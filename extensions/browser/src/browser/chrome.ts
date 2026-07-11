@@ -61,6 +61,7 @@ import {
 import {
   decorateOpenClawProfile,
   ensureProfileCleanExit,
+  ensureProfileNetworkPredictionDisabled,
   isProfileDecorated,
   usesOpenClawMockKeychain,
 } from "./chrome.profile-decoration.js";
@@ -1041,6 +1042,12 @@ export async function launchOpenClawChrome(
     } catch (err) {
       log.warn(`openclaw browser profile decoration failed: ${String(err)}`);
     }
+  }
+
+  try {
+    ensureProfileNetworkPredictionDisabled(userDataDir);
+  } catch (err) {
+    log.warn(`openclaw browser network-prediction prefs failed: ${String(err)}`);
   }
 
   try {
