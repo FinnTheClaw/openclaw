@@ -900,6 +900,8 @@ describe("sanitizeAssistantVisibleText", () => {
       "⚠️ 🛠️ `run openclaw definitely-not-a-real-subcommand (agent)` failed",
       "⚠️ 🛠️ gh search issues --repo openclaw/openclaw --state open --no-search-pages.jsonl /tmp/openclaw_open_unlabeled_current.json (agent) failed",
       "⚠️ 🛠️ gh search issues --repo openclaw/openclaw --state open (agent) failed: command timed out",
+      '⚠️ 🛠️ Bash failed: search "exec requires a tracked|requireTrackedExec|trackedExecutionOwner|Boolean(options?.messageProvider).*tracked" in ~/.openclaw/openclaw.json (agent)',
+      '⚠️ 🛠️ Exec failed: `rg "foo,bar" src` (repo) (exit 1)',
       "🛠️ run git status",
       "Visible outro.",
     ].join("\n");

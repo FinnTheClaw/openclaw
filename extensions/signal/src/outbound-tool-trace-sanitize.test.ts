@@ -6,7 +6,11 @@ import { signalPlugin } from "./channel.js";
 
 describe("signal outbound sanitizeText", () => {
   it("strips internal tool-trace banners before outbound delivery", () => {
-    const text = "Done.\n⚠️ 🛠️ `search repos (agent)` failed";
+    const text = [
+      "Done.",
+      "⚠️ 🛠️ `search repos (agent)` failed",
+      '⚠️ 🛠️ Bash failed: search "exec requires a tracked|requireTrackedExec|trackedExecutionOwner|Boolean(options?.messageProvider).*tracked" in ~/.openclaw/openclaw.json (agent)',
+    ].join("\n");
 
     expect(signalPlugin.outbound?.sanitizeText?.({ text, payload: { text } })).toBe("Done.");
   });
