@@ -383,6 +383,16 @@ function expectSingleLogMessage(
 }
 
 describe("Codex app-server native code mode config", () => {
+  it("keeps task ownership and completion policy on the native Codex route", () => {
+    const instructions = buildDeveloperInstructions(createAttemptParams({ provider: "openai" }));
+
+    expect(instructions).toContain("<completion_contract>");
+    expect(instructions).toContain("Continue until the requested outcome is complete");
+    expect(instructions).toContain("Resolve in-scope defects you discover");
+    expect(instructions).toContain("Do not hand routine next steps back to the user");
+    expect(instructions).toContain("human-only blocker");
+  });
+
   it("keeps Codex-native subagents primary while limiting OpenClaw spawn to OpenClaw delegation", () => {
     const instructions = buildDeveloperInstructions(createAttemptParams({ provider: "openai" }));
 
@@ -1196,7 +1206,7 @@ describe("Codex app-server turn params", () => {
       personality: "none",
       developerInstructions: resumeParams.developerInstructions,
     });
-    expect(resumeParams.developerInstructions).not.toContain(CODEX_GPT5_BEHAVIOR_CONTRACT);
+    expect(resumeParams.developerInstructions).toContain(CODEX_GPT5_BEHAVIOR_CONTRACT);
     const turnParams = buildTurnStartParams(params, {
       threadId: "thread-1",
       cwd: "/tmp/workspace",
