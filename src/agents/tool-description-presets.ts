@@ -70,6 +70,8 @@ export function describeSessionsSpawnTool(options?: {
       : '`mode="run"` one-shot background.',
     "Inherits parent workspace. Native task arrives as first `[Subagent Task]`.",
     'Native transcript needed: `context="fork"`; else omit/isolated.',
+    "Each spawn must be one bounded, independently verifiable shard (normally one package/module or 1-3 related files), never an entire repository or the complete parent request.",
+    "Decompose broad work into disjoint independent shards and dependency waves; use 4-12 children, including 10+ when 10+ independent components exist, then integrate and test in the parent.",
     "Use fresh child for sidecar/parallel batch reads, multi-step search, data collection; avoid quick lookup/single read unless policy prefers.",
     completionGuidance,
   ];

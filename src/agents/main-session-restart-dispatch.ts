@@ -21,6 +21,10 @@ const RESTART_RECOVERY_RESUME_MESSAGE =
   "[System] Your previous turn was interrupted by a gateway restart while " +
   "OpenClaw was waiting on tool/model work. Continue from the existing " +
   "transcript and finish the interrupted response.";
+const RESTART_RECOVERY_SCOPE_MESSAGE =
+  "Do not infer an interrupted task from memory files, project lists, or older " +
+  "conversations. If the exact interrupted work is not present in this transcript, " +
+  "say only that it could not be identified.";
 
 type RestartRecoveryTerminalStatus = "error" | "ok" | "timeout";
 
@@ -34,9 +38,9 @@ function buildResumeMessage(pendingFinalDeliveryText?: string | null): string {
       ? sanitizePendingFinalDeliveryText(pendingFinalDeliveryText)
       : "";
   if (sanitizedPendingText) {
-    return `${RESTART_RECOVERY_RESUME_MESSAGE}\n\nNote: The interrupted final reply was captured: "${sanitizedPendingText}"`;
+    return `${RESTART_RECOVERY_RESUME_MESSAGE}\n\n${RESTART_RECOVERY_SCOPE_MESSAGE}\n\nNote: The interrupted final reply was captured: "${sanitizedPendingText}"`;
   }
-  return RESTART_RECOVERY_RESUME_MESSAGE;
+  return `${RESTART_RECOVERY_RESUME_MESSAGE}\n\n${RESTART_RECOVERY_SCOPE_MESSAGE}`;
 }
 
 export function resolveRestartRecoveryDeliveryContext(params: {

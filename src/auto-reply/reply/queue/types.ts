@@ -150,6 +150,8 @@ export type FollowupRun = {
     authProfileId?: string;
     authProfileIdSource?: "auto" | "user";
     thinkLevel?: ThinkLevel;
+    /** True when the current turn explicitly selected a thinking level. */
+    thinkingLevelExplicit?: boolean;
     fastMode?: FastMode;
     fastModeAutoOnSeconds?: number;
     fastModeOverride?: boolean;

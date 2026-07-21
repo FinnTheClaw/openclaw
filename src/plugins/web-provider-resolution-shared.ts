@@ -117,15 +117,24 @@ export function resolveManifestDeclaredWebProviderCandidates(params: {
       env: params.env,
       pluginIds: scopedPluginIds,
     });
+  const explicitlyTrustedPluginIds = new Set(
+    Object.entries(params.config?.plugins?.entries ?? {})
+      .filter(([, entry]) => entry?.enabled === true)
+      .map(([pluginId]) => pluginId)
+      .filter((pluginId) => params.config?.plugins?.allow?.includes(pluginId) === true),
+  );
   const ids = manifestRecords
     .filter(
       (plugin) =>
         (!params.origin || plugin.origin === params.origin) &&
-        // Sandboxed web tools may run bundled providers or a verified official install,
-        // never an arbitrary workspace or external plugin with the same contract.
+        // Sandboxed web tools may run bundled providers, a verified official install,
+        // or a plugin the operator both allowlisted and explicitly enabled. Requiring
+        // both config signals prevents arbitrary discovered plugins from entering the
+        // sandbox while preserving deliberate offline/vendored deployments.
         (!params.sandboxed ||
           plugin.origin === "bundled" ||
-          plugin.trustedOfficialInstall === true) &&
+          plugin.trustedOfficialInstall === true ||
+          explicitlyTrustedPluginIds.has(plugin.id)) &&
         (!onlyPluginIdSet || onlyPluginIdSet.has(plugin.id)) &&
         pluginManifestDeclaresProviderConfig(plugin, params.configKey, params.contract),
     )

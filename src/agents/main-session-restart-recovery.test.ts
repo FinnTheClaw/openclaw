@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
 import type { SessionEntry } from "../config/sessions.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import {
@@ -2307,6 +2308,9 @@ describe("main-session-restart-recovery", () => {
       bestEffortDeliver: true,
       forceRestartSafeTools: true,
     });
+    expect(gatewayCall?.params?.message).toEqual(
+      expect.stringContaining("Do not infer an interrupted task from memory files"),
+    );
 
     const store = readStore(path.join(sessionsDir, "sessions.json"));
     expect(store["agent:main:demo-channel:room-1"]?.status).toBe("running");
@@ -2942,6 +2946,156 @@ describe("main-session-restart-recovery", () => {
     const result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
 
     expect(result).toEqual({ recovered: 0, failed: 1, skipped: 0 });
+    expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  it("defers exact Signal event replay to the matching durable ingress lane", async () => {
+    const sessionsDir = await makeSessionsDir();
+    const sessionKey = "agent:main:signal:direct:+15550001111";
+    const startedAt = Date.now() - 10_000;
+    await writeStore(sessionsDir, {
+      [sessionKey]: {
+        sessionId: "signal-interrupted",
+        startedAt,
+        updatedAt: Date.now() - 5_000,
+        status: "running",
+        abortedLastRun: true,
+        restartRecoveryDeliveryContext: {
+          channel: "signal",
+          to: "+15550001111",
+          accountId: "default",
+        },
+      },
+    });
+    await writeTranscript(sessionsDir, "signal-interrupted", [
+      { role: "user", content: "process this exact Signal event" },
+      { role: "toolResult", content: "interrupted result" },
+    ]);
+    const queue = createChannelIngressQueue<{ event: string }>({
+      channelId: "signal",
+      accountId: "default",
+      stateDir: tmpDir,
+    });
+    await queue.enqueue(
+      "signal-event-1",
+      { event: "receive" },
+      { laneKey: sessionKey, receivedAt: startedAt - 100 },
+    );
+
+    const result = await recoverRestartAbortedMainSessions({
+      cfg: { channels: { signal: { durableIngress: true } } },
+      stateDir: tmpDir,
+    });
+
+    expect(result).toEqual({ recovered: 0, failed: 0, skipped: 1 });
+    expect(callGateway).not.toHaveBeenCalled();
+    expect(readStore(path.join(sessionsDir, "sessions.json"))[sessionKey]?.status).toBe("failed");
+    expect((await queue.listPending({ limit: "all" })).map((record) => record.id)).toEqual([
+      "signal-event-1",
+    ]);
+  });
+
+  it("does not suppress recovery for a newer or unrelated Signal queue lane", async () => {
+    const sessionsDir = await makeSessionsDir();
+    const sessionKey = "agent:main:signal:direct:+15550001111";
+    const startedAt = Date.now() - 10_000;
+    await writeStore(sessionsDir, {
+      [sessionKey]: {
+        sessionId: "signal-interrupted",
+        startedAt,
+        updatedAt: Date.now() - 5_000,
+        status: "running",
+        abortedLastRun: true,
+        restartRecoveryDeliveryContext: {
+          channel: "signal",
+          to: "+15550001111",
+          accountId: "default",
+        },
+      },
+    });
+    await writeTranscript(sessionsDir, "signal-interrupted", [
+      { role: "user", content: "resume the interrupted turn" },
+      { role: "toolResult", content: "interrupted result" },
+    ]);
+    const queue = createChannelIngressQueue<{ event: string }>({
+      channelId: "signal",
+      accountId: "default",
+      stateDir: tmpDir,
+    });
+    await queue.enqueue(
+      "newer-same-lane",
+      { event: "receive" },
+      { laneKey: sessionKey, receivedAt: startedAt + 5_000 },
+    );
+    await queue.enqueue(
+      "older-other-lane",
+      { event: "receive" },
+      { laneKey: "agent:main:signal:direct:+15550002222", receivedAt: startedAt - 100 },
+    );
+
+    const result = await recoverRestartAbortedMainSessions({
+      cfg: { channels: { signal: { durableIngress: true } } },
+      stateDir: tmpDir,
+    });
+
+    expect(result).toEqual({ recovered: 1, failed: 0, skipped: 0 });
+    expect(callGateway).toHaveBeenCalledTimes(1);
+  });
+
+  it("expires days-old aborted sessions without replaying or notifying stale work", async () => {
+    const sessionsDir = await makeSessionsDir();
+    const sessionKey = "agent:main:main";
+    await writeStore(sessionsDir, {
+      [sessionKey]: {
+        sessionId: "days-old-session",
+        startedAt: Date.now() - 7 * 60 * 60 * 1000,
+        updatedAt: Date.now() - 1_000,
+        status: "running",
+        abortedLastRun: true,
+        restartRecoveryDeliveryContext: {
+          channel: "signal",
+          to: "+15550001111",
+          accountId: "default",
+        },
+      },
+    });
+    await writeTranscript(sessionsDir, "days-old-session", [
+      { role: "user", content: "stale task from days ago" },
+      { role: "toolResult", content: "stale partial result" },
+    ]);
+
+    const result = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+
+    expect(result).toEqual({ recovered: 0, failed: 0, skipped: 1 });
+    expect(callGateway).not.toHaveBeenCalled();
+    const entry = readStore(path.join(sessionsDir, "sessions.json"))[sessionKey];
+    expect(entry?.status).toBe("failed");
+    expect(entry?.pendingFinalDelivery).toBeUndefined();
+  });
+
+  it("does not rejuvenate a stale startup orphan before applying the age fence", async () => {
+    const sessionsDir = await makeSessionsDir();
+    const sessionKey = "agent:main:main";
+    await writeStore(sessionsDir, {
+      [sessionKey]: {
+        sessionId: "stale-startup-orphan",
+        startedAt: Date.now() - 7 * 60 * 60 * 1000,
+        updatedAt: Date.now() - 7 * 60 * 60 * 1000,
+        status: "running",
+      },
+    });
+
+    const result = await markStartupOrphanedMainSessionsForRecovery({
+      stateDir: tmpDir,
+      activeSessionIds: [],
+      activeSessionKeys: [],
+      updatedBeforeMs: Date.now(),
+    });
+
+    expect(result).toEqual({ marked: 0, skipped: 1 });
+    const entry = readStore(path.join(sessionsDir, "sessions.json"))[sessionKey];
+    expect(entry?.status).toBe("failed");
+    expect(entry?.abortedLastRun).toBe(true);
     expect(callGateway).not.toHaveBeenCalled();
   });
 });

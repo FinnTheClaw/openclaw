@@ -155,6 +155,11 @@ describe("memory host SDK package internals", () => {
     const tmpDir = getTmpDir();
     fsSync.writeFileSync(path.join(tmpDir, "MEMORY.md"), "# Default memory");
     fsSync.writeFileSync(path.join(tmpDir, "memory.md"), "# Legacy memory");
+    const memoryDir = path.join(tmpDir, "memory");
+    const dreamingDir = path.join(memoryDir, "dreaming", "light");
+    fsSync.mkdirSync(dreamingDir, { recursive: true });
+    fsSync.writeFileSync(path.join(memoryDir, "2026-07-17.md"), "# Daily memory");
+    fsSync.writeFileSync(path.join(dreamingDir, "2026-07-17.md"), "# Generated reflection");
     const extraDir = path.join(tmpDir, "extra");
     fsSync.mkdirSync(extraDir, { recursive: true });
     fsSync.writeFileSync(path.join(extraDir, "note.md"), "# Note");
@@ -173,6 +178,7 @@ describe("memory host SDK package internals", () => {
       path.join("extra", "diagram.png"),
       path.join("extra", "note.md"),
       path.join("extra", "recording.m2a"),
+      path.join("memory", "2026-07-17.md"),
     ]);
   });
 

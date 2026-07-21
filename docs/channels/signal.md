@@ -453,6 +453,7 @@ Provider options:
 - `channels.signal.httpHost`, `channels.signal.httpPort`: daemon bind (default `127.0.0.1:8080`).
 - `channels.signal.autoStart`: auto-spawn daemon (default true if `httpUrl` unset).
 - `channels.signal.startupTimeoutMs`: startup wait timeout in ms (min 1000, cap 120000; default 30000).
+- `channels.signal.durableIngress`: persist inbound Signal events in SQLite before processing (default `true`). Pending rows survive Gateway restarts; claimed rows identify the event currently processing. Temporary rollback: `openclaw config set channels.signal.durableIngress false && openclaw gateway restart`.
 - `channels.signal.receiveMode`: `on-start | manual`.
 - `channels.signal.ignoreAttachments`: skip attachment downloads.
 - `channels.signal.ignoreStories`: ignore stories from the daemon.

@@ -39,6 +39,7 @@ describe("agent concurrency defaults", () => {
           subagents: {
             maxSpawnDepth: 2,
             maxChildrenPerAgent: 7,
+            allowModelOverride: false,
           },
         },
       },
@@ -46,6 +47,7 @@ describe("agent concurrency defaults", () => {
 
     expect(parsed.agents?.defaults?.subagents?.maxSpawnDepth).toBe(2);
     expect(parsed.agents?.defaults?.subagents?.maxChildrenPerAgent).toBe(7);
+    expect(parsed.agents?.defaults?.subagents?.allowModelOverride).toBe(false);
   });
 
   it("injects missing agent defaults", () => {

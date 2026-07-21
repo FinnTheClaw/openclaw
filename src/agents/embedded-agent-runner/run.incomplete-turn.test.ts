@@ -2624,6 +2624,58 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(retryInstruction).toBe(EMPTY_RESPONSE_RETRY_INSTRUCTION);
   });
 
+  it("retries an empty continuation when only prior attempts had tool side effects", () => {
+    const retryInstruction = resolveEmptyResponseRetryInstruction({
+      provider: "remote-llm",
+      modelId: "moira/brain",
+      modelApi: "openai-responses",
+      payloadCount: 0,
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [],
+        replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "stop",
+          provider: "remote-llm",
+          model: "moira/brain",
+          content: [],
+          usage: { input: 5000, output: 200, totalTokens: 5200 },
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    });
+
+    expect(retryInstruction).toBe(EMPTY_RESPONSE_RETRY_INSTRUCTION);
+  });
+
+  it("does not retry an empty continuation when the current attempt had side effects", () => {
+    const retryInstruction = resolveEmptyResponseRetryInstruction({
+      provider: "remote-llm",
+      modelId: "moira/brain",
+      modelApi: "openai-responses",
+      payloadCount: 0,
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptResult({
+        assistantTexts: [],
+        replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "stop",
+          provider: "remote-llm",
+          model: "moira/brain",
+          content: [],
+          usage: { input: 5000, output: 200, totalTokens: 5200 },
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    });
+
+    expect(retryInstruction).toBeNull();
+  });
+
   it("retries generic empty OpenAI-compatible turns from custom endpoints", () => {
     const retryInstruction = resolveEmptyResponseRetryInstruction({
       provider: "llama-cpp-local",

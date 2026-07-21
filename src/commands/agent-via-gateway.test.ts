@@ -6,6 +6,7 @@ import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coerci
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { loggingState } from "../logging/state.js";
+import { GatewaySecretRefUnavailableError } from "../gateway/credentials.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE } from "../sessions/agent-harness-session-key.js";
 import { agentCliCommand, agentViaGatewayTesting } from "./agent-via-gateway.js";
@@ -564,6 +565,42 @@ describe("agentCliCommand", () => {
       expect(loadConfigWithShellEnvFallback).toHaveBeenCalledWith();
       expect(callGateway).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("retries a local SecretRef-authenticated gateway with paired device auth", async () => {
+    await withTempStore(
+      async () => {
+        callGateway.mockRejectedValueOnce(
+          new GatewaySecretRefUnavailableError("gateway.auth.token"),
+        );
+        mockGatewaySuccessReply();
+
+        await agentCliCommand(
+          { message: "hi", sessionKey: "agent:main:incident-42" },
+          runtime,
+        );
+
+        expect(loadConfig).toHaveBeenCalledTimes(1);
+        expect(loadConfigWithShellEnvFallback).not.toHaveBeenCalled();
+        expect(callGateway).toHaveBeenCalledTimes(2);
+        expect(requireRecord(callGateway.mock.calls[0]?.[0], "first gateway request")).not.toHaveProperty(
+          "useStoredDeviceAuth",
+        );
+        expect(requireRecord(callGateway.mock.calls[1]?.[0], "second gateway request")).toMatchObject({
+          useStoredDeviceAuth: true,
+          requiredStoredDeviceAuthScopes: ["operator.admin"],
+        });
+      },
+      {
+        gateway: {
+          mode: "local",
+          auth: {
+            mode: "token",
+            token: { source: "exec", provider: "keychain", id: "gateway/token" },
+          },
+        },
+      },
+    );
   });
 
   it("scopes legacy explicit session keys to the requested agent", async () => {

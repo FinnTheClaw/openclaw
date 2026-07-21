@@ -308,6 +308,10 @@ function shouldRetryGatewayDispatchWithShellEnvFallback(err: unknown): boolean {
   );
 }
 
+function isGatewayStoredDeviceAuthUnavailableError(err: unknown): boolean {
+  return err instanceof Error && err.name === "GatewayStoredDeviceAuthUnavailableError";
+}
+
 function isGatewayAgentEmbeddedFallbackError(err: unknown): boolean {
   return isGatewayTransportError(err);
 }
@@ -760,6 +764,7 @@ async function agentViaGatewayCommand(
   let acceptedGatewayRun = false;
   let activeConnectionAbortAttempted = false;
   let activeConnectionAbortSucceeded = false;
+  let useStoredDeviceAuth = false;
   let response: GatewayAgentResponse | undefined;
   const dispatchGatewayAgentCall = async (activeCfg: OpenClawConfig) =>
     await withProgress(
@@ -811,10 +816,18 @@ async function agentViaGatewayCommand(
               request,
             });
           },
+          ...(useStoredDeviceAuth
+            ? {
+                useStoredDeviceAuth: true,
+                requiredStoredDeviceAuthScopes: [ADMIN_SCOPE],
+              }
+            : {}),
           ...gatewayIdentity,
         }),
     );
 
+  let storedDeviceAuthRetriesRemaining = 1;
+  const consumeStoredDeviceAuthRetry = () => storedDeviceAuthRetriesRemaining-- > 0;
   let shellEnvFallbackRetriesRemaining = 1;
   const consumeShellEnvFallbackRetry = () => shellEnvFallbackRetriesRemaining-- > 0;
   for (;;) {
@@ -824,7 +837,27 @@ async function agentViaGatewayCommand(
     } catch (err) {
       if (
         !acceptedGatewayRun &&
-        shouldRetryGatewayDispatchWithShellEnvFallback(err) &&
+        !usesRemoteGateway &&
+        isGatewaySecretRefUnavailableError(err) &&
+        consumeStoredDeviceAuthRetry()
+      ) {
+        // A local interactive/SSH command may be unable to read a macOS
+        // Keychain-backed SecretRef even though the running Gateway resolved it
+        // successfully. Retry with the paired local device credential instead
+        // of requiring the shared Gateway token to be copied into the shell.
+        useStoredDeviceAuth = true;
+        continue;
+      }
+      const storedDeviceAuthFailed =
+        useStoredDeviceAuth &&
+        (isGatewayCredentialsRequiredError(err) ||
+          isGatewayStoredDeviceAuthUnavailableError(err));
+      if (storedDeviceAuthFailed) {
+        useStoredDeviceAuth = false;
+      }
+      if (
+        !acceptedGatewayRun &&
+        (storedDeviceAuthFailed || shouldRetryGatewayDispatchWithShellEnvFallback(err)) &&
         consumeShellEnvFallbackRetry()
       ) {
         cfg = await getGatewayDispatchConfig({ skipShellEnvFallback: false });

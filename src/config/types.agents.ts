@@ -139,6 +139,8 @@ export type AgentConfig = {
     allowAgents?: string[];
     /** Per-agent default model for spawned sub-agents (string or {primary,fallbacks}). */
     model?: AgentModelConfig;
+    /** Allow sessions_spawn calls to override this agent's configured sub-agent model. */
+    allowModelOverride?: boolean;
     /** Per-agent default thinking level for spawned sub-agents. */
     thinking?: string;
     /** Require explicit agentId in sessions_spawn (no default same-as-caller). */

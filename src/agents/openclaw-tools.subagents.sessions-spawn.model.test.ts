@@ -43,6 +43,29 @@ describe("subagent spawn model + thinking plan", () => {
     expect(plan.initialSessionPatch.modelOverrideSource).toBe("user");
   });
 
+  it("marks a rejected model override as the configured automatic lane", () => {
+    const plan = expectOkPlan(
+      resolveSubagentModelAndThinkingPlan({
+        cfg: createConfig({
+          agents: {
+            defaults: {
+              model: { primary: "openai/gpt-5.6-terra" },
+              subagents: {
+                model: "remote-llm/moira/coding",
+                allowModelOverride: false,
+              },
+            },
+          },
+        }),
+        targetAgentId: "main",
+        modelOverride: "openai/gpt-5.6-terra",
+      }),
+    );
+    expect(plan.resolvedModel).toBe("remote-llm/moira/coding");
+    expect(plan.initialSessionPatch.model).toBe("remote-llm/moira/coding");
+    expect(plan.initialSessionPatch.modelOverrideSource).toBe("auto");
+  });
+
   it("preserves model ids containing slashes", () => {
     expect(splitModelRef("openrouter/meta-llama/llama-3.3-70b:free")).toEqual({
       provider: "openrouter",

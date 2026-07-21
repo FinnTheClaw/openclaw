@@ -20,4 +20,8 @@ export const signalChannelConfigUiHints = {
     label: "Signal CLI Config Path",
     help: "Optional directory passed to signal-cli via --config when the service needs a non-default signal-cli data path.",
   },
+  durableIngress: {
+    label: "Durable Inbound Queue",
+    help: "Persist each Signal transport event in SQLite before processing. Disable only as a temporary rollback to the legacy process-local ingress path.",
+  },
 } satisfies Record<string, ChannelConfigUiHint>;

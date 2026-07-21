@@ -9,6 +9,7 @@ import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
 } from "../../packages/gateway-protocol/src/client-info.js";
+import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
   type RestartRecoveryRun,
@@ -66,6 +67,8 @@ const log = createSubsystemLogger("main-session-restart-recovery");
 const DEFAULT_RECOVERY_DELAY_MS = 5_000;
 const MAX_RECOVERY_RETRIES = 3;
 const RETRY_BACKOFF_MULTIPLIER = 2;
+const MAIN_SESSION_RECOVERY_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const SIGNAL_INGRESS_SESSION_START_SKEW_MS = 1_000;
 const UNRESUMABLE_SESSION_NOTICE =
   "I was interrupted by a gateway restart and couldn't safely resume the previous turn. " +
   "Please send that last request again and I'll pick it up cleanly.";
@@ -95,6 +98,40 @@ function normalizeStringSet(values: Iterable<string> | undefined): Set<string> {
 
 function normalizeFiniteTimestamp(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function resolveRecoveryAgeAnchor(entry: SessionEntry): number | undefined {
+  return (
+    normalizeFiniteTimestamp(entry.startedAt) ??
+    normalizeFiniteTimestamp(entry.pendingFinalDeliveryCreatedAt) ??
+    normalizeFiniteTimestamp(entry.updatedAt)
+  );
+}
+
+function isExpiredRestartRecovery(entry: SessionEntry, now = Date.now()): boolean {
+  const anchor = resolveRecoveryAgeAnchor(entry);
+  return anchor !== undefined && anchor <= now && now - anchor > MAIN_SESSION_RECOVERY_MAX_AGE_MS;
+}
+
+function terminalizeInterruptedSessionEntry(entry: SessionEntry, endedAt = Date.now()): void {
+  entry.status = "failed";
+  entry.abortedLastRun = true;
+  entry.endedAt = endedAt;
+  entry.updatedAt = endedAt;
+  entry.pendingFinalDelivery = undefined;
+  entry.pendingFinalDeliveryText = undefined;
+  entry.pendingFinalDeliveryCreatedAt = undefined;
+  entry.pendingFinalDeliveryLastAttemptAt = undefined;
+  entry.pendingFinalDeliveryAttemptCount = undefined;
+  entry.pendingFinalDeliveryLastError = undefined;
+  entry.pendingFinalDeliveryContext = undefined;
+  Object.assign(
+    entry,
+    buildRestartRecoveryClaimCleanupPatch({
+      entry,
+      recordTerminalSource: true,
+    }),
+  );
 }
 
 function hasCurrentProcessOwner(params: {
@@ -330,6 +367,7 @@ export async function markStartupOrphanedMainSessionsForRecovery(params: {
   updatedBeforeMs?: number;
 }): Promise<{ marked: number; skipped: number }> {
   const result = { marked: 0, skipped: 0 };
+  let expired = 0;
   const providedActiveSessionIds =
     params.activeSessionIds === undefined ? undefined : normalizeStringSet(params.activeSessionIds);
   const providedActiveSessionKeys =
@@ -348,7 +386,8 @@ export async function markStartupOrphanedMainSessionsForRecovery(params: {
       statuses: ["running"],
       update: (entries) => {
         const replacements: Array<{ sessionKey: string; entry: SessionEntry }> = [];
-        const counts = { marked: 0, skipped: 0 };
+        const counts = { marked: 0, skipped: 0, expired: 0 };
+        const observedAt = Date.now();
         for (const { sessionKey, entry } of entries) {
           if (entry.status !== "running" || entry.abortedLastRun === true) {
             continue;
@@ -375,8 +414,14 @@ export async function markStartupOrphanedMainSessionsForRecovery(params: {
           ) {
             continue;
           }
+          if (isExpiredRestartRecovery(entry, observedAt)) {
+            terminalizeInterruptedSessionEntry(entry, observedAt);
+            replacements.push({ sessionKey, entry });
+            counts.expired++;
+            continue;
+          }
           entry.abortedLastRun = true;
-          entry.updatedAt = Date.now();
+          entry.updatedAt = observedAt;
           replacements.push({ sessionKey, entry });
           counts.marked++;
         }
@@ -384,11 +429,15 @@ export async function markStartupOrphanedMainSessionsForRecovery(params: {
       },
     });
     result.marked += storeResult.marked;
-    result.skipped += storeResult.skipped;
+    result.skipped += storeResult.skipped + storeResult.expired;
+    expired += storeResult.expired;
   }
 
   if (result.marked > 0) {
     log.warn(`marked ${result.marked} startup-orphaned main session(s) for restart recovery`);
+  }
+  if (expired > 0) {
+    log.warn(`expired ${expired} startup-orphaned main session(s) older than the recovery window`);
   }
   return result;
 }
@@ -713,24 +762,7 @@ async function markSessionFailed(params: {
       ) {
         return { result: false };
       }
-      entry.status = "failed";
-      entry.abortedLastRun = true;
-      entry.endedAt = Date.now();
-      entry.updatedAt = entry.endedAt;
-      entry.pendingFinalDelivery = undefined;
-      entry.pendingFinalDeliveryText = undefined;
-      entry.pendingFinalDeliveryCreatedAt = undefined;
-      entry.pendingFinalDeliveryLastAttemptAt = undefined;
-      entry.pendingFinalDeliveryAttemptCount = undefined;
-      entry.pendingFinalDeliveryLastError = undefined;
-      entry.pendingFinalDeliveryContext = undefined;
-      Object.assign(
-        entry,
-        buildRestartRecoveryClaimCleanupPatch({
-          entry,
-          recordTerminalSource: true,
-        }),
-      );
+      terminalizeInterruptedSessionEntry(entry);
       return {
         result: true,
         replacements: [{ sessionKey: params.sessionKey, entry }],
@@ -891,9 +923,62 @@ function resolveRecoveryDispatchSessionKey(params: {
   }
 }
 
+async function hasAuthoritativeSignalIngressReplay(params: {
+  cfg?: OpenClawConfig;
+  dispatchSessionKey: string;
+  entry: SessionEntry;
+  sessionKey: string;
+  stateDir?: string;
+}): Promise<boolean> {
+  if (!params.cfg || params.cfg.channels?.signal?.durableIngress === false) {
+    return false;
+  }
+  const deliveryContext = resolveRestartRecoveryDeliveryContext({
+    cfg: params.cfg,
+    entry: params.entry,
+    includeSessionDeliveryFallback: true,
+    sessionKey: params.sessionKey,
+  });
+  if (deliveryContext?.channel !== "signal") {
+    return false;
+  }
+  const startedAt = normalizeFiniteTimestamp(params.entry.startedAt);
+  if (startedAt === undefined) {
+    // Without a turn start boundary, a newer queued message cannot safely be distinguished from
+    // the interrupted event. Preserve normal recovery rather than discarding unrelated work.
+    return false;
+  }
+  const accountId = normalizeOptionalString(deliveryContext.accountId) ?? "default";
+  const stateDir = params.stateDir ?? resolveStateDir(process.env);
+  try {
+    const queue = createChannelIngressQueue<unknown>({
+      channelId: "signal",
+      accountId,
+      stateDir,
+    });
+    const [pending, claims] = await Promise.all([
+      queue.listPending({ limit: "all", orderBy: "received" }),
+      queue.listClaims(),
+    ]);
+    const matchingSessionKeys = new Set([params.sessionKey, params.dispatchSessionKey]);
+    return [...claims, ...pending].some(
+      (record) =>
+        record.laneKey !== undefined &&
+        matchingSessionKeys.has(record.laneKey) &&
+        record.receivedAt <= startedAt + SIGNAL_INGRESS_SESSION_START_SKEW_MS,
+    );
+  } catch (err) {
+    log.warn(
+      `failed to inspect durable Signal ingress for ${params.sessionKey}; preserving normal restart recovery: ${String(err)}`,
+    );
+    return false;
+  }
+}
+
 async function recoverStore(params: {
   cfg?: OpenClawConfig;
   storePath: string;
+  stateDir?: string;
   resumedSessionKeys: Set<string>;
   expectedClaim?: ExpectedRestartRecoveryClaim;
   sessionWorkAdmissionHandoffId?: string;
@@ -961,6 +1046,43 @@ async function recoverStore(params: {
         sessionKey,
       })
     ) {
+      result.skipped++;
+      continue;
+    }
+    if (isExpiredRestartRecovery(entry)) {
+      await markSessionFailed({
+        expectedRecoveryRunId: normalizeOptionalString(entry.restartRecoveryDeliveryRunId),
+        expectedRecoverySourceRunId: normalizeOptionalString(
+          entry.restartRecoveryDeliverySourceRunId,
+        ),
+        expectedSessionId: entry.sessionId,
+        storePath: params.storePath,
+        sessionKey,
+        reason: "restart recovery window expired",
+      });
+      result.skipped++;
+      continue;
+    }
+    if (
+      !params.expectedClaim &&
+      (await hasAuthoritativeSignalIngressReplay({
+        cfg: params.cfg,
+        dispatchSessionKey,
+        entry,
+        sessionKey,
+        stateDir: params.stateDir,
+      }))
+    ) {
+      await markSessionFailed({
+        expectedRecoveryRunId: normalizeOptionalString(entry.restartRecoveryDeliveryRunId),
+        expectedRecoverySourceRunId: normalizeOptionalString(
+          entry.restartRecoveryDeliverySourceRunId,
+        ),
+        expectedSessionId: entry.sessionId,
+        storePath: params.storePath,
+        sessionKey,
+        reason: "durable Signal ingress owns exact event replay",
+      });
       result.skipped++;
       continue;
     }
@@ -1169,6 +1291,7 @@ export async function recoverRestartAbortedMainSessions(
     const storeResult = await recoverStore({
       cfg: params.cfg,
       storePath,
+      stateDir: params.stateDir,
       resumedSessionKeys,
       activeSessionIds: params.activeSessionIds,
       activeSessionKeys: params.activeSessionKeys,

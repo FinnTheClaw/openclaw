@@ -34,6 +34,8 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
   autoStart?: boolean;
   /** Max time to wait for signal-cli daemon startup (ms, cap 120000). */
   startupTimeoutMs?: number;
+  /** Persist inbound transport events before processing so they survive Gateway restarts. Default: true. */
+  durableIngress?: boolean;
   receiveMode?: "on-start" | "manual";
   ignoreAttachments?: boolean;
   ignoreStories?: boolean;

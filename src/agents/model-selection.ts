@@ -18,6 +18,7 @@ import { splitTrailingAuthProfile } from "./model-ref-profile.js";
 import {
   resolveDefaultModelForAgent,
   resolveSubagentConfiguredModelSelection,
+  resolveSubagentModelOverrideAllowed,
 } from "./model-selection-config.js";
 export {
   resolveThinkingDefault,
@@ -59,7 +60,11 @@ export type { ModelAliasIndex, ModelManifestNormalizationContext, ModelRef, Mode
 
 export type { ThinkLevel } from "../auto-reply/thinking.shared.js";
 
-export { resolveDefaultModelForAgent, resolveSubagentConfiguredModelSelection };
+export {
+  resolveDefaultModelForAgent,
+  resolveSubagentConfiguredModelSelection,
+  resolveSubagentModelOverrideAllowed,
+};
 
 export {
   buildConfiguredAllowlistKeys,
@@ -344,8 +349,12 @@ export function resolveConfiguredSubagentSpawnModelSelection(params: {
   defaultProvider?: string;
   includeAgentPrimary?: boolean;
 }): string | undefined {
+  const allowModelOverride = resolveSubagentModelOverrideAllowed({
+    cfg: params.cfg,
+    agentId: params.agentId,
+  });
   const raw =
-    normalizeModelSelection(params.modelOverride) ??
+    (allowModelOverride ? normalizeModelSelection(params.modelOverride) : undefined) ??
     resolveSubagentConfiguredModelSelection({
       cfg: params.cfg,
       agentId: params.agentId,

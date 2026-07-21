@@ -10,13 +10,14 @@ import { resetPluginStateStoreForTests } from "./plugin-state-store.js";
 function createPluginRecord(
   id: string,
   origin: PluginRecord["origin"] = "bundled",
-  opts: { trustedOfficialInstall?: boolean } = {},
+  opts: { explicitlyEnabled?: boolean; trustedOfficialInstall?: boolean } = {},
 ): PluginRecord {
   return {
     id,
     name: id,
     source: `/plugins/${id}/index.ts`,
     origin,
+    explicitlyEnabled: opts.explicitlyEnabled,
     trustedOfficialInstall: opts.trustedOfficialInstall,
     enabled: true,
     status: "loaded",
@@ -118,6 +119,22 @@ describe("plugin runtime state proxy", () => {
       });
       await expect(store.register("thread", { plugin: "slack" })).resolves.toBeUndefined();
       await expect(store.lookup("thread")).resolves.toEqual({ plugin: "slack" });
+    });
+  });
+
+  it("allows explicitly enabled global plugins to use keyed state", async () => {
+    await withOpenClawTestState({ label: "plugin-state-explicit-global" }, async () => {
+      const registry = createTestPluginRegistry();
+      const record = createPluginRecord("signal", "global", { explicitlyEnabled: true });
+      registry.registry.plugins.push(record);
+      const api = registry.createApi(record, { config: {} });
+
+      const store = api.runtime.state.openKeyedStore<{ plugin: string }>({
+        namespace: "runtime",
+        maxEntries: 10,
+      });
+      await expect(store.register("message", { plugin: "signal" })).resolves.toBeUndefined();
+      await expect(store.lookup("message")).resolves.toEqual({ plugin: "signal" });
     });
   });
 

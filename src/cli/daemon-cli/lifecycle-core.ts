@@ -629,26 +629,29 @@ export async function runServiceRestart(params: {
   }
 
   if (loaded && params.checkTokenDrift) {
-    // Check for token drift before restart (service token vs config token)
+    // Only embedded service tokens can drift. Tokenless service definitions resolve
+    // the current config (including SecretRefs) inside the restarted gateway.
     try {
       const command = await params.service.readCommand(process.env);
       const serviceToken = command?.environment?.OPENCLAW_GATEWAY_TOKEN;
-      const cfg = await readBestEffortConfig();
-      const driftEnv = {
-        ...process.env,
-        ...command?.environment,
-      };
-      const configToken = await resolveGatewayTokenForDriftCheck({ cfg, env: driftEnv });
-      const driftIssue = checkTokenDrift({ serviceToken, configToken });
-      if (driftIssue) {
-        const warning = driftIssue.detail
-          ? `${driftIssue.message} ${driftIssue.detail}`
-          : driftIssue.message;
-        warnings.push(warning);
-        if (!json) {
-          defaultRuntime.log(`\n⚠️  ${driftIssue.message}`);
-          if (driftIssue.detail) {
-            defaultRuntime.log(`   ${driftIssue.detail}\n`);
+      if (serviceToken?.trim()) {
+        const cfg = await readBestEffortConfig();
+        const driftEnv = {
+          ...process.env,
+          ...command?.environment,
+        };
+        const configToken = await resolveGatewayTokenForDriftCheck({ cfg, env: driftEnv });
+        const driftIssue = checkTokenDrift({ serviceToken, configToken });
+        if (driftIssue) {
+          const warning = driftIssue.detail
+            ? `${driftIssue.message} ${driftIssue.detail}`
+            : driftIssue.message;
+          warnings.push(warning);
+          if (!json) {
+            defaultRuntime.log(`\n⚠️  ${driftIssue.message}`);
+            if (driftIssue.detail) {
+              defaultRuntime.log(`   ${driftIssue.detail}\n`);
+            }
           }
         }
       }

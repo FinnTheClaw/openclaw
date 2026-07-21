@@ -69,6 +69,7 @@ export function createSignalToolResultConfig(
       signal: {
         ...signal,
         autoStart: true,
+        durableIngress: false,
         dmPolicy: "open",
         allowFrom: ["*"],
         ...overrides,
@@ -261,7 +262,12 @@ export function installSignalToolResultTestHooks() {
       messages: { responsePrefix: "PFX" },
       session: { store: signalToolResultSessionStorePath },
       channels: {
-        signal: { autoStart: false, dmPolicy: "open", allowFrom: ["*"] },
+        signal: {
+          autoStart: false,
+          durableIngress: false,
+          dmPolicy: "open",
+          allowFrom: ["*"],
+        },
       },
     };
 

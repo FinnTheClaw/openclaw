@@ -1,10 +1,22 @@
 {
   "id": "signal",
+  "name": "Signal",
+  "description": "OpenClaw Signal channel plugin using signal-cli REST or native mode.",
   "icon": "https://cdn.simpleicons.org/signal",
   "activation": {
     "onStartup": false
   },
   "channels": ["signal"],
+  "channelConfigs": {
+    "signal": {
+      "label": "Signal",
+      "description": "Signal direct-message and group integration through signal-cli.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

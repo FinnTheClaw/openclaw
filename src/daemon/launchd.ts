@@ -1241,12 +1241,14 @@ async function ensureLaunchAgentLoadedAfterFailure(params: {
   domain: string;
   serviceTarget: string;
   plistPath: string;
+  env: GatewayServiceEnv;
 }): Promise<void> {
   const probe = await execLaunchctl(["print", params.serviceTarget]);
   if (probe.code === 0) {
     return;
   }
   try {
+    await assertGatewayPortReleasedAfterStop(params.env);
     await bootstrapLaunchAgentOrThrow({
       domain: params.domain,
       serviceTarget: params.serviceTarget,
@@ -1292,19 +1294,6 @@ export async function restartLaunchAgent({
     return { outcome: "scheduled" };
   }
 
-  const cleanupPort = await resolveLaunchAgentGatewayPort(serviceEnv);
-  if (cleanupPort !== null) {
-    cleanStaleGatewayProcessesSync(cleanupPort);
-    const diagnostics = await inspectPortUsage(cleanupPort).catch(() => null);
-    if (diagnostics?.status === "busy") {
-      throw new Error(
-        [
-          `gateway port ${cleanupPort} is still busy before LaunchAgent restart`,
-          ...formatPortDiagnostics(diagnostics),
-        ].join("\n"),
-      );
-    }
-  }
   const plistReloadNeeded = await rewriteLaunchAgentPlistForRestart({
     env: serviceEnv,
     label,
@@ -1322,6 +1311,7 @@ export async function restartLaunchAgent({
     if (bootout.code !== 0 && !isLaunchctlNotLoaded(bootout)) {
       throw new Error(`launchctl bootout failed: ${formatLaunchctlResultDetail(bootout)}`);
     }
+    await assertGatewayPortReleasedAfterStop(serviceEnv);
     await bootstrapLaunchAgentOrThrow({
       domain,
       serviceTarget,
@@ -1339,11 +1329,17 @@ export async function restartLaunchAgent({
   }
 
   if (!isLaunchctlNotLoaded(start)) {
-    await ensureLaunchAgentLoadedAfterFailure({ domain, serviceTarget, plistPath });
+    await ensureLaunchAgentLoadedAfterFailure({
+      domain,
+      serviceTarget,
+      plistPath,
+      env: serviceEnv,
+    });
     throw new Error(`launchctl kickstart failed: ${start.stderr || start.stdout}`.trim());
   }
 
   // If the service was previously booted out, re-register the rewritten plist and retry.
+  await assertGatewayPortReleasedAfterStop(serviceEnv);
   await bootstrapLaunchAgentOrThrow({
     domain,
     serviceTarget,

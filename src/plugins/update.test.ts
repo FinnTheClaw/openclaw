@@ -2667,6 +2667,70 @@ describe("updateNpmInstalledPlugins", () => {
     });
   });
 
+  it.each([false, true])(
+    "refuses implicit npm downgrades before installation (dryRun=%s)",
+    async (dryRun) => {
+      const installPath = createInstalledPackageDir({
+        name: "@acme/demo",
+        version: "1.2.3",
+      });
+
+      const result = await updateNpmInstalledPlugins({
+        config: createNpmInstallConfig({
+          pluginId: "demo",
+          spec: "@acme/demo@1.2.2",
+          installPath,
+        }),
+        pluginIds: ["demo"],
+        ...(dryRun ? { dryRun: true } : {}),
+      });
+
+      expect(installPluginFromNpmSpecMock).not.toHaveBeenCalled();
+      expectRecordFields(result.outcomes[0], {
+        pluginId: "demo",
+        status: "skipped",
+        currentVersion: "1.2.3",
+        nextVersion: "1.2.2",
+        message:
+          'Skipping "demo": refusing implicit downgrade 1.2.3 -> 1.2.2. Pass an explicit version spec to downgrade.',
+      });
+    },
+  );
+
+  it("allows an explicit npm version override to request a downgrade", async () => {
+    const installPath = createInstalledPackageDir({
+      name: "@acme/demo",
+      version: "1.2.3",
+    });
+    installPluginFromNpmSpecMock.mockResolvedValue(
+      createSuccessfulNpmUpdateResult({
+        pluginId: "demo",
+        targetDir: installPath,
+        version: "1.2.2",
+      }),
+    );
+
+    const result = await updateNpmInstalledPlugins({
+      config: createNpmInstallConfig({
+        pluginId: "demo",
+        spec: "@acme/demo@1.2.3",
+        installPath,
+      }),
+      pluginIds: ["demo"],
+      specOverrides: { demo: "@acme/demo@1.2.2" },
+      dryRun: true,
+    });
+
+    expect(npmInstallCall()?.spec).toBe("@acme/demo@1.2.2");
+    expectRecordFields(result.outcomes[0], {
+      pluginId: "demo",
+      status: "updated",
+      currentVersion: "1.2.3",
+      nextVersion: "1.2.2",
+      message: "Would update demo: 1.2.3 -> 1.2.2.",
+    });
+  });
+
   it("keeps exact npm dry-runs unchanged when probe metadata is absent but spec matches", async () => {
     const installPath = createInstalledPackageDir({
       name: "@acme/demo",

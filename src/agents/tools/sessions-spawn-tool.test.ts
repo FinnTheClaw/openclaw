@@ -132,6 +132,21 @@ describe("sessions_spawn tool", () => {
     expect(schema.properties?.streamTo).toBeUndefined();
   });
 
+  it("requires bounded decomposition in both the tool description and task schema", () => {
+    const tool = createSessionsSpawnTool();
+    const schema = tool.parameters as {
+      properties?: { task?: { description?: string } };
+    };
+
+    expect(tool.description).toContain("bounded, independently verifiable shard");
+    expect(tool.description).toContain("never an entire repository");
+    expect(tool.description).toContain("10+ when 10+ independent components exist");
+    expect(schema.properties?.task?.description).toContain(
+      "One bounded, independently verifiable shard",
+    );
+    expect(schema.properties?.task?.description).toContain("never the whole repository");
+  });
+
   it("advertises ACP runtime affordances when an ACP backend is loaded", () => {
     registerAcpBackendForTest();
 

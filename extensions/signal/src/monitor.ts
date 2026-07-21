@@ -51,7 +51,8 @@ import {
 import { signalRpcRequest, signalCheck } from "./client-adapter.js";
 import { formatSignalDaemonExit, spawnSignalDaemon, type SignalDaemonHandle } from "./daemon.js";
 import { isSignalSenderAllowed, type resolveSignalSender } from "./identity.js";
-import { createSignalEventHandler } from "./monitor/event-handler.js";
+import { createSignalMonitorTaskRunner } from "./monitor-task-runner.js";
+import { createSignalEventHandler, resolveSignalIngressLaneKey } from "./monitor/event-handler.js";
 import type {
   SignalAttachment,
   SignalNativeReplyContext,
@@ -60,6 +61,11 @@ import type {
 } from "./monitor/event-handler.types.js";
 import { materializeSignalPresentationFallback } from "./presentation-fallback.js";
 import { sendMessageSignal } from "./send.js";
+import {
+  createSignalIngressWorker,
+  openSignalIngressQueue,
+  type SignalIngressWorker,
+} from "./signal-ingress-queue.js";
 import { runSignalSseLoop } from "./sse-reconnect.js";
 
 export type MonitorSignalOpts = {
@@ -89,24 +95,6 @@ export type MonitorSignalOpts = {
 
 function resolveRuntime(opts: MonitorSignalOpts): RuntimeEnv {
   return opts.runtime ?? createNonExitingRuntime();
-}
-
-function createSignalMonitorTaskRunner(runtime: RuntimeEnv) {
-  const inFlight = new Set<Promise<void>>();
-  return {
-    runTask(task: () => Promise<void>): void {
-      const trackedTask = Promise.resolve()
-        .then(task)
-        .catch((err: unknown) => runtime.error?.(`signal monitor task failed: ${String(err)}`))
-        .finally(() => inFlight.delete(trackedTask));
-      inFlight.add(trackedTask);
-    },
-    async waitForIdle(): Promise<void> {
-      while (inFlight.size > 0) {
-        await Promise.allSettled(inFlight);
-      }
-    },
-  };
 }
 
 function createSignalDaemonLifecycle(params: { abortSignal?: AbortSignal }) {
@@ -584,6 +572,7 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
   const readReceiptsViaDaemon = autoStart && sendReadReceipts;
   const daemonLifecycle = createSignalDaemonLifecycle({ abortSignal: opts.abortSignal });
   const monitorTaskRunner = createSignalMonitorTaskRunner(runtime);
+  let ingressWorker: SignalIngressWorker | null = null;
   let daemonHandle: SignalDaemonHandle | null = null;
 
   if (autoStart && configuredApiMode === "container") {
@@ -686,6 +675,28 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
       buildSignalReactionSystemEventText,
     });
 
+    if (accountInfo.config.durableIngress !== false) {
+      ingressWorker = createSignalIngressWorker({
+        queue: openSignalIngressQueue(accountInfo.accountId),
+        handleEvent,
+        resolveLaneKey: (event) =>
+          resolveSignalIngressLaneKey(
+            {
+              cfg,
+              account,
+              accountUuid: accountInfo.config.accountUuid,
+              accountId: accountInfo.accountId,
+            },
+            event,
+          ),
+        runtime,
+        abortSignal: daemonLifecycle.abortSignal,
+      });
+      await ingressWorker.start();
+    } else {
+      runtime.log?.("signal durable ingress disabled; using legacy process-local ingress");
+    }
+
     await runSignalSseLoop({
       baseUrl,
       account,
@@ -696,6 +707,12 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
       apiMode: configuredApiMode,
       policy: opts.reconnectPolicy,
       onEvent: (event) => {
+        if (ingressWorker) {
+          // Invoke enqueue before returning to the transport so SQLite commit begins at receipt,
+          // then track settlement for orderly shutdown without deferring it to a later microtask.
+          monitorTaskRunner.track(ingressWorker.enqueue(event));
+          return;
+        }
         monitorTaskRunner.runTask(() => handleEvent(event));
       },
     });
@@ -712,7 +729,12 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
   } finally {
     // Daemon attachment finishes before monitor tasks start. Keep teardown open until both the
     // child has exited and already-started reply work has drained.
-    await Promise.all([daemonLifecycle.stop(), monitorTaskRunner.waitForIdle()]);
+    await Promise.all([
+      daemonLifecycle.stop(),
+      ingressWorker?.stop(),
+      monitorTaskRunner.waitForIdle(),
+    ]);
     opts.abortSignal?.removeEventListener("abort", onAbort);
   }
 }
+/* oxlint-disable max-lines -- Signal monitor owns one cohesive provider lifecycle. */

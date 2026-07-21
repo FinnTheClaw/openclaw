@@ -629,6 +629,12 @@ function shouldSkipNonVisibleTurnRetry(params: {
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
 }): boolean {
+  // A prior attempt may already have committed tool side effects while the
+  // current continuation produced no tools and no visible response. Retrying
+  // that empty current attempt is safe: the persisted transcript is resumed,
+  // not replayed. Prefer attempt-local metadata when the runner provides it.
+  const replayMetadata =
+    params.attempt.currentAttemptReplayMetadata ?? resolveAttemptReplayMetadata(params.attempt);
   return Boolean(
     params.aborted ||
     params.timedOut ||
@@ -637,7 +643,7 @@ function shouldSkipNonVisibleTurnRetry(params: {
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
     hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
-    resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects,
+    replayMetadata.hadPotentialSideEffects,
   );
 }
 

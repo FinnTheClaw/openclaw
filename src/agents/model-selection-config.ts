@@ -53,3 +53,16 @@ export function resolveSubagentConfiguredModelSelection(params: {
     (params.includeAgentPrimary === false ? undefined : normalizeModelSelection(agentConfig?.model))
   );
 }
+
+/** Whether a model-supplied sessions_spawn call may bypass the configured worker lane. */
+export function resolveSubagentModelOverrideAllowed(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+}): boolean {
+  const agentConfig = resolveAgentConfig(params.cfg, params.agentId);
+  return (
+    agentConfig?.subagents?.allowModelOverride ??
+    params.cfg.agents?.defaults?.subagents?.allowModelOverride ??
+    true
+  );
+}

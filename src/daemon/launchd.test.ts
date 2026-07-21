@@ -1964,7 +1964,7 @@ describe("launchd install", () => {
     const label = "ai.openclaw.gateway";
     const serviceId = `${domain}/${label}`;
     expect(result).toEqual({ outcome: "completed" });
-    expect(cleanStaleGatewayProcessesSync).toHaveBeenCalledWith(18789);
+    expect(cleanStaleGatewayProcessesSync).not.toHaveBeenCalled();
     expect(state.launchctlCalls).toEqual([
       ["enable", serviceId],
       ["kickstart", "-k", serviceId],
@@ -2008,6 +2008,7 @@ describe("launchd install", () => {
     expect(plist).toContain("<key>StandardInPath</key>");
     expect(plist).toContain("<string>/dev/null</string>");
     expect(plist).toContain("<string>/Users/test/Library/Logs/openclaw/gateway.log</string>");
+    expect(cleanStaleGatewayProcessesSync).toHaveBeenCalledWith(18789);
     expect(launchctlCommandNames()).toEqual(["enable", "bootout", "enable", "bootstrap"]);
     expect(launchctlCommandNames()).not.toContain("kickstart");
   });
@@ -2050,7 +2051,7 @@ describe("launchd install", () => {
     expect(launchctlCommandNames()).not.toContain("kickstart");
   });
 
-  it("uses the configured gateway port for stale cleanup", async () => {
+  it("does not pre-clean the managed process before a normal restart", async () => {
     const env = {
       ...createDefaultLaunchdEnv(),
       OPENCLAW_GATEWAY_PORT: "19001",
@@ -2061,7 +2062,8 @@ describe("launchd install", () => {
       stdout: new PassThrough(),
     });
 
-    expect(cleanStaleGatewayProcessesSync).toHaveBeenCalledWith(19001);
+    expect(cleanStaleGatewayProcessesSync).not.toHaveBeenCalled();
+    expect(inspectPortUsage).not.toHaveBeenCalled();
   });
 
   it("ignores invalid configured gateway ports for stale cleanup", async () => {
@@ -2080,7 +2082,7 @@ describe("launchd install", () => {
     expect(inspectPortUsage).not.toHaveBeenCalled();
   });
 
-  it("uses the stored LaunchAgent environment port for restart stale cleanup", async () => {
+  it("does not pre-clean a normal restart with a stored LaunchAgent port", async () => {
     const env = createDefaultLaunchdEnv();
     await installLaunchAgent({
       env,
@@ -2095,8 +2097,8 @@ describe("launchd install", () => {
       stdout: new PassThrough(),
     });
 
-    expect(cleanStaleGatewayProcessesSync).toHaveBeenCalledWith(19007);
-    expect(inspectPortUsage).toHaveBeenCalledWith(19007);
+    expect(cleanStaleGatewayProcessesSync).not.toHaveBeenCalled();
+    expect(inspectPortUsage).not.toHaveBeenCalled();
   });
 
   it("ignores invalid stored LaunchAgent environment ports for stale cleanup", async () => {
@@ -2118,7 +2120,7 @@ describe("launchd install", () => {
     expect(inspectPortUsage).not.toHaveBeenCalled();
   });
 
-  it("fails restart before kickstart when the configured gateway port remains busy", async () => {
+  it("fails a plist reload when the gateway port remains busy after bootout", async () => {
     const env = {
       ...createDefaultLaunchdEnv(),
       OPENCLAW_GATEWAY_PORT: "19002",
@@ -2147,22 +2149,32 @@ describe("launchd install", () => {
       listeners: [],
       hints: [],
     });
+    probePortUsage.mockResolvedValue("busy");
     formatPortDiagnostics.mockReturnValue(["Port 19002 is held by pid 4242."]);
 
-    await expect(
-      restartLaunchAgent({
+    vi.useFakeTimers();
+    try {
+      const restartPromise = restartLaunchAgent({
         env,
         stdout: new PassThrough(),
-      }),
-    ).rejects.toThrow(
-      "gateway port 19002 is still busy before LaunchAgent restart\nPort 19002 is held by pid 4242.",
-    );
+      });
+      const result = restartPromise.catch((error: unknown) => error);
+      await vi.runAllTimersAsync();
+      await expect(result).resolves.toEqual(
+        expect.objectContaining({
+          message:
+            "gateway port 19002 is still busy after LaunchAgent stop\nPort 19002 is held by pid 4242.",
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(cleanStaleGatewayProcessesSync).toHaveBeenCalledWith(19002);
     expect(inspectPortUsage).toHaveBeenCalledWith(19002);
-    expect(state.files.get(plistPath)).toBe(originalPlist);
-    expect(state.fileWrites).toHaveLength(0);
-    expect(launchctlCommandNames()).not.toContain("kickstart");
+    expect(state.files.get(plistPath)).not.toBe(originalPlist);
+    expect(launchctlCommandNames()).toContain("bootout");
+    expect(launchctlCommandNames()).not.toContain("bootstrap");
   });
 
   it("skips stale cleanup when no explicit launch agent port can be resolved", async () => {

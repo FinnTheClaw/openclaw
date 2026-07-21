@@ -21,15 +21,17 @@ describe("sessions_spawn: cron isolated session note suppression", () => {
     expect(note).toContain("Auto-announce is push-based");
   });
 
-  it("keeps regular run guidance push-based without recommending sessions_yield", () => {
+  it("keeps regular run guidance push-based and distinguishes progress from final delivery", () => {
     // Run-mode children announce completion asynchronously, not through polling.
     const note = resolveSubagentSpawnAcceptedNote({ spawnMode: "run" });
 
     expect(note).toContain("Auto-announce is push-based");
     expect(note).toContain("Continue any independent work");
     expect(note).toContain("wait for runtime completion events to arrive as user messages");
-    expect(note).toContain("only answer after completion events for ALL required children arrive");
-    expect(note).not.toContain("sessions_yield");
+    expect(note).toContain("deliver the requested final result only after completion events for ALL required children arrive");
+    expect(note).toContain("A progress or waiting update is not the requested final result");
+    expect(note).toContain("use sessions_yield when available");
+    expect(note).toContain("when the requested final result was already delivered");
   });
 
   it("preserves ACCEPTED_NOTE for non-canonical cron-like keys", () => {

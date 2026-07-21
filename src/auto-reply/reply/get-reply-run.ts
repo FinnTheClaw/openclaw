@@ -538,6 +538,9 @@ export async function runPreparedReply(
   const isHeartbeat = opts?.isHeartbeat === true;
   const heartbeatRunScope = resolveHeartbeatRunScope(opts);
   const explicitThinkingLevelOverride = normalizeThinkLevel(opts?.thinkingLevelOverride);
+  const thinkingLevelExplicit =
+    (directives.hasThinkDirective && directives.thinkLevel !== undefined) ||
+    explicitThinkingLevelOverride !== undefined;
   const effectiveQueueMode = opts?.queueModeOverride ?? perMessageQueueMode;
   const traceAttributes = {
     provider,
@@ -1027,10 +1030,7 @@ export async function runPreparedReply(
     });
   }
   if (!thinkingLevelSupported) {
-    const explicitThink =
-      (directives.hasThinkDirective && directives.thinkLevel !== undefined) ||
-      explicitThinkingLevelOverride !== undefined;
-    if (explicitThink) {
+    if (thinkingLevelExplicit) {
       typing.cleanup();
       return {
         text: `Thinking level "${resolvedThinkLevel}" is not supported for ${provider}/${model}. Use one of: ${formatThinkingLevels(provider, model, ", ", thinkingCatalog, thinkingRuntime)}.`,
@@ -1573,6 +1573,7 @@ export async function runPreparedReply(
       authProfileId,
       authProfileIdSource,
       thinkLevel: resolvedThinkLevel,
+      thinkingLevelExplicit,
       ...(() => {
         if (useFastReplyRuntime) {
           return {

@@ -189,12 +189,17 @@ export function prepareEmbeddedAttemptStream(input: {
         if (outcome.action !== "revise") {
           return;
         }
+        // A finalize revision is a hidden continuation from the persisted
+        // transcript, not a replay of the completed attempt.  Tool results and
+        // side effects are already present in that transcript, so suppressing
+        // the unfinished terminal answer is safe and does not rerun them.
+        // Keep the signal in logs because the continuation prompt must remind
+        // the model not to duplicate completed work.
         if (event.hadDeterministicSideEffect) {
           log.warn(
-            `before_agent_finalize requested revision after potential side effects; finalizing ` +
-              `runId=${attempt.runId} sessionId=${attempt.sessionId}`,
+            `before_agent_finalize requested continuation after side effects; preserving ` +
+              `completed tool results runId=${attempt.runId} sessionId=${attempt.sessionId}`,
           );
-          return;
         }
         beforeAgentFinalizeRevisionReason = outcome.reason;
         return { suppressTerminalDelivery: true };

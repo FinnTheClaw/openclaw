@@ -557,6 +557,12 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain(
       "If additional action is required, continue the task or record a follow-up; otherwise send a truthful user-facing update.",
     );
+    expect(msg).toContain(
+      "Tool calls/results, progress or waiting updates, private verification, and pre-completion assistant turns are not a user-facing final result.",
+    );
+    expect(msg).toContain(
+      "If the original request requires a final result or marker and it has not been emitted after reviewing this completion, send it now.",
+    );
     expect(msg).toContain("Keep this internal context private");
     expect(call?.params?.internalEvents?.[0]?.type).toBe("task_completion");
     expect(call?.params?.internalEvents?.[0]?.taskLabel).toBe("do thing");
@@ -749,7 +755,7 @@ describe("subagent announce formatting", () => {
       "If additional action is required, continue the task or record a follow-up; otherwise send a truthful user-facing update.",
     );
     expect(msg).toContain(
-      `Reply ONLY: ${SILENT_REPLY_TOKEN} if this exact result was already delivered to the user in this same turn.`,
+      `Reply ONLY: ${SILENT_REPLY_TOKEN} only when the exact requested user-facing final result was already delivered after this completion in this same turn.`,
     );
     expect(msg).toContain("step-0");
     expect(msg).toContain("step-139");
@@ -793,6 +799,12 @@ describe("subagent announce formatting", () => {
     expect(call?.params?.sessionKey).toBe("agent:main:main");
     expectInputProvenance(call?.params, "agent:main:subagent:test");
     expect(msg).toContain("final answer: 2");
+    expect(msg).toContain(
+      "Tool calls/results, progress or waiting updates, private verification, and pre-completion assistant turns are not a user-facing final result.",
+    );
+    expect(msg).toContain(
+      `Reply ONLY: ${SILENT_REPLY_TOKEN} only when the exact requested user-facing final result was already delivered after this completion in this same turn.`,
+    );
     expect(msg).not.toContain("✅ Subagent");
   });
 

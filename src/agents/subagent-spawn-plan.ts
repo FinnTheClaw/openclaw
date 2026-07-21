@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   resolveDefaultModelForAgent,
   resolveSubagentConfiguredModelSelection,
+  resolveSubagentModelOverrideAllowed,
   resolveSubagentSpawnModelSelection,
 } from "./model-selection.js";
 import { resolveSubagentThinkingOverride } from "./subagent-spawn-thinking.js";
@@ -84,7 +85,11 @@ export function resolveSubagentModelAndThinkingPlan(params: {
     };
   }
 
-  const modelOverrideSource = params.modelOverride?.trim() ? "user" : "auto";
+  const modelOverrideSource =
+    params.modelOverride?.trim() &&
+    resolveSubagentModelOverrideAllowed({ cfg: params.cfg, agentId: params.targetAgentId })
+      ? "user"
+      : "auto";
   const hasConfiguredAutoModel =
     modelOverrideSource === "auto" &&
     Boolean(

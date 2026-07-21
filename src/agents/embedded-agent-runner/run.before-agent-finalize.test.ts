@@ -79,7 +79,7 @@ describe("runEmbeddedAgent before_agent_finalize", () => {
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledWith(
       expect.objectContaining({
         beforeAgentFinalizeRevisionAttempts: 0,
-        maxBeforeAgentFinalizeRevisions: 3,
+        maxBeforeAgentFinalizeRevisions: 64,
       }),
     );
   });
@@ -108,6 +108,110 @@ describe("runEmbeddedAgent before_agent_finalize", () => {
     expect(attemptCall(1).prompt).toContain("Mention the validated behavior.");
     expect(attemptCall(1).prompt).not.toContain("hello");
     expect(attemptCall(1).suppressNextUserMessagePersistence).toBe(true);
+  });
+
+  it("continues after completed tool side effects without replaying the user turn", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        finalAnswerAttempt("Now let me run the tests.", {
+          beforeAgentFinalizeRevisionReason:
+            "The answer promises unfinished work. Continue and verify the existing changes.",
+          replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+          currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        }),
+      )
+      .mockResolvedValueOnce(finalAnswerAttempt("Tests passed; the work is complete."));
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-before-finalize-side-effect-continuation",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(attemptCall(1).prompt).toContain("This is a continuation, not a replay");
+    expect(attemptCall(1).prompt).toContain("The answer promises unfinished work");
+    expect(attemptCall(1).prompt).not.toContain("hello");
+    expect(attemptCall(1).suppressNextUserMessagePersistence).toBe(true);
+  });
+
+  it("continues after a recoverable tool error instead of surfacing it as the final answer", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: [],
+          lastToolError: {
+            toolName: "exec",
+            error: "python3: can't open file '/tmp/read_config.py'",
+          },
+          toolMetas: [{ toolName: "exec", isError: true }],
+          lastAssistant: {
+            stopReason: "toolUse",
+            provider: "openai",
+            model: "gpt-5.5",
+            content: [],
+          } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+        }),
+      )
+      .mockResolvedValueOnce(finalAnswerAttempt("Recovered and completed."));
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-recoverable-tool-error",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(attemptCall(1).prompt).toContain("failure is evidence to recover from");
+    expect(attemptCall(1).prompt).toContain("change the approach");
+    expect(attemptCall(1).prompt).toContain("read_config.py");
+    expect(attemptCall(1).suppressNextUserMessagePersistence).toBe(true);
+  });
+
+  it("does not replay a handled tool error after a visible final answer", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      finalAnswerAttempt("Recovered and completed.", {
+        lastToolError: {
+          toolName: "exec",
+          error: "the earlier command failed",
+        },
+        toolMetas: [
+          { toolName: "exec", isError: true },
+          { toolName: "exec", isError: false },
+        ],
+      }),
+    );
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-handled-tool-error",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not auto-continue an externally consequential messaging error", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      finalAnswerAttempt("Delivery failed.", {
+        lastToolError: {
+          toolName: "message",
+          error: "delivery status unknown",
+        },
+      }),
+    );
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-message-tool-error",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
   });
 
   it("keeps finalizing when the attempt accepted a side-effecting revise decision", async () => {

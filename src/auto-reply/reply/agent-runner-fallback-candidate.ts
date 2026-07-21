@@ -6,6 +6,7 @@ import { ensureSelectedAgentHarnessPlugin } from "../../agents/harness/runtime-p
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
 import { isCliProvider } from "../../agents/model-selection.js";
+import { resolveThinkingDefault } from "../../agents/model-thinking-default.js";
 import { buildAgentRuntimeOutcomePlan } from "../../agents/runtime-plan/build.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { resolveCandidateThinkingLevel } from "../../agents/thinking-runtime.js";
@@ -23,6 +24,35 @@ import {
   resolveModelFallbackOptions,
   resolveRunFastModeForFallbackCandidate,
 } from "./agent-runner-utils.js";
+
+/** Apply per-model defaults on automatic fallback while preserving explicit turn overrides. */
+export function resolveFallbackCandidateThinkingLevel(params: {
+  cfg: NonNullable<Parameters<typeof resolveCandidateThinkingLevel>[0]["cfg"]>;
+  provider: string;
+  modelId: string;
+  level: Parameters<typeof resolveCandidateThinkingLevel>[0]["level"];
+  thinkingLevelExplicit?: boolean;
+  agentId?: string;
+  sessionKey?: string;
+  sessionEntry?: Parameters<typeof resolveCandidateThinkingLevel>[0]["sessionEntry"];
+}) {
+  const level = params.thinkingLevelExplicit
+    ? params.level
+    : resolveThinkingDefault({
+        cfg: params.cfg,
+        provider: params.provider,
+        model: params.modelId,
+      });
+  return resolveCandidateThinkingLevel({
+    cfg: params.cfg,
+    provider: params.provider,
+    modelId: params.modelId,
+    level,
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    sessionEntry: params.sessionEntry,
+  });
+}
 
 /** Runs the provider/model fallback candidates while preserving cross-candidate delivery state. */
 export async function runAgentFallbackCandidates(params: AgentFallbackCycleParams) {
@@ -102,11 +132,12 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
         params.state.attemptedRuntimeProvider = provider;
         params.state.attemptedRuntimeModel = model;
         const candidateRun = resolveFallbackCandidateRun(params.effectiveRun, provider, model);
-        const candidateThinkLevel = resolveCandidateThinkingLevel({
+        const candidateThinkLevel = resolveFallbackCandidateThinkingLevel({
           cfg: params.runtimeConfig,
           provider,
           modelId: model,
           level: turn.followupRun.run.thinkLevel,
+          thinkingLevelExplicit: turn.followupRun.run.thinkingLevelExplicit,
           agentId: turn.followupRun.run.agentId,
           sessionKey: turn.followupRun.run.runtimePolicySessionKey ?? turn.sessionKey,
           sessionEntry: turn.getActiveSessionEntry(),

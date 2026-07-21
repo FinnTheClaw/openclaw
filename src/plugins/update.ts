@@ -419,6 +419,35 @@ function compareNpmSemverForUpdate(left: string, right: string): number {
   return compareValidSemver(left, right) ?? 0;
 }
 
+function isImplicitNpmDowngrade(params: {
+  currentVersion: string | undefined;
+  nextVersion: string | undefined;
+  hasExplicitSpecOverride: boolean;
+}): boolean {
+  return Boolean(
+    !params.hasExplicitSpecOverride &&
+    params.currentVersion &&
+    params.nextVersion &&
+    compareNpmSemverForUpdate(params.nextVersion, params.currentVersion) < 0,
+  );
+}
+
+function buildImplicitNpmDowngradeOutcome(params: {
+  pluginId: string;
+  currentVersion: string;
+  nextVersion: string;
+}): PluginUpdateOutcome {
+  return {
+    pluginId: params.pluginId,
+    status: "skipped",
+    currentVersion: params.currentVersion,
+    nextVersion: params.nextVersion,
+    message:
+      `Skipping "${params.pluginId}": refusing implicit downgrade ` +
+      `${params.currentVersion} -> ${params.nextVersion}. Pass an explicit version spec to downgrade.`,
+  };
+}
+
 async function resolveNewerExactPinnedNpmDefaultLine(params: {
   currentVersion: string | undefined;
   effectiveSpec: string | undefined;
@@ -1688,6 +1717,26 @@ export async function updateNpmInstalledPlugins(params: {
       );
       continue;
     }
+    const exactNpmTargetVersion =
+      record.source === "npm" ? resolveExactNpmSpecVersion(effectiveSpec) : undefined;
+    if (
+      currentVersion &&
+      exactNpmTargetVersion &&
+      isImplicitNpmDowngrade({
+        currentVersion,
+        nextVersion: exactNpmTargetVersion,
+        hasExplicitSpecOverride: Boolean(params.specOverrides?.[pluginId]),
+      })
+    ) {
+      outcomes.push(
+        buildImplicitNpmDowngradeOutcome({
+          pluginId,
+          currentVersion,
+          nextVersion: exactNpmTargetVersion,
+        }),
+      );
+      continue;
+    }
     // Payload validation is filesystem work needed only to preserve state after metadata failures.
     // Every failure path below ends this plugin iteration, so the result cannot be reused.
     const hasRunnableInstalledPayloadForFailure = async (code?: string): Promise<boolean> => {
@@ -1721,6 +1770,24 @@ export async function updateNpmInstalledPlugins(params: {
         timeoutMs: params.timeoutMs,
       });
       if (metadataResult.ok) {
+        if (
+          currentVersion &&
+          metadataResult.metadata.version &&
+          isImplicitNpmDowngrade({
+            currentVersion,
+            nextVersion: metadataResult.metadata.version,
+            hasExplicitSpecOverride: Boolean(params.specOverrides?.[pluginId]),
+          })
+        ) {
+          outcomes.push(
+            buildImplicitNpmDowngradeOutcome({
+              pluginId,
+              currentVersion,
+              nextVersion: metadataResult.metadata.version,
+            }),
+          );
+          continue;
+        }
         const bypassTrustedOfficialUnchangedNpmCheck = shouldBypassTrustedOfficialUnchangedNpmCheck(
           {
             metadata: metadataResult.metadata,
@@ -2078,6 +2145,25 @@ export async function updateNpmInstalledPlugins(params: {
           : undefined);
       const nextVersion = resolvedProbeVersion ?? "unknown";
       const currentLabel = currentVersion ?? "unknown";
+      if (
+        currentVersion &&
+        resolvedProbeVersion &&
+        record.source === "npm" &&
+        isImplicitNpmDowngrade({
+          currentVersion,
+          nextVersion: resolvedProbeVersion,
+          hasExplicitSpecOverride: Boolean(params.specOverrides?.[pluginId]),
+        })
+      ) {
+        outcomes.push(
+          buildImplicitNpmDowngradeOutcome({
+            pluginId,
+            currentVersion,
+            nextVersion: resolvedProbeVersion,
+          }),
+        );
+        continue;
+      }
       const gitProbe =
         record.source === "git"
           ? (probe as Extract<Awaited<ReturnType<typeof installPluginFromGitSpec>>, { ok: true }>)

@@ -132,7 +132,10 @@ function createSessionsSpawnToolSchema(params: {
 }) {
   const spawnModes = params.threadAvailable ? SUBAGENT_SPAWN_MODES : (["run"] as const);
   const schema = {
-    task: Type.String(),
+    task: Type.String({
+      description:
+        "One bounded, independently verifiable shard with explicit scope, deliverable, and test; never the whole repository or complete parent request.",
+    }),
     taskName: Type.Optional(
       Type.String({
         description:

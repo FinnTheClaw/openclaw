@@ -3047,6 +3047,28 @@ describe("resolveSubagentSpawnModelSelection", () => {
     ).toBe("openai/gpt-5.4");
   });
 
+  it("keeps a configured worker lane when model overrides are locked", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.6-terra" },
+          subagents: {
+            model: "remote-llm/moira/coding",
+            allowModelOverride: false,
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(
+      resolveSubagentSpawnModelSelection({
+        cfg,
+        agentId: "main",
+        modelOverride: "openai/gpt-5.6-terra",
+      }),
+    ).toBe("remote-llm/moira/coding");
+  });
+
   it("falls back to runtime default when no override or config", () => {
     const cfg = {
       agents: {

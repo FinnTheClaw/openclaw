@@ -98,6 +98,7 @@ import type {
 } from "./event-handler.types.js";
 import { resolveSignalQuoteContext } from "./inbound-context.js";
 import { renderSignalMentions, resolveSignalMentionFacts } from "./mentions.js";
+import { createSignalProgressEmitter } from "./progress-emitter.js";
 
 const REPLY_SESSION_INIT_CONFLICT_MESSAGE_RE = /reply session initialization conflicted for \S+/u;
 const RETRYABLE_FLUSH_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
@@ -141,6 +142,53 @@ function resolveSignalInboundRoute(params: {
       id: params.isGroup ? (params.groupId ?? "unknown") : params.senderPeerId,
     },
   });
+}
+
+/**
+ * Resolve the durable queue lane before message handling starts. The lane is the same routed
+ * session key used by dispatch, allowing gateway restart recovery to defer to the exact durable
+ * Signal event instead of independently resurrecting the interrupted transcript.
+ */
+export function resolveSignalIngressLaneKey(
+  deps: Pick<SignalEventHandlerDeps, "cfg" | "account" | "accountUuid" | "accountId">,
+  event: { event?: string; data?: string },
+): string | undefined {
+  if (event.event !== "receive" || !event.data) {
+    return undefined;
+  }
+  let payload: SignalReceivePayload | null;
+  try {
+    payload = JSON.parse(event.data) as SignalReceivePayload;
+  } catch {
+    return undefined;
+  }
+  const envelope = payload?.envelope;
+  if (!envelope || "syncMessage" in envelope) {
+    return undefined;
+  }
+  const sender = resolveSignalSender(envelope);
+  if (!sender) {
+    return undefined;
+  }
+  const normalizedAccount = deps.account ? normalizeE164(deps.account) : undefined;
+  const isOwnMessage =
+    (sender.kind === "phone" && normalizedAccount != null && sender.e164 === normalizedAccount) ||
+    (sender.kind === "uuid" && deps.accountUuid != null && sender.raw === deps.accountUuid);
+  if (isOwnMessage) {
+    return undefined;
+  }
+  const dataMessage = envelope.dataMessage ?? envelope.editMessage?.dataMessage;
+  if (!dataMessage) {
+    return undefined;
+  }
+  const groupId = dataMessage.groupInfo?.groupId ?? undefined;
+  return resolveSignalInboundRoute({
+    cfg: deps.cfg,
+    accountId: deps.accountId,
+    isGroup: Boolean(groupId),
+    groupId,
+    senderPeerId: resolveSignalPeerId(sender),
+  }).sessionKey;
 }
 
 function resolveSignalStatusReactionTimestamp(params: {
@@ -215,6 +263,7 @@ async function finalizeSignalStatusReaction(params: {
 
 export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
   const activeEnqueueEntries = new WeakSet<SignalInboundEntry>();
+  const completedInboundEntries = new WeakSet<SignalInboundEntry>();
 
   async function handleSignalInboundMessage(entry: SignalInboundEntry) {
     const fromLabel = formatInboundFromLabel({
@@ -519,6 +568,28 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         deps.runtime.error?.(danger(`signal ${info.kind} reply failed: ${String(err)}`));
       },
     });
+    const progressTarget = ctxPayload.To;
+    const progressEmitter = createSignalProgressEmitter({
+      enabled: !entry.isGroup && Boolean(progressTarget),
+      onProgress: async (text) => {
+        if (!progressTarget) {
+          return;
+        }
+        await deps.deliverReplies({
+          cfg: deps.cfg,
+          replies: [{ text }],
+          target: progressTarget,
+          baseUrl: deps.baseUrl,
+          account: deps.account,
+          accountUuid: deps.accountUuid,
+          accountId: deps.accountId,
+          runtime: deps.runtime,
+          maxBytes: deps.mediaMaxBytes,
+          textLimit: deps.textLimit,
+          chatType: "direct",
+        });
+      },
+    });
     const inboundLastRouteSessionKey = resolveInboundLastRouteSessionKey({
       route,
       sessionKey: route.sessionKey,
@@ -601,29 +672,32 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
                   ...replyOptions,
                   disableBlockStreaming:
                     typeof deps.blockStreaming === "boolean" ? !deps.blockStreaming : undefined,
-                  ...(statusReactionController
-                    ? {
-                        allowProgressCallbacksWhenSourceDeliverySuppressed: true,
-                        allowToolLifecycleWhenProgressHidden: true,
-                        onToolStart: async (payload: { name?: string }) => {
-                          const toolName = payload.name?.trim();
-                          if (toolName) {
-                            await statusReactionController.setTool(toolName);
-                          }
-                        },
-                        onCompactionStart: async () => {
-                          await statusReactionController.setCompacting();
-                        },
-                        onCompactionEnd: async () => {
-                          statusReactionController.cancelPending();
-                          await statusReactionController.setThinking();
-                        },
-                      }
-                    : {}),
+                  allowProgressCallbacksWhenSourceDeliverySuppressed: true,
+                  allowToolLifecycleWhenProgressHidden: true,
+                  onToolStart: async (payload: { name?: string }) => {
+                    progressEmitter.noteToolStart(payload.name);
+                    const toolName = payload.name?.trim();
+                    if (toolName && statusReactionController) {
+                      await statusReactionController.setTool(toolName);
+                    }
+                  },
+                  onCompactionStart: async () => {
+                    progressEmitter.noteCompaction();
+                    if (statusReactionController) {
+                      await statusReactionController.setCompacting();
+                    }
+                  },
+                  onCompactionEnd: async () => {
+                    if (statusReactionController) {
+                      statusReactionController.cancelPending();
+                      await statusReactionController.setThinking();
+                    }
+                  },
                   onModelSelected,
                 },
               });
             } finally {
+              progressEmitter.stop();
               markDispatchIdle();
             }
           },
@@ -648,6 +722,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         },
       },
     });
+    completedInboundEntries.add(entry);
   }
 
   async function flushSignalInboundEntries(entries: SignalInboundEntry[]): Promise<void> {
@@ -681,6 +756,9 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       mediaPaths: undefined,
       mediaTypes: undefined,
     });
+    for (const entry of entries) {
+      completedInboundEntries.add(entry);
+    }
   }
 
   async function retrySignalInboundFlush(
@@ -1313,6 +1391,11 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     activeEnqueueEntries.add(entry);
     try {
       await inboundLane.enqueue(entry);
+      if (deps.abortSignal?.aborted && !completedInboundEntries.has(entry)) {
+        throw new Error("Signal inbound processing was interrupted before dispatch completed.", {
+          cause: deps.abortSignal.reason,
+        });
+      }
     } finally {
       activeEnqueueEntries.delete(entry);
     }

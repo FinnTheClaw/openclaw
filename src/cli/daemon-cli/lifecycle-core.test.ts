@@ -320,6 +320,20 @@ describe("runServiceRestart token drift", () => {
     expect(payload.warnings).toBeUndefined();
   });
 
+  it("skips SecretRef drift resolution when the service does not embed a token", async () => {
+    stubConfigSecretRefGatewayToken();
+    service.readCommand.mockResolvedValue({
+      programArguments: [],
+      environment: {},
+    });
+
+    await runServiceRestart(createServiceRunArgs(true));
+
+    expect(loadConfig).not.toHaveBeenCalled();
+    const payload = readJsonLog<{ warnings?: string[] }>();
+    expect(payload.warnings).toBeUndefined();
+  });
+
   it("skips drift warning when disabled", async () => {
     await runServiceRestart({
       serviceNoun: "Node",

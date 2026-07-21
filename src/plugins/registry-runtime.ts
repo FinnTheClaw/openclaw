@@ -466,7 +466,11 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             const record =
               pluginRuntimeRecordById.get(pluginId) ??
               registry.plugins.find((entry) => entry.id === pluginId);
-            if (record?.origin !== "bundled" && record?.trustedOfficialInstall !== true) {
+            if (
+              record?.origin !== "bundled" &&
+              record?.trustedOfficialInstall !== true &&
+              record?.explicitlyEnabled !== true
+            ) {
               throw new Error(
                 "openKeyedStore is only available for trusted plugins in this release.",
               );

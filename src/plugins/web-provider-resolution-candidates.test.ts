@@ -116,7 +116,7 @@ describe("resolveManifestDeclaredWebProviderCandidatePluginIds", () => {
     ).toStrictEqual([]);
   });
 
-  it("limits sandboxed web fetch candidates to bundled and trusted official installs", () => {
+  it("limits sandboxed web fetch candidates to bundled, official, or explicitly trusted installs", () => {
     mocks.loadPluginManifestRegistryForInstalledIndex.mockReturnValue({
       plugins: [
         {
@@ -136,6 +136,11 @@ describe("resolveManifestDeclaredWebProviderCandidatePluginIds", () => {
           contracts: { webFetchProviders: ["third-party"] },
         },
         {
+          id: "operator-fetch",
+          origin: "global",
+          contracts: { webFetchProviders: ["operator-fetch"] },
+        },
+        {
           id: "workspace-fetch",
           origin: "workspace",
           contracts: { webFetchProviders: ["workspace-fetch"] },
@@ -149,8 +154,14 @@ describe("resolveManifestDeclaredWebProviderCandidatePluginIds", () => {
         contract: "webFetchProviders",
         configKey: "webFetch",
         sandboxed: true,
+        config: {
+          plugins: {
+            allow: ["operator-fetch"],
+            entries: { "operator-fetch": { enabled: true } },
+          },
+        },
       }),
-    ).toEqual(["bundled-fetch", "firecrawl"]);
+    ).toEqual(["bundled-fetch", "firecrawl", "operator-fetch"]);
   });
 
   it("derives provider candidates from a single manifest-registry read", () => {

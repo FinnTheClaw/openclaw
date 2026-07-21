@@ -1,5 +1,13 @@
 // Signal tests cover monitor.tool result.pairs uuid only senders uuid allowlist entry plugin behavior.
 import { Buffer } from "node:buffer";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import {
+  closeOpenClawStateDatabaseForTest,
+  createChannelIngressQueueForTests as createChannelIngressQueue,
+} from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it, vi } from "vitest";
 import {
   config,
@@ -7,6 +15,9 @@ import {
   installSignalToolResultTestHooks,
   setSignalToolResultTestConfig,
 } from "./monitor.tool-result.test-harness.js";
+import { setSignalRuntime } from "./runtime.js";
+import { clearSignalRuntimeForTest } from "./runtime.test-support.js";
+import { createSignalIngressEventId, type SignalIngressPayload } from "./signal-ingress-queue.js";
 
 installSignalToolResultTestHooks();
 const { monitorSignalProvider } = await import("./monitor.js");
@@ -29,6 +40,158 @@ function mockCallArg(mock: ReturnType<typeof vi.fn>, callIndex = 0, argIndex = 0
 }
 
 describe("monitorSignalProvider tool results", () => {
+  it("persists every received event before an immediate monitor shutdown", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-signal-monitor-ingress-"));
+    const queue = createChannelIngressQueue<SignalIngressPayload>({
+      channelId: "signal",
+      accountId: "default",
+      stateDir,
+    });
+    setSignalRuntime(
+      createPluginRuntimeMock({
+        state: {
+          resolveStateDir: () => stateDir,
+          openChannelIngressQueue: (options = {}) =>
+            createChannelIngressQueue({ ...options, channelId: "signal" }),
+        },
+      }),
+    );
+    const baseChannels = (config.channels ?? {}) as Record<string, unknown>;
+    setSignalToolResultTestConfig({
+      ...config,
+      channels: {
+        ...baseChannels,
+        signal: {
+          ...((baseChannels.signal ?? {}) as Record<string, unknown>),
+          durableIngress: true,
+        },
+      },
+    });
+    const abortController = new AbortController();
+    const events = ["one", "two", "three"].map((event) => ({ event, data: "{}" }));
+    streamMock.mockImplementation(async ({ onEvent }) => {
+      for (const event of events) {
+        onEvent(event);
+      }
+      abortController.abort(new Error("simulated gateway shutdown"));
+    });
+
+    try {
+      await runMonitorWithMocks({
+        autoStart: false,
+        baseUrl: "http://127.0.0.1:8080",
+        abortSignal: abortController.signal,
+      });
+      const redeliveryKinds: string[] = [];
+      for (const event of events) {
+        const result = await queue.enqueue(createSignalIngressEventId(event), {
+          version: 1,
+          event,
+          receivedAt: 1,
+        });
+        redeliveryKinds.push(result.kind);
+      }
+      expect(redeliveryKinds).not.toContain("accepted");
+      expect(redeliveryKinds).toHaveLength(3);
+      expect(await queue.listClaims()).toEqual([]);
+    } finally {
+      clearSignalRuntimeForTest();
+      closeOpenClawStateDatabaseForTest();
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes five real Signal messages through one durable working claim", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-signal-monitor-burst-"));
+    const queue = createChannelIngressQueue<SignalIngressPayload>({
+      channelId: "signal",
+      accountId: "default",
+      stateDir,
+    });
+    setSignalRuntime(
+      createPluginRuntimeMock({
+        state: {
+          resolveStateDir: () => stateDir,
+          openChannelIngressQueue: (options = {}) =>
+            createChannelIngressQueue({ ...options, channelId: "signal" }),
+        },
+      }),
+    );
+    setSignalToolResultTestConfig({
+      channels: {
+        signal: {
+          autoStart: false,
+          durableIngress: true,
+          dmPolicy: "open",
+          allowFrom: ["*"],
+        },
+      },
+    });
+    const abortController = new AbortController();
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const observedBodies: string[] = [];
+    replyMock.mockImplementation(async (ctx: unknown) => {
+      const body = (ctx as { Body?: unknown }).Body;
+      observedBodies.push(typeof body === "string" ? body : "");
+      if (observedBodies.length === 1) {
+        await firstBlocked;
+      }
+      return { text: `reply-${observedBodies.length}` };
+    });
+    const messages = ["one", "two", "three", "four", "five"];
+
+    streamMock.mockImplementation(async ({ onEvent }) => {
+      for (const [index, message] of messages.entries()) {
+        onEvent({
+          event: "receive",
+          data: JSON.stringify({
+            envelope: {
+              sourceNumber: "+15550001111",
+              sourceName: "Ada",
+              timestamp: index + 1,
+              dataMessage: { message },
+            },
+          }),
+        });
+      }
+      await vi.waitFor(async () => {
+        expect(await queue.listClaims()).toHaveLength(1);
+        expect(await queue.listPending({ limit: "all" })).toHaveLength(4);
+      });
+      const liveRecords = [
+        ...(await queue.listClaims()),
+        ...(await queue.listPending({ limit: "all" })),
+      ];
+      expect(new Set(liveRecords.map((record) => record.laneKey)).size).toBe(1);
+      expect(liveRecords[0]?.laneKey).toBeTruthy();
+
+      releaseFirst();
+      await vi.waitFor(() => expect(replyMock).toHaveBeenCalledTimes(5));
+      await vi.waitFor(async () => {
+        expect(await queue.listClaims()).toEqual([]);
+        expect(await queue.listPending({ limit: "all" })).toEqual([]);
+      });
+      abortController.abort(new Error("burst test complete"));
+    });
+
+    try {
+      await runMonitorWithMocks({
+        autoStart: false,
+        baseUrl: "http://127.0.0.1:8080",
+        abortSignal: abortController.signal,
+      });
+      expect(observedBodies.map((body) => body.split(": ").at(-1))).toEqual(messages);
+      expect(sendMock).toHaveBeenCalledTimes(5);
+    } finally {
+      clearSignalRuntimeForTest();
+      closeOpenClawStateDatabaseForTest();
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("pairs uuid-only senders with a uuid allowlist entry", async () => {
     const baseChannels = (config.channels ?? {}) as Record<string, unknown>;
     const baseSignal = (baseChannels.signal ?? {}) as Record<string, unknown>;
@@ -172,7 +335,14 @@ describe("monitorSignalProvider tool results", () => {
   it("drains an inline inbound message accepted before the monitor stops", async () => {
     const abortController = new AbortController();
     setSignalToolResultTestConfig({
-      channels: { signal: { autoStart: false, dmPolicy: "open", allowFrom: ["*"] } },
+      channels: {
+        signal: {
+          autoStart: false,
+          durableIngress: false,
+          dmPolicy: "open",
+          allowFrom: ["*"],
+        },
+      },
     });
     replyMock.mockResolvedValue({ text: "accepted reply" });
     streamMock.mockImplementation(async ({ onEvent }) => {
@@ -205,7 +375,14 @@ describe("monitorSignalProvider tool results", () => {
     const abortController = new AbortController();
     setSignalToolResultTestConfig({
       messages: { inbound: { debounceMs: 10 } },
-      channels: { signal: { autoStart: false, dmPolicy: "open", allowFrom: ["*"] } },
+      channels: {
+        signal: {
+          autoStart: false,
+          durableIngress: false,
+          dmPolicy: "open",
+          allowFrom: ["*"],
+        },
+      },
     });
     replyMock.mockResolvedValue({ text: "late reply" });
     streamMock.mockImplementation(async ({ onEvent }) => {
