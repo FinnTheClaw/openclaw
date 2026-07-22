@@ -393,9 +393,7 @@ describe("memory index", () => {
           fallback: params.fallback,
           outputDimensionality: params.outputDimensionality,
           store: {
-            vector: {
-              ...(params.vectorEnabled !== undefined ? { enabled: params.vectorEnabled } : {}),
-            },
+            vector: params.vectorEnabled !== undefined ? { enabled: params.vectorEnabled } : {},
           },
           remote: params.batchEnabled
             ? {
