@@ -570,7 +570,11 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     });
     const progressTarget = ctxPayload.To;
     const progressEmitter = createSignalProgressEmitter({
-      enabled: !entry.isGroup && Boolean(progressTarget),
+      enabled:
+        !entry.isGroup &&
+        Boolean(progressTarget) &&
+        (deps.cfg.channels?.signal as { progress?: { enabled?: boolean } } | undefined)?.progress
+          ?.enabled !== false,
       onProgress: async (text) => {
         if (!progressTarget) {
           return;
