@@ -36,6 +36,7 @@ describe("messaging delivery action classification", () => {
     expect(isMessagingToolTargetEvidenceAction("message", { action: "poll" })).toBe(true);
     expect(isMessagingToolTargetEvidenceAction("message", { action: "reply" })).toBe(true);
     expect(isMessagingToolTargetEvidenceAction("message", { action: "sticker" })).toBe(true);
+    expect(isMessagingToolTargetEvidenceAction("message", { action: "react" })).toBe(true);
     expect(isMessagingToolTargetEvidenceAction("message", { action: "thread-create" })).toBe(true);
     expect(isMessagingToolTargetEvidenceAction("message", { action: "topic-create" })).toBe(true);
     expect(isMessagingToolTargetEvidenceAction("message", { action: "threadCreate" })).toBe(true);

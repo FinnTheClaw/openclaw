@@ -1055,6 +1055,10 @@ export function extractMessagingToolSend(
     // Normal sends use prepared core delivery, where provider transport owns
     // reply/thread precedence. Other send-like actions use plugin dispatch.
     const outboundReplyToId = action === "send" ? replyToId : undefined;
+    // Reactions are committed messaging side effects, but they are not a
+    // terminal reply to the source message. Mark them explicitly so automatic
+    // reply delivery cannot mistake a successful reaction for the answer.
+    const sourceReplyFinal = action === "react" ? false : undefined;
     const threadSuppressed =
       pluginExtracted?.threadSuppressed === true ||
       args.topLevel === true ||
@@ -1065,6 +1069,7 @@ export function extractMessagingToolSend(
           provider,
           accountId: resolvedAccountId,
           to,
+          ...(sourceReplyFinal === false ? { sourceReplyFinal } : {}),
           ...(providerId
             ? resolveMessagingToolThreadEvidence({
                 providerId,

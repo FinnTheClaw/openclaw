@@ -92,6 +92,7 @@ export function isMessagingToolTargetEvidenceAction(
   if (toolName === "message") {
     const action = normalizeOptionalString(args.action) ?? "";
     return (
+      action === "react" ||
       shouldApplyCrossContextMarker(action as ChannelMessageActionName) ||
       isMessageToolConversationCreateActionName(action)
     );

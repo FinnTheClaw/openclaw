@@ -317,6 +317,20 @@ describe("extractMessagingToolSend", () => {
     });
   });
 
+  it("records reactions as non-terminal source-reply evidence", () => {
+    expect(
+      extractMessagingToolSend(
+        "message",
+        { action: "react", channel: "slack", messageId: "message-1", emoji: "👍" },
+        { currentMessagingTarget: "C123" },
+      ),
+    ).toMatchObject({
+      provider: "slack",
+      to: "c123",
+      sourceReplyFinal: false,
+    });
+  });
+
   it("extracts provider-declared target aliases for visible reply actions", () => {
     const result = extractMessagingToolSend("message", {
       action: "reply",
