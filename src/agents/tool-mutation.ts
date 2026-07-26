@@ -152,6 +152,7 @@ type ToolMutationState = {
   replaySafe: boolean;
   actionFingerprint?: string;
   fileTarget?: FileTarget;
+  cliUsageRetryFingerprint?: string;
 };
 
 type ToolActionRef = {
@@ -216,6 +217,63 @@ function tokenizeSimpleShellCommand(command: string): string[] | undefined {
     tokens.push(current);
   }
   return tokens.length > 0 ? tokens : undefined;
+}
+
+const OPENCLAW_AGENT_TARGET_FLAGS = new Set(["--agent", "--session-key", "--session-id", "--to"]);
+
+/**
+ * Builds a conservative identity for an OpenClaw agent CLI invocation whose
+ * routing selector may be corrected on retry. This is deliberately narrower
+ * than the mutation fingerprint: it removes only target-selection flags and
+ * harmless timing/output wrappers while preserving the requested message and
+ * every other argument.
+ */
+export function buildExecCliUsageRetryFingerprint(
+  toolName: string,
+  args: unknown,
+): string | undefined {
+  const normalizedTool = normalizeLowercaseStringOrEmpty(toolName);
+  if (normalizedTool !== "exec" && normalizedTool !== "bash") {
+    return undefined;
+  }
+  const rawCommand = readShellCommand(asRecord(args));
+  if (!rawCommand || /[;\n\r`]|&&|\|\|/.test(rawCommand)) {
+    return undefined;
+  }
+
+  // Permit the observational suffixes used by benchmark/debug invocations.
+  // Any other shell pipeline or redirection fails closed in the tokenizer.
+  const command = rawCommand.replace(/\s+\d*>&\d+(?:\s+\|\s+(?:tail|head)(?:\s+.*)?)?\s*$/, "");
+  const parsedTokens = tokenizeSimpleShellCommand(command);
+  if (!parsedTokens) {
+    return undefined;
+  }
+  const tokens = [...parsedTokens];
+  if (normalizeLowercaseStringOrEmpty(tokens[0]) === "time") {
+    tokens.shift();
+  }
+  const executable = tokens[0]?.split("/").at(-1);
+  if (
+    normalizeLowercaseStringOrEmpty(executable) !== "openclaw" ||
+    normalizeLowercaseStringOrEmpty(tokens[1]) !== "agent"
+  ) {
+    return undefined;
+  }
+
+  const canonical = tokens.slice(0, 2);
+  for (let index = 2; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    const normalized = normalizeLowercaseStringOrEmpty(token);
+    if (OPENCLAW_AGENT_TARGET_FLAGS.has(normalized)) {
+      index += 1;
+      continue;
+    }
+    if ([...OPENCLAW_AGENT_TARGET_FLAGS].some((flag) => normalized.startsWith(`${flag}=`))) {
+      continue;
+    }
+    canonical.push(token);
+  }
+  return JSON.stringify(canonical);
 }
 
 function isReadOnlySedCommand(tokens: readonly string[]): boolean {
@@ -539,12 +597,14 @@ export function buildToolMutationState(
   meta?: string,
 ): ToolMutationState {
   const actionFingerprint = buildToolActionFingerprint(toolName, args, meta);
+  const cliUsageRetryFingerprint = buildExecCliUsageRetryFingerprint(toolName, args);
   const fileTarget = extractFileTarget(toolName, args);
   return {
     mutatingAction: actionFingerprint != null,
     replaySafe: isReplaySafeToolCall(toolName, args),
     actionFingerprint,
     ...(fileTarget !== undefined ? { fileTarget } : {}),
+    ...(cliUsageRetryFingerprint !== undefined ? { cliUsageRetryFingerprint } : {}),
   };
 }
 

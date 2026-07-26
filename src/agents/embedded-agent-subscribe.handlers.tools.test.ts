@@ -1036,6 +1036,114 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
     expect(ctx.state.lastToolError).toBeUndefined();
   });
 
+  it("clears a corrected OpenClaw agent target-selection usage failure", async () => {
+    const { ctx } = createTestContext();
+    const message = "Reply with exactly: SPEED_TEST_COMPLETE. Nothing else.";
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "exec",
+        toolCallId: "tool-openclaw-agent-missing-target",
+        args: {
+          command: `time openclaw agent --message "${message}" --json 2>&1`,
+        },
+      } as never,
+    );
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "exec",
+        toolCallId: "tool-openclaw-agent-missing-target",
+        isError: true,
+        result: {
+          error:
+            "No target session selected. Use --agent <id>, --session-key <key>, --session-id <id>, or --to <E.164>.",
+        },
+      } as never,
+    );
+
+    expect(ctx.state.lastToolError?.cliUsageRetryFingerprint).toBeDefined();
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "exec",
+        toolCallId: "tool-openclaw-agent-corrected-target",
+        args: {
+          command: `time openclaw agent --agent finn --message "${message}" --json 2>&1 | tail -20`,
+        },
+      } as never,
+    );
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "exec",
+        toolCallId: "tool-openclaw-agent-corrected-target",
+        isError: false,
+        result: { ok: true },
+      } as never,
+    );
+
+    expect(ctx.state.lastToolError).toBeUndefined();
+  });
+
+  it("retains an OpenClaw agent usage failure after an unrelated successful command", async () => {
+    const { ctx } = createTestContext();
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "exec",
+        toolCallId: "tool-openclaw-agent-usage-failure",
+        args: {
+          command:
+            'openclaw agent --message "Reply with exactly: SPEED_TEST_COMPLETE. Nothing else." --json',
+        },
+      } as never,
+    );
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "exec",
+        toolCallId: "tool-openclaw-agent-usage-failure",
+        isError: true,
+        result: { error: "No target session selected." },
+      } as never,
+    );
+
+    await handleToolExecutionStart(
+      ctx as never,
+      {
+        type: "tool_execution_start",
+        toolName: "exec",
+        toolCallId: "tool-unrelated-success",
+        args: { command: "git status" },
+      } as never,
+    );
+    await handleToolExecutionEnd(
+      ctx as never,
+      {
+        type: "tool_execution_end",
+        toolName: "exec",
+        toolCallId: "tool-unrelated-success",
+        isError: false,
+        result: { ok: true },
+      } as never,
+    );
+
+    expect(ctx.state.lastToolError).toMatchObject({
+      toolName: "exec",
+      error: "No target session selected.",
+    });
+  });
+
   it("emits a prepared validation diagnostic without model arguments", async () => {
     const { ctx, onAgentEvent } = createTestContext();
     const error =

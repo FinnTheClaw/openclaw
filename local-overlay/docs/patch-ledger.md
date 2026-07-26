@@ -437,3 +437,46 @@ delivered terminal reply.
 
 Use the complete snapshot above, or reverse `turn-integrity-v28.patch` and then
 `finn-wedge-rootcause.patch`; validate before one intentional gateway recycle.
+
+## recovered-cli-usage-errors
+
+- Date captured: 2026-07-26
+- Base package: `openclaw@2026.7.1-2`
+- Patch: `patches/openclaw-2026.7.1-2/recovered-cli-usage-errors.patch`
+- Patch SHA-256: `97a06466fac4a7f465ada56a8b9bbdf81cd046f6c48d32ebacd547205f534517`
+- Snapshot: `/Users/aiapi/backups/finn-cli-recovery-20260726T172901Z`
+
+### Problem
+
+Finn correctly recovered from an `openclaw agent` invocation that omitted a
+required target selector, but the successful retry added `--agent finn`.
+OpenClaw's mutation guard compared the raw shell fingerprints, retained the
+superseded failure, and appended an alarming exec-failed banner to an otherwise
+successful Signal reply.
+
+### Fix
+
+Build a conservative retry identity only for single `openclaw agent`
+invocations. The identity removes the four routing selectors and harmless
+timing/output wrappers while preserving the message and every other argument.
+Only a recognized CLI usage/selection error followed by a successful invocation
+with the same identity clears the banner. Compound commands fail closed, and an
+unrelated success cannot clear the failure. Replay and side-effect state remain
+unchanged.
+
+### Verification
+
+The source suite passes 307 focused tests across both embedded-agent projects
+and the mutation unit project. Oxfmt, Oxlint, the full production build, compiled
+JavaScript syntax/import checks, and the packaged regression test pass. The
+whole-repository legacy TypeScript checker exceeded both 4 GiB and 8 GiB heaps;
+the production build's compiler completed successfully.
+
+### Rollback
+
+```bash
+sudo patch --batch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw \
+  < patches/openclaw-2026.7.1-2/recovered-cli-usage-errors.patch
+```
+
+Then intentionally recycle the gateway once.

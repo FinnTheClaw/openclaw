@@ -48,6 +48,7 @@ export type ToolCallSummary = {
   mutatingAction: boolean;
   actionFingerprint?: string;
   fileTarget?: import("./tool-mutation.js").FileTarget;
+  cliUsageRetryFingerprint?: string;
 };
 
 /** User-visible assistant stream payload emitted to subscribers. */

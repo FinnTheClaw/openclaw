@@ -263,6 +263,7 @@ function buildToolCallSummary(
       (structuredReplaySafe && mutation.replaySafe),
     actionFingerprint: mutation.actionFingerprint,
     fileTarget: mutation.fileTarget,
+    cliUsageRetryFingerprint: mutation.cliUsageRetryFingerprint,
   };
 }
 
@@ -276,6 +277,15 @@ function buildToolItemTitle(toolName: string, meta?: string): string {
 
 function isExecToolName(toolName: string): boolean {
   return toolName === "exec" || toolName === "bash";
+}
+
+function isRecoverableCliUsageError(error: string | undefined): boolean {
+  if (!error) {
+    return false;
+  }
+  return /(?:no target session selected|too many arguments|unknown (?:command|option)|unrecognized option|missing required (?:argument|option)|required option|usage:)/i.test(
+    error,
+  );
 }
 
 function isPatchToolName(toolName: string): boolean {
@@ -1357,17 +1367,26 @@ export async function handleToolExecutionEnd(
       mutatingAction: attemptedMutatingAction,
       actionFingerprint: attemptedMutatingAction ? callSummary.actionFingerprint : undefined,
       fileTarget: attemptedMutatingAction ? callSummary.fileTarget : undefined,
+      cliUsageRetryFingerprint: attemptedMutatingAction
+        ? callSummary.cliUsageRetryFingerprint
+        : undefined,
     };
   } else if (ctx.state.lastToolError) {
     // Keep unresolved mutating failures until the same action succeeds.
     if (ctx.state.lastToolError.mutatingAction) {
+      const successfulAction = {
+        toolName,
+        meta,
+        actionFingerprint: callSummary.actionFingerprint,
+        fileTarget: callSummary.fileTarget,
+      };
+      const recoveredCorrectedCliUsage =
+        isRecoverableCliUsageError(ctx.state.lastToolError.error) &&
+        ctx.state.lastToolError.cliUsageRetryFingerprint !== undefined &&
+        ctx.state.lastToolError.cliUsageRetryFingerprint === callSummary.cliUsageRetryFingerprint;
       if (
-        isSameToolMutationAction(ctx.state.lastToolError, {
-          toolName,
-          meta,
-          actionFingerprint: callSummary?.actionFingerprint,
-          fileTarget: callSummary?.fileTarget,
-        })
+        isSameToolMutationAction(ctx.state.lastToolError, successfulAction) ||
+        recoveredCorrectedCliUsage
       ) {
         ctx.state.lastToolError = undefined;
       }

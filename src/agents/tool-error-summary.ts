@@ -17,6 +17,7 @@ export type ToolErrorSummary = {
   mutatingAction?: boolean;
   actionFingerprint?: string;
   fileTarget?: FileTarget;
+  cliUsageRetryFingerprint?: string;
 };
 
 const EXEC_LIKE_TOOL_NAMES = new Set(["exec", "bash"]);

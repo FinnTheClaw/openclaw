@@ -1,0 +1,113 @@
+diff --git a/dist/tool-mutation-BfXv6cQw.js b/dist/tool-mutation-BfXv6cQw.js
+index 635b5f0..e1177ec 100644
+--- a/dist/tool-mutation-BfXv6cQw.js
++++ b/dist/tool-mutation-BfXv6cQw.js
+@@ -193,6 +193,43 @@ function tokenizeSimpleShellCommand(command) {
+ 	if (current) tokens.push(current);
+ 	return tokens.length > 0 ? tokens : void 0;
+ }
++const OPENCLAW_AGENT_TARGET_FLAGS = /* @__PURE__ */ new Set([
++	"--agent",
++	"--session-key",
++	"--session-id",
++	"--to"
++]);
++/**
++* Builds a conservative identity for an OpenClaw agent CLI invocation whose
++* routing selector may be corrected on retry. This is deliberately narrower
++* than the mutation fingerprint: it removes only target-selection flags and
++* harmless timing/output wrappers while preserving the requested message and
++* every other argument.
++*/
++function buildExecCliUsageRetryFingerprint(toolName, args) {
++	const normalizedTool = normalizeLowercaseStringOrEmpty(toolName);
++	if (normalizedTool !== "exec" && normalizedTool !== "bash") return;
++	const rawCommand = readShellCommand(asOptionalObjectRecord(args));
++	if (!rawCommand || /[;\n\r`]|&&|\|\|/.test(rawCommand)) return;
++	const parsedTokens = tokenizeSimpleShellCommand(rawCommand.replace(/\s+\d*>&\d+(?:\s+\|\s+(?:tail|head)(?:\s+.*)?)?\s*$/, ""));
++	if (!parsedTokens) return;
++	const tokens = [...parsedTokens];
++	if (normalizeLowercaseStringOrEmpty(tokens[0]) === "time") tokens.shift();
++	const executable = tokens[0]?.split("/").at(-1);
++	if (normalizeLowercaseStringOrEmpty(executable) !== "openclaw" || normalizeLowercaseStringOrEmpty(tokens[1]) !== "agent") return;
++	const canonical = tokens.slice(0, 2);
++	for (let index = 2; index < tokens.length; index += 1) {
++		const token = tokens[index] ?? "";
++		const normalized = normalizeLowercaseStringOrEmpty(token);
++		if (OPENCLAW_AGENT_TARGET_FLAGS.has(normalized)) {
++			index += 1;
++			continue;
++		}
++		if ([...OPENCLAW_AGENT_TARGET_FLAGS].some((flag) => normalized.startsWith(`${flag}=`))) continue;
++		canonical.push(token);
++	}
++	return JSON.stringify(canonical);
++}
+ function isReadOnlySedCommand(tokens) {
+ 	const args = tokens.slice(1);
+ 	if (args.some((token) => token === "--in-place" || token.startsWith("--in-place="))) return false;
+@@ -368,12 +405,14 @@ function fileTargetsEqual(a, b) {
+ }
+ function buildToolMutationState(toolName, args, meta) {
+ 	const actionFingerprint = buildToolActionFingerprint(toolName, args, meta);
++	const cliUsageRetryFingerprint = buildExecCliUsageRetryFingerprint(toolName, args);
+ 	const fileTarget = extractFileTarget(toolName, args);
+ 	return {
+ 		mutatingAction: actionFingerprint != null,
+ 		replaySafe: isReplaySafeToolCall(toolName, args),
+ 		actionFingerprint,
+-		...fileTarget !== void 0 ? { fileTarget } : {}
++		...fileTarget !== void 0 ? { fileTarget } : {},
++		...cliUsageRetryFingerprint !== void 0 ? { cliUsageRetryFingerprint } : {}
+ 	};
+ }
+ function isSameToolMutationAction(existing, next) {
+diff --git a/dist/selection-JInn13lc.js b/dist/selection-JInn13lc.js
+index e3fa73d..e789a8f 100644
+--- a/dist/selection-JInn13lc.js
++++ b/dist/selection-JInn13lc.js
+@@ -1282,7 +1282,8 @@ function buildToolCallSummary(toolName, args, meta, instanceReplaySafe, structur
+ 		mutatingAction: mutation.mutatingAction,
+ 		replaySafe: instanceReplaySafe && !mutation.mutatingAction || structuredReplaySafe && mutation.replaySafe,
+ 		actionFingerprint: mutation.actionFingerprint,
+-		fileTarget: mutation.fileTarget
++		fileTarget: mutation.fileTarget,
++		cliUsageRetryFingerprint: mutation.cliUsageRetryFingerprint
+ 	};
+ }
+ function buildToolItemId(toolCallId) {
+@@ -1294,6 +1295,10 @@ function buildToolItemTitle(toolName, meta) {
+ function isExecToolName(toolName) {
+ 	return toolName === "exec" || toolName === "bash";
+ }
++function isRecoverableCliUsageError(error) {
++	if (!error) return false;
++	return /(?:no target session selected|too many arguments|unknown (?:command|option)|unrecognized option|missing required (?:argument|option)|required option|usage:)/i.test(error);
++}
+ function isPatchToolName(toolName) {
+ 	return toolName === "apply_patch";
+ }
+@@ -1993,15 +1998,18 @@ async function handleToolExecutionEnd(ctx, evt) {
+ 			middlewareError: isMiddlewareToolResultError(sanitizedResult) || void 0,
+ 			mutatingAction: attemptedMutatingAction,
+ 			actionFingerprint: attemptedMutatingAction ? callSummary.actionFingerprint : void 0,
+-			fileTarget: attemptedMutatingAction ? callSummary.fileTarget : void 0
++			fileTarget: attemptedMutatingAction ? callSummary.fileTarget : void 0,
++			cliUsageRetryFingerprint: attemptedMutatingAction ? callSummary.cliUsageRetryFingerprint : void 0
+ 		};
+ 	} else if (ctx.state.lastToolError) if (ctx.state.lastToolError.mutatingAction) {
+-		if (isSameToolMutationAction(ctx.state.lastToolError, {
++		const successfulAction = {
+ 			toolName,
+ 			meta,
+-			actionFingerprint: callSummary?.actionFingerprint,
+-			fileTarget: callSummary?.fileTarget
+-		})) ctx.state.lastToolError = void 0;
++			actionFingerprint: callSummary.actionFingerprint,
++			fileTarget: callSummary.fileTarget
++		};
++		const recoveredCorrectedCliUsage = isRecoverableCliUsageError(ctx.state.lastToolError.error) && ctx.state.lastToolError.cliUsageRetryFingerprint !== void 0 && ctx.state.lastToolError.cliUsageRetryFingerprint === callSummary.cliUsageRetryFingerprint;
++		if (isSameToolMutationAction(ctx.state.lastToolError, successfulAction) || recoveredCorrectedCliUsage) ctx.state.lastToolError = void 0;
+ 	} else ctx.state.lastToolError = void 0;
+ 	const toolErrorSummary = ctx.state.lastToolError ? summarizeToolValidationError(ctx.state.lastToolError) : void 0;
+ 	if (asyncStarted) ctx.state.hadDeterministicSideEffect = true;

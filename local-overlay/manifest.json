@@ -226,6 +226,18 @@
       "status": "applied-live-on-moira"
     },
     {
+      "id": "recovered-cli-usage-errors",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/tool-mutation-BfXv6cQw.js",
+        "dist/selection-JInn13lc.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/recovered-cli-usage-errors.patch",
+      "sha256": "97a06466fac4a7f465ada56a8b9bbdf81cd046f6c48d32ebacd547205f534517",
+      "purpose": "Treat a corrected OpenClaw agent target selector as recovery of the same CLI request so completed work is not followed by an obsolete exec-failed Signal banner; preserve fail-closed warnings for unrelated commands.",
+      "status": "applied-live-on-moira"
+    },
+    {
       "id": "jake-turn-integrity-recovery",
       "base_package": "openclaw@2026.7.2",
       "target_files": [
