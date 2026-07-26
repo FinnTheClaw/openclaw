@@ -1,0 +1,63 @@
+diff --git a/dist/bash-process-registry-17q1dHVV.js b/dist/bash-process-registry-17q1dHVV.js
+index 301a8ff..6746ff9 100644
+--- a/dist/bash-process-registry-17q1dHVV.js
++++ b/dist/bash-process-registry-17q1dHVV.js
+@@ -234,7 +234,6 @@ function markBackgrounded(session) {
+ 		moveToFinished(session, session.status ?? "failed");
+ 		return;
+ 	}
+-	activeBackgroundExecSessionIds.add(session.id);
+ }
+ function moveToFinished(session, status) {
+ 	runningSessions.delete(session.id);
+diff --git a/dist/embedded-agent-DGUuxGR2.js b/dist/embedded-agent-DGUuxGR2.js
+index 360e7f6..c94f2cf 100644
+--- a/dist/embedded-agent-DGUuxGR2.js
++++ b/dist/embedded-agent-DGUuxGR2.js
+@@ -1773,7 +1773,7 @@ const TRANSIENT_TRANSPORT_CONTINUATION_PROMPT = "The previous model stream ended
+ const UNEXPECTED_SILENT_REPLY_CONTINUATION_PROMPT = "This is a direct user request and the previous assistant response incorrectly attempted to stay silent. Continue from the current transcript and answer the user now. Complete any outstanding work first; do not emit NO_REPLY and do not answer with only a promise or setup sentence.";
+ function hasOnlySilentReplyTexts(texts) {
+ 	const nonEmpty = (texts ?? []).map((text) => String(text ?? "").trim()).filter(Boolean);
+-	return nonEmpty.length > 0 && nonEmpty.every((text) => text.toUpperCase() === SILENT_REPLY_TOKEN);
++	return nonEmpty.at(-1)?.toUpperCase() === SILENT_REPLY_TOKEN;
+ }
+ const SETTLED_TOOL_TERMINAL_CONTINUATION_PROMPT = "The previous assistant turn completed and verified its mutating tool calls but stopped before producing the final user-visible answer. Continue from the current transcript and provide that final answer now. Do not repeat completed tool calls or restart from scratch. No mutating tools are available during this finalization; if absolutely necessary you may read the completed result once, then answer.";
+ const SETTLED_TOOL_TERMINAL_CONTINUATION_MODEL_APIS = /* @__PURE__ */ new Set([
+diff --git a/dist/main-session-restart-recovery-Ce8fihTV.js b/dist/main-session-restart-recovery-Ce8fihTV.js
+index ba698af..efe4899 100644
+--- a/dist/main-session-restart-recovery-Ce8fihTV.js
++++ b/dist/main-session-restart-recovery-Ce8fihTV.js
+@@ -301,26 +301,20 @@ async function sendUnresumableSessionNotice(params) {
+ 		sessionKey: params.sessionKey
+ 	});
+ 	if (!deliveryContext) return false;
+-	const messageParams = {
++	const sendParams = {
++		channel: deliveryContext.channel,
+ 		to: deliveryContext.to,
+ 		message: UNRESUMABLE_SESSION_NOTICE,
+-		bestEffort: true
+-	};
+-	if (deliveryContext?.threadId != null) messageParams.threadId = deliveryContext.threadId;
+-	const actionParams = {
+-		channel: deliveryContext.channel,
+-		action: "send",
+ 		sessionKey: params.sessionKey,
+-		sessionId: params.entry.sessionId,
+-		idempotencyKey: `main-session-restart-recovery:${params.entry.sessionId}:failed-notice`,
+-		params: messageParams
++		idempotencyKey: `main-session-restart-recovery:${params.entry.sessionId}:failed-notice`
+ 	};
++	if (deliveryContext?.threadId != null) sendParams.threadId = deliveryContext.threadId;
+ 	const accountId = normalizeOptionalString(deliveryContext?.accountId);
+-	if (accountId) actionParams.accountId = accountId;
++	if (accountId) sendParams.accountId = accountId;
+ 	try {
+ 		await callGateway({
+-			method: "message.action",
+-			params: actionParams,
++			method: "send",
++			params: sendParams,
+ 			timeoutMs: 1e4
+ 		});
+ 		log.info(`sent interrupted main session recovery notice: ${params.sessionKey} (${params.reason})`);

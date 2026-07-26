@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const target = process.argv[2];
 if (!target) {
@@ -27,7 +28,20 @@ assert.match(
   /if \(session\.exited\) \{\s*moveToFinished\(session, session\.status \?\? "failed"\)/,
   "an exec process that exits while yielding must remain pollable",
 );
-assert.match(processRegistry, /activeBackgroundExecSessionIds\.add\(session\.id\)/);
+assert.doesNotMatch(
+  processRegistry,
+  /activeBackgroundExecSessionIds/,
+  "the frozen registry has no activeBackgroundExecSessionIds declaration and must not reference it",
+);
+const processRegistryModule = await import(
+  `${pathToFileURL(path.join(target, "dist", "bash-process-registry-17q1dHVV.js")).href}?wedge-regression=${Date.now()}`,
+);
+const runningSession = { id: "wedge-regression", backgrounded: false, exited: false };
+assert.doesNotThrow(
+  () => processRegistryModule.u(runningSession),
+  "markBackgrounded must not crash the gateway for a running exec",
+);
+assert.equal(runningSession.backgrounded, true);
 
 assert.match(lifecycle, /action: "exhausted"/);
 assert.match(lifecycle, /exhaustedReason \?\?= reason \?\? retryInstruction/);
@@ -54,12 +68,11 @@ assert.match(
   /The unfinished turn was not accepted as success; completed tool actions were preserved\./,
 );
 
-const pluginPath =
-  process.env.OPENCLAW_DEBUG_HOOKS_FILE ??
-  path.join(os.homedir(), ".openclaw", "plugins", "debug-hooks", "index.js");
-if (fs.existsSync(pluginPath)) {
+const pluginPath = process.env.OPENCLAW_DEBUG_HOOKS_FILE;
+if (pluginPath) {
+  assert.ok(fs.existsSync(pluginPath), `debug hook candidate does not exist: ${pluginPath}`);
   const plugin = fs.readFileSync(pluginPath, "utf8");
-  assert.match(plugin, /AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v27"/);
+  assert.match(plugin, /AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v28"/);
   assert.match(plugin, /const shouldRevise = behaviorIssues\.length > 0/);
   assert.match(plugin, /Math\.min\(5, Math\.floor\(configuredMaxRevisions\)\)/);
   assert.doesNotMatch(

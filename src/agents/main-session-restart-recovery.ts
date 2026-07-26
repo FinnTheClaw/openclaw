@@ -487,31 +487,25 @@ async function sendUnresumableSessionNotice(params: {
     return false;
   }
 
-  const messageParams: Record<string, unknown> = {
+  const sendParams: Record<string, unknown> = {
+    channel: deliveryContext.channel,
     to: deliveryContext.to,
     message: UNRESUMABLE_SESSION_NOTICE,
-    bestEffort: true,
+    sessionKey: params.sessionKey,
+    idempotencyKey: `main-session-restart-recovery:${params.entry.sessionId}:failed-notice`,
   };
   if (deliveryContext?.threadId != null) {
-    messageParams.threadId = deliveryContext.threadId;
+    sendParams.threadId = deliveryContext.threadId;
   }
-  const actionParams: Record<string, unknown> = {
-    channel: deliveryContext.channel,
-    action: "send",
-    sessionKey: params.sessionKey,
-    sessionId: params.entry.sessionId,
-    idempotencyKey: `main-session-restart-recovery:${params.entry.sessionId}:failed-notice`,
-    params: messageParams,
-  };
   const accountId = normalizeOptionalString(deliveryContext?.accountId);
   if (accountId) {
-    actionParams.accountId = accountId;
+    sendParams.accountId = accountId;
   }
 
   try {
     await callGateway({
-      method: "message.action",
-      params: actionParams,
+      method: "send",
+      params: sendParams,
       timeoutMs: 10_000,
     });
     log.info(

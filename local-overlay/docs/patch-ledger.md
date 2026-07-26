@@ -392,3 +392,48 @@ patch --batch -R -p1 -d ~/.openclaw/plugins/debug-hooks \
 
 Restore the pre-change debug-hook retry setting and intentionally recycle the
 gateway, or use the complete snapshot rollback script.
+
+## finn-wedge-rootcause
+
+- Date captured: 2026-07-26
+- Base package: `openclaw@2026.7.1-2`
+- Core patch: `patches/openclaw-2026.7.1-2/finn-wedge-rootcause.patch`
+- Core patch SHA-256: `3c28636b46d0feb726b91d1e24698ca1e6539a5e441977bcf0660a1543bc995b`
+- Debug-hook patch: `patches/debug-hooks/turn-integrity-v28.patch`
+- Debug-hook patch SHA-256: `213e2a638ed1fe05c10e16e43de5235ad67c9abcaf86cd611d0a22a5f4b9e204`
+- Snapshot: `/Users/aiapi/backups/finn-wedge-rootcause-20260726T164526Z`
+
+### Problem
+
+Fast foreground `exec` called an undeclared
+`activeBackgroundExecSessionIds` symbol and crashed the gateway. Restart
+recovery then tried Signal through unsupported `message.action`, so its notice
+was lost. Separately, the terminal guard treated “let me know” and a
+tool-proven macOS permission blocker as promises of more agent work. A final
+`NO_REPLY` could also escape when earlier progress text existed in the attempt.
+
+### Fix
+
+- remove the undeclared registry reference and execute the exact registry
+  export in regression coverage;
+- classify the last non-empty assistant text, rather than requiring every
+  fragment to be `NO_REPLY`;
+- send restart recovery through the generic channel `send` method;
+- preserve v27 fail-closed retry ownership while accepting proven external
+  permission/authentication blockers as terminal.
+
+### Verification
+
+The canonical frozen artifact accepts the complete ordered overlay, all four
+compiled regression suites pass, the corrected overlay verifies idempotently,
+the v28 hook patch applies exactly over v27, and the hook behavioral suite
+covers both true unfinished action announcements and valid permission
+blockers. Live validation used one intentional gateway recycle, completed a
+fast foreground `exec` canary without a new stability exception, then resumed
+the interrupted Signal session with one successful filesystem workflow and one
+delivered terminal reply.
+
+### Rollback
+
+Use the complete snapshot above, or reverse `turn-integrity-v28.patch` and then
+`finn-wedge-rootcause.patch`; validate before one intentional gateway recycle.

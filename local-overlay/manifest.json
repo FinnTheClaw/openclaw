@@ -185,7 +185,21 @@
       "purpose": "Fail closed with an explicit incomplete-turn error when before_agent_finalize retries are exhausted, and preserve fast-exiting background exec results so permissions checks and other tool runs remain pollable.",
       "status": "applied-live-on-moira",
       "upstream_pull_request": "https://github.com/openclaw/openclaw/pull/114004",
-      "upstream_commit": "b982eaa5f79fbf5b693ae80ae9db1362bafe54c9"
+      "upstream_commit": "b982eaa5f79fbf5b693ae80ae9db1362bafe54c9",
+      "corrected_by": "finn-wedge-rootcause"
+    },
+    {
+      "id": "finn-wedge-rootcause",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/bash-process-registry-17q1dHVV.js",
+        "dist/embedded-agent-DGUuxGR2.js",
+        "dist/main-session-restart-recovery-Ce8fihTV.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/finn-wedge-rootcause.patch",
+      "sha256": "3c28636b46d0feb726b91d1e24698ca1e6539a5e441977bcf0660a1543bc995b",
+      "purpose": "Remove an undeclared process-registry reference that crashed fast exec turns, classify a final NO_REPLY even after progress fragments, and route restart-recovery notices through the Signal-compatible generic send method.",
+      "status": "applied-live-on-moira"
     },
     {
       "id": "debug-hooks-turn-integrity-v27",
@@ -196,6 +210,19 @@
       "patch_file": "patches/debug-hooks/turn-integrity-v27.patch",
       "sha256": "cebe2726f5a81cd3e19d4a9093486d694e81b848edc7f3ebed7357df06572292",
       "purpose": "Keep reporting unfinished model output as a revision request while the OpenClaw core owns the bounded retry budget and visible terminal failure.",
+      "status": "superseded-by-debug-hooks-turn-integrity-v28"
+    },
+    {
+      "id": "debug-hooks-turn-integrity-v28",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "~/.openclaw/plugins/debug-hooks/index.js",
+        "~/.openclaw/bin/debug-hooks-index.js",
+        "cluster/provisioner/debug-hooks-index.js"
+      ],
+      "patch_file": "patches/debug-hooks/turn-integrity-v28.patch",
+      "sha256": "213e2a638ed1fe05c10e16e43de5235ad67c9abcaf86cd611d0a22a5f4b9e204",
+      "purpose": "Preserve core-owned fail-closed retries while accepting tool-proven external permission blockers and treating user-facing 'let me know' language as terminal rather than an unfinished agent promise.",
       "status": "applied-live-on-moira"
     },
     {

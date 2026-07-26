@@ -49,6 +49,19 @@ for patch_file in "${PATCH_FILES[@]}"; do
        grep -Fq 'recordEvent("turn.terminal_decision"' \
          "${TARGET}/dist/selection-JInn13lc.js"; then
     echo "applied (cumulative): ${label}"
+  elif [[ "${TARGET_VERSION}" == "2026.7.1-2" &&
+          "${label}" == "finalize-retry-failclosed.patch" ]] &&
+       grep -Fq "session.status = status" \
+         "${TARGET}/dist/bash-process-registry-17q1dHVV.js" &&
+       grep -Fq "moveToFinished(session, session.status ?? \"failed\")" \
+         "${TARGET}/dist/bash-process-registry-17q1dHVV.js" &&
+       ! grep -Fq "activeBackgroundExecSessionIds" \
+         "${TARGET}/dist/bash-process-registry-17q1dHVV.js" &&
+       grep -Fq 'action: "exhausted"' \
+         "${TARGET}/dist/lifecycle-hook-helpers-BwL6869q.js" &&
+       grep -Fq 'outcome.action !== "revise" && outcome.action !== "exhausted"' \
+         "${TARGET}/dist/selection-JInn13lc.js"; then
+    echo "applied (corrected cumulative): ${label}"
   else
     echo "conflict: ${label}"
     failed=1

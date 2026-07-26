@@ -139,6 +139,25 @@ if (packageVersion === "2026.7.1-2") {
   assert.doesNotMatch(embedded, /recoverableToolErrorContinuationAttempts < 8/);
 }
 assert.match(embedded, /UNEXPECTED_SILENT_REPLY_CONTINUATION_PROMPT/);
+const silentReplyMatch = embedded.match(
+  /function hasOnlySilentReplyTexts\(texts\) \{[\s\S]*?\n\}/,
+);
+assert.ok(silentReplyMatch, "compiled final-silence classifier must exist");
+const hasOnlySilentReplyTexts = Function(
+  `"use strict";
+  const SILENT_REPLY_TOKEN = "NO_REPLY";
+  ${silentReplyMatch[0]}
+  return hasOnlySilentReplyTexts;`,
+)();
+assert.equal(
+  hasOnlySilentReplyTexts(["Installed the app successfully.", "NO_REPLY"]),
+  true,
+  "a final NO_REPLY must be detected even after visible progress text",
+);
+assert.equal(
+  hasOnlySilentReplyTexts(["Installed the app successfully.", "Done — the app is installed."]),
+  false,
+);
 assert.match(
   embedded,
   /unexpectedSilentReplyContinuationAttempts < (?:1|MAX_UNEXPECTED_SILENT_REPLY_CONTINUATIONS)/,

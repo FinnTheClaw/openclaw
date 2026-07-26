@@ -1306,18 +1306,17 @@ describe("main-session-restart-recovery", () => {
     expect(store["agent:main:main"]?.abortedLastRun).toBe(true);
   });
 
-  it("sends a visible notice through legacy session route before failing an unresumable main session", async () => {
+  it("sends a visible notice through the generic Signal send route before failing an unresumable main session", async () => {
     const sessionsDir = await makeSessionsDir();
     await writeStore(sessionsDir, {
-      "agent:main:demo-channel:room-1": {
+      "agent:main:signal:direct:recipient": {
         sessionId: "main-session",
         updatedAt: Date.now() - 10_000,
         status: "running",
         abortedLastRun: true,
-        lastChannel: "discord",
-        lastTo: "discord:channel:room-1",
+        lastChannel: "signal",
+        lastTo: "recipient",
         lastAccountId: "default",
-        lastThreadId: "thread-1",
       },
     });
     await writeTranscript(sessionsDir, "main-session", [
@@ -1332,25 +1331,19 @@ describe("main-session-restart-recovery", () => {
     const gatewayCall = vi.mocked(callGateway).mock.calls[0]?.[0] as
       | { method?: string; params?: Record<string, unknown> }
       | undefined;
-    expect(gatewayCall?.method).toBe("message.action");
+    expect(gatewayCall?.method).toBe("send");
     expect(gatewayCall?.params).toMatchObject({
-      channel: "discord",
-      action: "send",
+      channel: "signal",
+      to: "recipient",
       accountId: "default",
-      sessionKey: "agent:main:demo-channel:room-1",
-      sessionId: "main-session",
+      sessionKey: "agent:main:signal:direct:recipient",
+      message: expect.stringContaining("couldn't safely resume"),
     });
-    expect(gatewayCall?.params?.params).toMatchObject({
-      to: "discord:channel:room-1",
-      threadId: "thread-1",
-      bestEffort: true,
-    });
-    expect(String((gatewayCall?.params?.params as Record<string, unknown>)?.message)).toContain(
-      "couldn't safely resume",
-    );
+    expect(gatewayCall?.params).not.toHaveProperty("action");
+    expect(gatewayCall?.params).not.toHaveProperty("params");
 
     const store = loadSessionStore(path.join(sessionsDir, "sessions.json"));
-    expect(store["agent:main:demo-channel:room-1"]?.status).toBe("failed");
-    expect(store["agent:main:demo-channel:room-1"]?.abortedLastRun).toBe(true);
+    expect(store["agent:main:signal:direct:recipient"]?.status).toBe("failed");
+    expect(store["agent:main:signal:direct:recipient"]?.abortedLastRun).toBe(true);
   });
 });

@@ -26,7 +26,9 @@ Direct edits under that package tree are upgrade-fragile. A manual `openclaw upd
 | `patches/openclaw-2026.7.1-2/turn-integrity-recovery.patch` | `2026.7.1-2` | `dist/embedded-agent-DGUuxGR2.js`, `dist/selection-JInn13lc.js`, `dist/get-reply-OTG64ybi.js` | Recover boundedly after silent failed-tool turns or accidental direct-chat `NO_REPLY`, reject tool errors as terminal delivery, permit a bounded unfinished-turn revision from the current transcript, and record the terminal classifier inputs in trajectory logs. |
 | `patches/openclaw-2026.7.1-2/transient-stream-continuation.patch` | `2026.7.1-2` | `dist/embedded-agent-DGUuxGR2.js`, `dist/selection-JInn13lc.js` | Fail closed when a provider stream ends with `stopReason=error` after partial progress, then continue the persisted turn up to twice for transient transport failures without replaying the original request. |
 | `patches/openclaw-2026.7.1-2/finalize-retry-failclosed.patch` | `2026.7.1-2` | four runner/process `dist/*.js` files | Reject unfinished progress text after the finalization retry budget is exhausted, surface a visible `incomplete_turn` error, and retain fast-exiting background process results for polling. |
+| `patches/openclaw-2026.7.1-2/finn-wedge-rootcause.patch` | `2026.7.1-2` | exec registry, embedded runner, and restart recovery | Prevent fast exec from crashing the gateway, reject a final `NO_REPLY` even after progress text, and send recovery notices through Signal's supported generic send route. |
 | `patches/debug-hooks/turn-integrity-v27.patch` | Finn debug-hooks plugin | `~/.openclaw/plugins/debug-hooks/index.js` | Keep classifying unfinished output as a revision request while core owns the bounded retry budget and visible terminal failure. |
+| `patches/debug-hooks/turn-integrity-v28.patch` | Finn and Jake debug-hooks plugin | live plugin, managed canonical hook, and provisioner source | Preserve v27 fail-closed behavior while accepting tool-proven external permission blockers and user-facing “let me know” language as legitimate terminal answers. |
 | `patches/openclaw-2026.7.1-2/tui-terminal-watchdog-reconcile.patch` | `2026.7.1-2` | `dist/tui-ttOZNpsl.js` | Reconcile a silent TUI run against canonical session history before declaring it stuck; clear stale spinners only when the session is terminal and has no in-flight run. |
 | `patches/openclaw-2026.7.2/jake-parent-fork-dynamic-context-tokens.patch` | `2026.7.2` | `dist/session-accessor-BFted17j.js`, `dist/session-fork-B2y_KaMK.js` | Use the actual Jake parent/model context budget for child-session inheritance instead of a fixed 100k-token ceiling. |
 | `patches/openclaw-2026.7.2/turn-integrity-recovery.patch` | `2026.7.2` | `dist/embedded-agent-BWIVdi3c.js`, `dist/selection-C50GdcQc.js`, `dist/get-reply-DE2xroan.js` | Give Jakes the same bounded failed-tool, completed-tool, accidental-silence, classifier, and trajectory fixes as Finn without retaining the upstream eight-pass tool-error loop. |
@@ -157,6 +159,24 @@ Restore `plugins.entries.debug-hooks.config.maxRevisionAttempts` to its
 pre-change value, validate the configuration, and intentionally recycle the
 gateway. The snapshot rollback script restores all affected files and config
 as one unit.
+
+## Finn Wedge Root-Cause Rollback
+
+The complete pre-change snapshot is:
+
+```text
+/Users/aiapi/backups/finn-wedge-rootcause-20260726T164526Z
+```
+
+Reverse the corrective core and hook patches in this order, validate, then
+intentionally recycle the gateway once:
+
+```bash
+patch --batch -R -p1 -d ~/.openclaw/plugins/debug-hooks \
+  < patches/debug-hooks/turn-integrity-v28.patch
+sudo patch --batch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw \
+  < patches/openclaw-2026.7.1-2/finn-wedge-rootcause.patch
+```
 
 ## Jake Parent-Fork Context Rollback
 

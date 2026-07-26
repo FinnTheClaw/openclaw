@@ -1,0 +1,42 @@
+diff --git a/index.js b/index.js
+index 5e80506..4f807c4 100644
+--- a/index.js
++++ b/index.js
+@@ -3,7 +3,7 @@ import path from "node:path";
+ import crypto from "node:crypto";
+ import { spawn } from "node:child_process";
+ 
+-const AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v27";
++const AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v28";
+ const finalizeRunEvidence = new Map();
+ const sequentialChainRuns = new Map();
+ const DEBUG_LOG_MAX_BYTES = 8 * 1024 * 1024;
+@@ -387,7 +387,10 @@ function summarizeMessages(messages) {
+ function looksLikeUnfinishedCoding(text, summary, userText = "") {
+   const trimmed = String(text || "").trim();
+   if (!trimmed) return false;
+-  const promise = /\b(i'll|i will|let me|i'm going to|i am going to|now i'll|now i will|now fix|next i'll|next i will|use a subagent|rewrite the whole file|pick back up|keep going|continuing|continue to|try a different approach|switch approaches)\b/i.test(trimmed);
++  const promiseText = trimmed
++    .replace(/\blet me know\b/gi, "")
++    .replace(/\b(?:tell|ping|message) me when\b/gi, "");
++  const promise = /\b(i'll|i will|let me|i'm going to|i am going to|now i'll|now i will|now fix|next i'll|next i will|use a subagent|rewrite the whole file|pick back up|keep going|continuing|continue to|try a different approach|switch approaches)\b/i.test(promiseText);
+   const trailingAction = /:\s*$/.test(trimmed);
+   const shortActionAnnouncement =
+     trimmed.length < 500 &&
+@@ -396,11 +399,15 @@ function looksLikeUnfinishedCoding(text, summary, userText = "") {
+     /(?:^|\n|[.!?]\s+)(?:now\s+)?(?:checking|querying|inspecting|verifying|testing|running|reading|fetching|trying|continuing|investigating|debugging)\b[^.!?]*[.!]?\s*$/i.test(trimmed);
+   const terminal = /(?:^|\n)\s*(?:done|finished|complete|verified|passed)\s*[.!]?\s*$/i.test(trimmed)
+     || /\b(?:blocked|cannot|can't|can not|need external|needs external)\b/i.test(trimmed);
++  const provenExternalBlocker =
++    Number(summary?.toolResults || 0) > 0 &&
++    /\b(?:waiting on you|once you|after you|requires? (?:your|user|manual)|needs? to be granted)\b/i.test(trimmed) &&
++    /\b(?:permission|approval|system settings|accessibility|screen recording|credential|authentication|pairing)\b/i.test(trimmed);
+   // A promise or trailing action is unfinished regardless of task domain.
+   // Do not infer unfinished work merely because an earlier tool failed: the
+   // core runner owns error recovery, and a later successful tool result plus
+   // a declarative final answer is a valid terminal state.
+-  return !terminal && (
++  return !terminal && !provenExternalBlocker && (
+     promise || trailingAction || shortActionAnnouncement || trailingActionAnnouncement
+   );
+ }
