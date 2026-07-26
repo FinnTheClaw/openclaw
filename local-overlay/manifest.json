@@ -1,0 +1,227 @@
+{
+  "kind": "finn-openclaw-patch-registry",
+  "created_at": "2026-06-29T06:19:00Z",
+  "owner": "FinnTheClaw",
+  "install_target": "/opt/homebrew/lib/node_modules/openclaw",
+  "patches": [
+    {
+      "id": "signal-durable-inbound-queue",
+      "base_package": "openclaw@2026.6.6",
+      "target_file": "dist/monitor-DLQu0UP3.js",
+      "patch_file": "patches/openclaw-2026.6.6/signal-durable-inbound-queue.patch",
+      "sha256": "cc8381c52dd9c2f1753ab7ee37ee9fc83130f3960d0c8c9e04e48d4de9e37e7e",
+      "purpose": "Persist Signal inbound events before dispatch, replay pending events after gateway restart, and canonicalize editMessage ids to prevent duplicate edited-message turns.",
+      "status": "applied-live-on-moira",
+      "captured_from_workspace_commit": "dd64846"
+    },
+    {
+      "id": "additional-local-hotpatches-20260629",
+      "base_package": "openclaw@2026.6.6",
+      "target_files": [
+        "dist/dispatch-DO0Fpkbp.js",
+        "dist/notification-correlation-x98jecIj.js",
+        "dist/openai-completions-DObeyZ3K.js",
+        "dist/status-text-B8Mjm64n.js"
+      ],
+      "patch_file": "patches/openclaw-2026.6.6/additional-local-hotpatches-20260629.patch",
+      "sha256": "a6aa0c03045b94cbb8d0f9dcb6d91bb0ac5ae523c1af384f82cbdae895ba1435",
+      "purpose": "Capture remaining installed-package OpenClaw hot patches present on Moira on 2026-06-29.",
+      "status": "applied-live-on-moira"
+    },
+    {
+      "id": "signal-native-quote-replies",
+      "base_package": "openclaw@2026.6.6",
+      "target_files": [
+        "dist/send-hICEM6a-.js",
+        "dist/send-De5Th-L4.d.ts",
+        "dist/message-D5B8ddQe.js",
+        "dist/message-action-runner-6wCJfhlZ.js",
+        "dist/channel-BEL8ozXJ.js"
+      ],
+      "patch_file": "patches/openclaw-2026.6.6/signal-native-quote-replies.patch",
+      "sha256": "82fe976a75aed28068e0380e01207bc5943d570319a4b219bc36884969021e52",
+      "purpose": "Map OpenClaw replyTo/replyToId into signal-cli native quote fields from the durable Signal inbound queue; fail closed when explicit reply resolution is missing.",
+      "status": "applied-live-on-moira"
+    },
+    {
+      "id": "signal-source-reply-required",
+      "base_package": "openclaw@2026.6.6",
+      "target_files": [
+        "dist/message-action-runner-6wCJfhlZ.js"
+      ],
+      "patch_file": "patches/openclaw-2026.6.6/signal-source-reply-required.patch",
+      "sha256": "8d49cf3767bf2602556ff25c5f95116fb0ad0556e7019992490dd1bc4981314c",
+      "purpose": "Fail closed for source-session Signal message-tool sends unless replyTo/replyToId resolves to a native reply target.",
+      "status": "applied-live-on-moira"
+    },
+    {
+      "id": "suppress-empty-terminal-assistant-events",
+      "base_package": "openclaw@2026.6.6",
+      "target_files": [
+        "dist/selection-BP0T9R9I.js",
+        "dist/compaction-successor-transcript-ONv2lneO.js"
+      ],
+      "patch_file": "patches/openclaw-2026.6.6/suppress-empty-terminal-assistant-events.patch",
+      "sha256": "8d6f7b66442e63608803cbec8b484b5d83aba2f6da83d02dc3c911e9b9c6b40d",
+      "purpose": "Keep retryable empty terminal assistant turns out of live TUI transcript broadcasts while preserving them for runner retry classification.",
+      "status": "applied-live-on-moira-and-alistar"
+    },
+    {
+      "id": "file-write-unbounded-decoded-bytes",
+      "base_package": "openclaw@2026.6.6",
+      "target_files": [
+        "dist/descriptors-odCTYLLK.js"
+      ],
+      "patch_file": "patches/openclaw-2026.6.6/file-write-unbounded-decoded-bytes.patch",
+      "sha256": "9c4792736e7c9dbe72e66a804e45e0cbf135657586ac83194966cad5027bfc9a",
+      "purpose": "Remove OpenClaw's decoded-byte hard cap from file_write so paired-node disk writes can exceed 16 MiB when transport and memory allow.",
+      "status": "applied-live-on-moira-and-alistar"
+    },
+    {
+      "id": "parent-fork-dynamic-context-tokens",
+      "base_package": "openclaw@2026.6.6",
+      "target_files": [
+        "dist/session-fork-BC-jKOPF.js",
+        "dist/openclaw-tools-C0nKaVVY.js",
+        "dist/get-reply-DW1jVSLI.js",
+        "dist/realtime-voice-BRCFRGg7.js"
+      ],
+      "patch_file": "patches/openclaw-2026.6.6/parent-fork-dynamic-context-tokens.patch",
+      "sha256": "5cf978e895a90ef700ed5f9f6eabfe3ff62d5ad4516137f910c98fd58a355d1e",
+      "purpose": "Make context=\"fork\" parent-size checks use the parent session/model/default context budget instead of a hardcoded 100k token limiter.",
+      "status": "applied-on-disk-moira-and-alistar-pending-process-restart"
+    },
+    {
+      "id": "skill-workshop-live-by-default",
+      "base_package": "openclaw@2026.6.6",
+      "target_files": [
+        "dist/skill-workshop-prompt-Ro8fA5Wx.js"
+      ],
+      "patch_file": "patches/openclaw-2026.6.6/skill-workshop-live-by-default.patch",
+      "sha256": "ae9a1c6c79bec3d0bb68b33923daa06089a182c14341e3a6443f3254c7a2f1ce",
+      "purpose": "Make Skill Workshop create/add/integrate/install/update requests validate and apply skills immediately unless the user asks for proposal-only review.",
+      "status": "applied-on-disk-moira-pending-process-restart"
+    },
+    {
+      "id": "node-restart-skip-gateway-port-preflight",
+      "base_package": "openclaw@2026.6.6",
+      "target_files": [
+        "dist/launchd-FSKBDZ2p.js"
+      ],
+      "patch_file": "patches/openclaw-2026.6.6/node-restart-skip-gateway-port-preflight.patch",
+      "sha256": "8aa3c05d7ed11740ec83ef3465279c43c0f8b331dbebc294a54a03e82db28ef3",
+      "purpose": "Skip gateway listener stale-process preflight when restarting the node LaunchAgent, because the node port is a gateway target and not a node listener.",
+      "status": "applied-on-disk-moira-pending-process-restart"
+    },
+    {
+      "id": "openai-gpt56-thinking-policy",
+      "base_package": "openclaw@2026.6.6",
+      "target_files": [
+        "dist/thinking-policy-D2pce6l8.js"
+      ],
+      "patch_file": "patches/openclaw-2026.6.6/openai-gpt56-thinking-policy.patch",
+      "sha256": "94d8803128f673e579d987399b57587cd80a1d6de04c6a38dd22c20fbb98e547",
+      "purpose": "Backport upstream beta GPT-5.6 OpenAI thinking-policy support so gpt-5.6 Sol/Terra/Luna expose xhigh and max thinking levels after the local config integration.",
+      "status": "applied-on-disk-moira-pending-process-restart"
+    },
+    {
+      "id": "settled-tool-terminal-continuation",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/embedded-agent-DGUuxGR2.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/settled-tool-terminal-continuation.patch",
+      "sha256": "ed975422a209dc60dd6d02499b85fe20c2250598cbd31692538f6d689ddfa8fd",
+      "purpose": "After verifying every terminal tool call has a successful matching result, run one read-only continuation from the current transcript so completed mutations are never replayed and the user still receives a final answer.",
+      "status": "applied-live-on-moira"
+    },
+    {
+      "id": "tui-terminal-watchdog-reconcile",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/tui-ttOZNpsl.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/tui-terminal-watchdog-reconcile.patch",
+      "sha256": "71407bce26c42ed471dd71316b4d8ae1b987e7ec82bc7e95c2f36bb8ee5ed418",
+      "purpose": "When the TUI receives no run events for 30 seconds, reconcile against canonical session history and clear stale activity only for a terminal session with no in-flight run.",
+      "status": "applied-live-on-moira"
+    },
+    {
+      "id": "turn-integrity-recovery",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/embedded-agent-DGUuxGR2.js",
+        "dist/selection-JInn13lc.js",
+        "dist/get-reply-OTG64ybi.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/turn-integrity-recovery.patch",
+      "sha256": "6985750821bc0ad92c3581ba71a9184b6112dc0883ada6ed397232d850a7d241",
+      "purpose": "Reject failed tools as terminal delivery, continue boundedly after silent failed-tool turns or accidental direct-chat silence, honor bounded promise-only revision hooks from the current transcript, and record terminal-decision evidence without prompt contents.",
+      "status": "applied-live-on-moira"
+    },
+    {
+      "id": "transient-stream-continuation",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/embedded-agent-DGUuxGR2.js",
+        "dist/selection-JInn13lc.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/transient-stream-continuation.patch",
+      "sha256": "b6b141388c06b6db86bd5bcab339aed691996920801b6c1a80ec354f9a18db32",
+      "purpose": "Treat provider stopReason=error as terminal failure even after partial progress, and continue a persisted turn up to twice after eligible transient stream termination without replaying completed work.",
+      "status": "applied-live-on-moira"
+    },
+    {
+      "id": "finalize-retry-failclosed",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/bash-process-registry-17q1dHVV.js",
+        "dist/embedded-agent-DGUuxGR2.js",
+        "dist/lifecycle-hook-helpers-BwL6869q.js",
+        "dist/selection-JInn13lc.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/finalize-retry-failclosed.patch",
+      "sha256": "e8614a62e469960fadeb1e01ddd266fba644f0b7be5d1cd2d358de690ff8abbf",
+      "purpose": "Fail closed with an explicit incomplete-turn error when before_agent_finalize retries are exhausted, and preserve fast-exiting background exec results so permissions checks and other tool runs remain pollable.",
+      "status": "applied-live-on-moira",
+      "upstream_pull_request": "https://github.com/openclaw/openclaw/pull/114004",
+      "upstream_commit": "b982eaa5f79fbf5b693ae80ae9db1362bafe54c9"
+    },
+    {
+      "id": "debug-hooks-turn-integrity-v27",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "~/.openclaw/plugins/debug-hooks/index.js"
+      ],
+      "patch_file": "patches/debug-hooks/turn-integrity-v27.patch",
+      "sha256": "cebe2726f5a81cd3e19d4a9093486d694e81b848edc7f3ebed7357df06572292",
+      "purpose": "Keep reporting unfinished model output as a revision request while the OpenClaw core owns the bounded retry budget and visible terminal failure.",
+      "status": "applied-live-on-moira"
+    },
+    {
+      "id": "jake-turn-integrity-recovery",
+      "base_package": "openclaw@2026.7.2",
+      "target_files": [
+        "dist/embedded-agent-BWIVdi3c.js",
+        "dist/selection-C50GdcQc.js",
+        "dist/get-reply-DE2xroan.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.2/turn-integrity-recovery.patch",
+      "sha256": "89483b78966591f0593724b214de8d20fbeec1b6eba2b38d90357bb48dbaa8c4",
+      "purpose": "Port bounded failed-tool, completed-tool, and accidental direct-chat silence recovery to the Jake OpenClaw runtime; reject tool errors as delivery and record terminal-decision evidence.",
+      "status": "published-in-stable-jake-update-20260726T0025Z-turn-integrity-v26"
+    },
+    {
+      "id": "jake-parent-fork-dynamic-context-tokens",
+      "base_package": "openclaw@2026.7.2",
+      "target_files": [
+        "dist/session-accessor-BFted17j.js",
+        "dist/session-fork-B2y_KaMK.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.2/jake-parent-fork-dynamic-context-tokens.patch",
+      "sha256": "fe0de94b44df620fc0b0018814d538e3326303770575b6d0c0836ed2eda9e2ac",
+      "purpose": "Use the Jake parent session, configured default, or selected model context limit when deciding whether a child session can inherit parent context instead of applying a fixed 100k-token ceiling.",
+      "status": "captured-for-jake-openclaw-2026.7.2"
+    }
+  ]
+}

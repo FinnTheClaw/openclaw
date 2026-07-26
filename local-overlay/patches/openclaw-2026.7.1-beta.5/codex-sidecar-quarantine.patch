@@ -1,0 +1,52 @@
+diff --git a/node_modules/@openclaw/codex/dist/doctor-contract-api.js b/node_modules/@openclaw/codex/dist/doctor-contract-api.js
+--- a/node_modules/@openclaw/codex/dist/doctor-contract-api.js
++++ b/node_modules/@openclaw/codex/dist/doctor-contract-api.js
+@@
+ 	async function migrateSource(source, owner, params, store) {
+ 		let importedKeys = 0;
++		const archive = async (reason) => {
++			let archivePath = `${source.sidecarPath}.migrated`;
++			if (await pathExists(archivePath)) archivePath = `${source.sidecarPath}.quarantined-${Date.now()}`;
++			await fs.rename(source.sidecarPath, archivePath);
++			return {
++				archived: true,
++				importedKeys,
++				warning: `Archived stale Codex binding sidecar because ${reason}: ${source.sidecarPath} -> ${archivePath}`
++			};
++		};
+ 		const retain = (reason) => ({
+ 			archived: false,
+ 			importedKeys,
+ 			warning: `Left Codex binding sidecar in place because ${reason}: ${source.sidecarPath}`
+ 		});
+@@
+-				if (!baseStored) return retain("its binding is invalid");
+-				if (owner?.agentHarnessId && owner.agentHarnessId !== CODEX_AGENT_HARNESS_ID) return retain(`its session is owned by agent harness ${owner.agentHarnessId}`);
++				if (!baseStored) return await archive("its binding is invalid");
++				if (owner?.agentHarnessId && owner.agentHarnessId !== CODEX_AGENT_HARNESS_ID) return await archive(`its session is owned by agent harness ${owner.agentHarnessId}`);
+@@
+-				if (stored.state !== "active" && stored.state !== "cleared") return retain(`canonical plugin state changed at ${conversationKeys[0]}`);
++				if (stored.state !== "active" && stored.state !== "cleared") return await archive(`canonical plugin state changed at ${conversationKeys[0]}`);
+@@
+-					if (current !== void 0 && !hasExpected(current, entry.value)) return retain(`canonical plugin state changed at ${entry.key}`);
++					if (current !== void 0 && !hasExpected(current, entry.value)) return await archive(`canonical plugin state changed at ${entry.key}`);
+ 				}
+ 				for (const entry of entries) {
+ 					if (await store.registerIfAbsent(entry.key, entry.value)) importedKeys++;
+-					if (!hasExpected(await store.lookup(entry.key), entry.value)) return retain(`canonical plugin state changed at ${entry.key}`);
++					if (!hasExpected(await store.lookup(entry.key), entry.value)) return await archive(`canonical plugin state changed at ${entry.key}`);
+ 				}
+-				if (!owner) return {
+-					archived: false,
+-					importedKeys,
+-					warning: `Left Codex binding sidecar in place after importing its conversation binding because its session owner could not be resolved: ${source.sidecarPath}`
+-				};
++				if (!owner) return await archive("its session owner could not be resolved after importing safe conversation bindings");
+ 				const ownershipWarning = await recordSessionOwner(owner);
+-				if (ownershipWarning) return retain(ownershipWarning);
+-				for (const entry of entries) if (!hasExpected(await store.lookup(entry.key), entry.value)) return retain(`canonical plugin state changed at ${entry.key}`);
++				if (ownershipWarning) return await archive(ownershipWarning);
++				for (const entry of entries) if (!hasExpected(await store.lookup(entry.key), entry.value)) return await archive(`canonical plugin state changed at ${entry.key}`);
+ 				const archivePath = `${source.sidecarPath}.migrated`;
+-				if (await pathExists(archivePath)) return retain(`its archive already exists at ${archivePath}`);
++				if (await pathExists(archivePath)) return await archive(`its archive already exists at ${archivePath}`);

@@ -1,0 +1,79 @@
+diff -ruN /tmp/openclaw-fork-patch/base/dist/get-reply-DW1jVSLI.js /tmp/openclaw-fork-patch/patched/dist/get-reply-DW1jVSLI.js
+--- a/dist/get-reply-DW1jVSLI.js	2026-07-05 12:43:38
++++ b/dist/get-reply-DW1jVSLI.js	2026-07-05 12:44:04
+@@ -4623,6 +4623,7 @@
+ 		const parentEntry = sessionStore[parentSessionKey];
+ 		const forkDecision = await resolveParentForkDecision({
+ 			parentEntry,
++			cfg,
+ 			storePath
+ 		});
+ 		if (forkDecision.status === "skip") {
+diff -ruN /tmp/openclaw-fork-patch/base/dist/openclaw-tools-C0nKaVVY.js /tmp/openclaw-fork-patch/patched/dist/openclaw-tools-C0nKaVVY.js
+--- a/dist/openclaw-tools-C0nKaVVY.js	2026-07-05 12:43:38
++++ b/dist/openclaw-tools-C0nKaVVY.js	2026-07-05 12:43:58
+@@ -11040,6 +11040,7 @@
+ 			if (!parentEntry?.sessionId) throw new Error("context=\"fork\" requested but the requester session transcript is not available.");
+ 			const forkDecision = await subagentSpawnDeps.resolveParentForkDecision({
+ 				parentEntry,
++				cfg: params.cfg,
+ 				storePath: parentTarget.storePath
+ 			});
+ 			if (forkDecision.status === "skip") {
+diff -ruN /tmp/openclaw-fork-patch/base/dist/realtime-voice-BRCFRGg7.js /tmp/openclaw-fork-patch/patched/dist/realtime-voice-BRCFRGg7.js
+--- a/dist/realtime-voice-BRCFRGg7.js	2026-07-05 12:43:38
++++ b/dist/realtime-voice-BRCFRGg7.js	2026-07-05 12:44:12
+@@ -500,6 +500,7 @@
+ 				if (parentEntry?.sessionId?.trim()) {
+ 					const decision = await realtimeVoiceAgentConsultDeps.resolveParentForkDecision({
+ 						parentEntry,
++						cfg: params.cfg,
+ 						storePath: params.storePath
+ 					});
+ 					if (decision.status === "fork") {
+@@ -553,6 +554,7 @@
+ 		contextMode: params.contextMode,
+ 		deliveryContext: resolvedDeliveryContext,
+ 		storePath,
++		cfg: params.cfg,
+ 		agentRuntime: params.agentRuntime,
+ 		logger: params.logger
+ 	});
+diff -ruN /tmp/openclaw-fork-patch/base/dist/session-fork-BC-jKOPF.js /tmp/openclaw-fork-patch/patched/dist/session-fork-BC-jKOPF.js
+--- a/dist/session-fork-BC-jKOPF.js	2026-07-05 12:43:38
++++ b/dist/session-fork-BC-jKOPF.js	2026-07-05 12:43:51
+@@ -1,4 +1,5 @@
+ import { t as createLazyImportLoader } from "./lazy-promise-BONnzNfb.js";
++import { s as resolveContextTokensForModel } from "./context-CvrdNrKN.js";
+ //#region src/auto-reply/reply/session-fork.ts
+ /**
+ * Default max parent token count beyond which thread/session parent forking is skipped.
+@@ -14,8 +15,27 @@
+ 	return `Parent context is too large to fork (${params.parentTokens}/${params.maxTokens} tokens); starting with isolated context instead.`;
+ }
+ /** Decides whether parent context is small enough to fork into a child session. */
++function resolvePositiveInteger(value) {
++	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return;
++	return Math.floor(value);
++}
++function resolveParentForkMaxTokens(params) {
++	const entryContextTokens = resolvePositiveInteger(params.parentEntry?.contextTokens);
++	if (entryContextTokens !== void 0) return entryContextTokens;
++	const configDefaultContextTokens = resolvePositiveInteger(params.cfg?.agents?.defaults?.contextTokens);
++	const provider = params.parentEntry?.modelProvider ?? params.parentEntry?.providerOverride;
++	const model = params.parentEntry?.model ?? params.parentEntry?.modelOverride;
++	const modelContextTokens = provider || model ? resolvePositiveInteger(resolveContextTokensForModel({
++		cfg: params.cfg,
++		provider,
++		model,
++		fallbackContextTokens: configDefaultContextTokens ?? DEFAULT_PARENT_FORK_MAX_TOKENS,
++		allowAsyncLoad: false
++	})) : void 0;
++	return modelContextTokens ?? configDefaultContextTokens ?? DEFAULT_PARENT_FORK_MAX_TOKENS;
++}
+ async function resolveParentForkDecision(params) {
+-	const maxTokens = DEFAULT_PARENT_FORK_MAX_TOKENS;
++	const maxTokens = resolveParentForkMaxTokens(params);
+ 	const parentTokens = await resolveParentForkTokenCount({
+ 		parentEntry: params.parentEntry,
+ 		storePath: params.storePath

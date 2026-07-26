@@ -1,0 +1,14 @@
+--- a/dist/skill-workshop-prompt-Ro8fA5Wx.js
++++ b/dist/skill-workshop-prompt-Ro8fA5Wx.js
+@@ -16,8 +16,9 @@
+ 		"For `action=revise`, pass `proposal_id` when known. If it is not known, pass the proposal or skill name in `name` so `skill_workshop` can resolve the pending proposal or return candidates.",
+ 		"Use `action=list` or `action=inspect` only for pending proposal discovery/inspection. Do not use filesystem search for proposal discovery.",
+ 		"If the user names an existing live skill, read or view that skill when needed for context, but create the update proposal through `skill_workshop`.",
+-		"Generated skills are pending proposals by default. Do not apply, install, approve, enable, or write into live skills unless the user explicitly asks for that separate action.",
+-		"Use `action=apply`, `action=reject`, or `action=quarantine` only after the user explicitly asks to approve/use/apply, reject, or quarantine a specific proposal. Pass `proposal_id`; if it is not known, use `action=list` or `action=inspect` first.",
++		"When the user asks to create, add, integrate, install, wire in, enable, use, or update a skill or durable workflow, treat that as authorization to create or revise the proposal, run reasonable validation, and then apply it immediately with `action=apply` unless the user explicitly asks for proposal-only review.",
++		"Leave generated skills pending only when the user asks to draft, propose, review, or not apply yet, or when validation fails or applying is blocked.",
++		"Use `action=apply`, `action=reject`, or `action=quarantine` after the user explicitly asks for that lifecycle action, or after a create/revise/update request that authorizes live skill integration under the previous rule. Pass `proposal_id`; if it is not known, use `action=list` or `action=inspect` first.",
+ 		"Do not apply, reject, or quarantine proposals manually with filesystem operations or shell commands. Proposal lifecycle changes must use `skill_workshop`.",
+ 		"You may gather context first, but the durable proposal write or lifecycle change must use `skill_workshop`.",
+ 		""

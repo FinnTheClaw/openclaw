@@ -1,0 +1,15 @@
+diff --git a/dist/register.runtime-siVw_cvp.js b/dist/register.runtime-siVw_cvp.js
+--- a/dist/register.runtime-siVw_cvp.js
++++ b/dist/register.runtime-siVw_cvp.js
+@@
+ 	function applyAnthropicSonnet5Cost(params) {
+ 		if (!isAnthropicSonnet5Model(params.modelId)) return;
+ 		const cost = resolveAnthropicSonnet5Cost();
+-		if (params.model.cost.input === cost.input && params.model.cost.output === cost.output && params.model.cost.cacheRead === cost.cacheRead && params.model.cost.cacheWrite === cost.cacheWrite) return;
++		const currentCost = params.model.cost ?? {};
++		if (currentCost.input === cost.input && currentCost.output === cost.output && currentCost.cacheRead === cost.cacheRead && currentCost.cacheWrite === cost.cacheWrite) return;
+ 		return {
+ 			...params.model,
+ 			cost
+ 		};
+ 	}

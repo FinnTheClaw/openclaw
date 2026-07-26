@@ -1,0 +1,183 @@
+diff --git a/dist/embedded-agent-BWIVdi3c.js b/dist/embedded-agent-BWIVdi3c.js
+index 59e2c17..bb427bf 100644
+--- a/dist/embedded-agent-BWIVdi3c.js
++++ b/dist/embedded-agent-BWIVdi3c.js
+@@ -1799,7 +1799,10 @@ function createEmbeddedRunTerminalRetryState() {
+ 		compactionContinuationAttempts: 0,
+ 		compactionContinuationInstruction: null,
+ 		beforeFinalizeRevisionAttempts: 0,
+-		recoverableToolErrorContinuationAttempts: 0
++		recoverableToolErrorContinuationAttempts: 0,
++		unexpectedSilentReplyContinuationAttempts: 0,
++		settledToolContinuationAttempts: 0,
++		restrictToolsForNextAttempt: false
+ 	};
+ }
+ //#endregion
+@@ -1807,6 +1810,11 @@ function createEmbeddedRunTerminalRetryState() {
+ async function prepareAndDispatchEmbeddedRunAttempt(input) {
+ 	const { runInput, preparedRuntime, contextEngine, sessionPromptState, terminalRetryState, provider, modelId } = input;
+ 	const params = runInput.runParams;
++	const paramsForAttempt = terminalRetryState.restrictToolsForNextAttempt ? {
++		...params,
++		toolsAllow: ["read"]
++	} : params;
++	terminalRetryState.restrictToolsForNextAttempt = false;
+ 	const { workspaceResolution, workspaceDir, isCanonicalWorkspace, agentDir, resolvedSessionKey, resolvedToolResultFormat, startupStages, emitStartupStageSummary, lifecycleGeneration } = runInput;
+ 	const { fastModeAutoOnSeconds, fastModeAutoProgressState, fastModeStartedAtMs, maybeAnnounceFastModeAutoOff, notifyAgentEvent, notifyExecutionPhase, notifyRunProgress, notifyToolResult, resolveAttemptFastModeParam } = runInput.progressController;
+ 	const { laneTaskAbortController, laneTaskReleaseController, noteLaneTaskProgress } = runInput.laneController;
+@@ -1881,7 +1889,7 @@ async function prepareAndDispatchEmbeddedRunAttempt(input) {
+ 	}
+ 	return {
+ 		dispatchedAttempt: await dispatchEmbeddedRunAttempt({
+-			params,
++			params: paramsForAttempt,
+ 			runtime: {
+ 				sessionId: sessionPromptState.sessionId,
+ 				sessionFile: sessionPromptState.sessionFile,
+@@ -4936,9 +4944,29 @@ function resolveAuthProfileStateProvider(store, profileId, fallbackProvider) {
+ //#endregion
+ //#region src/agents/embedded-agent-runner/run/terminal-resolution.ts
+ const MAX_MISSING_ASSISTANT_RETRIES = 1;
++const MAX_RECOVERABLE_TOOL_ERROR_CONTINUATIONS = 2;
++const MAX_UNEXPECTED_SILENT_REPLY_CONTINUATIONS = 1;
++const MAX_SETTLED_TOOL_CONTINUATIONS = 1;
+ const COMPACTION_CONTINUATION_RETRY_INSTRUCTION = "The previous attempt compacted the conversation context before producing a final user-visible answer. Continue from the compacted transcript and produce the final answer now. Do not restart from scratch, do not repeat completed work, and do not rerun tools unless the transcript clearly lacks required evidence.";
+ const BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX = "Continue from the persisted transcript before accepting the previous final answer. This is a continuation, not a replay: completed tool calls and their side effects already happened. Apply the revision request, preserve their results, do not repeat completed work, and do not rerun tools unless the transcript proves the result is missing or the request explicitly requires another run.";
+ const RECOVERABLE_TOOL_ERROR_RETRY_PROMPT_PREFIX = "The previous tool call failed, but that failure is evidence to recover from rather than a final answer. Continue from the persisted transcript. Inspect the exact error, change the approach, and finish the original request. Do not repeat an unchanged failing command and do not replay completed side effects.";
++const UNEXPECTED_SILENT_REPLY_CONTINUATION_PROMPT = "This is a direct user request and the previous assistant response incorrectly attempted to stay silent. Continue from the persisted transcript and answer the user now. Complete any outstanding work first; do not emit NO_REPLY and do not answer with only a promise or setup sentence.";
++const SETTLED_TOOL_TERMINAL_CONTINUATION_PROMPT = "The previous assistant turn completed and verified its tool calls but stopped before producing the final user-visible answer. Continue from the persisted transcript and provide that final answer now. Do not repeat completed tool calls or restart from scratch. No mutating tools are available during this finalization; if absolutely necessary, inspect the completed result once and then answer.";
++function hasOnlyUnexpectedSilentReply(assistantTexts) {
++	const nonEmpty = (assistantTexts ?? []).map((text) => String(text ?? "").trim()).filter(Boolean);
++	return nonEmpty.length > 0 && nonEmpty.every((text) => text.toUpperCase() === SILENT_REPLY_TOKEN);
++}
++function hasSettledTerminalToolUse(attempt) {
++	const assistant = attempt.currentAttemptAssistant ?? attempt.lastAssistant;
++	if (assistant?.stopReason !== "toolUse" || !Array.isArray(assistant.content)) return false;
++	const requestedToolCallIds = assistant.content.flatMap((item) => item?.type === "toolCall" && typeof item.id === "string" ? [item.id] : []);
++	if (requestedToolCallIds.length === 0 || (attempt.itemLifecycle?.activeCount ?? 0) !== 0) return false;
++	const snapshot = attempt.messagesSnapshot ?? [];
++	const assistantIndex = snapshot.indexOf(assistant);
++	if (assistantIndex < 0) return false;
++	const completedToolCallIds = new Set(snapshot.slice(assistantIndex + 1).flatMap((message) => message?.role === "toolResult" && message.isError !== true && typeof message.toolCallId === "string" ? [message.toolCallId] : []));
++	return requestedToolCallIds.every((id) => completedToolCallIds.has(id));
++}
+ function isExternallyConsequentialToolError(toolName) {
+ 	const normalized = toolName?.trim().toLowerCase().replaceAll("-", "_") ?? "";
+ 	return /^(?:message|sessions_send|email|mail|cron|whatsapp|signal)$/.test(normalized);
+@@ -5005,14 +5033,40 @@ async function resolveEmbeddedRunTerminal(input) {
+ 		log$1.warn(`empty response detected: runId=${runParams.runId} sessionId=${runParams.sessionId} provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — retrying ${retryState.emptyResponseAttempts}/${input.maxEmptyResponseRetryAttempts} with visible-answer continuation`);
+ 		return { action: "retry" };
+ 	}
+-	if (attempt.lastToolError && attempt.toolMetas.at(-1)?.isError === true && !input.finalAssistantVisibleText?.trim() && !isExternallyConsequentialToolError(attempt.lastToolError.toolName) && !input.terminalAborted && !input.terminalTimedOut && !input.terminalInterrupted && !input.promptError && !attempt.clientToolCalls && !attempt.yieldDetected && !attempt.didSendDeterministicApprovalPrompt && retryState.recoverableToolErrorContinuationAttempts < 8) {
++	const unexpectedSilentReply = runParams.silentExpected !== true && runParams.allowEmptyAssistantReplyAsSilent !== true && hasOnlyUnexpectedSilentReply(attempt.assistantTexts);
++	if (unexpectedSilentReply && retryState.unexpectedSilentReplyContinuationAttempts < MAX_UNEXPECTED_SILENT_REPLY_CONTINUATIONS && !input.terminalAborted && !input.terminalTimedOut && !input.terminalInterrupted && !input.promptError && !attempt.clientToolCalls && !attempt.yieldDetected && !attempt.didSendDeterministicApprovalPrompt) {
++		retryState.unexpectedSilentReplyContinuationAttempts += 1;
++		input.activateInternalPrompt(UNEXPECTED_SILENT_REPLY_CONTINUATION_PROMPT, true);
++		log$1.warn(`unexpected silent reply on direct turn: runId=${runParams.runId} sessionId=${runParams.sessionId} provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — continuing ${retryState.unexpectedSilentReplyContinuationAttempts}/${MAX_UNEXPECTED_SILENT_REPLY_CONTINUATIONS} with visible-answer requirement`);
++		return { action: "retry" };
++	}
++	if (attempt.lastToolError && attempt.toolMetas.at(-1)?.isError === true && !input.finalAssistantVisibleText?.trim() && !isExternallyConsequentialToolError(attempt.lastToolError.toolName) && !input.terminalAborted && !input.terminalTimedOut && !input.terminalInterrupted && !input.promptError && !attempt.clientToolCalls && !attempt.yieldDetected && !attempt.didSendDeterministicApprovalPrompt && retryState.recoverableToolErrorContinuationAttempts < MAX_RECOVERABLE_TOOL_ERROR_CONTINUATIONS) {
+ 		retryState.recoverableToolErrorContinuationAttempts += 1;
+ 		const detail = attempt.lastToolError.error ? `\n\nTool error: ${attempt.lastToolError.error}` : "";
+ 		input.activateInternalPrompt(`${RECOVERABLE_TOOL_ERROR_RETRY_PROMPT_PREFIX}${detail}`, true);
+ 		retryState.compactionContinuationInstruction = null;
+-		log$1.warn(`recoverable tool error requested one more pass: runId=${runParams.runId} sessionId=${runParams.sessionId} tool=${attempt.lastToolError.toolName ?? "unknown"} attempt=${retryState.recoverableToolErrorContinuationAttempts}/8`);
++		log$1.warn(`recoverable tool error requested one more pass: runId=${runParams.runId} sessionId=${runParams.sessionId} tool=${attempt.lastToolError.toolName ?? "unknown"} attempt=${retryState.recoverableToolErrorContinuationAttempts}/${MAX_RECOVERABLE_TOOL_ERROR_CONTINUATIONS}`);
++		return { action: "retry" };
++	}
++	const canContinueSettledToolUse = !emptyAssistantReplyIsSilent && retryState.settledToolContinuationAttempts < MAX_SETTLED_TOOL_CONTINUATIONS && !input.terminalAborted && !input.terminalTimedOut && !input.terminalInterrupted && !input.promptError && !attempt.lastToolError && !attempt.clientToolCalls && !attempt.yieldDetected && !attempt.didSendDeterministicApprovalPrompt && !hasAttemptTerminalState(attempt) && hasSettledTerminalToolUse(attempt);
++	if (canContinueSettledToolUse) {
++		retryState.settledToolContinuationAttempts += 1;
++		retryState.restrictToolsForNextAttempt = true;
++		input.activateInternalPrompt(SETTLED_TOOL_TERMINAL_CONTINUATION_PROMPT, true);
++		retryState.compactionContinuationInstruction = null;
++		log$1.warn(`settled post-tool turn lacked a final answer: runId=${runParams.runId} sessionId=${runParams.sessionId} provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — continuing ${retryState.settledToolContinuationAttempts}/${MAX_SETTLED_TOOL_CONTINUATIONS} from completed tool results with read-only tools`);
+ 		return { action: "retry" };
+ 	}
++	if (unexpectedSilentReply) {
++		log$1.warn(`unexpected silent reply retries exhausted: runId=${runParams.runId} sessionId=${runParams.sessionId} provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — surfacing visible incomplete-turn error`);
++		return surfaceIncompleteTurn({
++			...input,
++			text: "⚠️ Agent repeatedly attempted a silent reply to a direct user request. The turn was stopped instead of being dropped silently.",
++			payloadCount: 0,
++			incompleteTurnFallbackSafe: false,
++			terminalToolPresentation: void 0
++		});
++	}
+ 	const incompleteTurnText = emptyAssistantReplyIsSilent ? null : resolveIncompleteTurnPayloadText({
+ 		payloadCount,
+ 		aborted: input.terminalAborted,
+diff --git a/dist/get-reply-DE2xroan.js b/dist/get-reply-DE2xroan.js
+index ba47bea..1fa9c85 100644
+--- a/dist/get-reply-DE2xroan.js
++++ b/dist/get-reply-DE2xroan.js
+@@ -3515,7 +3515,7 @@ async function runPreparedReply(params) {
+ 		extraSystemPromptStatic,
+ 		...sessionPromptSourceReplyDeliveryMode ? { sourceReplyDeliveryMode: sessionPromptSourceReplyDeliveryMode } : {}
+ 	};
+-	const silentReplyPromptMode = directChatContext || groupChatContext || sourceReplyDeliveryMode === "message_tool_only" ? "none" : "generic";
++	const silentReplyPromptMode = silentReplySettings.policy === "disallow" || directChatContext || groupChatContext || sourceReplyDeliveryMode === "message_tool_only" ? "none" : "generic";
+ 	const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
+ 	const rawBodyTrimmed = (ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "").trim();
+ 	const baseBodyTrimmedRaw = baseBody.trim();
+diff --git a/dist/selection-C50GdcQc.js b/dist/selection-C50GdcQc.js
+index 02e7222..9bea9c3 100644
+--- a/dist/selection-C50GdcQc.js
++++ b/dist/selection-C50GdcQc.js
+@@ -7902,7 +7902,7 @@ function hasAsyncStartedToolActivity$1(toolMetas) {
+ function resolveAttemptTrajectoryTerminal(params) {
+ 	if (params.promptError) return { status: "error" };
+ 	if (params.aborted && params.externalAbort || params.timedOut) return { status: "interrupted" };
+-	const hasExplicitTerminalDelivery = params.silentExpected === true || params.emptyAssistantReplyIsSilent === true || params.didSendDeterministicApprovalPrompt || hasCommittedMessagingDeliveryEvidence(params) || hasAcceptedSessionSpawn(params.acceptedSessionSpawns) || params.heartbeatToolResponse !== void 0 || (params.clientToolCalls?.length ?? 0) > 0 || params.yieldDetected === true || params.lastToolError !== void 0 || hasAsyncStartedToolActivity$1(params.toolMetas);
++	const hasExplicitTerminalDelivery = params.silentExpected === true || params.emptyAssistantReplyIsSilent === true || params.didSendDeterministicApprovalPrompt || hasCommittedMessagingDeliveryEvidence(params) || hasAcceptedSessionSpawn(params.acceptedSessionSpawns) || params.heartbeatToolResponse !== void 0 || (params.clientToolCalls?.length ?? 0) > 0 || params.yieldDetected === true || hasAsyncStartedToolActivity$1(params.toolMetas);
+ 	if (params.lastAssistantStopReason === "toolUse" && !hasExplicitTerminalDelivery) return {
+ 		status: "error",
+ 		terminalError: NON_DELIVERABLE_TERMINAL_TURN_REASON
+@@ -7952,6 +7952,28 @@ function finalizeEmbeddedAttempt(params) {
+ 		hasTerminalOutput: params.hasTerminalOutput
+ 	});
+ 	const promptError = result.promptError ? formatErrorMessage(result.promptError) : void 0;
++	trajectoryRecorder?.recordEvent("turn.terminal_decision", {
++		status: terminal.status,
++		terminalError: terminal.terminalError,
++		promptError: Boolean(result.promptError),
++		aborted: result.aborted,
++		externalAbort: result.externalAbort,
++		timedOut: result.timedOut,
++		lastAssistantStopReason: result.lastAssistant?.stopReason,
++		assistantTextCount: terminalAssistantTexts.length,
++		assistantTextChars: terminalAssistantTexts.reduce((total, text) => total + text.length, 0),
++		hasTerminalOutput: params.hasTerminalOutput,
++		lastToolError: result.lastToolError !== void 0,
++		toolCount: result.toolMetas?.length ?? 0,
++		activeToolCount: result.itemLifecycle?.activeCount ?? 0,
++		emptyAssistantReplyIsSilent: params.emptyAssistantReplyIsSilent,
++		silentExpected: params.silentExpected === true,
++		synthesizedPayloadCount: params.synthesizedPayloadCount,
++		committedMessagingDelivery: hasCommittedMessagingDeliveryEvidence(result),
++		acceptedSessionSpawnCount: result.acceptedSessionSpawns?.length ?? 0,
++		yieldDetected: result.yieldDetected === true,
++		clientToolCallCount: result.clientToolCalls?.length ?? 0
++	});
+ 	trajectoryRecorder?.recordEvent("model.completed", {
+ 		aborted: result.aborted,
+ 		externalAbort: result.externalAbort,
+@@ -8116,7 +8138,7 @@ function resolveAttemptReplayMetadata(attempt) {
+ 	return attempt.replayMetadata ?? REPLAY_UNSAFE_FALLBACK_METADATA;
+ }
+ function hasAttemptTerminalState(attempt) {
+-	return Boolean(attempt.clientToolCalls || attempt.yieldDetected || attempt.didSendDeterministicApprovalPrompt || attempt.heartbeatToolResponse || attempt.lastToolError || attempt.toolMediaUrls?.some((url) => url.trim().length > 0) || attempt.toolAudioAsVoice || attempt.toolTrustedLocalMedia || attempt.hasToolMediaBlockReply || attempt.didDeliverSourceReplyViaMessageTool || attempt.messagingToolSourceReplyPayloads?.length || hasCommittedMessagingToolDeliveryEvidence({
++	return Boolean(attempt.clientToolCalls || attempt.yieldDetected || attempt.didSendDeterministicApprovalPrompt || attempt.heartbeatToolResponse || attempt.toolMediaUrls?.some((url) => url.trim().length > 0) || attempt.toolAudioAsVoice || attempt.toolTrustedLocalMedia || attempt.hasToolMediaBlockReply || attempt.didDeliverSourceReplyViaMessageTool || attempt.messagingToolSourceReplyPayloads?.length || hasCommittedMessagingToolDeliveryEvidence({
+ 		messagingToolSentTexts: attempt.messagingToolSentTexts ?? [],
+ 		messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls ?? [],
+ 		messagingToolSentTargets: attempt.messagingToolSentTargets ?? []
+@@ -8136,7 +8158,7 @@ function resolveIncompleteTurnPayloadText(params) {
+ 		lastAssistant: assistant
+ 	});
+ 	const thinkingOnlyTerminal = params.payloadCount !== 0 && !joinAssistantTexts(params.attempt.assistantTexts).length && !hasTerminalOutput && Boolean(assistant && hasOnlyAssistantReasoningContent(assistant));
+-	if (params.payloadCount !== 0 && !incompleteTerminalAssistant && !thinkingOnlyTerminal || params.aborted && params.externalAbort || params.timedOut || params.attempt.clientToolCalls || params.attempt.yieldDetected || params.attempt.didSendDeterministicApprovalPrompt || params.attempt.lastToolError) return null;
++	if (params.payloadCount !== 0 && !incompleteTerminalAssistant && !thinkingOnlyTerminal || params.aborted && params.externalAbort || params.timedOut || params.attempt.clientToolCalls || params.attempt.yieldDetected || params.attempt.didSendDeterministicApprovalPrompt) return null;
+ 	if (hasOnlySilentAssistantReply(params.attempt.assistantTexts)) return null;
+ 	if (hasCommittedMessagingToolDeliveryEvidence(params.attempt)) return null;
+ 	if (hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns)) return null;

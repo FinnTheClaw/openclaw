@@ -1,0 +1,77 @@
+diff --git a/dist/tui-ttOZNpsl.js b/dist/tui-ttOZNpsl.js
+index 04ebae3..4ad1fe9 100644
+--- a/dist/tui-ttOZNpsl.js
++++ b/dist/tui-ttOZNpsl.js
+@@ -2851,6 +2851,7 @@ function createEventHandlers(context) {
+ 	const streamingWatchdogMs = typeof context.streamingWatchdogMs === "number" && Number.isFinite(context.streamingWatchdogMs) && context.streamingWatchdogMs >= 0 ? Math.floor(context.streamingWatchdogMs) : DEFAULT_STREAMING_WATCHDOG_MS;
+ 	let streamingWatchdogTimer = null;
+ 	let streamingWatchdogRunId = null;
++	let streamingWatchdogReconcileInFlight = false;
+ 	const flushPendingHistoryRefreshIfIdle = () => {
+ 		if (!pendingHistoryRefresh || state.activeChatRunId || state.pendingChatRunId || state.pendingOptimisticUserMessage) return;
+ 		pendingHistoryRefresh = false;
+@@ -2906,7 +2907,7 @@ function createEventHandlers(context) {
+ 		if (streamingWatchdogMs <= 0) return;
+ 		if (streamingWatchdogTimer) clearTimeout(streamingWatchdogTimer);
+ 		streamingWatchdogRunId = runId;
+-		streamingWatchdogTimer = setTimeout(() => {
++		streamingWatchdogTimer = setTimeout(async () => {
+ 			streamingWatchdogTimer = null;
+ 			if (streamingWatchdogRunId !== runId || state.activeChatRunId !== runId) return;
+ 			streamingWatchdogRunId = null;
+@@ -2920,7 +2921,19 @@ function createEventHandlers(context) {
+ 				tui.requestRender();
+ 				return;
+ 			}
++			if (!streamingWatchdogReconcileInFlight) {
++				streamingWatchdogReconcileInFlight = true;
++				try {
++					if (await reconcileWatchedRunFromHistory(runId)) return;
++				} catch {
++					// Keep the run active and retry later if canonical history is temporarily unavailable.
++				} finally {
++					streamingWatchdogReconcileInFlight = false;
++				}
++			}
++			if (state.activeChatRunId !== runId) return;
+ 			chatLog.addPendingSystem(runId, STREAMING_WATCHDOG_USER_MESSAGE);
++			armStreamingWatchdog(runId);
+ 			tui.requestRender();
+ 		}, streamingWatchdogMs);
+ 		const maybeUnref = streamingWatchdogTimer.unref;
+@@ -2997,6 +3010,25 @@ function createEventHandlers(context) {
+ 	const clearActiveRunIfMatch = (runId) => {
+ 		if (state.activeChatRunId === runId) state.activeChatRunId = null;
+ 	};
++	const reconcileWatchedRunFromHistory = async (runId) => {
++		if (!loadHistory) return false;
++		const history = await loadHistory();
++		if (state.activeChatRunId !== runId) return true;
++		const sessionStatus = typeof history?.sessionStatus === "string" ? history.sessionStatus.trim().toLowerCase() : "";
++		const terminalSession = sessionStatus === "done" || sessionStatus === "failed" || sessionStatus === "timeout" || sessionStatus === "killed" || sessionStatus === "error" || sessionStatus === "aborted";
++		if (!history?.loaded || history.inFlightRunId || !terminalSession) return false;
++		chatLog.dismissPendingSystem(runId);
++		noteFinalizedRun(runId, { displayedFinal: true });
++		clearActiveRunIfMatch(runId);
++		if (state.pendingChatRunId === runId) state.pendingChatRunId = null;
++		if (state.pendingSubmitDraft?.runId === runId) state.pendingSubmitDraft = null;
++		state.pendingOptimisticUserMessage = false;
++		setActivityStatus("idle");
++		clearStreamingWatchdog();
++		refreshSessionInfo?.();
++		tui.requestRender(true);
++		return true;
++	};
+ 	const promoteMostRecentSessionRun = () => {
+ 		if (state.activeChatRunId || sessionRuns.size === 0) return false;
+ 		let nextRunId;
+@@ -4405,7 +4437,8 @@ function createSessionActions(context) {
+ 			tui.requestRender(true);
+ 			return {
+ 				loaded: true,
+-				inFlightRunId: inFlightRunId || null
++				inFlightRunId: inFlightRunId || null,
++				sessionStatus: typeof sessionInfo?.status === "string" ? sessionInfo.status : null
+ 			};
+ 		} catch (err) {
+ 			chatLog.addSystem(`history failed: ${String(err)}`);

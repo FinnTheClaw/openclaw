@@ -1,0 +1,69 @@
+diff --git a/dist/compaction-successor-transcript-ONv2lneO.js b/dist/compaction-successor-transcript-ONv2lneO.js
+--- a/dist/compaction-successor-transcript-ONv2lneO.js
++++ b/dist/compaction-successor-transcript-ONv2lneO.js
+@@ -1507,6 +1507,13 @@
+ 	if (!message || message.role !== "assistant") return false;
+ 	return isTranscriptOnlyOpenClawAssistantModel(normalizeOptionalString(message.provider) ?? "", normalizeOptionalString(message.model) ?? "");
+ }
++function isEmptyTerminalAssistantMessage(message, toolCallCount) {
++	if (!message || message.role !== "assistant" || toolCallCount > 0) return false;
++	const stopReason = normalizeOptionalString(message.stopReason);
++	if (!stopReason || !["stop", "end_turn", "completed"].includes(stopReason)) return false;
++	const content = message.content;
++	return Array.isArray(content) && content.length === 0;
++}
+ function installSessionToolResultGuard(sessionManager, opts) {
+ 	const originalAppend = getRawSessionAppendMessage(sessionManager);
+ 	setRawSessionAppendMessage(sessionManager, originalAppend);
+@@ -1619,7 +1626,7 @@
+ 			return;
+ 		}
+ 		const { entryId: result, messageSeq, sessionFile } = appendMessageAndCacheTranscriptSeq(finalMessage);
+-		if (sessionFile) emitSessionTranscriptUpdate({
++		if (sessionFile && !isEmptyTerminalAssistantMessage(finalMessage, toolCalls.length)) emitSessionTranscriptUpdate({
+ 			sessionFile,
+ 			sessionKey: opts?.sessionKey,
+ 			...opts?.agentId ? { agentId: opts.agentId } : {},
+diff --git a/dist/selection-BP0T9R9I.js b/dist/selection-BP0T9R9I.js
+--- a/dist/selection-BP0T9R9I.js
++++ b/dist/selection-BP0T9R9I.js
+@@ -3689,6 +3689,13 @@
+ 	const model = normalizeOptionalString(message.model) ?? "";
+ 	return provider === "openclaw" && (model === "delivery-mirror" || model === "gateway-injected");
+ }
++function isEmptyTerminalAssistantMessage(message) {
++	if (!message || message.role !== "assistant") return false;
++	const stopReason = normalizeOptionalString(message.stopReason);
++	if (!stopReason || !["stop", "end_turn", "completed"].includes(stopReason)) return false;
++	const content = message.content;
++	return Array.isArray(content) && content.length === 0;
++}
+ function isOpenAiResponsesAssistantMessage(message) {
+ 	if (!message || message.role !== "assistant") return false;
+ 	const api = normalizeOptionalString(message.api) ?? "";
+@@ -3934,14 +3941,14 @@
+ /** Handles assistant message-start boundaries for streaming state. */
+ function handleMessageStart(ctx, evt) {
+ 	const msg = evt.message;
+-	if (msg?.role !== "assistant" || isTranscriptOnlyOpenClawAssistantMessage(msg)) return;
++	if (msg?.role !== "assistant" || isTranscriptOnlyOpenClawAssistantMessage(msg) || isEmptyTerminalAssistantMessage(msg)) return;
+ 	ctx.resetAssistantMessageState(ctx.state.assistantTexts.length);
+ 	ctx.params.onAssistantMessageStart?.();
+ }
+ /** Handles assistant message deltas, reasoning, directives, and block replies. */
+ function handleMessageUpdate(ctx, evt) {
+ 	const msg = evt.message;
+-	if (msg?.role !== "assistant" || isTranscriptOnlyOpenClawAssistantMessage(msg)) return;
++	if (msg?.role !== "assistant" || isTranscriptOnlyOpenClawAssistantMessage(msg) || isEmptyTerminalAssistantMessage(msg)) return;
+ 	ctx.noteLastAssistant(msg);
+ 	if (shouldSuppressAssistantVisibleOutput(msg)) return;
+ 	const suppressDeterministicApprovalOutput = shouldSuppressDeterministicApprovalOutput(ctx.state);
+@@ -4138,7 +4145,7 @@
+ /** Handles assistant message-end finalization, block flush, and usage commit. */
+ function handleMessageEnd(ctx, evt) {
+ 	const msg = evt.message;
+-	if (msg?.role !== "assistant" || isTranscriptOnlyOpenClawAssistantMessage(msg)) return;
++	if (msg?.role !== "assistant" || isTranscriptOnlyOpenClawAssistantMessage(msg) || isEmptyTerminalAssistantMessage(msg)) return;
+ 	const assistantMessage = msg;
+ 	const assistantPhase = resolveAssistantMessagePhase(assistantMessage);
+ 	const suppressVisibleAssistantOutput = shouldSuppressAssistantVisibleOutput(assistantMessage);

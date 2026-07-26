@@ -1,0 +1,166 @@
+diff --git a/dist/bash-process-registry-17q1dHVV.js b/dist/bash-process-registry-17q1dHVV.js
+index c62fd14..301a8ff 100644
+--- a/dist/bash-process-registry-17q1dHVV.js
++++ b/dist/bash-process-registry-17q1dHVV.js
+@@ -223,12 +223,18 @@ function markExited(session, exitCode, exitSignal, status, exitReason, noOutputT
+ 	session.exitSignal = exitSignal;
+ 	session.exitReason = exitReason;
+ 	session.noOutputTimedOut = noOutputTimedOut;
++	session.status = status;
+ 	session.tail = tail(session.aggregated, 2e3);
+ 	moveToFinished(session, status);
+ }
+ /** Marks a running session as reconnectable after the exec call returns. */
+ function markBackgrounded(session) {
+ 	session.backgrounded = true;
++	if (session.exited) {
++		moveToFinished(session, session.status ?? "failed");
++		return;
++	}
++	activeBackgroundExecSessionIds.add(session.id);
+ }
+ function moveToFinished(session, status) {
+ 	runningSessions.delete(session.id);
+diff --git a/dist/embedded-agent-DGUuxGR2.js b/dist/embedded-agent-DGUuxGR2.js
+index 83422a1..360e7f6 100644
+--- a/dist/embedded-agent-DGUuxGR2.js
++++ b/dist/embedded-agent-DGUuxGR2.js
+@@ -1800,7 +1800,7 @@ function hasSettledTerminalToolUse(attempt) {
+ const COMPACTION_CONTINUATION_RETRY_INSTRUCTION = "The previous attempt compacted the conversation context before producing a final user-visible answer. Continue from the compacted transcript and produce the final answer now. Do not restart from scratch, do not repeat completed work, and do not rerun tools unless the transcript clearly lacks required evidence.";
+ const NO_REAL_CONVERSATION_MESSAGES_REASON = "no real conversation messages";
+ const BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX = "Before accepting the previous final answer, apply this revision request and produce the revised final answer. Do not repeat completed work or rerun tools unless the request explicitly requires it.";
+-const MAX_BEFORE_AGENT_FINALIZE_REVISIONS = 3;
++const MAX_BEFORE_AGENT_FINALIZE_REVISIONS = 5;
+ function isNoRealConversationCompactionNoop(params) {
+ 	return params.ok === true && params.compacted === false && params.reason === NO_REAL_CONVERSATION_MESSAGES_REASON;
+ }
+@@ -4539,6 +4539,58 @@ async function runEmbeddedAgentInternal(paramsInput) {
+ 					}
+ 					const beforeAgentFinalizeRevisionReason = attempt.beforeAgentFinalizeRevisionReason;
+ 					const shouldHonorBeforeAgentFinalizeRevision = !aborted && !promptError && !timedOut && !attempt.clientToolCalls && !attempt.yieldDetected && !emptyAssistantReplyIsSilent;
++					if (beforeAgentFinalizeRevisionReason && beforeAgentFinalizeRevisionAttempts >= MAX_BEFORE_AGENT_FINALIZE_REVISIONS) {
++						const incompletePayloadText = "⚠️ Agent repeatedly stopped before completing the request. The unfinished turn was not accepted as success; completed tool actions were preserved.";
++						const replayInvalid = resolveReplayInvalidForAttempt(incompletePayloadText);
++						const livenessState = resolveRunLivenessState({
++							payloadCount: 0,
++							aborted,
++							timedOut,
++							attempt,
++							incompleteTurnText: incompletePayloadText
++						});
++						setTerminalLifecycleMeta({
++							replayInvalid,
++							livenessState
++						});
++						log$1.warn(`before_agent_finalize revisions exhausted: runId=${params.runId} sessionId=${params.sessionId} attempts=${beforeAgentFinalizeRevisionAttempts}/${MAX_BEFORE_AGENT_FINALIZE_REVISIONS} — surfacing incomplete-turn error`);
++						return {
++							payloads: [{
++								text: incompletePayloadText,
++								isError: true
++							}],
++							meta: {
++								durationMs: Date.now() - started,
++								agentMeta,
++								aborted,
++								systemPromptReport: attempt.systemPromptReport,
++								finalPromptText: attempt.finalPromptText,
++								finalAssistantVisibleText,
++								finalAssistantRawText,
++								replayInvalid,
++								livenessState,
++								error: {
++									kind: "incomplete_turn",
++									message: "Agent repeatedly stopped before completing the request.",
++									fallbackSafe: false,
++									terminalPresentation: false
++								},
++								toolSummary: attemptToolSummary,
++								...failureSignal ? { failureSignal } : {},
++								agentHarnessResultClassification: attempt.agentHarnessResultClassification
++							},
++							didSendViaMessagingTool: attempt.didSendViaMessagingTool,
++							didDeliverSourceReplyViaMessageTool: attempt.didDeliverSourceReplyViaMessageTool === true,
++							didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
++							messagingToolSentTexts: attempt.messagingToolSentTexts,
++							messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
++							messagingToolSentTargets: attempt.messagingToolSentTargets,
++							messagingToolSourceReplyPayloads: attempt.messagingToolSourceReplyPayloads,
++							heartbeatToolResponse: attempt.heartbeatToolResponse,
++							successfulCronAdds: attempt.successfulCronAdds,
++							acceptedSessionSpawns: attempt.acceptedSessionSpawns
++						};
++					}
+ 					if (beforeAgentFinalizeRevisionReason && shouldHonorBeforeAgentFinalizeRevision) {
+ 						beforeAgentFinalizeRevisionAttempts += 1;
+ 						nextAttemptPromptOverride = buildBeforeAgentFinalizeRetryPrompt(beforeAgentFinalizeRevisionReason);
+diff --git a/dist/lifecycle-hook-helpers-BwL6869q.js b/dist/lifecycle-hook-helpers-BwL6869q.js
+index b0e3fa5..1ddb04c 100644
+--- a/dist/lifecycle-hook-helpers-BwL6869q.js
++++ b/dist/lifecycle-hook-helpers-BwL6869q.js
+@@ -135,6 +135,7 @@ function normalizeBeforeAgentFinalizeResult(result, event) {
+ 		const retryCandidates = readBeforeAgentFinalizeRetryCandidates(result);
+ 		if (retryCandidates.length > 0) {
+ 			const reason = normalizeOptionalString(result.reason);
++			let exhaustedReason;
+ 			for (const retry of retryCandidates) {
+ 				const retryInstruction = normalizeOptionalString(retry.instruction);
+ 				if (!retryInstruction) continue;
+@@ -149,12 +150,19 @@ function normalizeBeforeAgentFinalizeResult(result, event) {
+ 				budget.delete(retryRunId);
+ 				budget.set(retryRunId, runBudget);
+ 				pruneFinalizeRetryBudget(budget);
+-				if (nextCount > maxAttempts) continue;
++				if (nextCount > maxAttempts) {
++					exhaustedReason ??= reason ?? retryInstruction;
++					continue;
++				}
+ 				return {
+ 					action: "revise",
+ 					reason: reason && reason.includes(retryInstruction) ? reason : [reason, retryInstruction].filter(Boolean).join("\n\n")
+ 				};
+ 			}
++			if (exhaustedReason) return {
++				action: "exhausted",
++				reason: exhaustedReason
++			};
+ 			return { action: "continue" };
+ 		}
+ 		const reason = normalizeOptionalString(result.reason);
+diff --git a/dist/selection-JInn13lc.js b/dist/selection-JInn13lc.js
+index e59eedb..e3fa73d 100644
+--- a/dist/selection-JInn13lc.js
++++ b/dist/selection-JInn13lc.js
+@@ -13333,11 +13333,6 @@ async function runEmbeddedAttempt(params) {
+ 					model: params.modelId,
+ 					assistant: lastAssistant
+ 				});
+-				const maxRevisionAttempts = params.maxBeforeAgentFinalizeRevisions ?? 0;
+-				if (maxRevisionAttempts > 0 && (params.beforeAgentFinalizeRevisionAttempts ?? 0) >= maxRevisionAttempts) {
+-					log$2.warn(`before_agent_finalize revision limit reached; finalizing runId=${params.runId} sessionId=${params.sessionId} attempts=${params.beforeAgentFinalizeRevisionAttempts ?? 0}/${maxRevisionAttempts}`);
+-					return;
+-				}
+ 				const outcome = await runAgentHarnessBeforeAgentFinalizeHook({
+ 					event: {
+ 						runId: params.runId,
+@@ -13371,11 +13366,20 @@ async function runEmbeddedAttempt(params) {
+ 					},
+ 					hookRunner
+ 				});
+-				if (outcome.action !== "revise") return;
++				if (outcome.action !== "revise" && outcome.action !== "exhausted") return;
+ 				if (event.hadDeterministicSideEffect) {
+ 					log$2.warn(`before_agent_finalize requested bounded continuation after potential side effects; continuing from the current transcript without replaying the original prompt runId=${params.runId} sessionId=${params.sessionId}`);
+ 				}
+ 				beforeAgentFinalizeRevisionReason = outcome.reason;
++				if (outcome.action === "exhausted") {
++					log$2.warn(`before_agent_finalize retry metadata exhausted; refusing unfinished success runId=${params.runId} sessionId=${params.sessionId} attempts=${params.beforeAgentFinalizeRevisionAttempts ?? 0}`);
++					return { suppressTerminalDelivery: true };
++				}
++				const maxRevisionAttempts = params.maxBeforeAgentFinalizeRevisions ?? 0;
++				if (maxRevisionAttempts > 0 && (params.beforeAgentFinalizeRevisionAttempts ?? 0) >= maxRevisionAttempts) {
++					log$2.warn(`before_agent_finalize revision limit reached; refusing unfinished success runId=${params.runId} sessionId=${params.sessionId} attempts=${params.beforeAgentFinalizeRevisionAttempts ?? 0}/${maxRevisionAttempts}`);
++					return { suppressTerminalDelivery: true };
++				}
+ 				return { suppressTerminalDelivery: true };
+ 			} : void 0;
+ 			let toolMetasForTerminal = [];

@@ -1,0 +1,236 @@
+--- a/dist/dispatch-DO0Fpkbp.js
++++ b/dist/dispatch-DO0Fpkbp.js
+@@ -742,7 +742,7 @@
+ 		if (!dispatchOperationSessionKey) return { status: "ready" };
+ 		let operationSessionId = dispatchAbortOperation?.sessionId ?? initialSessionStoreEntry.entry?.sessionId ?? sessionStoreEntry.entry?.sessionId ?? crypto.randomUUID();
+ 		const replyTurnKind = resolveReplyTurnKind(params.replyOptions);
+-		const allowActivePreDispatch = phase === "pre_dispatch" && replyTurnKind === "visible";
++		const allowActiveVisibleTurnBypass = replyTurnKind === "visible" && (phase === "pre_dispatch" || phase === "dispatch");
+ 		const allowSlackRoutedThreadBypass = phase === "dispatch" && shouldLetSlackRoutedThreadBypassBusyReplyOperation({
+ 			activeOperation: replyRunRegistry.get(dispatchOperationSessionKey),
+ 			ctx,
+@@ -763,7 +763,7 @@
+ 			resetTriggered: false,
+ 			routeThreadId,
+ 			upstreamAbortSignal: params.replyOptions?.abortSignal,
+-			waitForActive: !allowActivePreDispatch && !allowSlackRoutedThreadBypass,
++			waitForActive: !allowActiveVisibleTurnBypass && !allowSlackRoutedThreadBypass,
+ 			...shouldRecoverStaleVisibleOperation ? { waitTimeoutMs: visibleReplyRecoveryWaitMs } : {}
+ 		});
+ 		if (shouldRecoverStaleVisibleOperation) while (admission.status === "skipped" && admission.reason === "active-run" && admission.activeOperation) {
+@@ -790,7 +790,7 @@
+ 			});
+ 		}
+ 		if (admission.status === "skipped") {
+-			if (allowActivePreDispatch && admission.reason === "active-run") {
++			if (allowActiveVisibleTurnBypass && admission.reason === "active-run") {
+ 				preDispatchAbortOperation = admission.activeOperation;
+ 				return { status: "ready" };
+ 			}
+--- a/dist/notification-correlation-x98jecIj.js
++++ b/dist/notification-correlation-x98jecIj.js
+@@ -9,6 +9,10 @@
+ 	else lines.push(`Models: ${formatCodexDisplayText(probes.models.error)}`);
+ 	lines.push(`Account: ${probes.account.ok ? formatCodexAccountSummary(probes.account.value) : formatCodexDisplayText(probes.account.error)}`);
+ 	lines.push(`Rate limits: ${probes.limits.ok ? formatCodexRateLimitSummary(probes.limits.value) : formatCodexDisplayText(probes.limits.error)}`);
++	if (probes.limits.ok) {
++		const usage = formatCodexUsageSummary(probes.limits.value);
++		if (usage) lines.push(`Usage: ${usage}`);
++	}
+ 	lines.push(`MCP servers: ${probes.mcps.ok ? summarizeArrayLike(probes.mcps.value) : formatCodexDisplayText(probes.mcps.error)}`);
+ 	lines.push(`Skills: ${probes.skills.ok ? summarizeCodexSkills(probes.skills.value) : formatCodexDisplayText(probes.skills.error)}`);
+ 	return lines.join("\n");
+@@ -228,6 +232,97 @@
+ 	if (!lines) return formatCodexDisplayText(hasCodexRateLimitSnapshots(value) ? "none returned" : summarizeRateLimits(value));
+ 	return lines.map(formatCodexDisplayText).join("\n");
+ }
++function formatCodexUsageSummary(value) {
++	const snapshot = selectCodexUsageSnapshotForStatus(value);
++	if (!snapshot) return;
++	const entries = [
++		["primary", snapshot.primary],
++		["secondary", snapshot.secondary]
++	].flatMap(([key, window]) => isJsonObject(window) ? [{
++		key,
++		window
++	}] : []);
++	const formatted = entries.map((entry) => formatCodexUsageWindowForStatus(entry, entries)).filter((line) => Boolean(line));
++	return formatted.length > 0 ? formatCodexDisplayText(formatted.join(" · ")) : void 0;
++}
++function selectCodexUsageSnapshotForStatus(value) {
++	const snapshots = collectCodexUsageSnapshotsForStatus(value);
++	return snapshots.find((snapshot) => {
++		const id = readString$1(snapshot, "limitId") ?? readString$1(snapshot, "limit_id");
++		return !id || id === "codex";
++	}) ?? snapshots[0];
++}
++function collectCodexUsageSnapshotsForStatus(value, snapshots = [], seen = /* @__PURE__ */ new Set()) {
++	if (Array.isArray(value)) {
++		for (const entry of value) collectCodexUsageSnapshotsForStatus(entry, snapshots, seen);
++		return snapshots;
++	}
++	if (!isJsonObject(value)) return snapshots;
++	if (isJsonObject(value.primary) || isJsonObject(value.secondary) || value.limitId !== void 0 || value.limit_id !== void 0) {
++		const signature = [
++			readString$1(value, "limitId") ?? readString$1(value, "limit_id") ?? "",
++			JSON.stringify(value.primary ?? null),
++			JSON.stringify(value.secondary ?? null)
++		].join("|");
++		if (!seen.has(signature)) {
++			seen.add(signature);
++			snapshots.push(value);
++		}
++		return snapshots;
++	}
++	for (const key of ["rateLimitsByLimitId", "rate_limits_by_limit_id"]) {
++		const nested = value[key];
++		if (isJsonObject(nested)) for (const nestedKey of Object.keys(nested).sort((left, right) => left === "codex" ? -1 : right === "codex" ? 1 : left.localeCompare(right))) collectCodexUsageSnapshotsForStatus(nested[nestedKey], snapshots, seen);
++	}
++	for (const key of ["rateLimits", "rate_limits", "data", "items"]) collectCodexUsageSnapshotsForStatus(value[key], snapshots, seen);
++	return snapshots;
++}
++function formatCodexUsageWindowForStatus(entry, entries) {
++	const usedPercent = readCodexStatusNumber(entry.window, "usedPercent", "used_percent");
++	const resetsAt = readCodexStatusNumber(entry.window, "resetsAt", "resets_at");
++	const resetsAtMs = normalizeCodexStatusEpochMs(resetsAt);
++	const resetSuffix = resetsAtMs && resetsAtMs > Date.now() ? ` ⏱${formatCodexStatusResetDuration(resetsAtMs - Date.now())}` : "";
++	const remaining = usedPercent === void 0 ? "usage unknown" : `${Math.max(0, 100 - Math.round(usedPercent))}% left`;
++	return `${formatCodexStatusWindowLabel(entry, entries)} ${remaining}${resetSuffix}`;
++}
++function formatCodexStatusWindowLabel(entry, entries) {
++	const minutes = readCodexStatusNumber(entry.window, "windowDurationMins", "window_duration_mins", "windowMinutes", "window_minutes");
++	if (minutes === 10080 || entry.key === "secondary" && hasCodexStatusWeeklyResetCadence(entry, entries)) return "Week";
++	if (minutes === 1440) return "Day";
++	if (minutes !== void 0 && minutes > 0 && minutes < 1440) return minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
++	if (minutes !== void 0 && minutes > 0 && minutes % 1440 === 0) return `${minutes / 1440}d`;
++	if (minutes !== void 0 && minutes > 0 && minutes % 60 === 0) return `${minutes / 60}h`;
++	return entry.key === "primary" ? "Short" : "Long";
++}
++function hasCodexStatusWeeklyResetCadence(entry, entries) {
++	const resetsAtMs = normalizeCodexStatusEpochMs(readCodexStatusNumber(entry.window, "resetsAt", "resets_at"));
++	if (!resetsAtMs) return false;
++	const others = entries.filter((candidate) => candidate !== entry).map((candidate) => normalizeCodexStatusEpochMs(readCodexStatusNumber(candidate.window, "resetsAt", "resets_at"))).filter((value) => Boolean(value));
++	return others.some((value) => Math.abs(resetsAtMs - value) >= 3 * 24 * 60 * 60 * 1e3);
++}
++function readCodexStatusNumber(record, ...keys) {
++	if (!isJsonObject(record)) return;
++	for (const key of keys) {
++		const value = record[key];
++		if (typeof value === "number" && Number.isFinite(value)) return value;
++		if (typeof value === "string" && value.trim()) {
++			const parsed = Number(value);
++			if (Number.isFinite(parsed)) return parsed;
++		}
++	}
++}
++function normalizeCodexStatusEpochMs(value) {
++	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return;
++	return value > 864e13 ? void 0 : value > 1e12 ? value : value * 1e3;
++}
++function formatCodexStatusResetDuration(ms) {
++	const totalMinutes = Math.max(1, Math.round(ms / 6e4));
++	if (totalMinutes < 60) return `${totalMinutes}m`;
++	const totalHours = Math.round(totalMinutes / 60);
++	if (totalHours < 24) return `${totalHours}h`;
++	const days = Math.round(totalHours / 24);
++	return `${days}d`;
++}
+ function summarizeRateLimits(value) {
+ 	const entries = extractArray(value);
+ 	if (entries.length > 0) {
+--- a/dist/openai-completions-DObeyZ3K.js
++++ b/dist/openai-completions-DObeyZ3K.js
+@@ -710,23 +710,25 @@
+ 	} else if (hasToolHistory(context.messages)) params.tools = [];
+ 	if (cacheControl) applyAnthropicCacheControl(messages, params.tools, cacheControl);
+ 	if (options?.toolChoice) params.tool_choice = options.toolChoice;
+-	if (compat.thinkingFormat === "zai" && model.reasoning) params.enable_thinking = Boolean(options?.reasoningEffort);
+-	else if (compat.thinkingFormat === "qwen" && model.reasoning) params.enable_thinking = Boolean(options?.reasoningEffort);
++	if (compat.thinkingFormat === "zai" && model.reasoning) params.enable_thinking = reasoningEffortEnablesThinking(options?.reasoningEffort);
++	else if (compat.thinkingFormat === "qwen" && model.reasoning) params.enable_thinking = reasoningEffortEnablesThinking(options?.reasoningEffort);
+ 	else if (compat.thinkingFormat === "qwen-chat-template" && model.reasoning) params.chat_template_kwargs = {
+-		enable_thinking: Boolean(options?.reasoningEffort),
++		enable_thinking: reasoningEffortEnablesThinking(options?.reasoningEffort),
+ 		preserve_thinking: true
+ 	};
+ 	else if (compat.thinkingFormat === "deepseek" && model.reasoning) {
+-		params.thinking = { type: options?.reasoningEffort ? "enabled" : "disabled" };
+-		if (options?.reasoningEffort) params.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
++		const thinkingEnabled = reasoningEffortEnablesThinking(options?.reasoningEffort);
++		params.thinking = { type: thinkingEnabled ? "enabled" : "disabled" };
++		if (thinkingEnabled && options?.reasoningEffort) params.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
+ 	} else if (compat.thinkingFormat === "openrouter" && model.reasoning) {
+ 		const openRouterParams = params;
+ 		if (options?.reasoningEffort) openRouterParams.reasoning = { effort: model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort };
+ 		else if (model.thinkingLevelMap?.off !== null) openRouterParams.reasoning = { effort: model.thinkingLevelMap?.off ?? "none" };
+ 	} else if (compat.thinkingFormat === "together" && model.reasoning) {
+ 		const togetherParams = params;
+-		togetherParams.reasoning = { enabled: Boolean(options?.reasoningEffort) };
+-		if (options?.reasoningEffort && compat.supportsReasoningEffort) togetherParams.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
++		const thinkingEnabled = reasoningEffortEnablesThinking(options?.reasoningEffort);
++		togetherParams.reasoning = { enabled: thinkingEnabled };
++		if (thinkingEnabled && options?.reasoningEffort && compat.supportsReasoningEffort) togetherParams.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
+ 	} else if (options?.reasoningEffort && model.reasoning && compat.supportsReasoningEffort) params.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
+ 	else if (!options?.reasoningEffort && model.reasoning && compat.supportsReasoningEffort) {
+ 		const offValue = model.thinkingLevelMap?.off;
+@@ -743,6 +745,9 @@
+ 		}
+ 	}
+ 	return params;
++}
++function reasoningEffortEnablesThinking(reasoningEffort) {
++	return Boolean(reasoningEffort && reasoningEffort !== "off");
+ }
+ function clampOpenAICompletionsMaxTokens(model, requestedMaxTokens) {
+ 	const modelMaxTokens = typeof model.maxTokens === "number" && Number.isFinite(model.maxTokens) && model.maxTokens > 0 ? Math.floor(model.maxTokens) : void 0;
+--- a/dist/status-text-B8Mjm64n.js
++++ b/dist/status-text-B8Mjm64n.js
+@@ -5,6 +5,7 @@
+ import { r as resolveProviderIdForAuth } from "./provider-auth-aliases-BNZrcvHv.js";
+ import { i as listOpenAIAuthProfileProvidersForAgentRuntime } from "./openai-routing-DXJmS9CT.js";
+ import { n as ensureAuthProfileStore } from "./store-C8spD0DG.js";
++import { i as resolveAuthProfileOrder } from "./order-CdBVYd7c.js";
+ import { t as CODEX_APP_SERVER_AUTH_MARKER } from "./model-auth-markers-Sq8HdQFX.js";
+ import { c as resolveDefaultModelForAgent } from "./model-selection-CA_65iXi.js";
+ import { n as formatTaskStatusDetail, r as formatTaskStatusTitle, t as buildTaskStatusSnapshot } from "./task-status-Cy2RAZFL.js";
+@@ -67,17 +68,25 @@
+ }
+ function resolveCodexSyntheticUsageAuthProfileId(params) {
+ 	const normalizedProfileId = params.profileId?.trim();
+-	if (!normalizedProfileId) return;
+ 	try {
+-		const credential = ensureAuthProfileStore(params.agentDir, {
++		const store = ensureAuthProfileStore(params.agentDir, {
+ 			allowKeychainPrompt: false,
+ 			config: params.cfg,
+ 			readOnly: true,
+ 			syncExternalCli: false
+-		}).profiles[normalizedProfileId];
+-		if (!credential) return;
+-		const credentialProvider = normalizeOptionalLowercaseString(credential.provider);
+-		return resolveProviderIdForAuth(credential.provider, { config: params.cfg }) === "openai" || credentialProvider === "openai-codex" || credentialProvider === "codex-cli" ? normalizedProfileId : void 0;
++		});
++		const candidates = normalizedProfileId ? [normalizedProfileId] : resolveAuthProfileOrder({
++			cfg: params.cfg,
++			store,
++			provider: "openai"
++		});
++		for (const profileId of candidates) {
++			const credential = store.profiles[profileId];
++			if (!credential || credential.type !== "oauth" && credential.type !== "token") continue;
++			const credentialProvider = normalizeOptionalLowercaseString(credential.provider);
++			if (resolveProviderIdForAuth(credential.provider, { config: params.cfg }) === "openai" || credentialProvider === "openai-codex" || credentialProvider === "codex-cli") return profileId;
++		}
++		return;
+ 	} catch {
+ 		return;
+ 	}
+@@ -205,7 +214,7 @@
+ 	const useCodexSyntheticUsage = shouldUseCodexSyntheticUsage({
+ 		provider: activeStatusProvider,
+ 		effectiveHarness
+-	}) && (selectedUsageCredentialType === "oauth" || selectedUsageCredentialType === "token");
++	});
+ 	const codexUsageAuthProfileId = useCodexSyntheticUsage ? resolveCodexSyntheticUsageAuthProfileId({
+ 		profileId: sessionEntry?.authProfileOverride,
+ 		cfg,

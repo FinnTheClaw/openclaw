@@ -1,0 +1,241 @@
+--- a/dist/send-hICEM6a-.js	2026-07-01 02:54:53
++++ b/dist/send-hICEM6a-.js	2026-07-01 02:54:52
+@@ -1,3 +1,6 @@
++import { existsSync, readFileSync } from "node:fs";
++import { homedir } from "node:os";
++import { join } from "node:path";
+ import { a as normalizeLowercaseStringOrEmpty, c as normalizeOptionalString } from "./string-coerce-mnp54Vah.js";
+ import { l as normalizeE164 } from "./utils-CCC-BEJH.js";
+ import { n as normalizeAccountId } from "./account-id-Df9e41E6.js";
+@@ -476,6 +479,48 @@
+ 		results,
+ 		kind: params.kind
+ 	});
++}
++function normalizeSignalReplyTimestamp(value) {
++	const trimmed = normalizeOptionalString(value) ?? "";
++	const match = /(?:^|:)(\d{10,})$/.exec(trimmed);
++	if (!match) return null;
++	const timestamp = Number(match[1]);
++	return Number.isSafeInteger(timestamp) ? timestamp : null;
++}
++function signalInboundQueuePath(accountId) {
++	const safeAccountId = normalizeOptionalString(accountId) ?? "default";
++	return join(homedir(), ".openclaw", "channel-inbound-queue", "signal", safeAccountId, "events.jsonl");
++}
++function parseSignalQueueEnvelope(line) {
++	try {
++		const record = JSON.parse(line);
++		const raw = record?.event?.data;
++		if (!raw || typeof raw !== "string") return null;
++		return JSON.parse(raw)?.envelope ?? null;
++	} catch {
++		return null;
++	}
++}
++function resolveSignalQuoteFromInboundQueue(params) {
++	const quoteTimestamp = normalizeSignalReplyTimestamp(params.replyToId);
++	if (quoteTimestamp == null) return null;
++	const queuePath = signalInboundQueuePath(params.accountId);
++	if (!existsSync(queuePath)) return null;
++	const lines = readFileSync(queuePath, "utf8").trimEnd().split(/\r?\n/);
++	for (let index = lines.length - 1; index >= 0; index -= 1) {
++		const envelope = parseSignalQueueEnvelope(lines[index]);
++		if (!envelope || envelope.timestamp !== quoteTimestamp) continue;
++		const dataMessage = envelope.dataMessage ?? envelope.editMessage?.dataMessage;
++		const message = normalizeOptionalString(dataMessage?.message);
++		const author = normalizeOptionalString(envelope.sourceNumber) ?? normalizeOptionalString(envelope.sourceUuid);
++		if (!author || !message) return null;
++		return {
++			quoteTimestamp,
++			quoteAuthor: author,
++			quoteMessage: message
++		};
++	}
++	return null;
+ }
+ async function sendMessageSignal(to, text, opts) {
+ 	const cfg = requireRuntimeConfig(opts.cfg, "Signal send");
+@@ -533,6 +578,18 @@
+ 	if (textStyles.length > 0) params["text-style"] = textStyles.map((style) => `${style.start}:${style.length}:${style.style}`);
+ 	if (account) params.account = account;
+ 	if (attachments && attachments.length > 0) params.attachments = attachments;
++	const quote = resolveSignalQuoteFromInboundQueue({
++		accountId: accountInfo.accountId,
++		replyToId: opts.replyToId
++	});
++	if (opts.replyToId && normalizeSignalReplyTimestamp(opts.replyToId) != null && !quote && process.env.OPENCLAW_SIGNAL_ALLOW_UNRESOLVED_REPLY !== "1") {
++		throw new Error(`Signal replyToId ${opts.replyToId} could not be resolved in the durable inbound queue for account ${accountInfo.accountId}`);
++	}
++	if (quote) {
++		params.quoteTimestamp = quote.quoteTimestamp;
++		params.quoteAuthor = quote.quoteAuthor;
++		params.quoteMessage = quote.quoteMessage;
++	}
+ 	const targetParams = buildTargetParams(target, {
+ 		recipient: true,
+ 		group: true,
+--- a/dist/send-De5Th-L4.d.ts	2026-07-01 02:54:53
++++ b/dist/send-De5Th-L4.d.ts	2026-07-01 02:54:53
+@@ -88,6 +88,7 @@
+   timeoutMs?: number;
+   textMode?: "markdown" | "plain";
+   textStyles?: SignalTextStyleRange[];
++  replyToId?: string;
+ };
+ type SignalSendResult = {
+   messageId: string;
+--- a/dist/message-D5B8ddQe.js	2026-07-02 00:45:00
++++ b/dist/message-D5B8ddQe.js	2026-07-02 00:45:00
+@@ -129,6 +129,7 @@
+ 		cfg,
+ 		channel: params.channel
+ 	});
++	const replyToId = params.replyToId ?? params.replyTo ?? void 0;
+ 	const deliveryMode = resolveRequiredPlugin(channel, cfg).outbound?.deliveryMode ?? "direct";
+ 	const hasRealMediaSource = [params.mediaUrl, ...params.mediaUrls ?? []].filter((source) => Boolean(source)).some((source) => source !== SEND_BUFFER_MEDIA_URL);
+ 	const shouldForwardBuffer = deliveryMode === "gateway" && Boolean(params.buffer) && !hasRealMediaSource;
+@@ -177,7 +178,7 @@
+ 			cfg,
+ 			channel: outboundChannel,
+ 			payloads: normalizedPayloads,
+-			replyToId: params.replyToId,
++			replyToId,
+ 			threadId: params.threadId,
+ 			silent: params.silent
+ 		});
+@@ -188,7 +189,7 @@
+ 			session: outboundSession,
+ 			accountId: params.accountId,
+ 			payloads: normalizedPayloads,
+-			replyToId: params.replyToId,
++			replyToId,
+ 			threadId: params.threadId,
+ 			gifPlayback: params.gifPlayback,
+ 			forceDocument: params.forceDocument,
+@@ -233,7 +234,7 @@
+ 			accountId: params.accountId,
+ 			agentId: params.agentId,
+ 			channel,
+-			replyToId: params.replyToId,
++			replyToId,
+			threadId: params.threadId != null ? String(params.threadId) : void 0,
+			forceDocument: params.forceDocument,
+			silent: params.silent,
+--- a/dist/message-action-runner-6wCJfhlZ.js	2026-07-02 01:00:00
++++ b/dist/message-action-runner-6wCJfhlZ.js	2026-07-02 01:00:00
+@@ -125,6 +125,8 @@
+ /** Normalizes message-action args before target validation and dispatch. */
+ function normalizeMessageActionInput(params) {
+ 	const normalizedArgs = { ...params.args };
++	const explicitReplyTo = normalizeOptionalString(normalizedArgs.replyTo) ?? normalizeOptionalString(normalizedArgs.replyToId) ?? normalizeOptionalString(normalizedArgs.reply_to) ?? normalizeOptionalString(normalizedArgs["reply-to"]);
++	if (explicitReplyTo) normalizedArgs.replyTo = explicitReplyTo;
+ 	const { action, toolContext } = params;
+ 	const explicitChannel = normalizeOptionalString(normalizedArgs.channel) ?? "";
+ 	const inferredChannel = explicitChannel || normalizeMessageChannel(toolContext?.currentChannelProvider) || "";
+--- a/dist/channel-BEL8ozXJ.js	2026-07-01 02:54:53
++++ b/dist/channel-BEL8ozXJ.js	2026-07-01 02:54:53
+@@ -172,6 +172,7 @@
+		...params.mediaUrl ? { mediaUrl: params.mediaUrl } : {},
+ 		...params.mediaLocalRoots?.length ? { mediaLocalRoots: params.mediaLocalRoots } : {},
+ 		...params.mediaReadFile ? { mediaReadFile: params.mediaReadFile } : {},
++		...params.replyToId ? { replyToId: params.replyToId } : {},
+		maxBytes,
+		accountId: params.accountId ?? void 0
+	});
+@@ -180,7 +181,9 @@
+ 	id: "signal",
+ 	durableFinal: { capabilities: {
+ 		text: true,
+-		media: true
++		media: true,
++		replyTo: true,
++		nativeQuote: true
+ 	} },
+ 	send: {
+ 		text: async (ctx) => await sendSignalOutbound({
+@@ -187,6 +188,7 @@
+			cfg: ctx.cfg,
+			to: ctx.to,
+			text: ctx.text,
++			replyToId: ctx.replyToId,
+ 			accountId: ctx.accountId ?? void 0,
+ 			deps: ctx.deps
+ 		}),
+@@ -197,6 +199,7 @@
+ 			mediaUrl: ctx.mediaUrl,
+ 			mediaLocalRoots: ctx.mediaLocalRoots,
+ 			mediaReadFile: ctx.mediaReadFile,
++			replyToId: ctx.replyToId,
+ 			accountId: ctx.accountId ?? void 0,
+ 			deps: ctx.deps
+ 		})
+@@ -257,6 +260,7 @@
+ 			cfg: ctx.cfg,
+ 			maxBytes,
+ 			accountId: ctx.accountId ?? void 0,
++			...ctx.replyToId ? { replyToId: ctx.replyToId } : {},
+ 			textMode: "plain",
+ 			textStyles: chunk.styles
+ 		});
+@@ -287,6 +291,7 @@
+ 		...ctx.mediaReadFile ? { mediaReadFile: ctx.mediaReadFile } : {},
+ 		maxBytes,
+ 		accountId: ctx.accountId ?? void 0,
++		...ctx.replyToId ? { replyToId: ctx.replyToId } : {},
+		textMode: "plain",
+		textStyles: formatted.styles
+	}));
+@@ -412,23 +418,25 @@
+ 				payload,
+ 				hint
+ 			}),
+-			sendFormattedText: async ({ cfg, to, text, accountId, deps, abortSignal }) => await sendFormattedSignalText({
++			sendFormattedText: async ({ cfg, to, text, accountId, deps, replyToId, abortSignal }) => await sendFormattedSignalText({
+ 				cfg,
+ 				to,
+ 				text,
+ 				accountId,
+ 				deps,
++				replyToId,
+ 				abortSignal
+ 			}),
+-			sendFormattedMedia: async ({ cfg, to, text, mediaUrl, mediaLocalRoots, mediaReadFile, accountId, deps, abortSignal }) => await sendFormattedSignalMedia({
++			sendFormattedMedia: async ({ cfg, to, text, mediaUrl, mediaLocalRoots, mediaReadFile, accountId, deps, replyToId, abortSignal }) => await sendFormattedSignalMedia({
+				cfg,
+				to,
+				text,
+				mediaUrl,
+				mediaLocalRoots,
+				mediaReadFile,
+				accountId,
+				deps,
++				replyToId,
+ 				abortSignal
+ 			})
+ 		},
+@@ -438,19 +443,21 @@
+		},
+		attachedResults: {
+ 			channel: "signal",
+-			sendText: async ({ cfg, to, text, accountId, deps }) => await sendSignalOutbound({
++			sendText: async ({ cfg, to, text, accountId, deps, replyToId }) => await sendSignalOutbound({
+ 				cfg,
+ 				to,
+ 				text,
++				replyToId,
+ 				accountId: accountId ?? void 0,
+ 				deps
+ 			}),
+-			sendMedia: async ({ cfg, to, text, mediaUrl, mediaLocalRoots, mediaReadFile, accountId, deps }) => await sendSignalOutbound({
++			sendMedia: async ({ cfg, to, text, mediaUrl, mediaLocalRoots, mediaReadFile, accountId, deps, replyToId }) => await sendSignalOutbound({
+ 				cfg,
+ 				to,
+ 				text,
+ 				mediaUrl,
+ 				mediaLocalRoots,
+ 				mediaReadFile,
++				replyToId,
+ 				accountId: accountId ?? void 0,
+ 				deps
+ 			})

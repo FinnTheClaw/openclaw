@@ -1,0 +1,198 @@
+--- a/dist/monitor-DLQu0UP3.js
++++ b/dist/monitor-DLQu0UP3.js
+@@ -67,9 +67,12 @@
+ import { t as isSignalNativeApprovalHandlerConfigured } from "./approval-native-DiTxhcNB.js";
+ import { n as signalRpcRequest, r as streamSignalEvents, t as signalCheck } from "./client-adapter-Bk8RFbS1.js";
+ import { a as maybeResolveSignalApprovalReaction, n as sendReadReceiptSignal, r as sendTypingSignal, s as resolveSignalApprovalConversationKey, t as sendMessageSignal } from "./send-hICEM6a-.js";
++import { y as resolveStateDir } from "./paths-mvMm5bYV.js";
+ import path from "node:path";
+ import os from "node:os";
+ import { spawn } from "node:child_process";
++import fs from "node:fs/promises";
++import { createHash } from "node:crypto";
+ //#region extensions/signal/src/daemon.ts
+ function formatSignalDaemonExit(exit) {
+ 	return `signal daemon exited (source=${exit.source} code=${exit.code ?? "null"} signal=${exit.signal ?? "null"})`;
+@@ -1119,7 +1122,156 @@
+ 			b.removeEventListener("abort", onAbortB);
+ 		}
+ 	};
++}
++const SIGNAL_INBOUND_QUEUE_VERSION = 1;
++function safeSignalQueueAccountId(accountId) {
++	const trimmed = accountId?.trim() || "default";
++	return trimmed.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 120) || "default";
++}
++function resolveSignalInboundQueueDir(accountId) {
++	return path.join(resolveStateDir(), "channel-inbound-queue", "signal", safeSignalQueueAccountId(accountId));
++}
++function resolveSignalInboundQueueLedgerPath(accountId) {
++	return path.join(resolveSignalInboundQueueDir(accountId), "events.jsonl");
++}
++function parseSignalQueueEventPayload(event) {
++	if (!event?.data || typeof event.data !== "string") return null;
++	try {
++		return JSON.parse(event.data);
++	} catch {
++		return null;
++	}
+ }
++function hashSignalQueueEvent(event) {
++	return createHash("sha256").update(JSON.stringify(event)).digest("hex").slice(0, 32);
++}
++function resolveSignalQueueEventId(accountId, event) {
++	const payload = parseSignalQueueEventPayload(event);
++	const envelope = payload?.envelope;
++	const editTargetTimestamp = typeof envelope?.editMessage?.targetSentTimestamp === "number" ? envelope.editMessage.targetSentTimestamp : void 0;
++	const timestamp = editTargetTimestamp ?? (typeof envelope?.timestamp === "number" ? envelope.timestamp : void 0);
++	const sender = envelope ? resolveSignalSender(envelope) : null;
++	const senderId = sender ? formatSignalSenderId(sender) : void 0;
++	const dataMessage = envelope?.dataMessage ?? envelope?.editMessage?.dataMessage;
++	const groupId = dataMessage?.groupInfo?.groupId ?? envelope?.reactionMessage?.groupInfo?.groupId ?? dataMessage?.reaction?.groupInfo?.groupId ?? void 0;
++	if (timestamp && senderId) return [
++		"signal",
++		accountId,
++		groupId ? `group:${groupId}` : "direct",
++		senderId,
++		String(timestamp)
++	].join(":");
++	if (event.id) return ["signal", accountId, "sse", event.id].join(":");
++	return ["signal", accountId, "hash", hashSignalQueueEvent(event)].join(":");
++}
++async function appendSignalInboundQueueRecord(accountId, record) {
++	const dir = resolveSignalInboundQueueDir(accountId);
++	const filePath = resolveSignalInboundQueueLedgerPath(accountId);
++	await fs.mkdir(dir, { recursive: true });
++	const handle = await fs.open(filePath, "a");
++	try {
++		await handle.write(`${JSON.stringify(record)}\n`);
++		await handle.sync();
++	} finally {
++		await handle.close();
++	}
++}
++async function readSignalInboundQueueRecords(accountId, runtime) {
++	const filePath = resolveSignalInboundQueueLedgerPath(accountId);
++	let raw;
++	try {
++		raw = await fs.readFile(filePath, "utf8");
++	} catch (err) {
++		if (err?.code === "ENOENT") return [];
++		runtime.error?.(`signal inbound queue read failed: ${String(err)}`);
++		return [];
++	}
++	const records = [];
++	let lineNumber = 0;
++	for (const line of raw.split(/\r?\n/)) {
++		lineNumber += 1;
++		if (!line.trim()) continue;
++		try {
++			const parsed = JSON.parse(line);
++			if (parsed && typeof parsed === "object") records.push(parsed);
++		} catch (err) {
++			runtime.error?.(`signal inbound queue ignored corrupt line ${lineNumber}: ${String(err)}`);
++		}
++	}
++	return records;
++}
++function materializeSignalInboundQueue(records) {
++	const pending = /* @__PURE__ */ new Map();
++	const processed = /* @__PURE__ */ new Set();
++	for (const record of records) {
++		const id = typeof record.id === "string" ? record.id : void 0;
++		if (!id) continue;
++		if (record.action === "enqueued") {
++			if (!processed.has(id) && record.event) pending.set(id, {
++				id,
++				event: record.event,
++				enqueuedAt: typeof record.at === "string" ? record.at : ""
++			});
++		} else if (record.action === "processed") {
++			processed.add(id);
++			pending.delete(id);
++		}
++	}
++	return {
++		pending,
++		processed
++	};
++}
++async function createSignalDurableInboundQueue(params) {
++	const records = await readSignalInboundQueueRecords(params.accountId, params.runtime);
++	const state = materializeSignalInboundQueue(records);
++	const pending = state.pending;
++	const processed = state.processed;
++	async function markProcessed(id) {
++		if (processed.has(id)) return;
++		await appendSignalInboundQueueRecord(params.accountId, {
++			v: SIGNAL_INBOUND_QUEUE_VERSION,
++			action: "processed",
++			id,
++			at: (/* @__PURE__ */ new Date()).toISOString()
++		});
++		processed.add(id);
++		pending.delete(id);
++	}
++	return {
++		async enqueue(event) {
++			const id = resolveSignalQueueEventId(params.accountId, event);
++			if (processed.has(id) || pending.has(id)) return null;
++			const item = {
++				id,
++				event,
++				enqueuedAt: (/* @__PURE__ */ new Date()).toISOString()
++			};
++			await appendSignalInboundQueueRecord(params.accountId, {
++				v: SIGNAL_INBOUND_QUEUE_VERSION,
++				action: "enqueued",
++				id,
++				at: item.enqueuedAt,
++				event
++			});
++			pending.set(id, item);
++			return item;
++		},
++		async replay(handler) {
++			const items = [...pending.values()].toSorted((a, b) => a.enqueuedAt.localeCompare(b.enqueuedAt));
++			for (const item of items) {
++				if (processed.has(item.id)) continue;
++				try {
++					await handler(item.event);
++					await markProcessed(item.id);
++				} catch (err) {
++					params.runtime.error?.(`signal inbound queue replay failed for ${item.id}: ${String(err)}`);
++				}
++			}
++		},
++		markProcessed
++	};
++}
+ function createSignalDaemonLifecycle(params) {
+ 	let daemonHandle = null;
+ 	let daemonStopRequested = false;
+@@ -1410,6 +1562,11 @@
+ 			shouldEmitSignalReactionNotification,
+ 			buildSignalReactionSystemEventText
+ 		});
++		const durableInboundQueue = await createSignalDurableInboundQueue({
++			accountId: accountInfo.accountId,
++			runtime
++		});
++		await durableInboundQueue.replay(handleEvent);
+ 		await runSignalSseLoop({
+ 			baseUrl,
+ 			account,
+@@ -1419,7 +1576,12 @@
+ 			apiMode: configuredApiMode,
+ 			policy: opts.reconnectPolicy,
+ 			onEvent: (event) => {
+-				monitorTaskRunner.runEventTask(() => handleEvent(event));
++				monitorTaskRunner.runEventTask(async () => {
++					const queued = await durableInboundQueue.enqueue(event);
++					if (!queued) return;
++					await handleEvent(event);
++					await durableInboundQueue.markProcessed(queued.id);
++				});
+ 			}
+ 		});
+ 		const daemonExitError = daemonLifecycle.getExitError();

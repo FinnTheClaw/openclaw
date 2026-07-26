@@ -1,0 +1,22 @@
+diff --git a/dist/descriptors-odCTYLLK.js b/dist/descriptors-odCTYLLK.js
+index 037520f..6f9108d 100644
+--- a/dist/descriptors-odCTYLLK.js
++++ b/dist/descriptors-odCTYLLK.js
+@@ -8,7 +8,7 @@ const FILE_FETCH_HARD_MAX_BYTES = 16 * 1024 * 1024;
+ const DIR_LIST_HARD_MAX_ENTRIES = 5e3;
+ const DIR_FETCH_DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+ const DIR_FETCH_HARD_MAX_BYTES = 16 * 1024 * 1024;
+-const FILE_WRITE_HARD_MAX_BYTES = 16 * 1024 * 1024;
++const FILE_WRITE_HARD_MAX_BYTES = Number.MAX_SAFE_INTEGER;
+ const PAIRED_NODE_DESCRIPTION = "Existing paired node id, display name, or IP shown by nodes status. Do not use local, host, gateway, or auto; use local file/exec tools for local workspace paths.";
+ const FILE_FETCH_TOOL_DESCRIPTOR = {
+ 	label: "File Fetch",
+@@ -58,7 +58,7 @@ const FILE_WRITE_TOOL_DESCRIPTOR = {
+ 	parameters: Type.Object({
+ 		node: Type.String({ description: PAIRED_NODE_DESCRIPTION }),
+ 		path: Type.String({ description: "Absolute path on the node to write. Canonicalized server-side." }),
+-		contentBase64: Type.Optional(Type.String({ description: "Base64-encoded bytes to write. Maximum 16 MB after decode." })),
++		contentBase64: Type.Optional(Type.String({ description: "Base64-encoded bytes to write. No OpenClaw decoded-byte cap is applied; practical limits may still come from model/tool-call transport and available memory." })),
+ 		sourceMediaId: Type.Optional(Type.String({ description: "Media id returned by file_fetch. Preferred for binary copies because bytes stay in the gateway media store." })),
+ 		mimeType: Type.Optional(Type.String({ description: "Content type hint. Not validated against the content." })),
+ 		overwrite: Type.Optional(Type.Boolean({

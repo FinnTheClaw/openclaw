@@ -1,0 +1,33 @@
+--- a/dist/message-action-runner-6wCJfhlZ.js	2026-07-02 09:08:42
++++ b/dist/message-action-runner-6wCJfhlZ.js	2026-07-02 09:09:06
+@@ -214,6 +214,17 @@
+ 	actionParams.replyTo = resolvedReplyToId;
+ 	return resolvedReplyToId;
+ }
++function isSignalSourceMessageAction(channel, input) {
++	if (channel !== "signal") return false;
++	const currentProvider = normalizeMessageChannel(input.toolContext?.currentChannelProvider);
++	return currentProvider === "signal" || input.sourceReplyDeliveryMode === "message_tool_only";
++}
++function enforceSignalSourceReplyTo(params) {
++	if (params.dryRun) return;
++	if (!isSignalSourceMessageAction(params.channel, params.input)) return;
++	if (params.replyToId) return;
++	throw new Error("Signal source replies through the message tool require replyTo/replyToId. Use the current inbound Signal message_id, or reply to a prior assistant message in the chain.");
++}
+ /** Prepares outbound session mirroring metadata for message-action sends. */
+ async function prepareOutboundMirrorRoute(params) {
+ 	const replyToId = readStringParam(params.actionParams, "replyTo");
+@@ -1240,6 +1251,12 @@
+ 	const replyToId = resolveAndApplyOutboundReplyToId(params, {
+ 		channel,
+ 		toolContext: input.toolContext
++	});
++	enforceSignalSourceReplyTo({
++		channel,
++		input,
++		replyToId,
++		dryRun
+ 	});
+ 	const { resolvedThreadId, outboundRoute } = await prepareOutboundMirrorRoute({
+ 		cfg,

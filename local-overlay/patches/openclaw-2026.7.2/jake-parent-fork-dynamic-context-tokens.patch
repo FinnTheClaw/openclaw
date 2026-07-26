@@ -1,0 +1,69 @@
+--- a/dist/session-accessor-BFted17j.js
++++ b/dist/session-accessor-BFted17j.js
+@@ -2850,7 +2850,7 @@
+ 	return `Parent context is too large to fork (${params.parentTokens}/${params.maxTokens} tokens); starting with isolated context instead.`;
+ }
+ function resolveSqliteParentForkDecision(parentEntry, transcriptEstimate) {
+-	const maxTokens = DEFAULT_PARENT_FORK_MAX_TOKENS;
++	const maxTokens = normalizePositiveTokenCount(parentEntry.contextTokens) ?? DEFAULT_PARENT_FORK_MAX_TOKENS;
+ 	const parentTokens = resolveFreshSessionTotalTokens(parentEntry) ?? (transcriptEstimate?.kind === "exact-context" ? transcriptEstimate.tokens : maxPositiveTokenCount(transcriptEstimate?.tokens, resolveSessionTotalTokens(parentEntry)));
+ 	if (typeof parentTokens === "number" && parentTokens > maxTokens) return {
+ 		status: "skip",
+--- a/dist/session-fork-B2y_KaMK.js
++++ b/dist/session-fork-B2y_KaMK.js
+@@ -1,4 +1,5 @@
+ import { I as resolveSessionParentForkDecision, M as forkSessionFromParentTranscript, j as forkSessionEntryFromParentTarget } from "./session-accessor-BFted17j.js";
++import { o as resolveContextTokensForModel } from "./context-Bhutrc8N.js";
+ import { l as resolveStorePath } from "./paths-TfuVT-K8.js";
+ import { a as isModelSelectionLocked, r as ModelSelectionLockedError } from "./model-overrides-BlzAR7Nc.js";
+ //#region src/auto-reply/reply/session-fork.ts
+@@ -9,12 +10,48 @@
+ function resolveParentForkStorePath(params) {
+ 	return params.storePath ?? resolveStorePath(params.config?.session?.store, { agentId: params.agentId });
+ }
++function resolvePositiveInteger(value) {
++	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return;
++	return Math.floor(value);
++}
++function resolveParentForkMaxTokens(params) {
++	const entryContextTokens = resolvePositiveInteger(params.parentEntry?.contextTokens);
++	if (entryContextTokens !== void 0) return entryContextTokens;
++	const configDefaultContextTokens = resolvePositiveInteger(params.config?.agents?.defaults?.contextTokens);
++	const provider = params.parentEntry?.modelProvider ?? params.parentEntry?.providerOverride;
++	const model = params.parentEntry?.model ?? params.parentEntry?.modelOverride;
++	const modelContextTokens = provider || model ? resolvePositiveInteger(resolveContextTokensForModel({
++		cfg: params.config,
++		provider,
++		model,
++		fallbackContextTokens: configDefaultContextTokens ?? 1e5,
++		allowAsyncLoad: false
++	})) : void 0;
++	return modelContextTokens ?? configDefaultContextTokens ?? 1e5;
++}
++function formatParentForkTooLargeMessage(params) {
++	return `Parent context is too large to fork (${params.parentTokens}/${params.maxTokens} tokens); starting with isolated context instead.`;
++}
+ async function resolveParentForkDecision(params) {
+ 	assertParentSessionForkAllowed(params.parentEntry);
+-	return await resolveSessionParentForkDecision({
++	const decision = await resolveSessionParentForkDecision({
+ 		parentEntry: params.parentEntry,
+ 		storePath: resolveParentForkStorePath(params)
+ 	});
++	const maxTokens = resolveParentForkMaxTokens(params);
++	const parentTokens = decision.parentTokens;
++	if (typeof parentTokens === "number" && parentTokens > maxTokens) return {
++		status: "skip",
++		reason: "parent-too-large",
++		maxTokens,
++		parentTokens,
++		message: formatParentForkTooLargeMessage({ parentTokens, maxTokens })
++	};
++	return {
++		status: "fork",
++		maxTokens,
++		...typeof parentTokens === "number" ? { parentTokens } : {}
++	};
+ }
+ async function forkSessionFromParent(params) {
+ 	assertParentSessionForkAllowed(params.parentEntry);

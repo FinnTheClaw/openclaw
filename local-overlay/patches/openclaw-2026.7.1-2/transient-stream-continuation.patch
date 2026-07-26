@@ -1,0 +1,59 @@
+diff --git a/dist/selection-JInn13lc.js b/dist/selection-JInn13lc.js
+index fb8ebfb..e59eedb 100644
+--- a/dist/selection-JInn13lc.js
++++ b/dist/selection-JInn13lc.js
+@@ -7738,6 +7738,10 @@ function resolveAttemptTrajectoryTerminal(params) {
+ function resolveAttemptTrajectoryTerminal(params) {
+ 	if (params.promptError) return { status: "error" };
+ 	if (params.aborted && params.externalAbort || params.timedOut) return { status: "interrupted" };
+ 	const hasExplicitTerminalDelivery = params.silentExpected === true || params.emptyAssistantReplyIsSilent === true || params.didSendDeterministicApprovalPrompt || hasCommittedMessagingDeliveryEvidence(params) || hasAcceptedSessionSpawn(params.acceptedSessionSpawns) || params.heartbeatToolResponse !== void 0 || (params.clientToolCalls?.length ?? 0) > 0 || params.yieldDetected === true || hasAsyncStartedToolActivity(params.toolMetas);
++	if (params.lastAssistantStopReason === "error" && !hasExplicitTerminalDelivery) return {
++		status: "error",
++		terminalError: NON_DELIVERABLE_TERMINAL_TURN_REASON
++	};
+ 	if (params.lastAssistantStopReason === "toolUse" && !hasExplicitTerminalDelivery) return {
+ 		status: "error",
+diff --git a/dist/embedded-agent-DGUuxGR2.js b/dist/embedded-agent-DGUuxGR2.js
+index 1fac44a..83422a1 100644
+--- a/dist/embedded-agent-DGUuxGR2.js
++++ b/dist/embedded-agent-DGUuxGR2.js
+@@ -1769,6 +1769,7 @@ const EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS = 3e4;
+ const EMBEDDED_RUN_LANE_HEARTBEAT_MS = EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS / 2;
+ const MID_TURN_PRECHECK_CONTINUATION_PROMPT = "Continue from the current transcript after the latest tool result. Do not repeat the original user request, and do not rerun completed tools unless the transcript shows they are still needed.";
+ const FAILED_TOOL_CONTINUATION_PROMPT = "The previous tool call failed and the assistant stopped without resolving the user's request. Continue from the current transcript now. Inspect the failure, change the command, tool, path, or approach, and keep working until the request is complete or a concrete external blocker is proven. Do not repeat the failed call unchanged, do not replay completed mutations, and do not answer with a promise to continue.";
++const TRANSIENT_TRANSPORT_CONTINUATION_PROMPT = "The previous model stream ended unexpectedly after partial progress. Continue from the persisted transcript and finish the original request. Do not repeat completed tool calls or side effects. Inspect prior results, verify current state as needed, change approach if necessary, and produce the final user-visible answer. A transient transport failure is not a reason to stop.";
+ const UNEXPECTED_SILENT_REPLY_CONTINUATION_PROMPT = "This is a direct user request and the previous assistant response incorrectly attempted to stay silent. Continue from the current transcript and answer the user now. Complete any outstanding work first; do not emit NO_REPLY and do not answer with only a promise or setup sentence.";
+ function hasOnlySilentReplyTexts(texts) {
+ 	const nonEmpty = (texts ?? []).map((text) => String(text ?? "").trim()).filter(Boolean);
+@@ -2804,6 +2805,8 @@ async function runEmbeddedAgentInternal(paramsInput) {
+ 			let codexAppServerRecoveryRetries = 0;
+ 			const MAX_EMPTY_ERROR_RETRIES = 3;
+ 			let emptyErrorRetries = 0;
++			const MAX_TRANSIENT_TRANSPORT_CONTINUATIONS = 2;
++			let transientTransportContinuationAttempts = 0;
+ 			const MAX_MISSING_ASSISTANT_RETRIES = 1;
+ 			let missingAssistantRetryAttempts = 0;
+ 			const overloadFailoverBackoffMs = resolveOverloadFailoverBackoffMs(params.config);
+@@ -4034,6 +4037,22 @@ async function runEmbeddedAgentInternal(paramsInput) {
+ 						log$1.warn(`[empty-error-retry] stopReason=error non-visible-output; resubmitting attempt=${emptyErrorRetries}/${MAX_EMPTY_ERROR_RETRIES} provider=${attemptAssistant?.provider ?? provider} model=${attemptAssistant?.model ?? model.id} sessionKey=${params.sessionKey ?? params.sessionId}`);
+ 						continue;
+ 					}
++					const transientTransportFailure = assistantFailoverReason === "timeout" || assistantFailoverReason === "server_error" || assistantFailoverReason === "unknown" || assistantFailoverReason === "no_error_details" || assistantFailoverReason === "unclassified" || assistantFailoverReason === null;
++					const hasPartialAssistantProgress = attemptAssistant?.stopReason === "error" && attempt.assistantTexts.some((text) => text.trim().length > 0);
++					if (hasPartialAssistantProgress && transientTransportFailure && !authFailure && !rateLimitFailure && !billingFailure && !cloudCodeAssistFormatError && !imageDimensionError && !aborted && !externalAbort && !promptError && !timedOut && !hasAttemptTerminalState(attempt) && transientTransportContinuationAttempts < MAX_TRANSIENT_TRANSPORT_CONTINUATIONS) {
++						transientTransportContinuationAttempts += 1;
++						nextAttemptPromptOverride = TRANSIENT_TRANSPORT_CONTINUATION_PROMPT;
++						suppressNextUserMessagePersistence = true;
++						traceAttempts.push({
++							provider: activeErrorContext.provider,
++							model: activeErrorContext.model,
++							result: assistantFailoverReason === "timeout" ? "timeout" : "error",
++							...assistantFailoverReason ? { reason: assistantFailoverReason } : {},
++							stage: "assistant"
++						});
++						log$1.warn(`[transient-transport-continuation] stopReason=error after partial progress; continuing persisted turn attempt=${transientTransportContinuationAttempts}/${MAX_TRANSIENT_TRANSPORT_CONTINUATIONS} provider=${attemptAssistant?.provider ?? provider} model=${attemptAssistant?.model ?? model.id} sessionKey=${params.sessionKey ?? params.sessionId}`);
++						continue;
++					}
+ 					const failedAssistantProfileId = lastProfileId;
+ 					const logAssistantFailoverDecision = createFailoverDecisionLogger({
+ 						stage: "assistant",

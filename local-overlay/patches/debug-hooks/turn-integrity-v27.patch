@@ -1,0 +1,53 @@
+diff --git a/index.js b/index.js
+index 5f60299..5e80506 100644
+--- a/index.js
++++ b/index.js
+@@ -3,7 +3,7 @@ import path from "node:path";
+ import crypto from "node:crypto";
+ import { spawn } from "node:child_process";
+ 
+-const AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v26";
++const AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v27";
+ const finalizeRunEvidence = new Map();
+ const sequentialChainRuns = new Map();
+ const DEBUG_LOG_MAX_BYTES = 8 * 1024 * 1024;
+@@ -466,8 +466,8 @@ function resolveHookSettings(api) {
+     protectCompletedArtifacts: booleanSetting(api, "protectCompletedArtifacts", true),
+     backupWorkspace: booleanSetting(api, "backupWorkspace", true),
+     maxRevisionAttempts: Number.isFinite(configuredMaxRevisions)
+-      ? Math.max(1, Math.min(3, Math.floor(configuredMaxRevisions)))
+-      : 2,
++      ? Math.max(1, Math.min(5, Math.floor(configuredMaxRevisions)))
++      : 5,
+   };
+ }
+ 
+@@ -927,11 +927,11 @@ const plugin = {
+       if (settings.reviseUnfinishedCoding && looksLikeUnfinishedCoding(text, messageSummary, userText)) {
+         behaviorIssues.unshift("the final answer promises or announces unfinished work");
+       }
+-      // Give the model a small, deterministic opportunity to finish, then
+-      // release its latest answer. A large retry budget turns a useful
+-      // follow-through guard into an expensive self-sustaining model loop.
++      // Always report known unfinished output as a revision. The core owns the
++      // bounded retry budget and must fail closed with a visible error when it
++      // is exhausted; releasing progress-only text here creates false success.
+       const maxRevisionAttempts = settings.maxRevisionAttempts;
+-      const shouldRevise = behaviorIssues.length > 0 && revisionAttempts < maxRevisionAttempts;
++      const shouldRevise = behaviorIssues.length > 0;
+       const chainProgress = settings.enforceExplicitCounts
+         ? chainContinuationInstruction(userText, turnEvidence)
+         : "";
+@@ -942,11 +942,7 @@ const plugin = {
+         at: new Date().toISOString(),
+         hook: "before_agent_finalize",
+         action: shouldRevise ? "revise" : "continue",
+-        reason: shouldRevise
+-          ? continuationReason
+-          : behaviorIssues.length > 0
+-            ? `revision-guard after ${revisionAttempts} revisions (${stagnantAttempts} stagnant): ${behaviorIssues.join("; ")}`
+-            : "normal-final-answer",
++        reason: shouldRevise ? continuationReason : "normal-final-answer",
+         runId: event?.runId || ctx?.runId,
+         sessionId: event?.sessionId || ctx?.sessionId,
+         sessionKey: event?.sessionKey || ctx?.sessionKey,

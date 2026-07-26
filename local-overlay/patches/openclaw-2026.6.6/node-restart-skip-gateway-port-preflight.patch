@@ -1,0 +1,11 @@
+--- a/dist/launchd-FSKBDZ2p.js
++++ b/dist/launchd-FSKBDZ2p.js
+@@ -1010,7 +1010,7 @@
+ 		writeLaunchAgentActionLine(stdout, "Scheduled LaunchAgent restart", serviceTarget);
+ 		return { outcome: "scheduled" };
+ 	}
+-	const cleanupPort = await resolveLaunchAgentGatewayPort(serviceEnv);
++	const cleanupPort = isCurrentGatewayLaunchdLabel(label, serviceEnv) ? await resolveLaunchAgentGatewayPort(serviceEnv) : null;
+ 	if (cleanupPort !== null) {
+ 		cleanStaleGatewayProcessesSync(cleanupPort);
+ 		const diagnostics = await inspectPortUsage(cleanupPort).catch(() => null);

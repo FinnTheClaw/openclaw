@@ -1,0 +1,29 @@
+diff --git a/dist/thinking-policy-D2pce6l8.js b/dist/thinking-policy-D2pce6l8.js
+--- a/dist/thinking-policy-D2pce6l8.js
++++ b/dist/thinking-policy-D2pce6l8.js
+@@ -7,6 +7,7 @@ const OPENAI_THINKING_BASE_LEVELS = [
+ 	{ id: "high" }
+ ];
+ const OPENAI_XHIGH_MODEL_IDS = [
++	"gpt-5.6",
+ 	"gpt-5.5",
+ 	"gpt-5.5-pro",
+ 	"gpt-5.4",
+@@ -15,6 +16,7 @@ const OPENAI_XHIGH_MODEL_IDS = [
+ 	"gpt-5.4-nano"
+ ];
+ const OPENAI_CODEX_XHIGH_MODEL_IDS = [
++	"gpt-5.6",
+ 	"gpt-5.5",
+ 	"gpt-5.5-pro",
+ 	"gpt-5.4",
+@@ -33,7 +35,8 @@ function matchesExactOrPrefix(id, values) {
+ 	});
+ }
+ function buildOpenAIThinkingProfile(params) {
+-	return { levels: [...OPENAI_THINKING_BASE_LEVELS, ...matchesExactOrPrefix(params.modelId, params.xhighModelIds) ? [{ id: "xhigh" }] : []] };
++	const supportsMax = normalizeModelId(params.modelId).startsWith("gpt-5.6");
++	return { levels: [...OPENAI_THINKING_BASE_LEVELS, ...matchesExactOrPrefix(params.modelId, params.xhighModelIds) ? [{ id: "xhigh" }] : [], ...supportsMax ? [{ id: "max" }] : []] };
+ }
+ function resolveOpenAIThinkingProfile(modelId) {
+ 	return buildOpenAIThinkingProfile({
