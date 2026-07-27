@@ -75,7 +75,7 @@ const pluginPath = process.env.OPENCLAW_DEBUG_HOOKS_FILE;
 if (pluginPath) {
   assert.ok(fs.existsSync(pluginPath), `debug hook candidate does not exist: ${pluginPath}`);
   const plugin = fs.readFileSync(pluginPath, "utf8");
-  assert.match(plugin, /AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v29"/);
+  assert.match(plugin, /AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v30"/);
   assert.match(plugin, /const shouldRevise = behaviorIssues\.length > 0/);
   assert.match(plugin, /Math\.min\(5, Math\.floor\(configuredMaxRevisions\)\)/);
   assert.doesNotMatch(

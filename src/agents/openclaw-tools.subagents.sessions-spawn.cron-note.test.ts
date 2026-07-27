@@ -35,6 +35,15 @@ describe("sessions_spawn: cron isolated session note suppression", () => {
     expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).toContain(
       "only answer after completion events for ALL required children arrive",
     );
+    expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).toContain(
+      "Continue spawning every worker explicitly requested by the user",
+    );
+    expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).toContain(
+      "Never emit NO_REPLY on the original direct user turn",
+    );
+    expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).toContain(
+      "NO_REPLY is reserved only for a later completion-event turn",
+    );
     expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).not.toContain("sessions_yield");
   });
 
