@@ -1,0 +1,178 @@
+diff --git a/index.js b/index.js
+index dfd4865..c485419 100644
+--- a/index.js
++++ b/index.js
+@@ -3,7 +3,7 @@ import path from "node:path";
+ import crypto from "node:crypto";
+ import { spawn } from "node:child_process";
+ 
+-const AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v29";
++const AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v30";
+ const finalizeRunEvidence = new Map();
+ const sequentialChainRuns = new Map();
+ const successfulReplayProtectedActions = new Map();
+@@ -73,6 +73,7 @@ function currentTurnEvidence(messages, anchorUserIndex) {
+     toolCallIds: new Set(),
+     toolResultIds: new Set(),
+     successfulToolResultIds: new Set(),
++    successfulToolResultNames: new Map(),
+     toolNames: new Set(),
+     successfulToolNames: new Set(),
+     resultText: "",
+@@ -93,6 +94,7 @@ function currentTurnEvidence(messages, anchorUserIndex) {
+       evidence.toolResultIds.add(resultId);
+       if (message.isError !== true) {
+         evidence.successfulToolResultIds.add(resultId);
++        evidence.successfulToolResultNames.set(resultId, String(message.toolName || ""));
+         if (message.toolName) evidence.successfulToolNames.add(String(message.toolName));
+       }
+       if (message.toolName) evidence.toolNames.add(String(message.toolName));
+@@ -110,6 +112,7 @@ function mergeTurnEvidence(previous, current) {
+     toolCallIds: new Set(previous?.toolCallIds || []),
+     toolResultIds: new Set(previous?.toolResultIds || []),
+     successfulToolResultIds: new Set(previous?.successfulToolResultIds || []),
++    successfulToolResultNames: new Map(previous?.successfulToolResultNames || []),
+     toolNames: new Set(previous?.toolNames || []),
+     successfulToolNames: new Set(previous?.successfulToolNames || []),
+     resultText: `${previous?.resultText || ""}${current?.resultText || ""}`,
+@@ -117,6 +120,9 @@ function mergeTurnEvidence(previous, current) {
+   for (const id of current?.toolCallIds || []) merged.toolCallIds.add(id);
+   for (const id of current?.toolResultIds || []) merged.toolResultIds.add(id);
+   for (const id of current?.successfulToolResultIds || []) merged.successfulToolResultIds.add(id);
++  for (const [id, name] of current?.successfulToolResultNames || []) {
++    merged.successfulToolResultNames.set(id, name);
++  }
+   for (const name of current?.toolNames || []) merged.toolNames.add(name);
+   for (const name of current?.successfulToolNames || []) merged.successfulToolNames.add(name);
+   return {
+@@ -138,7 +144,8 @@ function behavioralRequirementFromMessages(messages) {
+     if (fallback.index < 0) fallback = { text, index: i };
+     const hasExplicitCount = Boolean(requestedToolCallCount(text));
+     const hasExplicitTool = explicitlyRequiredTools(text).length > 0;
+-    const hasExplicitSubagent = /\b(?:use|spawn|delegate to)\s+(?:a\s+|one\s+|multiple\s+)?subagents?\b/i.test(text);
++    const hasExplicitSubagent = Boolean(requestedSubagentCount(text)) ||
++      /\b(?:use|spawn|launch|start|queue|que|delegate to)\s+(?:a\s+|one\s+|multiple\s+)?subagents?\b/i.test(text);
+     if (hasExplicitCount || hasExplicitTool || hasExplicitSubagent) {
+       return { text, index: i };
+     }
+@@ -180,6 +187,48 @@ function requestedToolCallCount(userText) {
+   return Number.isInteger(count) && count > 0 && count <= 200 ? count : undefined;
+ }
+ 
++function countTokenValue(token) {
++  const words = {
++    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
++    ten: 10, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70,
++    eighty: 80, ninety: 90, "one hundred": 100,
++  };
++  const normalized = String(token || "").toLowerCase().replace(/\s+/g, " ");
++  const count = /^\d+$/.test(normalized) ? Number(normalized) : words[normalized];
++  return Number.isInteger(count) && count > 0 && count <= 200 ? count : undefined;
++}
++
++function requestedSubagentCount(userText) {
++  const text = String(userText || "");
++  const countToken = "(\\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|one\\s+hundred)";
++  const match = text.match(new RegExp(
++    `\\b(?:queue|que|spawn|launch|start|run|use|create|delegate(?:\\s+to)?)\\s+(?:up\\s+to\\s+|exactly\\s+)?${countToken}\\s+(?:[a-z0-9_-]+\\s+){0,8}(?:subagents?|sub-agents?|workers?|child\\s+agents?)\\b`,
++    "i",
++  )) || text.match(new RegExp(
++    `\\b${countToken}\\s+(?:[a-z0-9_-]+\\s+){0,8}(?:subagents?|sub-agents?|workers?|child\\s+agents?)\\b`,
++    "i",
++  ));
++  return match ? countTokenValue(match[1]) : undefined;
++}
++
++function successfulToolResultCount(evidence, matcher) {
++  let count = 0;
++  for (const name of evidence?.successfulToolResultNames?.values?.() || []) {
++    if (matcher.test(String(name || ""))) count += 1;
++  }
++  return count;
++}
++
++function subagentContinuationInstruction(userText, evidence) {
++  const requested = requestedSubagentCount(userText);
++  if (!requested) return "";
++  const completed = successfulToolResultCount(evidence, /^sessions_spawn$/i);
++  if (completed < requested) {
++    return `Authoritative subagent fanout progress: ${completed}/${requested} requested workers have been accepted. Continue calling sessions_spawn for distinct remaining tasks until exactly ${requested} have successful results. Do not return NO_REPLY, finalize, or call sessions_yield before the requested queue is complete.`;
++  }
++  return `Authoritative subagent fanout progress: ${completed}/${requested} requested workers have been accepted. Do not spawn extras. Return a visible acknowledgement with the accepted count and run IDs; call sessions_yield only if the user asked you to wait for completion.`;
++}
++
+ export function chainContinuationInstruction(userText, evidence) {
+   const requestedCount = requestedToolCallCount(userText);
+   const completedCount = Number(evidence?.successfulToolResults || 0);
+@@ -344,12 +393,23 @@ function behavioralFinalizeIssues(userText, assistantText, evidence) {
+   if (requestedCount && evidence.successfulToolResults < requestedCount) {
+     issues.push(`explicit tool-call count is incomplete (${evidence.successfulToolResults}/${requestedCount} successful results)`);
+   }
++  const requestedSubagents = requestedSubagentCount(userText);
++  if (requestedSubagents) {
++    const acceptedSubagents = successfulToolResultCount(evidence, /^sessions_spawn$/i);
++    if (acceptedSubagents < requestedSubagents) {
++      issues.push(`explicit subagent count is incomplete (${acceptedSubagents}/${requestedSubagents} accepted)`);
++    }
++    if (/^\s*NO_REPLY\s*$/i.test(String(assistantText || ""))) {
++      issues.push("a direct subagent fanout request cannot finalize with NO_REPLY");
++    }
++  }
+   for (const requirement of explicitlyRequiredTools(userText)) {
+     if (![...evidence.successfulToolNames].some(requirement.matches)) {
+       issues.push(`explicitly required tool ${requirement.label} has no successful result`);
+     }
+   }
+-  const userRequestedSubagent = /\b(?:use|spawn|delegate to)\s+(?:a\s+|one\s+|multiple\s+)?subagents?\b/i.test(userText);
++  const userRequestedSubagent = Boolean(requestedSubagentCount(userText)) ||
++    /\b(?:use|spawn|launch|start|queue|que|delegate to)\s+(?:a\s+|one\s+|multiple\s+)?subagents?\b/i.test(userText);
+   if (userRequestedSubagent && !hasSubagentEvidence(evidence)) {
+     issues.push("the user explicitly requested subagents but no subagent tool was called");
+   }
+@@ -990,7 +1050,7 @@ const plugin = {
+       const priorRun = finalizeRunEvidence.get(runKey);
+       const chainState = sequentialChainRuns.get(runKey);
+       const userText = chainState?.userText || priorRun?.userText || requirement.text || lastUserFromMessages(event?.messages);
+-      const attemptEvidence = currentTurnEvidence(event?.messages);
++      const attemptEvidence = currentTurnEvidence(event?.messages, requirement.index);
+       const mergedEvidence = mergeTurnEvidence(priorRun?.evidence, attemptEvidence);
+       const turnEvidence = chainState
+         ? { ...mergedEvidence, successfulToolResults: Math.max(mergedEvidence.successfulToolResults, Number(chainState.completed || 0)) }
+@@ -1021,7 +1081,10 @@ const plugin = {
+       const chainProgress = settings.enforceExplicitCounts
+         ? chainContinuationInstruction(userText, turnEvidence)
+         : "";
+-      const continuationReason = [chainProgress, behaviorIssues.join("; ")]
++      const subagentProgress = settings.enforceExplicitCounts
++        ? subagentContinuationInstruction(userText, turnEvidence)
++        : "";
++      const continuationReason = [chainProgress, subagentProgress, behaviorIssues.join("; ")]
+         .filter(Boolean)
+         .join("\n\n");
+       const record = {
+@@ -1045,6 +1108,7 @@ const plugin = {
+           successfulToolResults: turnEvidence.successfulToolResults,
+           toolNames: [...turnEvidence.toolNames],
+           successfulToolNames: [...turnEvidence.successfulToolNames],
++          acceptedSessionSpawns: successfulToolResultCount(turnEvidence, /^sessions_spawn$/i),
+         },
+         finalTextChars: text.length,
+         finalTextPreview: redactDiagnosticText(text.trim(), 1200),
+@@ -1059,7 +1123,7 @@ const plugin = {
+         retry: {
+           idempotencyKey: `agent-unfinished-coding:${runKey}`,
+           maxAttempts: maxRevisionAttempts,
+-          instruction: chainProgress || (settings.verifyOperationalClaims || settings.enforceExplicitCounts
++          instruction: chainProgress || subagentProgress || (settings.verifyOperationalClaims || settings.enforceExplicitCounts
+             ? `The previous answer cannot finalize yet: ${behaviorIssues.join("; ")}. ${genericInstruction}`
+             : minimalInstruction),
+         },
+@@ -1107,6 +1171,8 @@ export {
+   mergeTurnEvidence,
+   expectedSequentialExecCall,
+   requestedToolCallCount,
++  requestedSubagentCount,
++  subagentContinuationInstruction,
+   isReplayProtectedToolAction,
+   replayProtectedActionFingerprint,
+   sequentialChainIncomplete,

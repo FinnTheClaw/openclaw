@@ -545,3 +545,68 @@ openclaw gateway restart
 sleep 8
 openclaw gateway status --deep
 ```
+
+## subagent-fanout-silence-v30
+
+- Date captured: 2026-07-27
+- Base package: `openclaw@2026.7.1-2`
+- Core patch: `patches/openclaw-2026.7.1-2/subagent-fanout-silence-v30.patch`
+- Core patch SHA-256: `fdd593b593204ea4af97e137e6250c36bb62787cc336ebb1404ae440730456f9`
+- Debug-hook patch: `patches/debug-hooks/turn-integrity-v30.patch`
+- Debug-hook patch SHA-256: `c5b2289203dbd0fb57d6ada90f9dc206d90c08d89304cdef771ff5f08a20fb10`
+- Snapshot: `/Users/aiapi/backups/finn-subagent-fanout-20260727T211240Z`
+
+### Problem
+
+Finn was asked to queue ten paper-writing subagents. After every successful
+`sessions_spawn`, OpenClaw injected guidance ending with an unconditional
+instruction to reply `NO_REPLY` when a completion event arrived after a final
+answer. The local Qwen parent generalized that instruction to the current
+original direct turn and attempted `NO_REPLY` after only two accepted workers.
+
+The fail-closed debug hook prevented silent delivery, but it did not recognize
+counted subagent requests and rebuilt evidence from the latest hidden
+continuation message. Earlier accepted spawns therefore disappeared from the
+hook's count.
+
+### Fix
+
+- constrain `NO_REPLY` to a later completion-event turn after a visible final
+  answer has already been delivered;
+- explicitly require every user-requested worker to be spawned before yielding
+  or finalizing;
+- recognize numeric and common word-form worker counts in queue/spawn requests;
+- count successful `sessions_spawn` results by tool-result id across hidden
+  continuations;
+- anchor evidence to the original behavioral request;
+- reject `NO_REPLY` on a direct counted-fanout turn, including after all workers
+  have been accepted, until a visible acknowledgement is returned;
+- record accepted spawn count in redacted finalization diagnostics.
+
+The concurrency limit remains unchanged. Finn may accept and durably queue more
+workers than the two local-model slots that execute simultaneously.
+
+### Verification
+
+- focused source test for spawn-note wording: 6 passed;
+- `debug-hooks-continuation-replay.test.mjs`: pass;
+- `debug-hooks-subagent-fanout.test.mjs`: pass, including 2/10, 4/10 after
+  hidden continuation, 10/10 silent rejection, and visible 10/10 acceptance;
+- `node --check` passed for the hook and both compiled OpenClaw targets;
+- the version-matched overlay verifier runs
+  `subagent-fanout-silence-v30.test.mjs`.
+
+### Rollback
+
+The complete snapshot can be restored directly. Patch-level rollback is:
+
+```bash
+patch --batch -R -p1 -d ~/.openclaw/plugins/debug-hooks \
+  < patches/debug-hooks/turn-integrity-v30.patch
+sudo patch --batch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw \
+  < patches/openclaw-2026.7.1-2/subagent-fanout-silence-v30.patch
+openclaw config validate
+openclaw gateway restart
+sleep 8
+openclaw gateway status --deep
+```

@@ -248,7 +248,32 @@
       "patch_file": "patches/debug-hooks/turn-integrity-v29.patch",
       "sha256": "ac2d02e226f7e38a58293db0da3d2b772c35cc3d8d5d68a2a4166fa723af7dcf",
       "purpose": "Reject exact replay of already-successful mutations during hidden continuation and reject waiting-for-workers progress text as terminal completion.",
-      "status": "applied-live-on-moira-and-provisioner"
+      "status": "superseded-by-debug-hooks-turn-integrity-v30"
+    },
+    {
+      "id": "subagent-fanout-silence-v30",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/subagent-system-prompt-Bs91RWap.js",
+        "dist/openclaw-tools-KulZ1cdH.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/subagent-fanout-silence-v30.patch",
+      "sha256": "fdd593b593204ea4af97e137e6250c36bb62787cc336ebb1404ae440730456f9",
+      "purpose": "Prevent post-spawn guidance from inducing NO_REPLY on the original direct turn and require explicitly counted worker fanout to finish before yielding.",
+      "status": "applied-on-disk-moira-pending-process-restart"
+    },
+    {
+      "id": "debug-hooks-turn-integrity-v30",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "~/.openclaw/plugins/debug-hooks/index.js",
+        "~/.openclaw/bin/debug-hooks-index.js",
+        "cluster/provisioner/debug-hooks-index.js"
+      ],
+      "patch_file": "patches/debug-hooks/turn-integrity-v30.patch",
+      "sha256": "c5b2289203dbd0fb57d6ada90f9dc206d90c08d89304cdef771ff5f08a20fb10",
+      "purpose": "Count successful sessions_spawn results across hidden continuations, reject premature NO_REPLY, and provide authoritative N-of-M fanout continuation instructions.",
+      "status": "applied-on-disk-moira-and-provisioner-pending-process-restart"
     },
     {
       "id": "recovered-cli-usage-errors",
