@@ -595,6 +595,18 @@ workers than the two local-model slots that execute simultaneously.
 - `node --check` passed for the hook and both compiled OpenClaw targets;
 - the version-matched overlay verifier runs
   `subagent-fanout-silence-v30.test.mjs`.
+- after one intentional gateway recycle, the live canary parent run
+  `b7ebb349-dce0-48b9-b4fd-57ef626e6be3` accepted exactly three workers
+  (`efb0dd23-2186-4c5c-b819-939af86f02b0`,
+  `4c104263-1ff1-461c-bc33-140ca84d5c43`, and
+  `9c95baff-131b-45b7-a682-580e9d817bae`) and returned the visible marker
+  `FANOUT_ACCEPTED_3`.
+
+The first live attempt through `moira/brain` never reached the fanout code
+because the coordinator returned 503 while Narya's brain model was unloaded
+and failed to hand the request to Moira's loaded fallback. The successful
+canary therefore used the explicit `moira/coding` route to isolate and certify
+the OpenClaw behavior without changing coordinator state.
 
 ### Rollback
 
