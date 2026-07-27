@@ -20,7 +20,15 @@ const LOCAL_MODEL_LEAN_DENY_TOOL_NAMES = new Set([
   "tts",
   "video_generate",
 ]);
-const LOCAL_MODEL_LEAN_DIRECT_TOOL_NAMES = new Set(["exec"]);
+// Keep the minimal execution and orchestration primitives visible. The system
+// prompt explicitly directs larger work to sessions_spawn; cataloging that tool
+// makes the prompt contract self-contradictory for local models and can leave a
+// parent repeatedly attempting setup work instead of delegating.
+const LOCAL_MODEL_LEAN_DIRECT_TOOL_NAMES = new Set([
+  "exec",
+  "sessions_spawn",
+  "sessions_yield",
+]);
 const LOCAL_MODEL_LEAN_TOOL_SEARCH_DEFAULTS = {
   enabled: true,
   mode: "tools",

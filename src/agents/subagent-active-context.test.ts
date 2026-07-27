@@ -14,7 +14,7 @@ beforeEach(() => {
 });
 
 describe("buildActiveSubagentSystemPromptAddition", () => {
-  it("returns nothing without active children", () => {
+  it("returns nothing without controlled children", () => {
     expect(
       buildActiveSubagentSystemPromptAddition({
         cfg: {} as OpenClawConfig,
@@ -45,11 +45,44 @@ describe("buildActiveSubagentSystemPromptAddition", () => {
       hasSessionsYield: true,
     });
 
-    expect(prompt).toContain("## Active Subagents");
+    expect(prompt).toContain("## Subagent Runtime State");
+    expect(prompt).toContain("scope=active");
     expect(prompt).toContain("taskName=inspect_state");
     expect(prompt).toContain("session=agent:main:subagent:active-context");
     expect(prompt).toContain("sessions_yield");
     expect(prompt).toContain("reports/evidence");
+  });
+
+  it("preserves recently completed child state across sessions_yield wake turns", () => {
+    const now = Date.now();
+    const run = {
+      runId: "run-completed-context",
+      childSessionKey: "agent:main:subagent:completed-context",
+      controllerSessionKey: "agent:main:main",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "write completed artifact",
+      taskName: "completed_worker",
+      label: "Completed worker",
+      cleanup: "keep",
+      createdAt: now - 2_000,
+      startedAt: now - 1_500,
+      endedAt: now - 500,
+      outcome: { status: "ok" },
+    } satisfies SubagentRunRecord;
+    addSubagentRunForTests(run);
+
+    const prompt = buildActiveSubagentSystemPromptAddition({
+      cfg: {} as OpenClawConfig,
+      controllerSessionKey: "agent:main:main",
+      hasSessionsYield: true,
+    });
+
+    expect(prompt).toContain("## Subagent Runtime State");
+    expect(prompt).toContain("scope=recent");
+    expect(prompt).toContain("taskName=completed_worker");
+    expect(prompt).toContain("status=done");
+    expect(prompt).toContain("do not wait for them again");
   });
 
   it("normalizes public main aliases before looking up active children", () => {

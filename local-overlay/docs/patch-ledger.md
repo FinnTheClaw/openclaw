@@ -142,341 +142,166 @@ Then restart the affected gateway/node process intentionally before relying on r
 
 ### Problem
 
-Skill Workshop system instructions told agents to leave generated skills as pending proposals unless the user separately asked to apply them. That blocked Owen's desired autonomous workflow where a request to integrate or create a skill should make the skill live after validation.
-
-### Fix
-
-The Skill Workshop prompt now treats create/add/integrate/install/wire/use/update requests as authorization to create or revise, validate, and apply the skill immediately. Pending proposals remain for explicit draft/review requests, failed validation, or blocked applies.
-
-### Verification
-
-The matching source checkout change passed:
-
-```bash
-pnpm test:unit:fast src/agents/system-prompt.test.ts src/agents/agent-tools.before-tool-call.embedded-mode.test.ts
-pnpm tsgo:core
-```
-
-Patch repo verification checks that the installed package contains the new live-by-default text and that `node --check` passes for the patched file.
-
-### Rollback
-
-Reverse the patch against the installed package:
-
-```bash
-patch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw < patches/openclaw-2026.6.6/skill-workshop-live-by-default.patch
-```
-
-Then restart the affected gateway/node process intentionally before relying on restored proposal-only behavior.
-
-## node-restart-skip-gateway-port-preflight
-
-- Date captured: 2026-07-06
-- Base package: `openclaw@2026.6.6`
-- Live target: `dist/launchd-FSKBDZ2p.js`
-- Patch file: `patches/openclaw-2026.6.6/node-restart-skip-gateway-port-preflight.patch`
-- Patch SHA-256: `8aa3c05d7ed11740ec83ef3465279c43c0f8b331dbebc294a54a03e82db28ef3`
-- Workspace source commit: `fa902361e3 Skip gateway port preflight for node restart`
-
-### Problem
-
-`openclaw node restart` used the shared LaunchAgent restart helper, which checked that the configured gateway port was free before restarting any LaunchAgent. On Moira this consumed Owen's node restart approval and then failed because the healthy gateway owned port `18789`.
-
-### Fix
-
-Run gateway listener stale-process cleanup only when the LaunchAgent label resolves to a gateway service. Node LaunchAgents skip the gateway port ownership preflight, because their `--port` value points at the gateway rather than a node-owned listener.
-
-### Verification
-
-The matching source checkout change passed:
-
-```bash
-env -u XPC_SERVICE_NAME -u XPC_FLAGS -u LAUNCH_JOB_LABEL -u LAUNCH_JOB_NAME -u OPENCLAW_LAUNCHD_LABEL -u OPENCLAW_SERVICE_KIND -u OPENCLAW_SERVICE_MARKER -u OPENCLAW_SERVICE_VERSION node scripts/test-projects.mjs src/daemon/launchd.test.ts
-pnpm tsgo:core
-```
-
-Patch repo verification checks that the installed package uses `isCurrentGatewayLaunchdLabel(label, serviceEnv)` before resolving gateway stale-cleanup ports and that `node --check` passes for the patched file.
-
-### Rollback
-
-Reverse the patch against the installed package:
-
-```bash
-patch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw < patches/openclaw-2026.6.6/node-restart-skip-gateway-port-preflight.patch
-```
-
-Then restart the affected gateway/node process intentionally before relying on restored legacy restart preflight behavior.
-
-## openai-gpt56-thinking-policy
-
-- Date captured: 2026-07-11
-- Base package: `openclaw@2026.6.6`
-- Live target: `dist/thinking-policy-D2pce6l8.js`
-- Patch file: `patches/openclaw-2026.6.6/openai-gpt56-thinking-policy.patch`
-- Patch SHA-256: `94d8803128f673e579d987399b57587cd80a1d6de04c6a38dd22c20fbb98e547`
-
-### Problem
-
-Upstream `openclaw@2026.7.1-beta.5` adds GPT-5.6 preview model refs and an OpenAI thinking policy where `gpt-5.6*` supports both `xhigh` and `max`. Moira's safe config-only integration made the models visible, but the installed `openclaw@2026.6.6` thinking policy still omitted GPT-5.6 from the OpenAI xhigh model sets and never exposed `max`.
-
-### Fix
-
-Backport only the OpenAI thinking-policy portion needed by the local config integration:
-
-- add `gpt-5.6` to the OpenAI and Codex xhigh model prefix lists;
-- add `max` whenever the normalized model id starts with `gpt-5.6`.
-
-This intentionally does not upgrade the full package or change the running default model.
-
-### Verification
-
-```bash
-/Users/aiapi/openclaw-patches/scripts/apply.sh /opt/homebrew/lib/node_modules/openclaw
-/Users/aiapi/openclaw-patches/scripts/verify.sh /opt/homebrew/lib/node_modules/openclaw
-node --check /opt/homebrew/lib/node_modules/openclaw/dist/thinking-policy-D2pce6l8.js
-```
-
-The workspace GPT-5.6 regression additionally checks the installed thinking policy alongside the config/spec guard.
-
-### Rollback
-
-Reverse the patch against the installed package:
-
-```bash
-patch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw < patches/openclaw-2026.6.6/openai-gpt56-thinking-policy.patch
-```
-
-Then restart the affected gateway/node process intentionally before relying on restored legacy thinking policy behavior.
-
-## jake-parent-fork-dynamic-context-tokens
-
-- Date captured: 2026-07-25
-- Base package: `openclaw@2026.7.2`
-- Targets: `dist/session-accessor-BFted17j.js`, `dist/session-fork-B2y_KaMK.js`
-- Patch file: `patches/openclaw-2026.7.2/jake-parent-fork-dynamic-context-tokens.patch`
-- Patch SHA-256: `fe0de94b44df620fc0b0018814d538e3326303770575b6d0c0836ed2eda9e2ac`
-- Status: captured for matching Jake deployments; not applied to Moira's current `openclaw@2026.7.1-2`
-
-### Problem
-
-Jake child-session inheritance could fall back to a fixed 100k-token parent
-limit even when the parent session or selected model had a larger configured
-context window. Large but valid parent sessions therefore started children
-with isolated context.
-
-### Fix
-
-Resolve the inheritance ceiling from the parent session first, then the
-configured agent default or selected model context, with 100k used only as a
-last fallback. The SQLite session decision uses the persisted parent context
-limit when available.
-
-### Verification
-
-The patch is syntactically captured and registered with its checksum. Apply and
-verify it only against an exact `openclaw@2026.7.2` package; the generic
-`scripts/verify.sh` checks every version-matched patch and JavaScript target.
-
-### Rollback
-
-```bash
-sudo patch --batch -R -p1 -d /path/to/openclaw \
-  < patches/openclaw-2026.7.2/jake-parent-fork-dynamic-context-tokens.patch
-```
-
-## transient-stream-continuation
-
-- Date captured: 2026-07-25
-- Base package: `openclaw@2026.7.1-2`
-- Targets: `dist/embedded-agent-DGUuxGR2.js`, `dist/selection-JInn13lc.js`
-- Patch file: `patches/openclaw-2026.7.1-2/transient-stream-continuation.patch`
-- Patch SHA-256: `b6b141388c06b6db86bd5bcab339aed691996920801b6c1a80ec354f9a18db32`
-- Live pre-change snapshot: `/Users/aiapi/backups/finn-transient-stream-continuation-20260726T030646Z`
-
-### Problem
-
-A Narya coordinator recovery terminated Finn's active OpenAI-compatible stream
-with `UND_ERR_SOCKET`. The final assistant event correctly carried
-`stopReason=error`, but trajectory classification counted earlier progress
-fragments and synthesized payloads as success. With no configured model
-fallback, Signal received the generic terminal failure and the persisted turn
-was abandoned.
-
-### Fix
-
-- classify an explicit final assistant error as non-deliverable even when
-  progress fragments exist;
-- for transient transport failures after partial progress, continue from the
-  persisted transcript instead of replaying the original prompt;
-- cap continuation at two attempts and exclude true timeouts, aborts,
-  authentication/rate-limit/billing failures, and committed deliveries.
-
-### Verification
-
-The compiled regression executes the terminal classifier and asserts that
-partial text plus synthesized payloads cannot override `stopReason=error`. It
-also verifies the bounded continuation prompt, persistence suppression, and
-diagnostic marker. Both candidate JavaScript bundles pass `node --check`.
-
-### Rollback
-
-```bash
-sudo patch --batch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw \
-  < patches/openclaw-2026.7.1-2/transient-stream-continuation.patch
-sudo launchctl kickstart -k system/com.finnclaw.openclaw.finn
-```
-
-## finalize-retry-failclosed
-
-- Date captured: 2026-07-26
-- Base package: `openclaw@2026.7.1-2`
-- Targets: `dist/bash-process-registry-17q1dHVV.js`,
-  `dist/embedded-agent-DGUuxGR2.js`,
-  `dist/lifecycle-hook-helpers-BwL6869q.js`,
-  `dist/selection-JInn13lc.js`
-- Core patch: `patches/openclaw-2026.7.1-2/finalize-retry-failclosed.patch`
-- Core patch SHA-256: `e8614a62e469960fadeb1e01ddd266fba644f0b7be5d1cd2d358de690ff8abbf`
-- Debug-hook patch: `patches/debug-hooks/turn-integrity-v27.patch`
-- Debug-hook patch SHA-256: `cebe2726f5a81cd3e19d4a9093486d694e81b848edc7f3ebed7357df06572292`
-- Live snapshot: `/Users/aiapi/backups/finn-followthrough-failclosed-20260726T042804Z`
-- Upstream PR: <https://github.com/openclaw/openclaw/pull/114004>
-
-### Problem
-
-Finn ended a macOS permissions-check turn after progress text. The debug hook
-correctly rejected the unfinished response, but its retry budget and the core
-runner's retry budget could disagree. The lifecycle normalizer converted
-exhausted retry metadata into ordinary `continue`, and the attempt layer then
-accepted progress-only text as success. A separate process-registry race could
-drop the result of an innocuous command that exited while `exec` was
-transitioning it to background polling.
-
-### Fix
-
-- keep unfinished-output classification in the plugin while making core the
-  sole owner of the bounded retry budget;
-- return an explicit `exhausted` lifecycle outcome instead of silently
-  normalizing it to `continue`;
-- suppress unfinished terminal delivery and emit a visible `incomplete_turn`
-  error after five unsuccessful revision attempts;
-- retain the exit status and output of a process that terminates during the
-  foreground-to-background transition.
-
-No coordinator, model route, Signal account, or cluster networking settings
-were changed.
-
-### Verification
-
-The source patch passed 56 focused tests, Oxfmt, Oxlint, `pnpm tsgo:prod`, and
-`pnpm tsgo:test:root`. Live validation exercised:
-
-1. a fast-exiting process canary;
-2. a forced unfinished-output case through all five revisions, which returned
-   explicit `incomplete_turn` instead of success;
-3. a normal macOS permissions check using three successful tool calls and one
-   concise final answer;
-4. a healthy gateway probe after the single process recycle.
-
-The registry regression checks compiled markers, JavaScript syntax, the
-fail-closed lifecycle path, process-result retention, and debug-hook revision
-`turn-integrity-v27`.
-
-### Rollback
-
-```bash
-sudo patch --batch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw \
-  < patches/openclaw-2026.7.1-2/finalize-retry-failclosed.patch
-patch --batch -R -p1 -d ~/.openclaw/plugins/debug-hooks \
-  < patches/debug-hooks/turn-integrity-v27.patch
-```
-
-Restore the pre-change debug-hook retry setting and intentionally recycle the
-gateway, or use the complete snapshot rollback script.
-
-## finn-wedge-rootcause
-
-- Date captured: 2026-07-26
-- Base package: `openclaw@2026.7.1-2`
-- Core patch: `patches/openclaw-2026.7.1-2/finn-wedge-rootcause.patch`
-- Core patch SHA-256: `3c28636b46d0feb726b91d1e24698ca1e6539a5e441977bcf0660a1543bc995b`
-- Debug-hook patch: `patches/debug-hooks/turn-integrity-v28.patch`
-- Debug-hook patch SHA-256: `213e2a638ed1fe05c10e16e43de5235ad67c9abcaf86cd611d0a22a5f4b9e204`
-- Snapshot: `/Users/aiapi/backups/finn-wedge-rootcause-20260726T164526Z`
-
-### Problem
-
-Fast foreground `exec` called an undeclared
-`activeBackgroundExecSessionIds` symbol and crashed the gateway. Restart
-recovery then tried Signal through unsupported `message.action`, so its notice
-was lost. Separately, the terminal guard treated “let me know” and a
-tool-proven macOS permission blocker as promises of more agent work. A final
-`NO_REPLY` could also escape when earlier progress text existed in the attempt.
-
-### Fix
-
-- remove the undeclared registry reference and execute the exact registry
-  export in regression coverage;
-- classify the last non-empty assistant text, rather than requiring every
-  fragment to be `NO_REPLY`;
-- send restart recovery through the generic channel `send` method;
-- preserve v27 fail-closed retry ownership while accepting proven external
-  permission/authentication blockers as terminal.
-
-### Verification
-
-The canonical frozen artifact accepts the complete ordered overlay, all four
-compiled regression suites pass, the corrected overlay verifies idempotently,
-the v28 hook patch applies exactly over v27, and the hook behavioral suite
-covers both true unfinished action announcements and valid permission
-blockers. Live validation used one intentional gateway recycle, completed a
-fast foreground `exec` canary without a new stability exception, then resumed
-the interrupted Signal session with one successful filesystem workflow and one
-delivered terminal reply.
-
-### Rollback
-
-Use the complete snapshot above, or reverse `turn-integrity-v28.patch` and then
-`finn-wedge-rootcause.patch`; validate before one intentional gateway recycle.
-
-## recovered-cli-usage-errors
-
-- Date captured: 2026-07-26
-- Base package: `openclaw@2026.7.1-2`
-- Patch: `patches/openclaw-2026.7.1-2/recovered-cli-usage-errors.patch`
-- Patch SHA-256: `97a06466fac4a7f465ada56a8b9bbdf81cd046f6c48d32ebacd547205f534517`
-- Snapshot: `/Users/aiapi/backups/finn-cli-recovery-20260726T172901Z`
-
-### Problem
-
-Finn correctly recovered from an `openclaw agent` invocation that omitted a
-required target selector, but the successful retry added `--agent finn`.
-OpenClaw's mutation guard compared the raw shell fingerprints, retained the
-superseded failure, and appended an alarming exec-failed banner to an otherwise
-successful Signal reply.
-
-### Fix
-
-Build a conservative retry identity only for single `openclaw agent`
-invocations. The identity removes the four routing selectors and harmless
-timing/output wrappers while preserving the message and every other argument.
-Only a recognized CLI usage/selection error followed by a successful invocation
-with the same identity clears the banner. Compound commands fail closed, and an
-unrelated success cannot clear the failure. Replay and side-effect state remain
-unchanged.
-
-### Verification
-
-The source suite passes 307 focused tests across both embedded-agent projects
-and the mutation unit project. Oxfmt, Oxlint, the full production build, compiled
-JavaScript syntax/import checks, and the packaged regression test pass. The
-whole-repository legacy TypeScript checker exceeded both 4 GiB and 8 GiB heaps;
-the production build's compiler completed successfully.
-
-### Rollback
-
-```bash
-sudo patch --batch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw \
-  < patches/openclaw-2026.7.1-2/recovered-cli-usage-errors.patch
-```
-
-Then intentionally recycle the gateway once.
+Skill Workshop system instructions told agents to leave generated skills as pending proposals unless t…15613 tokens truncated…ect(isLocalModelLeanEnabled({ config: cfg, agentId: "main" })).toBe(false);
+    expect(
+      filterLocalModelLeanTools({
+        tools: tools(["read", "browser", "cron", "message", "exec"]),
+        config: cfg,
+        agentId: "main",
+      }).map((tool) => tool.name),
+    ).toEqual(["read", "browser", "cron", "message", "exec"]);
+  });
+
+  it("inherits global lean mode when an agent experimental block omits the flag", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          experimental: {
+            localModelLean: true,
+          },
+        },
+        list: [
+          {
+            id: "main",
+            experimental: {},
+          },
+        ],
+      },
+    };
+
+    expect(isLocalModelLeanEnabled({ config: cfg, agentId: "main" })).toBe(true);
+    expect(
+      filterLocalModelLeanTools({
+        tools: tools(["read", "browser", "cron", "message", "exec"]),
+        config: cfg,
+        agentId: "main",
+      }).map((tool) => tool.name),
+    ).toEqual(["read", "exec"]);
+  });
+
+  it("keeps global lean mode for an agent id without an agent entry", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          experimental: {
+            localModelLean: true,
+          },
+        },
+      },
+    };
+
+    expect(isLocalModelLeanEnabled({ config: cfg, agentId: "ad-hoc" })).toBe(true);
+    expect(
+      filterLocalModelLeanTools({
+        tools: tools(["read", "browser", "cron", "message", "exec"]),
+        config: cfg,
+        agentId: "ad-hoc",
+      }).map((tool) => tool.name),
+    ).toEqual(["read", "exec"]);
+  });
+
+  it("uses the configured default agent when no agent id is explicit", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        list: [
+          {
+            id: "gemma",
+            default: true,
+            experimental: {
+              localModelLean: true,
+            },
+          },
+        ],
+      },
+    };
+
+    expect(isLocalModelLeanEnabled({ config: cfg })).toBe(true);
+    expect(
+      filterLocalModelLeanTools({
+        tools: tools(["read", "browser", "cron", "message", "exec"]),
+        config: cfg,
+      }).map((tool) => tool.name),
+    ).toEqual(["read", "exec"]);
+  });
+
+  it("uses the agent from an agent session key", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        list: [
+          {
+            id: "main",
+            experimental: {
+              localModelLean: false,
+            },
+          },
+          {
+            id: "gemma",
+            experimental: {
+              localModelLean: true,
+            },
+          },
+        ],
+      },
+    };
+
+    expect(isLocalModelLeanEnabled({ config: cfg, sessionKey: "agent:gemma:main" })).toBe(true);
+    expect(
+      filterLocalModelLeanTools({
+        tools: tools(["read", "browser", "cron", "message", "exec"]),
+        config: cfg,
+        sessionKey: "agent:gemma:main",
+      }).map((tool) => tool.name),
+    ).toEqual(["read", "exec"]);
+  });
+
+  it("defaults lean runs to structured Tool Search controls", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          experimental: {
+            localModelLean: true,
+          },
+        },
+      },
+    };
+
+    const resolved = applyLocalModelLeanToolSearchDefaults({ config: cfg, agentId: "main" });
+
+    expect(resolved).not.toBe(cfg);
+    expect(resolved?.tools?.toolSearch).toEqual({
+      enabled: true,
+      mode: "tools",
+      searchDefaultLimit: 5,
+      maxSearchLimit: 10,
+    });
+    expect(cfg.tools?.toolSearch).toBeUndefined();
+  });
+
+  it("preserves explicit Tool Search operator config", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          experimental: {
+            localModelLean: true,
+          },
+        },
+      },
+      tools: {
+        toolSearch: false,
+      },
+    };
+
+    expect(applyLocalModelLeanToolSearchDefaults({ config: cfg, agentId: "main" })).toBe(cfg);
+  });
+
+  it("keeps execution and subagent orchestration outside the lean Tool Search catalog", () => {
+    expect(shouldCatalogToolForLocalModelLean({ name: "exec" } as AnyAgentTool)).toBe(false);
+    expect(
+      shouldCatalogToolForLocalModelLean({ name: "sessions_spawn" } as AnyAgentTool),
+    ).toBe(false);
+    expect(
+      shouldCatalogToolForLocalModelLean({ name: "sessions_yield" } as AnyAgentTool),
+    ).toBe(false);
+    expect(shouldCatalogToolForLocalModelLean({ name: "read" } as AnyAgentTool)).toBe(true);
+  });
+});
