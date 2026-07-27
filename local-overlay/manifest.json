@@ -100,7 +100,7 @@
       "patch_file": "patches/openclaw-2026.6.6/skill-workshop-live-by-default.patch",
       "sha256": "ae9a1c6c79bec3d0bb68b33923daa06089a182c14341e3a6443f3254c7a2f1ce",
       "purpose": "Make Skill Workshop create/add/integrate/install/update requests validate and apply skills immediately unless the user asks for proposal-only review.",
-      "status": "applied-on-disk-moira-pending-process-restart"
+      "status": "applied-live-on-moira"
     },
     {
       "id": "node-restart-skip-gateway-port-preflight",
@@ -273,7 +273,7 @@
       "patch_file": "patches/debug-hooks/turn-integrity-v30.patch",
       "sha256": "c5b2289203dbd0fb57d6ada90f9dc206d90c08d89304cdef771ff5f08a20fb10",
       "purpose": "Count successful sessions_spawn results across hidden continuations, reject premature NO_REPLY, and provide authoritative N-of-M fanout continuation instructions.",
-      "status": "applied-on-disk-moira-and-provisioner-pending-process-restart"
+      "status": "applied-live-on-moira-and-provisioner"
     },
     {
       "id": "recovered-cli-usage-errors",
