@@ -337,8 +337,14 @@ describe("local model lean tool filtering", () => {
     expect(applyLocalModelLeanToolSearchDefaults({ config: cfg, agentId: "main" })).toBe(cfg);
   });
 
-  it("keeps exec outside the lean Tool Search catalog", () => {
+  it("keeps execution and subagent orchestration outside the lean Tool Search catalog", () => {
     expect(shouldCatalogToolForLocalModelLean({ name: "exec" } as AnyAgentTool)).toBe(false);
+    expect(shouldCatalogToolForLocalModelLean({ name: "sessions_spawn" } as AnyAgentTool)).toBe(
+      false,
+    );
+    expect(shouldCatalogToolForLocalModelLean({ name: "sessions_yield" } as AnyAgentTool)).toBe(
+      false,
+    );
     expect(shouldCatalogToolForLocalModelLean({ name: "read" } as AnyAgentTool)).toBe(true);
   });
 });

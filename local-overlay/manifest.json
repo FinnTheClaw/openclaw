@@ -223,7 +223,32 @@
       "patch_file": "patches/debug-hooks/turn-integrity-v28.patch",
       "sha256": "213e2a638ed1fe05c10e16e43de5235ad67c9abcaf86cd611d0a22a5f4b9e204",
       "purpose": "Preserve core-owned fail-closed retries while accepting tool-proven external permission blockers and treating user-facing 'let me know' language as terminal rather than an unfinished agent promise.",
+      "status": "superseded-by-debug-hooks-turn-integrity-v29"
+    },
+    {
+      "id": "local-model-orchestration-v29",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/tool-search-B8B4Spes.js",
+        "dist/selection-JInn13lc.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/local-model-orchestration-v29.patch",
+      "sha256": "2a95865f74c0ecb4b1337caeb7984407b4b5fc52ffe602e2fdc19df286ceae2f",
+      "purpose": "Expose spawn and nonblocking yield directly to lean local-model parents, and retain recently settled subagent state across partial completion wakes.",
       "status": "applied-live-on-moira"
+    },
+    {
+      "id": "debug-hooks-turn-integrity-v29",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "~/.openclaw/plugins/debug-hooks/index.js",
+        "~/.openclaw/bin/debug-hooks-index.js",
+        "cluster/provisioner/debug-hooks-index.js"
+      ],
+      "patch_file": "patches/debug-hooks/turn-integrity-v29.patch",
+      "sha256": "ac2d02e226f7e38a58293db0da3d2b772c35cc3d8d5d68a2a4166fa723af7dcf",
+      "purpose": "Reject exact replay of already-successful mutations during hidden continuation and reject waiting-for-workers progress text as terminal completion.",
+      "status": "applied-live-on-moira-and-provisioner"
     },
     {
       "id": "recovered-cli-usage-errors",

@@ -1,0 +1,148 @@
+diff --git a/index.js b/index.js
+index 4f807c4..dfd4865 100644
+--- a/index.js
++++ b/index.js
+@@ -3,9 +3,10 @@ import path from "node:path";
+ import crypto from "node:crypto";
+ import { spawn } from "node:child_process";
+ 
+-const AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v28";
++const AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v29";
+ const finalizeRunEvidence = new Map();
+ const sequentialChainRuns = new Map();
++const successfulReplayProtectedActions = new Map();
+ const DEBUG_LOG_MAX_BYTES = 8 * 1024 * 1024;
+ const DEBUG_LOG_ROTATIONS = 4;
+ let debugLogDirOverride;
+@@ -397,6 +398,8 @@ function looksLikeUnfinishedCoding(text, summary, userText = "") {
+     /^(?:now\s+)?(?:checking|querying|inspecting|verifying|testing|running|reading|fetching|trying|continuing|investigating|debugging)\b/i.test(trimmed);
+   const trailingActionAnnouncement =
+     /(?:^|\n|[.!?]\s+)(?:now\s+)?(?:checking|querying|inspecting|verifying|testing|running|reading|fetching|trying|continuing|investigating|debugging)\b[^.!?]*[.!]?\s*$/i.test(trimmed);
++  const deferredRequiredWork =
++    /\bwaiting\s+for\b[\s\S]{0,180}\bbefore\s+(?:creating|writing|building|verifying|testing|finishing|completing|continuing)\b/i.test(trimmed);
+   const terminal = /(?:^|\n)\s*(?:done|finished|complete|verified|passed)\s*[.!]?\s*$/i.test(trimmed)
+     || /\b(?:blocked|cannot|can't|can not|need external|needs external)\b/i.test(trimmed);
+   const provenExternalBlocker =
+@@ -408,7 +411,11 @@ function looksLikeUnfinishedCoding(text, summary, userText = "") {
+   // core runner owns error recovery, and a later successful tool result plus
+   // a declarative final answer is a valid terminal state.
+   return !terminal && !provenExternalBlocker && (
+-    promise || trailingAction || shortActionAnnouncement || trailingActionAnnouncement
++    promise ||
++    trailingAction ||
++    shortActionAnnouncement ||
++    trailingActionAnnouncement ||
++    deferredRequiredWork
+   );
+ }
+ 
+@@ -458,6 +465,38 @@ function shortHash(value) {
+   return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 16);
+ }
+ 
++function stableJson(value) {
++  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
++  if (!value || typeof value !== "object") return JSON.stringify(value);
++  return `{${Object.keys(value)
++    .sort()
++    .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
++    .join(",")}}`;
++}
++
++function isReplayProtectedToolAction(toolName, params) {
++  const name = String(toolName || "").toLowerCase();
++  if ([
++    "write",
++    "edit",
++    "apply_patch",
++    "file_write",
++    "sessions_spawn",
++    "message",
++    "cron",
++  ].includes(name)) {
++    return true;
++  }
++  if (name !== "exec" && name !== "bash") return false;
++  const command = String(params?.command || params?.cmd || "");
++  return /(?:^|[\s;&|])(?:mkdir|touch|rm|rmdir|mv|cp|install|chmod|chown|kill|pkill|reboot|shutdown)(?:\s|$)|(?:^|[\s;&|])(?:brew|npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:^|[\s;&|])git\s+(?:add|commit|push|pull|merge|rebase|checkout|switch|reset|clean)\b|(?:^|[\s;&|])(?:launchctl|systemctl)\s+(?:bootout|bootstrap|disable|enable|kickstart|restart|start|stop)\b|(?:^|[\s;&|])(?:echo|printf)\b[^;\n]*(?:>>|>)|(?:>>|>)\s*(?:["']?)[^\s;&|]+/i.test(command);
++}
++
++function replayProtectedActionFingerprint(toolName, params) {
++  if (!isReplayProtectedToolAction(toolName, params)) return undefined;
++  return shortHash(`${String(toolName || "").toLowerCase()}:${stableJson(params || {})}`);
++}
++
+ function booleanSetting(api, key, fallback) {
+   const value = api?.pluginConfig?.[key];
+   return typeof value === "boolean" ? value : fallback;
+@@ -850,6 +889,34 @@ const plugin = {
+           return undefined;
+         }
+       }
++      const completedActions = successfulReplayProtectedActions.get(runKey);
++      const replayFingerprint = replayProtectedActionFingerprint(
++        event?.toolName,
++        event?.params || event?.input,
++      );
++      if (
++        !chain &&
++        finalizeRunEvidence.has(runKey) &&
++        replayFingerprint &&
++        completedActions?.has(replayFingerprint)
++      ) {
++        const reason =
++          `Continuation replay guard blocked an exact repeat of the already-successful ` +
++          `${String(event?.toolName || "tool")} action. Treat that action as complete and proceed ` +
++          `to the next unfinished step; do not retry it.`;
++        appendJsonl(ctx, "continuation-replay.jsonl", {
++          at: new Date().toISOString(),
++          hook: "before_tool_call",
++          action: "block-completed-action-replay",
++          reason,
++          toolName: event?.toolName,
++          fingerprint: replayFingerprint,
++          runId: event?.runId || ctx?.runId,
++          sessionId: event?.sessionId || ctx?.sessionId,
++          sessionKey: event?.sessionKey || ctx?.sessionKey,
++        });
++        return { block: true, blockReason: reason };
++      }
+       const protection = settings.protectCompletedArtifacts ? protectCompletedArtifacts(event, ctx) : undefined;
+       if (protection?.block) {
+         appendJsonl(ctx, "artifact-protection.jsonl", {
+@@ -883,6 +950,18 @@ const plugin = {
+           resultPreview: event?.error || event?.isError ? redactDiagnosticText(resultText, 700) : undefined,
+         });
+       }
++      if (!event?.error && !event?.isError) {
++        const fingerprint = replayProtectedActionFingerprint(
++          event?.toolName,
++          event?.params || event?.input,
++        );
++        if (fingerprint) {
++          const runKey = durableRunKey(event, ctx);
++          const completed = successfulReplayProtectedActions.get(runKey) || new Set();
++          completed.add(fingerprint);
++          successfulReplayProtectedActions.set(runKey, completed);
++        }
++      }
+       if (!settings.enforceExplicitCounts) return undefined;
+       const runKey = durableRunKey(event, ctx);
+       const chain = sequentialChainRuns.get(runKey);
+@@ -996,6 +1075,7 @@ const plugin = {
+         finalizeRunEvidence.delete(runKey);
+         sequentialChainRuns.delete(runKey);
+       }
++      successfulReplayProtectedActions.delete(runKey);
+       if (event?.success && settings.backupWorkspace) {
+         runWorkspaceBackup(ctx, "prompt");
+       }
+@@ -1027,6 +1107,8 @@ export {
+   mergeTurnEvidence,
+   expectedSequentialExecCall,
+   requestedToolCallCount,
++  isReplayProtectedToolAction,
++  replayProtectedActionFingerprint,
+   sequentialChainIncomplete,
+   sequentialChainSpec,
+   sequentialChainSystemContext,

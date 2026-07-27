@@ -34,7 +34,7 @@ assert.doesNotMatch(
   "the frozen registry has no activeBackgroundExecSessionIds declaration and must not reference it",
 );
 const processRegistryModule = await import(
-  `${pathToFileURL(path.join(target, "dist", "bash-process-registry-17q1dHVV.js")).href}?wedge-regression=${Date.now()}`,
+  `${pathToFileURL(path.join(target, "dist", "bash-process-registry-17q1dHVV.js")).href}?wedge-regression=${Date.now()}`
 );
 const runningSession = { id: "wedge-regression", backgrounded: false, exited: false };
 assert.doesNotThrow(
@@ -52,7 +52,10 @@ assert.doesNotMatch(
 );
 
 assert.match(selection, /outcome\.action !== "revise" && outcome\.action !== "exhausted"/);
-assert.match(selection, /before_agent_finalize retry metadata exhausted; refusing unfinished success/);
+assert.match(
+  selection,
+  /before_agent_finalize retry metadata exhausted; refusing unfinished success/,
+);
 assert.match(selection, /return \{ suppressTerminalDelivery: true \}/);
 assert.doesNotMatch(
   selection,
@@ -72,7 +75,7 @@ const pluginPath = process.env.OPENCLAW_DEBUG_HOOKS_FILE;
 if (pluginPath) {
   assert.ok(fs.existsSync(pluginPath), `debug hook candidate does not exist: ${pluginPath}`);
   const plugin = fs.readFileSync(pluginPath, "utf8");
-  assert.match(plugin, /AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v28"/);
+  assert.match(plugin, /AGENT_DEBUG_HOOK_REVISION = "turn-integrity-v29"/);
   assert.match(plugin, /const shouldRevise = behaviorIssues\.length > 0/);
   assert.match(plugin, /Math\.min\(5, Math\.floor\(configuredMaxRevisions\)\)/);
   assert.doesNotMatch(
