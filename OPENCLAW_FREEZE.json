@@ -9,9 +9,10 @@
   "frozen_repository": "/Users/aiapi/workspace/openclaw-frozen",
   "upstream_mirror": "/Users/aiapi/workspace/openclaw-upstream",
   "overlay_directory": "local-overlay",
-  "overlay_source_commit": "a5fbfdaf1551d2f63224c15503ad9c6b8953f949",
-  "canonical_artifact": "/Users/aiapi/openclaw-artifacts/frozen/2026.7.1-2/openclaw-2026.7.1-2.tgz",
-  "canonical_artifact_sha256": "f9f6ad9e130ea6bda6976ba690f21764eb92ec57696dc07e693c41341c656b65",
+  "overlay_source_commit": "f0342e9309e3f5d4e5b194fe605fdc04d99d131c",
+  "canonical_artifact": "/Users/aiapi/openclaw-artifacts/frozen/2026.7.1-2/openclaw-2026.7.1-2-finn-f0342e9.tgz",
+  "canonical_artifact_sha256": "4bcbeae2e9b2fba8e29b12ed41bf0bdedb27678dfaf4dcd9f95907bf80fa253b",
+  "canonical_runtime_tree_sha256": "8d26eacef3a38c40287e1fddb8e2b91c9d525ce464deee26618c28442187fd61",
   "automatic_runtime_updates": false,
   "selected_upstream_changes_only": true,
   "created_at": "2026-07-26T05:35:00Z"
