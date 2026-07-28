@@ -2,7 +2,12 @@
 // session write-lock behavior.
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Context, Model, SimpleStreamOptions } from "../../llm/types.js";
+import type {
+  AssistantMessage,
+  Context,
+  Model,
+  SimpleStreamOptions,
+} from "../../llm/types.js";
 import {
   createUserTurnTranscriptRecorder,
   takeRuntimeUserTurnTranscriptContext,
@@ -189,6 +194,48 @@ describe("AgentSession getLastAssistantText", () => {
     const session = await createSessionFromManager(sessionManager);
 
     expect(session.getLastAssistantText()).toBe("previous answer");
+  });
+});
+
+describe("AgentSession post-agent run control", () => {
+  it("consumes sessions_yield as a one-shot stop before retry or auto-compaction", async () => {
+    const sessionManager = SessionManager.inMemory();
+    const session = await createSessionFromManager(sessionManager);
+    const internals = session as unknown as {
+      lastAssistantMessage: AssistantMessage;
+      handlePostAgentRun: () => Promise<boolean>;
+      checkCompaction: () => Promise<boolean>;
+    };
+    const assistant = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "yielding" }],
+      api: "openai-responses" as const,
+      provider: testModel.provider,
+      model: testModel.id,
+      usage: {
+        input: 100,
+        output: 10,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 110,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "toolUse" as const,
+      timestamp: Date.now(),
+    };
+    const checkCompaction = vi.spyOn(internals, "checkCompaction").mockResolvedValue(true);
+
+    internals.lastAssistantMessage = assistant;
+    session.requestPostAgentRunStop("sessions_yield");
+
+    await expect(internals.handlePostAgentRun()).resolves.toBe(false);
+    expect(checkCompaction).not.toHaveBeenCalled();
+
+    // The stop is one-shot: an ordinary later boundary still follows normal
+    // compaction policy.
+    internals.lastAssistantMessage = assistant;
+    await expect(internals.handlePostAgentRun()).resolves.toBe(true);
+    expect(checkCompaction).toHaveBeenCalledTimes(1);
   });
 });
 

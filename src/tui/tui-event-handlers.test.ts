@@ -104,6 +104,7 @@ describe("tui-event-handlers: handleAgentEvent", () => {
     const loadHistory = vi.fn<() => Promise<TuiHistoryLoadResult>>(async () => ({
       loaded: true,
       inFlightRunId: null,
+      sessionStatus: null,
     }));
     const localRunIds = new Set<string>();
     const localBtwRunIds = new Set<string>();
@@ -1549,7 +1550,7 @@ describe("tui-event-handlers: handleAgentEvent", () => {
     loadHistory.mockImplementation(async () => {
       expect(state.activeChatRunId).toBeNull();
       expect(state.activityStatus).toBe("idle");
-      return { loaded: true, inFlightRunId: null };
+      return { loaded: true, inFlightRunId: null, sessionStatus: null };
     });
 
     handleChatEvent({
@@ -1933,7 +1934,9 @@ describe("tui-event-handlers: handleAgentEvent", () => {
       });
       loadHistory.mockReturnValueOnce(result);
       return (loaded: boolean, inFlightRunId: string | null = null) =>
-        resolveHistory(loaded ? { loaded: true, inFlightRunId } : { loaded: false });
+        resolveHistory(
+          loaded ? { loaded: true, inFlightRunId, sessionStatus: null } : { loaded: false },
+        );
     };
 
     it("waits for terminal persistence before rebuilding an active external run", async () => {
@@ -2128,7 +2131,7 @@ describe("tui-event-handlers: handleAgentEvent", () => {
       loadHistory.mockImplementationOnce(async () => {
         state.activeChatRunId = "run-reset";
         state.activityStatus = "streaming";
-        return { loaded: true as const, inFlightRunId: "run-reset" };
+        return { loaded: true as const, inFlightRunId: "run-reset", sessionStatus: null };
       });
 
       handleSessionsChangedEvent({
@@ -2287,7 +2290,7 @@ describe("tui-event-handlers: streaming watchdog", () => {
     return { state, chatLog, tui, setActivityStatus, loadHistory, noteLocalRunId, handlers };
   };
 
-  it("keeps the active run busy when no stream delta arrives for the watchdog window", () => {
+  it("keeps the active run busy when no stream delta arrives for the watchdog window", async () => {
     const { state, chatLog, setActivityStatus, handlers } = createHarness({
       streamingWatchdogMs: 5_000,
     });
@@ -2302,7 +2305,7 @@ describe("tui-event-handlers: streaming watchdog", () => {
     expect(setActivityStatus).toHaveBeenLastCalledWith("streaming");
     expect(state.activeChatRunId).toBe("run-stuck");
 
-    vi.advanceTimersByTime(5_001);
+    await vi.advanceTimersByTimeAsync(5_001);
 
     expect(setActivityStatus).not.toHaveBeenCalledWith("idle");
     expect(state.activeChatRunId).toBe("run-stuck");
@@ -2311,7 +2314,37 @@ describe("tui-event-handlers: streaming watchdog", () => {
     handlers.dispose?.();
   });
 
-  it("keeps deferred history reload pending while the watchdog waits on the active run", () => {
+  it("reconciles a missed terminal event from canonical history", async () => {
+    const { state, chatLog, tui, setActivityStatus, loadHistory, handlers } = createHarness({
+      streamingWatchdogMs: 5_000,
+    });
+    loadHistory.mockResolvedValue({
+      loaded: true,
+      inFlightRunId: null,
+      sessionStatus: "done",
+    });
+
+    handlers.handleChatEvent({
+      runId: "run-terminal",
+      sessionKey: state.currentSessionKey,
+      state: "delta",
+      message: { content: "persisted final reply" },
+    } satisfies ChatEvent);
+
+    await vi.advanceTimersByTimeAsync(5_001);
+
+    expect(loadHistory).toHaveBeenCalledTimes(1);
+    expect(state.activeChatRunId).toBeNull();
+    expect(state.pendingOptimisticUserMessage).toBe(false);
+    expect(setActivityStatus).toHaveBeenLastCalledWith("idle");
+    expect(chatLog.addPendingSystem).not.toHaveBeenCalled();
+    expect(chatLog.dismissPendingSystem).toHaveBeenCalledWith("run-terminal");
+    expect(tui.requestRender).toHaveBeenCalledWith(true);
+
+    handlers.dispose?.();
+  });
+
+  it("keeps deferred history reload pending while the watchdog waits on the active run", async () => {
     const { state, loadHistory, noteLocalRunId, setActivityStatus, handlers } = createHarness({
       streamingWatchdogMs: 5_000,
     });
@@ -2332,11 +2365,11 @@ describe("tui-event-handlers: streaming watchdog", () => {
 
     expect(loadHistory).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(5_001);
+    await vi.advanceTimersByTimeAsync(5_001);
 
     expect(state.activeChatRunId).toBe("run-stuck");
     expect(setActivityStatus).not.toHaveBeenCalledWith("idle");
-    expect(loadHistory).not.toHaveBeenCalled();
+    expect(loadHistory).toHaveBeenCalledTimes(1);
 
     handlers.dispose?.();
   });
@@ -2565,7 +2598,7 @@ describe("tui-event-handlers: streaming watchdog", () => {
     handlers.dispose?.();
   });
 
-  it("does not let another run replace a watchdog-noticed active run", () => {
+  it("does not let another run replace a watchdog-noticed active run", async () => {
     const { state, chatLog, setActivityStatus, handlers } = createHarness({
       streamingWatchdogMs: 5_000,
     });
@@ -2577,7 +2610,7 @@ describe("tui-event-handlers: streaming watchdog", () => {
       message: { content: "old" },
     } satisfies ChatEvent);
 
-    vi.advanceTimersByTime(5_001);
+    await vi.advanceTimersByTimeAsync(5_001);
     expect(state.activeChatRunId).toBe("run-old");
     expect(chatLog.addPendingSystem).toHaveBeenCalledWith("run-old", expectedTimeoutMessage);
 
@@ -2626,7 +2659,7 @@ describe("tui-event-handlers: streaming watchdog", () => {
     expect(chatLog.addPendingSystem).not.toHaveBeenCalled();
   });
 
-  it("dismisses the watchdog notice when a delta arrives after the watchdog fires", () => {
+  it("dismisses the watchdog notice when a delta arrives after the watchdog fires", async () => {
     const { state, chatLog, handlers } = createHarness({
       streamingWatchdogMs: 5_000,
     });
@@ -2638,7 +2671,7 @@ describe("tui-event-handlers: streaming watchdog", () => {
       message: { content: "starting" },
     } satisfies ChatEvent);
 
-    vi.advanceTimersByTime(5_001);
+    await vi.advanceTimersByTimeAsync(5_001);
     expect(chatLog.addPendingSystem).toHaveBeenCalledWith("run-late", expectedTimeoutMessage);
 
     handlers.handleChatEvent({
@@ -2653,7 +2686,7 @@ describe("tui-event-handlers: streaming watchdog", () => {
     handlers.dispose?.();
   });
 
-  it("dismisses the watchdog notice when the final arrives after the watchdog fires", () => {
+  it("dismisses the watchdog notice when the final arrives after the watchdog fires", async () => {
     const { state, chatLog, handlers } = createHarness({
       streamingWatchdogMs: 5_000,
     });
@@ -2665,7 +2698,7 @@ describe("tui-event-handlers: streaming watchdog", () => {
       message: { content: "starting" },
     } satisfies ChatEvent);
 
-    vi.advanceTimersByTime(5_001);
+    await vi.advanceTimersByTimeAsync(5_001);
     expect(chatLog.addPendingSystem).toHaveBeenCalledWith("run-final-late", expectedTimeoutMessage);
 
     handlers.handleChatEvent({

@@ -444,6 +444,42 @@ export function findCutPoint(
   };
 }
 
+function findProgressingCutPoint(params: {
+  entries: SessionTreeEntry[];
+  startIndex: number;
+  endIndex: number;
+  keepRecentTokens: number;
+  hasPreviousCompaction: boolean;
+}): CutPointResult {
+  const initial = findCutPoint(
+    params.entries,
+    params.startIndex,
+    params.endIndex,
+    params.keepRecentTokens,
+  );
+  if (!params.hasPreviousCompaction || initial.firstKeptEntryIndex > params.startIndex) {
+    return initial;
+  }
+
+  // A second compaction can be requested when the retained tail plus fixed
+  // prompt/tool overhead still exceeds the provider budget. Reusing the same
+  // boundary only re-summarizes the old prefix, leaves the oversized tail
+  // intact, and can create an infinite compaction chain. Tighten the recent
+  // budget once, then fall back to the smallest valid retained suffix so every
+  // successful successor compaction advances its boundary.
+  const tightenedKeepRecentTokens = Math.max(1, Math.floor(params.keepRecentTokens / 2));
+  const tightened = findCutPoint(
+    params.entries,
+    params.startIndex,
+    params.endIndex,
+    tightenedKeepRecentTokens,
+  );
+  if (tightened.firstKeptEntryIndex > params.startIndex) {
+    return tightened;
+  }
+  return findCutPoint(params.entries, params.startIndex, params.endIndex, 1);
+}
+
 export const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
@@ -656,6 +692,8 @@ export async function generateSummary(
 export interface CompactionPreparation {
   /** Entry id where retained history starts. */
   firstKeptEntryId: string;
+  /** Newest user-authored request across the full pre-compaction branch. */
+  activeUserRequest?: string;
   /** Messages summarized into the history summary. */
   messagesToSummarize: AgentMessage[];
   /** Prefix messages summarized separately when compaction splits a turn. */
@@ -691,9 +729,11 @@ export function prepareCompaction(
 
   let previousSummary: string | undefined;
   let boundaryStart = 0;
+  let previousFirstKeptEntryId: string | undefined;
   if (prevCompactionIndex >= 0) {
     const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
     previousSummary = prevCompaction.summary;
+    previousFirstKeptEntryId = prevCompaction.firstKeptEntryId;
     const firstKeptEntryIndex = pathEntries.findIndex(
       (entry) => entry.id === prevCompaction.firstKeptEntryId,
     );
@@ -703,7 +743,13 @@ export function prepareCompaction(
 
   const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
-  const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
+  const cutPoint = findProgressingCutPoint({
+    entries: pathEntries,
+    startIndex: boundaryStart,
+    endIndex: boundaryEnd,
+    keepRecentTokens: settings.keepRecentTokens,
+    hasPreviousCompaction: prevCompactionIndex >= 0,
+  });
   const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
   if (!firstKeptEntry?.id) {
     return err(
@@ -714,6 +760,11 @@ export function prepareCompaction(
     );
   }
   const firstKeptEntryId = firstKeptEntry.id;
+  if (previousFirstKeptEntryId !== undefined && firstKeptEntryId === previousFirstKeptEntryId) {
+    // There is no newer valid turn boundary to compact. Returning no work is
+    // safer than persisting another identical boundary and retriggering.
+    return ok(undefined);
+  }
 
   const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
   const messagesToSummarize: AgentMessage[] = [];
@@ -741,6 +792,7 @@ export function prepareCompaction(
 
   return ok({
     firstKeptEntryId,
+    activeUserRequest: findLatestAuthoritativeUserRequest(pathEntries),
     messagesToSummarize,
     turnPrefixMessages,
     isSplitTurn: cutPoint.isSplitTurn,
@@ -766,6 +818,67 @@ Summarize the prefix to provide context for the retained suffix:
 
 Be concise. Focus on what's needed to understand the kept suffix.`;
 
+const ACTIVE_USER_REQUEST_MAX_CHARS = 6000;
+
+function extractUserMessageText(message: AgentMessage): string {
+  if (message.role !== "user") {
+    return "";
+  }
+  const content = (message as { content: unknown }).content;
+  if (typeof content === "string") {
+    return content.trim();
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((block) =>
+      block && typeof block === "object"
+        ? getCompactionContentBlockText(block as { type: string; content?: unknown; text?: string })
+        : "",
+    )
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function isInternalRuntimeUserText(text: string): boolean {
+  return (
+    text.includes("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>") ||
+    text.includes("OpenClaw runtime context (internal):") ||
+    text.includes("[Internal task completion event]")
+  );
+}
+
+/** Return the newest real user request, excluding runtime-generated user-role events. */
+export function findLatestAuthoritativeUserRequest(
+  entries: readonly SessionTreeEntry[],
+): string | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type !== "message") {
+      continue;
+    }
+    const text = extractUserMessageText(entry.message);
+    if (!text || isInternalRuntimeUserText(text)) {
+      continue;
+    }
+    return text;
+  }
+  return undefined;
+}
+
+function formatActiveUserRequestAnchor(text: string | undefined): string {
+  if (!text) {
+    return "";
+  }
+  const bounded =
+    text.length <= ACTIVE_USER_REQUEST_MAX_CHARS
+      ? text
+      : `${text.slice(0, ACTIVE_USER_REQUEST_MAX_CHARS)}\n[request truncated]`;
+  return `\n\n**Current user-authored request (verbatim):**\n${bounded}`;
+}
+
 export { serializeConversation } from "./utils.js";
 
 /** Generate compaction summary data from prepared session history. */
@@ -782,6 +895,7 @@ export async function compact(
 ): Promise<Result<CompactionResult, CompactionError>> {
   const {
     firstKeptEntryId,
+    activeUserRequest,
     messagesToSummarize,
     turnPrefixMessages,
     isSplitTurn,
@@ -836,7 +950,10 @@ export async function compact(
     if (!turnPrefixResult.ok) {
       return err(turnPrefixResult.error);
     }
-    summary = `${historyResult.value}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value}`;
+    const activeUserRequestAnchor = formatActiveUserRequestAnchor(activeUserRequest);
+    summary =
+      `${historyResult.value}\n\n---\n\n**Turn Context (split turn):**\n\n` +
+      `${turnPrefixResult.value}${activeUserRequestAnchor}`;
   } else {
     const summaryResult = await generateSummary(
       messagesToSummarize,

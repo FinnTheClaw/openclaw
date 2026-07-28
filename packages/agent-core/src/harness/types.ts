@@ -754,6 +754,7 @@ export interface CompactionSettings {
 /** Prepared compaction inputs exposed to hooks before a summary is generated. */
 export interface CompactionPreparation {
   firstKeptEntryId: string;
+  activeUserRequest?: string;
   messagesToSummarize: AgentMessage[];
   turnPrefixMessages: AgentMessage[];
   isSplitTurn: boolean;

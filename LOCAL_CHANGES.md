@@ -13,7 +13,9 @@ corresponding to the `2026.7.1` source used by the installed
 - Weekly maintenance must never merge, rebase, reset, or otherwise mutate this
   frozen repository.
 - `local-overlay/` contains the complete durable patch registry currently
-  applied to Finn and packaged for Jake.
+  applied historically to Finn and packaged for Jake. Current turn-lifecycle
+  behavior is source-integrated; old compiled patches are retained as rollback
+  evidence and are not layered over a source-integrated build.
 - The canonical deployable artifact and its SHA-256 are recorded in
   `OPENCLAW_FREEZE.json`. Large runtime artifacts remain outside Git.
 
@@ -28,3 +30,23 @@ candidate has a written compatibility report and explicit promotion approval.
 
 Direct fast-forwarding from upstream, automatic dependency upgrades, and
 runtime-bearing agent updates are prohibited.
+
+## Source-integrated behavioral contract
+
+`turn-lifecycle-v53` is implemented in the frozen source and verified before
+packaging. It provides typed yield/resume ownership, durable continuation
+state, evidence-backed completion, failed-tool and accidental-silence recovery,
+mutation replay protection, bounded subagent orchestration, dynamic
+parent-fork context sizing, and TUI terminal-history reconciliation.
+
+Generated natural-language phrases are not production control inputs. Exact
+phrases may appear in regression fixtures or protocol sentinels only.
+
+Every source-built artifact must:
+
+1. come from a clean reviewed commit;
+2. be stamped with that commit and behavior contract;
+3. pass the affected source suites, full build, package verifier, and Alistar
+   certification before Finn/Jake promotion;
+4. update `OPENCLAW_FREEZE.json` only after the artifact hash and runtime tree
+   hash are final.

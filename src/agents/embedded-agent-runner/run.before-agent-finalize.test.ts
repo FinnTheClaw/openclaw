@@ -40,12 +40,67 @@ function finalAnswerAttempt(
 function attemptCall(index: number): {
   prompt?: string;
   suppressNextUserMessagePersistence?: boolean;
+  beforeAgentFinalizeRevisionAttempts?: number;
 } {
   const call = mockedRunEmbeddedAttempt.mock.calls[index];
   if (!call) {
     throw new Error(`Expected embedded attempt call ${index}`);
   }
-  return call[0] as { prompt?: string; suppressNextUserMessagePersistence?: boolean };
+  return call[0] as {
+    prompt?: string;
+    suppressNextUserMessagePersistence?: boolean;
+    beforeAgentFinalizeRevisionAttempts?: number;
+  };
+}
+
+function completedToolProgressAttempt(params: {
+  id: string;
+  command: string;
+  text: string;
+  revisionReason?: string;
+}): EmbeddedRunAttemptResult {
+  const toolUse = {
+    role: "assistant",
+    stopReason: "toolUse",
+    provider: "openai",
+    model: "gpt-5.5",
+    content: [
+      {
+        type: "toolCall",
+        id: params.id,
+        name: "exec",
+        arguments: { command: params.command },
+      },
+    ],
+  };
+  return finalAnswerAttempt(params.text, {
+    beforeAgentFinalizeRevisionReason: params.revisionReason,
+    toolMetas: [{ toolName: "exec", meta: params.command, replaySafe: false }],
+    replayMetadata: {
+      hadPotentialSideEffects: true,
+      replaySafe: false,
+    },
+    itemLifecycle: {
+      startedCount: 1,
+      completedCount: 1,
+      activeCount: 0,
+    },
+    messagesSnapshot: [
+      toolUse as unknown as EmbeddedRunAttemptResult["messagesSnapshot"][number],
+      {
+        role: "toolResult",
+        toolCallId: params.id,
+        toolName: "exec",
+        isError: false,
+        content: [{ type: "text", text: "ok" }],
+      } as unknown as EmbeddedRunAttemptResult["messagesSnapshot"][number],
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: params.text }],
+      } as unknown as EmbeddedRunAttemptResult["messagesSnapshot"][number],
+    ],
+  });
 }
 
 describe("runEmbeddedAgent before_agent_finalize", () => {
@@ -74,7 +129,7 @@ describe("runEmbeddedAgent before_agent_finalize", () => {
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledWith(
       expect.objectContaining({
         beforeAgentFinalizeRevisionAttempts: 0,
-        maxBeforeAgentFinalizeRevisions: 3,
+        maxBeforeAgentFinalizeRevisions: 8,
       }),
     );
   });
@@ -103,6 +158,155 @@ describe("runEmbeddedAgent before_agent_finalize", () => {
     expect(attemptCall(1).prompt).toContain("Mention the validated behavior.");
     expect(attemptCall(1).prompt).not.toContain("hello");
     expect(attemptCall(1).suppressNextUserMessagePersistence).toBe(true);
+  });
+
+  it("renews the bounded finalize budget after a distinct durable mutation", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        completedToolProgressAttempt({
+          id: "call-a",
+          command: "touch /tmp/finalize-progress-first",
+          text: "First action completed; continuing.",
+          revisionReason: "Continue the unfinished request.",
+        }),
+      )
+      .mockResolvedValueOnce(
+        completedToolProgressAttempt({
+          id: "call-b",
+          command: "touch /tmp/finalize-progress-second",
+          text: "Second action completed; continuing.",
+          revisionReason: "Continue the unfinished request.",
+        }),
+      )
+      .mockResolvedValueOnce(finalAnswerAttempt("All work is complete."));
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-before-finalize-progress-renewal",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+    expect(attemptCall(1).beforeAgentFinalizeRevisionAttempts).toBe(1);
+    expect(attemptCall(2).beforeAgentFinalizeRevisionAttempts).toBe(1);
+  });
+
+  it("does not renew the finalize budget for the same repeated tool action", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        completedToolProgressAttempt({
+          id: "call-a",
+          command: "touch /tmp/finalize-progress-same",
+          text: "First attempt.",
+          revisionReason: "Continue the unfinished request.",
+        }),
+      )
+      .mockResolvedValueOnce(
+        completedToolProgressAttempt({
+          id: "call-b",
+          command: "touch /tmp/finalize-progress-same",
+          text: "Repeated attempt.",
+          revisionReason: "Continue the unfinished request.",
+        }),
+      )
+      .mockResolvedValueOnce(finalAnswerAttempt("All work is complete."));
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-before-finalize-no-false-progress",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+    expect(attemptCall(1).beforeAgentFinalizeRevisionAttempts).toBe(1);
+    expect(attemptCall(2).beforeAgentFinalizeRevisionAttempts).toBe(2);
+  });
+
+  it("does not renew the finalize budget for distinct read-only probes", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        completedToolProgressAttempt({
+          id: "call-read-a",
+          command: "wc -l first.py",
+          text: "First inspection completed; continuing.",
+          revisionReason: "Continue the unfinished request.",
+        }),
+      )
+      .mockResolvedValueOnce(
+        completedToolProgressAttempt({
+          id: "call-read-b",
+          command: "python3 -m py_compile second.py",
+          text: "Second inspection completed; continuing.",
+          revisionReason: "Continue the unfinished request.",
+        }),
+      )
+      .mockResolvedValueOnce(finalAnswerAttempt("All work is complete."));
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-before-finalize-read-only-no-renewal",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+    expect(attemptCall(1).beforeAgentFinalizeRevisionAttempts).toBe(1);
+    expect(attemptCall(2).beforeAgentFinalizeRevisionAttempts).toBe(2);
+  });
+
+  it("escalates once in-session when the finalize revision budget is exhausted", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        finalAnswerAttempt("Still inspecting.", {
+          beforeAgentFinalizeRevisionExhaustedReason:
+            "The tool-bearing turn has no valid terminal completion certificate.",
+        }),
+      )
+      .mockResolvedValueOnce(finalAnswerAttempt("Recovered and complete."));
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-before-finalize-exhaustion-recovery",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(attemptCall(1).prompt).toContain("continuation budget was exhausted");
+    expect(attemptCall(1).prompt).toContain("Change strategy now");
+    expect(attemptCall(1).prompt).toContain("no valid terminal completion certificate");
+    expect(attemptCall(1).beforeAgentFinalizeRevisionAttempts).toBe(0);
+    expect(attemptCall(1).suppressNextUserMessagePersistence).toBe(true);
+  });
+
+  it("fails closed instead of reporting success after bounded recovery is exhausted", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        finalAnswerAttempt("Still inspecting.", {
+          beforeAgentFinalizeRevisionExhaustedReason: "The request is still unfinished.",
+        }),
+      )
+      .mockResolvedValueOnce(
+        finalAnswerAttempt("Still inspecting again.", {
+          beforeAgentFinalizeRevisionExhaustedReason: "The request is still unfinished.",
+        }),
+      );
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-before-finalize-exhaustion-fail-closed",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(result.payloads?.[0]).toMatchObject({ isError: true });
+    expect(result.payloads?.[0]?.text).toContain("could not reach a verified terminal state");
+    expect(result.meta.replayInvalid).toBe(true);
+    expect(result.meta.livenessState).toBe("blocked");
+    expect(result.meta.error?.kind).toBe("incomplete_turn");
   });
 
   it("keeps finalizing when the attempt accepted a side-effecting revise decision", async () => {

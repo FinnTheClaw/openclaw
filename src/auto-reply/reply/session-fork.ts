@@ -1,3 +1,4 @@
+import { resolveContextTokensForModel } from "../../agents/context.js";
 import { resolveStorePath } from "../../config/sessions/paths.js";
 import {
   forkSessionEntryFromParentTarget,
@@ -104,10 +105,44 @@ function resolveParentForkStorePath(params: {
   );
 }
 
+function resolvePositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
+export function resolveParentForkMaxTokens(params: ParentForkDecisionParams): number {
+  const entryContextTokens = resolvePositiveInteger(params.parentEntry.contextTokens);
+  if (entryContextTokens !== undefined) {
+    return entryContextTokens;
+  }
+
+  const configDefaultContextTokens = resolvePositiveInteger(
+    params.config?.agents?.defaults?.contextTokens,
+  );
+  const provider = params.parentEntry.modelProvider ?? params.parentEntry.providerOverride;
+  const model = params.parentEntry.model ?? params.parentEntry.modelOverride;
+  const modelContextTokens =
+    provider || model
+      ? resolvePositiveInteger(
+          resolveContextTokensForModel({
+            cfg: params.config,
+            provider,
+            model,
+            fallbackContextTokens: configDefaultContextTokens ?? DEFAULT_PARENT_FORK_MAX_TOKENS,
+            allowAsyncLoad: false,
+          }),
+        )
+      : undefined;
+
+  return modelContextTokens ?? configDefaultContextTokens ?? DEFAULT_PARENT_FORK_MAX_TOKENS;
+}
+
 export async function resolveParentForkDecision(
   params: ParentForkDecisionParams,
 ): Promise<ParentForkDecision> {
-  const maxTokens = DEFAULT_PARENT_FORK_MAX_TOKENS;
+  const maxTokens = resolveParentForkMaxTokens(params);
   const parentTokens = await resolveParentForkTokenCount({
     parentEntry: params.parentEntry,
     storePath: resolveParentForkStorePath(params),

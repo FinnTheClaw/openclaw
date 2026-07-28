@@ -1167,6 +1167,8 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
         isError: true,
         executionStarted: false,
         errorKind: "argument-validation",
+        validationFailureCount: 2,
+        outputBudgetExhausted: true,
         result: { details: { status: "error", error } },
       } as never,
     );
@@ -1177,6 +1179,11 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
         phase: "result",
         toolErrorSummary: "edit tool validation failed: invalid arguments",
       }),
+    });
+    expect(ctx.state.lastToolError).toMatchObject({
+      toolName: "edit",
+      validationFailureCount: 2,
+      outputBudgetExhausted: true,
     });
     expect(JSON.stringify(onAgentEvent.mock.calls)).not.toContain("PTY_PLANTED_SECRET");
   });

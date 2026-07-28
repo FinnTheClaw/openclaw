@@ -300,6 +300,9 @@ describe("subagent registry steer restarts", () => {
     fallback?: ReturnType<typeof listMainRuns>[number];
     transcriptFile?: string;
     task?: string;
+    originalTask?: string;
+    steeringMessages?: string[];
+    steeringHistoryOmittedCount?: number;
   }) => {
     const replaced = mod.replaceSubagentRunAfterSteer({
       previousRunId: params.previousRunId,
@@ -307,6 +310,9 @@ describe("subagent registry steer restarts", () => {
       fallback: params.fallback,
       transcriptFile: params.transcriptFile,
       task: params.task,
+      originalTask: params.originalTask,
+      steeringMessages: params.steeringMessages,
+      steeringHistoryOmittedCount: params.steeringHistoryOmittedCount,
     });
     expect(replaced).toBe(true);
 
@@ -587,6 +593,30 @@ describe("subagent registry steer restarts", () => {
     expect(run.generation).toBe(2);
   });
 
+  it("persists root assignment and steering history separately from the restart prompt", () => {
+    registerRun({
+      runId: "run-steer-context-old",
+      childSessionKey: "agent:main:subagent:steer-context",
+      task: "complete the original assignment",
+    });
+
+    const previous = listMainRuns()[0];
+    const run = replaceRunAfterSteer({
+      previousRunId: "run-steer-context-old",
+      nextRunId: "run-steer-context-new",
+      fallback: previous,
+      task: "composed restart prompt",
+      originalTask: "complete the original assignment",
+      steeringMessages: ["first correction", "second correction"],
+      steeringHistoryOmittedCount: 2,
+    });
+
+    expect(run.task).toBe("composed restart prompt");
+    expect(run.originalTask).toBe("complete the original assignment");
+    expect(run.steeringMessages).toEqual(["first correction", "second correction"]);
+    expect(run.steeringHistoryOmittedCount).toBe(2);
+  });
+
   it("advances the generation from a fallback outside the live registry", () => {
     registerRun({
       runId: "run-fallback-generation-old",
@@ -630,6 +660,7 @@ describe("subagent registry steer restarts", () => {
     });
 
     expect(run.task).toBe("preserve me verbatim");
+    expect(run.originalTask).toBe("preserve me verbatim");
   });
 
   it("retains a legacy task owner fallback across another restart", () => {

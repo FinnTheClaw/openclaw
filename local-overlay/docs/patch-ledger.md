@@ -737,3 +737,46 @@ openclaw gateway restart
 sleep 8
 openclaw gateway status --deep
 ```
+## 2026-07-28 — Source-integrated turn lifecycle v53
+
+- Base runtime: `openclaw@2026.7.1-2`
+- Authoritative branch: `finn/frozen-2026.7.1-2`
+- Behavioral contract: `turn-lifecycle-v53`
+- Package verifier: `tests/source-integrated-turn-lifecycle-v53.test.mjs`
+
+### Why
+
+Compiled chunk patches were no longer a scalable source of truth. Chunk names
+change on every build, overlapping patches obscure which behavior is current,
+and phrase-level recovery rules can only recognize known examples. The
+long-term repair belongs in typed runtime state and source-level tests.
+
+### Source invariants
+
+- A parent that yields to a child records a typed yielded stop state, releases
+  its lock, and resumes from durable child evidence.
+- Finalization requires either user-visible output or verified completion
+  evidence, with unresolved requirements and tool errors kept nonterminal.
+- Direct user turns cannot disappear into silent reply tokens.
+- Successful mutations are replay-protected across hidden continuations.
+- Subagent state distinguishes active, yielded, resumed, and settled ownership.
+- Parent-fork limits come from parent, model, or configured context metadata,
+  with the historical 100k value used only as a conservative last resort.
+- A quiet TUI reconciles typed canonical session status and in-flight state
+  before deciding whether the run is terminal.
+
+Exact text remains in tests only when it is protocol syntax or a regression
+fixture. Production completion decisions do not depend on generated prose.
+
+### Verification
+
+- 24 affected test files passed, 860 tests total.
+- The full TypeScript/runtime build completed successfully.
+- Source-integrated packages are stamped with their clean source commit and are
+  rejected by the verifier if the stamp or structural invariants are missing.
+
+### Rollback
+
+Use the safety branch `safety/pre-v46-yield-state-20260728T2100Z` to restore the
+pre-consolidation source. Finn's complete pre-promotion runtime rollback remains
+at `/Users/aiapi/backups/finn-v52-promotion-20260728T2050Z/rollback.sh`.

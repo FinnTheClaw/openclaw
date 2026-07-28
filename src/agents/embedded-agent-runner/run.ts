@@ -266,12 +266,18 @@ const EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS = 30_000;
 const EMBEDDED_RUN_LANE_HEARTBEAT_MS = EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS / 2;
 const MID_TURN_PRECHECK_CONTINUATION_PROMPT =
   "Continue from the current transcript after the latest tool result. Do not repeat the original user request, and do not rerun completed tools unless the transcript shows they are still needed.";
+const COMPLETED_TOOL_RESULT_CONTINUATION_PROMPT =
+  "The latest tool call already completed and its result is recorded in the current transcript. Continue from that result without repeating the completed tool call or replaying the original request. Inspect the recorded result, take only distinct remaining actions that are still needed, and produce a user-visible final answer when the request is complete.";
+const MAX_COMPLETED_TOOL_RESULT_CONTINUATIONS = 2;
 const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
   "The previous attempt compacted the conversation context before producing a final user-visible answer. Continue from the compacted transcript and produce the final answer now. Do not restart from scratch, do not repeat completed work, and do not rerun tools unless the transcript clearly lacks required evidence.";
 const NO_REAL_CONVERSATION_MESSAGES_REASON = "no real conversation messages";
 const BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX =
   "Before accepting the previous final answer, apply this revision request and produce the revised final answer. Do not repeat completed work or rerun tools unless the request explicitly requires it.";
-const MAX_BEFORE_AGENT_FINALIZE_REVISIONS = 3;
+const MAX_BEFORE_AGENT_FINALIZE_REVISIONS = 8;
+const MAX_BEFORE_AGENT_FINALIZE_RECOVERY_ESCALATIONS = 1;
+const BEFORE_AGENT_FINALIZE_RECOVERY_PROMPT_PREFIX =
+  "The previous continuation budget was exhausted while the request was still unfinished. Recover in this same session without restarting or repeating completed work. Use the recorded tool results as authoritative state. Change strategy now: delegate a bounded independent subtask when an appropriate subagent is available, or take one distinct corrective action that advances the unresolved work. Verify the result before finalizing.";
 type EmbeddedRunAttemptForRunner = Awaited<ReturnType<typeof runEmbeddedAttemptWithBackend>>;
 type RunEmbeddedAgentParamsWithSessionFile = RunEmbeddedAgentParams & { sessionFile: string };
 
@@ -285,6 +291,160 @@ function isNoRealConversationCompactionNoop(params: {
     params.compacted === false &&
     params.reason === NO_REAL_CONVERSATION_MESSAGES_REASON
   );
+}
+
+function isDurableProgressToolCall(call: { name: string; arguments: unknown }): boolean {
+  const name = call.name.trim().toLowerCase();
+  if (
+    ["write", "edit", "apply_patch", "file_write", "sessions_spawn", "message", "cron"].includes(
+      name,
+    )
+  ) {
+    return true;
+  }
+  if (name !== "exec" && name !== "bash") {
+    return false;
+  }
+  const args =
+    call.arguments && typeof call.arguments === "object"
+      ? (call.arguments as Record<string, unknown>)
+      : {};
+  const command = String(args.command ?? args.cmd ?? args.script ?? "");
+  const mutationCommand = command
+    .replace(/(?:^|[\s;&|])\d*>\s*&\s*\d+\b/g, " ")
+    .replace(/(?:^|[\s;&|])\d*>>?\s*\/dev\/(?:null|stdout|stderr)\b/g, " ");
+  return /(?:^|[\s;&|])(?:mkdir|touch|rm|rmdir|mv|cp|install|chmod|chown|kill|pkill|reboot|shutdown)(?:\s|$)|(?:^|[\s;&|])(?:sed\s+-[^\s]*i|perl\s+-[^\s]*i)\b|(?:^|[\s;&|])(?:brew|apt(?:-get)?|dnf|yum|pacman|npm|pnpm|yarn)\s+(?:install|add|remove|uninstall|update|upgrade)\b|(?:^|[\s;&|])git\s+(?:add|commit|push|pull|merge|rebase|checkout|switch|reset|clean)\b|(?:^|[\s;&|])(?:launchctl|systemctl)\s+(?:bootout|bootstrap|disable|enable|kickstart|restart|start|stop)\b|(?:^|[\s;&|])(?:echo|printf)\b[^;\n]*(?:>>|>)|(?:>>|>)\s*(?:["']?)[^\s;&|]+/i.test(
+    mutationCommand,
+  );
+}
+
+function resolveCompletedSynchronousToolResultProgress(attempt: EmbeddedRunAttemptForRunner): {
+  key: string;
+  actionKey: string;
+  durableProgressActionKey?: string;
+  completedCount: number;
+} | null {
+  if (
+    attempt.lastToolError ||
+    attempt.clientToolCalls ||
+    attempt.yieldDetected ||
+    attempt.didSendDeterministicApprovalPrompt ||
+    (attempt.itemLifecycle?.activeCount ?? 0) > 0 ||
+    attempt.toolMetas.some((entry) => entry.asyncStarted === true)
+  ) {
+    return null;
+  }
+
+  for (
+    let assistantIndex = attempt.messagesSnapshot.length - 1;
+    assistantIndex >= 0;
+    assistantIndex -= 1
+  ) {
+    const assistant = attempt.messagesSnapshot[assistantIndex] as
+      | {
+          role?: unknown;
+          stopReason?: unknown;
+          content?: unknown;
+        }
+      | undefined;
+    if (
+      String(assistant?.role ?? "").toLowerCase() !== "assistant" ||
+      assistant?.stopReason !== "toolUse" ||
+      !Array.isArray(assistant.content)
+    ) {
+      continue;
+    }
+
+    const requestedToolCalls = assistant.content.flatMap((block) => {
+      if (!block || typeof block !== "object") {
+        return [];
+      }
+      const candidate = block as {
+        type?: unknown;
+        id?: unknown;
+        name?: unknown;
+        arguments?: unknown;
+        input?: unknown;
+      };
+      const type = String(candidate.type ?? "").toLowerCase();
+      return (type === "toolcall" || type === "tool_call" || type === "tool_use") &&
+        typeof candidate.id === "string"
+        ? [
+            {
+              id: candidate.id,
+              name: typeof candidate.name === "string" ? candidate.name : "",
+              arguments: candidate.arguments ?? candidate.input ?? {},
+            },
+          ]
+        : [];
+    });
+    const requestedToolCallIds = requestedToolCalls.map((call) => call.id);
+    if (requestedToolCallIds.length === 0) {
+      continue;
+    }
+
+    const completedToolCallIds = new Set<string>();
+    for (
+      let resultIndex = assistantIndex + 1;
+      resultIndex < attempt.messagesSnapshot.length;
+      resultIndex += 1
+    ) {
+      const message = attempt.messagesSnapshot[resultIndex] as
+        | {
+            role?: unknown;
+            toolCallId?: unknown;
+            isError?: boolean;
+          }
+        | undefined;
+      const role = String(message?.role ?? "")
+        .trim()
+        .toLowerCase();
+      if (
+        (role === "toolresult" || role === "tool_result" || role === "tool") &&
+        message?.isError !== true &&
+        typeof message?.toolCallId === "string"
+      ) {
+        completedToolCallIds.add(message.toolCallId);
+      }
+    }
+    if (!requestedToolCallIds.every((id) => completedToolCallIds.has(id))) {
+      // The latest requested tool batch is incomplete. Do not fall back to an
+      // older successful batch and misclassify stale progress as current.
+      return null;
+    }
+    const durableProgressCalls = requestedToolCalls.filter(isDurableProgressToolCall);
+    return {
+      key: requestedToolCallIds.join("|"),
+      actionKey: JSON.stringify(
+        requestedToolCalls.map((call) => ({
+          name: call.name,
+          arguments: call.arguments,
+        })),
+      ),
+      durableProgressActionKey:
+        durableProgressCalls.length > 0
+          ? JSON.stringify(
+              durableProgressCalls.map((call) => ({
+                name: call.name,
+                arguments: call.arguments,
+              })),
+            )
+          : undefined,
+      completedCount: requestedToolCallIds.length,
+    };
+  }
+  return null;
+}
+
+function needsCompletedToolResultContinuation(params: {
+  payloadCount: number;
+  attempt: EmbeddedRunAttemptForRunner;
+}): boolean {
+  if (params.payloadCount === 0) {
+    return true;
+  }
+  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
+  return assistant?.stopReason === "toolUse";
 }
 
 function resolveInitialThinkLevel(params: {
@@ -362,6 +522,10 @@ function resolveAttemptDispatchApiKey(params: {
 
 function buildBeforeAgentFinalizeRetryPrompt(reason: string): string {
   return `${BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX}\n\n${reason}`;
+}
+
+function buildBeforeAgentFinalizeRecoveryPrompt(reason: string): string {
+  return `${BEFORE_AGENT_FINALIZE_RECOVERY_PROMPT_PREFIX}\n\nOutstanding completion requirement:\n${reason}`;
 }
 
 function resolveEmbeddedRunLaneTimeoutMs(timeoutMs: number): number {
@@ -1630,7 +1794,11 @@ async function runEmbeddedAgentInternal(
       let reasoningOnlyRetryAttempts = 0;
       let emptyResponseRetryAttempts = 0;
       let compactionContinuationRetryAttempts = 0;
+      let completedToolResultContinuationProgressKey: string | undefined;
+      let completedToolResultContinuationAttempts = 0;
+      let beforeAgentFinalizeLastProgressKey: string | undefined;
       let beforeAgentFinalizeRevisionAttempts = 0;
+      let beforeAgentFinalizeRecoveryEscalations = 0;
       let sameModelIdleTimeoutRetries = 0;
       // Cost-runaway breaker for #76293. State lives at the run-loop level
       // on purpose so it survives across attempt boundaries and across
@@ -3979,6 +4147,43 @@ async function runEmbeddedAgentInternal(
           const terminalToolPresentation = incompleteTurnFallbackSafe
             ? readAttemptTerminalToolPresentation()
             : undefined;
+          const completedToolResultProgress =
+            resolveCompletedSynchronousToolResultProgress(attempt);
+          const continuingSameCompletedToolResult = Boolean(
+            completedToolResultProgress &&
+            completedToolResultProgress.key === completedToolResultContinuationProgressKey &&
+            completedToolResultContinuationAttempts > 0,
+          );
+          if (
+            completedToolResultProgress &&
+            completedToolResultProgress.key !== completedToolResultContinuationProgressKey
+          ) {
+            completedToolResultContinuationProgressKey = completedToolResultProgress.key;
+            completedToolResultContinuationAttempts = 0;
+          }
+          if (
+            incompleteTurnText &&
+            !aborted &&
+            !promptError &&
+            !timedOut &&
+            completedToolResultProgress &&
+            ((attempt.toolMetas?.length ?? 0) > 0 || continuingSameCompletedToolResult) &&
+            needsCompletedToolResultContinuation({ payloadCount, attempt }) &&
+            completedToolResultContinuationAttempts < MAX_COMPLETED_TOOL_RESULT_CONTINUATIONS
+          ) {
+            completedToolResultContinuationAttempts += 1;
+            nextAttemptPromptOverride = COMPLETED_TOOL_RESULT_CONTINUATION_PROMPT;
+            suppressNextUserMessagePersistence = true;
+            reasoningOnlyRetryInstruction = null;
+            emptyResponseRetryInstruction = null;
+            compactionContinuationRetryInstruction = null;
+            log.warn(
+              `settled post-tool turn lacked a continuation: runId=${params.runId} sessionId=${params.sessionId} ` +
+                `tools=${completedToolResultProgress.completedCount} — continuing ${completedToolResultContinuationAttempts}/${MAX_COMPLETED_TOOL_RESULT_CONTINUATIONS} ` +
+                "from the recorded tool result without replaying completed tools",
+            );
+            continue;
+          }
           if (
             !emptyAssistantReplyIsSilent &&
             attemptCompactionCount > 0 &&
@@ -4003,6 +4208,101 @@ async function runEmbeddedAgentInternal(
             continue;
           }
           compactionContinuationRetryInstruction = null;
+          const beforeAgentFinalizeRevisionExhaustedReason =
+            attempt.beforeAgentFinalizeRevisionExhaustedReason;
+          if (
+            beforeAgentFinalizeRevisionExhaustedReason &&
+            !aborted &&
+            !promptError &&
+            !timedOut &&
+            !attempt.clientToolCalls &&
+            !attempt.yieldDetected &&
+            !emptyAssistantReplyIsSilent
+          ) {
+            const currentProgressKey = completedToolResultProgress?.durableProgressActionKey;
+            const observedNewDurableProgress = Boolean(
+              currentProgressKey &&
+              currentProgressKey !== beforeAgentFinalizeLastProgressKey &&
+              (attempt.toolMetas?.length ?? 0) > 0,
+            );
+            if (observedNewDurableProgress) {
+              beforeAgentFinalizeLastProgressKey = currentProgressKey;
+              beforeAgentFinalizeRevisionAttempts = 0;
+              beforeAgentFinalizeRecoveryEscalations = 0;
+              nextAttemptPromptOverride = buildBeforeAgentFinalizeRetryPrompt(
+                beforeAgentFinalizeRevisionExhaustedReason,
+              );
+              suppressNextUserMessagePersistence = true;
+              log.warn(
+                `before_agent_finalize reached its revision boundary with new durable progress: ` +
+                  `runId=${params.runId} sessionId=${params.sessionId} — renewed bounded completion budget`,
+              );
+              continue;
+            }
+            if (
+              beforeAgentFinalizeRecoveryEscalations <
+              MAX_BEFORE_AGENT_FINALIZE_RECOVERY_ESCALATIONS
+            ) {
+              beforeAgentFinalizeRecoveryEscalations += 1;
+              beforeAgentFinalizeRevisionAttempts = 0;
+              nextAttemptPromptOverride = buildBeforeAgentFinalizeRecoveryPrompt(
+                beforeAgentFinalizeRevisionExhaustedReason,
+              );
+              suppressNextUserMessagePersistence = true;
+              reasoningOnlyRetryInstruction = null;
+              emptyResponseRetryInstruction = null;
+              log.warn(
+                `before_agent_finalize exhausted without durable progress: ` +
+                  `runId=${params.runId} sessionId=${params.sessionId} — escalating recovery ` +
+                  `${beforeAgentFinalizeRecoveryEscalations}/${MAX_BEFORE_AGENT_FINALIZE_RECOVERY_ESCALATIONS}`,
+              );
+              continue;
+            }
+
+            const completionErrorText =
+              "⚠️ Agent could not reach a verified terminal state after bounded recovery. " +
+              "Completed tool actions were preserved and the turn was not accepted as success.";
+            setTerminalLifecycleMeta({
+              replayInvalid: true,
+              livenessState: "blocked",
+              stopReason:
+                attempt.currentAttemptAssistant?.stopReason ?? attempt.lastAssistant?.stopReason,
+            });
+            return {
+              payloads: [{ text: completionErrorText, isError: true }],
+              meta: {
+                durationMs: Date.now() - started,
+                agentMeta,
+                aborted,
+                systemPromptReport: attempt.systemPromptReport,
+                finalPromptText: attempt.finalPromptText,
+                finalAssistantVisibleText,
+                finalAssistantRawText,
+                replayInvalid: true,
+                livenessState: "blocked",
+                error: {
+                  kind: "incomplete_turn",
+                  message: completionErrorText,
+                  fallbackSafe: false,
+                  terminalPresentation: false,
+                },
+                toolSummary: attemptToolSummary,
+                ...(failureSignal ? { failureSignal } : {}),
+                agentHarnessResultClassification: attempt.agentHarnessResultClassification,
+              },
+              didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+              didDeliverSourceReplyViaMessageTool:
+                attempt.didDeliverSourceReplyViaMessageTool === true,
+              didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
+              messagingToolSentTexts: attempt.messagingToolSentTexts,
+              messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
+              messagingToolSentTargets: attempt.messagingToolSentTargets,
+              messagingToolSourceReplyPayloads: attempt.messagingToolSourceReplyPayloads,
+              heartbeatToolResponse: attempt.heartbeatToolResponse,
+              successfulCronAdds: attempt.successfulCronAdds,
+              acceptedSessionSpawns: attempt.acceptedSessionSpawns,
+            };
+          }
           if (reasoningOnlyRetriesExhausted && !finalAssistantVisibleText) {
             log.warn(
               `reasoning-only retries exhausted: runId=${params.runId} sessionId=${params.sessionId} ` +
@@ -4176,6 +4476,22 @@ async function runEmbeddedAgentInternal(
             !attempt.clientToolCalls &&
             !attempt.yieldDetected &&
             !emptyAssistantReplyIsSilent;
+          const currentBeforeAgentFinalizeProgressKey =
+            completedToolResultProgress?.durableProgressActionKey;
+          if (
+            beforeAgentFinalizeRevisionReason &&
+            currentBeforeAgentFinalizeProgressKey &&
+            currentBeforeAgentFinalizeProgressKey !== beforeAgentFinalizeLastProgressKey &&
+            (attempt.toolMetas?.length ?? 0) > 0
+          ) {
+            beforeAgentFinalizeLastProgressKey = currentBeforeAgentFinalizeProgressKey;
+            beforeAgentFinalizeRevisionAttempts = 0;
+            beforeAgentFinalizeRecoveryEscalations = 0;
+            log.warn(
+              `before_agent_finalize observed new durable tool progress: ` +
+                `runId=${params.runId} sessionId=${params.sessionId} — renewed bounded revision budget`,
+            );
+          }
           if (beforeAgentFinalizeRevisionReason && shouldHonorBeforeAgentFinalizeRevision) {
             beforeAgentFinalizeRevisionAttempts += 1;
             nextAttemptPromptOverride = buildBeforeAgentFinalizeRetryPrompt(

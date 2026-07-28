@@ -1011,6 +1011,7 @@ async function initSessionStateAttemptLocked(
       await prepareReplySessionParentFork({
         agentId,
         alreadyForked,
+        config: cfg,
         parentSessionKey,
         readEntry,
         sessionEntry: entryToCommit,

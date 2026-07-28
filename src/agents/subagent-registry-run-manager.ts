@@ -587,6 +587,9 @@ export function createSubagentRunManager(params: {
     preserveFrozenResultFallback?: boolean;
     transcriptFile?: string;
     task?: string;
+    originalTask?: string;
+    steeringMessages?: string[];
+    steeringHistoryOmittedCount?: number;
   }) => {
     const previousRunId = replaceParams.previousRunId.trim();
     const nextRunId = replaceParams.nextRunId.trim();
@@ -639,6 +642,13 @@ export function createSubagentRunManager(params: {
       typeof replaceParams.task === "string" && replaceParams.task.length > 0
         ? replaceParams.task
         : source.task;
+    const originalTask =
+      typeof replaceParams.originalTask === "string" && replaceParams.originalTask.trim().length > 0
+        ? replaceParams.originalTask.trim()
+        : source.originalTask?.trim() || source.task;
+    const steeringMessages = replaceParams.steeringMessages ?? source.steeringMessages;
+    const steeringHistoryOmittedCount =
+      replaceParams.steeringHistoryOmittedCount ?? source.steeringHistoryOmittedCount;
     const next: SubagentRunRecord = normalizeSubagentRunState({
       ...source,
       runId: nextRunId,
@@ -647,6 +657,9 @@ export function createSubagentRunManager(params: {
       // original detached task across another restart.
       taskRunId: source.taskRunId,
       task: nextTask,
+      originalTask,
+      steeringMessages,
+      steeringHistoryOmittedCount,
       generation,
       createdAt: now,
       startedAt: now,
@@ -753,6 +766,7 @@ export function createSubagentRunManager(params: {
       requesterOrigin,
       requesterDisplayKey: registerParams.requesterDisplayKey,
       task: registerParams.task,
+      originalTask: registerParams.task,
       taskName: registerParams.taskName,
       cleanup: registerParams.cleanup,
       expectsCompletionMessage: registerParams.expectsCompletionMessage,

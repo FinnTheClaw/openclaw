@@ -17,6 +17,16 @@ if [[ ! -d "${TARGET}" ]]; then
 fi
 
 TARGET_VERSION="$(node -p 'require(process.argv[1]).version' "${TARGET}/package.json")"
+SOURCE_BUILD_CONTRACT="$(
+  node -p 'require(process.argv[1]).finnSourceBuild?.behaviorContract ?? ""' \
+    "${TARGET}/package.json"
+)"
+if [[ "${SOURCE_BUILD_CONTRACT}" == "turn-lifecycle-v53" ]]; then
+  echo "Source-integrated OpenClaw contract detected; compiled hot patches are historical only."
+  "${SCRIPT_DIR}/verify.sh" "${TARGET}"
+  echo "OpenClaw ${TARGET_VERSION} source-integrated verification complete."
+  exit 0
+fi
 PATCH_DIR="${REPO_DIR}/patches/openclaw-${TARGET_VERSION}"
 shopt -s nullglob
 PATCH_FILES=("${PATCH_DIR}"/*.patch)

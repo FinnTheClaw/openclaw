@@ -365,6 +365,14 @@ export class AgentSession {
   private compactionAbortController: AbortController | undefined = undefined;
   private autoCompactionAbortController: AbortController | undefined = undefined;
   private overflowRecoveryAttempted = false;
+  /**
+   * One-shot control-plane stop requested by a tool in the current agent run.
+   *
+   * This is deliberately state, not generated language. A yielded parent must
+   * return to its caller after the current tool batch instead of entering the
+   * normal retry/auto-compaction continuation path while a child keeps working.
+   */
+  private postAgentRunStopReason: "sessions_yield" | undefined = undefined;
 
   // Branch summarization state
   private branchSummaryAbortController: AbortController | undefined = undefined;
@@ -1110,6 +1118,16 @@ export class AgentSession {
   }
 
   private async handlePostAgentRun(): Promise<boolean> {
+    const stopReason = this.postAgentRunStopReason;
+    this.postAgentRunStopReason = undefined;
+    if (stopReason) {
+      // Consume the assistant boundary as well as the stop request. Leaving it
+      // behind would let a later prompt reinterpret this yielded tool-use
+      // message as a fresh auto-compaction/retry candidate.
+      this.lastAssistantMessage = undefined;
+      return false;
+    }
+
     const msg = this.lastAssistantMessage;
     this.lastAssistantMessage = undefined;
     if (!msg) {
@@ -1606,6 +1624,16 @@ export class AgentSession {
     await this.agent.waitForIdle();
   }
 
+  /**
+   * Stop the normal post-agent continuation path after the current run.
+   *
+   * The request is consumed exactly once by handlePostAgentRun. It does not
+   * disable compaction globally or affect later ordinary turns.
+   */
+  requestPostAgentRunStop(reason: "sessions_yield"): void {
+    this.postAgentRunStopReason = reason;
+  }
+
   // =========================================================================
   // Model Management
   // =========================================================================
@@ -2005,6 +2033,17 @@ export class AgentSession {
 
     if (options.signal.aborted) {
       return { status: "aborted" };
+    }
+
+    const previousCompactionEntry = getLatestCompactionEntry(pathEntries);
+    if (
+      previousCompactionEntry &&
+      compactionResult.firstKeptEntryId === previousCompactionEntry.firstKeptEntryId
+    ) {
+      throw new Error(
+        `Compaction made no boundary progress: retained entry ${compactionResult.firstKeptEntryId} ` +
+          "matches the previous compaction. Refusing to persist a repeated compaction loop.",
+      );
     }
 
     this.sessionManager.appendCompaction(

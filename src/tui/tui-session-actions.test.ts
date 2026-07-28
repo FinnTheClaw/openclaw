@@ -1305,7 +1305,31 @@ describe("tui session actions", () => {
       { text: "persisted", timestamp: 2_000 },
     ]);
     expect(chatLog.restorePendingUsers).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ loaded: true, inFlightRunId: null });
+    expect(result).toEqual({ loaded: true, inFlightRunId: null, sessionStatus: null });
+  });
+
+  it("returns terminal session status for watchdog reconciliation", async () => {
+    const loadHistory = vi.fn().mockResolvedValue({
+      sessionId: "session-main",
+      sessionInfo: {
+        key: "agent:main:main",
+        sessionId: "session-main",
+        status: "done",
+      },
+      messages: [],
+    });
+    const { loadHistory: runLoadHistory } = createTestSessionActions({
+      client: {
+        listSessions: vi.fn(),
+        loadHistory,
+      } as unknown as TuiBackend,
+    });
+
+    await expect(runLoadHistory()).resolves.toEqual({
+      loaded: true,
+      inFlightRunId: null,
+      sessionStatus: "done",
+    });
   });
 
   it("force-renders after rebuilding chat history so transient status rows are cleared", async () => {

@@ -1058,7 +1058,205 @@ describe("agentLoop tool termination", () => {
     expect(endEvent).toMatchObject({
       executionStarted: false,
       errorKind: "argument-validation",
+      validationFailureCount: 1,
     });
+  });
+
+  it("breaks a repeated invalid argument-shape loop after structural recovery guidance", async () => {
+    const executed: string[] = [];
+    let turn = 0;
+    const streamFn: StreamFn = () => {
+      turn += 1;
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        const message = makeAssistantMessage([
+          {
+            type: "toolCall",
+            id: `call-edit-${turn}`,
+            name: "edit",
+            arguments: {},
+          },
+        ]);
+        stream.push({ type: "done", reason: "toolUse", message });
+        stream.end();
+      });
+      return stream;
+    };
+    const tool: AgentTool = {
+      ...makeTool("edit", executed),
+      parameters: Type.Object({ path: Type.String() }, { additionalProperties: false }),
+    };
+
+    const events = await collectEvents(
+      agentLoop(
+        [{ role: "user", content: "hello", timestamp: 1 }],
+        { systemPrompt: "", messages: [], tools: [tool] },
+        config,
+        undefined,
+        streamFn,
+      ),
+    );
+    const validationEnds = events.filter(
+      (event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+        event.type === "tool_execution_end",
+    );
+    const terminalResult = validationEnds.at(-1)?.result as AgentToolResult<unknown> | undefined;
+
+    expect(turn).toBe(3);
+    expect(executed).toEqual([]);
+    expect(validationEnds.map((event) => event.validationFailureCount)).toEqual([1, 2, 3]);
+    expect(terminalResult?.terminate).toBe(true);
+    expect(terminalResult?.content).toEqual([
+      expect.objectContaining({
+        type: "text",
+        text: expect.stringContaining("independently verifiable slice"),
+      }),
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: "agent_end" });
+  });
+
+  it("preserves argument-validation recovery state across separate agent loops", async () => {
+    const executed: string[] = [];
+    const tool: AgentTool = {
+      ...makeTool("edit", executed),
+      parameters: Type.Object({ path: Type.String() }, { additionalProperties: false }),
+    };
+
+    const runOneValidationAttempt = async (
+      priorMessages: AgentMessage[],
+      callNumber: number,
+    ): Promise<{
+      messages: AgentMessage[];
+      validationEnd: Extract<AgentEvent, { type: "tool_execution_end" }>;
+      modelTurns: number;
+    }> => {
+      let modelTurns = 0;
+      const streamFn: StreamFn = () => {
+        modelTurns += 1;
+        const stream = createAssistantMessageEventStream();
+        queueMicrotask(() => {
+          const message =
+            modelTurns === 1
+              ? makeAssistantMessage([
+                  {
+                    type: "toolCall",
+                    id: `call-edit-${callNumber}`,
+                    name: "edit",
+                    arguments: {},
+                  },
+                ])
+              : makeAssistantMessage([{ type: "text", text: "paused" }]);
+          stream.push({
+            type: "done",
+            reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+            message,
+          });
+          stream.end();
+        });
+        return stream;
+      };
+      const stream = agentLoop(
+        [{ role: "user", content: "continue", timestamp: callNumber }],
+        { systemPrompt: "", messages: priorMessages, tools: [tool] },
+        config,
+        undefined,
+        streamFn,
+      );
+      const events = await collectEvents(stream);
+      const validationEnd = events.find(
+        (event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+          event.type === "tool_execution_end",
+      );
+      if (!validationEnd) {
+        throw new Error("validation end event missing");
+      }
+      return {
+        messages: await stream.result(),
+        validationEnd,
+        modelTurns,
+      };
+    };
+
+    const first = await runOneValidationAttempt([], 1);
+    const second = await runOneValidationAttempt(first.messages, 2);
+    const third = await runOneValidationAttempt([...first.messages, ...second.messages], 3);
+
+    expect(first.validationEnd.validationFailureCount).toBe(1);
+    expect(second.validationEnd.validationFailureCount).toBe(2);
+    expect(third.validationEnd.validationFailureCount).toBe(3);
+    expect(first.modelTurns).toBe(2);
+    expect(second.modelTurns).toBe(2);
+    expect(third.modelTurns).toBe(1);
+    expect((third.validationEnd.result as AgentToolResult<unknown>).terminate).toBe(true);
+    expect(executed).toEqual([]);
+  });
+
+  it("reports output-budget exhaustion on the first invalid tool call", async () => {
+    const executed: string[] = [];
+    let turn = 0;
+    const streamFn: StreamFn = () => {
+      turn += 1;
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        const baseMessage =
+          turn === 1
+            ? makeAssistantMessage([
+                { type: "toolCall", id: "call-edit", name: "edit", arguments: {} },
+              ])
+            : makeAssistantMessage([{ type: "text", text: "done" }]);
+        const message =
+          turn === 1
+            ? {
+                ...baseMessage,
+                usage: {
+                  ...baseMessage.usage,
+                  output: model.maxTokens ?? 1000,
+                  totalTokens: model.maxTokens ?? 1000,
+                },
+              }
+            : baseMessage;
+        stream.push({
+          type: "done",
+          reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+          message,
+        });
+        stream.end();
+      });
+      return stream;
+    };
+    const tool: AgentTool = {
+      ...makeTool("edit", executed),
+      parameters: Type.Object({ path: Type.String() }, { additionalProperties: false }),
+    };
+
+    const events = await collectEvents(
+      agentLoop(
+        [{ role: "user", content: "hello", timestamp: 1 }],
+        { systemPrompt: "", messages: [], tools: [tool] },
+        config,
+        undefined,
+        streamFn,
+      ),
+    );
+    const validationEnd = events.find(
+      (event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+        event.type === "tool_execution_end",
+    );
+    const validationResult = validationEnd?.result as AgentToolResult<unknown> | undefined;
+
+    expect(turn).toBe(2);
+    expect(validationEnd).toMatchObject({
+      executionStarted: false,
+      errorKind: "argument-validation",
+      validationFailureCount: 1,
+      outputBudgetExhausted: true,
+    });
+    expect(validationResult?.content).toEqual([
+      expect.objectContaining({
+        type: "text",
+        text: expect.stringContaining("exhausted its configured output budget"),
+      }),
+    ]);
   });
 
   it("stops after a tool result only when the finalized result explicitly terminates", async () => {

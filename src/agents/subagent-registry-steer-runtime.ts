@@ -20,6 +20,12 @@ type ReplaceSubagentRunAfterSteerParams = {
    * over untouched.
    */
   task?: string;
+  /** Immutable root assignment for steer restarts. */
+  originalTask?: string;
+  /** Bounded, chronological steering deltas applied to the root assignment. */
+  steeringMessages?: string[];
+  /** Number of older steering deltas omitted from the bounded history. */
+  steeringHistoryOmittedCount?: number;
 };
 
 type ReplaceSubagentRunAfterSteerFn = (params: ReplaceSubagentRunAfterSteerParams) => boolean;

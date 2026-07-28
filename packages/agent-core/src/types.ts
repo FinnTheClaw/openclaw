@@ -541,5 +541,9 @@ export type AgentEvent =
       executionStarted?: boolean;
       /** Typed pre-execution failure provenance for safe downstream diagnostics. */
       errorKind?: "argument-validation";
+      /** Run-local count for the same invalid tool name and argument shape. */
+      validationFailureCount?: number;
+      /** True when the invalid call was emitted at the configured output-token ceiling. */
+      outputBudgetExhausted?: boolean;
       hideFromChannelProgress?: boolean;
     };

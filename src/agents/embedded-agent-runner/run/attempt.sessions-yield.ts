@@ -10,6 +10,58 @@ const SESSIONS_YIELD_INTERRUPT_CUSTOM_TYPE = "openclaw.sessions_yield_interrupt"
 const SESSIONS_YIELD_CONTEXT_CUSTOM_TYPE = "openclaw.sessions_yield";
 
 const SESSIONS_YIELD_ABORT_SETTLE_TIMEOUT_MS = resolveEmbeddedAbortSettleTimeoutMs();
+const SESSIONS_YIELD_SIBLING_SETTLE_TIMEOUT_MS = 30_000;
+const SESSIONS_YIELD_SIBLING_POLL_INTERVAL_MS = 10;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+
+/**
+ * Wait until a sessions_yield call is the only active tool in its batch.
+ *
+ * Tool calls from one assistant message can execute concurrently. Aborting the
+ * agent as soon as sessions_yield starts otherwise cancels legitimate sibling
+ * work (for example, a final cleanup exec) and turns a clean handoff into a
+ * misleading tool failure. Two clear observations provide a short admission
+ * barrier for sibling starts scheduled in the same event-loop turn.
+ */
+export async function waitForSessionsYieldSiblingTools(params: {
+  countActiveTools: () => number;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}): Promise<boolean> {
+  const timeoutMs = Math.max(
+    0,
+    params.timeoutMs ?? SESSIONS_YIELD_SIBLING_SETTLE_TIMEOUT_MS,
+  );
+  const pollIntervalMs = Math.max(
+    1,
+    params.pollIntervalMs ?? SESSIONS_YIELD_SIBLING_POLL_INTERVAL_MS,
+  );
+  const startedAt = Date.now();
+  let consecutiveClearObservations = 0;
+
+  await delay(0);
+  while (true) {
+    const activeTools = Math.max(0, params.countActiveTools());
+    if (activeTools <= 1) {
+      consecutiveClearObservations += 1;
+      if (consecutiveClearObservations >= 2) {
+        return true;
+      }
+    } else {
+      consecutiveClearObservations = 0;
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      return false;
+    }
+    await delay(pollIntervalMs);
+  }
+}
 
 // Persist a hidden context reminder so the next turn knows why the runner stopped.
 function buildSessionsYieldContextMessage(message: string): string {

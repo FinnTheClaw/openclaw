@@ -75,14 +75,17 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(warnMessages().join("\n")).not.toContain(text);
   }
 
-  function runAttemptCall(index: number): { prompt?: string } {
+  function runAttemptCall(index: number): {
+    prompt?: string;
+    suppressNextUserMessagePersistence?: boolean;
+  } {
     // Continuation prompt assertions read the exact prompt passed to the runner
     // attempt rather than derived result metadata.
     const call = mockedRunEmbeddedAttempt.mock.calls[index];
     if (!call) {
       throw new Error(`Expected run embedded attempt call ${index}`);
     }
-    return call[0] as { prompt?: string };
+    return call[0] as { prompt?: string; suppressNextUserMessagePersistence?: boolean };
   }
 
   it("emits the before_agent_run hook block message as the agent payload", async () => {
@@ -1707,20 +1710,61 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(incompleteTurnText).toBeNull();
   });
 
-  it("surfaces an error for tool-use terminal turn with pre-tool text via runEmbeddedAgent (#76477)", async () => {
+  it("continues from a completed tool result without replaying a side-effecting tool (#76477)", async () => {
     mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedBuildEmbeddedRunPayloads
+      .mockReturnValueOnce([{ text: "Initial analysis of the issue..." }])
+      .mockReturnValueOnce([{ text: "The edit is complete and verified." }]);
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({
         assistantTexts: ["Initial analysis of the issue..."],
-        toolMetas: [{ toolName: "read", meta: "path=src/index.ts" }],
+        toolMetas: [{ toolName: "edit", meta: "path=src/index.ts", replaySafe: false }],
+        replayMetadata: {
+          hadPotentialSideEffects: true,
+          replaySafe: false,
+        },
+        messagesSnapshot: [
+          {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [
+              { type: "text", text: "Initial analysis of the issue..." },
+              {
+                type: "tool_use",
+                id: "tool_1",
+                name: "edit",
+                input: { path: "src/index.ts" },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "tool_1",
+            toolName: "edit",
+            isError: false,
+            content: [{ type: "text", text: "Edit applied." }],
+          },
+        ] as unknown as EmbeddedRunAttemptResult["messagesSnapshot"],
         lastAssistant: {
           stopReason: "toolUse",
           provider: "anthropic",
           model: "sonnet-4.6",
           content: [
             { type: "text", text: "Initial analysis of the issue..." },
-            { type: "tool_use", id: "tool_1", name: "read", input: { path: "src/index.ts" } },
+            { type: "tool_use", id: "tool_1", name: "edit", input: { path: "src/index.ts" } },
           ],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["The edit is complete and verified."],
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "stop",
+          provider: "anthropic",
+          model: "sonnet-4.6",
+          content: [{ type: "text", text: "The edit is complete and verified." }],
         } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
       }),
     );
@@ -1732,9 +1776,71 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       runId: "run-tool-use-dropped-final-text",
     });
 
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(runAttemptCall(1).prompt).toContain(
+      "latest tool call already completed and its result is recorded",
+    );
+    expect(runAttemptCall(1).suppressNextUserMessagePersistence).toBe(true);
+    expect(result.payloads?.[0]?.text).toBe("The edit is complete and verified.");
+    expect(result.payloads?.[0]?.isError).not.toBe(true);
+    expectWarnMessageWith("settled post-tool turn lacked a continuation");
+    expectNoWarnMessageWith("incomplete turn detected");
+  });
+
+  it("does not continue from a toolUse assistant when no completed tool result is recorded", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["I am about to edit the file..."],
+        toolMetas: [{ toolName: "edit", meta: "path=src/index.ts", replaySafe: false }],
+        replayMetadata: {
+          hadPotentialSideEffects: true,
+          replaySafe: false,
+        },
+        messagesSnapshot: [
+          {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [
+              { type: "text", text: "I am about to edit the file..." },
+              {
+                type: "tool_use",
+                id: "tool_unsettled",
+                name: "edit",
+                input: { path: "src/index.ts" },
+              },
+            ],
+          },
+        ] as unknown as EmbeddedRunAttemptResult["messagesSnapshot"],
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "toolUse",
+          provider: "anthropic",
+          model: "sonnet-4.6",
+          content: [
+            { type: "text", text: "I am about to edit the file..." },
+            {
+              type: "tool_use",
+              id: "tool_unsettled",
+              name: "edit",
+              input: { path: "src/index.ts" },
+            },
+          ],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "anthropic",
+      model: "sonnet-4.6",
+      runId: "run-tool-use-without-completed-result",
+    });
+
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
     expect(result.payloads?.[0]?.isError).toBe(true);
     expect(result.payloads?.[0]?.text).toContain("couldn't generate a response");
+    expectNoWarnMessageWith("settled post-tool turn lacked a continuation");
     expectWarnMessageWith("incomplete turn detected");
   });
 

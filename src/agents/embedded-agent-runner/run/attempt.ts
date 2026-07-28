@@ -440,6 +440,7 @@ import {
   queueSessionsYieldInterruptMessage,
   stripSessionsYieldArtifacts,
   waitForSessionsYieldAbortSettle,
+  waitForSessionsYieldSiblingTools,
 } from "./attempt.sessions-yield.js";
 import { wrapStreamFnHandleSensitiveStopReason } from "./attempt.stop-reason-recovery.js";
 import {
@@ -1440,9 +1441,19 @@ export async function runEmbeddedAttempt(
             skillsSnapshot: skillsSnapshotForRun,
             skillUsagePaths,
             conversationCapabilityProfile: runtimeCapabilityProfile,
-            onYield: (message) => {
+            onYield: async (message) => {
+              const siblingsSettled = await waitForSessionsYieldSiblingTools({
+                countActiveTools: () => countActiveToolExecutions(params.runId),
+              });
+              if (!siblingsSettled) {
+                throw new Error(
+                  "sessions_yield could not pause because sibling tool calls are still active; " +
+                    "wait for them to finish, then call sessions_yield by itself.",
+                );
+              }
               yieldDetected = true;
               yieldMessage = message;
+              requestPostAgentRunStopForYield?.();
               queueYieldInterruptForSession?.();
               runAbortController.abort("sessions_yield");
               abortSessionForYield?.();
@@ -1600,6 +1611,7 @@ export async function runEmbeddedAttempt(
     // Late-binding reference so onYield can abort the session (declared after tool creation)
     let abortSessionForYield: (() => void) | null = null;
     let queueYieldInterruptForSession: (() => void) | null = null;
+    let requestPostAgentRunStopForYield: (() => void) | null = null;
     let yieldAbortSettled: Promise<void> | null = null;
     const runtimePlanModelContext = {
       workspaceDir: effectiveWorkspace,
@@ -2712,6 +2724,9 @@ export async function runEmbeddedAttempt(
       queueYieldInterruptForSession = () => {
         queueSessionsYieldInterruptMessage(activeSession);
       };
+      requestPostAgentRunStopForYield = () => {
+        activeSession.requestPostAgentRunStop("sessions_yield");
+      };
       const contextTokenBudgetForGuard = Math.max(
         1,
         Math.floor(
@@ -3589,6 +3604,7 @@ export async function runEmbeddedAttempt(
       // Hook runner was already obtained earlier before tool creation.
       const hookAgentId = sessionAgentId;
       let beforeAgentFinalizeRevisionReason: string | undefined;
+      let beforeAgentFinalizeRevisionExhaustedReason: string | undefined;
       const onBlockReply = params.onBlockReply
         ? bindOwnedSessionTranscriptWrites(ownedTranscriptWriteContext, params.onBlockReply)
         : undefined;
@@ -3631,6 +3647,7 @@ export async function runEmbeddedAttempt(
               promptError ||
               timedOut ||
               hasCompletedClientToolCall ||
+              didDeliverSourceReplyViaMessageTool ||
               yieldDetected ||
               silentFinalReply
             ) {
@@ -3645,18 +3662,6 @@ export async function runEmbeddedAttempt(
               model: params.modelId,
               assistant: lastAssistant,
             });
-            const maxRevisionAttempts = params.maxBeforeAgentFinalizeRevisions ?? 0;
-            if (
-              maxRevisionAttempts > 0 &&
-              (params.beforeAgentFinalizeRevisionAttempts ?? 0) >= maxRevisionAttempts
-            ) {
-              log.warn(
-                `before_agent_finalize revision limit reached; finalizing ` +
-                  `runId=${params.runId} sessionId=${params.sessionId} ` +
-                  `attempts=${params.beforeAgentFinalizeRevisionAttempts ?? 0}/${maxRevisionAttempts}`,
-              );
-              return;
-            }
             const outcome = await runAgentHarnessBeforeAgentFinalizeHook({
               event: {
                 runId: params.runId,
@@ -3695,13 +3700,25 @@ export async function runEmbeddedAttempt(
             if (outcome.action !== "revise") {
               return;
             }
-            if (event.hadDeterministicSideEffect) {
+            const maxRevisionAttempts = params.maxBeforeAgentFinalizeRevisions ?? 0;
+            if (
+              maxRevisionAttempts > 0 &&
+              (params.beforeAgentFinalizeRevisionAttempts ?? 0) >= maxRevisionAttempts
+            ) {
+              beforeAgentFinalizeRevisionExhaustedReason = outcome.reason;
               log.warn(
-                `before_agent_finalize requested revision after potential side effects; finalizing ` +
-                  `runId=${params.runId} sessionId=${params.sessionId}`,
+                `before_agent_finalize revision limit reached with work still unfinished; ` +
+                  `runId=${params.runId} sessionId=${params.sessionId} ` +
+                  `attempts=${params.beforeAgentFinalizeRevisionAttempts ?? 0}/${maxRevisionAttempts}`,
               );
               return;
             }
+            // A finalize revision is a hidden continuation over the same
+            // persisted transcript, not a replay of completed tool calls.
+            // Refusing it merely because an earlier tool may have changed
+            // state leaves "let me..." turns unfinished. Source replies and
+            // completed client tools are excluded above; ordinary tool results
+            // remain in context and duplicate mutations are guarded separately.
             beforeAgentFinalizeRevisionReason = outcome.reason;
             return { suppressTerminalDelivery: true };
           }
@@ -5408,7 +5425,7 @@ export async function runEmbeddedAttempt(
             }
           }
 
-          if (activeContextEngine && !beforeAgentFinalizeRevisionReason) {
+          if (activeContextEngine && !beforeAgentFinalizeRevisionReason && !yieldAborted) {
             // Context-engine afterTurn hooks may reconcile against the jsonl, so
             // materialize the active turn before finalization reads from disk.
             flushSessionManagerFile(activeSessionManager);
@@ -5418,7 +5435,7 @@ export async function runEmbeddedAttempt(
         // Let the active context engine run its post-turn lifecycle. These hooks
         // may call runtime LLM capabilities, so only their transcript rewrite
         // helper reacquires the session write lock.
-        if (activeContextEngine && !beforeAgentFinalizeRevisionReason) {
+        if (activeContextEngine && !beforeAgentFinalizeRevisionReason && !yieldAborted) {
           const afterTurnRuntimeContext = buildAfterTurnRuntimeContextFromUsage({
             attempt: params,
             workspaceDir: effectiveWorkspace,
@@ -5947,6 +5964,9 @@ export async function runEmbeddedAttempt(
         finalPromptText,
         messagesSnapshot,
         ...(beforeAgentFinalizeRevisionReason ? { beforeAgentFinalizeRevisionReason } : {}),
+        ...(beforeAgentFinalizeRevisionExhaustedReason
+          ? { beforeAgentFinalizeRevisionExhaustedReason }
+          : {}),
         assistantTexts,
         lastAssistantTextMessageIndex: getLastAssistantTextMessageIndex(),
         toolMetas: toolMetasNormalized,

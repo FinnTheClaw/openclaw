@@ -12,6 +12,8 @@ export type ToolErrorSummary = {
   errorCode?: string;
   error?: string;
   validationErrorSummary?: string;
+  validationFailureCount?: number;
+  outputBudgetExhausted?: boolean;
   timedOut?: boolean;
   middlewareError?: boolean;
   mutatingAction?: boolean;

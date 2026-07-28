@@ -203,6 +203,7 @@ export type EmbeddedRunAttemptResult = {
   finalPromptText?: string;
   messagesSnapshot: AgentMessage[];
   beforeAgentFinalizeRevisionReason?: string;
+  beforeAgentFinalizeRevisionExhaustedReason?: string;
   assistantTexts: string[];
   lastAssistantTextMessageIndex?: number;
   toolMetas: Array<{

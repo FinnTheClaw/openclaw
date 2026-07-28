@@ -434,6 +434,7 @@ export async function createGatewaySession(params: {
         const forkDecision = await resolveParentForkDecision({
           parentEntry: currentParentSessionEntry,
           agentId: parentSessionTarget.agentId,
+          config: params.cfg,
           storePath: parentSessionTarget.storePath,
         });
         if (forkDecision.status === "skip") {

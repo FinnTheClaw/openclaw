@@ -103,6 +103,12 @@ export type SubagentRunRecord = {
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
   task: string;
+  /** Immutable root assignment retained when steer restarts rotate the child session. */
+  originalTask?: string;
+  /** Ordered steering deltas needed to reconstruct context after a restart. */
+  steeringMessages?: string[];
+  /** Number of oldest steering deltas omitted by the bounded history policy. */
+  steeringHistoryOmittedCount?: number;
   taskName?: string;
   cleanup: "delete" | "keep";
   label?: string;

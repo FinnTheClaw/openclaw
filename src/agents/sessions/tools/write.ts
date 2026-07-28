@@ -28,11 +28,17 @@ import {
 } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
+export const MAX_INLINE_WRITE_CONTENT_CHARS = 12_000;
+
 const writeSchema = Type.Object({
   path: Type.String({
     description: "Path to the file to write (relative or absolute)",
   }),
-  content: Type.String({ description: "Content to write to the file" }),
+  content: Type.String({
+    maxLength: MAX_INLINE_WRITE_CONTENT_CHARS,
+    description:
+      "Content to write to the file. Keep large source generation in bounded chunks or a concise generator instead of one oversized tool argument.",
+  }),
 });
 export type { WriteToolInput } from "./tool-contracts.js";
 
@@ -388,7 +394,10 @@ export function createWriteToolDefinition(
     description:
       "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
     promptSnippet: "Create or overwrite files",
-    promptGuidelines: ["Use write only for new files or complete rewrites."],
+    promptGuidelines: [
+      "Use write only for new files or complete rewrites.",
+      `Keep each write payload at or below ${MAX_INLINE_WRITE_CONTENT_CHARS} characters; use bounded chunks, a concise generator, or a coding subagent for larger source work.`,
+    ],
     parameters: writeSchema,
     async execute(
       toolCallId,

@@ -10,6 +10,19 @@ The live OpenClaw CLI is installed as a global npm package at:
 
 Direct edits under that package tree are upgrade-fragile. A manual `openclaw update`, `npm install -g openclaw@...`, or package reinstall can overwrite them. This repository keeps every local OpenClaw hot patch as a reproducible artifact with apply and verify commands.
 
+## Source-integrated runtime
+
+The authoritative `finn/frozen-2026.7.1-2` branch now carries the current turn
+lifecycle repairs in TypeScript source under the `turn-lifecycle-v53`
+behavioral contract. Compiled `2026.7.1-2` patches remain immutable historical
+rollback evidence; they are not reapplied to a source-integrated package.
+
+The package builder stamps the clean source commit and behavioral contract into
+`package.json.finnSourceBuild`. `scripts/apply.sh` detects that stamp and runs
+the source-integrated behavioral verifier instead of matching obsolete chunk
+filenames. Unstamped legacy packages continue to use the version-matched patch
+path below.
+
 ## Current Patches
 
 | Patch                                                                      | Base OpenClaw                    | Target                                                                                                                                               | Purpose                                                                                                                                                                                                                                                              |
@@ -48,6 +61,11 @@ From this repo:
 ./scripts/apply.sh /opt/homebrew/lib/node_modules/openclaw
 ./scripts/verify.sh /opt/homebrew/lib/node_modules/openclaw
 ```
+
+For a source-integrated package, `apply.sh` performs verification only. New
+runtime changes must be implemented and tested in the frozen source repository,
+then rebuilt from a clean commit. Do not generate a new compiled hot patch for
+code already owned by the source branch.
 
 Restart commands are available directly from the terminal or agent operations. Use the native path:
 

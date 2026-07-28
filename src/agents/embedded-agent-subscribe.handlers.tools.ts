@@ -1362,6 +1362,10 @@ export async function handleToolExecutionEnd(
       ...(errorCode ? { errorCode } : {}),
       error: errorMessage,
       ...(validationErrorSummary ? { validationErrorSummary } : {}),
+      ...(evt.validationFailureCount
+        ? { validationFailureCount: evt.validationFailureCount }
+        : {}),
+      ...(evt.outputBudgetExhausted ? { outputBudgetExhausted: true } : {}),
       timedOut: isToolResultTimedOut(sanitizedResult) || undefined,
       middlewareError: isMiddlewareToolResultError(sanitizedResult) || undefined,
       mutatingAction: attemptedMutatingAction,

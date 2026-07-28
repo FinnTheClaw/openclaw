@@ -2094,8 +2094,89 @@ describe("steerControlledSubagentRun", () => {
     expect(result.status).toBe("accepted");
     expect(result.sessionId).toBeTypeOf("string");
     expect(result.sessionId).not.toBe("old-child-session");
-    const agentParams = agentCalls[0]?.params as { sessionId?: string } | undefined;
+    const agentParams = agentCalls[0]?.params as
+      | { sessionId?: string; message?: string }
+      | undefined;
     expect(agentParams?.sessionId).toBe(result.sessionId);
+    expect(agentParams?.message).toContain("Original task:\nactive steer task");
+    expect(agentParams?.message).toContain("Steering update 1:\nupdated direction");
+    const storedRun = getSubagentRunByChildSessionKey(childSessionKey);
+    expect(storedRun?.originalTask).toBe("active steer task");
+    expect(storedRun?.steeringMessages).toEqual(["updated direction"]);
+    expect(storedRun?.task).toBe(agentParams?.message);
+  });
+
+  it("preserves the immutable root task across repeated steer restarts", async () => {
+    const childSessionKey = "agent:main:subagent:repeated-steer-worker";
+    const agentCalls: CallGatewayOptions[] = [];
+    let nextRun = 0;
+    addSubagentRunForTests({
+      runId: "run-repeated-steer-0",
+      childSessionKey,
+      controllerSessionKey: "agent:main:main",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "implement the complete original assignment",
+      cleanup: "keep",
+      createdAt: Date.now() - 5_000,
+      startedAt: Date.now() - 4_000,
+    });
+
+    setSubagentControlDepsForTest({
+      callGateway: async <T = Record<string, unknown>>(request: CallGatewayOptions) => {
+        if (request.method === "agent.wait") {
+          return {} as T;
+        }
+        if (request.method === "agent") {
+          agentCalls.push(request);
+          nextRun += 1;
+          return { runId: `run-repeated-steer-${nextRun}` } as T;
+        }
+        throw new Error(`unexpected method: ${request.method}`);
+      },
+    });
+
+    const controller = {
+      controllerSessionKey: "agent:main:main",
+      callerSessionKey: "agent:main:main",
+      callerIsSubagent: false,
+      controlScope: "children" as const,
+    };
+    const initial = getSubagentRunByChildSessionKey(childSessionKey);
+    if (!initial) {
+      throw new Error("missing initial subagent run");
+    }
+    const first = await steerControlledSubagentRun({
+      cfg: cfgWithSessionStore(),
+      controller,
+      entry: initial,
+      message: "first correction",
+    });
+    expect(first.status).toBe("accepted");
+
+    const afterFirst = getSubagentRunByChildSessionKey(childSessionKey);
+    if (!afterFirst) {
+      throw new Error("missing first steered subagent run");
+    }
+    const second = await steerControlledSubagentRun({
+      cfg: cfgWithSessionStore(),
+      controller,
+      entry: afterFirst,
+      message: "second correction",
+    });
+    expect(second.status).toBe("accepted");
+
+    const secondParams = agentCalls[1]?.params as { message?: string } | undefined;
+    const secondMessage = secondParams?.message ?? "";
+    expect(secondMessage.match(/Original task:/g)).toHaveLength(1);
+    expect(secondMessage.match(/implement the complete original assignment/g)).toHaveLength(1);
+    expect(secondMessage).toContain("Steering update 1:\nfirst correction");
+    expect(secondMessage).toContain("Steering update 2:\nsecond correction");
+
+    const storedRun = getSubagentRunByChildSessionKey(childSessionKey);
+    expect(storedRun?.originalTask).toBe("implement the complete original assignment");
+    expect(storedRun?.steeringMessages).toEqual(["first correction", "second correction"]);
+    expect(storedRun?.task).toBe(secondMessage);
   });
 });
 

@@ -525,6 +525,7 @@ async function prepareSubagentSessionContext(params: {
       sessionStoreKeys: childTarget.storeKeys,
       fallbackEntry: { sessionId: "", updatedAt: Date.now() },
       agentId: params.requesterAgentId,
+      config: params.cfg,
     });
     if (forkedResult.status === "missing-parent") {
       throw new Error(

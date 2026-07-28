@@ -49,6 +49,7 @@ type SessionInfoDefaults = {
 type SessionInfoEntry = SessionInfo & {
   key?: string;
   sessionId?: string;
+  status?: string;
   modelOverride?: string;
   providerOverride?: string;
 };
@@ -571,7 +572,11 @@ export function createSessionActions(context: SessionActionContext) {
       }
       void rememberSessionKey?.(state.currentSessionKey);
       tui.requestRender(true);
-      return { loaded: true, inFlightRunId: inFlightRunId || null };
+      return {
+        loaded: true,
+        inFlightRunId: inFlightRunId || null,
+        sessionStatus: typeof sessionInfo?.status === "string" ? sessionInfo.status : null,
+      };
     } catch (err) {
       chatLog.addSystem(`history failed: ${String(err)}`);
       tui.requestRender(true);

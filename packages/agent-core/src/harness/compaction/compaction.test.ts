@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAssistantMessageEventStream } from "../../llm.js";
 import type { AssistantMessage, Model, StreamFn } from "../../llm.js";
+import type { SessionTreeEntry } from "../types.js";
 import {
   calculateContextTokens,
   compact,
   estimateContextTokens,
+  findLatestAuthoritativeUserRequest,
   generateSummary,
+  prepareCompaction,
 } from "./compaction.js";
 import { createFileOps } from "./utils.js";
 
@@ -233,6 +236,7 @@ describe("split-turn compaction", () => {
     const result = await compact(
       {
         firstKeptEntryId: "kept-entry",
+        activeUserRequest: "finish the current benchmark without restarting",
         messagesToSummarize: [{ role: "user", content: "history", timestamp: 1 }],
         turnPrefixMessages: [{ role: "user", content: "prefix", timestamp: 2 }],
         isSplitTurn: true,
@@ -252,5 +256,135 @@ describe("split-turn compaction", () => {
     expect(result.ok).toBe(true);
     expect(streamFn).toHaveBeenCalledTimes(2);
     expect(maxActive).toBe(1);
+    if (!result.ok) {
+      throw result.error;
+    }
+    expect(result.value.summary).toContain("**Current user-authored request (verbatim):**");
+    expect(result.value.summary).toContain("finish the current benchmark");
+    expect(result.value.summary).not.toContain("**Active user request (verbatim):**");
+  });
+});
+
+describe("authoritative compaction request anchor", () => {
+  it("ignores newer runtime-generated user-role events", () => {
+    const entries = [
+      {
+        type: "message",
+        id: "real-user",
+        parentId: null,
+        timestamp: new Date(1).toISOString(),
+        message: {
+          role: "user",
+          content: "Repair module two and finish the benchmark.",
+          timestamp: 1,
+        },
+      },
+      {
+        type: "message",
+        id: "internal-user",
+        parentId: "real-user",
+        timestamp: new Date(2).toISOString(),
+        message: {
+          role: "user",
+          content:
+            "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nOpenClaw runtime context (internal):\n" +
+            "[Internal task completion event]\nstale subagent result",
+          timestamp: 2,
+        },
+      },
+    ] as SessionTreeEntry[];
+
+    expect(findLatestAuthoritativeUserRequest(entries)).toBe(
+      "Repair module two and finish the benchmark.",
+    );
+  });
+});
+
+describe("successor compaction boundary progress", () => {
+  it("advances beyond the previous retained boundary when the normal keep budget cannot", () => {
+    const assistant = (text: string, timestamp: number) => ({
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text }],
+      api: "openai-responses",
+      provider: "remote-llm",
+      model: "moira/brain",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop" as const,
+      timestamp,
+    });
+    const entries = [
+      {
+        type: "message",
+        id: "old-user",
+        parentId: null,
+        timestamp: new Date(1).toISOString(),
+        message: { role: "user", content: "old request", timestamp: 1 },
+      },
+      {
+        type: "message",
+        id: "old-assistant",
+        parentId: "old-user",
+        timestamp: new Date(2).toISOString(),
+        message: assistant("old response", 2),
+      },
+      {
+        type: "message",
+        id: "retained-boundary",
+        parentId: "old-assistant",
+        timestamp: new Date(3).toISOString(),
+        message: assistant("retained historical response", 3),
+      },
+      {
+        type: "compaction",
+        id: "compaction-1",
+        parentId: "retained-boundary",
+        timestamp: new Date(4).toISOString(),
+        summary: "historical summary",
+        firstKeptEntryId: "retained-boundary",
+        tokensBefore: 2_000,
+      },
+      {
+        type: "message",
+        id: "active-user",
+        parentId: "compaction-1",
+        timestamp: new Date(5).toISOString(),
+        message: {
+          role: "user",
+          content: "finish the current benchmark and preserve every completed artifact",
+          timestamp: 5,
+        },
+      },
+      {
+        type: "message",
+        id: "active-assistant",
+        parentId: "active-user",
+        timestamp: new Date(6).toISOString(),
+        message: assistant("x".repeat(2_800), 6),
+      },
+    ] as SessionTreeEntry[];
+
+    const result = prepareCompaction(entries, {
+      enabled: true,
+      reserveTokens: 500,
+      keepRecentTokens: 1_000,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok || !result.value) {
+      throw new Error("expected a progressing successor compaction");
+    }
+    expect(result.value.firstKeptEntryId).not.toBe("retained-boundary");
+    expect(result.value.firstKeptEntryId).toBe("active-assistant");
+    expect(result.value.isSplitTurn).toBe(true);
+    expect(JSON.stringify(result.value.turnPrefixMessages)).toContain(
+      "finish the current benchmark",
+    );
   });
 });

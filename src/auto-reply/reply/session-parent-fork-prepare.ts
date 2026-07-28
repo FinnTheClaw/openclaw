@@ -1,10 +1,12 @@
 // Prepares parent-context fork metadata for guarded reply session initialization.
 import type { SessionEntry } from "../../config/sessions.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { forkSessionFromParent, resolveParentForkDecision } from "./session-fork.js";
 
 export async function prepareReplySessionParentFork(params: {
   agentId: string;
   alreadyForked: boolean;
+  config: OpenClawConfig;
   parentSessionKey?: string;
   readEntry: (sessionKey: string) => SessionEntry | undefined;
   sessionEntry: SessionEntry;
@@ -26,6 +28,7 @@ export async function prepareReplySessionParentFork(params: {
   const decision = await resolveParentForkDecision({
     parentEntry,
     agentId: params.agentId,
+    config: params.config,
     storePath: params.storePath,
   });
   if (decision.status === "skip") {

@@ -29,7 +29,7 @@ export type TuiResult = {
 };
 
 export type TuiHistoryLoadResult =
-  | { loaded: true; inFlightRunId: string | null }
+  | { loaded: true; inFlightRunId: string | null; sessionStatus: string | null }
   | { loaded: false };
 
 export type ChatEvent = {

@@ -55,8 +55,60 @@ export const MAX_RECENT_MINUTES = 24 * 60;
 const STEER_RATE_LIMIT_MS = 2_000;
 const STEER_ABORT_SETTLE_TIMEOUT_MS = 5_000;
 const SUBAGENT_REPLY_HISTORY_LIMIT = 50;
+const MAX_STEERING_HISTORY_ENTRIES = 16;
+const MAX_STEERING_HISTORY_CHARS = 24_000;
 
 const steerRateLimit = new Map<string, number>();
+
+function appendBoundedSteeringMessage(params: {
+  entry: SubagentRunRecord;
+  message: string;
+}): { messages: string[]; omittedCount: number } {
+  const messages = [
+    ...(params.entry.steeringMessages ?? []).filter(
+      (message): message is string => typeof message === "string" && message.trim().length > 0,
+    ),
+    params.message.trim(),
+  ];
+  let omittedCount = Math.max(0, params.entry.steeringHistoryOmittedCount ?? 0);
+  let totalChars = messages.reduce((total, message) => total + message.length, 0);
+  while (
+    messages.length > 1 &&
+    (messages.length > MAX_STEERING_HISTORY_ENTRIES || totalChars > MAX_STEERING_HISTORY_CHARS)
+  ) {
+    const removed = messages.shift();
+    totalChars -= removed?.length ?? 0;
+    omittedCount += 1;
+  }
+  return { messages, omittedCount };
+}
+
+function buildSteeredSubagentMessage(params: {
+  originalTask: string;
+  steeringMessages: string[];
+  steeringHistoryOmittedCount: number;
+}): string {
+  const historyNotice =
+    params.steeringHistoryOmittedCount > 0
+      ? `\n${params.steeringHistoryOmittedCount} older steering update(s) were omitted from this bounded restart context. Preserve durable workspace progress and re-derive any missing operational detail from the original task.`
+      : "";
+  const updates = params.steeringMessages
+    .map((message, index) => `Steering update ${index + 1}:\n${message}`)
+    .join("\n\n");
+  return [
+    "Continue the existing subagent assignment after a controlled restart.",
+    "The original task remains authoritative. Apply the steering updates in chronological order as corrections or additions; they do not erase unfinished requirements unless they explicitly say so.",
+    "",
+    "Original task:",
+    params.originalTask,
+    "",
+    "Steering updates:",
+    updates,
+    historyNotice,
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
 
 type GatewayCaller = typeof callGateway;
 type PatchSessionEntry = typeof patchSessionEntry;
@@ -758,11 +810,21 @@ export async function steerControlledSubagentRun(params: {
 
   const idempotencyKey = crypto.randomUUID();
   let runId: string = idempotencyKey;
+  const originalTask = params.entry.originalTask?.trim() || params.entry.task;
+  const steeringHistory = appendBoundedSteeringMessage({
+    entry: params.entry,
+    message: params.message,
+  });
+  const restartMessage = buildSteeredSubagentMessage({
+    originalTask,
+    steeringMessages: steeringHistory.messages,
+    steeringHistoryOmittedCount: steeringHistory.omittedCount,
+  });
   try {
     const response = await subagentControlDeps.callGateway<{ runId: string }>({
       method: "agent",
       params: {
-        message: params.message,
+        message: restartMessage,
         sessionKey: params.entry.childSessionKey,
         sessionId: restartSessionId,
         idempotencyKey,
@@ -793,11 +855,12 @@ export async function steerControlledSubagentRun(params: {
     nextRunId: runId,
     fallback: params.entry,
     runTimeoutSeconds: params.entry.runTimeoutSeconds ?? 0,
-    // Preserve the steered instruction so that restart redispatch rewraps the
-    // new message rather than the stale pre-steer task. Persisting the older
-    // task would cause `recoverOrphanedSubagentSessions` to re-issue the
-    // original instruction after a crash, silently dropping the user's steer.
-    task: params.message,
+    // Persist the exact restart prompt for orphan redispatch while retaining
+    // the immutable root assignment separately for any later steer.
+    task: restartMessage,
+    originalTask,
+    steeringMessages: steeringHistory.messages,
+    steeringHistoryOmittedCount: steeringHistory.omittedCount,
   });
   if (!replaced) {
     clearSubagentRunSteerRestart(params.entry.runId);

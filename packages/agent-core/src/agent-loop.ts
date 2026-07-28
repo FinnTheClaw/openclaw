@@ -277,6 +277,9 @@ async function runLoop(
   let config = initialConfig;
   let firstTurn = true;
   let turnOpen = true;
+  const argumentValidationFailures = createArgumentValidationFailureTracker(
+    initialContext.messages,
+  );
   // Check for steering messages at start (user may have typed while waiting)
   let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
   const stopIfAborted = async (): Promise<boolean> => {
@@ -363,6 +366,7 @@ async function runLoop(
           config,
           signal,
           emit,
+          argumentValidationFailures,
         );
         toolResults.push(...executedToolBatch.messages);
         hasMoreToolCalls = !executedToolBatch.terminate;
@@ -552,6 +556,7 @@ async function executeToolCalls(
   config: AgentLoopConfig,
   signal: AbortSignal | undefined,
   emit: AgentEventSink,
+  argumentValidationFailures: ArgumentValidationFailureTracker,
 ): Promise<ExecutedToolCallBatch> {
   const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
   const resolvedToolCalls = new Map<AgentToolCall, ResolvedToolCallOutcome>();
@@ -584,6 +589,7 @@ async function executeToolCalls(
       config,
       signal,
       emit,
+      argumentValidationFailures,
     );
   }
   return executeToolCallsParallel(
@@ -594,6 +600,7 @@ async function executeToolCalls(
     config,
     signal,
     emit,
+    argumentValidationFailures,
   );
 }
 
@@ -627,6 +634,7 @@ async function executeToolCallsSequential(
   config: AgentLoopConfig,
   signal: AbortSignal | undefined,
   emit: AgentEventSink,
+  argumentValidationFailures: ArgumentValidationFailureTracker,
 ): Promise<ExecutedToolCallBatch> {
   const finalizedCalls: FinalizedToolCallOutcome[] = [];
   const messages: ToolResultMessage[] = [];
@@ -652,6 +660,7 @@ async function executeToolCallsSequential(
       config,
       signal,
       resolvedToolCalls,
+      argumentValidationFailures,
     );
     let finalized: FinalizedToolCallOutcome;
     if (preparation.kind === "immediate") {
@@ -661,6 +670,12 @@ async function executeToolCallsSequential(
         isError: preparation.isError,
         executionStarted: false,
         ...(preparation.errorKind ? { errorKind: preparation.errorKind } : {}),
+        ...(preparation.validationFailureCount
+          ? { validationFailureCount: preparation.validationFailureCount }
+          : {}),
+        ...(preparation.outputBudgetExhausted
+          ? { outputBudgetExhausted: true }
+          : {}),
         ...(hideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
       };
     } else {
@@ -700,6 +715,7 @@ async function executeToolCallsParallel(
   config: AgentLoopConfig,
   signal: AbortSignal | undefined,
   emit: AgentEventSink,
+  argumentValidationFailures: ArgumentValidationFailureTracker,
 ): Promise<ExecutedToolCallBatch> {
   const finalizedCalls: FinalizedToolCallEntry[] = [];
 
@@ -724,6 +740,7 @@ async function executeToolCallsParallel(
       config,
       signal,
       resolvedToolCalls,
+      argumentValidationFailures,
     );
     if (preparation.kind === "immediate") {
       const finalized = {
@@ -732,6 +749,12 @@ async function executeToolCallsParallel(
         isError: preparation.isError,
         executionStarted: false,
         ...(preparation.errorKind ? { errorKind: preparation.errorKind } : {}),
+        ...(preparation.validationFailureCount
+          ? { validationFailureCount: preparation.validationFailureCount }
+          : {}),
+        ...(preparation.outputBudgetExhausted
+          ? { outputBudgetExhausted: true }
+          : {}),
         ...(hideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
       } satisfies FinalizedToolCallOutcome;
       await emitToolExecutionEnd(finalized, emit);
@@ -788,6 +811,8 @@ type ImmediateToolCallOutcome = {
   result: AgentToolResult<unknown>;
   isError: boolean;
   errorKind?: "argument-validation";
+  validationFailureCount?: number;
+  outputBudgetExhausted?: boolean;
 };
 
 type ExecutedToolCallOutcome = {
@@ -801,8 +826,182 @@ type FinalizedToolCallOutcome = {
   isError: boolean;
   executionStarted: boolean;
   errorKind?: "argument-validation";
+  validationFailureCount?: number;
+  outputBudgetExhausted?: boolean;
   hideFromChannelProgress?: boolean;
 };
+
+type ArgumentValidationFailureTracker = {
+  counts: Map<string, number>;
+};
+
+const MAX_TRACKED_ARGUMENT_VALIDATION_SHAPES = 64;
+const TERMINAL_ARGUMENT_VALIDATION_FAILURE_COUNT = 3;
+const ARGUMENT_VALIDATION_RECOVERY_DETAILS_KEY = "openclawArgumentValidationRecovery";
+
+function readPersistedArgumentValidationFailure(
+  message: AgentMessage,
+): { fingerprint: string; count: number } | undefined {
+  if (message.role !== "toolResult") {
+    return undefined;
+  }
+  const details = message.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return undefined;
+  }
+  const recovery = (details as Record<string, unknown>)[
+    ARGUMENT_VALIDATION_RECOVERY_DETAILS_KEY
+  ];
+  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {
+    return undefined;
+  }
+  const fingerprint = (recovery as Record<string, unknown>).fingerprint;
+  const count = (recovery as Record<string, unknown>).failureCount;
+  if (
+    typeof fingerprint !== "string" ||
+    !/^[0-9a-f]{8}$/.test(fingerprint) ||
+    typeof count !== "number" ||
+    !Number.isInteger(count) ||
+    count < 1
+  ) {
+    return undefined;
+  }
+  return {
+    fingerprint,
+    count: Math.min(count, TERMINAL_ARGUMENT_VALIDATION_FAILURE_COUNT),
+  };
+}
+
+function createArgumentValidationFailureTracker(
+  messages: readonly AgentMessage[] = [],
+): ArgumentValidationFailureTracker {
+  const counts = new Map<string, number>();
+  for (const message of messages) {
+    const persisted = readPersistedArgumentValidationFailure(message);
+    if (!persisted) {
+      continue;
+    }
+    counts.delete(persisted.fingerprint);
+    counts.set(persisted.fingerprint, persisted.count);
+    if (counts.size > MAX_TRACKED_ARGUMENT_VALIDATION_SHAPES) {
+      const oldest = counts.keys().next().value;
+      if (oldest !== undefined) {
+        counts.delete(oldest);
+      }
+    }
+  }
+  return { counts };
+}
+
+function describeArgumentShape(value: unknown, depth = 0): string {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  if (typeof value !== "object") {
+    return typeof value;
+  }
+  if (depth >= 1) {
+    return "object";
+  }
+  const entries = Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(0, 32)
+    .map(([key, nested]) => `${key}:${describeArgumentShape(nested, depth + 1)}`);
+  return `{${entries.join(",")}}`;
+}
+
+function hashArgumentValidationFingerprint(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function buildArgumentValidationFailureFingerprint(toolCall: AgentToolCall): string {
+  return hashArgumentValidationFingerprint(
+    `${toolCall.name}:${describeArgumentShape(toolCall.arguments)}`,
+  );
+}
+
+function recordArgumentValidationFailure(
+  tracker: ArgumentValidationFailureTracker,
+  toolCall: AgentToolCall,
+): { fingerprint: string; count: number } {
+  const fingerprint = buildArgumentValidationFailureFingerprint(toolCall);
+  const count = (tracker.counts.get(fingerprint) ?? 0) + 1;
+  if (
+    !tracker.counts.has(fingerprint) &&
+    tracker.counts.size >= MAX_TRACKED_ARGUMENT_VALIDATION_SHAPES
+  ) {
+    const oldest = tracker.counts.keys().next().value;
+    if (oldest !== undefined) {
+      tracker.counts.delete(oldest);
+    }
+  }
+  tracker.counts.delete(fingerprint);
+  tracker.counts.set(fingerprint, count);
+  return { fingerprint, count };
+}
+
+function exhaustedAssistantOutputBudget(
+  assistantMessage: AssistantMessage,
+  config: AgentLoopConfig,
+): boolean {
+  const outputTokens = assistantMessage.usage?.output;
+  const maxTokens = config.maxTokens ?? config.model.maxTokens;
+  return (
+    typeof outputTokens === "number" &&
+    Number.isFinite(outputTokens) &&
+    typeof maxTokens === "number" &&
+    Number.isFinite(maxTokens) &&
+    maxTokens > 0 &&
+    outputTokens >= maxTokens
+  );
+}
+
+function buildArgumentValidationRecoveryResult(params: {
+  originalError: string;
+  fingerprint: string;
+  failureCount: number;
+  outputBudgetExhausted: boolean;
+  includeRecoveryGuidance: boolean;
+}): AgentToolResult<unknown> {
+  const cause = params.includeRecoveryGuidance
+    ? params.outputBudgetExhausted
+      ? "The assistant exhausted its configured output budget while constructing this invalid call. "
+      : `This same invalid argument shape has now failed ${params.failureCount} times. `
+    : "";
+  const recovery = params.includeRecoveryGuidance
+    ? "The tool did not run. Do not retry the same oversized or incomplete payload. " +
+      "Provide every required field and reduce the operation to one independently verifiable slice; " +
+      "for a large task, delegate or chain additional bounded slices after this one succeeds."
+    : "";
+  return {
+    content: [
+      {
+        type: "text",
+        text: params.includeRecoveryGuidance
+          ? `${params.originalError}\n\n${cause}${recovery}`
+          : params.originalError,
+      },
+    ],
+    details: {
+      [ARGUMENT_VALIDATION_RECOVERY_DETAILS_KEY]: {
+        fingerprint: params.fingerprint,
+        failureCount: params.failureCount,
+        outputBudgetExhausted: params.outputBudgetExhausted,
+      },
+    },
+    ...(params.failureCount >= TERMINAL_ARGUMENT_VALIDATION_FAILURE_COUNT
+      ? { terminate: true }
+      : {}),
+  };
+}
 
 type FinalizedToolCallEntry = FinalizedToolCallOutcome | (() => Promise<FinalizedToolCallOutcome>);
 
@@ -878,6 +1077,7 @@ async function prepareToolCall(
   config: AgentLoopConfig,
   signal: AbortSignal | undefined,
   resolvedToolCalls: Map<AgentToolCall, ResolvedToolCallOutcome>,
+  argumentValidationFailures: ArgumentValidationFailureTracker,
 ): Promise<PreparedToolCall | ImmediateToolCallOutcome> {
   const resolution = await resolveToolCallTool(
     currentContext,
@@ -924,11 +1124,27 @@ async function prepareToolCall(
   try {
     validatedArgs = validateToolArguments(tool, preparedToolCall);
   } catch (error) {
+    const originalError = error instanceof Error ? error.message : String(error);
+    const validationFailure = recordArgumentValidationFailure(
+      argumentValidationFailures,
+      preparedToolCall,
+    );
+    const validationFailureCount = validationFailure.count;
+    const outputBudgetExhausted = exhaustedAssistantOutputBudget(assistantMessage, config);
+    const shouldGuideRecovery = validationFailureCount > 1 || outputBudgetExhausted;
     return {
       kind: "immediate",
-      result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+      result: buildArgumentValidationRecoveryResult({
+        originalError,
+        fingerprint: validationFailure.fingerprint,
+        failureCount: validationFailureCount,
+        outputBudgetExhausted,
+        includeRecoveryGuidance: shouldGuideRecovery,
+      }),
       isError: true,
       errorKind: "argument-validation",
+      validationFailureCount,
+      ...(outputBudgetExhausted ? { outputBudgetExhausted: true } : {}),
     };
   }
 
@@ -1094,6 +1310,10 @@ async function emitToolExecutionEnd(
     isError: finalized.isError,
     executionStarted: finalized.executionStarted,
     ...(finalized.errorKind ? { errorKind: finalized.errorKind } : {}),
+    ...(finalized.validationFailureCount
+      ? { validationFailureCount: finalized.validationFailureCount }
+      : {}),
+    ...(finalized.outputBudgetExhausted ? { outputBudgetExhausted: true } : {}),
     ...(finalized.hideFromChannelProgress === true ? { hideFromChannelProgress: true } : {}),
   });
 }

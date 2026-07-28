@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWriteTool, type WriteOperations } from "./write.js";
+import { createWriteTool, MAX_INLINE_WRITE_CONTENT_CHARS, type WriteOperations } from "./write.js";
 
 describe("write tool", () => {
   let tmpDir = "";
@@ -49,6 +49,16 @@ describe("write tool", () => {
       },
     };
   }
+
+  it("bounds inline write payloads below a full model-output budget", () => {
+    const tool = createWriteTool("/tmp");
+    const schema = tool.parameters as {
+      properties?: { content?: { maxLength?: number } };
+    };
+
+    expect(schema.properties?.content?.maxLength).toBe(MAX_INLINE_WRITE_CONTENT_CHARS);
+    expect(MAX_INLINE_WRITE_CONTENT_CHARS).toBe(12_000);
+  });
 
   it("recovers success after a post-write abort when readback matches requested content", async () => {
     // Remote transports can report cancellation after the write landed; verify

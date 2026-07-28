@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { forkSessionEntryFromParent } from "./session-fork.js";
+import { forkSessionEntryFromParent, resolveParentForkMaxTokens } from "./session-fork.js";
 
 const runtimeMocks = vi.hoisted(() => ({
   resolveParentForkTokenCountRuntime: vi.fn(),
@@ -99,5 +99,30 @@ describe("forkSessionEntryFromParent", () => {
     >;
     expect(stored[sessionKey]?.sessionId).toBe(result.fork.sessionId);
     expect(stored[sessionKey]?.sessionFile).toBe(result.fork.sessionFile);
+  });
+});
+
+describe("resolveParentForkMaxTokens", () => {
+  const parentEntry = { sessionId: "parent", updatedAt: 1 };
+
+  it("prefers the context window recorded on the parent session", () => {
+    expect(
+      resolveParentForkMaxTokens({
+        parentEntry: { ...parentEntry, contextTokens: 250_000 },
+      }),
+    ).toBe(250_000);
+  });
+
+  it("uses the configured default context window when session metadata is absent", () => {
+    expect(
+      resolveParentForkMaxTokens({
+        parentEntry,
+        config: { agents: { defaults: { contextTokens: 512_000 } } } as OpenClawConfig,
+      }),
+    ).toBe(512_000);
+  });
+
+  it("falls back conservatively when no context metadata is available", () => {
+    expect(resolveParentForkMaxTokens({ parentEntry })).toBe(100_000);
   });
 });
