@@ -2,13 +2,15 @@ diff --git a/dist/tool-search-B8B4Spes.js b/dist/tool-search-B8B4Spes.js
 index 448dfca..ebf5731 100644
 --- a/dist/tool-search-B8B4Spes.js
 +++ b/dist/tool-search-B8B4Spes.js
-@@ -26,7 +26,11 @@ const LOCAL_MODEL_LEAN_DENY_TOOL_NAMES = /* @__PURE__ */ new Set([
+@@ -26,7 +26,13 @@ const LOCAL_MODEL_LEAN_DENY_TOOL_NAMES = /* @__PURE__ */ new Set([
  	"tts",
  	"video_generate"
  ]);
 -const LOCAL_MODEL_LEAN_DIRECT_TOOL_NAMES = /* @__PURE__ */ new Set(["exec"]);
 +const LOCAL_MODEL_LEAN_DIRECT_TOOL_NAMES = /* @__PURE__ */ new Set([
 +	"exec",
++	"memory_get",
++	"memory_search",
 +	"sessions_spawn",
 +	"sessions_yield"
 +]);

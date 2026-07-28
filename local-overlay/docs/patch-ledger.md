@@ -529,7 +529,7 @@ Then intentionally recycle the gateway once.
 - Date captured: 2026-07-27
 - Base package: `openclaw@2026.7.1-2`
 - Core patch: `patches/openclaw-2026.7.1-2/local-model-orchestration-v29.patch`
-- Core patch SHA-256: `2a95865f74c0ecb4b1337caeb7984407b4b5fc52ffe602e2fdc19df286ceae2f`
+- Core patch SHA-256: `b0f2c2c8087ba22c12b4c8a804cd9c5583e95f79ba82b9eee670948767d69259`
 - Debug-hook patch: `patches/debug-hooks/turn-integrity-v29.patch`
 - Debug-hook patch SHA-256: `ac2d02e226f7e38a58293db0da3d2b772c35cc3d8d5d68a2a4166fa723af7dcf`
 - Snapshot: `/Users/aiapi/backups/finn-large-task-20260727T135427`
@@ -548,10 +548,15 @@ finalize with “waiting for workers,” and after a partial completion wake it
 could see only currently active children and forget a worker that had already
 finished.
 
+The fresh Alistar certification later exposed the same contradiction for
+durable recall: `memory_search` and `memory_get` were cataloged while `exec`
+remained direct. Qwen found the requested marker with shell `grep` instead of
+following the explicit `memory_search` instruction.
+
 ### Fix
 
-- expose `exec`, `sessions_spawn`, and `sessions_yield` directly to lean
-  local-model parents;
+- expose `exec`, `memory_search`, `memory_get`, `sessions_spawn`, and
+  `sessions_yield` directly to lean local-model parents;
 - include active and recently settled controlled children in the runtime state
   injected on every wake;
 - mark settled children as completed evidence that must not be awaited again;
@@ -565,7 +570,8 @@ were changed.
 
 ### Verification
 
-Source tests passed for 20 focused lean-tool and subagent-state cases. The
+Source tests pass for lean-tool and subagent-state behavior, including direct
+durable-memory schemas. The
 debug-hook continuation/replay regression passed both locally and on Moira.
 The final live two-worker canary spawned runs
 `ca8caa75-33a4-4821-b379-d2ffa3e1c20c` and

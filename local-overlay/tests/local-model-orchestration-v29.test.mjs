@@ -11,8 +11,8 @@ const selection = fs.readFileSync(path.join(target, "dist/selection-JInn13lc.js"
 
 assert.match(
   toolSearch,
-  /LOCAL_MODEL_LEAN_DIRECT_TOOL_NAMES[\s\S]*?"exec"[\s\S]*?"sessions_spawn"[\s\S]*?"sessions_yield"/,
-  "lean local-model parents must receive spawn and nonblocking yield directly",
+  /LOCAL_MODEL_LEAN_DIRECT_TOOL_NAMES[\s\S]*?"exec"[\s\S]*?"memory_get"[\s\S]*?"memory_search"[\s\S]*?"sessions_spawn"[\s\S]*?"sessions_yield"/,
+  "lean local-model parents must receive durable-memory, spawn, and nonblocking-yield tools directly",
 );
 assert.match(selection, /## Subagent Runtime State/);
 assert.match(selection, /\.\.\.list\.recent\.map/);

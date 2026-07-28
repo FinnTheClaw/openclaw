@@ -339,6 +339,8 @@ describe("local model lean tool filtering", () => {
 
   it("keeps execution and subagent orchestration outside the lean Tool Search catalog", () => {
     expect(shouldCatalogToolForLocalModelLean({ name: "exec" } as AnyAgentTool)).toBe(false);
+    expect(shouldCatalogToolForLocalModelLean({ name: "memory_get" } as AnyAgentTool)).toBe(false);
+    expect(shouldCatalogToolForLocalModelLean({ name: "memory_search" } as AnyAgentTool)).toBe(false);
     expect(shouldCatalogToolForLocalModelLean({ name: "sessions_spawn" } as AnyAgentTool)).toBe(
       false,
     );

@@ -244,9 +244,9 @@
         "dist/selection-JInn13lc.js"
       ],
       "patch_file": "patches/openclaw-2026.7.1-2/local-model-orchestration-v29.patch",
-      "sha256": "2a95865f74c0ecb4b1337caeb7984407b4b5fc52ffe602e2fdc19df286ceae2f",
-      "purpose": "Expose spawn and nonblocking yield directly to lean local-model parents, and retain recently settled subagent state across partial completion wakes.",
-      "status": "applied-live-on-moira"
+      "sha256": "b0f2c2c8087ba22c12b4c8a804cd9c5583e95f79ba82b9eee670948767d69259",
+      "purpose": "Expose durable-memory search/get plus spawn and nonblocking yield directly to lean local-model parents, and retain recently settled subagent state across partial completion wakes.",
+      "status": "corrected-cumulative-candidate-for-alistar-certification"
     },
     {
       "id": "debug-hooks-turn-integrity-v29",
