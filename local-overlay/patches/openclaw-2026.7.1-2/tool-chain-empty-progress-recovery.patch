@@ -1,0 +1,107 @@
+diff --git a/dist/embedded-agent-DGUuxGR2.js b/dist/embedded-agent-DGUuxGR2.js
+index c94f2cf..6995158 100644
+--- a/dist/embedded-agent-DGUuxGR2.js
++++ b/dist/embedded-agent-DGUuxGR2.js
+@@ -1775,7 +1775,8 @@ function hasOnlySilentReplyTexts(texts) {
+ 	const nonEmpty = (texts ?? []).map((text) => String(text ?? "").trim()).filter(Boolean);
+ 	return nonEmpty.at(-1)?.toUpperCase() === SILENT_REPLY_TOKEN;
+ }
+-const SETTLED_TOOL_TERMINAL_CONTINUATION_PROMPT = "The previous assistant turn completed and verified its mutating tool calls but stopped before producing the final user-visible answer. Continue from the current transcript and provide that final answer now. Do not repeat completed tool calls or restart from scratch. No mutating tools are available during this finalization; if absolutely necessary you may read the completed result once, then answer.";
++const SETTLED_TOOL_TERMINAL_CONTINUATION_PROMPT = "The previous assistant turn completed one or more tool calls but then returned no user-visible continuation. Continue from the current transcript and complete every remaining step, using tools as needed. Do not repeat completed tool calls or restart from scratch. Produce the final user-visible answer only after the original request is complete or a concrete external blocker is proven.";
++const MAX_SETTLED_TOOL_CONTINUATIONS_PER_PROGRESS = 2;
+ const SETTLED_TOOL_TERMINAL_CONTINUATION_MODEL_APIS = /* @__PURE__ */ new Set([
+ 	"openai-completions",
+ 	"anthropic-messages",
+@@ -1786,16 +1787,25 @@ const SETTLED_TOOL_TERMINAL_CONTINUATION_MODEL_APIS = /* @__PURE__ */ new Set([
+ 	"openclaw-openai-responses-transport",
+ 	"openclaw-azure-openai-responses-transport"
+ ]);
+-function hasSettledTerminalToolUse(attempt) {
+-	const assistant = attempt.currentAttemptAssistant ?? attempt.lastAssistant;
+-	if (assistant?.stopReason !== "toolUse" || !Array.isArray(assistant.content)) return false;
+-	const requestedToolCallIds = assistant.content.flatMap((item) => item?.type === "toolCall" && typeof item.id === "string" ? [item.id] : []);
+-	if (requestedToolCallIds.length === 0 || (attempt.itemLifecycle?.activeCount ?? 0) !== 0) return false;
++function resolveSettledTerminalToolProgress(attempt) {
++	if ((attempt.itemLifecycle?.activeCount ?? 0) !== 0) return null;
+ 	const snapshot = attempt.messagesSnapshot ?? [];
+-	const assistantIndex = snapshot.indexOf(assistant);
+-	if (assistantIndex < 0) return false;
+-	const completedToolCallIds = new Set(snapshot.slice(assistantIndex + 1).flatMap((message) => message?.role === "toolResult" && message.isError !== true && typeof message.toolCallId === "string" ? [message.toolCallId] : []));
+-	return requestedToolCallIds.every((id) => completedToolCallIds.has(id));
++	for (let assistantIndex = snapshot.length - 1; assistantIndex >= 0; assistantIndex -= 1) {
++		const assistant = snapshot[assistantIndex];
++		if (assistant?.role !== "assistant" || assistant.stopReason !== "toolUse" || !Array.isArray(assistant.content)) continue;
++		const requestedToolCallIds = assistant.content.flatMap((item) => item?.type === "toolCall" && typeof item.id === "string" ? [item.id] : []);
++		if (requestedToolCallIds.length === 0) continue;
++		const completedToolCallIds = new Set(snapshot.slice(assistantIndex + 1).flatMap((message) => message?.role === "toolResult" && message.isError !== true && typeof message.toolCallId === "string" ? [message.toolCallId] : []));
++		if (!requestedToolCallIds.every((id) => completedToolCallIds.has(id))) return null;
++		return {
++			key: requestedToolCallIds.join("|"),
++			completedCount: requestedToolCallIds.length
++		};
++	}
++	return null;
++}
++function hasSettledTerminalToolUse(attempt) {
++	return resolveSettledTerminalToolProgress(attempt) !== null;
+ }
+ const COMPACTION_CONTINUATION_RETRY_INSTRUCTION = "The previous attempt compacted the conversation context before producing a final user-visible answer. Continue from the compacted transcript and produce the final answer now. Do not restart from scratch, do not repeat completed work, and do not rerun tools unless the transcript clearly lacks required evidence.";
+ const NO_REAL_CONVERSATION_MESSAGES_REASON = "no real conversation messages";
+@@ -2761,8 +2771,8 @@ async function runEmbeddedAgentInternal(paramsInput) {
+ 			let emptyResponseRetryAttempts = 0;
+ 			let failedToolContinuationAttempts = 0;
+ 			let unexpectedSilentReplyContinuationAttempts = 0;
++			let settledToolContinuationProgressKey;
+ 			let settledToolContinuationAttempts = 0;
+-			let restrictToolsForNextAttempt = false;
+ 			let compactionContinuationRetryAttempts = 0;
+ 			let beforeAgentFinalizeRevisionAttempts = 0;
+ 			let sameModelIdleTimeoutRetries = 0;
+@@ -3039,8 +3049,6 @@ async function runEmbeddedAgentInternal(paramsInput) {
+ 						runtimeAuthState
+ 					});
+ 					const attemptFastMode = resolveAttemptFastModeParam();
+-					const toolsAllowForAttempt = restrictToolsForNextAttempt ? ["read"] : params.toolsAllow;
+-					restrictToolsForNextAttempt = false;
+ 					if (!startupStagesEmitted) startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
+ 					const runtimePlan = buildAgentRuntimePlan({
+ 						provider,
+@@ -3253,7 +3261,7 @@ async function runEmbeddedAgentInternal(paramsInput) {
+ 						bootstrapContextMode: params.bootstrapContextMode,
+ 						bootstrapContextRunKind: params.bootstrapContextRunKind,
+ 						jobId: params.jobId,
+-						toolsAllow: toolsAllowForAttempt,
++						toolsAllow: params.toolsAllow,
+ 						crestodianTool: params.crestodianTool,
+ 						cleanupBundleMcpOnRunEnd: params.cleanupBundleMcpOnRunEnd,
+ 						disableMessageTool: params.disableMessageTool,
+@@ -4327,7 +4335,12 @@ async function runEmbeddedAgentInternal(paramsInput) {
+ 					});
+ 					const payloadsForTerminalPath = recoveredFinalAssistantPayloadsAfterPromptTimeout ? recoveredFinalAssistantPayloadsAfterPromptTimeout : payloadsWithToolMedia?.length ? payloadsWithToolMedia : silentToolResultReplyPayload ? [silentToolResultReplyPayload] : payloadsWithToolMedia;
+ 					const payloadCount = payloadsForTerminalPath?.length ?? 0;
+-					const settledToolFinalizationAttempted = settledToolContinuationAttempts > 0;
++					const settledToolProgress = resolveSettledTerminalToolProgress(attempt);
++					if (settledToolProgress && settledToolProgress.key !== settledToolContinuationProgressKey) {
++						settledToolContinuationProgressKey = settledToolProgress.key;
++						settledToolContinuationAttempts = 0;
++					}
++					const settledToolFinalizationAttempted = Boolean(settledToolProgress && settledToolProgress.key === settledToolContinuationProgressKey && settledToolContinuationAttempts > 0);
+ 					const emptyAssistantReplyIsSilent = settledToolFinalizationAttempted ? false : shouldTreatEmptyAssistantReplyAsSilent({
+ 						allowEmptyAssistantReplyAsSilent: params.allowEmptyAssistantReplyAsSilent,
+ 						payloadCount,
+@@ -4395,13 +4408,12 @@ async function runEmbeddedAgentInternal(paramsInput) {
+ 						continue;
+ 					}
+ 					const terminalToolPresentationBeforeContinuation = readAttemptTerminalToolPresentation();
+-					const canContinueSettledToolUse = !emptyAssistantReplyIsSilent && !settledToolFinalizationAttempted && settledToolContinuationAttempts < 1 && !aborted && !timedOut && !promptError && !attempt.lastToolError && !attempt.clientToolCalls && !attempt.yieldDetected && !attempt.didSendDeterministicApprovalPrompt && !terminalToolPresentationBeforeContinuation && !hasAttemptTerminalState(attempt) && SETTLED_TOOL_TERMINAL_CONTINUATION_MODEL_APIS.has(effectiveModel.api) && hasSettledTerminalToolUse(attempt);
++					const canContinueSettledToolUse = payloadCount === 0 && !emptyAssistantReplyIsSilent && settledToolProgress !== null && settledToolContinuationAttempts < MAX_SETTLED_TOOL_CONTINUATIONS_PER_PROGRESS && !aborted && !timedOut && !promptError && !attempt.lastToolError && !attempt.clientToolCalls && !attempt.yieldDetected && !attempt.didSendDeterministicApprovalPrompt && !terminalToolPresentationBeforeContinuation && !hasAttemptTerminalState(attempt) && SETTLED_TOOL_TERMINAL_CONTINUATION_MODEL_APIS.has(effectiveModel.api);
+ 					if (canContinueSettledToolUse) {
+ 						settledToolContinuationAttempts += 1;
+ 						nextAttemptPromptOverride = SETTLED_TOOL_TERMINAL_CONTINUATION_PROMPT;
+ 						suppressNextUserMessagePersistence = true;
+-						restrictToolsForNextAttempt = true;
+-						log$1.warn(`settled post-tool turn lacked a final answer: runId=${params.runId} sessionId=${params.sessionId} provider=${activeErrorContext.provider}/${activeErrorContext.model} — continuing ${settledToolContinuationAttempts}/1 from completed tool results with read-only tools`);
++						log$1.warn(`settled post-tool turn lacked a continuation: runId=${params.runId} sessionId=${params.sessionId} provider=${activeErrorContext.provider}/${activeErrorContext.model} — continuing ${settledToolContinuationAttempts}/${MAX_SETTLED_TOOL_CONTINUATIONS_PER_PROGRESS} from ${settledToolProgress.completedCount} completed tool result(s)`);
+ 						continue;
+ 					}
+ 					const incompleteTurnText = unexpectedSilentReply ? "⚠️ Agent repeatedly attempted a silent reply to a direct user request. The turn was stopped instead of being dropped silently." : emptyAssistantReplyIsSilent ? null : resolveIncompleteTurnPayloadText({

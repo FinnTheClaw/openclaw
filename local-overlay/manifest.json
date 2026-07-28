@@ -133,6 +133,17 @@
       "patch_file": "patches/openclaw-2026.7.1-2/settled-tool-terminal-continuation.patch",
       "sha256": "ed975422a209dc60dd6d02499b85fe20c2250598cbd31692538f6d689ddfa8fd",
       "purpose": "After verifying every terminal tool call has a successful matching result, run one read-only continuation from the current transcript so completed mutations are never replayed and the user still receives a final answer.",
+      "status": "superseded-by-tool-chain-empty-progress-recovery"
+    },
+    {
+      "id": "tool-chain-empty-progress-recovery",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/embedded-agent-DGUuxGR2.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/tool-chain-empty-progress-recovery.patch",
+      "sha256": "17ce213b4a93ae8222cd5658c696d9b1d533d7349c093366d80a39e1fe5b513f",
+      "purpose": "Recover an empty local-model completion after a successful tool result by locating the latest settled tool batch, resetting a bounded retry budget whenever durable tool progress advances, and continuing with the full tool set without replaying completed actions.",
       "status": "applied-live-on-moira"
     },
     {

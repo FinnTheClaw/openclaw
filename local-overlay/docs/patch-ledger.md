@@ -589,6 +589,65 @@ sleep 8
 openclaw gateway status --deep
 ```
 
+## 2026-07-27 — Progress-aware empty completion recovery
+
+- Base package: `openclaw@2026.7.1-2`
+- Core patch: `patches/openclaw-2026.7.1-2/tool-chain-empty-progress-recovery.patch`
+- Core patch SHA-256: `17ce213b4a93ae8222cd5658c696d9b1d533d7349c093366d80a39e1fe5b513f`
+- Reproduction run: `4404a95c-2740-452e-a7c6-af67cfed0b13`
+
+### Problem
+
+A fresh high-thinking Finn session routed to Narya successfully called `exec`
+and received a successful result, then Qwen returned a clean empty assistant
+completion. OpenClaw correctly considered generic replay unsafe after `exec`,
+but the settled-tool recovery helper inspected only the final empty assistant
+record. It therefore missed the immediately preceding successful tool batch and
+terminated the run as `incomplete_turn`.
+
+Direct coordinator tests proved that Narya could chain the same tool protocol
+with thinking and prefix caching enabled. The defect was the OpenClaw recovery
+state machine, not model routing, fallback, or corrupted model weights.
+
+### Fix
+
+- scan backward to the latest `toolUse` assistant record;
+- require every tool call in that latest batch to have a successful matching
+  result and fail closed on partial, failed, or still-active work;
+- derive a progress key from the completed tool-call ids;
+- reset the two-attempt continuation budget whenever a new completed tool batch
+  advances that progress key;
+- require zero user-visible payload before invoking this recovery path;
+- continue from the persisted transcript with the full tool set so unfinished
+  chains can proceed;
+- retain exact-action replay protection in the debug hook so completed
+  mutations cannot run twice.
+
+### Verification
+
+- compiled JavaScript syntax check: pass;
+- functional helper regression covers empty-after-tool, partial batches, failed
+  latest batches, stale results, active tools, and progress-key advancement;
+- the complete frozen-overlay verifier passed against an APFS-cloned candidate;
+- live isolated Narya run `a0289a4f-4b75-4d89-9c5c-7a1e42e2509b`
+  completed six sequential `exec` calls with zero failures, no fallback, and
+  the exact visible `CLEAN_CHAIN_OK` result in 14 seconds;
+- Signal remained configured, running, and probe-healthy after promotion;
+- the affected direct Signal session was returned from stale `thinking=low`
+  metadata to the configured `thinking=high` default;
+- rollback snapshot:
+  `/Users/aiapi/backups/openclaw-tool-chain-empty-20260728T044209Z`.
+
+### Rollback
+
+Reverse only the incremental patch, then intentionally restart the gateway:
+
+```bash
+sudo patch --batch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw \
+  < local-overlay/patches/openclaw-2026.7.1-2/tool-chain-empty-progress-recovery.patch
+openclaw gateway restart
+```
+
 ## subagent-fanout-silence-v30
 
 - Date captured: 2026-07-27

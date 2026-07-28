@@ -165,7 +165,9 @@ assert.match(
 assert.match(embedded, /Agent repeatedly attempted a silent reply to a direct user request/);
 assert.match(embedded, /SETTLED_TOOL_TERMINAL_CONTINUATION_PROMPT/);
 assert.match(embedded, /hasSettledTerminalToolUse/);
-assert.match(embedded, /restrictToolsForNextAttempt/);
+assert.match(embedded, /resolveSettledTerminalToolProgress/);
+assert.match(embedded, /MAX_SETTLED_TOOL_CONTINUATIONS_PER_PROGRESS/);
+assert.doesNotMatch(embedded, /restrictToolsForNextAttempt/);
 
 assert.match(
   getReply,
