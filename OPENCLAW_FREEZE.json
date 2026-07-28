@@ -5,6 +5,7 @@
   "source_version": "2026.7.1",
   "source_commit": "0790d9f593ad30c940ed93b5872a8cf6d6f3cf8c",
   "frozen_source_commit": "086da00d643c2afaf767ce8be6aca3b4149d3b7f",
+  "artifact_source_commit": "d188e5b6aaad60d0ee98b1385b3e921bfe1c1ce4",
   "source_branch": "finn/frozen-2026.7.1-2",
   "upstream_repository": "https://github.com/openclaw/openclaw.git",
   "frozen_repository": "/Users/aiapi/workspace/openclaw-frozen",
@@ -12,11 +13,11 @@
   "overlay_directory": "local-overlay",
   "overlay_source_commit": "086da00d643c2afaf767ce8be6aca3b4149d3b7f",
   "behavior_contract": "turn-lifecycle-v53",
-  "canonical_artifact": "/Users/aiapi/openclaw-artifacts/frozen/2026.7.1-2/openclaw-2026.7.1-2-finn-086da00.tgz",
-  "canonical_artifact_sha256": "cf532db8bff86f997049d963277c15ac2df50ca9e46b58352786a5508b631620",
-  "canonical_runtime_tree_sha256": "719fcca66de29ab79cd1d9ca373ea510ba19f37477c34584b2bb78b41a86d5e3",
+  "canonical_artifact": "/Users/aiapi/openclaw-artifacts/frozen/2026.7.1-2/openclaw-2026.7.1-2-finn-d188e5b-v2.tgz",
+  "canonical_artifact_sha256": "30ee027bd18867522a98bba59e3e3bac79b877f9de2987ba8c6e9623ddb2d06e",
+  "canonical_runtime_tree_sha256": "77d55ee0935fd29278e86edc9108b5ff1f295412260037dff80979eae063f2c1",
   "automatic_runtime_updates": false,
   "selected_upstream_changes_only": true,
   "created_at": "2026-07-26T05:35:00Z",
-  "updated_at": "2026-07-28T22:15:00Z"
+  "updated_at": "2026-07-28T21:50:42Z"
 }
