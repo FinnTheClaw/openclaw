@@ -612,6 +612,9 @@ export async function createSshSandboxSessionFromSettings(
       materializedCertificate ?? resolveOptionalLocalPath(settings.certificateFile);
     const knownHostsFile =
       materializedKnownHosts ?? resolveOptionalLocalPath(settings.knownHostsFile);
+    assertSshConfigLineValue(identityFile, "identityFile");
+    assertSshConfigLineValue(certificateFile, "certificateFile");
+    assertSshConfigLineValue(knownHostsFile, "knownHostsFile");
     const hostAlias = "openclaw-sandbox";
     const configPath = path.join(configDir, "config");
     const lines = [
@@ -929,6 +932,12 @@ function parseSshConfigHost(configText: string): string | null {
 
 function resolveSshTmpRoot(): string {
   return path.resolve(resolvePreferredOpenClawTmpDir() ?? os.tmpdir());
+}
+
+function assertSshConfigLineValue(value: string | undefined, field: string): void {
+  if (value && /[\r\n]/.test(value)) {
+    throw new Error(`SSH sandbox ${field} must not contain line breaks.`);
+  }
 }
 
 function resolveOptionalLocalPath(value: string | undefined): string | undefined {
