@@ -148,6 +148,7 @@ done
 if [[ "${TARGET_VERSION}" == "2026.7.1-2" ]]; then
   node "${REPO_DIR}/tests/finalize-retry-failclosed.test.mjs" "${TARGET}"
   node "${REPO_DIR}/tests/local-model-orchestration-v29.test.mjs" "${TARGET}"
+  node "${REPO_DIR}/tests/parent-fork-dynamic-context-tokens.test.mjs" "${TARGET}"
   node "${REPO_DIR}/tests/recovered-cli-usage-errors.test.mjs" "${TARGET}"
   node "${REPO_DIR}/tests/settled-tool-terminal-continuation.test.mjs" "${TARGET}"
   node "${REPO_DIR}/tests/subagent-fanout-silence-v30.test.mjs" "${TARGET}"

@@ -1,0 +1,77 @@
+--- a/dist/session-fork-B_4CoW5e.js
++++ b/dist/session-fork-B_4CoW5e.js
+@@ -1,4 +1,5 @@
+ import { t as createLazyImportLoader } from "./lazy-promise-10KxeiYV.js";
++import { o as resolveContextTokensForModel } from "./context-_zWLdTOu.js";
+ import { d as resolveStorePath } from "./paths-C2C4lJH6.js";
+ import { g as forkSessionFromParentTranscript, h as forkSessionEntryFromParentTarget } from "./session-accessor-D7yi6P1i.js";
+ //#region src/auto-reply/reply/session-fork.ts
+@@ -18,8 +19,27 @@ function formatParentForkTooLargeMessage(params) {
+ function resolveParentForkStorePath(params) {
+ 	return params.storePath ?? resolveStorePath(params.config?.session?.store, { agentId: params.agentId });
+ }
++function resolvePositiveInteger(value) {
++	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return;
++	return Math.floor(value);
++}
++function resolveParentForkMaxTokens(params) {
++	const entryContextTokens = resolvePositiveInteger(params.parentEntry?.contextTokens);
++	if (entryContextTokens !== void 0) return entryContextTokens;
++	const configDefaultContextTokens = resolvePositiveInteger(params.config?.agents?.defaults?.contextTokens);
++	const provider = params.parentEntry?.modelProvider ?? params.parentEntry?.providerOverride;
++	const model = params.parentEntry?.model ?? params.parentEntry?.modelOverride;
++	const modelContextTokens = provider || model ? resolvePositiveInteger(resolveContextTokensForModel({
++		cfg: params.config,
++		provider,
++		model,
++		fallbackContextTokens: configDefaultContextTokens ?? DEFAULT_PARENT_FORK_MAX_TOKENS,
++		allowAsyncLoad: false
++	})) : void 0;
++	return modelContextTokens ?? configDefaultContextTokens ?? DEFAULT_PARENT_FORK_MAX_TOKENS;
++}
+ async function resolveParentForkDecision(params) {
+-	const maxTokens = DEFAULT_PARENT_FORK_MAX_TOKENS;
++	const maxTokens = resolveParentForkMaxTokens(params);
+ 	const parentTokens = await resolveParentForkTokenCount({
+ 		parentEntry: params.parentEntry,
+ 		storePath: resolveParentForkStorePath(params)
+--- a/dist/openclaw-tools-KulZ1cdH.js
++++ b/dist/openclaw-tools-KulZ1cdH.js
+@@ -10781,7 +10781,8 @@ async function prepareSubagentSessionContext(params) {
+ 				sessionId: "",
+ 				updatedAt: Date.now()
+ 			},
+-			agentId: params.requesterAgentId
++			agentId: params.requesterAgentId,
++			config: params.cfg
+ 		});
+ 		if (forkedResult.status === "missing-parent") throw new Error("context=\"fork\" requested but the requester session transcript is not available.");
+ 		if (forkedResult.status === "failed" || forkedResult.status === "missing-entry") throw new Error("context=\"fork\" requested but OpenClaw could not fork the requester transcript.");
+--- a/dist/get-reply-OTG64ybi.js
++++ b/dist/get-reply-OTG64ybi.js
+@@ -4111,6 +4111,7 @@ async function prepareReplySessionParentFork(params) {
+ 	const decision = await resolveParentForkDecision({
+ 		parentEntry,
+ 		agentId: params.agentId,
++		config: params.config,
+ 		storePath: params.storePath
+ 	});
+ 	if (decision.status === "skip") {
+@@ -4686,6 +4687,7 @@ async function initSessionStateAttemptLocked(params, attemptContext, staleSnapsh
+ 		prepareSessionEntry: async ({ readEntry, sessionEntry: entryToCommit }) => await prepareReplySessionParentFork({
+ 			agentId,
+ 			alreadyForked,
++			config: cfg,
+ 			parentSessionKey,
+ 			readEntry,
+ 			sessionEntry: entryToCommit,
+--- a/dist/session-create-service-14oZxrT5.js
++++ b/dist/session-create-service-14oZxrT5.js
+@@ -700,6 +700,7 @@ async function createGatewaySession(params) {
+ 			const forkDecision = await resolveParentForkDecision({
+ 				parentEntry: currentParentSessionEntry,
+ 				agentId: parentSessionTarget.agentId,
++				config: params.cfg,
+ 				storePath: parentSessionTarget.storePath
+ 			});
+ 			if (forkDecision.status === "skip") return {

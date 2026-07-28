@@ -29,14 +29,15 @@ Direct edits under that package tree are upgrade-fragile. A manual `openclaw upd
 | `patches/openclaw-2026.7.1-2/finn-wedge-rootcause.patch`                   | `2026.7.1-2`                     | exec registry, embedded runner, and restart recovery                                                                                                 | Prevent fast exec from crashing the gateway, reject a final `NO_REPLY` even after progress text, and send recovery notices through Signal's supported generic send route.                                                                                            |
 | `patches/openclaw-2026.7.1-2/recovered-cli-usage-errors.patch`             | `2026.7.1-2`                     | `dist/tool-mutation-BfXv6cQw.js`, `dist/selection-JInn13lc.js`                                                                                       | Suppress an obsolete exec warning after the same OpenClaw agent request succeeds with a corrected target selector, while retaining unrelated failures.                                                                                                               |
 | `patches/debug-hooks/turn-integrity-v27.patch`                             | Finn debug-hooks plugin          | `~/.openclaw/plugins/debug-hooks/index.js`                                                                                                           | Keep classifying unfinished output as a revision request while core owns the bounded retry budget and visible terminal failure.                                                                                                                                      |
-| `patches/debug-hooks/turn-integrity-v28.patch`                             | Finn and Jake debug-hooks plugin | live plugin, managed canonical hook, and provisioner source                                                                                          | Preserve v27 fail-closed behavior while accepting tool-proven external permission blockers and user-facing “let me know” language as legitimate terminal answers.                                                                                                    |
+| `patches/debug-hooks/turn-integrity-v28.patch`                             | live and provisioned-agent debug-hooks plugin | live plugin, managed canonical hook, and provisioner source                                                                                          | Preserve v27 fail-closed behavior while accepting tool-proven external permission blockers and user-facing “let me know” language as legitimate terminal answers.                                                                                                    |
 | `patches/openclaw-2026.7.1-2/local-model-orchestration-v29.patch`          | `2026.7.1-2`                     | `dist/tool-search-B8B4Spes.js`, `dist/selection-JInn13lc.js`                                                                                         | Expose spawn/yield directly to lean local-model parents and preserve recently settled child state across partial completion wakes.                                                                                                                                   |
-| `patches/debug-hooks/turn-integrity-v29.patch`                             | Finn and Jake debug-hooks plugin | live plugin, managed canonical hook, and provisioner source                                                                                          | Reject exact replay of already-successful mutations during continuation and reject “waiting before finishing” as a completed turn.                                                                                                                                   |
+| `patches/debug-hooks/turn-integrity-v29.patch`                             | live and provisioned-agent debug-hooks plugin | live plugin, managed canonical hook, and provisioner source                                                                                          | Reject exact replay of already-successful mutations during continuation and reject “waiting before finishing” as a completed turn.                                                                                                                                   |
 | `patches/openclaw-2026.7.1-2/subagent-fanout-silence-v30.patch`           | `2026.7.1-2`                     | `dist/subagent-system-prompt-Bs91RWap.js`, `dist/openclaw-tools-KulZ1cdH.js`                                                                          | Keep the original direct turn visible, finish explicitly counted worker fanout before yielding, and reserve `NO_REPLY` for later completion events after a visible final answer.                                                                                      |
-| `patches/debug-hooks/turn-integrity-v30.patch`                             | Finn and Jake debug-hooks plugin | live plugin, managed canonical hook, and provisioner source                                                                                          | Count accepted `sessions_spawn` results across hidden continuations and reject premature silence with authoritative N-of-M recovery guidance.                                                                                                                        |
+| `patches/debug-hooks/turn-integrity-v30.patch`                             | live and provisioned-agent debug-hooks plugin | live plugin, managed canonical hook, and provisioner source                                                                                          | Count accepted `sessions_spawn` results across hidden continuations and reject premature silence with authoritative N-of-M recovery guidance.                                                                                                                        |
 | `patches/openclaw-2026.7.1-2/tui-terminal-watchdog-reconcile.patch`        | `2026.7.1-2`                     | `dist/tui-ttOZNpsl.js`                                                                                                                               | Reconcile a silent TUI run against canonical session history before declaring it stuck; clear stale spinners only when the session is terminal and has no in-flight run.                                                                                             |
-| `patches/openclaw-2026.7.2/jake-parent-fork-dynamic-context-tokens.patch`  | `2026.7.2`                       | `dist/session-accessor-BFted17j.js`, `dist/session-fork-B2y_KaMK.js`                                                                                 | Use the actual Jake parent/model context budget for child-session inheritance instead of a fixed 100k-token ceiling.                                                                                                                                                 |
-| `patches/openclaw-2026.7.2/turn-integrity-recovery.patch`                  | `2026.7.2`                       | `dist/embedded-agent-BWIVdi3c.js`, `dist/selection-C50GdcQc.js`, `dist/get-reply-DE2xroan.js`                                                        | Give Jakes the same bounded failed-tool, completed-tool, accidental-silence, classifier, and trajectory fixes as Finn without retaining the upstream eight-pass tool-error loop.                                                                                     |
+| `patches/openclaw-2026.7.1-2/parent-fork-dynamic-context-tokens.patch`     | `2026.7.1-2`                     | `dist/session-fork-B_4CoW5e.js`, `dist/openclaw-tools-KulZ1cdH.js`, `dist/get-reply-OTG64ybi.js`, `dist/session-create-service-14oZxrT5.js`          | Use the parent session, selected model, or configured default context budget for child-session inheritance instead of a fixed 100k-token ceiling, with config propagated through every compiled caller.                                                              |
+| `patches/openclaw-2026.7.2/parent-fork-dynamic-context-tokens.patch`       | `2026.7.2`                       | `dist/session-accessor-BFted17j.js`, `dist/session-fork-B2y_KaMK.js`                                                                                 | Use the actual parent/model context budget for child-session inheritance instead of a fixed 100k-token ceiling.                                                                                                                                                      |
+| `patches/openclaw-2026.7.2/turn-integrity-recovery.patch`                  | `2026.7.2`                       | `dist/embedded-agent-BWIVdi3c.js`, `dist/selection-C50GdcQc.js`, `dist/get-reply-DE2xroan.js`                                                        | Give provisioned agents the same bounded failed-tool, completed-tool, accidental-silence, classifier, and trajectory fixes as the live reference agent without retaining the upstream eight-pass tool-error loop.                                                     |
 
 ## Reapply After Upgrade
 
@@ -133,7 +134,7 @@ tool, finalization, and delivery events under
 See `docs/turn-integrity-observability.md` for event coverage and the bounded
 raw-stream escalation procedure.
 
-The equivalent Jake patch is version-specific to `openclaw@2026.7.2`. Reverse
+The equivalent provisioned-agent patch is version-specific to `openclaw@2026.7.2`. Reverse
 it from a matching package with:
 
 ```bash
@@ -183,15 +184,22 @@ sudo patch --batch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw \
   < patches/openclaw-2026.7.1-2/finn-wedge-rootcause.patch
 ```
 
-## Jake Parent-Fork Context Rollback
+## Parent-Fork Context Rollback
 
-The `openclaw@2026.7.2` Jake patch is version-specific and is not applied to
-Moira's current `openclaw@2026.7.1-2` installation. On a matching Jake target,
-reverse it with:
+For the current frozen `openclaw@2026.7.1-2` package, reverse the version-matched
+patch and intentionally restart the affected gateway:
 
 ```bash
 sudo patch --batch -R -p1 -d /path/to/openclaw \
-  < patches/openclaw-2026.7.2/jake-parent-fork-dynamic-context-tokens.patch
+  < patches/openclaw-2026.7.1-2/parent-fork-dynamic-context-tokens.patch
+```
+
+The equivalent `openclaw@2026.7.2` patch is separately version-specific. On a
+matching provisioned-agent target, reverse it with:
+
+```bash
+sudo patch --batch -R -p1 -d /path/to/openclaw \
+  < patches/openclaw-2026.7.2/parent-fork-dynamic-context-tokens.patch
 ```
 
 ## Patch Hygiene

@@ -276,6 +276,20 @@
       "status": "applied-live-on-moira-and-provisioner"
     },
     {
+      "id": "parent-fork-dynamic-context-tokens-2026-7-1-2",
+      "base_package": "openclaw@2026.7.1-2",
+      "target_files": [
+        "dist/session-fork-B_4CoW5e.js",
+        "dist/openclaw-tools-KulZ1cdH.js",
+        "dist/get-reply-OTG64ybi.js",
+        "dist/session-create-service-14oZxrT5.js"
+      ],
+      "patch_file": "patches/openclaw-2026.7.1-2/parent-fork-dynamic-context-tokens.patch",
+      "sha256": "e58e28aac777f87c0bffde09995a2ec8ea387a9ee414f3ca59eee38c6ae0fd57",
+      "purpose": "Use the parent session, configured default, or selected model context limit when deciding whether a child session can inherit parent context instead of applying a fixed 100k-token ceiling.",
+      "status": "validated-for-frozen-agent-runtime-publication"
+    },
+    {
       "id": "recovered-cli-usage-errors",
       "base_package": "openclaw@2026.7.1-2",
       "target_files": [
@@ -288,7 +302,7 @@
       "status": "applied-live-on-moira"
     },
     {
-      "id": "jake-turn-integrity-recovery",
+      "id": "turn-integrity-recovery-2026-7-2",
       "base_package": "openclaw@2026.7.2",
       "target_files": [
         "dist/embedded-agent-BWIVdi3c.js",
@@ -297,20 +311,20 @@
       ],
       "patch_file": "patches/openclaw-2026.7.2/turn-integrity-recovery.patch",
       "sha256": "89483b78966591f0593724b214de8d20fbeec1b6eba2b38d90357bb48dbaa8c4",
-      "purpose": "Port bounded failed-tool, completed-tool, and accidental direct-chat silence recovery to the Jake OpenClaw runtime; reject tool errors as delivery and record terminal-decision evidence.",
-      "status": "published-in-stable-jake-update-20260726T0025Z-turn-integrity-v26"
+      "purpose": "Port bounded failed-tool, completed-tool, and accidental direct-chat silence recovery to the provisioned-agent OpenClaw runtime; reject tool errors as delivery and record terminal-decision evidence.",
+      "status": "published-in-stable-agent-update-20260726T0025Z-turn-integrity-v26"
     },
     {
-      "id": "jake-parent-fork-dynamic-context-tokens",
+      "id": "parent-fork-dynamic-context-tokens-2026-7-2",
       "base_package": "openclaw@2026.7.2",
       "target_files": [
         "dist/session-accessor-BFted17j.js",
         "dist/session-fork-B2y_KaMK.js"
       ],
-      "patch_file": "patches/openclaw-2026.7.2/jake-parent-fork-dynamic-context-tokens.patch",
+      "patch_file": "patches/openclaw-2026.7.2/parent-fork-dynamic-context-tokens.patch",
       "sha256": "fe0de94b44df620fc0b0018814d538e3326303770575b6d0c0836ed2eda9e2ac",
-      "purpose": "Use the Jake parent session, configured default, or selected model context limit when deciding whether a child session can inherit parent context instead of applying a fixed 100k-token ceiling.",
-      "status": "captured-for-jake-openclaw-2026.7.2"
+      "purpose": "Use the parent session, configured default, or selected model context limit when deciding whether a child session can inherit parent context instead of applying a fixed 100k-token ceiling.",
+      "status": "captured-for-agent-openclaw-2026.7.2"
     }
   ]
 }

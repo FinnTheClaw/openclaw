@@ -104,7 +104,7 @@ Then restart the affected gateway/node process intentionally before relying on r
 
 ### Problem
 
-OpenClaw's `context="fork"` parent-size check used a hardcoded `DEFAULT_PARENT_FORK_MAX_TOKENS = 100000`. Jake's thesis failure hit this exact path: a parent session around `166533` tokens was treated as too large for fork despite the active brain and generated Jake config supporting about `1010000` context tokens.
+OpenClaw's `context="fork"` parent-size check used a hardcoded `DEFAULT_PARENT_FORK_MAX_TOKENS = 100000`. A large-context provisioned-agent failure hit this exact path: a parent session around `166533` tokens was treated as too large for fork despite the active brain and generated agent config supporting about `1010000` context tokens.
 
 ### Fix
 
@@ -248,18 +248,61 @@ patch -R -p1 -d /opt/homebrew/lib/node_modules/openclaw < patches/openclaw-2026.
 
 Then restart the affected gateway/node process intentionally before relying on restored legacy thinking policy behavior.
 
-## jake-parent-fork-dynamic-context-tokens
+## parent-fork-dynamic-context-tokens-2026.7.1-2
+
+- Date captured: 2026-07-28
+- Base package: `openclaw@2026.7.1-2`
+- Targets: `dist/session-fork-B_4CoW5e.js`, `dist/openclaw-tools-KulZ1cdH.js`, `dist/get-reply-OTG64ybi.js`, `dist/session-create-service-14oZxrT5.js`
+- Patch file: `patches/openclaw-2026.7.1-2/parent-fork-dynamic-context-tokens.patch`
+- Patch SHA-256: `e58e28aac777f87c0bffde09995a2ec8ea387a9ee414f3ca59eee38c6ae0fd57`
+- Status: validated against the canonical frozen artifact for approval-gated agent publication
+
+### Problem
+
+The frozen runtime retained a fixed 100k parent-fork ceiling even though the
+coordinator, generated agent config, and parent session advertise a 250k
+context budget. A 166,533-token parent was therefore forced into isolated
+context. Three compiled call sites also failed to propagate their available
+runtime config into the shared fork decision.
+
+### Fix
+
+Resolve the ceiling from parent-session context first, then the selected
+provider/model or configured agent default, retaining 100k only as the
+no-metadata fallback. Propagate config from subagent spawn, threaded reply, and
+operator-created session forks; realtime voice already supplied it.
+
+### Verification
+
+`tests/parent-fork-dynamic-context-tokens.test.mjs` executes the compiled
+decision helper and proves parent, selected-model, configured-default,
+overflow, and legacy-fallback behavior. It also checks configuration
+propagation at every compiled call site. `scripts/verify.sh` runs this
+regression for every exact `openclaw@2026.7.1-2` candidate, and the overlay is
+validated for both first application and idempotent reapplication.
+
+### Rollback
+
+```bash
+sudo patch --batch -R -p1 -d /path/to/openclaw \
+  < patches/openclaw-2026.7.1-2/parent-fork-dynamic-context-tokens.patch
+```
+
+Restart the affected gateway intentionally before relying on restored legacy
+fork behavior.
+
+## parent-fork-dynamic-context-tokens-2026.7.2
 
 - Date captured: 2026-07-25
 - Base package: `openclaw@2026.7.2`
 - Targets: `dist/session-accessor-BFted17j.js`, `dist/session-fork-B2y_KaMK.js`
-- Patch file: `patches/openclaw-2026.7.2/jake-parent-fork-dynamic-context-tokens.patch`
+- Patch file: `patches/openclaw-2026.7.2/parent-fork-dynamic-context-tokens.patch`
 - Patch SHA-256: `fe0de94b44df620fc0b0018814d538e3326303770575b6d0c0836ed2eda9e2ac`
-- Status: captured for matching Jake deployments; not applied to Moira's current `openclaw@2026.7.1-2`
+- Status: captured for matching provisioned-agent deployments
 
 ### Problem
 
-Jake child-session inheritance could fall back to a fixed 100k-token parent
+Provisioned-agent child-session inheritance could fall back to a fixed 100k-token parent
 limit even when the parent session or selected model had a larger configured
 context window. Large but valid parent sessions therefore started children
 with isolated context.
@@ -281,7 +324,7 @@ verify it only against an exact `openclaw@2026.7.2` package; the generic
 
 ```bash
 sudo patch --batch -R -p1 -d /path/to/openclaw \
-  < patches/openclaw-2026.7.2/jake-parent-fork-dynamic-context-tokens.patch
+  < patches/openclaw-2026.7.2/parent-fork-dynamic-context-tokens.patch
 ```
 
 ## transient-stream-continuation
