@@ -608,6 +608,13 @@ and failed to hand the request to Moira's loaded fallback. The successful
 canary therefore used the explicit `moira/coding` route to isolate and certify
 the OpenClaw behavior without changing coordinator state.
 
+After the coordinator/Narya recovery was completed, primary-route parent run
+`d4f3fd22-cc67-42ef-a8c9-6754d87a3e6a` repeated the same bounded canary
+through `moira/brain`. It accepted exactly three `sessions_spawn` calls with
+zero tool failures and returned only `FANOUT_ACCEPTED_3` in 8.4 seconds.
+Execution finished normally with `stopReason=stop`, no OpenClaw fallback, no
+error payload, and no silent-turn warning.
+
 ### Rollback
 
 The complete snapshot can be restored directly. Patch-level rollback is:
