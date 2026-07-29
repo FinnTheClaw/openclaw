@@ -66,6 +66,113 @@ describe("subagent spawn model + thinking plan", () => {
     expect(plan.initialSessionPatch.modelOverrideSource).toBe("auto");
   });
 
+  it("routes work to the configured specialist while raw overrides remain disabled", () => {
+    const cfg = createConfig({
+      agents: {
+        defaults: {
+          model: { primary: "remote-llm/moira/brain" },
+          subagents: {
+            model: "remote-llm/moira/brain",
+            defaultModelRoute: "general",
+            modelRoutes: {
+              general: "remote-llm/moira/brain",
+              coding: "remote-llm/moira/coding",
+              vision: "remote-llm/moira/multimodal",
+            },
+            allowModelOverride: false,
+          },
+        },
+      },
+    });
+    const plan = expectOkPlan(
+      resolveSubagentModelAndThinkingPlan({
+        cfg,
+        targetAgentId: "main",
+        modelRoute: "coding",
+        modelOverride: "remote-llm/moira/brain",
+      }),
+    );
+    expect(plan.modelRoute).toBe("coding");
+    expect(plan.resolvedModel).toBe("remote-llm/moira/coding");
+    expect(plan.initialSessionPatch.modelOverrideSource).toBe("auto");
+  });
+
+  it("automatically prefers the configured vision route for image attachments", () => {
+    const plan = expectOkPlan(
+      resolveSubagentModelAndThinkingPlan({
+        cfg: createConfig({
+          agents: {
+            defaults: {
+              model: { primary: "remote-llm/moira/brain" },
+              subagents: {
+                defaultModelRoute: "general",
+                modelRoutes: {
+                  general: "remote-llm/moira/brain",
+                  vision: "remote-llm/moira/multimodal",
+                },
+              },
+            },
+          },
+        }),
+        targetAgentId: "main",
+        hasImageAttachments: true,
+      }),
+    );
+    expect(plan.modelRoute).toBe("vision");
+    expect(plan.resolvedModel).toBe("remote-llm/moira/multimodal");
+  });
+
+  it("honors an explicit brain-capable route for image reasoning", () => {
+    const plan = expectOkPlan(
+      resolveSubagentModelAndThinkingPlan({
+        cfg: createConfig({
+          agents: {
+            defaults: {
+              model: { primary: "remote-llm/moira/brain" },
+              subagents: {
+                defaultModelRoute: "general",
+                modelRoutes: {
+                  general: "remote-llm/moira/brain",
+                  vision: "remote-llm/moira/multimodal",
+                  vision_reasoning: "remote-llm/moira/brain",
+                },
+              },
+            },
+          },
+        }),
+        targetAgentId: "main",
+        modelRoute: "vision_reasoning",
+        hasImageAttachments: true,
+      }),
+    );
+    expect(plan.modelRoute).toBe("vision_reasoning");
+    expect(plan.resolvedModel).toBe("remote-llm/moira/brain");
+  });
+
+  it("rejects unknown model routes with the available choices", () => {
+    const plan = resolveSubagentModelAndThinkingPlan({
+      cfg: createConfig({
+        agents: {
+          defaults: {
+            subagents: {
+              modelRoutes: {
+                general: "remote-llm/moira/brain",
+                coding: "remote-llm/moira/coding",
+              },
+            },
+          },
+        },
+      }),
+      targetAgentId: "main",
+      modelRoute: "poetry_gpu",
+    });
+    expect(plan.status).toBe("error");
+    if (plan.status === "error") {
+      expect(plan.error).toContain('Unknown or unconfigured subagent model route "poetry_gpu"');
+      expect(plan.error).toContain("coding, general");
+    }
+  });
+
   it("preserves model ids containing slashes", () => {
     expect(splitModelRef("openrouter/meta-llama/llama-3.3-70b:free")).toEqual({
       provider: "openrouter",

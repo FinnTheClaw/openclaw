@@ -62,7 +62,7 @@ export function describeSessionsSpawnTool(options?: {
     'Native only: `context="fork"` only when child needs current transcript; else omit or `isolated`.',
     "Each spawn must be one bounded, independently verifiable shard, never an entire repository or the complete parent request.",
     "Decompose broad work into disjoint independent shards and dependency waves; use multiple children when components are independent, then integrate and test in the parent.",
-    "Omit `model` for ordinary delegation so the configured worker lane is used.",
+    "Choose `modelRoute` to match the work to an administrator-configured specialist; omit raw `model` unless an explicit override is allowed.",
     "Use for fresh child-session work.",
     "Delegate sidecar/parallel tasks: batch file reads, multi-step searches, data collection.",
     "Avoid delegating quick lookups or single-file reads unless policy prefers delegation.",

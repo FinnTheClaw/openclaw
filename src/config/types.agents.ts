@@ -7,6 +7,7 @@ import type {
   AgentModelEntryConfig,
   EmbeddedAgentExecutionContract,
   SubagentDelegationMode,
+  SubagentModelRoutes,
 } from "./types.agent-defaults.js";
 import type { AgentModelConfig, AgentSandboxConfig } from "./types.agents-shared.js";
 import type { DmScope, HumanDelayConfig, IdentityConfig } from "./types.base.js";
@@ -139,6 +140,10 @@ export type AgentConfig = {
     allowAgents?: string[];
     /** Per-agent default model for spawned sub-agents (string or {primary,fallbacks}). */
     model?: AgentModelConfig;
+    /** Per-agent capability routes merged over agents.defaults.subagents.modelRoutes. */
+    modelRoutes?: SubagentModelRoutes;
+    /** Per-agent default capability route. */
+    defaultModelRoute?: string;
     /** Allow model-supplied sessions_spawn calls to override this agent's configured worker lane. */
     allowModelOverride?: boolean;
     /** Per-agent default thinking level for spawned sub-agents. */

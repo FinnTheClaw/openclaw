@@ -171,6 +171,147 @@ describe("spawnSubagentDirect filename validation", () => {
     expect(result.error).toMatch(/attachments_invalid_name/);
   });
 
+  it("snapshots a local staged-media path under an allowed root", async () => {
+    const inboundDir = path.join(workspaceDirOverride, "media", "inbound");
+    fs.mkdirSync(inboundDir, { recursive: true });
+    const sourcePath = path.join(inboundDir, "photo.jpg");
+    fs.writeFileSync(sourcePath, Buffer.from("real image bytes"));
+    configOverride = createSubagentSpawnTestConfig(workspaceDirOverride, {
+      tools: {
+        sessions_spawn: {
+          attachments: {
+            enabled: true,
+            allowLocalPaths: true,
+            localPathRoots: [inboundDir],
+            maxFiles: 50,
+            maxFileBytes: 1024,
+            maxTotalBytes: 4096,
+          },
+        },
+      },
+    });
+
+    const { spawnSubagentDirect } = subagentSpawnModule;
+    const result = await spawnSubagentDirect(
+      {
+        task: "describe the image",
+        attachments: [{ name: "photo.jpg", path: sourcePath, mimeType: "image/jpeg" }],
+      },
+      ctx,
+    );
+
+    expect(result.status).toBe("accepted");
+    expect(result.modelRoute).toBeUndefined();
+    const attachmentsRoot = path.join(workspaceDirOverride, ".openclaw", "attachments");
+    const [attachmentId] = fs.readdirSync(attachmentsRoot);
+    expect(fs.readFileSync(path.join(attachmentsRoot, attachmentId, "photo.jpg"), "utf8")).toBe(
+      "real image bytes",
+    );
+  });
+
+  it("rejects local attachment paths outside administrator-approved roots", async () => {
+    const inboundDir = path.join(workspaceDirOverride, "media", "inbound");
+    fs.mkdirSync(inboundDir, { recursive: true });
+    const outsidePath = path.join(workspaceDirOverride, "outside.jpg");
+    fs.writeFileSync(outsidePath, Buffer.from("outside"));
+    configOverride = createSubagentSpawnTestConfig(workspaceDirOverride, {
+      tools: {
+        sessions_spawn: {
+          attachments: {
+            enabled: true,
+            allowLocalPaths: true,
+            localPathRoots: [inboundDir],
+          },
+        },
+      },
+    });
+
+    const { spawnSubagentDirect } = subagentSpawnModule;
+    const result = await spawnSubagentDirect(
+      {
+        task: "describe the image",
+        attachments: [{ name: "outside.jpg", path: outsidePath, mimeType: "image/jpeg" }],
+      },
+      ctx,
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("attachments_local_path_outside_allowed_roots");
+  });
+
+  (process.platform === "win32" ? it.skip : it)(
+    "rejects a symlink inside an allowed root when it resolves outside",
+    async () => {
+      const inboundDir = path.join(workspaceDirOverride, "media", "inbound");
+      fs.mkdirSync(inboundDir, { recursive: true });
+      const outsidePath = path.join(workspaceDirOverride, "outside.jpg");
+      const symlinkPath = path.join(inboundDir, "linked.jpg");
+      fs.writeFileSync(outsidePath, Buffer.from("outside"));
+      fs.symlinkSync(outsidePath, symlinkPath);
+      configOverride = createSubagentSpawnTestConfig(workspaceDirOverride, {
+        tools: {
+          sessions_spawn: {
+            attachments: {
+              enabled: true,
+              allowLocalPaths: true,
+              localPathRoots: [inboundDir],
+            },
+          },
+        },
+      });
+
+      const { spawnSubagentDirect } = subagentSpawnModule;
+      const result = await spawnSubagentDirect(
+        {
+          task: "describe the image",
+          attachments: [{ name: "linked.jpg", path: symlinkPath, mimeType: "image/jpeg" }],
+        },
+        ctx,
+      );
+
+      expect(result.status).toBe("error");
+      expect(result.error).toContain("attachments_local_path_outside_allowed_roots");
+    },
+  );
+
+  it("rejects attachments that provide both inline content and a local path", async () => {
+    const inboundDir = path.join(workspaceDirOverride, "media", "inbound");
+    fs.mkdirSync(inboundDir, { recursive: true });
+    const sourcePath = path.join(inboundDir, "photo.jpg");
+    fs.writeFileSync(sourcePath, Buffer.from("image"));
+    configOverride = createSubagentSpawnTestConfig(workspaceDirOverride, {
+      tools: {
+        sessions_spawn: {
+          attachments: {
+            enabled: true,
+            allowLocalPaths: true,
+            localPathRoots: [inboundDir],
+          },
+        },
+      },
+    });
+
+    const { spawnSubagentDirect } = subagentSpawnModule;
+    const result = await spawnSubagentDirect(
+      {
+        task: "describe the image",
+        attachments: [
+          {
+            name: "photo.jpg",
+            path: sourcePath,
+            content: validContent,
+            encoding: "base64",
+            mimeType: "image/jpeg",
+          },
+        ],
+      },
+      ctx,
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("attachments_exactly_one_source_required");
+  });
+
   it("materializes attachments under explicit cwd when native subagent cwd is provided", async () => {
     const explicitWorkspaceDir = fs.mkdtempSync(
       path.join(os.tmpdir(), `openclaw-subagent-cwd-attachments-${process.pid}-${Date.now()}-`),

@@ -35,7 +35,8 @@ export function decodeStrictBase64(value: string, maxDecodedBytes: number): Buff
 
 export type SubagentInlineAttachment = {
   name: string;
-  content: string;
+  content?: string;
+  path?: string;
   encoding?: "utf8" | "base64";
   mimeType?: string;
 };
@@ -51,6 +52,8 @@ type AttachmentLimits = {
   maxFiles: number;
   maxFileBytes: number;
   retainOnSessionKeep: boolean;
+  allowLocalPaths: boolean;
+  localPathRoots: string[];
 };
 
 export type SubagentAttachmentReceiptFile = {
@@ -118,6 +121,12 @@ function resolveAttachmentLimits(config: OpenClawConfig): AttachmentLimits {
         ? Math.max(0, Math.floor(attachmentsCfg.maxFileBytes))
         : 1 * 1024 * 1024,
     retainOnSessionKeep: attachmentsCfg?.retainOnSessionKeep === true,
+    allowLocalPaths: attachmentsCfg?.allowLocalPaths === true,
+    localPathRoots: Array.isArray(attachmentsCfg?.localPathRoots)
+      ? attachmentsCfg.localPathRoots.flatMap((entry) =>
+          typeof entry === "string" && entry.trim() ? [entry.trim()] : [],
+        )
+      : [],
   };
 }
 
@@ -195,11 +204,72 @@ function decodeAttachmentContent(params: {
   return Buffer.from(params.content, "utf8");
 }
 
-function prepareSubagentAttachments(params: {
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+  );
+}
+
+async function readLocalAttachment(params: {
+  name: string;
+  sourcePath: string;
+  limits: AttachmentLimits;
+}): Promise<Buffer> {
+  if (!params.limits.allowLocalPaths) {
+    failAttachment("attachments_local_paths_disabled");
+  }
+  if (!path.isAbsolute(params.sourcePath)) {
+    failAttachment(`attachments_local_path_must_be_absolute (name=${params.name})`);
+  }
+  const allowedRoots = (
+    await Promise.all(
+      params.limits.localPathRoots.map(async (root) => {
+        try {
+          return await fs.realpath(root);
+        } catch {
+          return null;
+        }
+      }),
+    )
+  ).filter((root): root is string => Boolean(root));
+  if (allowedRoots.length === 0) {
+    failAttachment("attachments_local_path_roots_unavailable");
+  }
+
+  let sourceRealPath: string;
+  try {
+    sourceRealPath = await fs.realpath(params.sourcePath);
+  } catch {
+    failAttachment(`attachments_local_path_unreadable (name=${params.name})`);
+  }
+  if (!allowedRoots.some((root) => isPathInside(root, sourceRealPath))) {
+    failAttachment(`attachments_local_path_outside_allowed_roots (name=${params.name})`);
+  }
+  const sourceStat = await fs.stat(sourceRealPath);
+  if (!sourceStat.isFile()) {
+    failAttachment(`attachments_local_path_not_file (name=${params.name})`);
+  }
+  if (sourceStat.size > params.limits.maxFileBytes) {
+    failAttachment(
+      `attachments_file_bytes_exceeded (name=${params.name} bytes=${sourceStat.size} maxFileBytes=${params.limits.maxFileBytes})`,
+    );
+  }
+  const buf = await fs.readFile(sourceRealPath);
+  if (buf.byteLength > params.limits.maxFileBytes) {
+    failAttachment(
+      `attachments_file_bytes_exceeded (name=${params.name} bytes=${buf.byteLength} maxFileBytes=${params.limits.maxFileBytes})`,
+    );
+  }
+  return buf;
+}
+
+async function prepareSubagentAttachments(params: {
   attachments: SubagentInlineAttachment[];
   limits: AttachmentLimits;
   requireImageMime?: boolean;
-}): { attachments: PreparedSubagentAttachment[]; totalBytes: number } {
+}): Promise<{ attachments: PreparedSubagentAttachment[]; totalBytes: number }> {
   const seen = new Set<string>();
   const attachments: PreparedSubagentAttachment[] = [];
   let totalBytes = 0;
@@ -207,6 +277,8 @@ function prepareSubagentAttachments(params: {
   for (const raw of params.attachments) {
     const name = normalizeOptionalString(raw?.name) ?? "";
     const content = typeof raw?.content === "string" ? raw.content : "";
+    const hasContent = typeof raw?.content === "string";
+    const sourcePath = normalizeOptionalString(raw?.path);
     const encodingRaw = normalizeOptionalString(raw?.encoding) ?? "utf8";
     const encoding = encodingRaw === "base64" ? "base64" : "utf8";
     const mimeType = normalizeOptionalString(raw?.mimeType) ?? "";
@@ -216,6 +288,9 @@ function prepareSubagentAttachments(params: {
       failAttachment(`attachments_duplicate_name (${name})`);
     }
     seen.add(name);
+    if (hasContent === Boolean(sourcePath)) {
+      failAttachment(`attachments_exactly_one_source_required (name=${name})`);
+    }
 
     if (params.requireImageMime && !mimeType.startsWith("image/")) {
       failAttachment(
@@ -223,12 +298,18 @@ function prepareSubagentAttachments(params: {
       );
     }
 
-    const buf = decodeAttachmentContent({
-      name,
-      content,
-      encoding,
-      limits: params.limits,
-    });
+    const buf = sourcePath
+      ? await readLocalAttachment({
+          name,
+          sourcePath,
+          limits: params.limits,
+        })
+      : decodeAttachmentContent({
+          name,
+          content,
+          encoding,
+          limits: params.limits,
+        });
     const bytes = buf.byteLength;
     if (bytes > params.limits.maxFileBytes) {
       failAttachment(
@@ -249,14 +330,15 @@ function prepareSubagentAttachments(params: {
   return { attachments, totalBytes };
 }
 
-export function resolveAcpSessionsSpawnImageAttachments(params: {
+export async function resolveAcpSessionsSpawnImageAttachments(params: {
   config: OpenClawConfig;
   attachments?: SubagentInlineAttachment[];
-}):
+}): Promise<
   | { status: "ok"; attachments: AcpInlineImageAttachment[] }
   | { status: "forbidden"; error: string }
   | { status: "error"; error: string }
-  | null {
+  | null
+> {
   const request = resolveSubagentAttachmentRequest(params);
   if (request.status === "none") {
     return null;
@@ -266,7 +348,7 @@ export function resolveAcpSessionsSpawnImageAttachments(params: {
   }
 
   try {
-    const prepared = prepareSubagentAttachments({
+    const prepared = await prepareSubagentAttachments({
       attachments: request.attachments,
       limits: request.limits,
       requireImageMime: true,
@@ -316,7 +398,7 @@ export async function materializeSubagentAttachments(params: {
     const files: SubagentAttachmentReceiptFile[] = [];
     const writeJobs: Array<{ outPath: string; buf: Buffer }> = [];
 
-    const prepared = prepareSubagentAttachments({
+    const prepared = await prepareSubagentAttachments({
       attachments: request.attachments,
       limits: request.limits,
     });

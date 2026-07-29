@@ -392,6 +392,10 @@ export type SessionsSpawnToolsConfig = {
     maxFiles?: number;
     maxFileBytes?: number;
     retainOnSessionKeep?: boolean;
+    /** Allow snapshotting local files by path instead of embedding base64 in the tool call. */
+    allowLocalPaths?: boolean;
+    /** Real paths must resolve inside one of these roots; empty means deny all local paths. */
+    localPathRoots?: string[];
   };
 };
 

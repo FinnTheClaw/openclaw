@@ -183,7 +183,13 @@ function createSessionsSpawnToolSchema(params: {
     model: Type.Optional(
       Type.String({
         description:
-          "Optional model override. Omit for ordinary delegation so the configured worker lane is used; deployments may disallow model-supplied overrides.",
+          "Optional raw model override. Prefer modelRoute so deployments can select an administrator-approved specialist; deployments may disallow raw overrides.",
+      }),
+    ),
+    modelRoute: Type.Optional(
+      Type.String({
+        description:
+          "Named specialist/capability route configured by the administrator (for example general, coding, creative, reasoning, research, vision, vision_reasoning, audio, video, or compaction). Match the task and honor an explicit user route request. Image attachments automatically prefer vision when omitted.",
       }),
     ),
     thinking: Type.Optional(Type.String()),
@@ -216,7 +222,13 @@ function createSessionsSpawnToolSchema(params: {
       Type.Array(
         Type.Object({
           name: Type.String(),
-          content: Type.String(),
+          content: Type.Optional(Type.String()),
+          path: Type.Optional(
+            Type.String({
+              description:
+                "Exact local staged-media path. Allowed only when local-path attachments are enabled and the resolved file is under an administrator-approved root.",
+            }),
+          ),
           encoding: Type.Optional(optionalStringEnum(["utf8", "base64"] as const)),
           mimeType: Type.Optional(Type.String()),
         }),
@@ -321,6 +333,7 @@ export function createSessionsSpawnTool(
       const requestedAgentId = readStringParam(params, "agentId");
       const resumeSessionId = readStringParam(params, "resumeSessionId");
       const modelOverride = normalizeToolModelOverride(readStringParam(params, "model"));
+      const modelRoute = readStringParam(params, "modelRoute");
       const thinkingOverrideRaw = readStringParam(params, "thinking");
       const cwd = readStringParam(params, "cwd");
       const mode = params.mode === "run" || params.mode === "session" ? params.mode : undefined;
@@ -368,11 +381,17 @@ export function createSessionsSpawnTool(
       if (runtime === "acp" && context === "fork") {
         throw new Error('context="fork" is only supported for runtime="subagent".');
       }
+      if (runtime === "acp" && modelRoute) {
+        throw new ToolInputError(
+          'modelRoute is only supported for runtime="subagent"; use model for ACP sessions.',
+        );
+      }
       const thread = params.thread === true;
       const attachments = Array.isArray(params.attachments)
         ? (params.attachments as Array<{
             name: string;
-            content: string;
+            content?: string;
+            path?: string;
             encoding?: "utf8" | "base64";
             mimeType?: string;
           }>)
@@ -380,7 +399,7 @@ export function createSessionsSpawnTool(
 
       if (runtime === "acp") {
         const { isSpawnAcpAcceptedResult, spawnAcpDirect } = await loadAcpSpawnModule();
-        const acpAttachments = resolveAcpSessionsSpawnImageAttachments({
+        const acpAttachments = await resolveAcpSessionsSpawnImageAttachments({
           config: opts?.config ?? getRuntimeConfig(),
           attachments,
         });
@@ -486,6 +505,7 @@ export function createSessionsSpawnTool(
           label: label || undefined,
           agentId: requestedAgentId,
           model: modelOverride,
+          modelRoute,
           thinking: thinkingOverrideRaw,
           cwd,
           thread,

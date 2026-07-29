@@ -129,21 +129,23 @@ describe("sessions_spawn tool", () => {
     expect(schema.properties?.streamTo).toBeUndefined();
   });
 
-  it("describes bounded tasks and configured worker-lane routing", () => {
+  it("describes bounded tasks and administrator-configured specialist routing", () => {
     const tool = createSessionsSpawnTool();
     const schema = tool.parameters as {
       properties?: {
         task?: { description?: string };
         model?: { description?: string };
+        modelRoute?: { description?: string };
       };
     };
 
     expect(tool.description).toContain("bounded, independently verifiable shard");
-    expect(tool.description).toContain("Omit `model` for ordinary delegation");
+    expect(tool.description).toContain("Choose `modelRoute`");
     expect(schema.properties?.task?.description).toContain(
       "One bounded, independently verifiable shard",
     );
-    expect(schema.properties?.model?.description).toContain("configured worker lane is used");
+    expect(schema.properties?.model?.description).toContain("Prefer modelRoute");
+    expect(schema.properties?.modelRoute?.description).toContain("administrator");
   });
 
   it("advertises ACP runtime affordances when an ACP backend is loaded", () => {
@@ -332,6 +334,7 @@ describe("sessions_spawn tool", () => {
       task: "build feature",
       agentId: "main",
       model: "anthropic/claude-sonnet-4-6",
+      modelRoute: "coding",
       thinking: "medium",
       cwd: "/workspace/requester",
       thread: true,
@@ -349,6 +352,7 @@ describe("sessions_spawn tool", () => {
     expect(spawnArgs.task).toBe("build feature");
     expect(spawnArgs.agentId).toBe("main");
     expect(spawnArgs.model).toBe("anthropic/claude-sonnet-4-6");
+    expect(spawnArgs.modelRoute).toBe("coding");
     expect(spawnArgs.thinking).toBe("medium");
     expect(spawnArgs.cwd).toBe("/workspace/requester");
     expect(spawnArgs).not.toHaveProperty("runTimeoutSeconds");
@@ -564,6 +568,25 @@ describe("sessions_spawn tool", () => {
         lightContext: true,
       }),
     ).rejects.toThrow("lightContext is only supported for runtime='subagent'.");
+
+    expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
+    expect(hoisted.spawnAcpDirectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects modelRoute when runtime is "acp" instead of silently ignoring it', async () => {
+    registerAcpBackendForTest();
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+    });
+
+    await expect(
+      tool.execute("call-route-acp", {
+        runtime: "acp",
+        task: "investigate this",
+        agentId: "codex",
+        modelRoute: "coding",
+      }),
+    ).rejects.toThrow('modelRoute is only supported for runtime="subagent"');
 
     expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
     expect(hoisted.spawnAcpDirectMock).not.toHaveBeenCalled();

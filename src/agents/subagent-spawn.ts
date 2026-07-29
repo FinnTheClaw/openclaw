@@ -162,6 +162,7 @@ type SpawnSubagentParams = {
   label?: string;
   agentId?: string;
   model?: string;
+  modelRoute?: string;
   taskName?: string;
   thinking?: string;
   cwd?: string;
@@ -175,7 +176,8 @@ type SpawnSubagentParams = {
   expectsCompletionMessage?: boolean;
   attachments?: Array<{
     name: string;
-    content: string;
+    content?: string;
+    path?: string;
     encoding?: "utf8" | "base64";
     mimeType?: string;
   }>;
@@ -208,6 +210,7 @@ export type SpawnSubagentResult = {
   mode?: SpawnSubagentMode;
   taskName?: string;
   note?: string;
+  modelRoute?: string;
   /** Fully resolved model ref applied to the spawned child session. */
   resolvedModel?: string;
   /** Provider prefix parsed from resolvedModel when the ref includes one. */
@@ -1098,6 +1101,7 @@ export async function spawnSubagentDirect(
     };
   }
   const modelOverride = params.model;
+  const modelRoute = params.modelRoute;
   const thinkingOverrideRaw = params.thinking;
   const requestThreadBinding = params.thread === true;
   const sandboxMode = params.sandbox === "require" ? "require" : "inherit";
@@ -1294,6 +1298,14 @@ export async function spawnSubagentDirect(
     requesterAgentConfig,
     targetAgentConfig,
     modelOverride,
+    modelRoute,
+    hasImageAttachments: params.attachments?.some((attachment) => {
+      const mimeType = attachment.mimeType?.trim().toLowerCase() ?? "";
+      if (mimeType.startsWith("image/")) {
+        return true;
+      }
+      return /\.(?:avif|bmp|gif|jpe?g|png|webp)$/i.test(attachment.name);
+    }),
     thinkingOverrideRaw,
     callerThinkingRaw,
   });
@@ -1303,7 +1315,7 @@ export async function spawnSubagentDirect(
       error: plan.error,
     };
   }
-  const { resolvedModel, thinkingOverride } = plan;
+  const { resolvedModel, thinkingOverride, modelRoute: resolvedModelRoute } = plan;
   const resolvedModelMetadata = buildResolvedSubagentModelMetadata(resolvedModel);
   const patchChildSession = async (patch: Record<string, unknown>): Promise<string | undefined> => {
     try {
@@ -1752,6 +1764,7 @@ export async function spawnSubagentDirect(
     runId: childRunId,
     mode: spawnMode,
     taskName,
+    modelRoute: resolvedModelRoute,
     note: preparedSpawnContext.forkFallbackNote
       ? `${acceptedNote} ${preparedSpawnContext.forkFallbackNote}`
       : acceptedNote,

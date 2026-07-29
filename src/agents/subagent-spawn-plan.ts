@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   resolveDefaultModelForAgent,
   resolveSubagentConfiguredModelSelection,
+  resolveSubagentModelRouteSelection,
   resolveSubagentModelOverrideAllowed,
   resolveSubagentSpawnModelSelection,
 } from "./model-selection.js";
@@ -58,13 +59,39 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   requesterAgentConfig?: unknown;
   targetAgentConfig?: unknown;
   modelOverride?: string;
+  modelRoute?: string;
+  hasImageAttachments?: boolean;
   thinkingOverrideRaw?: string;
   callerThinkingRaw?: string;
 }) {
+  const requestedRoute = params.modelRoute?.trim() || undefined;
+  let routeSelection = resolveSubagentModelRouteSelection({
+    cfg: params.cfg,
+    agentId: params.targetAgentId,
+    modelRoute: requestedRoute ?? (params.hasImageAttachments ? "vision" : undefined),
+  });
+  if (!requestedRoute && params.hasImageAttachments && !routeSelection.model) {
+    routeSelection = resolveSubagentModelRouteSelection({
+      cfg: params.cfg,
+      agentId: params.targetAgentId,
+    });
+  }
+  if (requestedRoute && routeSelection.requestedRoute && !routeSelection.model) {
+    const available =
+      routeSelection.availableRoutes.length > 0
+        ? routeSelection.availableRoutes.join(", ")
+        : "(none configured)";
+    return {
+      status: "error" as const,
+      resolvedModel: "",
+      error: `Unknown or unconfigured subagent model route "${routeSelection.requestedRoute}". Available routes: ${available}.`,
+    };
+  }
   const resolvedModel = resolveSubagentSpawnModelSelection({
     cfg: params.cfg,
     agentId: params.targetAgentId,
     modelOverride: params.modelOverride,
+    modelRoute: routeSelection.route,
   });
 
   const thinkingPlan = resolveSubagentThinkingOverride({
@@ -96,6 +123,7 @@ export function resolveSubagentModelAndThinkingPlan(params: {
       resolveSubagentConfiguredModelSelection({
         cfg: params.cfg,
         agentId: params.targetAgentId,
+        modelRoute: routeSelection.route,
       }),
     );
   const configuredModelRef = hasConfiguredAutoModel ? splitModelRef(resolvedModel) : undefined;
@@ -114,6 +142,7 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   return {
     status: "ok" as const,
     resolvedModel,
+    modelRoute: modelOverrideSource === "auto" ? routeSelection.route : undefined,
     modelApplied: Boolean(resolvedModel),
     thinkingOverride: thinkingPlan.thinkingOverride,
     initialSessionPatch: {

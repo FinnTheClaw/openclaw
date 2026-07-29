@@ -3060,4 +3060,43 @@ describe("resolveSubagentSpawnModelSelection", () => {
       "anthropic/claude-sonnet-4-6",
     );
   });
+
+  it("selects administrator-defined specialist routes without enabling raw overrides", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          model: { primary: "remote-llm/moira/brain" },
+          subagents: {
+            model: "remote-llm/moira/brain",
+            defaultModelRoute: "general",
+            modelRoutes: {
+              general: "remote-llm/moira/brain",
+              coding: "remote-llm/moira/coding",
+              vision: "remote-llm/moira/multimodal",
+            },
+            allowModelOverride: false,
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(resolveSubagentSpawnModelSelection({ cfg, agentId: "main" })).toBe(
+      "remote-llm/moira/brain",
+    );
+    expect(
+      resolveSubagentSpawnModelSelection({
+        cfg,
+        agentId: "main",
+        modelRoute: "CODING",
+        modelOverride: "remote-llm/moira/brain",
+      }),
+    ).toBe("remote-llm/moira/coding");
+    expect(
+      resolveSubagentSpawnModelSelection({
+        cfg,
+        agentId: "main",
+        modelRoute: "vision",
+      }),
+    ).toBe("remote-llm/moira/multimodal");
+  });
 });

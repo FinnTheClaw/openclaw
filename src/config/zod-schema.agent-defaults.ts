@@ -263,6 +263,8 @@ export const AgentDefaultsSchema = z
           ),
         archiveAfterMinutes: z.number().int().min(0).optional(),
         model: AgentModelSchema.optional(),
+        modelRoutes: z.record(z.string(), AgentModelSchema).optional(),
+        defaultModelRoute: z.string().min(1).optional(),
         allowModelOverride: z.boolean().optional(),
         thinking: z.string().optional(),
         runTimeoutSeconds: z.number().int().min(0).optional(),

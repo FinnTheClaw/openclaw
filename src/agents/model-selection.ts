@@ -326,14 +326,80 @@ function resolveAllowedFallbacks(params: { cfg: OpenClawConfig; agentId?: string
 export function resolveSubagentConfiguredModelSelection(params: {
   cfg: OpenClawConfig;
   agentId: string;
+  modelRoute?: unknown;
   includeAgentPrimary?: boolean;
 }): string | undefined {
   const agentConfig = resolveAgentConfig(params.cfg, params.agentId);
+  const routedModel = resolveSubagentModelRouteSelection({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    modelRoute: params.modelRoute,
+  }).model;
   return (
+    routedModel ??
     normalizeModelSelection(agentConfig?.subagents?.model) ??
     normalizeModelSelection(params.cfg.agents?.defaults?.subagents?.model) ??
     (params.includeAgentPrimary === false ? undefined : normalizeModelSelection(agentConfig?.model))
   );
+}
+
+export type SubagentModelRouteSelection = {
+  requestedRoute?: string;
+  route?: string;
+  model?: string;
+  availableRoutes: string[];
+};
+
+function normalizeSubagentModelRouteName(value: unknown): string | undefined {
+  const normalized = normalizeLowercaseStringOrEmpty(value);
+  return normalized || undefined;
+}
+
+/**
+ * Resolve an administrator-defined subagent capability route.
+ *
+ * Per-agent routes override matching default routes while inheriting all other
+ * defaults. Route matching is case-insensitive, but the configured spelling is
+ * returned for diagnostics.
+ */
+export function resolveSubagentModelRouteSelection(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  modelRoute?: unknown;
+}): SubagentModelRouteSelection {
+  const agentConfig = resolveAgentConfig(params.cfg, params.agentId);
+  const defaults = params.cfg.agents?.defaults?.subagents?.modelRoutes ?? {};
+  const overrides = agentConfig?.subagents?.modelRoutes ?? {};
+  const mergedRoutes = new Map<string, { route: string; modelConfig: (typeof defaults)[string] }>();
+  for (const [route, modelConfig] of [...Object.entries(defaults), ...Object.entries(overrides)]) {
+    const normalizedRoute = normalizeSubagentModelRouteName(route);
+    if (normalizedRoute) {
+      mergedRoutes.set(normalizedRoute, { route, modelConfig });
+    }
+  }
+  const availableRoutes = [...mergedRoutes.values()]
+    .map((entry) => entry.route)
+    .toSorted((a, b) => a.localeCompare(b));
+  const requestedRoute =
+    normalizeOptionalString(params.modelRoute) ??
+    normalizeOptionalString(
+      agentConfig?.subagents?.defaultModelRoute ??
+        params.cfg.agents?.defaults?.subagents?.defaultModelRoute,
+    );
+  const normalizedRequestedRoute = normalizeSubagentModelRouteName(requestedRoute);
+  if (!normalizedRequestedRoute) {
+    return { availableRoutes };
+  }
+  const matchedRoute = mergedRoutes.get(normalizedRequestedRoute);
+  if (!matchedRoute) {
+    return { requestedRoute, availableRoutes };
+  }
+  return {
+    requestedRoute,
+    route: matchedRoute.route,
+    model: normalizeModelSelection(matchedRoute.modelConfig),
+    availableRoutes,
+  };
 }
 
 /** Whether a model-supplied sessions_spawn call may bypass the configured worker lane. */
@@ -373,6 +439,7 @@ export function resolveSubagentSpawnModelSelection(params: {
   cfg: OpenClawConfig;
   agentId: string;
   modelOverride?: unknown;
+  modelRoute?: unknown;
 }): string {
   const runtimeDefault = resolveDefaultModelForAgent({
     cfg: params.cfg,
@@ -382,6 +449,7 @@ export function resolveSubagentSpawnModelSelection(params: {
     cfg: params.cfg,
     agentId: params.agentId,
     modelOverride: params.modelOverride,
+    modelRoute: params.modelRoute,
     defaultProvider: runtimeDefault.provider,
   });
   if (configured) {
@@ -401,6 +469,7 @@ export function resolveConfiguredSubagentSpawnModelSelection(params: {
   cfg: OpenClawConfig;
   agentId: string;
   modelOverride?: unknown;
+  modelRoute?: unknown;
   defaultProvider?: string;
   includeAgentPrimary?: boolean;
 }): string | undefined {
@@ -413,6 +482,7 @@ export function resolveConfiguredSubagentSpawnModelSelection(params: {
     resolveSubagentConfiguredModelSelection({
       cfg: params.cfg,
       agentId: params.agentId,
+      modelRoute: params.modelRoute,
       includeAgentPrimary: params.includeAgentPrimary,
     });
   if (!raw) {

@@ -22,6 +22,8 @@ export type OptionalBootstrapFileName = "SOUL.md" | "USER.md" | "HEARTBEAT.md" |
 export type EmbeddedAgentExecutionContract = "default" | "strict-agentic";
 /** Prompt-only default for how strongly agents should delegate to sub-agents. */
 export type SubagentDelegationMode = "suggest" | "prefer";
+/** Named capability routes that map sub-agent work to administrator-approved models. */
+export type SubagentModelRoutes = Record<string, AgentModelConfig>;
 /** Image compression/detail preference used before sending image inputs to models. */
 export type AgentImageQualityPreference = "auto" | "efficient" | "balanced" | "high";
 
@@ -485,6 +487,13 @@ export type AgentDefaultsConfig = {
     archiveAfterMinutes?: number;
     /** Default model selection for spawned sub-agents (string or {primary,fallbacks}). */
     model?: AgentModelConfig;
+    /**
+     * Administrator-defined capability routes for spawned sub-agents.
+     * Route names are selected with sessions_spawn.modelRoute.
+     */
+    modelRoutes?: SubagentModelRoutes;
+    /** Route used when sessions_spawn omits modelRoute. */
+    defaultModelRoute?: string;
     /**
      * Allow model-supplied sessions_spawn calls to override the configured sub-agent model.
      * Default: true for upstream compatibility. Set false to enforce the configured worker lane.
