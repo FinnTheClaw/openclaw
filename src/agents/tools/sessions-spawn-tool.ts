@@ -165,7 +165,10 @@ function createSessionsSpawnToolSchema(params: {
 }) {
   const spawnModes = params.threadAvailable ? SUBAGENT_SPAWN_MODES : (["run"] as const);
   const schema = {
-    task: Type.String(),
+    task: Type.String({
+      description:
+        "One bounded, independently verifiable shard with explicit scope, deliverable, and test; never the whole repository or complete parent request.",
+    }),
     taskName: Type.Optional(
       Type.String({
         description:
@@ -177,7 +180,12 @@ function createSessionsSpawnToolSchema(params: {
       params.acpAvailable ? SESSIONS_SPAWN_RUNTIMES : (["subagent"] as const),
     ),
     agentId: Type.Optional(Type.String()),
-    model: Type.Optional(Type.String()),
+    model: Type.Optional(
+      Type.String({
+        description:
+          "Optional model override. Omit for ordinary delegation so the configured worker lane is used; deployments may disallow model-supplied overrides.",
+      }),
+    ),
     thinking: Type.Optional(Type.String()),
     cwd: Type.Optional(Type.String()),
     ...(params.threadAvailable

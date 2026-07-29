@@ -946,6 +946,8 @@ describe("buildAgentSystemPrompt", () => {
     expect(preferPrompt).toContain("objective, expected output, relevant files/inputs");
     expect(preferPrompt).toContain("keep it lowercase with underscores or hyphens");
     expect(preferPrompt).toContain("Treat child outputs as reports/evidence");
+    expect(preferPrompt).toContain("A progress-only statement is not completion");
+    expect(preferPrompt).toContain("synthesize one user-visible result");
     expect(preferPrompt).toContain(
       "Use `subagents(action=list)` only when explicitly asked for sub-agent status",
     );
@@ -1580,7 +1582,7 @@ describe("buildSubagentSystemPrompt", () => {
       "Track expected child session keys and only send your final answer after completion events for ALL expected children arrive.",
     );
     expect(prompt).toContain(
-      "If a child completion event arrives AFTER you already sent your final answer, reply ONLY with NO_REPLY.",
+      "NO_REPLY is reserved only for a later completion-event turn after a visible final answer was already delivered.",
     );
     expect(prompt).toContain("Avoid polling loops");
     expect(prompt).toContain("spawned by the main agent");

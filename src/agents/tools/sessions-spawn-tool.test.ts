@@ -129,6 +129,23 @@ describe("sessions_spawn tool", () => {
     expect(schema.properties?.streamTo).toBeUndefined();
   });
 
+  it("describes bounded tasks and configured worker-lane routing", () => {
+    const tool = createSessionsSpawnTool();
+    const schema = tool.parameters as {
+      properties?: {
+        task?: { description?: string };
+        model?: { description?: string };
+      };
+    };
+
+    expect(tool.description).toContain("bounded, independently verifiable shard");
+    expect(tool.description).toContain("Omit `model` for ordinary delegation");
+    expect(schema.properties?.task?.description).toContain(
+      "One bounded, independently verifiable shard",
+    );
+    expect(schema.properties?.model?.description).toContain("configured worker lane is used");
+  });
+
   it("advertises ACP runtime affordances when an ACP backend is loaded", () => {
     registerAcpBackendForTest();
 
