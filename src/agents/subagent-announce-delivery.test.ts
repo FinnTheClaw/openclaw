@@ -1085,6 +1085,58 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
 });
 
 describe("deliverSubagentAnnouncement completion delivery", () => {
+  it("serializes concurrent completion handoffs for the same requester session", async () => {
+    let resolveFirst!: (value: Record<string, unknown>) => void;
+    const firstResponse = new Promise<Record<string, unknown>>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const dispatchGatewayMethodInProcess = vi
+      .fn()
+      .mockImplementationOnce(async () => await firstResponse)
+      .mockResolvedValue({
+        result: {
+          payloads: [{ text: "completion accepted" }],
+        },
+      }) as unknown as typeof runtimeDispatchGatewayMethodInProcess;
+    testing.setDepsForTest({
+      dispatchGatewayMethodInProcess,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-serialized",
+        isActive: false,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+    });
+
+    const deliver = (directIdempotencyKey: string) =>
+      deliverSubagentAnnouncement({
+        requesterSessionKey: "agent:main:main",
+        targetRequesterSessionKey: "agent:main:main",
+        triggerMessage: "child done",
+        steerMessage: "child done",
+        requesterIsSubagent: false,
+        expectsCompletionMessage: true,
+        directIdempotencyKey,
+        sourceTool: "subagent_announce",
+      });
+
+    const first = deliver("announce-serialized-1");
+    await vi.waitFor(() => {
+      expect(dispatchGatewayMethodInProcess).toHaveBeenCalledTimes(1);
+    });
+    const second = deliver("announce-serialized-2");
+    await Promise.resolve();
+    expect(dispatchGatewayMethodInProcess).toHaveBeenCalledTimes(1);
+
+    resolveFirst({
+      result: {
+        payloads: [{ text: "completion accepted" }],
+      },
+    });
+    await first;
+    await second;
+    expect(dispatchGatewayMethodInProcess).toHaveBeenCalledTimes(2);
+  });
+
   it("uses an active requester queue as the completion handoff when message-tool delivery is not required", async () => {
     const callGateway = createGatewayMock();
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);

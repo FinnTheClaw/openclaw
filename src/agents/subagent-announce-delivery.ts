@@ -19,6 +19,7 @@ import { isOutboundDeliveryError } from "../infra/outbound/deliver-types.js";
 import type { ConversationRef } from "../infra/outbound/session-binding-service.js";
 import { sourceDeliveryTargetsMatch } from "../infra/outbound/source-delivery-plan.js";
 import { stringifyRouteThreadId } from "../plugin-sdk/channel-route.js";
+import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import {
@@ -115,6 +116,7 @@ const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
 
 let subagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps =
   defaultSubagentAnnounceDeliveryDeps;
+let requesterCompletionDeliveryQueue = new KeyedAsyncQueue();
 
 async function resolveQueueEmbeddedAgentMessageOutcome(
   sessionId: string,
@@ -1769,7 +1771,7 @@ async function sendSubagentAnnounceDirectly(params: {
   }
 }
 
-export async function deliverSubagentAnnouncement(params: {
+async function deliverSubagentAnnouncementUnqueued(params: {
   requesterSessionKey: string;
   announceId?: string;
   triggerMessage: string;
@@ -1823,12 +1825,43 @@ export async function deliverSubagentAnnouncement(params: {
   });
 }
 
+export async function deliverSubagentAnnouncement(params: {
+  requesterSessionKey: string;
+  announceId?: string;
+  triggerMessage: string;
+  steerMessage: string;
+  internalEvents?: AgentInternalEvent[];
+  summaryLine?: string;
+  requesterSessionOrigin?: DeliveryContext;
+  requesterOrigin?: DeliveryContext;
+  completionDirectOrigin?: DeliveryContext;
+  directOrigin?: DeliveryContext;
+  sourceSessionKey?: string;
+  sourceChannel?: string;
+  sourceTool?: string;
+  targetRequesterSessionKey: string;
+  requesterIsSubagent: boolean;
+  expectsCompletionMessage: boolean;
+  bestEffortDeliver?: boolean;
+  directIdempotencyKey: string;
+  signal?: AbortSignal;
+}): Promise<SubagentAnnounceDeliveryResult> {
+  const queueKey =
+    params.targetRequesterSessionKey.trim() ||
+    params.requesterSessionKey.trim() ||
+    params.directIdempotencyKey;
+  return await requesterCompletionDeliveryQueue.enqueue(queueKey, async () =>
+    deliverSubagentAnnouncementUnqueued(params),
+  );
+}
+
 export const testing = {
   setDepsForTest(
     overrides?: Partial<SubagentAnnounceDeliveryDeps> & {
       callGateway?: typeof callGateway;
     },
   ) {
+    requesterCompletionDeliveryQueue = new KeyedAsyncQueue();
     const callGatewayOverride = overrides?.callGateway;
     const dispatchGatewayMethodInProcessOverride =
       overrides?.dispatchGatewayMethodInProcess ??
