@@ -32,20 +32,36 @@ describe("agent concurrency defaults", () => {
     expect(resolveCronMaxConcurrentRuns({ maxConcurrentRuns: 0 })).toBe(1);
   });
 
-  it("accepts subagent spawn depth and per-agent child limits", () => {
+  it("accepts the fifty-job subagent queue limit", () => {
     const parsed = OpenClawSchema.parse({
       agents: {
         defaults: {
           subagents: {
             maxSpawnDepth: 2,
-            maxChildrenPerAgent: 7,
+            maxConcurrent: 50,
+            maxChildrenPerAgent: 50,
           },
         },
       },
     });
 
     expect(parsed.agents?.defaults?.subagents?.maxSpawnDepth).toBe(2);
-    expect(parsed.agents?.defaults?.subagents?.maxChildrenPerAgent).toBe(7);
+    expect(parsed.agents?.defaults?.subagents?.maxConcurrent).toBe(50);
+    expect(parsed.agents?.defaults?.subagents?.maxChildrenPerAgent).toBe(50);
+  });
+
+  it("rejects more than fifty direct subagent children", () => {
+    expect(() =>
+      OpenClawSchema.parse({
+        agents: {
+          defaults: {
+            subagents: {
+              maxChildrenPerAgent: 51,
+            },
+          },
+        },
+      }),
+    ).toThrow();
   });
 
   it("injects missing agent defaults", () => {
