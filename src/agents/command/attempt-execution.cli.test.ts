@@ -1643,6 +1643,74 @@ describe("CLI attempt execution", () => {
     });
   });
 
+  it("embedded assistant gap-fill skips a trailing sessions_yield tool result", async () => {
+    const sessionKey = "agent:main:subagent:embedded-gap-fill-sessions-yield";
+    const sessionEntry: SessionEntry = {
+      sessionId: "session-embedded-gap-fill-sessions-yield",
+      updatedAt: Date.now(),
+    };
+    const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
+    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf-8");
+
+    const result = makeCliResult("Waiting for all six children.");
+    result.meta.executionTrace = {
+      winnerProvider: "anthropic",
+      winnerModel: "claude-haiku-4-5-20251001",
+      fallbackUsed: false,
+      runner: "embedded",
+    };
+
+    const updatedFirst = await persistCliTranscriptEntry({
+      body: "ignored for gap fill",
+      result,
+      sessionId: sessionEntry.sessionId,
+      sessionKey,
+      sessionEntry,
+      sessionStore,
+      storePath,
+      sessionAgentId: "main",
+      sessionCwd: tmpDir,
+      config: {},
+      embeddedAssistantGapFill: true,
+    });
+    const sessionFile = updatedFirst?.sessionFile;
+    if (typeof sessionFile !== "string") {
+      throw new Error("Expected CLI transcript session file.");
+    }
+
+    await appendSessionTranscriptMessage({
+      transcriptPath: sessionFile,
+      sessionId: sessionEntry.sessionId,
+      cwd: tmpDir,
+      config: {},
+      message: {
+        role: "toolResult",
+        toolCallId: "call_sessions_yield",
+        toolName: "sessions_yield",
+        content: [{ type: "text", text: '{"status":"yielded"}' }],
+        isError: false,
+      },
+    });
+
+    await persistCliTurnTranscript({
+      body: "still ignored",
+      result,
+      sessionId: sessionEntry.sessionId,
+      sessionKey,
+      sessionEntry: updatedFirst,
+      sessionStore,
+      storePath,
+      sessionAgentId: "main",
+      sessionCwd: tmpDir,
+      config: {},
+      embeddedAssistantGapFill: true,
+    });
+
+    const messages = await readSessionMessages(sessionFile);
+    expect(messages).toHaveLength(2);
+    expect(messages.map((message) => message.role)).toEqual(["assistant", "toolResult"]);
+  });
+
   it("embedded assistant gap-fill appends repeated replies after a user tail", async () => {
     const sessionKey = "agent:main:subagent:embedded-repeated-reply";
     const sessionEntry: SessionEntry = {

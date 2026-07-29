@@ -1041,6 +1041,43 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     expect(tailAssistantText?.text).toBe("Canonical answer");
   });
 
+  it("scans past a trailing sessions_yield tool result to find the yielding assistant text", async () => {
+    writeTranscriptStore();
+    const sessionFile = resolveSessionTranscriptPathInDir(sessionId, fixture.sessionsDir());
+    const toolCallId = "call_sessions_yield";
+
+    const assistantResult = await appendSessionTranscriptMessage({
+      transcriptPath: sessionFile,
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Waiting for all six children." },
+          {
+            type: "toolCall",
+            id: toolCallId,
+            name: "sessions_yield",
+            arguments: { message: "Waiting for all six children." },
+          },
+        ],
+        stopReason: "toolUse",
+      },
+    });
+    await appendSessionTranscriptMessage({
+      transcriptPath: sessionFile,
+      message: {
+        role: "toolResult",
+        toolCallId,
+        toolName: "sessions_yield",
+        content: [{ type: "text", text: '{"status":"yielded"}' }],
+        isError: false,
+      },
+    });
+
+    const tailAssistantText = await readTailAssistantTextFromSessionTranscript(sessionFile);
+    expect(tailAssistantText?.id).toBe(assistantResult.messageId);
+    expect(tailAssistantText?.text).toBe("Waiting for all six children.");
+  });
+
   it("does not reuse an older matching assistant message across turns", async () => {
     writeTranscriptStore();
 
