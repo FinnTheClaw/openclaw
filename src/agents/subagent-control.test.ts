@@ -1396,6 +1396,48 @@ describe("killAllControlledSubagentRuns", () => {
     testing.setDepsForTest();
   });
 
+  it("suppresses completion delivery when a controlled batch member is killed", async () => {
+    const entry = {
+      runId: "run-controlled-group-kill",
+      childSessionKey: "agent:main:subagent:controlled-group-kill",
+      controllerSessionKey: "agent:main:main",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "controlled grouped task",
+      cleanup: "keep" as const,
+      createdAt: Date.now() - 2_000,
+      startedAt: Date.now() - 1_000,
+      completionGroup: {
+        id: "controlled-group",
+        index: 0,
+        expectedSize: 2,
+        finalized: true,
+      },
+    };
+    addSubagentRunForTests(entry);
+
+    const result = await killAllControlledSubagentRuns({
+      cfg: cfgWithSessionStore(),
+      controller: {
+        controllerSessionKey: "agent:main:main",
+        callerSessionKey: "agent:main:main",
+        callerIsSubagent: false,
+        controlScope: "children",
+      },
+      runs: [entry],
+    });
+
+    expect(result).toEqual({
+      status: "ok",
+      killed: 1,
+      labels: ["controlled grouped task"],
+    });
+    expect(
+      getSubagentRunByChildSessionKey(entry.childSessionKey)?.killReconciliation
+        ?.suppressTaskDelivery,
+    ).toBe(true);
+  });
+
   it("continues bulk cancellation after one registry persistence failure", async () => {
     let persistenceAttempts = 0;
     subagentRegistryTesting.setDepsForTest({

@@ -60,10 +60,10 @@ const MAX_STEERING_HISTORY_CHARS = 24_000;
 
 const steerRateLimit = new Map<string, number>();
 
-function appendBoundedSteeringMessage(params: {
-  entry: SubagentRunRecord;
-  message: string;
-}): { messages: string[]; omittedCount: number } {
+function appendBoundedSteeringMessage(params: { entry: SubagentRunRecord; message: string }): {
+  messages: string[];
+  omittedCount: number;
+} {
   const messages = [
     ...(params.entry.steeringMessages ?? []).filter(
       (message): message is string => typeof message === "string" && message.trim().length > 0,
@@ -337,6 +337,7 @@ async function killSubagentRun(params: {
         runId: params.entry.runId,
         childSessionKey: params.entry.childSessionKey,
         reason: "killed",
+        suppressTaskDelivery: true,
       });
     }
     return { killed: false, targetState: initialTargetState };
@@ -362,6 +363,7 @@ async function killSubagentRun(params: {
         runId: params.entry.runId,
         childSessionKey,
         reason: "killed",
+        suppressTaskDelivery: true,
       });
     }
     return { killed: false, sessionId, targetState: targetStateAfterRuntimeLoad };
@@ -396,6 +398,7 @@ async function killSubagentRun(params: {
         runId: params.entry.runId,
         childSessionKey,
         reason: "killed",
+        suppressTaskDelivery: true,
       });
     } else {
       await persistAbortedLastRun(false);
@@ -408,6 +411,7 @@ async function killSubagentRun(params: {
     runId: params.entry.runId,
     childSessionKey,
     reason: "killed",
+    suppressTaskDelivery: true,
   });
   const killed = marked > 0 || aborted || cleared.followupCleared > 0 || cleared.laneCleared > 0;
   return {
