@@ -248,15 +248,23 @@ export function resolveIncompleteTurnPayloadText(params: {
     !joinAssistantTexts(params.attempt.assistantTexts).length &&
     !hasTerminalOutput &&
     Boolean(assistant && hasOnlyAssistantReasoningContent(assistant));
+  // Earlier pre-tool narration is not a successful answer when the current
+  // post-tool assistant message terminated with an error. The old visible-text
+  // shortcut let "let me check..." mask a failed terminal model turn.
+  const terminalAssistantErrored = assistant?.stopReason === "error";
 
   if (
-    (params.payloadCount !== 0 && !incompleteTerminalAssistant && !thinkingOnlyTerminal) ||
+    (params.payloadCount !== 0 &&
+      !incompleteTerminalAssistant &&
+      !thinkingOnlyTerminal &&
+      !terminalAssistantErrored) ||
     (params.aborted && params.externalAbort) ||
     params.timedOut ||
     params.attempt.clientToolCalls ||
     params.attempt.yieldDetected ||
     params.attempt.didSendDeterministicApprovalPrompt ||
-    params.attempt.lastToolError
+    params.attempt.lastToolError ||
+    hasTerminalOutput
   ) {
     return null;
   }

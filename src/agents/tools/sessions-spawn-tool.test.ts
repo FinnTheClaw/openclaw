@@ -364,6 +364,113 @@ describe("sessions_spawn tool", () => {
     expect(hoisted.spawnAcpDirectMock).not.toHaveBeenCalled();
   });
 
+  it("admits distinct batch tasks concurrently in one model tool call", async () => {
+    const releases: Array<() => void> = [];
+    hoisted.spawnSubagentDirectMock.mockImplementation(
+      async (spawnArgs: { task: string }) =>
+        await new Promise((resolve) => {
+          const index = releases.length;
+          releases.push(() =>
+            resolve({
+              status: "accepted",
+              childSessionKey: `agent:main:subagent:${index + 1}`,
+              runId: `run-subagent-${index + 1}`,
+              task: spawnArgs.task,
+            }),
+          );
+        }),
+    );
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+    });
+
+    const resultPromise = tool.execute("call-batch", {
+      modelRoute: "general",
+      thinking: "medium",
+      tasks: [
+        { task: "write essay one", taskName: "essay-1" },
+        { task: "write essay two", taskName: "essay-2" },
+        { task: "write essay three", taskName: "essay-3" },
+      ],
+    });
+
+    await vi.waitFor(() => {
+      expect(hoisted.spawnSubagentDirectMock).toHaveBeenCalledTimes(3);
+    });
+    expect(releases).toHaveLength(3);
+    for (const release of releases) {
+      release();
+    }
+    const result = await resultPromise;
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      complete: true,
+      requestedCount: 3,
+      acceptedCount: 3,
+      failedCount: 0,
+      runId: "run-subagent-1",
+      childSessionKey: "agent:main:subagent:1",
+    });
+    expect(
+      hoisted.spawnSubagentDirectMock.mock.calls.map(([spawnArgs]) => ({
+        task: (spawnArgs as { task: string }).task,
+        modelRoute: (spawnArgs as { modelRoute?: string }).modelRoute,
+      })),
+    ).toEqual([
+      { task: "write essay one", modelRoute: "general" },
+      { task: "write essay two", modelRoute: "general" },
+      { task: "write essay three", modelRoute: "general" },
+    ]);
+  });
+
+  it("reports partial batch admission without hiding accepted child sessions", async () => {
+    hoisted.spawnSubagentDirectMock
+      .mockResolvedValueOnce({
+        status: "accepted",
+        childSessionKey: "agent:main:subagent:accepted",
+        runId: "run-subagent-accepted",
+      })
+      .mockResolvedValueOnce({
+        status: "error",
+        error: "admission unavailable",
+      });
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+    });
+
+    const result = await tool.execute("call-batch-partial", {
+      tasks: [{ task: "accepted shard" }, { task: "rejected shard" }],
+    });
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      complete: false,
+      requestedCount: 2,
+      acceptedCount: 1,
+      failedCount: 1,
+      runId: "run-subagent-accepted",
+      childSessionKey: "agent:main:subagent:accepted",
+    });
+  });
+
+  it("rejects invalid batch sizes and ambiguous single-plus-batch input", async () => {
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+    });
+
+    await expect(tool.execute("call-batch-empty", { tasks: [] })).rejects.toThrow(
+      "between 1 and 50",
+    );
+    await expect(
+      tool.execute("call-batch-ambiguous", {
+        task: "single shard",
+        tasks: [{ task: "batch shard" }],
+      }),
+    ).rejects.toThrow('exactly one of "task" or "tasks"');
+    expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
+  });
+
   it("passes inherited tool denies to subagent spawns", async () => {
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:main:main",

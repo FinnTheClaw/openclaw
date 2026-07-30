@@ -164,34 +164,54 @@ function createSessionsSpawnToolSchema(params: {
   threadAvailable: boolean;
 }) {
   const spawnModes = params.threadAvailable ? SUBAGENT_SPAWN_MODES : (["run"] as const);
-  const schema = {
-    task: Type.String({
+  const taskDescription =
+    "One bounded, independently verifiable shard with explicit scope, deliverable, and test; never the whole repository or complete parent request.";
+  const taskNameDescription =
+    "Stable alias for later targeting; lowercase letters/digits/underscores/hyphens, starts letter.";
+  const modelDescription =
+    "Optional raw model override. Prefer modelRoute so deployments can select an administrator-approved specialist; deployments may disallow raw overrides.";
+  const modelRouteDescription =
+    "Named specialist/capability route configured by the administrator (for example general, coding, creative, reasoning, research, vision, vision_reasoning, audio, video, or compaction). Match the task and honor an explicit user route request. Image attachments automatically prefer vision when omitted.";
+  const batchTaskSchema = Type.Object({
+    task: Type.String({ description: taskDescription }),
+    taskName: Type.Optional(Type.String({ description: taskNameDescription })),
+    label: Type.Optional(Type.String()),
+    agentId: Type.Optional(Type.String()),
+    model: Type.Optional(Type.String({ description: modelDescription })),
+    modelRoute: Type.Optional(Type.String({ description: modelRouteDescription })),
+    thinking: Type.Optional(Type.String()),
+    cwd: Type.Optional(Type.String()),
+    mode: optionalStringEnum(spawnModes),
+    cleanup: optionalStringEnum(["delete", "keep"] as const),
+    sandbox: optionalStringEnum(SESSIONS_SPAWN_SANDBOX_MODES),
+    context: optionalStringEnum(SUBAGENT_SPAWN_CONTEXT_MODES, {
       description:
-        "One bounded, independently verifiable shard with explicit scope, deliverable, and test; never the whole repository or complete parent request.",
+        'Native context. Omit/"isolated" for clean child; "fork" only when child needs requester transcript.',
     }),
-    taskName: Type.Optional(
-      Type.String({
-        description:
-          "Stable alias for later targeting; lowercase letters/digits/underscores/hyphens, starts letter.",
+    lightContext: Type.Optional(
+      Type.Boolean({
+        description: 'Light bootstrap context; runtime="subagent" only.',
       }),
     ),
+  });
+  const schema = {
+    task: Type.Optional(Type.String({ description: taskDescription })),
+    tasks: Type.Optional(
+      Type.Array(batchTaskSchema, {
+        minItems: 1,
+        maxItems: 50,
+        description:
+          "Two to fifty independent native-subagent shards to admit concurrently as distinct child sessions. Use dependency waves instead of placing dependent work in the same batch.",
+      }),
+    ),
+    taskName: Type.Optional(Type.String({ description: taskNameDescription })),
     label: Type.Optional(Type.String()),
     runtime: optionalStringEnum(
       params.acpAvailable ? SESSIONS_SPAWN_RUNTIMES : (["subagent"] as const),
     ),
     agentId: Type.Optional(Type.String()),
-    model: Type.Optional(
-      Type.String({
-        description:
-          "Optional raw model override. Prefer modelRoute so deployments can select an administrator-approved specialist; deployments may disallow raw overrides.",
-      }),
-    ),
-    modelRoute: Type.Optional(
-      Type.String({
-        description:
-          "Named specialist/capability route configured by the administrator (for example general, coding, creative, reasoning, research, vision, vision_reasoning, audio, video, or compaction). Match the task and honor an explicit user route request. Image attachments automatically prefer vision when omitted.",
-      }),
-    ),
+    model: Type.Optional(Type.String({ description: modelDescription })),
+    modelRoute: Type.Optional(Type.String({ description: modelRouteDescription })),
     thinking: Type.Optional(Type.String()),
     cwd: Type.Optional(Type.String()),
     ...(params.threadAvailable
@@ -291,7 +311,7 @@ export function createSessionsSpawnTool(
   });
   const threadAvailability = resolveSessionsSpawnThreadAvailability(opts);
   const threadAvailable = hasAnyThreadAvailability(threadAvailability);
-  return {
+  const tool: AnyAgentTool = {
     label: "Sessions",
     name: "sessions_spawn",
     displaySummary: acpAvailable
@@ -299,7 +319,7 @@ export function createSessionsSpawnTool(
       : SESSIONS_SPAWN_SUBAGENT_TOOL_DISPLAY_SUMMARY,
     description: describeSessionsSpawnTool({ acpAvailable, threadAvailable }),
     parameters: createSessionsSpawnToolSchema({ acpAvailable, threadAvailable }),
-    execute: async (_toolCallId, args) => {
+    execute: async (toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const unsupportedParam = UNSUPPORTED_SESSIONS_SPAWN_PARAM_KEYS.find((key) =>
         Object.hasOwn(params, key),
@@ -318,6 +338,79 @@ export function createSessionsSpawnTool(
         throw new ToolInputError(
           `sessions_spawn does not support per-call "${providedTimeoutParam}". Configure agents.defaults.subagents.runTimeoutSeconds instead.`,
         );
+      }
+      const hasSingleTask = typeof params.task === "string" && params.task.trim().length > 0;
+      const hasBatchTasks = Array.isArray(params.tasks);
+      if (hasSingleTask && hasBatchTasks) {
+        throw new ToolInputError(
+          'sessions_spawn accepts exactly one of "task" or "tasks", not both.',
+        );
+      }
+      if (hasBatchTasks) {
+        const batchTasks = params.tasks as unknown[];
+        if (batchTasks.length === 0 || batchTasks.length > 50) {
+          throw new ToolInputError("sessions_spawn tasks must contain between 1 and 50 shards.");
+        }
+        if (params.runtime === "acp") {
+          throw new ToolInputError(
+            'sessions_spawn tasks is for concurrent native subagents only; use individual calls for runtime="acp".',
+          );
+        }
+        const sharedParams = { ...params };
+        delete sharedParams.task;
+        delete sharedParams.tasks;
+        delete sharedParams.taskName;
+        delete sharedParams.label;
+        const batchResults: Array<Record<string, unknown>> = await Promise.all(
+          batchTasks.map(async (rawTask, index): Promise<Record<string, unknown>> => {
+            if (!rawTask || typeof rawTask !== "object" || Array.isArray(rawTask)) {
+              return {
+                index,
+                status: "error",
+                error: `tasks[${index}] must be an object.`,
+              };
+            }
+            const taskParams = {
+              ...sharedParams,
+              ...(rawTask as Record<string, unknown>),
+            };
+            try {
+              const result = await tool.execute(`${toolCallId}:${index + 1}`, taskParams);
+              const details =
+                result &&
+                typeof result === "object" &&
+                "details" in result &&
+                result.details &&
+                typeof result.details === "object" &&
+                !Array.isArray(result.details)
+                  ? (result.details as Record<string, unknown>)
+                  : { status: "error", error: "spawn returned no structured details" };
+              return { index, ...details };
+            } catch (err) {
+              return {
+                index,
+                status: "error",
+                error: summarizeError(err),
+              };
+            }
+          }),
+        );
+        const acceptedResults = batchResults.filter((result) => result.status === "accepted");
+        const firstAccepted = acceptedResults[0];
+        return jsonResult({
+          // Any accepted child makes this a committed side effect. `complete`
+          // and the counts tell the model whether every requested shard was admitted.
+          status: acceptedResults.length > 0 ? "accepted" : "error",
+          complete: acceptedResults.length === batchTasks.length,
+          requestedCount: batchTasks.length,
+          acceptedCount: acceptedResults.length,
+          failedCount: batchTasks.length - acceptedResults.length,
+          ...(typeof firstAccepted?.runId === "string" ? { runId: firstAccepted.runId } : {}),
+          ...(typeof firstAccepted?.childSessionKey === "string"
+            ? { childSessionKey: firstAccepted.childSessionKey }
+            : {}),
+          results: batchResults,
+        });
       }
       const task = readStringParam(params, "task", { required: true });
       const taskNameResult = normalizeSubagentTaskName(params.taskName);
@@ -542,4 +635,5 @@ export function createSessionsSpawnTool(
       return jsonResult(addRoleToFailureResult(result, requestedAgentId));
     },
   };
+  return tool;
 }

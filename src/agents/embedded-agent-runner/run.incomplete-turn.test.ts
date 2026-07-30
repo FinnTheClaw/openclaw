@@ -1787,6 +1787,81 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expectNoWarnMessageWith("incomplete turn detected");
   });
 
+  it("continues when pre-tool narration masks an errored post-tool terminal turn", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedBuildEmbeddedRunPayloads
+      .mockReturnValueOnce([{ text: "Let me check the admission state." }])
+      .mockReturnValueOnce([{ text: "The admission state is healthy and ready." }]);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Let me check the admission state."],
+        toolMetas: [{ toolName: "exec", meta: "subagent-admission status", replaySafe: true }],
+        messagesSnapshot: [
+          {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [
+              { type: "text", text: "Let me check the admission state." },
+              {
+                type: "tool_use",
+                id: "tool_status",
+                name: "exec",
+                input: { command: "subagent-admission status" },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "tool_status",
+            toolName: "exec",
+            isError: false,
+            content: [{ type: "text", text: "capacity=50 active=0" }],
+          },
+          {
+            role: "assistant",
+            stopReason: "error",
+            content: [],
+          },
+        ] as unknown as EmbeddedRunAttemptResult["messagesSnapshot"],
+        currentAttemptAssistant: {
+          role: "assistant",
+          stopReason: "error",
+          provider: "openai",
+          model: "qwen3.6-27b",
+          content: [],
+        } as unknown as EmbeddedRunAttemptResult["currentAttemptAssistant"],
+      }),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["The admission state is healthy and ready."],
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "stop",
+          provider: "openai",
+          model: "qwen3.6-27b",
+          content: [{ type: "text", text: "The admission state is healthy and ready." }],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "qwen3.6-27b",
+      runId: "run-pretool-text-posttool-error",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(runAttemptCall(1).prompt).toContain(
+      "latest tool call already completed and its result is recorded",
+    );
+    expect(runAttemptCall(1).suppressNextUserMessagePersistence).toBe(true);
+    expect(result.payloads?.[0]?.text).toBe("The admission state is healthy and ready.");
+    expect(result.payloads?.[0]?.isError).not.toBe(true);
+    expectWarnMessageWith("settled post-tool turn lacked a continuation");
+  });
+
   it("does not continue from a toolUse assistant when no completed tool result is recorded", async () => {
     mockedClassifyFailoverReason.mockReturnValue(null);
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(

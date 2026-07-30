@@ -444,7 +444,7 @@ function needsCompletedToolResultContinuation(params: {
     return true;
   }
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
-  return assistant?.stopReason === "toolUse";
+  return assistant?.stopReason === "toolUse" || assistant?.stopReason === "error";
 }
 
 function resolveInitialThinkLevel(params: {

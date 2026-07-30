@@ -15,7 +15,7 @@ import {
 installSignalToolResultTestHooks();
 
 // Import after the harness registers `vi.mock(...)` for Signal internals.
-const { monitorSignalProvider } = await import("./monitor.js");
+const { monitorSignalProvider, resolveSignalNativeReplyOptions } = await import("./monitor.js");
 
 const {
   replyMock,
@@ -80,6 +80,42 @@ function hasQueuedReactionEventFor(sender: string) {
     );
   });
 }
+
+describe("Signal native reply fallback", () => {
+  it("reconstructs an ordinary native reply from inbound context when reply mode allows it", () => {
+    expect(
+      resolveSignalNativeReplyOptions({
+        payload: { text: "normal reply" },
+        replyContext: {
+          replyToId: "1700000000001",
+          author: "+15550001111",
+          body: "original request",
+          state: { hasReplied: false },
+        },
+        replyToMode: "all",
+      }),
+    ).toEqual({
+      replyToId: "1700000000001",
+      replyToAuthor: "+15550001111",
+      replyToBody: "original request",
+    });
+  });
+
+  it("does not reconstruct an implicit native reply when reply mode is off", () => {
+    expect(
+      resolveSignalNativeReplyOptions({
+        payload: { text: "normal reply" },
+        replyContext: {
+          replyToId: "1700000000001",
+          author: "+15550001111",
+          body: "original request",
+          state: { hasReplied: false },
+        },
+        replyToMode: "off",
+      }),
+    ).toEqual({});
+  });
+});
 
 function makeBaseEnvelope(overrides: Record<string, unknown> = {}) {
   return {

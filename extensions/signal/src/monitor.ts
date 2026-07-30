@@ -483,24 +483,41 @@ export async function deliverReplies(params: {
   }
 }
 
-function resolveSignalNativeReplyOptions(params: {
+export function resolveSignalNativeReplyOptions(params: {
   payload: ReplyPayload;
   replyContext?: SignalNativeReplyContext;
+  replyToMode: ReplyToMode;
 }): Pick<Parameters<typeof sendMessageSignal>[2], "replyToId" | "replyToAuthor" | "replyToBody"> {
   if (params.payload.replyToCurrent === false) {
     return {};
   }
   const payloadReplyToId = normalizeOptionalString(params.payload.replyToId);
   const contextReplyToId = normalizeOptionalString(params.replyContext?.replyToId);
-  if (!payloadReplyToId || !contextReplyToId || payloadReplyToId !== contextReplyToId) {
+  if (!contextReplyToId || (payloadReplyToId && payloadReplyToId !== contextReplyToId)) {
+    return {};
+  }
+  // Ordinary model replies can reach the channel after a delivery path that
+  // omitted replyToId even though the inbound Signal context is still intact.
+  // Status/error notices happened to retain the field, which made native
+  // quoting appear error-only. Restore the current inbound target whenever the
+  // configured reply mode permits implicit replies (or the payload explicitly
+  // requested the current message).
+  const effectiveReplyToId =
+    payloadReplyToId ??
+    (params.replyToMode === "all" ||
+    params.replyToMode === "first" ||
+    params.payload.replyToCurrent === true
+      ? contextReplyToId
+      : undefined);
+  if (!effectiveReplyToId) {
     return {};
   }
   const replyToAuthor = normalizeOptionalString(params.replyContext?.author);
   if (!replyToAuthor) {
-    return { replyToId: payloadReplyToId };
+    return { replyToId: effectiveReplyToId };
   }
   return {
-    replyToId: payloadReplyToId,
+    replyToId: effectiveReplyToId,
     replyToAuthor,
     replyToBody: params.replyContext?.body ?? "",
   };
