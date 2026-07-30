@@ -6,10 +6,12 @@ const hoisted = vi.hoisted(() => {
   const spawnSubagentDirectMock = vi.fn();
   const spawnAcpDirectMock = vi.fn();
   const registerSubagentRunMock = vi.fn();
+  const finalizeSubagentCompletionGroupMock = vi.fn();
   return {
     spawnSubagentDirectMock,
     spawnAcpDirectMock,
     registerSubagentRunMock,
+    finalizeSubagentCompletionGroupMock,
   };
 });
 
@@ -27,6 +29,8 @@ vi.mock("../acp-spawn.js", () => ({
 }));
 
 vi.mock("../subagent-registry.js", () => ({
+  finalizeSubagentCompletionGroup: (...args: unknown[]) =>
+    hoisted.finalizeSubagentCompletionGroupMock(...args),
   registerSubagentRun: (...args: unknown[]) => hoisted.registerSubagentRunMock(...args),
 }));
 
@@ -52,6 +56,7 @@ describe("sessions_spawn tool", () => {
       runId: "run-acp",
     });
     hoisted.registerSubagentRunMock.mockReset();
+    hoisted.finalizeSubagentCompletionGroupMock.mockReset();
   });
 
   function registerAcpBackendForTest() {
@@ -411,6 +416,22 @@ describe("sessions_spawn tool", () => {
       failedCount: 0,
       runId: "run-subagent-1",
       childSessionKey: "agent:main:subagent:1",
+      completionAggregationReady: true,
+    });
+    const groupIds = hoisted.spawnSubagentDirectMock.mock.calls.map(
+      ([spawnArgs]) =>
+        (
+          spawnArgs as {
+            completionGroup?: { id?: string; index?: number; expectedSize?: number };
+          }
+        ).completionGroup,
+    );
+    expect(groupIds.map((group) => group?.index)).toEqual([0, 1, 2]);
+    expect(groupIds.every((group) => group?.id === groupIds[0]?.id)).toBe(true);
+    expect(groupIds.every((group) => group?.expectedSize === 3)).toBe(true);
+    expect(hoisted.finalizeSubagentCompletionGroupMock).toHaveBeenCalledWith({
+      groupId: groupIds[0]?.id,
+      acceptedRunIds: ["run-subagent-1", "run-subagent-2", "run-subagent-3"],
     });
     expect(
       hoisted.spawnSubagentDirectMock.mock.calls.map(([spawnArgs]) => ({
@@ -451,6 +472,16 @@ describe("sessions_spawn tool", () => {
       failedCount: 1,
       runId: "run-subagent-accepted",
       childSessionKey: "agent:main:subagent:accepted",
+      completionAggregationReady: true,
+    });
+    const partialGroup = (
+      mockCallArg(hoisted.spawnSubagentDirectMock, 0, 0, "spawnSubagentDirect") as {
+        completionGroup?: { id?: string };
+      }
+    ).completionGroup;
+    expect(hoisted.finalizeSubagentCompletionGroupMock).toHaveBeenCalledWith({
+      groupId: partialGroup?.id,
+      acceptedRunIds: ["run-subagent-accepted"],
     });
   });
 

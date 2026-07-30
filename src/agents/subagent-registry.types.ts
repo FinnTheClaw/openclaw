@@ -84,6 +84,22 @@ export type SubagentCompletionDeliveryState = {
     | "waiting_for_requester_turn";
 };
 
+/**
+ * Durable barrier shared by native subagents admitted from one batch tool call.
+ *
+ * Batch members execute independently, but completion delivery is withheld until
+ * every accepted member settles. The deterministic leader then wakes the
+ * requester once with an aggregate settlement summary.
+ */
+export type SubagentCompletionGroupState = {
+  id: string;
+  index: number;
+  expectedSize: number;
+  finalized: boolean;
+  activatedAt?: number;
+  leaderRunId?: string;
+};
+
 type SubagentKillReconciliationState = {
   /** Actual cancellation time; a yielded run may have an older execution end. */
   killedAt: number;
@@ -147,6 +163,8 @@ export type SubagentRunRecord = {
   deleteCleanupDispatchedAt?: number;
   /** Durable outbox marker for parent/external completion delivery. */
   delivery?: SubagentCompletionDeliveryState;
+  /** Optional batch-completion barrier for concurrently admitted child runs. */
+  completionGroup?: SubagentCompletionGroupState;
   attachmentsDir?: string;
   attachmentsRootDir?: string;
   retainAttachmentsOnKeep?: boolean;

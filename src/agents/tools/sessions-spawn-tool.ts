@@ -3,6 +3,7 @@
  *
  * Starts subagent or ACP-backed sessions with inherited tool policy and delivery context.
  */
+import crypto from "node:crypto";
 import { Type } from "typebox";
 import { isAcpRuntimeSpawnAvailable } from "../../acp/runtime/availability.js";
 import {
@@ -25,7 +26,8 @@ import {
 import { optionalStringEnum } from "../schema/typebox.js";
 import type { SpawnedToolContext } from "../spawned-context.js";
 import { resolveAcpSessionsSpawnImageAttachments } from "../subagent-attachments.js";
-import { registerSubagentRun } from "../subagent-registry.js";
+import { finalizeSubagentCompletionGroup, registerSubagentRun } from "../subagent-registry.js";
+import type { SubagentCompletionGroupState } from "../subagent-registry.types.js";
 import { resolveSubagentSpawnOwnership } from "../subagent-spawn-ownership.js";
 import {
   SUBAGENT_SPAWN_CONTEXT_MODES,
@@ -64,6 +66,7 @@ const UNSUPPORTED_SESSIONS_SPAWN_TIMEOUT_PARAM_KEYS = [
   "runTimeoutSeconds",
   "timeoutSeconds",
 ] as const;
+const INTERNAL_COMPLETION_GROUP_PARAM = "__completionGroup";
 
 type AcpSpawnModule = typeof import("../acp-spawn.js");
 
@@ -83,6 +86,35 @@ function summarizeError(err: unknown): string {
     return err;
   }
   return "error";
+}
+
+function readInternalCompletionGroup(
+  params: Record<string, unknown>,
+): SubagentCompletionGroupState | undefined {
+  const raw = params[INTERNAL_COMPLETION_GROUP_PARAM];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const value = raw as Record<string, unknown>;
+  if (
+    typeof value.id !== "string" ||
+    !value.id.trim() ||
+    typeof value.index !== "number" ||
+    typeof value.expectedSize !== "number" ||
+    !Number.isInteger(value.index) ||
+    !Number.isInteger(value.expectedSize) ||
+    value.index < 0 ||
+    value.expectedSize < 1 ||
+    value.expectedSize > 50
+  ) {
+    return undefined;
+  }
+  return {
+    id: value.id.trim(),
+    index: value.index,
+    expectedSize: value.expectedSize,
+    finalized: value.finalized === true,
+  };
 }
 
 function addRoleToFailureResult<T extends { status: string }>(
@@ -361,6 +393,7 @@ export function createSessionsSpawnTool(
         delete sharedParams.tasks;
         delete sharedParams.taskName;
         delete sharedParams.label;
+        const completionGroupId = crypto.randomUUID();
         const batchResults: Array<Record<string, unknown>> = await Promise.all(
           batchTasks.map(async (rawTask, index): Promise<Record<string, unknown>> => {
             if (!rawTask || typeof rawTask !== "object" || Array.isArray(rawTask)) {
@@ -373,6 +406,12 @@ export function createSessionsSpawnTool(
             const taskParams = {
               ...sharedParams,
               ...(rawTask as Record<string, unknown>),
+              [INTERNAL_COMPLETION_GROUP_PARAM]: {
+                id: completionGroupId,
+                index,
+                expectedSize: batchTasks.length,
+                finalized: false,
+              } satisfies SubagentCompletionGroupState,
             };
             try {
               const result = await tool.execute(`${toolCallId}:${index + 1}`, taskParams);
@@ -397,6 +436,20 @@ export function createSessionsSpawnTool(
         );
         const acceptedResults = batchResults.filter((result) => result.status === "accepted");
         const firstAccepted = acceptedResults[0];
+        const acceptedRunIds = acceptedResults
+          .map((result) => result.runId)
+          .filter((runId): runId is string => typeof runId === "string" && runId.length > 0);
+        let completionAggregationError: string | undefined;
+        if (acceptedRunIds.length > 0) {
+          try {
+            finalizeSubagentCompletionGroup({
+              groupId: completionGroupId,
+              acceptedRunIds,
+            });
+          } catch (error) {
+            completionAggregationError = summarizeError(error);
+          }
+        }
         return jsonResult({
           // Any accepted child makes this a committed side effect. `complete`
           // and the counts tell the model whether every requested shard was admitted.
@@ -405,6 +458,10 @@ export function createSessionsSpawnTool(
           requestedCount: batchTasks.length,
           acceptedCount: acceptedResults.length,
           failedCount: batchTasks.length - acceptedResults.length,
+          completionGroupId,
+          completionAggregationReady:
+            acceptedRunIds.length === acceptedResults.length && !completionAggregationError,
+          ...(completionAggregationError ? { completionAggregationError } : {}),
           ...(typeof firstAccepted?.runId === "string" ? { runId: firstAccepted.runId } : {}),
           ...(typeof firstAccepted?.childSessionKey === "string"
             ? { childSessionKey: firstAccepted.childSessionKey }
@@ -433,6 +490,7 @@ export function createSessionsSpawnTool(
       const cleanup =
         params.cleanup === "keep" || params.cleanup === "delete" ? params.cleanup : "keep";
       const expectsCompletionMessage = params.expectsCompletionMessage !== false;
+      const completionGroup = readInternalCompletionGroup(params);
       const sandbox = params.sandbox === "require" ? "require" : "inherit";
       const context =
         params.context === "fork" || params.context === "isolated" ? params.context : undefined;
@@ -608,6 +666,7 @@ export function createSessionsSpawnTool(
           context,
           lightContext,
           expectsCompletionMessage,
+          completionGroup,
           attachments,
           attachMountPath:
             params.attachAs && typeof params.attachAs === "object"

@@ -276,6 +276,154 @@ describe("subagent registry lifecycle hardening", () => {
     bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey.mockResolvedValue(true);
   });
 
+  it("waits for every batch member and emits exactly one aggregate parent wake", async () => {
+    const groupId = "batch-group-1";
+    const entries = [0, 1, 2].map((index) =>
+      createRunEntry({
+        runId: `run-${index + 1}`,
+        childSessionKey: `agent:main:subagent:child-${index + 1}`,
+        taskName: `essay-${index + 1}`,
+        expectsCompletionMessage: true,
+        completionGroup: {
+          id: groupId,
+          index,
+          expectedSize: 3,
+          finalized: true,
+          leaderRunId: "run-1",
+        },
+      }),
+    );
+    const runs = new Map(entries.map((entry) => [entry.runId, entry]));
+    const runSubagentAnnounceFlow = vi.fn(async () => true);
+    const controller = createLifecycleController({
+      entry: entries[0]!,
+      runs,
+      runSubagentAnnounceFlow,
+      captureSubagentCompletionReply: vi.fn(async (sessionKey: string) => `result ${sessionKey}`),
+    });
+
+    await controller.completeSubagentRun({
+      runId: "run-1",
+      endedAt: 4_000,
+      outcome: { status: "ok" },
+      reason: SUBAGENT_ENDED_REASON_COMPLETE,
+      triggerCleanup: true,
+    });
+    await controller.completeSubagentRun({
+      runId: "run-2",
+      endedAt: 4_100,
+      outcome: { status: "error", error: "shard failed" },
+      reason: SUBAGENT_ENDED_REASON_ERROR,
+      triggerCleanup: true,
+    });
+
+    expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
+
+    await controller.completeSubagentRun({
+      runId: "run-3",
+      endedAt: 4_200,
+      outcome: { status: "ok" },
+      reason: SUBAGENT_ENDED_REASON_COMPLETE,
+      triggerCleanup: true,
+    });
+
+    await vi.waitFor(() => expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce());
+    const announce = firstCallArg(runSubagentAnnounceFlow);
+    expect(announce.childRunId).toBe("run-1");
+    expect(announce.roundOneReply).toContain("Concurrent subagent batch settled (3/3)");
+    expect(announce.roundOneReply).toContain("1. essay-1: ok");
+    expect(announce.roundOneReply).toContain("2. essay-2: error");
+    expect(announce.roundOneReply).toContain("3. essay-3: ok");
+    expect(entries[0]?.suppressCompletionDelivery).toBeUndefined();
+    expect(entries[1]?.delivery?.status).toBe("not_required");
+    expect(entries[2]?.delivery?.status).toBe("not_required");
+    expect(entries.every((entry) => typeof entry.completionGroup?.activatedAt === "number")).toBe(
+      true,
+    );
+  });
+
+  it("does not resurrect a stopped batch through its elected group leader", async () => {
+    const groupId = "stopped-batch";
+    const entries = [0, 1, 2].map((index) =>
+      createRunEntry({
+        runId: `stopped-${index + 1}`,
+        childSessionKey: `agent:main:subagent:stopped-${index + 1}`,
+        taskName: `stopped-task-${index + 1}`,
+        endedAt: 5_000 + index,
+        outcome: { status: index === 2 ? "cancelled" : "ok" },
+        expectsCompletionMessage: true,
+        ...(index === 2 ? { suppressCompletionDelivery: true } : {}),
+        completion: {
+          required: true,
+          resultText: `stopped result ${index + 1}`,
+          capturedAt: 5_000 + index,
+        },
+        completionGroup: {
+          id: groupId,
+          index,
+          expectedSize: 3,
+          finalized: true,
+          leaderRunId: "stopped-1",
+        },
+      }),
+    );
+    const runs = new Map(entries.map((entry) => [entry.runId, entry]));
+    const runSubagentAnnounceFlow = vi.fn(async () => true);
+    const controller = createLifecycleController({
+      entry: entries[0]!,
+      runs,
+      runSubagentAnnounceFlow,
+    });
+
+    expect(controller.startSubagentCompletionGroupCleanup(groupId)).toBe(true);
+
+    await vi.waitFor(() =>
+      expect(entries.every((entry) => entry.delivery?.status === "not_required")).toBe(true),
+    );
+    expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
+    expect(entries.every((entry) => entry.suppressCompletionDelivery !== true)).toBe(true);
+  });
+
+  it("releases a fully settled completion group after registry restore", async () => {
+    const groupId = "restored-batch";
+    const entries = [0, 1].map((index) =>
+      createRunEntry({
+        runId: `restored-${index + 1}`,
+        childSessionKey: `agent:main:subagent:restored-${index + 1}`,
+        taskName: `restored-task-${index + 1}`,
+        endedAt: 5_000 + index,
+        outcome: { status: "ok" },
+        expectsCompletionMessage: true,
+        completion: {
+          required: true,
+          resultText: `restored result ${index + 1}`,
+          capturedAt: 5_000 + index,
+        },
+        completionGroup: {
+          id: groupId,
+          index,
+          expectedSize: 2,
+          finalized: true,
+          leaderRunId: "restored-1",
+        },
+      }),
+    );
+    const runs = new Map(entries.map((entry) => [entry.runId, entry]));
+    const runSubagentAnnounceFlow = vi.fn(async () => true);
+    const controller = createLifecycleController({
+      entry: entries[0]!,
+      runs,
+      runSubagentAnnounceFlow,
+    });
+
+    expect(controller.startSubagentCompletionGroupCleanup(groupId)).toBe(true);
+
+    await vi.waitFor(() => expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce());
+    expect(firstCallArg(runSubagentAnnounceFlow).roundOneReply).toContain(
+      "Concurrent subagent batch settled (2/2)",
+    );
+  });
+
   it("does not reject completion when task finalization throws", async () => {
     const persist = vi.fn();
     const persistOrThrow = vi.fn();

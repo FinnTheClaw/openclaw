@@ -494,6 +494,8 @@ export async function getReplyFromConfig(
     initialSessionEntry,
     sessionEntryHandle,
     previousSessionEntry,
+    previousRunStatus,
+    previousRunWasOrphaned,
     sessionStore,
     sessionKey,
     sessionId,
@@ -757,6 +759,8 @@ export async function getReplyFromConfig(
         storePath,
         workspaceDir,
         abortedLastRun,
+        previousRunStatus,
+        previousRunWasOrphaned,
         autoFallbackPrimaryProbe,
       }),
     );
@@ -1091,6 +1095,8 @@ export async function getReplyFromConfig(
       storePath,
       workspaceDir,
       abortedLastRun,
+      previousRunStatus,
+      previousRunWasOrphaned,
       autoFallbackPrimaryProbe: runAutoFallbackPrimaryProbe,
     }),
   );

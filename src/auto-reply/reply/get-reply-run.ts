@@ -505,6 +505,8 @@ type RunPreparedReplyParams = {
   storePath?: string;
   workspaceDir: string;
   abortedLastRun: boolean;
+  previousRunStatus?: SessionEntry["status"];
+  previousRunWasOrphaned?: boolean;
   autoFallbackPrimaryProbe?: AutoFallbackPrimaryProbe;
 };
 
@@ -560,6 +562,8 @@ export async function runPreparedReply(
     resolvedElevatedLevel,
     execOverrides,
     abortedLastRun,
+    previousRunStatus,
+    previousRunWasOrphaned,
   } = params;
   let { sessionEntry, resolvedThinkLevel } = params;
   const isHeartbeat = opts?.isHeartbeat === true;
@@ -894,6 +898,8 @@ export async function runPreparedReply(
       : await applySessionHints({
           baseBody: effectiveBaseBody,
           abortedLastRun,
+          previousRunStatus,
+          previousRunWasOrphaned,
           sessionEntry,
           sessionEntryHandle,
           sessionStore,

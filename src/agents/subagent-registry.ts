@@ -715,6 +715,7 @@ const {
   finalizeResumedAnnounceGiveUp,
   refreshFrozenResultFromSession,
   startSubagentAnnounceCleanupFlow,
+  startSubagentCompletionGroupCleanup,
 } = subagentLifecycleController;
 
 function resumeSubagentRun(runId: string) {
@@ -1607,6 +1608,62 @@ export function replaceSubagentRunAfterSteer(params: {
 
 export function registerSubagentRun(params: RegisterSubagentRunParams) {
   subagentRunManager.registerSubagentRun(params);
+}
+
+/**
+ * Closes admission for one concurrent native-subagent batch.
+ *
+ * Registration starts before all shards are known so children can launch
+ * concurrently. This commit narrows the barrier to the runs that were actually
+ * accepted, persists it, and immediately releases an already-settled batch.
+ */
+export function finalizeSubagentCompletionGroup(params: {
+  groupId: string;
+  acceptedRunIds: readonly string[];
+}) {
+  const groupId = params.groupId.trim();
+  const acceptedRunIds = [...new Set(params.acceptedRunIds.map((runId) => runId.trim()))].filter(
+    Boolean,
+  );
+  if (!groupId || acceptedRunIds.length === 0) {
+    throw new Error("completion group requires an id and at least one accepted run");
+  }
+  const acceptedSet = new Set(acceptedRunIds);
+  const members = [...subagentRuns.values()]
+    .filter((entry) => entry.completionGroup?.id === groupId && acceptedSet.has(entry.runId))
+    .toSorted(
+      (left, right) =>
+        (left.completionGroup?.index ?? 0) - (right.completionGroup?.index ?? 0) ||
+        left.runId.localeCompare(right.runId),
+    );
+  if (members.length !== acceptedRunIds.length) {
+    throw new Error(
+      `completion group registration mismatch: accepted=${acceptedRunIds.length} registered=${members.length}`,
+    );
+  }
+  const leaderRunId = members[0]!.runId;
+  const snapshots = new Map(members.map((member) => [member, structuredClone(member)] as const));
+  try {
+    for (const member of members) {
+      member.completionGroup = {
+        ...member.completionGroup!,
+        expectedSize: members.length,
+        finalized: true,
+        leaderRunId,
+      };
+    }
+    persistSubagentRunsOrThrow();
+  } catch (error) {
+    for (const [member, snapshot] of snapshots) {
+      const target = member as unknown as Record<string, unknown>;
+      for (const key of Object.keys(target)) {
+        delete target[key];
+      }
+      Object.assign(target, snapshot);
+    }
+    throw error;
+  }
+  startSubagentCompletionGroupCleanup(groupId);
 }
 
 export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {

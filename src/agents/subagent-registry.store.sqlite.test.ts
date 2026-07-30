@@ -82,7 +82,16 @@ describe("subagent registry sqlite store", () => {
 
   it("persists subagent runs in the shared sqlite state database", async () => {
     await withTempStateEnv(async () => {
-      const run = createRun();
+      const run = createRun({
+        completionGroup: {
+          id: "batch-persisted",
+          index: 1,
+          expectedSize: 3,
+          finalized: true,
+          activatedAt: 300,
+          leaderRunId: "run-zero",
+        },
+      });
 
       saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
 
@@ -99,6 +108,7 @@ describe("subagent registry sqlite store", () => {
         outcome: run.outcome,
         completion: run.completion,
         delivery: run.delivery,
+        completionGroup: run.completionGroup,
       });
       expect(await fs.stat(path.join(tempStateDir!, "state", "openclaw.sqlite"))).toBeTruthy();
       await expect(fs.stat(path.join(tempStateDir!, "subagents", "runs.json"))).rejects.toThrow();

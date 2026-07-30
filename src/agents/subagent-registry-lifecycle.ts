@@ -189,6 +189,7 @@ export function createSubagentRegistryLifecycleController(params: {
   const terminalCompletionLocks = new Map<string, Promise<void>>();
   const terminalGenerations = new WeakMap<SubagentRunRecord, number>();
   const cleanupGenerations = new WeakMap<SubagentRunRecord, number>();
+  const completionGroupActivationLocks = new Set<string>();
 
   const newerGenerationOwnsSession = (entry: SubagentRunRecord): boolean =>
     entry.killReconciliation?.supersededAt !== undefined ||
@@ -407,7 +408,10 @@ export function createSubagentRegistryLifecycleController(params: {
     }
     const target = resolveSubagentTaskTarget(args.entry, args.taskResolution);
     const { status, error, terminalOutcome, ...details } = terminal;
-    const suppressDelivery = args.entry.suppressCompletionDelivery === true;
+    // Grouped children settle into one aggregate requester wake. Their detached
+    // task projections must never publish individual completion events.
+    const suppressDelivery =
+      args.entry.suppressCompletionDelivery === true || args.entry.completionGroup !== undefined;
     try {
       if (status === "succeeded") {
         return completeTaskRunByRunId({
@@ -1149,7 +1153,138 @@ export function createSubagentRegistryLifecycleController(params: {
     scheduleResumeSubagentRun(runId, entry, deferredDecision.resumeDelayMs);
   };
 
-  const startSubagentAnnounceCleanupFlow = (runId: string, entry: SubagentRunRecord): boolean => {
+  const listCompletionGroupMembers = (groupId: string): SubagentRunRecord[] =>
+    [...params.runs.values()]
+      .filter((candidate) => candidate.completionGroup?.id === groupId)
+      .toSorted(
+        (left, right) =>
+          (left.completionGroup?.index ?? 0) - (right.completionGroup?.index ?? 0) ||
+          left.runId.localeCompare(right.runId),
+      );
+
+  const buildCompletionGroupSummary = (members: SubagentRunRecord[]): string => {
+    const expectedSize = members[0]?.completionGroup?.expectedSize ?? members.length;
+    const lines = members.map((member) => {
+      const index = (member.completionGroup?.index ?? 0) + 1;
+      const name = member.taskName?.trim() || member.label?.trim() || `shard-${index}`;
+      const status = member.outcome?.status ?? "unknown";
+      return `${index}. ${name}: ${status}`;
+    });
+    return [
+      `Concurrent subagent batch settled (${members.length}/${expectedSize}).`,
+      ...lines,
+      "Review and verify the batch deliverables, then send one complete user-facing summary.",
+    ].join("\n");
+  };
+
+  function startSubagentCompletionGroupCleanup(groupId: string): boolean {
+    const normalizedGroupId = groupId.trim();
+    if (!normalizedGroupId || completionGroupActivationLocks.has(normalizedGroupId)) {
+      return false;
+    }
+    const members = listCompletionGroupMembers(normalizedGroupId);
+    if (members.length === 0) {
+      return false;
+    }
+    const expectedSize = members[0]?.completionGroup?.expectedSize;
+    if (
+      typeof expectedSize !== "number" ||
+      expectedSize < 1 ||
+      members.length !== expectedSize ||
+      members.some(
+        (member) =>
+          member.completionGroup?.finalized !== true ||
+          member.completionGroup.expectedSize !== expectedSize ||
+          typeof member.endedAt !== "number" ||
+          member.pauseReason === "sessions_yield" ||
+          member.killReconciliation !== undefined,
+      )
+    ) {
+      return false;
+    }
+
+    const alreadyActivated = members.every(
+      (member) => typeof member.completionGroup?.activatedAt === "number",
+    );
+    const configuredLeaderRunId = members.find(
+      (member) => member.completionGroup?.leaderRunId === member.runId,
+    )?.runId;
+    const leaderRunId = configuredLeaderRunId ?? members[0]!.runId;
+    // Explicit cancellation is group-scoped from the requester's perspective.
+    // Preserve it even when some shards had already settled before /stop marked
+    // the remaining members, otherwise leader election would resurrect one
+    // completion and wake the parent after the user cancelled the batch.
+    const suppressGroupDelivery = members.some(
+      (member) => member.suppressCompletionDelivery === true,
+    );
+    if (!alreadyActivated) {
+      completionGroupActivationLocks.add(normalizedGroupId);
+      const snapshots = new Map(
+        members.map((member) => [member, structuredClone(member)] as const),
+      );
+      try {
+        const activatedAt = Date.now();
+        for (const member of members) {
+          member.completionGroup = {
+            ...member.completionGroup!,
+            activatedAt,
+            leaderRunId,
+          };
+          member.suppressCompletionDelivery =
+            suppressGroupDelivery || member.runId !== leaderRunId ? true : undefined;
+          member.cleanupHandled = false;
+        }
+        const leader = members.find((member) => member.runId === leaderRunId)!;
+        const completion = ensureCompletionState(leader);
+        const groupSummary = buildCompletionGroupSummary(members);
+        const representativeResult = completion.resultText?.trim();
+        completion.resultText = capFrozenResultText(
+          representativeResult
+            ? `${groupSummary}\n\nRepresentative shard result:\n${representativeResult}`
+            : groupSummary,
+        );
+        completion.capturedAt ??= activatedAt;
+        refreshPendingFinalDeliveryPayload(leader);
+        if (leader.delivery?.payload) {
+          leader.delivery.payload = {
+            ...leader.delivery.payload,
+            task: `Concurrent subagent batch (${members.length} accepted shards)`,
+            frozenResultText: completion.resultText,
+          };
+        }
+        params.persistOrThrow();
+      } catch (error) {
+        for (const [member, snapshot] of snapshots) {
+          const target = member as unknown as Record<string, unknown>;
+          for (const key of Object.keys(target)) {
+            delete target[key];
+          }
+          Object.assign(target, snapshot);
+        }
+        throw error;
+      } finally {
+        completionGroupActivationLocks.delete(normalizedGroupId);
+      }
+    }
+
+    let started = false;
+    for (const member of members) {
+      started = startSubagentAnnounceCleanupFlow(member.runId, member) || started;
+    }
+    return started;
+  }
+
+  function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecord): boolean {
+    if (entry.completionGroup && entry.completionGroup.activatedAt === undefined) {
+      return startSubagentCompletionGroupCleanup(entry.completionGroup.id);
+    }
+    if (
+      entry.completionGroup &&
+      entry.completionGroup.leaderRunId !== undefined &&
+      entry.completionGroup.leaderRunId !== runId
+    ) {
+      entry.suppressCompletionDelivery = true;
+    }
     if (entry.killReconciliation) {
       // Restores and unrelated cleanup retries must not publish a provisional
       // kill. The sweeper re-enters here after durable reconciliation.
@@ -1341,7 +1476,7 @@ export function createSubagentRegistryLifecycleController(params: {
         void finalizeAnnounceCleanup(false);
       });
     return true;
-  };
+  }
 
   type CompleteSubagentRunParams = {
     runId: string;
@@ -1850,5 +1985,6 @@ export function createSubagentRegistryLifecycleController(params: {
     finalizeResumedAnnounceGiveUp,
     refreshFrozenResultFromSession,
     startSubagentAnnounceCleanupFlow,
+    startSubagentCompletionGroupCleanup,
   };
 }

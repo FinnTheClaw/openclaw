@@ -40,7 +40,8 @@ describe("applySessionHints", () => {
       });
 
       const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
-      expect(body).toContain("previous agent run was aborted");
+      expect(body).toContain("previous run was explicitly stopped and is closed");
+      expect(body).toContain("current user message as a fresh authoritative request");
       expect(sessionStore[sessionKey]?.sessionId).toBe("hint-session");
       expect(sessionStore[sessionKey]?.modelProvider).toBe("openai");
       expect(sessionStore[sessionKey]?.abortedLastRun).toBe(false);
@@ -49,5 +50,30 @@ describe("applySessionHints", () => {
       expect(persisted?.model).toBe("gpt-5.5");
       expect(persisted?.abortedLastRun).toBe(false);
     });
+  });
+
+  it("closes a failed prior run instead of inviting stale task resumption", async () => {
+    const body = await applySessionHints({
+      baseBody: "hey",
+      abortedLastRun: false,
+      previousRunStatus: "failed",
+    });
+
+    expect(body).toContain("previous run ended without a valid final answer and is closed");
+    expect(body).toContain("Do not resume prior work");
+    expect(body).toMatch(/\n\nhey$/);
+  });
+
+  it("closes an orphaned running turn before handling a fresh message", async () => {
+    const body = await applySessionHints({
+      baseBody: "hey",
+      abortedLastRun: false,
+      previousRunStatus: "running",
+      previousRunWasOrphaned: true,
+    });
+
+    expect(body).toContain("left marked running without an active owner and is closed");
+    expect(body).toContain("Do not resume prior work");
+    expect(body).toMatch(/\n\nhey$/);
   });
 });

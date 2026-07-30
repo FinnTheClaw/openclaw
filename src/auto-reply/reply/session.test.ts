@@ -2235,6 +2235,41 @@ describe("initSessionState reset policy", () => {
     expect(persisted[sessionKey]?.runtimeMs).toBe(9_000);
   });
 
+  it("identifies persisted running state as orphaned for a newly queued turn", async () => {
+    vi.setSystemTime(new Date(2026, 0, 18, 5, 30, 0));
+    const root = await makeCaseDir("openclaw-orphaned-running-entry-");
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:signal:dm:orphaned-running";
+    const existingSessionId = "orphaned-running-session";
+    await writeSessionStoreFast(storePath, {
+      [sessionKey]: {
+        sessionId: existingSessionId,
+        updatedAt: Date.now(),
+        startedAt: Date.now() - 10_000,
+        status: "running",
+      },
+    });
+    const operation = replyRunRegistry.begin({
+      sessionKey,
+      sessionId: existingSessionId,
+      resetTriggered: false,
+    });
+
+    try {
+      const result = await initSessionState({
+        ctx: { Body: "hey", SessionKey: sessionKey },
+        cfg: { session: { store: storePath } } as OpenClawConfig,
+        commandAuthorized: true,
+      });
+
+      expect(operation.phase).toBe("queued");
+      expect(result.previousRunStatus).toBe("running");
+      expect(result.previousRunWasOrphaned).toBe(true);
+    } finally {
+      operation.complete();
+    }
+  });
+
   it.each([
     {
       name: "non-main terminal rows ignore transcript mtime",

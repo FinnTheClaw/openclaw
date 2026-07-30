@@ -187,6 +187,10 @@ export type SessionInitResult = {
   sessionEntry: SessionEntry;
   initialSessionEntry?: SessionEntry;
   previousSessionEntry?: SessionEntry;
+  /** Terminal state observed before this visible turn recovers the session row. */
+  previousRunStatus?: SessionEntry["status"];
+  /** Persisted running state with no prior active owner at admission. */
+  previousRunWasOrphaned?: boolean;
   sessionEntryHandle: ReplySessionEntryHandle;
   sessionStore: Record<string, SessionEntry>;
   sessionKey: string;
@@ -550,6 +554,7 @@ async function initSessionStateAttemptLocked(
     ctx,
   });
   const entry = initializationSnapshot.currentEntry;
+  const previousRunStatus = entry?.status;
   const archivedSessionError = resolveSessionWorkStartError(sessionKey, entry);
   if (archivedSessionError) {
     throw new Error(archivedSessionError);
@@ -644,6 +649,9 @@ async function initSessionStateAttemptLocked(
       (softResetAllowed && canReuseExistingEntry)) &&
       !terminalMainTranscriptNewerThanRegistry);
   const activeReplyOperation = replyRunRegistry.get(sessionKey);
+  const previousRunWasOrphaned =
+    previousRunStatus === "running" &&
+    (!activeReplyOperation || activeReplyOperation.phase === "queued");
   const deferImplicitRolloverForActiveRun =
     !resetTriggered &&
     !freshEntry &&
@@ -1145,6 +1153,8 @@ async function initSessionStateAttemptLocked(
       sessionEntry,
       sessionEntryHandle,
       previousSessionEntry,
+      previousRunStatus,
+      previousRunWasOrphaned,
       sessionStore,
       sessionKey,
       sessionId: sessionId ?? crypto.randomUUID(),
