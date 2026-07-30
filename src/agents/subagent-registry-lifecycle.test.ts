@@ -350,7 +350,7 @@ describe("subagent registry lifecycle hardening", () => {
         childSessionKey: `agent:main:subagent:stopped-${index + 1}`,
         taskName: `stopped-task-${index + 1}`,
         endedAt: 5_000 + index,
-        outcome: { status: index === 2 ? "cancelled" : "ok" },
+        outcome: { status: index === 2 ? "error" : "ok" },
         expectsCompletionMessage: true,
         ...(index === 2 ? { suppressCompletionDelivery: true } : {}),
         completion: {
