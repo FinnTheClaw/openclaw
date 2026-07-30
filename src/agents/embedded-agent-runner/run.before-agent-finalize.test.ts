@@ -39,6 +39,7 @@ function finalAnswerAttempt(
 
 function attemptCall(index: number): {
   prompt?: string;
+  transcriptPrompt?: string;
   suppressNextUserMessagePersistence?: boolean;
   beforeAgentFinalizeRevisionAttempts?: number;
 } {
@@ -48,6 +49,7 @@ function attemptCall(index: number): {
   }
   return call[0] as {
     prompt?: string;
+    transcriptPrompt?: string;
     suppressNextUserMessagePersistence?: boolean;
     beforeAgentFinalizeRevisionAttempts?: number;
   };
@@ -151,12 +153,15 @@ describe("runEmbeddedAgent before_agent_finalize", () => {
       provider: "openai",
       model: "gpt-5.5",
       runId: "run-before-finalize-revise",
+      transcriptPrompt: "canonical current ask",
     });
 
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(attemptCall(0).transcriptPrompt).toBe("canonical current ask");
     expect(attemptCall(1).prompt).toContain("Tighten the final wording.");
     expect(attemptCall(1).prompt).toContain("Mention the validated behavior.");
     expect(attemptCall(1).prompt).not.toContain("hello");
+    expect(attemptCall(1).transcriptPrompt).toBeUndefined();
     expect(attemptCall(1).suppressNextUserMessagePersistence).toBe(true);
   });
 

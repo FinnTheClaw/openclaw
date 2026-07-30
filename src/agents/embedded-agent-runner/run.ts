@@ -2194,8 +2194,9 @@ async function runEmbeddedAgentInternal(
             startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.workspace);
           }
 
+          const attemptPromptOverride = nextAttemptPromptOverride;
           const basePrompt =
-            nextAttemptPromptOverride ??
+            attemptPromptOverride ??
             (provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);
           nextAttemptPromptOverride = null;
           const promptAdditions = [
@@ -2359,7 +2360,11 @@ async function runEmbeddedAgentInternal(
             contextWindowInfo: ctxInfo,
             skillsSnapshot: params.skillsSnapshot,
             prompt,
-            transcriptPrompt: params.transcriptPrompt,
+            // Hidden in-run continuations must replace both prompt channels. Keeping
+            // the original transcriptPrompt here causes the attempt layer to prefer
+            // and resend the user's original request, silently discarding the
+            // continuation and replaying completed tools.
+            transcriptPrompt: attemptPromptOverride === null ? params.transcriptPrompt : undefined,
             userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
             currentInboundEventKind: params.currentInboundEventKind,
             currentInboundContext: params.currentInboundContext,

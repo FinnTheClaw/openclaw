@@ -77,6 +77,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
 
   function runAttemptCall(index: number): {
     prompt?: string;
+    transcriptPrompt?: string;
     suppressNextUserMessagePersistence?: boolean;
   } {
     // Continuation prompt assertions read the exact prompt passed to the runner
@@ -85,7 +86,11 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     if (!call) {
       throw new Error(`Expected run embedded attempt call ${index}`);
     }
-    return call[0] as { prompt?: string; suppressNextUserMessagePersistence?: boolean };
+    return call[0] as {
+      prompt?: string;
+      transcriptPrompt?: string;
+      suppressNextUserMessagePersistence?: boolean;
+    };
   }
 
   it("emits the before_agent_run hook block message as the agent payload", async () => {
@@ -1774,12 +1779,15 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       provider: "anthropic",
       model: "sonnet-4.6",
       runId: "run-tool-use-dropped-final-text",
+      transcriptPrompt: "canonical edit request",
     });
 
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(runAttemptCall(0).transcriptPrompt).toBe("canonical edit request");
     expect(runAttemptCall(1).prompt).toContain(
       "latest tool call already completed and its result is recorded",
     );
+    expect(runAttemptCall(1).transcriptPrompt).toBeUndefined();
     expect(runAttemptCall(1).suppressNextUserMessagePersistence).toBe(true);
     expect(result.payloads?.[0]?.text).toBe("The edit is complete and verified.");
     expect(result.payloads?.[0]?.isError).not.toBe(true);
