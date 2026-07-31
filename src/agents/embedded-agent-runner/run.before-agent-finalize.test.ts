@@ -165,6 +165,72 @@ describe("runEmbeddedAgent before_agent_finalize", () => {
     expect(attemptCall(1).suppressNextUserMessagePersistence).toBe(true);
   });
 
+  it("recovers a pending finalize revision instead of silently accepting sessions_yield", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        finalAnswerAttempt("I found three jobs. Let me check.", {
+          beforeAgentFinalizeRevisionReason:
+            "The answer announces unfinished work and still owes the user a verified status.",
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: [],
+          yieldDetected: true,
+          messagesSnapshot: [],
+        }),
+      )
+      .mockResolvedValueOnce(
+        finalAnswerAttempt("Three prior-test jobs were active; all are tracked."),
+      );
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-before-finalize-yield-recovery",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+    expect(attemptCall(2).prompt).toContain(
+      "attempted to end with sessions_yield before sending the required user-visible reply",
+    );
+    expect(attemptCall(2).prompt).toContain("Do not call sessions_yield");
+    expect(attemptCall(2).suppressNextUserMessagePersistence).toBe(true);
+    expect(result.meta.error).toBeUndefined();
+    expect(result.meta.livenessState).not.toBe("blocked");
+    expect(result.meta.yielded).toBeUndefined();
+  });
+
+  it("fails visibly when finalize revision recovery attempts to yield again", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        finalAnswerAttempt("Let me check.", {
+          beforeAgentFinalizeRevisionReason:
+            "The direct user request still needs a visible answer.",
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: [], yieldDetected: true }))
+      .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: [], yieldDetected: true }));
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-before-finalize-repeated-yield",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+    expect(result.payloads?.[0]).toMatchObject({ isError: true });
+    expect(result.payloads?.[0]?.text).toContain(
+      "attempted to pause repeatedly before sending the required reply",
+    );
+    expect(result.meta.replayInvalid).toBe(true);
+    expect(result.meta.livenessState).toBe("blocked");
+    expect(result.meta.yielded).toBeUndefined();
+    expect(result.meta.error?.kind).toBe("incomplete_turn");
+  });
+
   it("renews the bounded finalize budget after a distinct durable mutation", async () => {
     mockedRunEmbeddedAttempt
       .mockResolvedValueOnce(

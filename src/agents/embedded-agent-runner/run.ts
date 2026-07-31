@@ -269,6 +269,9 @@ const MID_TURN_PRECHECK_CONTINUATION_PROMPT =
 const COMPLETED_TOOL_RESULT_CONTINUATION_PROMPT =
   "The latest tool call already completed and its result is recorded in the current transcript. Continue from that result without repeating the completed tool call or replaying the original request. Inspect the recorded result, take only distinct remaining actions that are still needed, and produce a user-visible final answer when the request is complete.";
 const MAX_COMPLETED_TOOL_RESULT_CONTINUATIONS = 2;
+const READ_ONLY_TOOL_ERROR_CONTINUATION_PROMPT =
+  "The latest read-only tool call failed, and its error is recorded in the current transcript. Diagnose the concrete error and continue with one corrected or bounded alternative; do not repeat the identical failing call. Produce a user-visible answer after recovery, or explicitly report the remaining blocker if the corrected alternative also fails.";
+const MAX_READ_ONLY_TOOL_ERROR_CONTINUATIONS = 1;
 const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
   "The previous attempt compacted the conversation context before producing a final user-visible answer. Continue from the compacted transcript and produce the final answer now. Do not restart from scratch, do not repeat completed work, and do not rerun tools unless the transcript clearly lacks required evidence.";
 const NO_REAL_CONVERSATION_MESSAGES_REASON = "no real conversation messages";
@@ -278,6 +281,9 @@ const MAX_BEFORE_AGENT_FINALIZE_REVISIONS = 8;
 const MAX_BEFORE_AGENT_FINALIZE_RECOVERY_ESCALATIONS = 1;
 const BEFORE_AGENT_FINALIZE_RECOVERY_PROMPT_PREFIX =
   "The previous continuation budget was exhausted while the request was still unfinished. Recover in this same session without restarting or repeating completed work. Use the recorded tool results as authoritative state. Change strategy now: delegate a bounded independent subtask when an appropriate subagent is available, or take one distinct corrective action that advances the unresolved work. Verify the result before finalizing.";
+const MAX_BEFORE_AGENT_FINALIZE_YIELD_RECOVERIES = 1;
+const BEFORE_AGENT_FINALIZE_YIELD_RECOVERY_PROMPT_PREFIX =
+  "The previous finalize revision attempted to end with sessions_yield before sending the required user-visible reply. Do not call sessions_yield in this recovery pass. Use the recorded tool results as authoritative state and produce a concise user-visible answer now. If background work remains, report its current ownership and status without announcing another action.";
 type EmbeddedRunAttemptForRunner = Awaited<ReturnType<typeof runEmbeddedAttemptWithBackend>>;
 type RunEmbeddedAgentParamsWithSessionFile = RunEmbeddedAgentParams & { sessionFile: string };
 
@@ -526,6 +532,10 @@ function buildBeforeAgentFinalizeRetryPrompt(reason: string): string {
 
 function buildBeforeAgentFinalizeRecoveryPrompt(reason: string): string {
   return `${BEFORE_AGENT_FINALIZE_RECOVERY_PROMPT_PREFIX}\n\nOutstanding completion requirement:\n${reason}`;
+}
+
+function buildBeforeAgentFinalizeYieldRecoveryPrompt(reason: string): string {
+  return `${BEFORE_AGENT_FINALIZE_YIELD_RECOVERY_PROMPT_PREFIX}\n\nOutstanding completion requirement:\n${reason}`;
 }
 
 function resolveEmbeddedRunLaneTimeoutMs(timeoutMs: number): number {
@@ -1796,9 +1806,12 @@ async function runEmbeddedAgentInternal(
       let compactionContinuationRetryAttempts = 0;
       let completedToolResultContinuationProgressKey: string | undefined;
       let completedToolResultContinuationAttempts = 0;
+      let readOnlyToolErrorContinuationAttempts = 0;
       let beforeAgentFinalizeLastProgressKey: string | undefined;
       let beforeAgentFinalizeRevisionAttempts = 0;
       let beforeAgentFinalizeRecoveryEscalations = 0;
+      let beforeAgentFinalizePendingReason: string | undefined;
+      let beforeAgentFinalizeYieldRecoveryAttempts = 0;
       let sameModelIdleTimeoutRetries = 0;
       // Cost-runaway breaker for #76293. State lives at the run-loop level
       // on purpose so it survives across attempt boundaries and across
@@ -4060,6 +4073,41 @@ async function runEmbeddedAgentInternal(
             timedOut,
             attempt,
           });
+          const shouldRecoverReadOnlyToolError =
+            !emptyAssistantReplyIsSilent &&
+            Boolean(attempt.lastToolError) &&
+            attempt.lastToolError?.mutatingAction === false &&
+            !aborted &&
+            !promptError &&
+            !timedOut &&
+            !attempt.clientToolCalls &&
+            !attempt.yieldDetected &&
+            !attempt.didSendViaMessagingTool &&
+            !attempt.didDeliverSourceReplyViaMessageTool &&
+            !attempt.didSendDeterministicApprovalPrompt &&
+            !attempt.heartbeatToolResponse &&
+            (attempt.acceptedSessionSpawns?.length ?? 0) === 0 &&
+            attempt.replayMetadata?.hadPotentialSideEffects !== true &&
+            params.trigger !== "cron" &&
+            params.trigger !== "heartbeat" &&
+            needsCompletedToolResultContinuation({ payloadCount, attempt });
+          if (
+            shouldRecoverReadOnlyToolError &&
+            readOnlyToolErrorContinuationAttempts < MAX_READ_ONLY_TOOL_ERROR_CONTINUATIONS
+          ) {
+            readOnlyToolErrorContinuationAttempts += 1;
+            nextAttemptPromptOverride = READ_ONLY_TOOL_ERROR_CONTINUATION_PROMPT;
+            suppressNextUserMessagePersistence = true;
+            reasoningOnlyRetryInstruction = null;
+            emptyResponseRetryInstruction = null;
+            compactionContinuationRetryInstruction = null;
+            log.warn(
+              `read-only tool error interrupted the user-visible answer: ` +
+                `runId=${params.runId} sessionId=${params.sessionId} — recovering ` +
+                `${readOnlyToolErrorContinuationAttempts}/${MAX_READ_ONLY_TOOL_ERROR_CONTINUATIONS}`,
+            );
+            continue;
+          }
           const nextReasoningOnlyRetryInstruction = emptyAssistantReplyIsSilent
             ? null
             : resolveReasoningOnlyRetryInstruction({
@@ -4213,6 +4261,26 @@ async function runEmbeddedAgentInternal(
             continue;
           }
           compactionContinuationRetryInstruction = null;
+          const yieldedWithPendingFinalizeRevision =
+            attempt.yieldDetected && Boolean(beforeAgentFinalizePendingReason);
+          if (
+            yieldedWithPendingFinalizeRevision &&
+            beforeAgentFinalizeYieldRecoveryAttempts < MAX_BEFORE_AGENT_FINALIZE_YIELD_RECOVERIES
+          ) {
+            beforeAgentFinalizeYieldRecoveryAttempts += 1;
+            nextAttemptPromptOverride = buildBeforeAgentFinalizeYieldRecoveryPrompt(
+              beforeAgentFinalizePendingReason ?? "Produce the required user-visible reply.",
+            );
+            suppressNextUserMessagePersistence = true;
+            reasoningOnlyRetryInstruction = null;
+            emptyResponseRetryInstruction = null;
+            log.warn(
+              `sessions_yield attempted while a finalize revision still required a visible reply: ` +
+                `runId=${params.runId} sessionId=${params.sessionId} — recovering ` +
+                `${beforeAgentFinalizeYieldRecoveryAttempts}/${MAX_BEFORE_AGENT_FINALIZE_YIELD_RECOVERIES}`,
+            );
+            continue;
+          }
           const beforeAgentFinalizeRevisionExhaustedReason =
             attempt.beforeAgentFinalizeRevisionExhaustedReason;
           if (
@@ -4234,6 +4302,7 @@ async function runEmbeddedAgentInternal(
               beforeAgentFinalizeLastProgressKey = currentProgressKey;
               beforeAgentFinalizeRevisionAttempts = 0;
               beforeAgentFinalizeRecoveryEscalations = 0;
+              beforeAgentFinalizePendingReason = beforeAgentFinalizeRevisionExhaustedReason;
               nextAttemptPromptOverride = buildBeforeAgentFinalizeRetryPrompt(
                 beforeAgentFinalizeRevisionExhaustedReason,
               );
@@ -4250,6 +4319,7 @@ async function runEmbeddedAgentInternal(
             ) {
               beforeAgentFinalizeRecoveryEscalations += 1;
               beforeAgentFinalizeRevisionAttempts = 0;
+              beforeAgentFinalizePendingReason = beforeAgentFinalizeRevisionExhaustedReason;
               nextAttemptPromptOverride = buildBeforeAgentFinalizeRecoveryPrompt(
                 beforeAgentFinalizeRevisionExhaustedReason,
               );
@@ -4499,6 +4569,8 @@ async function runEmbeddedAgentInternal(
           }
           if (beforeAgentFinalizeRevisionReason && shouldHonorBeforeAgentFinalizeRevision) {
             beforeAgentFinalizeRevisionAttempts += 1;
+            beforeAgentFinalizePendingReason = beforeAgentFinalizeRevisionReason;
+            beforeAgentFinalizeYieldRecoveryAttempts = 0;
             nextAttemptPromptOverride = buildBeforeAgentFinalizeRetryPrompt(
               beforeAgentFinalizeRevisionReason,
             );
@@ -4518,29 +4590,45 @@ async function runEmbeddedAgentInternal(
             `embedded run done: runId=${params.runId} sessionId=${params.sessionId} durationMs=${Date.now() - started} aborted=${aborted}`,
           );
           markAuthProfileSuccessAfterRun();
-          const replayInvalid = resolveReplayInvalidForAttempt(null);
-          const livenessState = attempt.yieldDetected
-            ? "paused"
-            : resolveRunLivenessState({
-                payloadCount,
-                aborted,
-                timedOut,
-                attempt,
-                incompleteTurnText: null,
-              });
-          const stopReason = attempt.clientToolCalls
-            ? "tool_calls"
+          const finalizeRevisionYieldFailureText = yieldedWithPendingFinalizeRevision
+            ? "⚠️ Agent attempted to pause repeatedly before sending the required reply. Completed tool actions were preserved, and the turn was not accepted as success."
+            : undefined;
+          const terminalHeartbeatIncompleteTurn = Boolean(
+            attempt.heartbeatToolResponse &&
+            !finalAssistantVisibleText &&
+            attemptAssistant?.stopReason === "error",
+          );
+          const replayInvalid = finalizeRevisionYieldFailureText
+            ? true
+            : resolveReplayInvalidForAttempt(null);
+          const livenessState = finalizeRevisionYieldFailureText
+            ? "blocked"
             : attempt.yieldDetected
-              ? "end_turn"
-              : (attemptAssistant?.stopReason as string | undefined);
-          const terminalPayloads = emptyAssistantReplyIsSilent
-            ? [{ text: SILENT_REPLY_TOKEN }]
-            : payloadsForTerminalPath;
+              ? "paused"
+              : resolveRunLivenessState({
+                  payloadCount,
+                  aborted,
+                  timedOut,
+                  attempt,
+                  incompleteTurnText: null,
+                });
+          const stopReason = finalizeRevisionYieldFailureText
+            ? "error"
+            : attempt.clientToolCalls
+              ? "tool_calls"
+              : attempt.yieldDetected
+                ? "end_turn"
+                : (attemptAssistant?.stopReason as string | undefined);
+          const terminalPayloads = finalizeRevisionYieldFailureText
+            ? [{ text: finalizeRevisionYieldFailureText, isError: true }]
+            : emptyAssistantReplyIsSilent
+              ? [{ text: SILENT_REPLY_TOKEN }]
+              : payloadsForTerminalPath;
           setTerminalLifecycleMeta({
             replayInvalid,
             livenessState,
             stopReason,
-            yielded: attempt.yieldDetected === true,
+            yielded: attempt.yieldDetected === true && !finalizeRevisionYieldFailureText,
           });
           return {
             payloads: terminalPayloads?.length ? terminalPayloads : undefined,
@@ -4558,7 +4646,29 @@ async function runEmbeddedAgentInternal(
               replayInvalid,
               livenessState,
               agentHarnessResultClassification: attempt.agentHarnessResultClassification,
-              ...(attempt.yieldDetected ? { yielded: true } : {}),
+              ...(attempt.yieldDetected && !finalizeRevisionYieldFailureText
+                ? { yielded: true }
+                : {}),
+              ...(finalizeRevisionYieldFailureText
+                ? {
+                    error: {
+                      kind: "incomplete_turn" as const,
+                      message: finalizeRevisionYieldFailureText,
+                      fallbackSafe: false,
+                      terminalPresentation: false,
+                    },
+                  }
+                : {}),
+              ...(terminalHeartbeatIncompleteTurn
+                ? {
+                    error: {
+                      kind: "incomplete_turn" as const,
+                      message: "Agent couldn't generate a response.",
+                      fallbackSafe: false,
+                      terminalPresentation: false,
+                    },
+                  }
+                : {}),
               ...(emptyAssistantReplyIsSilent
                 ? { terminalReplyKind: "silent-empty" as const }
                 : {}),
