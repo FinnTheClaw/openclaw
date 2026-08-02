@@ -7,6 +7,7 @@ import { estimateToolResultReductionPotential } from "../tool-result-truncation.
 
 let PREEMPTIVE_OVERFLOW_ERROR_TEXT: typeof import("./preemptive-compaction.js").PREEMPTIVE_OVERFLOW_ERROR_TEXT;
 let estimateLlmBoundaryTokenPressure: typeof import("./preemptive-compaction.js").estimateLlmBoundaryTokenPressure;
+let estimateLlmBoundaryTokenPressureFromLatestUsage: typeof import("./preemptive-compaction.js").estimateLlmBoundaryTokenPressureFromLatestUsage;
 let buildPrePromptContextBudgetStatus: typeof import("./preemptive-compaction.js").buildPrePromptContextBudgetStatus;
 let estimateRenderedLlmBoundaryTokenPressure: typeof import("./preemptive-compaction.js").estimateRenderedLlmBoundaryTokenPressure;
 let formatPrePromptPrecheckLog: typeof import("./preemptive-compaction.js").formatPrePromptPrecheckLog;
@@ -19,6 +20,7 @@ beforeAll(async () => {
   ({
     PREEMPTIVE_OVERFLOW_ERROR_TEXT,
     estimateLlmBoundaryTokenPressure,
+    estimateLlmBoundaryTokenPressureFromLatestUsage,
     buildPrePromptContextBudgetStatus,
     estimateRenderedLlmBoundaryTokenPressure,
     formatPrePromptPrecheckLog,
@@ -71,6 +73,28 @@ function makeAssistantToolCall(args: unknown): AgentMessage {
         arguments: args,
       },
     ],
+    timestamp: timestamp++,
+  } as AgentMessage;
+}
+
+function makeAssistantUsageCheckpoint(params: {
+  input: number;
+  cacheRead: number;
+  output: number;
+  provider?: string;
+  model?: string;
+}): AgentMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: "checkpoint response" }],
+    provider: params.provider ?? "remote-llm",
+    model: params.model ?? "moira/brain",
+    usage: {
+      input: params.input,
+      cacheRead: params.cacheRead,
+      output: params.output,
+      totalTokens: params.input + params.cacheRead + params.output,
+    },
     timestamp: timestamp++,
   } as AgentMessage;
 }
@@ -250,6 +274,75 @@ describe("preemptive-compaction", () => {
     expect(result.estimatedPromptTokens).toBe(estimatedPromptTokens);
     expect(result.route).toBe("compact_only");
     expect(result.shouldCompact).toBe(true);
+  });
+
+  it("uses a matching provider usage checkpoint instead of re-tokenizing old tool history", () => {
+    const systemPrompt = "stable system prompt ".repeat(1_000);
+    const messages = [
+      makeToolResultMessage("historical tool output ".repeat(30_000)),
+      makeAssistantUsageCheckpoint({ input: 2_000, cacheRead: 110_000, output: 800 }),
+    ];
+    const transcriptEstimate = estimateLlmBoundaryTokenPressure({
+      messages,
+      systemPrompt,
+      prompt: "continue",
+    });
+    const checkpoint = estimateLlmBoundaryTokenPressureFromLatestUsage({
+      messages,
+      systemPrompt,
+      prompt: "continue",
+      provider: "remote-llm",
+      modelId: "moira/brain",
+    });
+
+    expect(transcriptEstimate).toBeGreaterThan(200_000);
+    expect(checkpoint?.estimatedPromptTokens).toBeGreaterThan(112_000);
+    expect(checkpoint?.estimatedPromptTokens).toBeLessThan(150_000);
+    const result = shouldPreemptivelyCompactBeforePrompt({
+      messages,
+      systemPrompt,
+      prompt: "continue",
+      contextTokenBudget: 250_000,
+      reserveTokens: 50_000,
+      llmBoundaryTokenPressure: checkpoint,
+    });
+    expect(result.pressureSource).toBe("provider_usage_checkpoint");
+    expect(result.route).toBe("fits");
+  });
+
+  it("still counts large tool results created after a provider usage checkpoint", () => {
+    const messages = [
+      makeAssistantUsageCheckpoint({ input: 2_000, cacheRead: 110_000, output: 800 }),
+      makeToolResultMessage("new uncached tool output ".repeat(20_000)),
+    ];
+    const checkpoint = estimateLlmBoundaryTokenPressureFromLatestUsage({
+      messages,
+      systemPrompt: "sys",
+      prompt: "continue",
+      provider: "remote-llm",
+      modelId: "moira/brain",
+    });
+
+    expect(checkpoint?.estimatedPromptTokens).toBeGreaterThan(200_000);
+  });
+
+  it("does not reuse provider usage from a different model route", () => {
+    const checkpoint = estimateLlmBoundaryTokenPressureFromLatestUsage({
+      messages: [
+        makeAssistantUsageCheckpoint({
+          input: 2_000,
+          cacheRead: 110_000,
+          output: 800,
+          model: "moira/coding",
+        }),
+      ],
+      systemPrompt: "sys",
+      prompt: "continue",
+      provider: "remote-llm",
+      modelId: "moira/brain",
+    });
+
+    expect(checkpoint).toBeUndefined();
   });
 
   it("counts array/object tool-result payloads at the LLM boundary", () => {

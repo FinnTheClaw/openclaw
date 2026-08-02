@@ -557,6 +557,48 @@ type MemoryFlushAppendOnlyWriteOptions = {
   };
 };
 
+const MAX_MEMORY_FLUSH_APPEND_BYTES = 64 * 1024;
+
+function normalizeMemoryFlushAppend(params: {
+  existing: string;
+  requested: string;
+}): { content: string; normalizedFromSnapshot: boolean; noOp: boolean } {
+  let content = params.requested.trim();
+  if (!content) {
+    return { content: "", normalizedFromSnapshot: false, noOp: true };
+  }
+  if (Buffer.byteLength(content, "utf8") > MAX_MEMORY_FLUSH_APPEND_BYTES) {
+    throw new Error(
+      `Memory flush append exceeds ${MAX_MEMORY_FLUSH_APPEND_BYTES} bytes; write only concise novel durable facts.`,
+    );
+  }
+
+  const existing = params.existing.trimEnd();
+  let normalizedFromSnapshot = false;
+  if (existing && content.startsWith(existing)) {
+    content = content.slice(existing.length).trim();
+    normalizedFromSnapshot = true;
+  }
+  if (!content) {
+    return { content: "", normalizedFromSnapshot, noOp: true };
+  }
+  if (existing && /^#\s+\d{4}-\d{2}-\d{2}\b/u.test(content)) {
+    throw new Error(
+      "Memory flush append tried to restart the existing daily document; provide only new sections or bullets.",
+    );
+  }
+  if (existing.includes(content)) {
+    return { content: "", normalizedFromSnapshot, noOp: true };
+  }
+  // Keep appended Markdown sections visually separated without depending on
+  // whether the existing daily file currently ends in a newline. The host and
+  // sandbox append paths both preserve an explicit leading newline.
+  if (existing && !content.startsWith("\n")) {
+    content = `\n${content}`;
+  }
+  return { content, normalizedFromSnapshot, noOp: false };
+}
+
 async function readOptionalUtf8File(params: {
   absolutePath: string;
   relativePath: string;
@@ -596,25 +638,35 @@ async function appendMemoryFlushContent(params: {
   content: string;
   sandbox?: MemoryFlushAppendOnlyWriteOptions["sandbox"];
   signal?: AbortSignal;
-}) {
-  if (!params.sandbox) {
-    const root = await fsRoot(params.root);
-    await root.append(params.relativePath, params.content, {
-      mkdir: true,
-      prependNewlineIfNeeded: true,
-    });
-    return;
-  }
-
+}): Promise<{ bytesAppended: number; normalizedFromSnapshot: boolean; noOp: boolean }> {
   const existing = await readOptionalUtf8File({
     absolutePath: params.absolutePath,
     relativePath: params.relativePath,
     sandbox: params.sandbox,
     signal: params.signal,
   });
+  const normalized = normalizeMemoryFlushAppend({ existing, requested: params.content });
+  if (normalized.noOp) {
+    return { bytesAppended: 0, normalizedFromSnapshot: normalized.normalizedFromSnapshot, noOp: true };
+  }
+  if (!params.sandbox) {
+    const root = await fsRoot(params.root);
+    await root.append(params.relativePath, normalized.content, {
+      mkdir: true,
+      prependNewlineIfNeeded: true,
+    });
+    return {
+      bytesAppended: Buffer.byteLength(normalized.content, "utf8"),
+      normalizedFromSnapshot: normalized.normalizedFromSnapshot,
+      noOp: false,
+    };
+  }
+
   const separator =
-    existing.length > 0 && !existing.endsWith("\n") && !params.content.startsWith("\n") ? "\n" : "";
-  const next = `${existing}${separator}${params.content}`;
+    existing.length > 0 && !existing.endsWith("\n") && !normalized.content.startsWith("\n")
+      ? "\n"
+      : "";
+  const next = `${existing}${separator}${normalized.content}`;
   if (params.sandbox) {
     const parent = path.posix.dirname(params.relativePath);
     if (parent && parent !== ".") {
@@ -631,10 +683,19 @@ async function appendMemoryFlushContent(params: {
       mkdir: true,
       signal: params.signal,
     });
-    return;
+    return {
+      bytesAppended: Buffer.byteLength(normalized.content, "utf8"),
+      normalizedFromSnapshot: normalized.normalizedFromSnapshot,
+      noOp: false,
+    };
   }
   await fs.mkdir(path.dirname(params.absolutePath), { recursive: true });
   await fs.writeFile(params.absolutePath, next, "utf-8");
+  return {
+    bytesAppended: Buffer.byteLength(normalized.content, "utf8"),
+    normalizedFromSnapshot: normalized.normalizedFromSnapshot,
+    noOp: false,
+  };
 }
 
 /** Restrict a write tool to appending memory-flush content to one path. */
@@ -672,7 +733,7 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
         );
       }
 
-      await appendMemoryFlushContent({
+      const appendResult = await appendMemoryFlushContent({
         absolutePath: allowedAbsolutePath,
         root: options.root,
         relativePath: options.relativePath,
@@ -685,6 +746,7 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
         details: {
           path: options.relativePath,
           appendOnly: true,
+          ...appendResult,
         },
       };
     },

@@ -516,6 +516,7 @@ import {
   PREEMPTIVE_OVERFLOW_ERROR_TEXT,
   buildPrePromptContextBudgetStatus,
   estimateLlmBoundaryTokenPressure,
+  estimateLlmBoundaryTokenPressureFromLatestUsage,
   estimateRenderedLlmBoundaryTokenPressure,
   formatPrePromptPrecheckLog,
   shouldPreemptivelyCompactBeforePrompt,
@@ -4851,10 +4852,17 @@ export async function runEmbeddedAttempt(
                   llmBoundaryOptionsForPrecheck,
                 )
               : undefined;
-          const llmBoundaryTokenPressure = estimateLlmBoundaryTokenPressure({
+          const transcriptLlmBoundaryTokenPressure = estimateLlmBoundaryTokenPressure({
             messages: hookMessagesForCurrentPrompt,
             systemPrompt: systemPromptForHook,
             prompt: llmBoundaryPromptForPrecheck,
+          });
+          const providerUsageTokenPressure = estimateLlmBoundaryTokenPressureFromLatestUsage({
+            messages: hookMessagesForCurrentPrompt,
+            systemPrompt: systemPromptForHook,
+            prompt: llmBoundaryPromptForPrecheck,
+            provider: params.provider,
+            modelId: params.modelId,
           });
           let preemptiveCompaction = null;
           const shouldSkipPrecheck =
@@ -4880,8 +4888,8 @@ export async function runEmbeddedAttempt(
               contextTokenBudget,
               reserveTokens,
               toolResultMaxChars: promptToolResultMaxChars,
-              llmBoundaryTokenPressure: {
-                estimatedPromptTokens: llmBoundaryTokenPressure,
+              llmBoundaryTokenPressure: providerUsageTokenPressure ?? {
+                estimatedPromptTokens: transcriptLlmBoundaryTokenPressure,
                 source: "llm_boundary_normalized_prompt",
                 renderedChars: llmBoundaryPromptForPrecheck.length,
               },

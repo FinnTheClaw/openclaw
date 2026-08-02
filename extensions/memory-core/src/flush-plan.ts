@@ -16,11 +16,17 @@ const MEMORY_FLUSH_TARGET_HINT =
   "Store durable memories only in memory/YYYY-MM-DD.md (create memory/ if needed).";
 const MEMORY_FLUSH_APPEND_ONLY_HINT =
   "If memory/YYYY-MM-DD.md already exists, APPEND new content only and do not overwrite existing entries.";
+const MEMORY_FLUSH_NOVEL_DELTA_HINT =
+  "Read the target first, then pass only novel durable sections or bullets to the write tool; never copy existing file content into the write payload.";
+const MEMORY_FLUSH_DURABILITY_HINT =
+  "Prioritize durable user preferences, confirmed environment/access changes, decisions, verified failures and fixes, and unresolved owned work; omit transient tool output and unverified model guesses.";
 const MEMORY_FLUSH_READ_ONLY_HINT =
   "Treat workspace bootstrap/reference files such as MEMORY.md, DREAMS.md, SOUL.md, TOOLS.md, and AGENTS.md as read-only during this flush; never overwrite, replace, or edit them.";
 const MEMORY_FLUSH_REQUIRED_HINTS = [
   MEMORY_FLUSH_TARGET_HINT,
   MEMORY_FLUSH_APPEND_ONLY_HINT,
+  MEMORY_FLUSH_NOVEL_DELTA_HINT,
+  MEMORY_FLUSH_DURABILITY_HINT,
   MEMORY_FLUSH_READ_ONLY_HINT,
 ];
 
@@ -29,6 +35,8 @@ export const DEFAULT_MEMORY_FLUSH_PROMPT = [
   MEMORY_FLUSH_TARGET_HINT,
   MEMORY_FLUSH_READ_ONLY_HINT,
   MEMORY_FLUSH_APPEND_ONLY_HINT,
+  MEMORY_FLUSH_NOVEL_DELTA_HINT,
+  MEMORY_FLUSH_DURABILITY_HINT,
   "Do NOT create timestamped variant files (e.g., YYYY-MM-DD-HHMM.md); always use the canonical YYYY-MM-DD.md filename.",
   `If nothing to store, reply with ${SILENT_REPLY_TOKEN}.`,
 ].join(" ");
@@ -39,6 +47,8 @@ const DEFAULT_MEMORY_FLUSH_SYSTEM_PROMPT = [
   MEMORY_FLUSH_TARGET_HINT,
   MEMORY_FLUSH_READ_ONLY_HINT,
   MEMORY_FLUSH_APPEND_ONLY_HINT,
+  MEMORY_FLUSH_NOVEL_DELTA_HINT,
+  MEMORY_FLUSH_DURABILITY_HINT,
   `You may reply, but usually ${SILENT_REPLY_TOKEN} is correct.`,
 ].join(" ");
 

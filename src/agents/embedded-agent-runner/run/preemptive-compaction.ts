@@ -11,6 +11,11 @@ import {
 import { SAFETY_MARGIN } from "../../compaction.js";
 import type { AgentMessage, BashExecutionMessage } from "../../runtime/index.js";
 import {
+  deriveContextPromptTokens,
+  normalizeUsage,
+  type UsageLike,
+} from "../../usage.js";
+import {
   BRANCH_SUMMARY_PREFIX,
   BRANCH_SUMMARY_SUFFIX,
   bashExecutionToText,
@@ -30,6 +35,7 @@ const MESSAGE_BOUNDARY_OVERHEAD_TOKENS = 12;
 const CONTENT_BLOCK_OVERHEAD_TOKENS = 6;
 const IMAGE_BLOCK_TOKENS = 2_000;
 const TRUNCATION_ROUTE_BUFFER_TOKENS = 512;
+const PROVIDER_USAGE_CHECKPOINT_BUFFER_TOKENS = 512;
 
 /** Pre-prompt routing decision plus the budget facts used to explain it in logs and session state. */
 export type PreemptiveCompactionDecision = {
@@ -271,6 +277,77 @@ export function estimateLlmBoundaryTokenPressure(params: {
   const promptTokens =
     MESSAGE_BOUNDARY_OVERHEAD_TOKENS + estimateStringTokenPressure(params.prompt);
   return Math.max(0, Math.ceil((historyTokens + systemTokens + promptTokens) * SAFETY_MARGIN));
+}
+
+/**
+ * Calibrates pre-prompt pressure from the latest provider-tokenized assistant
+ * message that is still present in the active transcript.
+ *
+ * Provider usage is authoritative for everything before that assistant
+ * response. Only the response itself, later messages, and the new prompt are
+ * estimated locally. The current system prompt is deliberately counted again
+ * as change/headroom protection because the prior usage snapshot does not carry
+ * a system-prompt fingerprint.
+ */
+export function estimateLlmBoundaryTokenPressureFromLatestUsage(params: {
+  messages: AgentMessage[];
+  systemPrompt?: string;
+  prompt: string;
+  provider?: string;
+  modelId?: string;
+}): LlmBoundaryTokenPressure | undefined {
+  for (let index = params.messages.length - 1; index >= 0; index -= 1) {
+    const message = params.messages[index];
+    const record = message as unknown as Record<string, unknown>;
+    if (record.role !== "assistant") {
+      continue;
+    }
+    if (params.provider && record.provider !== params.provider) {
+      continue;
+    }
+    if (params.modelId && record.model !== params.modelId) {
+      continue;
+    }
+
+    const usage = normalizeUsage(record.usage as UsageLike | undefined);
+    const providerPromptTokens = deriveContextPromptTokens({ lastCallUsage: usage });
+    if (
+      typeof providerPromptTokens !== "number" ||
+      !Number.isFinite(providerPromptTokens) ||
+      providerPromptTokens <= 0
+    ) {
+      continue;
+    }
+
+    const assistantResponseTokens =
+      typeof usage?.output === "number" && Number.isFinite(usage.output)
+        ? Math.max(0, usage.output) + MESSAGE_BOUNDARY_OVERHEAD_TOKENS
+        : estimateMessageTokenPressure(message);
+    const tailTokens = params.messages
+      .slice(index + 1)
+      .reduce((sum, tailMessage) => sum + estimateMessageTokenPressure(tailMessage), 0);
+    const currentPromptTokens =
+      MESSAGE_BOUNDARY_OVERHEAD_TOKENS + estimateStringTokenPressure(params.prompt);
+    const systemRevalidationTokens =
+      typeof params.systemPrompt === "string" && params.systemPrompt.trim().length > 0
+        ? MESSAGE_BOUNDARY_OVERHEAD_TOKENS + estimateStringTokenPressure(params.systemPrompt)
+        : 0;
+    const incrementalTokens =
+      assistantResponseTokens + tailTokens + currentPromptTokens + systemRevalidationTokens;
+    return {
+      estimatedPromptTokens: Math.max(
+        0,
+        Math.ceil(
+          providerPromptTokens +
+            incrementalTokens * SAFETY_MARGIN +
+            PROVIDER_USAGE_CHECKPOINT_BUFFER_TOKENS,
+        ),
+      ),
+      source: "provider_usage_checkpoint",
+      renderedChars: params.prompt.length,
+    };
+  }
+  return undefined;
 }
 
 /** Estimates only the rendered prompt/system portion when history has already been accounted for. */

@@ -1625,6 +1625,70 @@ describe("createOpenClawCodingTools", () => {
     }
   });
 
+  it("strips an accidental full-memory snapshot before appending only the novel suffix", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-snapshot-"));
+    const memoryRelativePath = "memory/2026-08-02.md";
+    const memoryFile = path.join(workspaceDir, memoryRelativePath);
+    const existing = "# 2026-08-02\n\n## Existing\n\n- already durable\n";
+
+    try {
+      await fs.mkdir(path.dirname(memoryFile), { recursive: true });
+      await fs.writeFile(memoryFile, existing, "utf8");
+      const tools = createOpenClawCodingTools({
+        workspaceDir,
+        trigger: "memory",
+        memoryFlushWritePath: memoryRelativePath,
+      });
+      const result = await requireToolExecute(requireTool(tools, "write"))(
+        "tool-memory-flush-snapshot",
+        {
+          path: memoryRelativePath,
+          content: `${existing}\n## Novel\n\n- newly durable`,
+        },
+      );
+
+      await expect(fs.readFile(memoryFile, "utf8")).resolves.toBe(
+        `${existing}\n## Novel\n\n- newly durable`,
+      );
+      expect(result?.details).toMatchObject({
+        appendOnly: true,
+        normalizedFromSnapshot: true,
+        noOp: false,
+      });
+    } finally {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an already-persisted memory delta as a verified no-op", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-noop-"));
+    const memoryRelativePath = "memory/2026-08-02.md";
+    const memoryFile = path.join(workspaceDir, memoryRelativePath);
+    const existing = "# 2026-08-02\n\n## Existing\n\n- already durable\n";
+
+    try {
+      await fs.mkdir(path.dirname(memoryFile), { recursive: true });
+      await fs.writeFile(memoryFile, existing, "utf8");
+      const tools = createOpenClawCodingTools({
+        workspaceDir,
+        trigger: "memory",
+        memoryFlushWritePath: memoryRelativePath,
+      });
+      const result = await requireToolExecute(requireTool(tools, "write"))(
+        "tool-memory-flush-noop",
+        {
+          path: memoryRelativePath,
+          content: "## Existing\n\n- already durable",
+        },
+      );
+
+      await expect(fs.readFile(memoryFile, "utf8")).resolves.toBe(existing);
+      expect(result?.details).toMatchObject({ appendOnly: true, bytesAppended: 0, noOp: true });
+    } finally {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects legacy alias parameters", async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-legacy-alias-"));
     try {

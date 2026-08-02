@@ -256,6 +256,9 @@ describe("buildMemoryFlushPlan", () => {
   it("keeps overwrite guards in the default prompt", () => {
     expect(DEFAULT_MEMORY_FLUSH_PROMPT).toMatch(/APPEND/i);
     expect(DEFAULT_MEMORY_FLUSH_PROMPT).toContain("do not overwrite");
+    expect(DEFAULT_MEMORY_FLUSH_PROMPT).toContain("only novel durable sections or bullets");
+    expect(DEFAULT_MEMORY_FLUSH_PROMPT).toContain("never copy existing file content");
+    expect(DEFAULT_MEMORY_FLUSH_PROMPT).toContain("unresolved owned work");
     expect(DEFAULT_MEMORY_FLUSH_PROMPT).toContain("timestamped variant");
     expect(DEFAULT_MEMORY_FLUSH_PROMPT).toContain("YYYY-MM-DD.md");
   });

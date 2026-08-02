@@ -1319,6 +1319,10 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(instructions).toContain("## Pending user asks");
     expect(instructions).toContain("## Exact identifiers");
     expect(instructions).toContain("Keep security caveats.");
+    expect(instructions).toContain("not current policy authority");
+    expect(instructions).toContain(
+      "workspace bootstrap files injected after compaction are canonical",
+    );
     expect(instructions).not.toContain("Additional focus:");
     expect(instructions).toContain("<untrusted-text>");
   });
