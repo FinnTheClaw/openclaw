@@ -775,7 +775,7 @@ describe("stuck session diagnostics threshold", () => {
     );
   });
 
-  it("recovers stale model calls through the active embedded-run abort path", async () => {
+  it("does not abort an actively owned model call at the generic stuck threshold", async () => {
     const events: DiagnosticEventPayload[] = [];
     const recoverStuckSession = vi.fn();
     const stuckSessionWarnMs = 30_000;
@@ -812,23 +812,17 @@ describe("stuck session diagnostics threshold", () => {
       unsubscribe();
     }
 
+    expect(events.some((event) => event.type === "session.stalled")).toBe(false);
     expectRecordFields(
-      requireRecord(
-        events.findLast((event) => event.type === "session.stalled"),
-        "stalled event",
-      ),
+      requireRecord(events.findLast((event) => event.type === "session.long_running"), "event"),
       {
-        classification: "stalled_agent_run",
-        reason: "active_work_without_progress",
+        classification: "long_running",
+        reason: "active_model_call_without_progress",
         activeWorkKind: "model_call",
         lastProgressReason: "model_call:started",
       },
     );
-    expectRecoveryCall(
-      recoverStuckSession,
-      { sessionId: "s1", sessionKey: "main", queueDepth: 0, allowActiveAbort: true },
-      ["ageMs", "stateGeneration"],
-    );
+    expect(recoverStuckSession).not.toHaveBeenCalled();
   });
 
   it("reports silent model calls as long-running before the abort threshold", async () => {
@@ -935,7 +929,7 @@ describe("stuck session diagnostics threshold", () => {
     expect(recoverStuckSession).not.toHaveBeenCalled();
   });
 
-  it("actively aborts silent local model calls after the stuck timeout", async () => {
+  it("leaves silent local model calls to the provider timeout", async () => {
     const events: DiagnosticEventPayload[] = [];
     const recoverStuckSession = vi.fn();
     const stuckSessionWarnMs = 30_000;
@@ -969,23 +963,17 @@ describe("stuck session diagnostics threshold", () => {
       unsubscribe();
     }
 
+    expect(events.some((event) => event.type === "session.stalled")).toBe(false);
     expectRecordFields(
-      requireRecord(
-        events.findLast((event) => event.type === "session.stalled"),
-        "stalled event",
-      ),
+      requireRecord(events.findLast((event) => event.type === "session.long_running"), "event"),
       {
-        classification: "stalled_agent_run",
-        reason: "active_work_without_progress",
+        classification: "long_running",
+        reason: "active_model_call_without_progress",
         activeWorkKind: "model_call",
         lastProgressReason: "model_call:started",
       },
     );
-    expectRecoveryCall(
-      recoverStuckSession,
-      { sessionId: "s1", sessionKey: "main", queueDepth: 0, allowActiveAbort: true },
-      ["ageMs", "stateGeneration"],
-    );
+    expect(recoverStuckSession).not.toHaveBeenCalled();
   });
 
   it("recovers stale model calls without active embedded-run ownership", async () => {

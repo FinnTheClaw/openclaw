@@ -89,7 +89,7 @@ describe("classifySessionAttention", () => {
       },
     },
     {
-      name: "active model call without progress after abort threshold",
+      name: "active model call stays long-running after the generic abort threshold",
       queueDepth: 0,
       activity: {
         activeWorkKind: "model_call" as const,
@@ -97,8 +97,25 @@ describe("classifySessionAttention", () => {
         lastProgressAgeMs: 60_000,
       },
       expected: {
+        eventType: "session.long_running",
+        reason: "active_model_call_without_progress",
+        classification: "long_running",
+        activeWorkKind: "model_call",
+        recoveryEligible: false,
+      },
+    },
+    {
+      name: "idle queued work behind a stale model owner remains recoverable",
+      state: "idle" as const,
+      queueDepth: 1,
+      activity: {
+        activeWorkKind: "model_call" as const,
+        hasActiveEmbeddedRun: true,
+        lastProgressAgeMs: 60_000,
+      },
+      expected: {
         eventType: "session.stalled",
-        reason: "active_work_without_progress",
+        reason: "queued_work_behind_stale_model_call",
         classification: "stalled_agent_run",
         activeWorkKind: "model_call",
         recoveryEligible: false,

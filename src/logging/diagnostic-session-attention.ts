@@ -83,18 +83,30 @@ export function classifySessionAttention(params: {
       params.activity.hasActiveEmbeddedRun === true &&
       lastProgressAgeMs > params.staleMs
     ) {
+      // An idle session with queued work cannot make forward progress while a
+      // stale embedded owner still holds the model call. Unlike a processing
+      // request, this is a recoverable ownership contradiction.
       if (
+        params.state === "idle" &&
+        params.queueDepth > 0 &&
         typeof params.stuckSessionAbortMs === "number" &&
         lastProgressAgeMs >= params.stuckSessionAbortMs
       ) {
         return {
           eventType: "session.stalled",
-          reason: "active_work_without_progress",
+          reason: "queued_work_behind_stale_model_call",
           classification: "stalled_agent_run",
           activeWorkKind: params.activity.activeWorkKind,
           recoveryEligible: false,
         };
       }
+      // A model request can remain silent while it is admitted, queued, or
+      // reasoning before its first parsed output chunk. The diagnostic poller
+      // cannot distinguish that healthy state from a dead provider request,
+      // so it must never abort an actively owned model call based only on
+      // semantic-output inactivity. The provider/request timeout remains the
+      // authoritative cancellation boundary. Orphaned model markers are still
+      // recoverable through the idle queued-work path above.
       return {
         eventType: "session.long_running",
         reason: "active_model_call_without_progress",

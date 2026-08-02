@@ -535,9 +535,10 @@ function isStalledModelCallRecoveryEligible(params: {
   stuckSessionAbortMs: number;
 }): boolean {
   const lastProgressAgeMs = params.activity?.lastProgressAgeMs;
-  // Local providers are not blanket-exempt from recovery. Streaming model
-  // chunks refresh run activity while emitted progress events are throttled, so
-  // active streams stay fresh and silent/non-streaming calls can be recovered.
+  // Processing model calls with a live embedded owner are always classified as
+  // long-running and never reach this path. A stalled model classification is
+  // therefore limited to an orphaned marker or an idle lane whose stale owner
+  // blocks queued work, both of which are safe to recover.
   return (
     params.classification?.eventType === "session.stalled" &&
     params.classification.classification === "stalled_agent_run" &&
