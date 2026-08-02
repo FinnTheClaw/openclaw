@@ -4261,8 +4261,22 @@ async function runEmbeddedAgentInternal(
             continue;
           }
           compactionContinuationRetryInstruction = null;
+          const yieldedAfterAcceptedSubagentHandoff = Boolean(
+            attempt.yieldDetected && (attempt.acceptedSessionSpawns?.length ?? 0) > 0,
+          );
           const yieldedWithPendingFinalizeRevision =
-            attempt.yieldDetected && Boolean(beforeAgentFinalizePendingReason);
+            attempt.yieldDetected &&
+            Boolean(beforeAgentFinalizePendingReason) &&
+            !yieldedAfterAcceptedSubagentHandoff;
+          if (yieldedAfterAcceptedSubagentHandoff && beforeAgentFinalizePendingReason) {
+            log.info(
+              `sessions_yield accepted after finalize revision handed off to ` +
+                `${attempt.acceptedSessionSpawns?.length ?? 0} child session(s): ` +
+                `runId=${params.runId} sessionId=${params.sessionId}`,
+            );
+            beforeAgentFinalizePendingReason = undefined;
+            beforeAgentFinalizeYieldRecoveryAttempts = 0;
+          }
           if (
             yieldedWithPendingFinalizeRevision &&
             beforeAgentFinalizeYieldRecoveryAttempts < MAX_BEFORE_AGENT_FINALIZE_YIELD_RECOVERIES

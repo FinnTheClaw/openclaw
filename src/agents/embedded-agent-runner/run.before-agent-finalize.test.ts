@@ -202,6 +202,41 @@ describe("runEmbeddedAgent before_agent_finalize", () => {
     expect(result.meta.yielded).toBeUndefined();
   });
 
+  it("accepts sessions_yield after a finalize revision successfully hands work to a child", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        finalAnswerAttempt("I should delegate the requested trace.", {
+          beforeAgentFinalizeRevisionReason:
+            "The requested delegated trace has not been started yet.",
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["The trace is delegated; waiting for its result."],
+          yieldDetected: true,
+          acceptedSessionSpawns: [
+            {
+              runId: "child-run-1",
+              childSessionKey: "agent:test:subagent:child-1",
+            },
+          ],
+          messagesSnapshot: [],
+        }),
+      );
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "openai",
+      model: "gpt-5.5",
+      runId: "run-before-finalize-valid-yield-handoff",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(result.meta.error).toBeUndefined();
+    expect(result.meta.yielded).toBe(true);
+    expect(result.meta.livenessState).toBe("paused");
+  });
+
   it("fails visibly when finalize revision recovery attempts to yield again", async () => {
     mockedRunEmbeddedAttempt
       .mockResolvedValueOnce(
