@@ -96,6 +96,7 @@ async function sendSignalOutbound(params: {
   to: string;
   text: string;
   mediaUrl?: string;
+  mediaAccess?: Parameters<SignalSendFn>[2]["mediaAccess"];
   mediaLocalRoots?: readonly string[];
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
   accountId?: string;
@@ -106,6 +107,7 @@ async function sendSignalOutbound(params: {
   return await send(to, params.text, {
     cfg: params.cfg,
     ...(params.mediaUrl ? { mediaUrl: params.mediaUrl } : {}),
+    ...(params.mediaAccess ? { mediaAccess: params.mediaAccess } : {}),
     ...(params.mediaLocalRoots?.length ? { mediaLocalRoots: params.mediaLocalRoots } : {}),
     ...(params.mediaReadFile ? { mediaReadFile: params.mediaReadFile } : {}),
     maxBytes,
@@ -154,6 +156,7 @@ const signalMessageAdapter = defineChannelMessageAdapter({
         to: ctx.to,
         text: ctx.text,
         mediaUrl: ctx.mediaUrl,
+        mediaAccess: ctx.mediaAccess,
         mediaLocalRoots: ctx.mediaLocalRoots,
         mediaReadFile: ctx.mediaReadFile,
         accountId: ctx.accountId ?? undefined,
@@ -282,6 +285,7 @@ async function sendFormattedSignalMedia(ctx: {
   to: string;
   text: string;
   mediaUrl: string;
+  mediaAccess?: Parameters<SignalSendFn>[2]["mediaAccess"];
   mediaLocalRoots?: readonly string[];
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
   accountId?: string | null;
@@ -313,6 +317,7 @@ async function sendFormattedSignalMedia(ctx: {
   const result = await send(to, formatted.text, {
     cfg: ctx.cfg,
     mediaUrl: ctx.mediaUrl,
+    ...(ctx.mediaAccess ? { mediaAccess: ctx.mediaAccess } : {}),
     mediaLocalRoots: ctx.mediaLocalRoots,
     ...(ctx.mediaReadFile ? { mediaReadFile: ctx.mediaReadFile } : {}),
     maxBytes,
@@ -598,6 +603,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
           to,
           text,
           mediaUrl,
+          mediaAccess,
           mediaLocalRoots,
           mediaReadFile,
           accountId,
@@ -609,6 +615,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
             to,
             text,
             mediaUrl,
+            mediaAccess,
             mediaLocalRoots,
             mediaReadFile,
             accountId,
@@ -631,6 +638,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
           to,
           text,
           mediaUrl,
+          mediaAccess,
           mediaLocalRoots,
           mediaReadFile,
           accountId,
@@ -641,6 +649,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
             to,
             text,
             mediaUrl,
+            mediaAccess,
             mediaLocalRoots,
             mediaReadFile,
             accountId: accountId ?? undefined,
