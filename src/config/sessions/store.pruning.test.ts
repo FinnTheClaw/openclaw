@@ -70,8 +70,14 @@ describe("pruneStaleEntries", () => {
       ["agent:main:slack:channel:C123:thread:1710000000.000100", makeEntry(now - 31 * DAY_MS)],
       ["agent:main:telegram:group:-100123:topic:77", makeEntry(now - 31 * DAY_MS)],
       ["agent:main:slack:channel:C999", makeEntry(now - 31 * DAY_MS)],
+      ["agent:main:signal:direct:+15551234567", makeEntry(now - 31 * DAY_MS)],
+      ["agent:main:whatsapp:dm:+15557654321", makeEntry(now - 31 * DAY_MS)],
       ["agent:main:telegram:group:-100123", { ...makeEntry(now - 31 * DAY_MS), chatType: "group" }],
       ["agent:main:discord:channel:ops", { ...makeEntry(now - 31 * DAY_MS), chatType: "channel" }],
+      [
+        "agent:main:main",
+        { ...makeEntry(now - 31 * DAY_MS), chatType: "direct", channel: "signal" },
+      ],
     ]);
 
     const pruned = pruneStaleEntries(store, 30 * DAY_MS);
@@ -81,8 +87,11 @@ describe("pruneStaleEntries", () => {
     expect(store).toHaveProperty("agent:main:slack:channel:C123:thread:1710000000.000100");
     expect(store).toHaveProperty("agent:main:telegram:group:-100123:topic:77");
     expect(store).toHaveProperty("agent:main:slack:channel:C999");
+    expect(store).toHaveProperty("agent:main:signal:direct:+15551234567");
+    expect(store).toHaveProperty("agent:main:whatsapp:dm:+15557654321");
     expect(store).toHaveProperty("agent:main:telegram:group:-100123");
     expect(store).toHaveProperty("agent:main:discord:channel:ops");
+    expect(store).toHaveProperty("agent:main:main");
   });
 });
 
@@ -526,6 +535,13 @@ describe("isProtectedSessionMaintenanceEntry", () => {
         origin: { chatType: "group" },
       }),
     ).toBe(false);
+    expect(
+      isProtectedSessionMaintenanceEntry("agent:main:subagent:signal-child", {
+        ...makeEntry(Date.now()),
+        chatType: "direct",
+        channel: "signal",
+      }),
+    ).toBe(false);
   });
 
   it("protects metadata-less Telegram topic keys without treating every :topic: id as a thread", () => {
@@ -559,6 +575,34 @@ describe("isProtectedSessionMaintenanceEntry", () => {
         chatType: "channel",
       }),
     ).toBe(true);
+  });
+
+  it("protects direct communication-channel sessions without protecting anonymous direct work", () => {
+    expect(
+      isProtectedSessionMaintenanceEntry(
+        "agent:main:signal:direct:+15551234567",
+        makeEntry(Date.now()),
+      ),
+    ).toBe(true);
+    expect(
+      isProtectedSessionMaintenanceEntry(
+        "agent:main:whatsapp:dm:+15557654321",
+        makeEntry(Date.now()),
+      ),
+    ).toBe(true);
+    expect(
+      isProtectedSessionMaintenanceEntry("agent:main:main", {
+        ...makeEntry(Date.now()),
+        chatType: "direct",
+        deliveryContext: { channel: "signal", to: "+15551234567" },
+      }),
+    ).toBe(true);
+    expect(
+      isProtectedSessionMaintenanceEntry("agent:main:explicit:local-test", {
+        ...makeEntry(Date.now()),
+        chatType: "direct",
+      }),
+    ).toBe(false);
   });
 });
 

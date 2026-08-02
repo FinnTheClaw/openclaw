@@ -376,10 +376,30 @@ function isTelegramTopicSessionKey(sessionKey: string): boolean {
   return /^telegram:(?:group|channel|direct|dm):.+:topic:[^:]+$/.test(rest);
 }
 
-function isExternalGroupOrChannelSessionKey(sessionKey: string): boolean {
+function isExternalConversationSessionKey(sessionKey: string): boolean {
   const parsed = parseAgentSessionKey(sessionKey);
   const rest = normalizeLowercaseStringOrEmpty(parsed?.rest ?? sessionKey);
-  return /^[^:]+:(?:group|channel):.+$/.test(rest);
+  return /^[^:]+:(?:direct|dm|group|channel):.+$/.test(rest);
+}
+
+function hasConversationChannelMetadata(entry: SessionEntry | undefined): boolean {
+  const chatType = normalizeLowercaseStringOrEmpty(entry?.chatType ?? entry?.origin?.chatType);
+  if (
+    chatType !== "direct" &&
+    chatType !== "dm" &&
+    chatType !== "group" &&
+    chatType !== "channel" &&
+    chatType !== "thread"
+  ) {
+    return false;
+  }
+  const channel = normalizeLowercaseStringOrEmpty(
+    entry?.channel ??
+      entry?.lastChannel ??
+      entry?.deliveryContext?.channel ??
+      entry?.origin?.provider,
+  );
+  return channel.length > 0;
 }
 
 export function isProtectedSessionMaintenanceEntry(
@@ -396,11 +416,16 @@ export function isProtectedSessionMaintenanceEntry(
   if (isTelegramTopicSessionKey(sessionKey)) {
     return true;
   }
-  if (isExternalGroupOrChannelSessionKey(sessionKey)) {
+  if (isExternalConversationSessionKey(sessionKey)) {
     return true;
   }
   const chatType = normalizeLowercaseStringOrEmpty(entry?.chatType ?? entry?.origin?.chatType);
-  return chatType === "group" || chatType === "channel" || chatType === "thread";
+  return (
+    chatType === "group" ||
+    chatType === "channel" ||
+    chatType === "thread" ||
+    hasConversationChannelMetadata(entry)
+  );
 }
 
 export function shouldPreserveMaintenanceEntry(params: {
