@@ -3724,6 +3724,29 @@ describe("openai transport stream", () => {
     expect(params.input?.[0]?.role).toBe("system");
   });
 
+  it("adds opt-in coordinator routing metadata without exposing it to the transcript", () => {
+    const params = buildOpenAIResponsesParams(
+      createAzureResponsesModel(),
+      { systemPrompt: "system", messages: [], tools: [] } as never,
+      {
+        maxTokens: 80,
+        sessionId: "parent-session",
+        requestMetadata: { priority: "normal", expectedTokenDurationMs: "75" },
+      } as never,
+    ) as { metadata?: Record<string, string> };
+
+    expect(params.metadata).toMatchObject({
+      priority: "normal",
+      expectedOutputTokens: "80",
+      expectedDurationMs: "6000",
+      fanoutGroup: "session:parent-session",
+    });
+    expect(params.metadata?.requestId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(params.metadata?.sequenceId).toBe(params.metadata?.requestId);
+    expect(params.metadata?.eventId).toBe(`${params.metadata?.requestId}:0`);
+    expect(params.metadata).not.toHaveProperty("expectedTokenDurationMs");
+  });
+
   it("adds explicit message item types for Responses system and user input items", () => {
     const params = buildOpenAIResponsesParams(
       createAzureResponsesModel(),

@@ -166,6 +166,7 @@ type CacheRetentionStreamOptions = Partial<SimpleStreamOptions> & {
   presencePenalty?: number;
   seed?: number;
   stop?: string[];
+  requestMetadata?: Record<string, string>;
 };
 type SupportedTransport = AgentRuntimeTransport;
 
@@ -446,6 +447,20 @@ function normalizeStopSequences(value: unknown): string[] | undefined {
   return sequences.length > 0 ? sequences : undefined;
 }
 
+function normalizeRequestMetadata(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const metadata = Object.fromEntries(
+    Object.entries(value).flatMap(([key, item]) =>
+      typeof item === "string" && key.trim().length > 0 && item.trim().length > 0
+        ? [[key.trim(), item.trim()]]
+        : [],
+    ),
+  );
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
 function createStreamFnWithExtraParams(
   baseStreamFn: StreamFn | undefined,
   extraParams: Record<string, unknown> | undefined,
@@ -524,6 +539,10 @@ function createStreamFnWithExtraParams(
   const resolvedStop = normalizeStopSequences(extraParams.stop);
   if (resolvedStop) {
     streamParams.stop = resolvedStop;
+  }
+  const requestMetadata = normalizeRequestMetadata(extraParams.requestMetadata);
+  if (requestMetadata) {
+    streamParams.requestMetadata = requestMetadata;
   }
 
   const readSupportsPromptCacheKey = (m: unknown): boolean => {

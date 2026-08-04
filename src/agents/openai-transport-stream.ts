@@ -162,6 +162,8 @@ type BaseStreamOptions = {
   cacheRetention?: "none" | "short" | "long";
   sessionId?: string;
   promptCacheKey?: string;
+  /** Provider-approved per-request routing hints. Kept out of transcript content. */
+  requestMetadata?: Record<string, string>;
   authProfileId?: string;
   onPayload?: (payload: unknown, model: Model) => unknown;
   headers?: Record<string, string>;
@@ -2332,6 +2334,39 @@ function resolveOpenAIResponsesTextFormat(
   return responseFormat as unknown as ResponseFormatTextConfig;
 }
 
+function buildRequestMetadata(params: {
+  configured?: Record<string, string>;
+  sessionId?: string;
+  effectiveMaxTokens?: number;
+}): Record<string, string> | undefined {
+  if (!params.configured || Object.keys(params.configured).length === 0) {
+    return undefined;
+  }
+  const configured = Object.fromEntries(
+    Object.entries(params.configured).filter(
+      ([key, value]) => key.length > 0 && value.trim().length > 0,
+    ),
+  );
+  const expectedTokenDurationMs = Number(configured.expectedTokenDurationMs);
+  delete configured.expectedTokenDurationMs;
+  const requestId = randomUUID();
+  const sessionId = params.sessionId?.trim();
+  const effectiveMaxTokens = params.effectiveMaxTokens;
+  return {
+    ...configured,
+    ...(effectiveMaxTokens ? { expectedOutputTokens: String(effectiveMaxTokens) } : {}),
+    ...(Number.isFinite(expectedTokenDurationMs) &&
+    expectedTokenDurationMs > 0 &&
+    effectiveMaxTokens
+      ? { expectedDurationMs: String(Math.ceil(expectedTokenDurationMs * effectiveMaxTokens)) }
+      : {}),
+    requestId,
+    sequenceId: requestId,
+    eventId: `${requestId}:0`,
+    ...(sessionId ? { fanoutGroup: `session:${sessionId}` } : {}),
+  };
+}
+
 export function buildOpenAIResponsesParams(
   model: Model,
   context: Context,
@@ -2380,6 +2415,14 @@ export function buildOpenAIResponsesParams(
     ...(metadata ? { metadata } : {}),
   };
   const effectiveMaxTokens = options?.maxTokens || model.maxTokens;
+  const requestMetadata = buildRequestMetadata({
+    configured: options?.requestMetadata,
+    sessionId: options?.sessionId,
+    effectiveMaxTokens,
+  });
+  if (requestMetadata) {
+    params.metadata = { ...params.metadata, ...requestMetadata };
+  }
   if (effectiveMaxTokens) {
     params.max_output_tokens = effectiveMaxTokens;
   }
