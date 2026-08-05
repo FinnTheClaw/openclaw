@@ -1722,7 +1722,9 @@ export default definePluginEntry({
           }
           if (durableRuntime && currentCfg.durableMemory.enabled) {
             const normalizedQuery = normalizeRecallQuery(query, currentCfg.recallMaxChars);
-            let durableRecall: Awaited<ReturnType<typeof runWithTimeout<MemorySearchResult[]>>>;
+            let durableRecall: Awaited<
+              ReturnType<typeof runWithTimeout<HybridMemorySearchResult[]>>
+            >;
             try {
               durableRecall = await runWithTimeout({
                 timeoutMs: currentCfg.durableMemory.recallTimeoutMs,

@@ -1301,10 +1301,7 @@ describe("memory plugin e2e", () => {
           );
           const callsAfterTimeout = post.mock.calls.length;
           await expect(
-            beforePromptBuild?.(
-              { prompt: "what editor should i use now?", messages: [] },
-              {},
-            ),
+            beforePromptBuild?.({ prompt: "what editor should i use now?", messages: [] }, {}),
           ).resolves.toBeUndefined();
           expect(post).toHaveBeenCalledTimes(callsAfterTimeout);
           await vi.advanceTimersByTimeAsync(15_000);
