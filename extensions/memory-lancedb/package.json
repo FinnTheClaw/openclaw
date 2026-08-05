@@ -8,19 +8,10 @@
   },
   "type": "module",
   "files": [
-    "api.ts",
-    "config.ts",
-    "durable-memory-runtime.ts",
-    "hybrid-memory-index.ts",
-    "index.ts",
-    "lancedb-runtime.ts",
-    "cli-metadata.ts",
-    "memory-consolidator.ts",
-    "openai-memory-consolidator.ts",
+    "dist/**",
     "openclaw.plugin.json",
-    "README.md",
-    "scale-certification.ts",
-    "temporal-ledger.ts"
+    "npm-shrinkwrap.json",
+    "README.md"
   ],
   "dependencies": {
     "@lancedb/lancedb": "0.30.0",
