@@ -8,6 +8,8 @@
 
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
+import path from "node:path";
 import type * as LanceDB from "@lancedb/lancedb";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import {
@@ -268,6 +270,17 @@ export function resolveCertifyCliOptions(
     directory: stringValue("directory", "--directory"),
     keep: argv.includes("--keep") || direct.keep === true || inherited.keep === true,
   };
+}
+
+/** Resolve CLI-owned local paths without depending on a retired lazy-plugin API. */
+export function resolveMemoryCliPath(input: string, home: string = os.homedir()): string {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    throw new Error("memory path must not be empty");
+  }
+  const expanded =
+    trimmed === "~" ? home : trimmed.startsWith("~/") ? path.join(home, trimmed.slice(2)) : trimmed;
+  return path.resolve(expanded);
 }
 
 class MemoryDB {
@@ -2266,7 +2279,7 @@ export default definePluginEntry({
             if (!durableRuntime || !resolveCurrentHookConfig().durableMemory.enabled) {
               throw new Error("durable memory is not enabled");
             }
-            const resolved = api.resolvePath(String(snapshotPath));
+            const resolved = resolveMemoryCliPath(String(snapshotPath));
             durableRuntime.ledger.createSnapshot(resolved);
             console.log(JSON.stringify({ created: resolved }, null, 2));
           });
@@ -2283,7 +2296,7 @@ export default definePluginEntry({
             const facts = parsePositiveIntegerOption(resolvedOptions.facts, "--facts") ?? 25_000;
             const queries = parsePositiveIntegerOption(resolvedOptions.queries, "--queries") ?? 200;
             const directory = resolvedOptions.directory
-              ? api.resolvePath(String(resolvedOptions.directory))
+              ? resolveMemoryCliPath(String(resolvedOptions.directory))
               : undefined;
             const report = await runMemoryScaleCertification({
               facts,

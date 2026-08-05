@@ -31,6 +31,7 @@ import memoryPlugin, {
   normalizeEmbeddingVector,
   normalizeRecallQuery,
   resolveCertifyCliOptions,
+  resolveMemoryCliPath,
   sanitizeForMemoryCapture,
   shouldCapture,
   testing,
@@ -54,6 +55,13 @@ test("certification CLI preserves explicit retained paths across lazy option spl
     directory: "/var/lib/openclaw/certifications/retained",
     keep: true,
   });
+});
+
+test("memory CLI paths do not depend on a lazy plugin path resolver", () => {
+  expect(resolveMemoryCliPath("/var/lib/openclaw/memory", "/home/tester")).toBe(
+    "/var/lib/openclaw/memory",
+  );
+  expect(resolveMemoryCliPath("~/memory/cert", "/home/tester")).toBe("/home/tester/memory/cert");
 });
 type MemoryPluginTestConfig = {
   embedding?: {
