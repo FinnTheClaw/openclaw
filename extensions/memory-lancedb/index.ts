@@ -2221,15 +2221,19 @@ export default definePluginEntry({
           .option("--queries <n>", "Random recall query count", "200")
           .option("--directory <path>", "Dedicated certification directory")
           .option("--keep", "Keep an automatically-created temporary directory", false)
-          .action(async (opts) => {
-            const facts = parsePositiveIntegerOption(opts.facts, "--facts") ?? 25_000;
-            const queries = parsePositiveIntegerOption(opts.queries, "--queries") ?? 200;
-            const directory = opts.directory ? api.resolvePath(String(opts.directory)) : undefined;
+          .action(async (opts, command) => {
+            const resolvedOptions =
+              command && typeof command.opts === "function" ? command.opts() : opts;
+            const facts = parsePositiveIntegerOption(resolvedOptions.facts, "--facts") ?? 25_000;
+            const queries = parsePositiveIntegerOption(resolvedOptions.queries, "--queries") ?? 200;
+            const directory = resolvedOptions.directory
+              ? api.resolvePath(String(resolvedOptions.directory))
+              : undefined;
             const report = await runMemoryScaleCertification({
               facts,
               queries,
               directory,
-              keep: Boolean(opts.keep),
+              keep: Boolean(resolvedOptions.keep),
             });
             console.log(JSON.stringify(report, null, 2));
             if (report.status !== "PASS") {
