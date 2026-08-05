@@ -213,6 +213,63 @@ function parsePositiveIntegerOption(value: string | undefined, flag: string): nu
   return parsed;
 }
 
+type CertifyCliOptions = {
+  facts?: string;
+  queries?: string;
+  directory?: string;
+  keep: boolean;
+};
+
+function readExplicitCliOption(argv: string[], flag: string): string | undefined {
+  const prefix = `${flag}=`;
+  for (let index = argv.length - 1; index >= 0; index--) {
+    const token = argv[index];
+    if (token?.startsWith(prefix)) {
+      return token.slice(prefix.length);
+    }
+    if (token === flag) {
+      return argv[index + 1];
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Plugin commands are registered lazily. Depending on the bootstrap path,
+ * Commander can split option values between the callback's options argument
+ * and the command object. Explicit argv values are authoritative so a path
+ * can never silently fall back to a disposable temporary directory.
+ */
+export function resolveCertifyCliOptions(
+  options: unknown,
+  command: unknown,
+  argv: string[] = process.argv.slice(2),
+): CertifyCliOptions {
+  const direct = asRecord(options) ?? {};
+  const commandRecord = asRecord(command);
+  const commandOpts = commandRecord?.opts;
+  const inherited =
+    typeof commandOpts === "function" ? (asRecord(commandOpts.call(command)) ?? {}) : {};
+  const stringValue = (key: "facts" | "queries" | "directory", flag: string) => {
+    const explicit = readExplicitCliOption(argv, flag);
+    if (explicit !== undefined) {
+      return explicit;
+    }
+    const directValue = direct[key];
+    if (typeof directValue === "string") {
+      return directValue;
+    }
+    const inheritedValue = inherited[key];
+    return typeof inheritedValue === "string" ? inheritedValue : undefined;
+  };
+  return {
+    facts: stringValue("facts", "--facts"),
+    queries: stringValue("queries", "--queries"),
+    directory: stringValue("directory", "--directory"),
+    keep: argv.includes("--keep") || direct.keep === true || inherited.keep === true,
+  };
+}
+
 class MemoryDB {
   private db: LanceDB.Connection | null = null;
   private table: LanceDB.Table | null = null;
@@ -2222,8 +2279,7 @@ export default definePluginEntry({
           .option("--directory <path>", "Dedicated certification directory")
           .option("--keep", "Keep an automatically-created temporary directory", false)
           .action(async (opts, command) => {
-            const resolvedOptions =
-              command && typeof command.opts === "function" ? command.opts() : opts;
+            const resolvedOptions = resolveCertifyCliOptions(opts, command);
             const facts = parsePositiveIntegerOption(resolvedOptions.facts, "--facts") ?? 25_000;
             const queries = parsePositiveIntegerOption(resolvedOptions.queries, "--queries") ?? 200;
             const directory = resolvedOptions.directory

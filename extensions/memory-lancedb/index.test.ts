@@ -30,6 +30,7 @@ import memoryPlugin, {
   looksLikePromptInjection,
   normalizeEmbeddingVector,
   normalizeRecallQuery,
+  resolveCertifyCliOptions,
   sanitizeForMemoryCapture,
   shouldCapture,
   testing,
@@ -39,6 +40,21 @@ import { TemporalMemoryLedger } from "./temporal-ledger.js";
 import { installTmpDirHarness } from "./test-helpers.js";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "test-key";
+
+test("certification CLI preserves explicit retained paths across lazy option splitting", () => {
+  expect(
+    resolveCertifyCliOptions(
+      { facts: "1000" },
+      { opts: () => ({ queries: "17", directory: undefined, keep: false }) },
+      ["ltm", "certify", "--directory", "/var/lib/openclaw/certifications/retained", "--keep"],
+    ),
+  ).toEqual({
+    facts: "1000",
+    queries: "17",
+    directory: "/var/lib/openclaw/certifications/retained",
+    keep: true,
+  });
+});
 type MemoryPluginTestConfig = {
   embedding?: {
     provider?: string;
