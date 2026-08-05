@@ -1722,26 +1722,37 @@ export default definePluginEntry({
           }
           if (durableRuntime && currentCfg.durableMemory.enabled) {
             const normalizedQuery = normalizeRecallQuery(query, currentCfg.recallMaxChars);
-            const durableRecall = await runWithTimeout({
-              timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
-              task: async () => {
-                const vector = await embeddings.embed(normalizedQuery, {
-                  timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
-                });
-                return await durableRuntime.index.search({
-                  queryText: normalizedQuery,
-                  vector,
-                  agentId: toolContext.agentId ?? "main",
-                  channel: toolContext.messageChannel,
-                  limit,
-                });
-              },
-            });
-            if (durableRecall.status === "timeout") {
-              return buildMemoryRecallUnavailableResult(
-                `memory_recall timed out after ${Math.round(currentCfg.durableMemory.recallTimeoutMs / 1000)}s`,
+            let durableRecall: Awaited<ReturnType<typeof runWithTimeout<MemorySearchResult[]>>>;
+            try {
+              durableRecall = await runWithTimeout({
+                timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
+                task: async () => {
+                  const vector = await embeddings.embed(normalizedQuery, {
+                    timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
+                  });
+                  return await durableRuntime.index.search({
+                    queryText: normalizedQuery,
+                    vector,
+                    agentId: toolContext.agentId ?? "main",
+                    channel: toolContext.messageChannel,
+                    limit,
+                  });
+                },
+              });
+            } catch (error) {
+              const message = formatMemoryRecallError(error);
+              recordMemoryRecallCooldown(message);
+              api.logger.warn?.(
+                `memory-v2: memory_recall failed: ${message}; opening the recall circuit`,
               );
+              return buildMemoryRecallUnavailableResult(message);
             }
+            if (durableRecall.status === "timeout") {
+              const message = `memory_recall timed out after ${currentCfg.durableMemory.recallTimeoutMs}ms`;
+              recordMemoryRecallCooldown(message);
+              return buildMemoryRecallUnavailableResult(message);
+            }
+            memoryRecallCooldown = undefined;
             if (durableRecall.value.length === 0) {
               return {
                 content: [{ type: "text", text: "No relevant memories found." }],
@@ -2490,6 +2501,9 @@ export default definePluginEntry({
       if (!event.prompt || event.prompt.length < 5) {
         return undefined;
       }
+      if (readMemoryRecallCooldown()) {
+        return undefined;
+      }
 
       try {
         const recallQuery = normalizeRecallQuery(
@@ -2514,11 +2528,15 @@ export default definePluginEntry({
             },
           });
           if (recall.status === "timeout") {
+            recordMemoryRecallCooldown(
+              `bounded recall timed out after ${currentCfg.durableMemory.recallTimeoutMs}ms`,
+            );
             api.logger.warn?.(
-              `memory-v2: bounded recall timed out after ${currentCfg.durableMemory.recallTimeoutMs}ms; continuing without memory`,
+              `memory-v2: bounded recall timed out after ${currentCfg.durableMemory.recallTimeoutMs}ms; opening the recall circuit and continuing without memory`,
             );
             return undefined;
           }
+          memoryRecallCooldown = undefined;
           const context = formatBoundedDurableMemoryContext(
             recall.value,
             currentCfg.durableMemory.recallBudgetChars,
@@ -2543,11 +2561,15 @@ export default definePluginEntry({
           },
         });
         if (recall.status === "timeout") {
+          recordMemoryRecallCooldown(
+            `auto-recall timed out after ${DEFAULT_AUTO_RECALL_TIMEOUT_MS}ms`,
+          );
           api.logger.warn?.(
             `memory-lancedb: auto-recall timed out after ${DEFAULT_AUTO_RECALL_TIMEOUT_MS}ms; skipping memory injection to avoid stalling agent startup`,
           );
           return undefined;
         }
+        memoryRecallCooldown = undefined;
 
         // Filter contaminated memories, then cap at the prompt-budget bound.
         const cleanResults = cleanMemorySearchResults(recall.value)
@@ -2569,6 +2591,7 @@ export default definePluginEntry({
           prependContext: context,
         };
       } catch (err) {
+        recordMemoryRecallCooldown(formatMemoryRecallError(err));
         api.logger.warn(`memory-lancedb: recall failed: ${String(err)}`);
       }
       return undefined;

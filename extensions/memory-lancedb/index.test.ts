@@ -1299,6 +1299,14 @@ describe("memory plugin e2e", () => {
           expect(logger.warn).toHaveBeenCalledWith(
             "memory-lancedb: auto-recall timed out after 15000ms; skipping memory injection to avoid stalling agent startup",
           );
+          const callsAfterTimeout = post.mock.calls.length;
+          await expect(
+            beforePromptBuild?.(
+              { prompt: "what editor should i use now?", messages: [] },
+              {},
+            ),
+          ).resolves.toBeUndefined();
+          expect(post).toHaveBeenCalledTimes(callsAfterTimeout);
           await vi.advanceTimersByTimeAsync(15_000);
         },
       });
