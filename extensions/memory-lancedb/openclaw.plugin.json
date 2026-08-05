@@ -78,6 +78,39 @@
       "label": "Storage Options",
       "advanced": true,
       "help": "Storage configuration options (access_key, secret_key, endpoint, etc.); supports ${ENV_VAR} values"
+    },
+    "durableMemory.enabled": {
+      "label": "Durable Memory V2",
+      "help": "Append every turn to the transactional ledger and use scalable hybrid retrieval"
+    },
+    "durableMemory.ledgerPath": {
+      "label": "Durable Ledger Path",
+      "placeholder": "~/.openclaw/memory/ledger.sqlite3",
+      "advanced": true
+    },
+    "durableMemory.startupReconcile": {
+      "label": "Reconcile Transcripts on Startup",
+      "advanced": true
+    },
+    "durableMemory.consolidation.enabled": {
+      "label": "Semantic Consolidation",
+      "help": "Asynchronously extract temporal facts and refresh hierarchical summaries",
+      "advanced": true
+    },
+    "durableMemory.consolidation.baseUrl": {
+      "label": "Consolidation Base URL",
+      "placeholder": "https://coordinator.example/v1",
+      "advanced": true
+    },
+    "durableMemory.consolidation.apiKey": {
+      "label": "Consolidation API Key",
+      "sensitive": true,
+      "advanced": true
+    },
+    "durableMemory.consolidation.model": {
+      "label": "Consolidation Model Route",
+      "placeholder": "moira/memory",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -88,7 +121,6 @@
         "type": "object",
         "minProperties": 1,
         "additionalProperties": false,
-        "minProperties": 1,
         "properties": {
           "apiKey": {
             "type": "string"
@@ -143,6 +175,37 @@
         "type": "object",
         "additionalProperties": {
           "type": "string"
+        }
+      },
+      "durableMemory": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "ledgerPath": { "type": "string" },
+          "startupReconcile": { "type": "boolean" },
+          "projectionBatch": { "type": "integer", "minimum": 1, "maximum": 256 },
+          "projectionConcurrency": { "type": "integer", "minimum": 1, "maximum": 16 },
+          "embeddingTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000 },
+          "recallTimeoutMs": { "type": "integer", "minimum": 100, "maximum": 30000 },
+          "recallLimit": { "type": "integer", "minimum": 1, "maximum": 20 },
+          "recallBudgetChars": { "type": "integer", "minimum": 500, "maximum": 20000 },
+          "consolidation": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "baseUrl": { "type": "string" },
+              "apiKey": { "type": "string" },
+              "model": { "type": "string" },
+              "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 300000 },
+              "maxInputChars": { "type": "integer", "minimum": 1000, "maximum": 100000 },
+              "extractionBatch": { "type": "integer", "minimum": 1, "maximum": 64 },
+              "extractionConcurrency": { "type": "integer", "minimum": 1, "maximum": 8 },
+              "summaryBatch": { "type": "integer", "minimum": 1, "maximum": 32 },
+              "summaryConcurrency": { "type": "integer", "minimum": 1, "maximum": 8 }
+            }
+          }
         }
       }
     }

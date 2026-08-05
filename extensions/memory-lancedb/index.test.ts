@@ -35,6 +35,7 @@ import memoryPlugin, {
   testing,
 } from "./index.js";
 import { createLanceDbRuntimeLoader } from "./lancedb-runtime.js";
+import { TemporalMemoryLedger } from "./temporal-ledger.js";
 import { installTmpDirHarness } from "./test-helpers.js";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "test-key";
@@ -126,6 +127,10 @@ function expectToolExecute(tool: unknown, name?: string) {
     expect(record.name).toBe(name);
   }
   expect(record.execute).toBeTypeOf("function");
+}
+
+function instantiateRegisteredTool(tool: unknown) {
+  return typeof tool === "function" ? tool({ agentId: "main", messageChannel: "test" }) : tool;
 }
 
 function firstAddedMemory(add: ReturnType<typeof vi.fn>) {
@@ -608,7 +613,7 @@ describe("memory plugin e2e", () => {
 
       dynamicMemoryPlugin.register(mockApi as any);
       const recallTool = registerTool.mock.calls
-        .map(([tool]) => tool)
+        .map(([tool]) => instantiateRegisteredTool(tool))
         .find((tool) => tool.name === "memory_recall");
       if (!recallTool) {
         throw new Error("expected memory_recall tool registration");
@@ -687,7 +692,7 @@ describe("memory plugin e2e", () => {
             debug: vi.fn(),
           },
           registerTool: (tool: any, opts: any) => {
-            registeredTools.push({ tool, opts });
+            registeredTools.push({ tool: instantiateRegisteredTool(tool), opts });
           },
           registerCli: vi.fn(),
           registerService: vi.fn(),
@@ -784,7 +789,7 @@ describe("memory plugin e2e", () => {
             debug: vi.fn(),
           },
           registerTool: (tool: any, opts: any) => {
-            registeredTools.push({ tool, opts });
+            registeredTools.push({ tool: instantiateRegisteredTool(tool), opts });
           },
           registerCli: vi.fn(),
           registerService: vi.fn(),
@@ -873,7 +878,7 @@ describe("memory plugin e2e", () => {
             runtime: {},
             logger,
             registerTool: (tool: any, opts: any) => {
-              registeredTools.push({ tool, opts });
+              registeredTools.push({ tool: instantiateRegisteredTool(tool), opts });
             },
             registerCli: vi.fn(),
             registerService: vi.fn(),
@@ -2501,7 +2506,7 @@ describe("memory plugin e2e", () => {
           debug: vi.fn(),
         },
         registerTool: (tool: any, opts: any) => {
-          registeredTools.push({ tool, opts });
+          registeredTools.push({ tool: instantiateRegisteredTool(tool), opts });
         },
         registerCli: vi.fn(),
         registerService: vi.fn(),
@@ -2597,7 +2602,7 @@ describe("memory plugin e2e", () => {
           debug: vi.fn(),
         },
         registerTool: (tool: any, opts: any) => {
-          registeredTools.push({ tool, opts });
+          registeredTools.push({ tool: instantiateRegisteredTool(tool), opts });
         },
         registerCli: vi.fn(),
         registerService: vi.fn(),
@@ -2879,7 +2884,7 @@ describe("memory plugin e2e", () => {
             debug: vi.fn(),
           },
           registerTool: (tool: any, opts: any) => {
-            registeredTools.push({ tool, opts });
+            registeredTools.push({ tool: instantiateRegisteredTool(tool), opts });
           },
           registerCli: vi.fn(),
           registerService: vi.fn(),
@@ -3014,7 +3019,7 @@ describe("memory plugin e2e", () => {
         runtime: {},
         logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
         registerTool: (tool: any, opts: any) => {
-          registeredTools.push({ tool, opts });
+          registeredTools.push({ tool: instantiateRegisteredTool(tool), opts });
         },
         registerCli: vi.fn(),
         registerService: vi.fn(),
@@ -3888,6 +3893,93 @@ describe("memory plugin e2e", () => {
     expect(
       escapeMemoryForPrompt("Photo [media attached: media://inbound/abc123.jpg] was attached"),
     ).toBe("Photo was attached");
+  });
+
+  test("durable lifecycle hooks commit turns before compaction and survive service stop", async () => {
+    const post = vi.fn(async (_path: string, options: { body?: unknown }) => {
+      const input = (options.body as { input?: unknown })?.input;
+      const count = Array.isArray(input) ? input.length : 1;
+      return {
+        data: Array.from({ length: count }, () => ({
+          embedding: [1, ...Array.from({ length: 1_535 }, () => 0)],
+        })),
+      };
+    });
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher: vi.fn(),
+      openAiPost: post,
+      loadLanceDbModule: vi.fn(async () => await import("@lancedb/lancedb")),
+      run: async (dynamicMemoryPlugin) => {
+        const on = vi.fn();
+        const services: Array<{ stop?: () => Promise<void> | void }> = [];
+        const ledgerPath = path.join(getTmpDir(), "durable-hook-ledger.sqlite3");
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: "sk-test",
+              model: "text-embedding-3-small",
+            },
+            dbPath: getDbPath(),
+            durableMemory: {
+              enabled: true,
+              ledgerPath,
+              startupReconcile: false,
+            },
+          },
+          runtime: { config: { current: () => ({}) } },
+          logger: {
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+          },
+          registerTool: vi.fn(),
+          registerCli: vi.fn(),
+          registerService: (service: { stop?: () => Promise<void> | void }) =>
+            services.push(service),
+          on,
+          resolvePath: (filePath: string) => filePath,
+        };
+        dynamicMemoryPlugin.register(mockApi as any);
+
+        const receive = hookHandler(on, "message_received");
+        receive?.(
+          {
+            content: "Juniper controls greenhouse irrigation.",
+            timestamp: 1_000,
+            messageId: "message-1",
+          },
+          { sessionKey: "agent:jake:signal:family", channelId: "signal" },
+        );
+        const beforeCompaction = hookHandler(on, "before_compaction");
+        await beforeCompaction?.(
+          {
+            messages: [
+              {
+                id: "message-2",
+                role: "assistant",
+                content: "I verified Juniper is online.",
+                timestamp: 2_000,
+              },
+            ],
+          },
+          { agentId: "jake", sessionKey: "agent:jake:signal:family", channel: "signal" },
+        );
+        await services[0]?.stop?.();
+
+        const ledger = new TemporalMemoryLedger(ledgerPath);
+        try {
+          expect(ledger.verifyIntegrity()).toEqual({ ok: true, messages: ["ok"] });
+          expect(ledger.getStats()).toMatchObject({ events: 2 });
+        } finally {
+          ledger.close();
+        }
+      },
+    });
   });
 });
 

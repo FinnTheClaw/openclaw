@@ -20,6 +20,29 @@ export type MemoryConfig = {
   customTriggers?: string[];
   recallMaxChars?: number;
   storageOptions?: Record<string, string>;
+  durableMemory: {
+    enabled: boolean;
+    ledgerPath: string;
+    startupReconcile: boolean;
+    projectionBatch: number;
+    projectionConcurrency: number;
+    embeddingTimeoutMs: number;
+    recallTimeoutMs: number;
+    recallLimit: number;
+    recallBudgetChars: number;
+    consolidation: {
+      enabled: boolean;
+      baseUrl?: string;
+      apiKey?: string;
+      model: string;
+      timeoutMs: number;
+      maxInputChars: number;
+      extractionBatch: number;
+      extractionConcurrency: number;
+      summaryBatch: number;
+      summaryConcurrency: number;
+    };
+  };
 };
 
 export const MEMORY_CATEGORIES = ["preference", "fact", "decision", "entity", "other"] as const;
@@ -28,6 +51,10 @@ export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
 const DEFAULT_MODEL = "text-embedding-3-small";
 export const DEFAULT_CAPTURE_MAX_CHARS = 500;
 export const DEFAULT_RECALL_MAX_CHARS = 1000;
+export const DEFAULT_DURABLE_LEDGER_PATH = join(homedir(), ".openclaw", "memory", "ledger.sqlite3");
+export const DEFAULT_DURABLE_RECALL_TIMEOUT_MS = 3_000;
+export const DEFAULT_DURABLE_RECALL_LIMIT = 6;
+export const DEFAULT_DURABLE_RECALL_BUDGET_CHARS = 5_000;
 const LEGACY_STATE_DIRS: string[] = [];
 
 function resolveDefaultDbPath(): string {
@@ -152,6 +179,7 @@ export const memoryConfigSchema = {
         "customTriggers",
         "recallMaxChars",
         "storageOptions",
+        "durableMemory",
       ],
       "memory config",
     );
@@ -218,6 +246,172 @@ export const memoryConfigSchema = {
               throw new Error("dreaming config must be an object");
             })();
 
+    const durableInput = cfg.durableMemory;
+    if (
+      durableInput !== undefined &&
+      (!durableInput || typeof durableInput !== "object" || Array.isArray(durableInput))
+    ) {
+      throw new Error("durableMemory config must be an object");
+    }
+    const durable = (durableInput ?? {}) as Record<string, unknown>;
+    assertAllowedKeys(
+      durable,
+      [
+        "enabled",
+        "ledgerPath",
+        "startupReconcile",
+        "projectionBatch",
+        "projectionConcurrency",
+        "embeddingTimeoutMs",
+        "recallTimeoutMs",
+        "recallLimit",
+        "recallBudgetChars",
+        "consolidation",
+      ],
+      "durableMemory config",
+    );
+    const consolidationInput = durable.consolidation;
+    if (
+      consolidationInput !== undefined &&
+      (!consolidationInput ||
+        typeof consolidationInput !== "object" ||
+        Array.isArray(consolidationInput))
+    ) {
+      throw new Error("durableMemory.consolidation must be an object");
+    }
+    const consolidation = (consolidationInput ?? {}) as Record<string, unknown>;
+    assertAllowedKeys(
+      consolidation,
+      [
+        "enabled",
+        "baseUrl",
+        "apiKey",
+        "model",
+        "timeoutMs",
+        "maxInputChars",
+        "extractionBatch",
+        "extractionConcurrency",
+        "summaryBatch",
+        "summaryConcurrency",
+      ],
+      "durableMemory.consolidation config",
+    );
+    const consolidationEnabled = consolidation.enabled === true;
+    const consolidationBaseUrl =
+      typeof consolidation.baseUrl === "string" ? resolveEnvVars(consolidation.baseUrl) : undefined;
+    const consolidationModel =
+      typeof consolidation.model === "string" ? consolidation.model.trim() : "moira/memory";
+    if (consolidationEnabled && !consolidationBaseUrl) {
+      throw new Error("durableMemory.consolidation.baseUrl is required when enabled");
+    }
+    if (consolidationEnabled && !consolidationModel) {
+      throw new Error("durableMemory.consolidation.model is required when enabled");
+    }
+    const durableMemory = {
+      // Opt-in at the plugin boundary so an upstream install never migrates a
+      // production memory store merely by updating packages. Finn/Jake
+      // provisioner policy enables this explicitly and treats disablement as
+      // configuration drift.
+      enabled: durable.enabled === true,
+      ledgerPath:
+        typeof durable.ledgerPath === "string"
+          ? resolveEnvVars(durable.ledgerPath)
+          : DEFAULT_DURABLE_LEDGER_PATH,
+      startupReconcile: durable.startupReconcile !== false,
+      projectionBatch: resolveBoundedIntegerConfig({
+        value: durable.projectionBatch,
+        fallback: 32,
+        min: 1,
+        max: 256,
+        label: "durableMemory.projectionBatch",
+      }),
+      projectionConcurrency: resolveBoundedIntegerConfig({
+        value: durable.projectionConcurrency,
+        fallback: 4,
+        min: 1,
+        max: 16,
+        label: "durableMemory.projectionConcurrency",
+      }),
+      embeddingTimeoutMs: resolveBoundedIntegerConfig({
+        value: durable.embeddingTimeoutMs,
+        fallback: 15_000,
+        min: 1_000,
+        max: 120_000,
+        label: "durableMemory.embeddingTimeoutMs",
+      }),
+      recallTimeoutMs: resolveBoundedIntegerConfig({
+        value: durable.recallTimeoutMs,
+        fallback: DEFAULT_DURABLE_RECALL_TIMEOUT_MS,
+        min: 100,
+        max: 30_000,
+        label: "durableMemory.recallTimeoutMs",
+      }),
+      recallLimit: resolveBoundedIntegerConfig({
+        value: durable.recallLimit,
+        fallback: DEFAULT_DURABLE_RECALL_LIMIT,
+        min: 1,
+        max: 20,
+        label: "durableMemory.recallLimit",
+      }),
+      recallBudgetChars: resolveBoundedIntegerConfig({
+        value: durable.recallBudgetChars,
+        fallback: DEFAULT_DURABLE_RECALL_BUDGET_CHARS,
+        min: 500,
+        max: 20_000,
+        label: "durableMemory.recallBudgetChars",
+      }),
+      consolidation: {
+        enabled: consolidationEnabled,
+        ...(consolidationBaseUrl ? { baseUrl: consolidationBaseUrl } : {}),
+        ...(typeof consolidation.apiKey === "string"
+          ? { apiKey: resolveEnvVars(consolidation.apiKey) }
+          : {}),
+        model: consolidationModel,
+        timeoutMs: resolveBoundedIntegerConfig({
+          value: consolidation.timeoutMs,
+          fallback: 60_000,
+          min: 1_000,
+          max: 300_000,
+          label: "durableMemory.consolidation.timeoutMs",
+        }),
+        maxInputChars: resolveBoundedIntegerConfig({
+          value: consolidation.maxInputChars,
+          fallback: 24_000,
+          min: 1_000,
+          max: 100_000,
+          label: "durableMemory.consolidation.maxInputChars",
+        }),
+        extractionBatch: resolveBoundedIntegerConfig({
+          value: consolidation.extractionBatch,
+          fallback: 8,
+          min: 1,
+          max: 64,
+          label: "durableMemory.consolidation.extractionBatch",
+        }),
+        extractionConcurrency: resolveBoundedIntegerConfig({
+          value: consolidation.extractionConcurrency,
+          fallback: 2,
+          min: 1,
+          max: 8,
+          label: "durableMemory.consolidation.extractionConcurrency",
+        }),
+        summaryBatch: resolveBoundedIntegerConfig({
+          value: consolidation.summaryBatch,
+          fallback: 4,
+          min: 1,
+          max: 32,
+          label: "durableMemory.consolidation.summaryBatch",
+        }),
+        summaryConcurrency: resolveBoundedIntegerConfig({
+          value: consolidation.summaryConcurrency,
+          fallback: 2,
+          min: 1,
+          max: 8,
+          label: "durableMemory.consolidation.summaryConcurrency",
+        }),
+      },
+    };
+
     // Parse storageOptions (object with string values)
     let storageOptions: Record<string, string> | undefined;
     const storageOpts = cfg.storageOptions as Record<string, unknown> | undefined;
@@ -252,6 +446,7 @@ export const memoryConfigSchema = {
       ...(customTriggers ? { customTriggers } : {}),
       recallMaxChars,
       ...(storageOptions ? { storageOptions } : {}),
+      durableMemory,
     };
   },
   uiHints: {
@@ -319,6 +514,40 @@ export const memoryConfigSchema = {
       sensitive: true,
       advanced: true,
       help: "Storage configuration options (access_key, secret_key, endpoint, etc.); supports ${ENV_VAR} values",
+    },
+    "durableMemory.enabled": {
+      label: "Durable Memory V2",
+      help: "Append every turn to the transactional ledger and use scalable hybrid retrieval",
+    },
+    "durableMemory.ledgerPath": {
+      label: "Durable Ledger Path",
+      placeholder: "~/.openclaw/memory/ledger.sqlite3",
+      advanced: true,
+    },
+    "durableMemory.startupReconcile": {
+      label: "Reconcile Transcripts on Startup",
+      help: "Backfill only transcript bytes not already committed to the durable ledger",
+      advanced: true,
+    },
+    "durableMemory.consolidation.enabled": {
+      label: "Semantic Consolidation",
+      help: "Asynchronously extract temporal facts and refresh hierarchical summaries",
+      advanced: true,
+    },
+    "durableMemory.consolidation.baseUrl": {
+      label: "Consolidation Base URL",
+      placeholder: "https://coordinator.example/v1",
+      advanced: true,
+    },
+    "durableMemory.consolidation.apiKey": {
+      label: "Consolidation API Key",
+      sensitive: true,
+      advanced: true,
+    },
+    "durableMemory.consolidation.model": {
+      label: "Consolidation Model Route",
+      placeholder: "moira/memory",
+      advanced: true,
     },
   },
 };

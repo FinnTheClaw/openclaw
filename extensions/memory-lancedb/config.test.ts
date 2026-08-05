@@ -213,4 +213,102 @@ describe("memory-lancedb config", () => {
       });
     }).toThrow("dreaming config must be an object");
   });
+
+  it("keeps migration opt-in while preserving bounded durable defaults", () => {
+    const parsed = memoryConfigSchema.parse({
+      embedding: {
+        apiKey: "sk-test",
+      },
+    });
+
+    expect(parsed.durableMemory).toMatchObject({
+      enabled: false,
+      startupReconcile: true,
+      projectionBatch: 32,
+      projectionConcurrency: 4,
+      embeddingTimeoutMs: 15_000,
+      recallTimeoutMs: 3_000,
+      recallLimit: 6,
+      recallBudgetChars: 5_000,
+    });
+    expect(parsed.durableMemory.ledgerPath).toContain("ledger.sqlite3");
+  });
+
+  it("accepts durable-memory tuning in both manifest and runtime schemas", () => {
+    const value = {
+      embedding: { apiKey: "sk-test" },
+      durableMemory: {
+        enabled: true,
+        ledgerPath: "/tmp/openclaw-memory.sqlite3",
+        startupReconcile: false,
+        projectionBatch: 128,
+        projectionConcurrency: 8,
+        embeddingTimeoutMs: 30_000,
+        recallTimeoutMs: 2_000,
+        recallLimit: 10,
+        recallBudgetChars: 8_000,
+      },
+    };
+    const manifestResult = validateJsonSchemaValue({
+      schema: manifest.configSchema,
+      cacheKey: "memory-lancedb.manifest.durable-memory",
+      value,
+    });
+    const parsed = memoryConfigSchema.parse(value);
+
+    expect(manifestResult.ok).toBe(true);
+    expect(parsed.durableMemory).toMatchObject(value.durableMemory);
+    expect(parsed.durableMemory.consolidation).toMatchObject({
+      enabled: false,
+      model: "moira/memory",
+      extractionBatch: 8,
+      summaryBatch: 4,
+    });
+  });
+
+  it("rejects unbounded or malformed durable-memory worker settings", () => {
+    expect(() =>
+      memoryConfigSchema.parse({
+        embedding: { apiKey: "sk-test" },
+        durableMemory: { projectionBatch: 257 },
+      }),
+    ).toThrow("durableMemory.projectionBatch must be between 1 and 256");
+    expect(() =>
+      memoryConfigSchema.parse({
+        embedding: { apiKey: "sk-test" },
+        durableMemory: { recallBudgetChars: 100 },
+      }),
+    ).toThrow("durableMemory.recallBudgetChars must be between 500 and 20000");
+    expect(() =>
+      memoryConfigSchema.parse({
+        embedding: { apiKey: "sk-test" },
+        durableMemory: { unknown: true },
+      }),
+    ).toThrow("durableMemory config has unknown keys: unknown");
+  });
+
+  it("requires an explicit coordinator endpoint for semantic consolidation", () => {
+    expect(() =>
+      memoryConfigSchema.parse({
+        embedding: { apiKey: "sk-test" },
+        durableMemory: { consolidation: { enabled: true } },
+      }),
+    ).toThrow("durableMemory.consolidation.baseUrl is required when enabled");
+
+    const parsed = memoryConfigSchema.parse({
+      embedding: { apiKey: "sk-test" },
+      durableMemory: {
+        consolidation: {
+          enabled: true,
+          baseUrl: "https://coordinator.example/v1",
+          model: "moira/memory",
+        },
+      },
+    });
+    expect(parsed.durableMemory.consolidation).toMatchObject({
+      enabled: true,
+      baseUrl: "https://coordinator.example/v1",
+      model: "moira/memory",
+    });
+  });
 });
