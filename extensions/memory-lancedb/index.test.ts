@@ -3935,7 +3935,10 @@ describe("memory plugin e2e", () => {
       loadLanceDbModule: vi.fn(async () => await import("@lancedb/lancedb")),
       run: async (dynamicMemoryPlugin) => {
         const on = vi.fn();
-        const services: Array<{ stop?: () => Promise<void> | void }> = [];
+        const services: Array<{
+          start?: () => Promise<void> | void;
+          stop?: () => Promise<void> | void;
+        }> = [];
         const ledgerPath = path.join(getTmpDir(), "durable-hook-ledger.sqlite3");
         const mockApi = {
           id: "memory-lancedb",
@@ -3963,12 +3966,15 @@ describe("memory plugin e2e", () => {
           },
           registerTool: vi.fn(),
           registerCli: vi.fn(),
-          registerService: (service: { stop?: () => Promise<void> | void }) =>
-            services.push(service),
+          registerService: (service: {
+            start?: () => Promise<void> | void;
+            stop?: () => Promise<void> | void;
+          }) => services.push(service),
           on,
           resolvePath: (filePath: string) => filePath,
         };
         dynamicMemoryPlugin.register(mockApi as any);
+        await services[0]?.start?.();
 
         const receive = hookHandler(on, "message_received");
         receive?.(
@@ -3994,6 +4000,11 @@ describe("memory plugin e2e", () => {
           { agentId: "jake", sessionKey: "agent:jake:signal:family", channel: "signal" },
         );
         await services[0]?.stop?.();
+        hookHandler(on, "gateway_start")?.({}, {});
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(mockApi.logger.warn).not.toHaveBeenCalledWith(
+          expect.stringContaining("memory ledger is closed"),
+        );
 
         const ledger = new TemporalMemoryLedger(ledgerPath);
         try {

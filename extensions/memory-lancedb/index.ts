@@ -1633,6 +1633,7 @@ export default definePluginEntry({
       durableRuntime?.scheduleProjection();
       consolidator?.schedule();
     };
+    let serviceActive = false;
     const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
     let memoryRecallCooldown: { until: number; error: string } | undefined;
     const resolveCurrentHookConfig = () => {
@@ -2430,7 +2431,7 @@ export default definePluginEntry({
     });
 
     api.on("gateway_start", (_event, _ctx) => {
-      if (!durableRuntime) {
+      if (!durableRuntime || !serviceActive) {
         return;
       }
       void (async () => {
@@ -2671,11 +2672,13 @@ export default definePluginEntry({
     api.registerService({
       id: "memory-lancedb",
       start: () => {
+        serviceActive = true;
         api.logger.info(
           `memory-lancedb: initialized (db: ${resolvedDbPath}, model: ${cfg.embedding.model})`,
         );
       },
       stop: async () => {
+        serviceActive = false;
         await consolidator?.stop();
         await durableRuntime?.stop();
         api.logger.info("memory-lancedb: stopped");
