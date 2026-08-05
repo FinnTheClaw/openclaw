@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DurableMemoryRuntime } from "./durable-memory-runtime.js";
+import { DurableMemoryRuntime, type WorkspaceMemoryArtifact } from "./durable-memory-runtime.js";
 
 function embedding(text: string, dimensions = 8): number[] {
   const vector = Array.from({ length: dimensions }, () => 0);
@@ -38,6 +38,21 @@ describe("DurableMemoryRuntime", () => {
       projectionConcurrency: 4,
     });
     return runtime;
+  }
+
+  function artifact(
+    absolutePath: string,
+    relativePath = path.basename(absolutePath),
+    kind = "daily-note",
+  ): WorkspaceMemoryArtifact {
+    return {
+      kind,
+      workspaceDir: tmpDir,
+      relativePath,
+      absolutePath,
+      agentIds: ["jake"],
+      contentType: "markdown",
+    };
   }
 
   it("commits inbound memory before asynchronous projection and then drains cleanly", async () => {
@@ -170,5 +185,94 @@ describe("DurableMemoryRuntime", () => {
     expect(batches.flat()).toHaveLength(40);
     expect(batches.every((batch) => batch.length <= 16)).toBe(true);
     expect(batches.length).toBeLessThanOrEqual(3);
+  });
+
+  it("checkpoint-imports Markdown, chunks large sources, and retracts changed or removed sources", async () => {
+    const memory = open();
+    const root = path.join(tmpDir, "MEMORY.md");
+    const daily = path.join(tmpDir, "memory", "2026-08-05.md");
+    await fs.mkdir(path.dirname(daily), { recursive: true });
+    await fs.writeFile(root, `# Canonical\n\n${"Juniper irrigation detail. ".repeat(400)}`, "utf8");
+    await fs.writeFile(daily, "# Daily\n\nThe pump controller is on circuit C.", "utf8");
+    const artifacts = [
+      artifact(root, "MEMORY.md", "memory-root"),
+      artifact(daily, "memory/2026-08-05.md"),
+    ];
+
+    const first = await memory.reconcileWorkspaceMarkdown(artifacts);
+    expect(first).toMatchObject({ files: 2, changed: 2, unchanged: 0, removed: 0, errors: 0 });
+    expect(first.captured).toBeGreaterThan(2);
+    expect(await memory.flush()).toBe(true);
+    expect((await memory.index.getStats()).rows).toBe(first.captured);
+
+    expect(await memory.reconcileWorkspaceMarkdown(artifacts)).toMatchObject({
+      files: 2,
+      changed: 0,
+      unchanged: 2,
+      captured: 0,
+      errors: 0,
+    });
+
+    await fs.writeFile(root, "# Canonical\n\nJuniper now controls both orchard pumps.", "utf8");
+    const changed = await memory.reconcileWorkspaceMarkdown(artifacts);
+    expect(changed).toMatchObject({ changed: 1, unchanged: 1, captured: 1, errors: 0 });
+    expect(await memory.flush()).toBe(true);
+    expect(
+      memory.ledger.listRecentEvents({ agentId: "jake", limit: 100 }).map((event) => event.content),
+    ).toEqual(expect.arrayContaining(["# Canonical\n\nJuniper now controls both orchard pumps."]));
+    expect(
+      memory.ledger
+        .listRecentEvents({ agentId: "jake", limit: 100 })
+        .some((event) => event.content.includes("Juniper irrigation detail")),
+    ).toBe(false);
+
+    expect(
+      await memory.reconcileWorkspaceMarkdown([artifacts[0]!], {
+        activeWorkspaceDirs: [tmpDir],
+      }),
+    ).toMatchObject({
+      files: 1,
+      removed: 0,
+      preserved: 1,
+      errors: 0,
+    });
+    await fs.rm(daily);
+    expect(
+      await memory.reconcileWorkspaceMarkdown([artifacts[0]!], {
+        activeWorkspaceDirs: [tmpDir],
+      }),
+    ).toMatchObject({ files: 1, removed: 1, preserved: 0, errors: 0 });
+    expect(
+      memory.ledger
+        .listRecentEvents({ agentId: "jake", limit: 100 })
+        .some((event) => event.content.includes("circuit C")),
+    ).toBe(false);
+  });
+
+  it("imports more than 256 Markdown sources with no rolling file ceiling", async () => {
+    const memory = open();
+    const memoryDir = path.join(tmpDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    const artifacts = await Promise.all(
+      Array.from({ length: 300 }, async (_, index) => {
+        const file = path.join(memoryDir, `fact-${index}.md`);
+        await fs.writeFile(file, `Fact ${index}: durable value ${index * 17}.`, "utf8");
+        return artifact(file, `memory/fact-${index}.md`);
+      }),
+    );
+
+    expect(await memory.reconcileWorkspaceMarkdown(artifacts)).toMatchObject({
+      files: 300,
+      changed: 300,
+      captured: 300,
+      errors: 0,
+    });
+    expect(await memory.reconcileWorkspaceMarkdown(artifacts)).toMatchObject({
+      files: 300,
+      changed: 0,
+      unchanged: 300,
+      captured: 0,
+      errors: 0,
+    });
   });
 });

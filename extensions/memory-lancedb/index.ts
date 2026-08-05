@@ -20,6 +20,7 @@ import { BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES } from "openclaw/plugin-sdk/chat
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import type { MemoryEmbeddingProvider } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
+import { resolveMemoryDreamingWorkspaces } from "openclaw/plugin-sdk/memory-core-host-status";
 import { MESSAGE_TOOL_DELIVERY_HINTS } from "openclaw/plugin-sdk/message-tool-delivery-hints";
 import {
   parseStrictPositiveInteger,
@@ -2470,6 +2471,25 @@ export default definePluginEntry({
           }
           durableRuntime.ledger.setMetadata(migrationKey, "1");
           api.logger.info?.(`memory-v2: migrated ${legacy.length} legacy memories`);
+        }
+        try {
+          const { listMemoryHostPublicArtifacts } = await loadMemoryHostCoreModule();
+          const liveConfig = (api.runtime.config?.current?.() ?? api.config) as OpenClawConfig;
+          const artifacts = await listMemoryHostPublicArtifacts({
+            cfg: liveConfig,
+          });
+          const result = await durableRuntime.reconcileWorkspaceMarkdown(artifacts, {
+            activeWorkspaceDirs: resolveMemoryDreamingWorkspaces(liveConfig).map(
+              (workspace) => workspace.workspaceDir,
+            ),
+          });
+          api.logger.info?.(
+            `memory-v2: workspace Markdown reconciliation tracked ${result.files} sources; ` +
+              `changed=${result.changed}, unchanged=${result.unchanged}, removed=${result.removed}, ` +
+              `preserved=${result.preserved}, captured=${result.captured}, errors=${result.errors}`,
+          );
+        } catch (error) {
+          logDurableHookFailure("workspace Markdown reconciliation", error);
         }
         if (cfg.durableMemory.startupReconcile) {
           const result = await durableRuntime.reconcileStateDir(resolveStateDir());

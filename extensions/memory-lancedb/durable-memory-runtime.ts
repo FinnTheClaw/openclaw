@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/routing";
@@ -16,6 +16,9 @@ const DEFAULT_PROJECTION_BATCH = 32;
 const DEFAULT_PROJECTION_CONCURRENCY = 4;
 const DEFAULT_PROJECTION_LEASE_MS = 120_000;
 const MAX_PROJECTION_PASSES_PER_TICK = 8;
+const WORKSPACE_MARKDOWN_SOURCE_KIND = "workspace_memory_markdown";
+const WORKSPACE_MARKDOWN_CHUNK_CHARS = 3_500;
+const WORKSPACE_MARKDOWN_RECONCILE_CONCURRENCY = 8;
 
 export type DurableMemoryLogger = {
   debug?: (message: string) => void;
@@ -39,6 +42,25 @@ export type DurableMemoryRuntimeOptions = {
   projectionBatch?: number;
   projectionConcurrency?: number;
   embeddingTimeoutMs?: number;
+};
+
+export type WorkspaceMemoryArtifact = {
+  kind: string;
+  workspaceDir: string;
+  relativePath: string;
+  absolutePath: string;
+  agentIds: string[];
+  contentType: "markdown" | "json" | "text";
+};
+
+export type WorkspaceMarkdownReconcileResult = {
+  files: number;
+  changed: number;
+  unchanged: number;
+  removed: number;
+  preserved: number;
+  captured: number;
+  errors: number;
 };
 
 type MessageCaptureContext = {
@@ -145,6 +167,56 @@ function projectionImportance(event: ProjectionLease): number {
     default:
       return 0.25;
   }
+}
+
+function chunkMarkdown(text: string, maxChars = WORKSPACE_MARKDOWN_CHUNK_CHARS): string[] {
+  const normalized = text.replaceAll("\r\n", "\n").trim();
+  if (!normalized) {
+    return [];
+  }
+  const blocks = normalized
+    .split(/\n{2,}/u)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  const chunks: string[] = [];
+  let current = "";
+  const flush = () => {
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+  };
+  for (const block of blocks) {
+    const candidate = current ? `${current}\n\n${block}` : block;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      continue;
+    }
+    flush();
+    if (block.length <= maxChars) {
+      current = block;
+      continue;
+    }
+    let remainder = block;
+    while (remainder.length > maxChars) {
+      let splitAt = remainder.lastIndexOf("\n", maxChars);
+      if (splitAt < Math.floor(maxChars * 0.6)) {
+        splitAt = remainder.lastIndexOf(" ", maxChars);
+      }
+      if (splitAt < Math.floor(maxChars * 0.6)) {
+        splitAt = maxChars;
+      }
+      chunks.push(remainder.slice(0, splitAt).trim());
+      remainder = remainder.slice(splitAt).trimStart();
+    }
+    current = remainder;
+  }
+  flush();
+  return chunks.filter(Boolean);
+}
+
+function workspaceSourceKey(agentId: string, absolutePath: string): string {
+  return `${agentId}\u0000${absolutePath}`;
 }
 
 async function mapConcurrent<T, R>(
@@ -457,6 +529,194 @@ export class DurableMemoryRuntime {
       }
     }
     return { files, captured };
+  }
+
+  /**
+   * Imports canonical MEMORY.md and recursively discovered memory Markdown artifacts into the durable
+   * ledger. SQLite checkpoints make unchanged startup work stat-only, while
+   * deterministic event IDs make interrupted updates idempotent. The ledger is
+   * authoritative; the vector projection remains rebuildable.
+   */
+  async reconcileWorkspaceMarkdown(
+    artifacts: WorkspaceMemoryArtifact[],
+    options?: { activeWorkspaceDirs?: string[] },
+  ): Promise<WorkspaceMarkdownReconcileResult> {
+    const activeWorkspaceDirs = new Set(
+      (options?.activeWorkspaceDirs ?? artifacts.map((artifact) => artifact.workspaceDir)).map(
+        (workspaceDir) => path.resolve(workspaceDir),
+      ),
+    );
+    const desired = new Map<
+      string,
+      { artifact: WorkspaceMemoryArtifact; agentId: string; absolutePath: string }
+    >();
+    for (const artifact of artifacts) {
+      if (artifact.contentType !== "markdown") {
+        continue;
+      }
+      const absolutePath = path.resolve(artifact.absolutePath);
+      for (const rawAgentId of artifact.agentIds) {
+        const agentId = rawAgentId.trim();
+        if (!agentId) {
+          continue;
+        }
+        desired.set(workspaceSourceKey(agentId, absolutePath), { artifact, agentId, absolutePath });
+      }
+    }
+
+    const totals: WorkspaceMarkdownReconcileResult = {
+      files: desired.size,
+      changed: 0,
+      unchanged: 0,
+      removed: 0,
+      preserved: 0,
+      captured: 0,
+      errors: 0,
+    };
+    const settled = await mapConcurrent(
+      [...desired.values()],
+      WORKSPACE_MARKDOWN_RECONCILE_CONCURRENCY,
+      async (source) => await this.reconcileWorkspaceMarkdownSource(source),
+    );
+    for (const result of settled) {
+      if (result.status === "rejected") {
+        totals.errors++;
+        this.options.logger.warn?.(
+          `memory-v2: Markdown reconciliation failed: ${String(result.reason)}`,
+        );
+        continue;
+      }
+      totals.changed += result.value.changed ? 1 : 0;
+      totals.unchanged += result.value.changed ? 0 : 1;
+      totals.captured += result.value.captured;
+    }
+
+    for (const checkpoint of this.ledger.listSourceCheckpoints({
+      sourceKind: WORKSPACE_MARKDOWN_SOURCE_KIND,
+    })) {
+      if (desired.has(workspaceSourceKey(checkpoint.agentId, checkpoint.sourcePath))) {
+        continue;
+      }
+      if (activeWorkspaceDirs.has(path.resolve(checkpoint.workspaceDir))) {
+        try {
+          const existing = await stat(checkpoint.sourcePath);
+          if (existing.isFile()) {
+            totals.preserved++;
+            continue;
+          }
+        } catch (error) {
+          const code = asRecord(error)?.code;
+          if (code !== "ENOENT") {
+            totals.errors++;
+            totals.preserved++;
+            this.options.logger.warn?.(
+              `memory-v2: preserving undiscovered Markdown source after stat failure: ${String(error)}`,
+            );
+            continue;
+          }
+        }
+      }
+      for (const eventId of checkpoint.eventIds) {
+        this.ledger.deleteEvent(eventId, "workspace_memory_source_removed");
+        await this.index.delete(eventId);
+      }
+      this.ledger.deleteSourceCheckpoint(checkpoint);
+      totals.removed++;
+    }
+    if (totals.captured > 0) {
+      this.scheduleProjection();
+    }
+    return totals;
+  }
+
+  private async reconcileWorkspaceMarkdownSource(source: {
+    artifact: WorkspaceMemoryArtifact;
+    agentId: string;
+    absolutePath: string;
+  }): Promise<{ changed: boolean; captured: number }> {
+    const before = await stat(source.absolutePath);
+    if (!before.isFile()) {
+      throw new Error(`${source.absolutePath} is not a regular file`);
+    }
+    const sourceIdentity = `${String(before.dev)}:${String(before.ino)}`;
+    const prior = this.ledger.getSourceCheckpoint({
+      sourceKind: WORKSPACE_MARKDOWN_SOURCE_KIND,
+      agentId: source.agentId,
+      sourcePath: source.absolutePath,
+    });
+    if (
+      prior?.sourceIdentity === sourceIdentity &&
+      prior.sizeBytes === before.size &&
+      prior.mtimeMs === before.mtimeMs
+    ) {
+      return { changed: false, captured: 0 };
+    }
+
+    const text = await readFile(source.absolutePath, "utf8");
+    const after = await stat(source.absolutePath);
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs
+    ) {
+      throw new Error(`${source.absolutePath} changed while it was being read`);
+    }
+    const contentSha256 = sha256(text);
+    if (prior?.contentSha256 === contentSha256) {
+      this.ledger.upsertSourceCheckpoint({
+        ...prior,
+        workspaceDir: path.resolve(source.artifact.workspaceDir),
+        sourceIdentity,
+        sizeBytes: after.size,
+        mtimeMs: after.mtimeMs,
+      });
+      return { changed: false, captured: 0 };
+    }
+
+    const chunks = chunkMarkdown(text);
+    const inputs: MemoryEventInput[] = chunks.map((content, chunkIndex) => ({
+      agentId: source.agentId,
+      role: "user",
+      content,
+      sourceKind: WORKSPACE_MARKDOWN_SOURCE_KIND,
+      sourceRef: `${source.absolutePath}#chunk=${chunkIndex + 1}`,
+      observedAt: Math.floor(after.mtimeMs),
+      externalId: `workspace-markdown:v1:${sha256(source.absolutePath)}:${contentSha256}:${chunkIndex}`,
+      metadata: {
+        workspaceDir: source.artifact.workspaceDir,
+        relativePath: source.artifact.relativePath,
+        artifactKind: source.artifact.kind,
+        chunkIndex,
+        chunkCount: chunks.length,
+        category: source.artifact.kind === "memory-root" ? "canonical" : "episodic",
+        importance: source.artifact.kind === "memory-root" ? 0.95 : 0.8,
+        confidence: 1,
+        authority: source.artifact.kind === "memory-root" ? 1 : 0.9,
+      },
+    }));
+    const stored = this.ledger.appendEvents(inputs);
+    const eventIds = stored.map((result) => result.event.eventId);
+    const retained = new Set(eventIds);
+    for (const eventId of prior?.eventIds ?? []) {
+      if (retained.has(eventId)) {
+        continue;
+      }
+      this.ledger.deleteEvent(eventId, "workspace_memory_source_changed");
+      await this.index.delete(eventId);
+    }
+    this.ledger.upsertSourceCheckpoint({
+      sourceKind: WORKSPACE_MARKDOWN_SOURCE_KIND,
+      agentId: source.agentId,
+      workspaceDir: path.resolve(source.artifact.workspaceDir),
+      sourcePath: source.absolutePath,
+      sourceIdentity,
+      sizeBytes: after.size,
+      mtimeMs: after.mtimeMs,
+      contentSha256,
+      eventIds,
+    });
+    return { changed: true, captured: stored.filter((result) => result.inserted).length };
   }
 
   scheduleProjection(): void {

@@ -427,4 +427,48 @@ describe("TemporalMemoryLedger", () => {
     }
     expect(db.getStats()).toMatchObject({ pendingMaterialization: 0 });
   });
+
+  it("tracks an unbounded set of source checkpoints without a monolithic registry", () => {
+    const db = open();
+    for (let index = 0; index < 300; index++) {
+      db.upsertSourceCheckpoint({
+        sourceKind: "workspace_memory_markdown",
+        agentId: index % 2 === 0 ? "finn" : "jake",
+        workspaceDir: "/workspace",
+        sourcePath: `/workspace/memory/note-${index}.md`,
+        sourceIdentity: `dev:inode-${index}`,
+        sizeBytes: 100 + index,
+        mtimeMs: 1_000 + index,
+        contentSha256: `sha-${index}`,
+        eventIds: [`event-${index}-a`, `event-${index}-b`],
+        updatedAt: 2_000 + index,
+      });
+    }
+
+    expect(db.listSourceCheckpoints({ sourceKind: "workspace_memory_markdown" })).toHaveLength(300);
+    expect(
+      db.getSourceCheckpoint({
+        sourceKind: "workspace_memory_markdown",
+        agentId: "jake",
+        sourcePath: "/workspace/memory/note-299.md",
+      }),
+    ).toMatchObject({
+      sourceIdentity: "dev:inode-299",
+      contentSha256: "sha-299",
+      eventIds: ["event-299-a", "event-299-b"],
+    });
+    expect(
+      db.deleteSourceCheckpoint({
+        sourceKind: "workspace_memory_markdown",
+        agentId: "jake",
+        sourcePath: "/workspace/memory/note-299.md",
+      }),
+    ).toBe(true);
+    expect(
+      db.listSourceCheckpoints({
+        sourceKind: "workspace_memory_markdown",
+        agentId: "jake",
+      }),
+    ).toHaveLength(149);
+  });
 });

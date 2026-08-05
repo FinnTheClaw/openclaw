@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const DEFAULT_LEASE_MS = 60_000;
 const DEFAULT_MAX_PROJECTION_ATTEMPTS = 12;
 
@@ -146,6 +146,19 @@ export type MemoryIngestCursor = {
   byteOffset: number;
   lineNumber: number;
   lastEventId?: string;
+  updatedAt: number;
+};
+
+export type MemorySourceCheckpoint = {
+  sourceKind: string;
+  agentId: string;
+  workspaceDir: string;
+  sourcePath: string;
+  sourceIdentity: string;
+  sizeBytes: number;
+  mtimeMs: number;
+  contentSha256: string;
+  eventIds: string[];
   updatedAt: number;
 };
 
@@ -295,6 +308,34 @@ function rowToSummary(row: SqlRow): StoredSummaryNode {
   };
 }
 
+function rowToSourceCheckpoint(row: SqlRow): MemorySourceCheckpoint {
+  let eventIds: string[] = [];
+  if (typeof row.event_ids_json === "string") {
+    try {
+      const parsed = JSON.parse(row.event_ids_json) as unknown;
+      if (Array.isArray(parsed)) {
+        eventIds = parsed.filter(
+          (entry): entry is string => typeof entry === "string" && entry.length > 0,
+        );
+      }
+    } catch {
+      // A malformed checkpoint is treated as empty so reconciliation safely rebuilds it.
+    }
+  }
+  return {
+    sourceKind: String(row.source_kind),
+    agentId: String(row.agent_id),
+    workspaceDir: String(row.workspace_dir),
+    sourcePath: String(row.source_path),
+    sourceIdentity: String(row.source_identity),
+    sizeBytes: Number(row.size_bytes),
+    mtimeMs: Number(row.mtime_ms),
+    contentSha256: String(row.content_sha256),
+    eventIds,
+    updatedAt: Number(row.updated_at),
+  };
+}
+
 function utcBucket(timestamp: number, level: MemorySummaryLevel): { start: number; end: number } {
   const date = new Date(timestamp);
   let start: number;
@@ -440,14 +481,30 @@ export class TemporalMemoryLedger {
       CREATE INDEX IF NOT EXISTS memory_materialization_ready
         ON memory_materialization_outbox(state, next_attempt_at, lease_until, updated_at);
 
-      CREATE TABLE IF NOT EXISTS memory_ingest_cursors (
+                CREATE TABLE IF NOT EXISTS memory_ingest_cursors (
         source_path TEXT PRIMARY KEY,
         source_identity TEXT NOT NULL,
         byte_offset INTEGER NOT NULL DEFAULT 0,
         line_number INTEGER NOT NULL DEFAULT 0,
         last_event_id TEXT,
         updated_at INTEGER NOT NULL
-      ) STRICT;
+                ) STRICT;
+
+                CREATE TABLE IF NOT EXISTS memory_source_checkpoints (
+                  source_kind TEXT NOT NULL,
+                  agent_id TEXT NOT NULL,
+                  workspace_dir TEXT NOT NULL,
+                  source_path TEXT NOT NULL,
+                  source_identity TEXT NOT NULL,
+                  size_bytes INTEGER NOT NULL,
+                  mtime_ms REAL NOT NULL,
+                  content_sha256 TEXT NOT NULL,
+                  event_ids_json TEXT NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  PRIMARY KEY(source_kind, agent_id, source_path)
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS memory_source_checkpoints_kind
+                  ON memory_source_checkpoints(source_kind, agent_id, updated_at);
 
       CREATE TABLE IF NOT EXISTS memory_fact_revisions (
         revision_id TEXT PRIMARY KEY,
@@ -1468,6 +1525,103 @@ export class TemporalMemoryLedger {
       lastEventId: optionalString(row.last_event_id),
       updatedAt: Number(row.updated_at),
     };
+  }
+
+  getSourceCheckpoint(options: {
+    sourceKind: string;
+    agentId: string;
+    sourcePath: string;
+  }): MemorySourceCheckpoint | undefined {
+    this.assertOpen();
+    const row = this.db
+      .prepare(
+        "SELECT * FROM memory_source_checkpoints " +
+          "WHERE source_kind = ? AND agent_id = ? AND source_path = ?",
+      )
+      .get(
+        normalizeRequired(options.sourceKind, "sourceKind"),
+        normalizeRequired(options.agentId, "agentId"),
+        normalizeRequired(options.sourcePath, "sourcePath"),
+      ) as SqlRow | undefined;
+    return row ? rowToSourceCheckpoint(row) : undefined;
+  }
+
+  listSourceCheckpoints(options: {
+    sourceKind: string;
+    agentId?: string;
+  }): MemorySourceCheckpoint[] {
+    this.assertOpen();
+    const sourceKind = normalizeRequired(options.sourceKind, "sourceKind");
+    const rows = options.agentId
+      ? (this.db
+          .prepare(
+            "SELECT * FROM memory_source_checkpoints " +
+              "WHERE source_kind = ? AND agent_id = ? ORDER BY source_path",
+          )
+          .all(sourceKind, normalizeRequired(options.agentId, "agentId")) as SqlRow[])
+      : (this.db
+          .prepare(
+            "SELECT * FROM memory_source_checkpoints " +
+              "WHERE source_kind = ? ORDER BY agent_id, source_path",
+          )
+          .all(sourceKind) as SqlRow[]);
+    return rows.map(rowToSourceCheckpoint);
+  }
+
+  upsertSourceCheckpoint(
+    checkpoint: Omit<MemorySourceCheckpoint, "updatedAt"> & { updatedAt?: number },
+  ): void {
+    this.assertOpen();
+    const updatedAt = finiteTimestamp(checkpoint.updatedAt, Date.now());
+    this.db
+      .prepare(`
+        INSERT INTO memory_source_checkpoints(
+          source_kind, agent_id, workspace_dir, source_path, source_identity, size_bytes, mtime_ms,
+          content_sha256, event_ids_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_kind, agent_id, source_path) DO UPDATE SET
+          workspace_dir = excluded.workspace_dir,
+          source_identity = excluded.source_identity,
+          size_bytes = excluded.size_bytes,
+          mtime_ms = excluded.mtime_ms,
+          content_sha256 = excluded.content_sha256,
+          event_ids_json = excluded.event_ids_json,
+          updated_at = excluded.updated_at
+      `)
+      .run(
+        normalizeRequired(checkpoint.sourceKind, "sourceKind"),
+        normalizeRequired(checkpoint.agentId, "agentId"),
+        normalizeRequired(checkpoint.workspaceDir, "workspaceDir"),
+        normalizeRequired(checkpoint.sourcePath, "sourcePath"),
+        normalizeRequired(checkpoint.sourceIdentity, "sourceIdentity"),
+        Math.max(0, Math.floor(checkpoint.sizeBytes)),
+        Math.max(0, checkpoint.mtimeMs),
+        normalizeRequired(checkpoint.contentSha256, "contentSha256"),
+        JSON.stringify([
+          ...new Set(checkpoint.eventIds.map((id) => normalizeRequired(id, "eventId"))),
+        ]),
+        updatedAt,
+      );
+  }
+
+  deleteSourceCheckpoint(options: {
+    sourceKind: string;
+    agentId: string;
+    sourcePath: string;
+  }): boolean {
+    this.assertOpen();
+    return (
+      this.db
+        .prepare(
+          "DELETE FROM memory_source_checkpoints " +
+            "WHERE source_kind = ? AND agent_id = ? AND source_path = ?",
+        )
+        .run(
+          normalizeRequired(options.sourceKind, "sourceKind"),
+          normalizeRequired(options.agentId, "agentId"),
+          normalizeRequired(options.sourcePath, "sourcePath"),
+        ).changes > 0
+    );
   }
 
   listRecentEvents(options: { agentId: string; limit?: number }): StoredMemoryEvent[] {

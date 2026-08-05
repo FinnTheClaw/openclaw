@@ -3939,6 +3939,13 @@ describe("memory plugin e2e", () => {
       openAiPost: post,
       loadLanceDbModule: vi.fn(async () => await import("@lancedb/lancedb")),
       run: async (dynamicMemoryPlugin) => {
+        const workspaceDir = path.join(getTmpDir(), "durable-hook-workspace");
+        await fs.mkdir(workspaceDir, { recursive: true });
+        await fs.writeFile(
+          path.join(workspaceDir, "MEMORY.md"),
+          "# Canonical\n\nJuniper is the irrigation controller.\n",
+          "utf8",
+        );
         const on = vi.fn();
         const services: Array<{
           start?: () => Promise<void> | void;
@@ -3962,7 +3969,13 @@ describe("memory plugin e2e", () => {
               startupReconcile: false,
             },
           },
-          runtime: { config: { current: () => ({}) } },
+          runtime: {
+            config: {
+              current: () => ({
+                agents: { list: [{ id: "main", default: true, workspace: workspaceDir }] },
+              }),
+            },
+          },
           logger: {
             info: vi.fn(),
             warn: vi.fn(),
@@ -3980,6 +3993,20 @@ describe("memory plugin e2e", () => {
         };
         dynamicMemoryPlugin.register(mockApi as any);
         await services[0]?.start?.();
+        hookHandler(on, "gateway_start")?.({}, {});
+        for (let attempt = 0; attempt < 50; attempt++) {
+          if (
+            mockApi.logger.info.mock.calls.some((call: unknown[]) =>
+              String(call[0]).includes("workspace Markdown reconciliation tracked 1 sources"),
+            )
+          ) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(mockApi.logger.info).toHaveBeenCalledWith(
+          expect.stringContaining("workspace Markdown reconciliation tracked 1 sources"),
+        );
 
         const receive = hookHandler(on, "message_received");
         receive?.(
@@ -4014,7 +4041,10 @@ describe("memory plugin e2e", () => {
         const ledger = new TemporalMemoryLedger(ledgerPath);
         try {
           expect(ledger.verifyIntegrity()).toEqual({ ok: true, messages: ["ok"] });
-          expect(ledger.getStats()).toMatchObject({ events: 2 });
+          expect(ledger.getStats()).toMatchObject({ events: 3 });
+          expect(
+            ledger.listSourceCheckpoints({ sourceKind: "workspace_memory_markdown" }),
+          ).toHaveLength(1);
         } finally {
           ledger.close();
         }
