@@ -50,6 +50,7 @@ import {
   OpenAICompatibleFactExtractor,
   OpenAICompatibleMemorySummarizer,
 } from "./openai-memory-consolidator.js";
+import { runMemoryScaleCertification } from "./scale-certification.js";
 
 // ============================================================================
 // Types
@@ -2211,6 +2212,29 @@ export default definePluginEntry({
             const resolved = api.resolvePath(String(snapshotPath));
             durableRuntime.ledger.createSnapshot(resolved);
             console.log(JSON.stringify({ created: resolved }, null, 2));
+          });
+
+        memory
+          .command("certify")
+          .description("Run an isolated durable-memory scale and recall certification")
+          .option("--facts <n>", "Synthetic fact count", "25000")
+          .option("--queries <n>", "Random recall query count", "200")
+          .option("--directory <path>", "Dedicated certification directory")
+          .option("--keep", "Keep an automatically-created temporary directory", false)
+          .action(async (opts) => {
+            const facts = parsePositiveIntegerOption(opts.facts, "--facts") ?? 25_000;
+            const queries = parsePositiveIntegerOption(opts.queries, "--queries") ?? 200;
+            const directory = opts.directory ? api.resolvePath(String(opts.directory)) : undefined;
+            const report = await runMemoryScaleCertification({
+              facts,
+              queries,
+              directory,
+              keep: Boolean(opts.keep),
+            });
+            console.log(JSON.stringify(report, null, 2));
+            if (report.status !== "PASS") {
+              process.exitCode = 1;
+            }
           });
       },
       { commands: ["ltm"] },
