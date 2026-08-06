@@ -54,6 +54,7 @@ import {
   OpenAICompatibleMemorySummarizer,
 } from "./openai-memory-consolidator.js";
 import { runMemoryScaleCertification } from "./scale-certification.js";
+import type { DeadLetterQueue } from "./temporal-ledger.js";
 
 // ============================================================================
 // Types
@@ -214,6 +215,14 @@ function parsePositiveIntegerOption(value: string | undefined, flag: string): nu
     throw new Error(`${flag} must be a positive integer`);
   }
   return parsed;
+}
+
+export function parseDeadLetterQueue(value: string): DeadLetterQueue {
+  const queue = value.trim().toLowerCase();
+  if (queue === "projection" || queue === "extraction" || queue === "all") {
+    return queue;
+  }
+  throw new Error("--queue must be projection, extraction, or all");
 }
 
 type CertifyCliOptions = {
@@ -2297,6 +2306,21 @@ export default definePluginEntry({
             const resolved = resolveMemoryCliPath(String(snapshotPath));
             durableRuntime.ledger.createSnapshot(resolved);
             console.log(JSON.stringify({ created: resolved }, null, 2));
+          });
+
+        memory
+          .command("retry-dead")
+          .description("Atomically requeue selected durable-memory dead letters")
+          .requiredOption("--queue <queue>", "Queue to recover: projection, extraction, or all")
+          .action((opts) => {
+            if (!durableRuntime || !resolveCurrentHookConfig().durableMemory.enabled) {
+              throw new Error("durable memory is not enabled");
+            }
+            const result = durableRuntime.ledger.requeueDeadLetters({
+              queue: parseDeadLetterQueue(opts.queue),
+            });
+            scheduleDurableWorkers();
+            console.log(JSON.stringify(result, null, 2));
           });
 
         memory

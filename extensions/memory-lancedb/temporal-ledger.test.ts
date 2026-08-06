@@ -118,6 +118,84 @@ describe("TemporalMemoryLedger", () => {
     expect(db.getStats()).toMatchObject({ events: 1, deadProjection: 1 });
   });
 
+  it("atomically requeues selected dead-letter work without deleting source events", () => {
+    const db = open();
+    const event = db.appendEvent({
+      agentId: "jake",
+      role: "user",
+      content: "The greenhouse controller is named Juniper.",
+      sourceKind: "message_received",
+      externalId: "dead-letter-recovery",
+    }).event;
+
+    db.claimProjectionBatch({ owner: "projection-worker", limit: 1, now: 10_000 });
+    expect(
+      db.markProjectionFailed({
+        eventId: event.eventId,
+        owner: "projection-worker",
+        error: "invalid embedding",
+        maxAttempts: 1,
+        now: 10_001,
+      }),
+    ).toBe("dead");
+    db.claimFactExtractionBatch({ owner: "extraction-worker", limit: 1, now: 10_000 });
+    expect(
+      db.markFactExtractionFailed({
+        eventId: event.eventId,
+        owner: "extraction-worker",
+        error: "generation unavailable",
+        maxAttempts: 1,
+        now: 10_001,
+      }),
+    ).toBe("dead");
+    expect(db.getStats()).toMatchObject({
+      events: 1,
+      deadProjection: 1,
+      deadExtraction: 1,
+    });
+
+    expect(db.requeueDeadLetters({ queue: "projection", now: 20_000 })).toEqual({
+      queue: "projection",
+      projection: 1,
+      extraction: 0,
+      total: 1,
+      recoveredAt: 20_000,
+    });
+    expect(db.getStats()).toMatchObject({
+      events: 1,
+      pendingProjection: 1,
+      deadProjection: 0,
+      deadExtraction: 1,
+    });
+    expect(
+      db.claimProjectionBatch({ owner: "projection-recovery", limit: 1, now: 20_001 }),
+    ).toEqual([expect.objectContaining({ eventId: event.eventId, attempts: 1 })]);
+
+    expect(db.requeueDeadLetters({ queue: "extraction", now: 21_000 })).toEqual({
+      queue: "extraction",
+      projection: 0,
+      extraction: 1,
+      total: 1,
+      recoveredAt: 21_000,
+    });
+    expect(
+      db.claimFactExtractionBatch({
+        owner: "extraction-recovery",
+        limit: 1,
+        now: 21_001,
+      }),
+    ).toEqual([expect.objectContaining({ eventId: event.eventId, attempts: 1 })]);
+
+    expect(db.requeueDeadLetters({ queue: "all", now: 22_000 })).toEqual({
+      queue: "all",
+      projection: 0,
+      extraction: 0,
+      total: 0,
+      recoveredAt: 22_000,
+    });
+    expect(db.getStats()).toMatchObject({ events: 1 });
+  });
+
   it("preserves temporal fact revisions while exposing only the latest active value", () => {
     const db = open();
     const oldEvidence = db.appendEvent({

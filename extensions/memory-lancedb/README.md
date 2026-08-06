@@ -26,6 +26,22 @@ bounded chunks, and records indexed per-source checkpoints. Unchanged files need
 only metadata checks; changed or deleted files retract their old projections.
 There is no memory-record or Markdown-file rollover limit.
 
+## Recover durable dead letters
+
+Repair and verify the failed dependency before retrying durable work. Preserve an
+evidence snapshot, then requeue only the affected lane:
+
+```bash
+openclaw ltm stats
+openclaw ltm snapshot ~/.openclaw/backups/memory-ledger-before-retry.sqlite3
+openclaw ltm retry-dead --queue projection
+openclaw ltm retry-dead --queue extraction
+```
+
+Use `--queue all` only when both embedding projection and fact extraction are
+healthy. Recovery is atomic and idempotent: it does not delete source events or
+their prior diagnostics, and an already-requeued lane reports zero changes.
+
 ## Configure
 
 Use the memory plugin docs for embedding provider setup, storage paths, indexing, and recall behavior:

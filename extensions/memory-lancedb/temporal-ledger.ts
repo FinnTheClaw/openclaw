@@ -140,6 +140,16 @@ export type TemporalLedgerStats = {
   pendingMaterialization: number;
 };
 
+export type DeadLetterQueue = "projection" | "extraction" | "all";
+
+export type DeadLetterRecoveryResult = {
+  queue: DeadLetterQueue;
+  projection: number;
+  extraction: number;
+  total: number;
+  recoveredAt: number;
+};
+
 export type MemoryIngestCursor = {
   sourcePath: string;
   sourceIdentity: string;
@@ -931,6 +941,63 @@ export class TemporalMemoryLedger {
         options.owner,
       );
     return state;
+  }
+
+  /**
+   * Atomically makes explicitly selected dead-letter work eligible for a new
+   * processing cycle. Source events and their prior diagnostic errors remain
+   * intact; only queue ownership, timing, and attempt state are reset.
+   * Repeating the same recovery is therefore safe and returns zero changes.
+   */
+  requeueDeadLetters(options: { queue: DeadLetterQueue; now?: number }): DeadLetterRecoveryResult {
+    this.assertOpen();
+    const queue = options.queue;
+    if (queue !== "projection" && queue !== "extraction" && queue !== "all") {
+      throw new Error("queue must be projection, extraction, or all");
+    }
+    const recoveredAt = finiteTimestamp(options.now, Date.now());
+    let projection = 0;
+    let extraction = 0;
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (queue === "projection" || queue === "all") {
+        projection = Number(
+          this.db
+            .prepare(`
+              UPDATE memory_projection_outbox
+              SET state = 'pending', attempts = 0, lease_owner = NULL,
+                  lease_until = NULL, next_attempt_at = 0, updated_at = ?
+              WHERE state = 'dead'
+            `)
+            .run(recoveredAt).changes,
+        );
+      }
+      if (queue === "extraction" || queue === "all") {
+        extraction = Number(
+          this.db
+            .prepare(`
+              UPDATE memory_fact_extraction_outbox
+              SET state = 'pending', attempts = 0, lease_owner = NULL,
+                  lease_until = NULL, next_attempt_at = 0, updated_at = ?
+              WHERE state = 'dead'
+            `)
+            .run(recoveredAt).changes,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    return {
+      queue,
+      projection,
+      extraction,
+      total: projection + extraction,
+      recoveredAt,
+    };
   }
 
   /** Explicit user deletion is the only count-reducing path. It records a

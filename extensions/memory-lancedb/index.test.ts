@@ -30,6 +30,7 @@ import memoryPlugin, {
   looksLikePromptInjection,
   normalizeEmbeddingVector,
   normalizeRecallQuery,
+  parseDeadLetterQueue,
   resolveCertifyCliOptions,
   resolveMemoryCliPath,
   sanitizeForMemoryCapture,
@@ -62,6 +63,15 @@ test("memory CLI paths do not depend on a lazy plugin path resolver", () => {
     "/var/lib/openclaw/memory",
   );
   expect(resolveMemoryCliPath("~/memory/cert", "/home/tester")).toBe("/home/tester/memory/cert");
+});
+
+test("dead-letter recovery requires an explicit valid queue", () => {
+  expect(parseDeadLetterQueue("projection")).toBe("projection");
+  expect(parseDeadLetterQueue(" EXTRACTION ")).toBe("extraction");
+  expect(parseDeadLetterQueue("all")).toBe("all");
+  expect(() => parseDeadLetterQueue("everything")).toThrow(
+    "--queue must be projection, extraction, or all",
+  );
 });
 type MemoryPluginTestConfig = {
   embedding?: {
