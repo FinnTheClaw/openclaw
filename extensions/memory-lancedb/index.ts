@@ -1644,6 +1644,7 @@ export default definePluginEntry({
       consolidator?.schedule();
     };
     let serviceActive = false;
+    let durableRetryTimer: ReturnType<typeof setInterval> | undefined;
     const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
     let memoryRecallCooldown: { until: number; error: string } | undefined;
     const resolveCurrentHookConfig = () => {
@@ -2319,7 +2320,6 @@ export default definePluginEntry({
             const result = durableRuntime.ledger.requeueDeadLetters({
               queue: parseDeadLetterQueue(opts.queue),
             });
-            scheduleDurableWorkers();
             console.log(JSON.stringify(result, null, 2));
           });
 
@@ -2742,12 +2742,20 @@ export default definePluginEntry({
       id: "memory-lancedb",
       start: () => {
         serviceActive = true;
+        if ((durableRuntime || consolidator) && !durableRetryTimer) {
+          durableRetryTimer = setInterval(scheduleDurableWorkers, 30_000);
+          durableRetryTimer.unref?.();
+        }
         api.logger.info(
           `memory-lancedb: initialized (db: ${resolvedDbPath}, model: ${cfg.embedding.model})`,
         );
       },
       stop: async () => {
         serviceActive = false;
+        if (durableRetryTimer) {
+          clearInterval(durableRetryTimer);
+          durableRetryTimer = undefined;
+        }
         await consolidator?.stop();
         await durableRuntime?.stop();
         api.logger.info("memory-lancedb: stopped");

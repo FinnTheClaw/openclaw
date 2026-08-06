@@ -40,7 +40,10 @@ openclaw ltm retry-dead --queue extraction
 
 Use `--queue all` only when both embedding projection and fact extraction are
 healthy. Recovery is atomic and idempotent: it does not delete source events or
-their prior diagnostics, and an already-requeued lane reports zero changes.
+their prior diagnostics, and an already-requeued lane reports zero changes. The
+CLI changes ledger state only; it never performs provider requests. A running
+Gateway discovers requeued and retryable work on its bounded 30-second retry
+wake, using the Gateway's configured credentials and network trust.
 
 ## Configure
 
