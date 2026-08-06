@@ -189,6 +189,7 @@ describe("DurableMemoryRuntime", () => {
 
   it("length-buckets mixed transcript rows before padded embedding allocation", async () => {
     const paddedSurfaces: number[] = [];
+    const embeddedTexts: string[] = [];
     runtime = new DurableMemoryRuntime({
       ledgerPath: path.join(tmpDir, "ledger.sqlite3"),
       projectionPath: path.join(tmpDir, "projection"),
@@ -198,6 +199,7 @@ describe("DurableMemoryRuntime", () => {
           throw new Error("single embedding path must not be used");
         },
         embedBatch: async (texts) => {
+          embeddedTexts.push(...texts);
           const paddedSurface = Math.max(...texts.map((text) => text.length)) * texts.length;
           paddedSurfaces.push(paddedSurface);
           if (paddedSurface > 30_000) {
@@ -223,7 +225,52 @@ describe("DurableMemoryRuntime", () => {
     expect(await runtime.flush()).toBe(true);
     expect(paddedSurfaces.length).toBeGreaterThan(1);
     expect(Math.max(...paddedSurfaces)).toBeLessThanOrEqual(30_000);
+    expect(Math.max(...embeddedTexts.map((text) => text.length))).toBeLessThanOrEqual(8_000);
+    expect(
+      embeddedTexts.some((text) =>
+        text.includes("durable memory middle omitted from embedding only"),
+      ),
+    ).toBe(true);
     expect((await runtime.index.getStats()).rows).toBe(lengths.length);
+  });
+
+  it("keeps full long content searchable while embedding only a bounded representation", async () => {
+    const embeddedTexts: string[] = [];
+    runtime = new DurableMemoryRuntime({
+      ledgerPath: path.join(tmpDir, "ledger.sqlite3"),
+      projectionPath: path.join(tmpDir, "projection"),
+      vectorDimensions: 8,
+      embeddings: {
+        embed: async (text) => embedding(text),
+        embedBatch: async (texts) => {
+          embeddedTexts.push(...texts);
+          return texts.map((text) => embedding(text));
+        },
+      },
+      logger: {},
+      projectionBatch: 16,
+      projectionConcurrency: 4,
+    });
+    const needle = "UNIQUE_MIDDLE_MEMORY_NEEDLE";
+    const fullContent = `${"H".repeat(7_000)}${needle}${"T".repeat(7_000)}`;
+    runtime.captureInbound({
+      agentId: "jake",
+      content: fullContent,
+      timestamp: 1,
+      messageId: "long-searchable-content",
+    });
+
+    expect(await runtime.flush()).toBe(true);
+    expect(embeddedTexts).toHaveLength(1);
+    expect(embeddedTexts[0]).toHaveLength(8_000);
+    expect(embeddedTexts[0]).not.toContain(needle);
+    const results = await runtime.index.search({
+      queryText: needle,
+      vector: embedding(needle),
+      agentId: "jake",
+      limit: 1,
+    });
+    expect(results[0]?.entry.text).toBe(fullContent);
   });
 
   it("recursively isolates one failed embedding without retrying successful siblings", async () => {

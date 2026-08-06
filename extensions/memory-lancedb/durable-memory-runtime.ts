@@ -20,6 +20,10 @@ const MAX_PROJECTION_PASSES_PER_TICK = 8;
 // padded character surface prevents one long transcript message from turning
 // an otherwise small batch into a multi-gigabyte MPS attention allocation.
 const MAX_PADDED_EMBEDDING_CHARS_PER_BATCH = 30_000;
+const MAX_EMBEDDING_CONTENT_CHARS = 8_000;
+const EMBEDDING_CONTENT_TAIL_CHARS = 2_000;
+const EMBEDDING_CONTENT_OMISSION =
+  "\n[... durable memory middle omitted from embedding only ...]\n";
 const WORKSPACE_MARKDOWN_SOURCE_KIND = "workspace_memory_markdown";
 const WORKSPACE_MARKDOWN_CHUNK_CHARS = 3_500;
 const WORKSPACE_MARKDOWN_RECONCILE_CONCURRENCY = 8;
@@ -79,6 +83,7 @@ type MessageCaptureContext = {
 type IndexedProjectionLease = {
   event: ProjectionLease;
   index: number;
+  embeddingText: string;
 };
 
 type IndexedProjectionResult = {
@@ -181,6 +186,15 @@ function projectionImportance(event: ProjectionLease): number {
     default:
       return 0.25;
   }
+}
+
+function contentForEmbedding(content: string): string {
+  if (content.length <= MAX_EMBEDDING_CONTENT_CHARS) {
+    return content;
+  }
+  const headChars =
+    MAX_EMBEDDING_CONTENT_CHARS - EMBEDDING_CONTENT_TAIL_CHARS - EMBEDDING_CONTENT_OMISSION.length;
+  return `${content.slice(0, headChars)}${EMBEDDING_CONTENT_OMISSION}${content.slice(-EMBEDDING_CONTENT_TAIL_CHARS)}`;
 }
 
 function chunkMarkdown(text: string, maxChars = WORKSPACE_MARKDOWN_CHUNK_CHARS): string[] {
@@ -887,16 +901,16 @@ export class DurableMemoryRuntime {
 
   private projectionEmbeddingBatches(leased: ProjectionLease[]): IndexedProjectionLease[][] {
     const ordered = leased
-      .map((event, index) => ({ event, index }))
+      .map((event, index) => ({ event, index, embeddingText: contentForEmbedding(event.content) }))
       .toSorted(
         (left, right) =>
-          right.event.content.length - left.event.content.length || left.index - right.index,
+          right.embeddingText.length - left.embeddingText.length || left.index - right.index,
       );
     const batches: IndexedProjectionLease[][] = [];
     let current: IndexedProjectionLease[] = [];
     let longest = 0;
     for (const item of ordered) {
-      const nextLongest = Math.max(longest, item.event.content.length);
+      const nextLongest = Math.max(longest, item.embeddingText.length);
       const exceedsCount = current.length >= this.projectionBatch;
       const exceedsPaddedBudget =
         current.length > 0 &&
@@ -907,7 +921,7 @@ export class DurableMemoryRuntime {
         longest = 0;
       }
       current.push(item);
-      longest = Math.max(longest, item.event.content.length);
+      longest = Math.max(longest, item.embeddingText.length);
     }
     if (current.length > 0) {
       batches.push(current);
@@ -920,7 +934,7 @@ export class DurableMemoryRuntime {
   ): Promise<IndexedProjectionResult[]> {
     try {
       const vectors = await this.options.embeddings.embedBatch!(
-        batch.map((item) => item.event.content),
+        batch.map((item) => item.embeddingText),
         { timeoutMs: this.embeddingTimeoutMs },
       );
       if (vectors.length !== batch.length) {
