@@ -4052,7 +4052,10 @@ describe("memory plugin e2e", () => {
         );
 
         await gatewayStop?.({ reason: "gateway stopping" }, {});
+        vi.useFakeTimers();
         await services[0]?.stop?.();
+        await vi.advanceTimersByTimeAsync(5_000);
+        vi.useRealTimers();
 
         const ledger = new TemporalMemoryLedger(ledgerPath);
         try {

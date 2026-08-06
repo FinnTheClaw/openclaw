@@ -1645,7 +1645,7 @@ export default definePluginEntry({
     };
     let serviceActive = false;
     let durableRetryTimer: ReturnType<typeof setInterval> | undefined;
-    let preserveRuntimeForGatewayRestart = false;
+    let durableCloseTimer: ReturnType<typeof setTimeout> | undefined;
     const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
     let memoryRecallCooldown: { until: number; error: string } | undefined;
     const resolveCurrentHookConfig = () => {
@@ -2526,11 +2526,10 @@ export default definePluginEntry({
       })().catch((error: unknown) => logDurableHookFailure("gateway_start recovery", error));
     });
 
-    api.on("gateway_stop", async (event) => {
+    api.on("gateway_stop", async () => {
       if (!durableRuntime) {
         return;
       }
-      preserveRuntimeForGatewayRestart = /restart/i.test(event.reason ?? "");
       const flushed = await durableRuntime.flush(5_000).catch(() => false);
       if (!flushed) {
         api.logger.warn?.(
@@ -2744,7 +2743,10 @@ export default definePluginEntry({
       id: "memory-lancedb",
       start: () => {
         serviceActive = true;
-        preserveRuntimeForGatewayRestart = false;
+        if (durableCloseTimer) {
+          clearTimeout(durableCloseTimer);
+          durableCloseTimer = undefined;
+        }
         if ((durableRuntime || consolidator) && !durableRetryTimer) {
           durableRetryTimer = setInterval(scheduleDurableWorkers, 30_000);
           durableRetryTimer.unref?.();
@@ -2759,11 +2761,18 @@ export default definePluginEntry({
           clearInterval(durableRetryTimer);
           durableRetryTimer = undefined;
         }
-        if (!preserveRuntimeForGatewayRestart) {
-          await consolidator?.stop();
-          await durableRuntime?.stop();
+        if (!durableCloseTimer) {
+          durableCloseTimer = setTimeout(() => {
+            durableCloseTimer = undefined;
+            void (async () => {
+              await consolidator?.stop();
+              await durableRuntime?.stop();
+              api.logger.info("memory-lancedb: stopped");
+            })().catch((error: unknown) => logDurableHookFailure("deferred service stop", error));
+          }, 5_000);
+          durableCloseTimer.unref?.();
         }
-        api.logger.info("memory-lancedb: stopped");
+        api.logger.info("memory-lancedb: paused; durable runtime close deferred for 5s");
       },
     });
   },

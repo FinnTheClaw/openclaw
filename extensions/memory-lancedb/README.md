@@ -45,8 +45,10 @@ CLI changes ledger state only; it never performs provider requests. A running
 Gateway discovers requeued and retryable work on its bounded 30-second retry
 wake, using the Gateway's configured credentials and network trust.
 
-Durable workers and the open ledger survive an in-process Gateway restart. A
-final Gateway shutdown still flushes, checkpoints, and closes them normally.
+Durable workers and the open ledger survive an in-process Gateway restart. The
+service defers its final runtime close for five seconds; an in-process restart
+cancels that close, while a true unload completes it after the grace period. A
+final Gateway shutdown still flushes and checkpoints before process exit.
 
 ## Configure
 
