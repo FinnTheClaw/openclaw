@@ -4041,12 +4041,18 @@ describe("memory plugin e2e", () => {
           },
           { agentId: "jake", sessionKey: "agent:jake:signal:family", channel: "signal" },
         );
+        const gatewayStop = hookHandler(on, "gateway_stop");
+        await gatewayStop?.({ reason: "gateway restarting" }, {});
         await services[0]?.stop?.();
+        await services[0]?.start?.();
         hookHandler(on, "gateway_start")?.({}, {});
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(mockApi.logger.warn).not.toHaveBeenCalledWith(
           expect.stringContaining("memory ledger is closed"),
         );
+
+        await gatewayStop?.({ reason: "gateway stopping" }, {});
+        await services[0]?.stop?.();
 
         const ledger = new TemporalMemoryLedger(ledgerPath);
         try {

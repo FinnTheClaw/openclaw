@@ -144,6 +144,23 @@ function stableRequestId(kind: string, content: string): string {
   return `memory-${kind}-${createHash("sha256").update(content).digest("hex").slice(0, 24)}`;
 }
 
+function parseStructuredContent(content: string): unknown {
+  const trimmed = content.trim();
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    const fenced = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/i);
+    if (fenced?.[1]) {
+      try {
+        return JSON.parse(fenced[1].trim()) as unknown;
+      } catch {
+        // Fall through to the stable retryable error below.
+      }
+    }
+    throw new Error("memory consolidation model returned invalid JSON");
+  }
+}
+
 class OpenAICompatibleMemoryModel {
   private readonly timeoutMs: number;
   private readonly maxInputChars: number;
@@ -211,11 +228,7 @@ class OpenAICompatibleMemoryModel {
       if (typeof content !== "string") {
         throw new Error("memory consolidation model returned no text content");
       }
-      try {
-        return JSON.parse(content) as unknown;
-      } catch {
-        throw new Error("memory consolidation model returned invalid JSON");
-      }
+      return parseStructuredContent(content);
     } finally {
       clearTimeout(timer);
     }
@@ -241,7 +254,11 @@ export class OpenAICompatibleFactExtractor implements MemoryFactExtractor {
         "one-off requests, tool narration, or unsupported inference. Use stable normalized subject " +
         "and predicate names so later corrections supersede earlier values. Preserve dates and " +
         "scope. The user is the highest-authority source for their own preferences; assistant claims " +
-        "have lower authority unless they report a verified completed action.",
+        "have lower authority unless they report a verified completed action. Return exactly one " +
+        'JSON object and no prose or Markdown. It must be {"facts":[...]} with at most 32 fact ' +
+        "objects. Every fact must contain string fields subject, predicate, object, text, category " +
+        "and numeric fields confidence and authority from 0 to 1. Optional fields are factKey, " +
+        'scope, validFrom, and validTo. Return {"facts":[]} when nothing is durable.',
       payload: {
         role: event.role,
         observedAt: event.observedAt,
@@ -270,7 +287,9 @@ export class OpenAICompatibleMemorySummarizer implements MemorySummarizer {
       system:
         "Create a compact factual temporal summary. Preserve concrete names, identifiers, dates, " +
         "decisions, outcomes, unresolved work, and corrections. Do not add advice, instructions, " +
-        "or unsupported conclusions. Prefer the newest explicit correction when sources conflict.",
+        "or unsupported conclusions. Prefer the newest explicit correction when sources conflict. " +
+        "Return exactly one JSON object and no prose or Markdown, with the shape " +
+        '{"summary":"compact factual summary"}.',
       payload: {
         level: node.level,
         bucketStart: node.bucketStart,

@@ -68,7 +68,41 @@ describe("OpenAI-compatible memory consolidation client", () => {
       type: "json_schema",
       json_schema: { strict: true },
     });
+    expect(String(body.messages[0].content)).toContain('{"facts":[...]}');
     expect(String(body.messages[1].content)).toContain("untrusted historical data");
+  });
+
+  it("accepts a single JSON Markdown fence from compatibility routes", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '```json\n{"facts":[]}\n```' } }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const extractor = new OpenAICompatibleFactExtractor({
+      baseUrl: "http://memory.local/v1",
+      model: "moira/memory",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(
+      extractor.extract({
+        eventId: "evt-fenced",
+        agentId: "jake",
+        role: "user",
+        content: "No durable fact here.",
+        sourceKind: "message_received",
+        observedAt: 1_000,
+        contentSha256: "hash",
+        metadata: {},
+        attempts: 1,
+        leaseOwner: "test",
+        leaseUntil: 10_000,
+      }),
+    ).resolves.toEqual([]);
   });
 
   it("creates temporal summaries through the same bounded model route", async () => {
@@ -101,6 +135,8 @@ describe("OpenAI-compatible memory consolidation client", () => {
       ["Juniper controls irrigation.", "Juniper uses circuit C."],
     );
     expect(summary).toBe("Juniper controls irrigation and uses circuit C.");
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, any>;
+    expect(String(body.messages[0].content)).toContain('{"summary":"compact factual summary"}');
   });
 
   it("rejects malformed model output so the durable lease can retry", async () => {

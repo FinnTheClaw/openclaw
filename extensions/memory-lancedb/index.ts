@@ -1645,6 +1645,7 @@ export default definePluginEntry({
     };
     let serviceActive = false;
     let durableRetryTimer: ReturnType<typeof setInterval> | undefined;
+    let preserveRuntimeForGatewayRestart = false;
     const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
     let memoryRecallCooldown: { until: number; error: string } | undefined;
     const resolveCurrentHookConfig = () => {
@@ -2525,10 +2526,11 @@ export default definePluginEntry({
       })().catch((error: unknown) => logDurableHookFailure("gateway_start recovery", error));
     });
 
-    api.on("gateway_stop", async () => {
+    api.on("gateway_stop", async (event) => {
       if (!durableRuntime) {
         return;
       }
+      preserveRuntimeForGatewayRestart = /restart/i.test(event.reason ?? "");
       const flushed = await durableRuntime.flush(5_000).catch(() => false);
       if (!flushed) {
         api.logger.warn?.(
@@ -2742,6 +2744,7 @@ export default definePluginEntry({
       id: "memory-lancedb",
       start: () => {
         serviceActive = true;
+        preserveRuntimeForGatewayRestart = false;
         if ((durableRuntime || consolidator) && !durableRetryTimer) {
           durableRetryTimer = setInterval(scheduleDurableWorkers, 30_000);
           durableRetryTimer.unref?.();
@@ -2756,8 +2759,10 @@ export default definePluginEntry({
           clearInterval(durableRetryTimer);
           durableRetryTimer = undefined;
         }
-        await consolidator?.stop();
-        await durableRuntime?.stop();
+        if (!preserveRuntimeForGatewayRestart) {
+          await consolidator?.stop();
+          await durableRuntime?.stop();
+        }
         api.logger.info("memory-lancedb: stopped");
       },
     });

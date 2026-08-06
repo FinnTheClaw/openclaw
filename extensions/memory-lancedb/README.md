@@ -45,6 +45,9 @@ CLI changes ledger state only; it never performs provider requests. A running
 Gateway discovers requeued and retryable work on its bounded 30-second retry
 wake, using the Gateway's configured credentials and network trust.
 
+Durable workers and the open ledger survive an in-process Gateway restart. A
+final Gateway shutdown still flushes, checkpoints, and closes them normally.
+
 ## Configure
 
 Use the memory plugin docs for embedding provider setup, storage paths, indexing, and recall behavior:
