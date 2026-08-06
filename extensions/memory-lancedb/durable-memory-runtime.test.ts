@@ -200,7 +200,7 @@ describe("DurableMemoryRuntime", () => {
         embedBatch: async (texts) => {
           const paddedSurface = Math.max(...texts.map((text) => text.length)) * texts.length;
           paddedSurfaces.push(paddedSurface);
-          if (paddedSurface > 120_000) {
+          if (paddedSurface > 30_000) {
             throw new Error("simulated MPS padded-batch OOM");
           }
           return texts.map((text) => embedding(text));
@@ -222,7 +222,7 @@ describe("DurableMemoryRuntime", () => {
 
     expect(await runtime.flush()).toBe(true);
     expect(paddedSurfaces.length).toBeGreaterThan(1);
-    expect(Math.max(...paddedSurfaces)).toBeLessThanOrEqual(120_000);
+    expect(Math.max(...paddedSurfaces)).toBeLessThanOrEqual(30_000);
     expect((await runtime.index.getStats()).rows).toBe(lengths.length);
   });
 

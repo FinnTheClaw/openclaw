@@ -19,7 +19,7 @@ const MAX_PROJECTION_PASSES_PER_TICK = 8;
 // Causal embedding batches are padded to their longest row. Bounding the
 // padded character surface prevents one long transcript message from turning
 // an otherwise small batch into a multi-gigabyte MPS attention allocation.
-const MAX_PADDED_EMBEDDING_CHARS_PER_BATCH = 120_000;
+const MAX_PADDED_EMBEDDING_CHARS_PER_BATCH = 30_000;
 const WORKSPACE_MARKDOWN_SOURCE_KIND = "workspace_memory_markdown";
 const WORKSPACE_MARKDOWN_CHUNK_CHARS = 3_500;
 const WORKSPACE_MARKDOWN_RECONCILE_CONCURRENCY = 8;
