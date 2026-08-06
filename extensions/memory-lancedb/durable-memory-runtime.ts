@@ -16,6 +16,10 @@ const DEFAULT_PROJECTION_BATCH = 32;
 const DEFAULT_PROJECTION_CONCURRENCY = 4;
 const DEFAULT_PROJECTION_LEASE_MS = 120_000;
 const MAX_PROJECTION_PASSES_PER_TICK = 8;
+// Causal embedding batches are padded to their longest row. Bounding the
+// padded character surface prevents one long transcript message from turning
+// an otherwise small batch into a multi-gigabyte MPS attention allocation.
+const MAX_PADDED_EMBEDDING_CHARS_PER_BATCH = 120_000;
 const WORKSPACE_MARKDOWN_SOURCE_KIND = "workspace_memory_markdown";
 const WORKSPACE_MARKDOWN_CHUNK_CHARS = 3_500;
 const WORKSPACE_MARKDOWN_RECONCILE_CONCURRENCY = 8;
@@ -70,6 +74,16 @@ type MessageCaptureContext = {
   conversationId?: string;
   sourceKind: string;
   sourceRef?: string;
+};
+
+type IndexedProjectionLease = {
+  event: ProjectionLease;
+  index: number;
+};
+
+type IndexedProjectionResult = {
+  index: number;
+  result: PromiseSettledResult<MemoryProjectionInput>;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -795,23 +809,22 @@ export class DurableMemoryRuntime {
       }
       let results: Array<PromiseSettledResult<MemoryProjectionInput>>;
       if (this.options.embeddings.embedBatch) {
-        try {
-          const vectors = await this.options.embeddings.embedBatch(
-            leased.map((event) => event.content),
-            { timeoutMs: this.embeddingTimeoutMs },
-          );
-          if (vectors.length !== leased.length) {
-            throw new Error(
-              `memory batch embedding returned ${vectors.length} vectors for ${leased.length} events`,
-            );
+        const indexedResults = Array.from<PromiseSettledResult<MemoryProjectionInput> | undefined>({
+          length: leased.length,
+        });
+        for (const batch of this.projectionEmbeddingBatches(leased)) {
+          const batchResults = await this.embedProjectionBatchResilient(batch);
+          for (const item of batchResults) {
+            indexedResults[item.index] = item.result;
           }
-          results = leased.map((event, index) => ({
-            status: "fulfilled" as const,
-            value: this.projectionForEvent(event, vectors[index]!),
-          }));
-        } catch (reason) {
-          results = leased.map(() => ({ status: "rejected" as const, reason }));
         }
+        results = indexedResults.map(
+          (result): PromiseSettledResult<MemoryProjectionInput> =>
+            result ?? {
+              status: "rejected",
+              reason: new Error("memory embedding microbatch did not return an indexed result"),
+            },
+        );
       } else {
         results = await mapConcurrent(
           leased,
@@ -870,6 +883,67 @@ export class DurableMemoryRuntime {
       }
     }
     this.drainRequested = true;
+  }
+
+  private projectionEmbeddingBatches(leased: ProjectionLease[]): IndexedProjectionLease[][] {
+    const ordered = leased
+      .map((event, index) => ({ event, index }))
+      .toSorted(
+        (left, right) =>
+          right.event.content.length - left.event.content.length || left.index - right.index,
+      );
+    const batches: IndexedProjectionLease[][] = [];
+    let current: IndexedProjectionLease[] = [];
+    let longest = 0;
+    for (const item of ordered) {
+      const nextLongest = Math.max(longest, item.event.content.length);
+      const exceedsCount = current.length >= this.projectionBatch;
+      const exceedsPaddedBudget =
+        current.length > 0 &&
+        nextLongest * (current.length + 1) > MAX_PADDED_EMBEDDING_CHARS_PER_BATCH;
+      if (exceedsCount || exceedsPaddedBudget) {
+        batches.push(current);
+        current = [];
+        longest = 0;
+      }
+      current.push(item);
+      longest = Math.max(longest, item.event.content.length);
+    }
+    if (current.length > 0) {
+      batches.push(current);
+    }
+    return batches;
+  }
+
+  private async embedProjectionBatchResilient(
+    batch: IndexedProjectionLease[],
+  ): Promise<IndexedProjectionResult[]> {
+    try {
+      const vectors = await this.options.embeddings.embedBatch!(
+        batch.map((item) => item.event.content),
+        { timeoutMs: this.embeddingTimeoutMs },
+      );
+      if (vectors.length !== batch.length) {
+        throw new Error(
+          `memory batch embedding returned ${vectors.length} vectors for ${batch.length} events`,
+        );
+      }
+      return batch.map((item, index) => ({
+        index: item.index,
+        result: {
+          status: "fulfilled" as const,
+          value: this.projectionForEvent(item.event, vectors[index]!),
+        },
+      }));
+    } catch (reason) {
+      if (batch.length === 1) {
+        return [{ index: batch[0]!.index, result: { status: "rejected", reason } }];
+      }
+      const midpoint = Math.ceil(batch.length / 2);
+      const left = await this.embedProjectionBatchResilient(batch.slice(0, midpoint));
+      const right = await this.embedProjectionBatchResilient(batch.slice(midpoint));
+      return [...left, ...right];
+    }
   }
 
   private projectionForEvent(event: ProjectionLease, vector: number[]): MemoryProjectionInput {

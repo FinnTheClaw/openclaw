@@ -187,6 +187,79 @@ describe("DurableMemoryRuntime", () => {
     expect(batches.length).toBeLessThanOrEqual(3);
   });
 
+  it("length-buckets mixed transcript rows before padded embedding allocation", async () => {
+    const paddedSurfaces: number[] = [];
+    runtime = new DurableMemoryRuntime({
+      ledgerPath: path.join(tmpDir, "ledger.sqlite3"),
+      projectionPath: path.join(tmpDir, "projection"),
+      vectorDimensions: 8,
+      embeddings: {
+        embed: async () => {
+          throw new Error("single embedding path must not be used");
+        },
+        embedBatch: async (texts) => {
+          const paddedSurface = Math.max(...texts.map((text) => text.length)) * texts.length;
+          paddedSurfaces.push(paddedSurface);
+          if (paddedSurface > 120_000) {
+            throw new Error("simulated MPS padded-batch OOM");
+          }
+          return texts.map((text) => embedding(text));
+        },
+      },
+      logger: {},
+      projectionBatch: 32,
+      projectionConcurrency: 4,
+    });
+    const lengths = [26_162, 15_776, 14_992, 14_931, 14_901, ...Array(27).fill(12)];
+    lengths.forEach((length, index) => {
+      runtime!.captureInbound({
+        agentId: "jake",
+        content: String(index % 10).repeat(length),
+        timestamp: index + 1,
+        messageId: `mixed-length-${index}`,
+      });
+    });
+
+    expect(await runtime.flush()).toBe(true);
+    expect(paddedSurfaces.length).toBeGreaterThan(1);
+    expect(Math.max(...paddedSurfaces)).toBeLessThanOrEqual(120_000);
+    expect((await runtime.index.getStats()).rows).toBe(lengths.length);
+  });
+
+  it("recursively isolates one failed embedding without retrying successful siblings", async () => {
+    runtime = new DurableMemoryRuntime({
+      ledgerPath: path.join(tmpDir, "ledger.sqlite3"),
+      projectionPath: path.join(tmpDir, "projection"),
+      vectorDimensions: 8,
+      embeddings: {
+        embed: async () => {
+          throw new Error("single embedding path must not be used");
+        },
+        embedBatch: async (texts) => {
+          if (texts.some((text) => text.includes("POISON"))) {
+            throw new Error("simulated row-specific embedding failure");
+          }
+          return texts.map((text) => embedding(text));
+        },
+      },
+      logger: {},
+      projectionBatch: 16,
+      projectionConcurrency: 4,
+    });
+    for (let index = 0; index < 8; index++) {
+      runtime.captureInbound({
+        agentId: "jake",
+        content: index === 3 ? "POISON" : `Healthy durable fact ${index}`,
+        timestamp: index + 1,
+        messageId: `isolated-failure-${index}`,
+      });
+    }
+
+    expect(await runtime.flush(100)).toBe(false);
+    expect(runtime.ledger.getStats()).toMatchObject({ retryProjection: 1 });
+    expect((await runtime.index.getStats()).rows).toBe(7);
+  });
+
   it("checkpoint-imports Markdown, chunks large sources, and retracts changed or removed sources", async () => {
     const memory = open();
     const root = path.join(tmpDir, "MEMORY.md");
