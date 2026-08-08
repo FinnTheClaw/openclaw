@@ -57,11 +57,13 @@ async function notifyApproved(channel: PairingChannel, id: string, accountId?: s
   await notifyPairingApproved({ channelId: channel, id, cfg, ...(accountId ? { accountId } : {}) });
 }
 
-async function maybeBootstrapCommandOwnerFromPairing(params: {
+async function bootstrapCommandOwnerFromPairing(params: {
   channel: PairingChannel;
   id: string;
 }): Promise<{ ownerEntry: string | null; bootstrapped: boolean }> {
-  // First approved pairing can seed ownerAllowFrom so command access is not left open-ended.
+  // Ownership is deliberately separate from ordinary DM pairing. Callers must
+  // opt in explicitly so approving a conversational sender cannot silently
+  // grant that sender command-owner privileges.
   const ownerEntry = formatCommandOwnerFromChannelSender(params);
   if (!ownerEntry) {
     return { ownerEntry: null, bootstrapped: false };
@@ -162,6 +164,11 @@ export function registerPairingCli(program: Command) {
     .option("--account <accountId>", "Account id (for multi-account channels)")
     .argument("<codeOrChannel>", "Pairing code (or channel when using 2 args)")
     .argument("[code]", "Pairing code (when channel is passed as the 1st arg)")
+    .option(
+      "--command-owner",
+      "Configure the approved sender as the initial command owner (explicit opt-in)",
+      false,
+    )
     .option("--notify", "Notify the requester on the same channel", false)
     .action(async (codeOrChannel, code, opts) => {
       const defaultChannel = channels.length === 1 ? channels[0] : "";
@@ -208,14 +215,22 @@ export function registerPairingCli(program: Command) {
       defaultRuntime.log(
         `${theme.success("Approved")} ${theme.muted(channel)} sender ${theme.command(approved.id)}.`,
       );
-      const ownerBootstrap = await maybeBootstrapCommandOwnerFromPairing({
-        channel,
-        id: approved.id,
-      });
-      if (ownerBootstrap.bootstrapped && ownerBootstrap.ownerEntry) {
-        defaultRuntime.log(
-          `${theme.success("Command owner configured")} ${theme.command(ownerBootstrap.ownerEntry)} ${theme.muted("(commands.ownerAllowFrom was empty).")}`,
-        );
+      if (opts.commandOwner) {
+        const ownerBootstrap = await bootstrapCommandOwnerFromPairing({
+          channel,
+          id: approved.id,
+        });
+        if (ownerBootstrap.bootstrapped && ownerBootstrap.ownerEntry) {
+          defaultRuntime.log(
+            `${theme.success("Command owner configured")} ${theme.command(ownerBootstrap.ownerEntry)} ${theme.muted("(explicit --command-owner request).")}`,
+          );
+        } else {
+          defaultRuntime.log(
+            theme.warn(
+              "Command owner was not changed because commands.ownerAllowFrom is already configured.",
+            ),
+          );
+        }
       }
 
       if (!opts.notify) {

@@ -248,7 +248,7 @@ describe("pairing cli", () => {
     );
   });
 
-  it("accepts channel as positional for approve (npm-run compatible)", async () => {
+  it("does not grant command ownership during ordinary pairing approval", async () => {
     mockApprovedPairing();
 
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -259,6 +259,23 @@ describe("pairing cli", () => {
         channel: "telegram",
         code: "ABCDEFGH",
       });
+      expect(readConfigFileSnapshotForWrite).not.toHaveBeenCalled();
+      expect(replaceConfigFile).not.toHaveBeenCalled();
+      expect(log.mock.calls).toEqual([
+        [`${theme.success("Approved")} ${theme.muted("telegram")} sender ${theme.command("123")}.`],
+      ]);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("bootstraps a command owner only with explicit opt-in", async () => {
+    mockApprovedPairing();
+
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runPairing(["pairing", "approve", "telegram", "ABCDEFGH", "--command-owner"]);
+
       const replaceCall = requireFirstMockCall(
         replaceConfigFile.mock.calls,
         "config replace",
@@ -267,7 +284,7 @@ describe("pairing cli", () => {
       expect(log.mock.calls).toEqual([
         [`${theme.success("Approved")} ${theme.muted("telegram")} sender ${theme.command("123")}.`],
         [
-          `${theme.success("Command owner configured")} ${theme.command("telegram:123")} ${theme.muted("(commands.ownerAllowFrom was empty).")}`,
+          `${theme.success("Command owner configured")} ${theme.command("telegram:123")} ${theme.muted("(explicit --command-owner request).")}`,
         ],
       ]);
     } finally {
@@ -292,9 +309,12 @@ describe("pairing cli", () => {
     });
     mockApprovedPairing();
 
-    await runPairing(["pairing", "approve", "telegram", "ABCDEFGH"]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runPairing(["pairing", "approve", "telegram", "ABCDEFGH", "--command-owner"]);
 
     expect(replaceConfigFile).not.toHaveBeenCalled();
+    expect(log.mock.calls.at(-1)?.[0]).toContain("Command owner was not changed");
+    log.mockRestore();
   });
 
   it("forwards --account for approve", async () => {
