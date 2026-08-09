@@ -152,7 +152,10 @@ export async function checkInboundAccessControl(params: {
         })({
           senderId: candidate,
           senderIdLine: `Your WhatsApp phone number: ${candidate}`,
-          meta: { name: (params.pushName ?? "").trim() || undefined },
+          meta: {
+            name: (params.pushName ?? "").trim() || undefined,
+            e164: params.senderE164 ?? undefined,
+          },
           onCreated: () => {
             logWhatsAppVerbose(
               params.verbose,

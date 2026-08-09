@@ -8,6 +8,12 @@ const mocks = vi.hoisted(() => ({
   listChannelPairingRequests: vi.fn(),
   approveChannelPairingCode: vi.fn(),
   notifyPairingApproved: vi.fn(),
+  ensureCommunicationIdentityForPairing: vi.fn(),
+  listCommunicationIdentities: vi.fn(),
+  reconcileCommunicationIdentityConfig: vi.fn(),
+  setCommunicationAdminPhone: vi.fn(),
+  adminQuestion: vi.fn(),
+  adminPromptClose: vi.fn(),
   readConfigFileSnapshotForWrite: vi.fn(),
   replaceConfigFile: vi.fn(),
   normalizeChannelId: vi.fn((raw: string) => {
@@ -32,6 +38,10 @@ const {
   listChannelPairingRequests,
   approveChannelPairingCode,
   notifyPairingApproved,
+  ensureCommunicationIdentityForPairing,
+  listCommunicationIdentities,
+  reconcileCommunicationIdentityConfig,
+  setCommunicationAdminPhone,
   readConfigFileSnapshotForWrite,
   replaceConfigFile,
   normalizeChannelId,
@@ -39,18 +49,17 @@ const {
   listPairingChannels,
 } = mocks;
 
+vi.mock("node:readline/promises", () => ({
+  createInterface: () => ({
+    question: mocks.adminQuestion,
+    close: mocks.adminPromptClose,
+  }),
+}));
+
 const pairingIdLabels: Record<string, string> = {
   telegram: "telegramUserId",
   discord: "discordUserId",
 };
-
-function requireFirstMockCall(calls: readonly unknown[][], label: string): unknown[] {
-  const call = calls.at(0);
-  if (!call) {
-    throw new Error(`expected ${label} call`);
-  }
-  return call;
-}
 
 vi.mock("../pairing/pairing-store.js", () => ({
   listChannelPairingRequests: mocks.listChannelPairingRequests,
@@ -67,6 +76,15 @@ vi.mock("../channels/plugins/index.js", () => ({
   normalizeChannelId: mocks.normalizeChannelId,
 }));
 
+vi.mock("../identity/communication-identities.js", () => ({
+  ensureCommunicationIdentityForPairing: mocks.ensureCommunicationIdentityForPairing,
+  listCommunicationIdentities: mocks.listCommunicationIdentities,
+  normalizeCommunicationPhone: (value: unknown) =>
+    typeof value === "string" && /^\+[1-9]\d{6,14}$/.test(value.trim()) ? value.trim() : null,
+  reconcileCommunicationIdentityConfig: mocks.reconcileCommunicationIdentityConfig,
+  setCommunicationAdminPhone: mocks.setCommunicationAdminPhone,
+}));
+
 vi.mock("../config/config.js", () => ({
   getRuntimeConfig: vi.fn().mockReturnValue({}),
   loadConfig: vi.fn().mockReturnValue({}),
@@ -79,15 +97,25 @@ describe("pairing cli", () => {
     listChannelPairingRequests.mockClear();
     listChannelPairingRequests.mockResolvedValue([]);
     approveChannelPairingCode.mockClear();
-    approveChannelPairingCode.mockResolvedValue({
-      id: "123",
-      entry: {
-        id: "123",
-        code: "ABCDEFGH",
-        createdAt: "2026-01-08T00:00:00Z",
-        lastSeenAt: "2026-01-08T00:00:00Z",
+    approveChannelPairingCode.mockImplementation(
+      async (params: {
+        beforeAllow?: (entry: {
+          id: string;
+          code: string;
+          createdAt: string;
+          lastSeenAt: string;
+        }) => Promise<void>;
+      }) => {
+        const entry = {
+          id: "123",
+          code: "ABCDEFGH",
+          createdAt: "2026-01-08T00:00:00Z",
+          lastSeenAt: "2026-01-08T00:00:00Z",
+        };
+        await params.beforeAllow?.(entry);
+        return { id: "123", entry };
       },
-    });
+    );
     notifyPairingApproved.mockClear();
     readConfigFileSnapshotForWrite.mockClear();
     readConfigFileSnapshotForWrite.mockResolvedValue({
@@ -110,6 +138,30 @@ describe("pairing cli", () => {
     getPairingAdapter.mockClear();
     listPairingChannels.mockClear();
     notifyPairingApproved.mockResolvedValue(undefined);
+    ensureCommunicationIdentityForPairing.mockReset();
+    ensureCommunicationIdentityForPairing.mockResolvedValue({
+      identity: {
+        id: "id-aaaaaaaaaaaaaaaaaaaaaaaa",
+        canonicalKind: "channel-peer",
+        memberAgentId: "person-aaaaaaaaaaaaaaaa",
+        workspace: "/tmp/member/workspace",
+        agentDir: "/tmp/member/agent",
+        createdAt: "2026-01-08T00:00:00Z",
+        updatedAt: "2026-01-08T00:00:00Z",
+        endpoints: [],
+      },
+      created: true,
+      endpointAdded: true,
+      bootstrappedAdmin: false,
+      isAdmin: false,
+    });
+    listCommunicationIdentities.mockReset();
+    listCommunicationIdentities.mockResolvedValue({ adminIdentityId: null, identities: [] });
+    reconcileCommunicationIdentityConfig.mockReset();
+    reconcileCommunicationIdentityConfig.mockResolvedValue({ identities: {} });
+    setCommunicationAdminPhone.mockReset();
+    mocks.adminQuestion.mockReset();
+    mocks.adminPromptClose.mockReset();
   });
 
   function createProgram() {
@@ -125,15 +177,25 @@ describe("pairing cli", () => {
   }
 
   function mockApprovedPairing() {
-    approveChannelPairingCode.mockResolvedValueOnce({
-      id: "123",
-      entry: {
-        id: "123",
-        code: "ABCDEFGH",
-        createdAt: "2026-01-08T00:00:00Z",
-        lastSeenAt: "2026-01-08T00:00:00Z",
+    approveChannelPairingCode.mockImplementationOnce(
+      async (params: {
+        beforeAllow?: (entry: {
+          id: string;
+          code: string;
+          createdAt: string;
+          lastSeenAt: string;
+        }) => Promise<void>;
+      }) => {
+        const entry = {
+          id: "123",
+          code: "ABCDEFGH",
+          createdAt: "2026-01-08T00:00:00Z",
+          lastSeenAt: "2026-01-08T00:00:00Z",
+        };
+        await params.beforeAllow?.(entry);
+        return { id: "123", entry };
       },
-    });
+    );
   }
 
   it("evaluates pairing channels when registering the CLI (not at import)", () => {
@@ -248,73 +310,93 @@ describe("pairing cli", () => {
     );
   });
 
-  it("does not grant command ownership during ordinary pairing approval", async () => {
+  it("provisions an isolated identity before ordinary pairing approval", async () => {
     mockApprovedPairing();
 
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       await runPairing(["pairing", "approve", "telegram", "ABCDEFGH"]);
 
-      expect(approveChannelPairingCode).toHaveBeenCalledWith({
+      expect(approveChannelPairingCode).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: "telegram",
+          code: "ABCDEFGH",
+          beforeAllow: expect.any(Function),
+        }),
+      );
+      expect(ensureCommunicationIdentityForPairing).toHaveBeenCalledWith({
         channel: "telegram",
-        code: "ABCDEFGH",
+        accountId: undefined,
+        peerId: "123",
+        identityPhone: undefined,
       });
       expect(readConfigFileSnapshotForWrite).not.toHaveBeenCalled();
       expect(replaceConfigFile).not.toHaveBeenCalled();
-      expect(log.mock.calls).toEqual([
-        [`${theme.success("Approved")} ${theme.muted("telegram")} sender ${theme.command("123")}.`],
-      ]);
+      expect(log.mock.calls).toHaveLength(2);
+      expect(log.mock.calls[0]?.[0]).toBe(
+        `${theme.success("Approved")} ${theme.muted("telegram")} sender ${theme.command("123")}.`,
+      );
+      expect(log.mock.calls[1]?.[0]).toContain("Isolated identity ready");
     } finally {
       log.mockRestore();
     }
   });
 
-  it("bootstraps a command owner only with explicit opt-in", async () => {
+  it("forwards an explicit canonical phone for cross-channel rebinding", async () => {
     mockApprovedPairing();
-
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      await runPairing(["pairing", "approve", "telegram", "ABCDEFGH", "--command-owner"]);
-
-      const replaceCall = requireFirstMockCall(
-        replaceConfigFile.mock.calls,
-        "config replace",
-      )[0] as { nextConfig?: { commands?: { ownerAllowFrom?: string[] } } } | undefined;
-      expect(replaceCall?.nextConfig?.commands?.ownerAllowFrom).toEqual(["telegram:123"]);
-      expect(log.mock.calls).toEqual([
-        [`${theme.success("Approved")} ${theme.muted("telegram")} sender ${theme.command("123")}.`],
-        [
-          `${theme.success("Command owner configured")} ${theme.command("telegram:123")} ${theme.muted("(explicit --command-owner request).")}`,
-        ],
+      await runPairing([
+        "pairing",
+        "approve",
+        "telegram",
+        "ABCDEFGH",
+        "--identity-phone",
+        "+15125550123",
       ]);
+      expect(ensureCommunicationIdentityForPairing).toHaveBeenCalledWith(
+        expect.objectContaining({ identityPhone: "+15125550123" }),
+      );
     } finally {
       log.mockRestore();
     }
   });
 
-  it("does not overwrite an existing command owner when approving pairing", async () => {
-    readConfigFileSnapshotForWrite.mockResolvedValueOnce({
-      snapshot: {
-        path: "/tmp/openclaw.json",
-        exists: true,
-        raw: "{}",
-        parsed: {},
-        valid: true,
-        issues: [],
-        legacyIssues: [],
-        sourceConfig: { commands: { ownerAllowFrom: ["discord:999"] } },
-        runtimeConfig: { commands: { ownerAllowFrom: ["discord:999"] } },
+  it("uses provider-supplied phone metadata for an opaque channel peer", async () => {
+    approveChannelPairingCode.mockImplementationOnce(
+      async (params: {
+        beforeAllow?: (entry: {
+          id: string;
+          code: string;
+          createdAt: string;
+          lastSeenAt: string;
+          meta?: Record<string, string>;
+        }) => Promise<void>;
+      }) => {
+        const entry = {
+          id: "signal-uuid-opaque",
+          code: "ABCDEFGH",
+          createdAt: "2026-01-08T00:00:00Z",
+          lastSeenAt: "2026-01-08T00:00:00Z",
+          meta: { e164: "+15125550123" },
+        };
+        await params.beforeAllow?.(entry);
+        return { id: entry.id, entry };
       },
-      writeOptions: {},
-    });
-    mockApprovedPairing();
-
+    );
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    await runPairing(["pairing", "approve", "telegram", "ABCDEFGH", "--command-owner"]);
-
-    expect(replaceConfigFile).not.toHaveBeenCalled();
-    expect(log.mock.calls.at(-1)?.[0]).toContain("Command owner was not changed");
-    log.mockRestore();
+    try {
+      await runPairing(["pairing", "approve", "signal", "ABCDEFGH"]);
+      expect(ensureCommunicationIdentityForPairing).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: "signal",
+          peerId: "signal-uuid-opaque",
+          identityPhone: "+15125550123",
+        }),
+      );
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("forwards --account for approve", async () => {
@@ -330,11 +412,14 @@ describe("pairing cli", () => {
       "ABCDEFGH",
     ]);
 
-    expect(approveChannelPairingCode).toHaveBeenCalledWith({
-      channel: "telegram",
-      code: "ABCDEFGH",
-      accountId: "yy",
-    });
+    expect(approveChannelPairingCode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "telegram",
+        code: "ABCDEFGH",
+        accountId: "yy",
+        beforeAllow: expect.any(Function),
+      }),
+    );
   });
 
   it("defaults approve to the sole available channel when only code is provided", async () => {
@@ -343,10 +428,62 @@ describe("pairing cli", () => {
 
     await runPairing(["pairing", "approve", "ABCDEFGH"]);
 
-    expect(approveChannelPairingCode).toHaveBeenCalledWith({
-      channel: "slack",
-      code: "ABCDEFGH",
-    });
+    expect(approveChannelPairingCode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "slack",
+        code: "ABCDEFGH",
+        beforeAllow: expect.any(Function),
+      }),
+    );
+  });
+
+  it("reconciles managed identities through the host CLI", async () => {
+    await runPairing(["pairing", "identities", "reconcile"]);
+    expect(reconcileCommunicationIdentityConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects admin transfer from a non-interactive agent process", async () => {
+    const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: false });
+    try {
+      await expect(runPairing(["pairing", "admin", "set", "+15125550123"])).rejects.toThrow(
+        "interactive host terminal",
+      );
+      expect(setCommunicationAdminPhone).not.toHaveBeenCalled();
+      expect(mocks.adminQuestion).not.toHaveBeenCalled();
+    } finally {
+      if (stdinDescriptor) {
+        Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+      }
+      if (stdoutDescriptor) {
+        Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+      }
+    }
+  });
+
+  it("transfers admin after exact confirmation in an interactive host terminal", async () => {
+    const phone = "+15125550123";
+    const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+    mocks.adminQuestion.mockResolvedValue(phone);
+    setCommunicationAdminPhone.mockResolvedValue({ id: "id-new-admin" });
+    try {
+      await runPairing(["pairing", "admin", "set", phone]);
+      expect(mocks.adminQuestion).toHaveBeenCalledWith(expect.stringContaining(phone));
+      expect(setCommunicationAdminPhone).toHaveBeenCalledWith({ phone });
+      expect(mocks.adminPromptClose).toHaveBeenCalledTimes(1);
+    } finally {
+      if (stdinDescriptor) {
+        Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+      }
+      if (stdoutDescriptor) {
+        Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+      }
+    }
   });
 
   it("keeps approve usage error when multiple channels exist and channel is omitted", async () => {

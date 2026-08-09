@@ -132,6 +132,32 @@ describe("HybridMemoryIndex", () => {
     expect(results[0]?.lexicalRank).toBe(1);
   }, 60_000);
 
+  it("never returns another agent's memory even for identical text and vectors", async () => {
+    const db = new HybridMemoryIndex(path.join(tmpDir, "lance"), 4);
+    const first = entry("private-a");
+    first.agentId = "person-a";
+    first.text = "The private recovery phrase is orchid seven.";
+    const second = entry("private-b");
+    second.agentId = "person-b";
+    second.text = first.text;
+    await db.upsertBatch([first, second]);
+
+    const personA = await db.search({
+      agentId: "person-a",
+      queryText: first.text,
+      vector: first.vector,
+      limit: 10,
+    });
+    const personB = await db.search({
+      agentId: "person-b",
+      queryText: second.text,
+      vector: second.vector,
+      limit: 10,
+    });
+    expect(personA.map((result) => result.entry.id)).toEqual(["private-a"]);
+    expect(personB.map((result) => result.entry.id)).toEqual(["private-b"]);
+  });
+
   it("updates projections idempotently and excludes superseded or future facts", async () => {
     const db = new HybridMemoryIndex(path.join(tmpDir, "lance"), 4);
     await db.upsertBatch([

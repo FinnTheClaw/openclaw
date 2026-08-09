@@ -9,6 +9,7 @@ import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope-config.js";
 import { ensureOwnerDisplaySecret } from "../agents/owner-display.js";
 import { isVerbose } from "../global-state.js";
+import { applyCommunicationIdentityRuntimeOverlay } from "../identity/communication-identity-runtime.js";
 import { loadDotEnv } from "../infra/dotenv.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import {
@@ -1471,7 +1472,11 @@ export function createConfigIO(
   }
 
   function finalizeLoadedRuntimeConfig(cfg: OpenClawConfig): OpenClawConfig {
-    const duplicates = findDuplicateAgentDirs(cfg, {
+    const isolatedConfig = applyCommunicationIdentityRuntimeOverlay({
+      config: cfg,
+      stateDir: resolveStateDir(deps.env, deps.homedir),
+    });
+    const duplicates = findDuplicateAgentDirs(isolatedConfig, {
       env: deps.env,
       homedir: deps.homedir,
     });
@@ -1479,9 +1484,10 @@ export function createConfigIO(
       throw new DuplicateAgentDirError(duplicates);
     }
 
-    applyConfigEnvVars(cfg, deps.env);
+    applyConfigEnvVars(isolatedConfig, deps.env);
 
-    const enabled = shouldEnableShellEnvFallback(deps.env) || cfg.env?.shellEnv?.enabled === true;
+    const enabled =
+      shouldEnableShellEnvFallback(deps.env) || isolatedConfig.env?.shellEnv?.enabled === true;
     if (
       enabled &&
       overrides.shellEnvFallback !== "defer" &&
@@ -1492,13 +1498,14 @@ export function createConfigIO(
         env: deps.env,
         expectedKeys: resolveShellEnvExpectedKeys(deps.env),
         logger: deps.logger,
-        timeoutMs: cfg.env?.shellEnv?.timeoutMs ?? resolveShellEnvFallbackTimeoutMs(deps.env),
+        timeoutMs:
+          isolatedConfig.env?.shellEnv?.timeoutMs ?? resolveShellEnvFallbackTimeoutMs(deps.env),
       });
     }
 
     const pendingSecret = AUTO_OWNER_DISPLAY_SECRET_BY_PATH.get(configPath);
     const ownerDisplaySecretResolution = ensureOwnerDisplaySecret(
-      cfg,
+      isolatedConfig,
       () => pendingSecret ?? crypto.randomBytes(32).toString("hex"),
     );
     const cfgWithOwnerDisplaySecret = retainGeneratedOwnerDisplaySecret({

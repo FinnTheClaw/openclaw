@@ -102,6 +102,34 @@ describe("createSandboxBridgeReadFile", () => {
     ).rejects.toThrow("Sandbox path escapes workspace root: /remote/agent/secret.png");
   });
 
+  it("rejects media paths belonging to a different communication identity workspace", async () => {
+    const identityARoot = "/tmp/openclaw-identities/person-a";
+    const identityBMedia = "/remote/workspaces/person-b/media/private.png";
+
+    await expect(
+      resolveSandboxedBridgeMediaPath({
+        sandbox: {
+          root: identityARoot,
+          workspaceOnly: true,
+          bridge: {
+            resolvePath: vi.fn(({ filePath }: { filePath: string }) =>
+              filePath === identityARoot
+                ? {
+                    relativePath: "",
+                    containerPath: "/remote/workspaces/person-a",
+                  }
+                : {
+                    relativePath: filePath,
+                    containerPath: identityBMedia,
+                  },
+            ),
+          } as unknown as SandboxFsBridge,
+        },
+        mediaPath: identityBMedia,
+      }),
+    ).rejects.toThrow(`Sandbox path escapes workspace root: ${identityBMedia}`);
+  });
+
   it("rewrites inbound media URIs before direct sandbox resolution", async () => {
     const resolvePath = vi.fn(({ filePath }: { filePath: string }) => ({
       hostPath: `/tmp/sandbox-root/${filePath}`,

@@ -385,9 +385,60 @@ describe("pairing store", () => {
           code: "ABCDEFGH",
           accountId: "yy",
           env,
+          beforeAllow: async () => {},
         }),
       ).resolves.toMatchObject({ id: "1001" });
       await expect(readChannelAllowFromStore("telegram", env, "yy")).resolves.toEqual(["1001"]);
+    });
+  });
+
+  it("provisions before allowlisting and preserves the pending request when provisioning fails", async () => {
+    await withTempStateDir(async (stateDir, env) => {
+      const created = await createTelegramPairingRequest("yy", env, "isolated-user");
+      const failure = new Error("identity projection failed");
+      let callbackCalls = 0;
+
+      await expect(
+        approveChannelPairingCode({
+          channel: "telegram",
+          code: created.code,
+          accountId: "yy",
+          env,
+          beforeAllow: async (entry) => {
+            callbackCalls += 1;
+            expect(entry.id).toBe("isolated-user");
+            expect(await readChannelAllowFromStore("telegram", env, "yy")).toEqual([]);
+            const durable = JSON.parse(
+              fsSync.readFileSync(resolvePairingFilePath(stateDir, "telegram"), "utf8"),
+            ) as { requests: Array<{ id: string }> };
+            expect(durable.requests.map((request) => request.id)).toContain("isolated-user");
+            throw failure;
+          },
+        }),
+      ).rejects.toBe(failure);
+
+      expect(callbackCalls).toBe(1);
+      await expect(readChannelAllowFromStore("telegram", env, "yy")).resolves.toEqual([]);
+      await expect(listChannelPairingRequests("telegram", env, "yy")).resolves.toMatchObject([
+        { id: "isolated-user" },
+      ]);
+
+      await expect(
+        approveChannelPairingCode({
+          channel: "telegram",
+          code: created.code,
+          accountId: "yy",
+          env,
+          beforeAllow: async () => {
+            callbackCalls += 1;
+          },
+        }),
+      ).resolves.toMatchObject({ id: "isolated-user" });
+      expect(callbackCalls).toBe(2);
+      await expect(readChannelAllowFromStore("telegram", env, "yy")).resolves.toEqual([
+        "isolated-user",
+      ]);
+      await expect(listChannelPairingRequests("telegram", env, "yy")).resolves.toEqual([]);
     });
   });
 
@@ -550,6 +601,7 @@ describe("pairing store", () => {
         channel: "telegram",
         code: created.code,
         env,
+        beforeAllow: async () => {},
       });
       expect(approved?.id).toBe("67890");
       await expectAccountScopedEntryIsolated("67890", env);
@@ -560,6 +612,7 @@ describe("pairing store", () => {
           channel: "telegram",
           code: "   ",
           env,
+          beforeAllow: async () => {},
         }),
       ).resolves.toBeNull();
       await expect(
@@ -568,6 +621,7 @@ describe("pairing store", () => {
           code: filtered.code,
           accountId: "zz",
           env,
+          beforeAllow: async () => {},
         }),
       ).resolves.toBeNull();
       const pending = await listChannelPairingRequests("telegram", env);

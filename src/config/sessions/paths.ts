@@ -196,6 +196,15 @@ function resolvePathWithinSessionsDir(
     ? path.relative(realBase, realTrimmed)
     : realTrimmed;
   if (normalized.startsWith("..") && path.isAbsolute(realTrimmed)) {
+    const explicitAgentId = opts?.agentId?.trim();
+    const extractedAgentId = extractAgentIdFromAbsoluteSessionPath(realTrimmed);
+    if (
+      explicitAgentId &&
+      extractedAgentId &&
+      normalizeAgentId(extractedAgentId) !== normalizeAgentId(explicitAgentId)
+    ) {
+      throw new Error("Session file path belongs to a different agent namespace");
+    }
     const tryAgentFallback = (agentId: string): string | undefined => {
       const normalizedAgentId = normalizeAgentId(agentId);
       const siblingSessionsDir = resolveSiblingAgentSessionsDir(realBase, normalizedAgentId);
@@ -211,14 +220,12 @@ function resolvePathWithinSessionsDir(
       );
     };
 
-    const explicitAgentId = opts?.agentId?.trim();
     if (explicitAgentId) {
       const resolvedFromAgent = tryAgentFallback(explicitAgentId);
       if (resolvedFromAgent) {
         return resolvedFromAgent;
       }
     }
-    const extractedAgentId = extractAgentIdFromAbsoluteSessionPath(realTrimmed);
     if (extractedAgentId) {
       const resolvedFromPath = tryAgentFallback(extractedAgentId);
       if (resolvedFromPath) {

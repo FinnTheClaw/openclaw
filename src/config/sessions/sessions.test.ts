@@ -73,6 +73,22 @@ describe("session path safety", () => {
     expect(resolved).toBe(path.resolve(sessionsDir, "sess-1.jsonl"));
   });
 
+  it("never follows a persisted transcript path into another agent namespace", () => {
+    const sessionsDir = "/tmp/openclaw/agents/private-a/sessions";
+    const foreign = "/tmp/openclaw/agents/private-b/sessions/foreign.jsonl";
+
+    expect(
+      resolveSessionFilePath(
+        "local-session",
+        { sessionFile: foreign },
+        { sessionsDir, agentId: "private-a" },
+      ),
+    ).toBe(path.resolve(sessionsDir, "local-session.jsonl"));
+    expect(() =>
+      resolveExplicitSessionFilePath(foreign, { sessionsDir, agentId: "private-a" }),
+    ).toThrow("different agent namespace");
+  });
+
   it("rejects explicit sessionFile paths without derived fallback", () => {
     const sessionsDir = "/tmp/openclaw/agents/main/sessions";
 

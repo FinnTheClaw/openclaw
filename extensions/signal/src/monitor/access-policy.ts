@@ -189,7 +189,10 @@ export async function handleSignalDirectMessageAccess(params: {
     })({
       senderId: params.senderId,
       senderIdLine: params.senderIdLine,
-      meta: { name: params.senderName },
+      meta: {
+        name: params.senderName,
+        e164: /^\+[1-9]\d{6,14}$/.test(params.senderId) ? params.senderId : undefined,
+      },
       sendPairingReply: params.sendPairingReply,
       onCreated: () => {
         params.log(`signal pairing request sender=${params.senderId}`);

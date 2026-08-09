@@ -1,3 +1,4 @@
+import { createInterface } from "node:readline/promises";
 // Pairing CLI for listing and approving channel DM pairing requests.
 import {
   normalizeLowercaseStringOrEmpty,
@@ -9,15 +10,15 @@ import { getTerminalTableWidth, renderTable } from "../../packages/terminal-core
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { normalizeChannelId } from "../channels/plugins/index.js";
 import { listPairingChannels, notifyPairingApproved } from "../channels/plugins/pairing.js";
+import { getRuntimeConfig } from "../config/config.js";
 import {
-  formatCommandOwnerFromChannelSender,
-  hasConfiguredCommandOwners,
-} from "../commands/doctor-command-owner.js";
-import {
-  getRuntimeConfig,
-  readConfigFileSnapshotForWrite,
-  replaceConfigFile,
-} from "../config/config.js";
+  ensureCommunicationIdentityForPairing,
+  listCommunicationIdentities,
+  normalizeCommunicationPhone,
+  reconcileCommunicationIdentityConfig,
+  setCommunicationAdminPhone,
+  type EnsuredCommunicationIdentity,
+} from "../identity/communication-identities.js";
 import { resolvePairingIdLabel } from "../pairing/pairing-labels.js";
 import { approveChannelPairingCode, listChannelPairingRequests } from "../pairing/pairing-store.js";
 import type { PairingChannel } from "../pairing/pairing-store.types.js";
@@ -57,35 +58,42 @@ async function notifyApproved(channel: PairingChannel, id: string, accountId?: s
   await notifyPairingApproved({ channelId: channel, id, cfg, ...(accountId ? { accountId } : {}) });
 }
 
-async function bootstrapCommandOwnerFromPairing(params: {
-  channel: PairingChannel;
-  id: string;
-}): Promise<{ ownerEntry: string | null; bootstrapped: boolean }> {
-  // Ownership is deliberately separate from ordinary DM pairing. Callers must
-  // opt in explicitly so approving a conversational sender cannot silently
-  // grant that sender command-owner privileges.
-  const ownerEntry = formatCommandOwnerFromChannelSender(params);
-  if (!ownerEntry) {
-    return { ownerEntry: null, bootstrapped: false };
+function pairingIdentityPhone(params: {
+  explicit?: unknown;
+  meta?: Record<string, string>;
+}): string | undefined {
+  const candidates = [
+    normalizeStringifiedOptionalString(params.explicit),
+    params.meta?.e164,
+    params.meta?.phone,
+    params.meta?.phoneNumber,
+    params.meta?.senderPhone,
+    params.meta?.number,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeCommunicationPhone(candidate);
+    if (normalized) {
+      return normalized;
+    }
   }
+  return undefined;
+}
 
-  const { snapshot, writeOptions } = await readConfigFileSnapshotForWrite();
-  if (hasConfiguredCommandOwners(snapshot.sourceConfig)) {
-    return { ownerEntry, bootstrapped: false };
+async function confirmAdminTransfer(phone: string): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("Changing the communication admin requires an interactive host terminal.");
   }
-
-  const nextConfig = structuredClone(snapshot.sourceConfig);
-  nextConfig.commands = {
-    ...nextConfig.commands,
-    ownerAllowFrom: [ownerEntry],
-  };
-  await replaceConfigFile({
-    nextConfig,
-    snapshot,
-    writeOptions,
-    afterWrite: { mode: "auto" },
-  });
-  return { ownerEntry, bootstrapped: true };
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await prompt.question(
+      `Type ${phone} to transfer communication-admin authority to that phone: `,
+    );
+    if (answer.trim() !== phone) {
+      throw new Error("Communication-admin transfer cancelled; confirmation did not match.");
+    }
+  } finally {
+    prompt.close();
+  }
 }
 
 export function registerPairingCli(program: Command) {
@@ -162,13 +170,12 @@ export function registerPairingCli(program: Command) {
     .description("Approve a pairing code and allow that sender")
     .option("--channel <channel>", `Channel (${channelHint})`)
     .option("--account <accountId>", "Account id (for multi-account channels)")
+    .option(
+      "--identity-phone <e164>",
+      "Canonical E.164 phone used to link this person across chat channels",
+    )
     .argument("<codeOrChannel>", "Pairing code (or channel when using 2 args)")
     .argument("[code]", "Pairing code (when channel is passed as the 1st arg)")
-    .option(
-      "--command-owner",
-      "Configure the approved sender as the initial command owner (explicit opt-in)",
-      false,
-    )
     .option("--notify", "Notify the requester on the same channel", false)
     .action(async (codeOrChannel, code, opts) => {
       const defaultChannel = channels.length === 1 ? channels[0] : "";
@@ -196,15 +203,28 @@ export function registerPairingCli(program: Command) {
       }
       const channel = parseChannel(channelRaw, channels);
       const accountId = normalizeStringifiedOptionalString(opts.account) ?? "";
+      let identity: EnsuredCommunicationIdentity | undefined;
+      const beforeAllow = async (entry: { id: string; meta?: Record<string, string> }) => {
+        const approvedAccountId =
+          accountId || normalizeStringifiedOptionalString(entry.meta?.accountId);
+        identity = await ensureCommunicationIdentityForPairing({
+          channel,
+          accountId: approvedAccountId,
+          peerId: entry.id,
+          identityPhone: pairingIdentityPhone({ explicit: opts.identityPhone, meta: entry.meta }),
+        });
+      };
       const approved = accountId
         ? await approveChannelPairingCode({
             channel,
             code: String(resolvedCode),
             accountId,
+            beforeAllow,
           })
         : await approveChannelPairingCode({
             channel,
             code: String(resolvedCode),
+            beforeAllow,
           });
       if (!approved) {
         throw new Error(
@@ -215,23 +235,14 @@ export function registerPairingCli(program: Command) {
       defaultRuntime.log(
         `${theme.success("Approved")} ${theme.muted(channel)} sender ${theme.command(approved.id)}.`,
       );
-      if (opts.commandOwner) {
-        const ownerBootstrap = await bootstrapCommandOwnerFromPairing({
-          channel,
-          id: approved.id,
-        });
-        if (ownerBootstrap.bootstrapped && ownerBootstrap.ownerEntry) {
-          defaultRuntime.log(
-            `${theme.success("Command owner configured")} ${theme.command(ownerBootstrap.ownerEntry)} ${theme.muted("(explicit --command-owner request).")}`,
-          );
-        } else {
-          defaultRuntime.log(
-            theme.warn(
-              "Command owner was not changed because commands.ownerAllowFrom is already configured.",
-            ),
-          );
-        }
+      if (!identity) {
+        throw new Error("Pairing identity provisioning did not complete.");
       }
+      defaultRuntime.log(
+        identity.bootstrappedAdmin
+          ? `${theme.success("Initial communication admin configured")} ${theme.command(identity.identity.id)}.`
+          : `${theme.success("Isolated identity ready")} ${theme.command(identity.identity.id)} ${theme.muted(identity.isAdmin ? "(admin)" : "(sandboxed)")}.`,
+      );
 
       if (!opts.notify) {
         return;
@@ -241,5 +252,96 @@ export function registerPairingCli(program: Command) {
       await notifyApproved(channel, approved.id, approvedAccountId).catch((err: unknown) => {
         defaultRuntime.log(theme.warn(`Failed to notify requester: ${String(err)}`));
       });
+    });
+
+  const identities = pairing
+    .command("identities")
+    .description("Inspect or reconcile isolated communication identities");
+
+  identities
+    .command("list")
+    .description("List communication identities and their bound endpoints")
+    .option("--json", "Print JSON", false)
+    .action(async (opts) => {
+      const state = await listCommunicationIdentities();
+      if (opts.json) {
+        defaultRuntime.writeJson(state);
+        return;
+      }
+      if (state.identities.length === 0) {
+        defaultRuntime.log(theme.muted("No communication identities are registered."));
+        return;
+      }
+      defaultRuntime.log(
+        renderTable({
+          width: getTerminalTableWidth(),
+          columns: [
+            { key: "Role", header: "Role", minWidth: 9 },
+            { key: "Identity", header: "Identity", minWidth: 16 },
+            { key: "Phone", header: "Phone", minWidth: 12 },
+            { key: "Endpoints", header: "Endpoints", minWidth: 20, flex: true },
+          ],
+          rows: state.identities.map((entry) => ({
+            Role: entry.id === state.adminIdentityId ? "admin" : "sandboxed",
+            Identity: entry.id,
+            Phone: entry.phone ?? "-",
+            Endpoints: entry.endpoints
+              .map((endpoint) => `${endpoint.channel}/${endpoint.accountId}:${endpoint.peerId}`)
+              .join(", "),
+          })),
+        }).trimEnd(),
+      );
+    });
+
+  identities
+    .command("reconcile")
+    .description("Rebuild managed routes and isolation policy from the protected registry")
+    .action(async () => {
+      const registry = await reconcileCommunicationIdentityConfig();
+      defaultRuntime.log(
+        `${theme.success("Communication identities reconciled")} ${theme.muted(`(${Object.keys(registry.identities).length} identities).`)}`,
+      );
+    });
+
+  const admin = pairing
+    .command("admin")
+    .description("Inspect or transfer communication-admin authority (host terminal only)");
+
+  admin
+    .command("show")
+    .description("Show the current communication admin")
+    .option("--json", "Print JSON", false)
+    .action(async (opts) => {
+      const state = await listCommunicationIdentities();
+      const identity = state.adminIdentityId
+        ? (state.identities.find((entry) => entry.id === state.adminIdentityId) ?? null)
+        : null;
+      if (opts.json) {
+        defaultRuntime.writeJson({ adminIdentityId: state.adminIdentityId, identity });
+        return;
+      }
+      if (!identity) {
+        defaultRuntime.log(theme.warn("No communication admin is configured."));
+        return;
+      }
+      defaultRuntime.log(
+        `${theme.heading("Communication admin")} ${theme.command(identity.phone ?? identity.id)}`,
+      );
+    });
+
+  admin
+    .command("set")
+    .description("Transfer admin authority to an E.164 phone from an interactive host terminal")
+    .argument("<phone>", "New admin phone in E.164 format")
+    .action(async (rawPhone) => {
+      const phone = normalizeCommunicationPhone(String(rawPhone));
+      if (!phone) {
+        throw new Error("Admin phone must be a valid E.164 number, for example +15125550123.");
+      }
+      await confirmAdminTransfer(phone);
+      const identity = await setCommunicationAdminPhone({ phone });
+      defaultRuntime.log(
+        `${theme.success("Communication admin transferred")} ${theme.command(phone)} ${theme.muted(`(${identity.id}).`)}`,
+      );
     });
 }

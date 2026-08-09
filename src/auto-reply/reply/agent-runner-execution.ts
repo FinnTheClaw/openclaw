@@ -75,6 +75,7 @@ import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { resolveSilentReplyPolicy } from "../../config/silent-reply.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
+import { resolveCommunicationIdentityPromptCacheKey } from "../../identity/communication-identity-prompt-cache.js";
 import {
   captureAgentRunLifecycleGeneration,
   clearAgentRunContext,
@@ -2585,7 +2586,18 @@ async function runAgentTurnWithFallbackInternal(
                 hasRepliedRef: params.opts?.hasRepliedRef,
                 provider,
                 runId,
-                promptCacheKey: params.opts?.promptCacheKey,
+                promptCacheKey:
+                  params.opts?.promptCacheKey ??
+                  resolveCommunicationIdentityPromptCacheKey({
+                    agentId: candidateRun.agentId,
+                    sessionKey:
+                      candidateRun.sessionKey ??
+                      params.sessionKey ??
+                      candidateRun.sessionId ??
+                      runId,
+                    provider,
+                    model,
+                  }),
                 allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
                 model,
               });

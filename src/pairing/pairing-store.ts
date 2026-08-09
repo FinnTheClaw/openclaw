@@ -717,6 +717,13 @@ export async function approveChannelPairingCode(params: {
   accountId?: string;
   env?: NodeJS.ProcessEnv;
   pairingAdapter?: ChannelPairingAdapter;
+  /**
+   * Runs while the pending request is still durable and before the sender is
+   * added to the channel allow-list. A rejection leaves both stores unchanged.
+   * This lets security-sensitive callers provision an isolated route before a
+   * newly approved sender can deliver their first message.
+   */
+  beforeAllow: (entry: PairingRequest) => Promise<void>;
 }): Promise<{ id: string; entry?: PairingRequest } | null> {
   const env = params.env ?? process.env;
   const code = (normalizeNullableString(params.code) ?? "").toUpperCase();
@@ -750,11 +757,7 @@ export async function approveChannelPairingCode(params: {
       if (!entry) {
         return null;
       }
-      pruned.splice(idx, 1);
-      await writeJsonFile(filePath, {
-        version: 1,
-        requests: pruned,
-      } satisfies PairingStore);
+      await params.beforeAllow(entry);
       const entryAccountId = normalizeOptionalString(entry.meta?.accountId);
       await addChannelAllowFromStoreEntry({
         channel: params.channel,
@@ -763,6 +766,14 @@ export async function approveChannelPairingCode(params: {
         env,
         pairingAdapter: params.pairingAdapter,
       });
+      // Consume the request last. If this write fails after the idempotent
+      // allow-list update, retrying repeats provisioning and then finishes the
+      // consume instead of losing the only durable approval request.
+      pruned.splice(idx, 1);
+      await writeJsonFile(filePath, {
+        version: 1,
+        requests: pruned,
+      } satisfies PairingStore);
       return { id: entry.id, entry };
     },
   );

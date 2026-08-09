@@ -338,7 +338,13 @@ describe("checkInboundAccessControl pairing grace", () => {
     const result = await runPairingGraceCase(1_000_000 - 10_000);
 
     expect(result.allowed).toBe(false);
-    expect(upsertPairingRequestMock).toHaveBeenCalled();
+    expect(upsertPairingRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "whatsapp",
+        id: "+15550001111",
+        meta: expect.objectContaining({ name: "Sam", e164: "+15550001111" }),
+      }),
+    );
     expect(sendMessageMock).toHaveBeenCalled();
   });
 });
