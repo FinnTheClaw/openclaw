@@ -67,6 +67,20 @@ export type PlannedCommunicationAdminTransfer = {
   created: boolean;
 };
 
+export class CommunicationIdentityPhoneRequiredError extends Error {
+  readonly code = "COMMUNICATION_IDENTITY_PHONE_REQUIRED";
+  readonly channel: string;
+
+  constructor(channel: string) {
+    super(
+      `Phone-backed channel "${channel}" requires a canonical E.164 phone identity. ` +
+        "Supply --identity-phone when the channel exposes only an opaque UUID/JID.",
+    );
+    this.name = "CommunicationIdentityPhoneRequiredError";
+    this.channel = channel;
+  }
+}
+
 function nowIso(now?: Date): string {
   return (now ?? new Date()).toISOString();
 }
@@ -117,10 +131,7 @@ function canonicalIdentityKey(params: {
     return { key: `tel:${phone}`, kind: "phone", phone };
   }
   if (requiresPhone) {
-    throw new Error(
-      `Phone-backed channel "${params.channel}" requires a canonical E.164 phone identity. ` +
-        "Supply --identity-phone when the channel exposes only an opaque UUID/JID.",
-    );
+    throw new CommunicationIdentityPhoneRequiredError(params.channel);
   }
   return {
     key: `channel-peer:${params.channel}:${params.accountId}:${params.peerId}`,

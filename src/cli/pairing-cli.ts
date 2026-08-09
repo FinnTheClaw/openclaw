@@ -12,6 +12,7 @@ import { normalizeChannelId } from "../channels/plugins/index.js";
 import { listPairingChannels, notifyPairingApproved } from "../channels/plugins/pairing.js";
 import { getRuntimeConfig } from "../config/config.js";
 import {
+  CommunicationIdentityPhoneRequiredError,
   ensureCommunicationIdentityForPairing,
   listCommunicationIdentities,
   normalizeCommunicationPhone,
@@ -77,6 +78,35 @@ function pairingIdentityPhone(params: {
     }
   }
   return undefined;
+}
+
+async function promptForPairingIdentityPhone(channel: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(
+      `Phone-backed channel "${channel}" exposed only an opaque sender id. ` +
+        "Run this approval from an interactive host terminal or supply --identity-phone with the sender's E.164 number.",
+    );
+  }
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await prompt.question(
+      `${channel} did not expose this sender's phone number. Enter the canonical E.164 number ` +
+        "to bind this person's channels (for example +15125550123): ",
+    );
+    const phone = normalizeCommunicationPhone(answer);
+    if (!phone) {
+      throw new Error("Pairing identity phone must be a valid E.164 number.");
+    }
+    const confirmation = await prompt.question(
+      `Re-enter ${phone} to confirm this cross-channel identity binding: `,
+    );
+    if (normalizeCommunicationPhone(confirmation) !== phone) {
+      throw new Error("Pairing identity confirmation did not match; no sender was approved.");
+    }
+    return phone;
+  } finally {
+    prompt.close();
+  }
 }
 
 async function confirmAdminTransfer(phone: string): Promise<void> {
@@ -203,6 +233,11 @@ export function registerPairingCli(program: Command) {
       }
       const channel = parseChannel(channelRaw, channels);
       const accountId = normalizeStringifiedOptionalString(opts.account) ?? "";
+      const rawIdentityPhone = normalizeStringifiedOptionalString(opts.identityPhone);
+      let resolvedIdentityPhone = normalizeCommunicationPhone(rawIdentityPhone) ?? undefined;
+      if (rawIdentityPhone && !resolvedIdentityPhone) {
+        throw new Error("--identity-phone must be a valid E.164 number, for example +15125550123.");
+      }
       let identity: EnsuredCommunicationIdentity | undefined;
       const beforeAllow = async (entry: { id: string; meta?: Record<string, string> }) => {
         const approvedAccountId =
@@ -211,21 +246,35 @@ export function registerPairingCli(program: Command) {
           channel,
           accountId: approvedAccountId,
           peerId: entry.id,
-          identityPhone: pairingIdentityPhone({ explicit: opts.identityPhone, meta: entry.meta }),
+          identityPhone: resolvedIdentityPhone ?? pairingIdentityPhone({ meta: entry.meta }),
         });
       };
-      const approved = accountId
-        ? await approveChannelPairingCode({
-            channel,
-            code: String(resolvedCode),
-            accountId,
-            beforeAllow,
-          })
-        : await approveChannelPairingCode({
-            channel,
-            code: String(resolvedCode),
-            beforeAllow,
-          });
+      const approve = async () =>
+        accountId
+          ? await approveChannelPairingCode({
+              channel,
+              code: String(resolvedCode),
+              accountId,
+              beforeAllow,
+            })
+          : await approveChannelPairingCode({
+              channel,
+              code: String(resolvedCode),
+              beforeAllow,
+            });
+      let approved: Awaited<ReturnType<typeof approve>>;
+      try {
+        approved = await approve();
+      } catch (error) {
+        if (!(error instanceof CommunicationIdentityPhoneRequiredError) || resolvedIdentityPhone) {
+          throw error;
+        }
+        // The rejected transaction leaves the durable request and allow-list unchanged.
+        // Prompt only after its file lock has been released, then retry atomically.
+        resolvedIdentityPhone = await promptForPairingIdentityPhone(error.channel);
+        identity = undefined;
+        approved = await approve();
+      }
       if (!approved) {
         throw new Error(
           `No pending pairing request found for code "${String(resolvedCode)}". Run ${formatCliCommand(`openclaw pairing list --channel ${channel}`)} to list pending requests.`,

@@ -29,6 +29,7 @@ import {
 } from "./communication-identity-registry.js";
 
 export {
+  CommunicationIdentityPhoneRequiredError,
   createCommunicationIdentityRegistryForTest,
   normalizeCommunicationPhone,
   planCommunicationAdminTransfer,

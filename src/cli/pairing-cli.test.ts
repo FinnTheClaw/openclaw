@@ -4,37 +4,54 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { registerPairingCli } from "./pairing-cli.js";
 
-const mocks = vi.hoisted(() => ({
-  listChannelPairingRequests: vi.fn(),
-  approveChannelPairingCode: vi.fn(),
-  notifyPairingApproved: vi.fn(),
-  ensureCommunicationIdentityForPairing: vi.fn(),
-  listCommunicationIdentities: vi.fn(),
-  reconcileCommunicationIdentityConfig: vi.fn(),
-  setCommunicationAdminPhone: vi.fn(),
-  adminQuestion: vi.fn(),
-  adminPromptClose: vi.fn(),
-  readConfigFileSnapshotForWrite: vi.fn(),
-  replaceConfigFile: vi.fn(),
-  normalizeChannelId: vi.fn((raw: string) => {
-    if (!raw) {
+const mocks = vi.hoisted(() => {
+  class CommunicationIdentityPhoneRequiredError extends Error {
+    readonly code = "COMMUNICATION_IDENTITY_PHONE_REQUIRED";
+    readonly channel: string;
+
+    constructor(channel: string) {
+      super(
+        `Phone-backed channel "${channel}" requires a canonical E.164 phone identity. ` +
+          "Supply --identity-phone when the channel exposes only an opaque UUID/JID.",
+      );
+      this.name = "CommunicationIdentityPhoneRequiredError";
+      this.channel = channel;
+    }
+  }
+  return {
+    CommunicationIdentityPhoneRequiredError,
+    listChannelPairingRequests: vi.fn(),
+    approveChannelPairingCode: vi.fn(),
+    notifyPairingApproved: vi.fn(),
+    ensureCommunicationIdentityForPairing: vi.fn(),
+    listCommunicationIdentities: vi.fn(),
+    reconcileCommunicationIdentityConfig: vi.fn(),
+    setCommunicationAdminPhone: vi.fn(),
+    adminQuestion: vi.fn(),
+    adminPromptClose: vi.fn(),
+    readConfigFileSnapshotForWrite: vi.fn(),
+    replaceConfigFile: vi.fn(),
+    normalizeChannelId: vi.fn((raw: string) => {
+      if (!raw) {
+        return null;
+      }
+      if (raw === "imsg") {
+        return "imessage";
+      }
+      if (["telegram", "discord", "imessage"].includes(raw)) {
+        return raw;
+      }
       return null;
-    }
-    if (raw === "imsg") {
-      return "imessage";
-    }
-    if (["telegram", "discord", "imessage"].includes(raw)) {
-      return raw;
-    }
-    return null;
-  }),
-  getPairingAdapter: vi.fn((channel: string) => ({
-    idLabel: pairingIdLabels[channel] ?? "userId",
-  })),
-  listPairingChannels: vi.fn(() => ["telegram", "discord", "imessage"]),
-}));
+    }),
+    getPairingAdapter: vi.fn((channel: string) => ({
+      idLabel: pairingIdLabels[channel] ?? "userId",
+    })),
+    listPairingChannels: vi.fn(() => ["telegram", "discord", "imessage"]),
+  };
+});
 
 const {
+  CommunicationIdentityPhoneRequiredError,
   listChannelPairingRequests,
   approveChannelPairingCode,
   notifyPairingApproved,
@@ -77,6 +94,7 @@ vi.mock("../channels/plugins/index.js", () => ({
 }));
 
 vi.mock("../identity/communication-identities.js", () => ({
+  CommunicationIdentityPhoneRequiredError: mocks.CommunicationIdentityPhoneRequiredError,
   ensureCommunicationIdentityForPairing: mocks.ensureCommunicationIdentityForPairing,
   listCommunicationIdentities: mocks.listCommunicationIdentities,
   normalizeCommunicationPhone: (value: unknown) =>
@@ -397,6 +415,119 @@ describe("pairing cli", () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  it("prompts on the host terminal and retries opaque Signal pairing atomically", async () => {
+    const phone = "+15125550123";
+    const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+    mocks.adminQuestion.mockResolvedValueOnce(phone).mockResolvedValueOnce(phone);
+    ensureCommunicationIdentityForPairing.mockImplementation(
+      async (params: { identityPhone?: string }) => {
+        if (!params.identityPhone) {
+          throw new CommunicationIdentityPhoneRequiredError("signal");
+        }
+        return {
+          identity: {
+            id: "id-aaaaaaaaaaaaaaaaaaaaaaaa",
+            canonicalKind: "phone",
+            phone,
+            memberAgentId: "person-aaaaaaaaaaaaaaaa",
+            workspace: "/tmp/member/workspace",
+            agentDir: "/tmp/member/agent",
+            createdAt: "2026-01-08T00:00:00Z",
+            updatedAt: "2026-01-08T00:00:00Z",
+            endpoints: [],
+          },
+          created: true,
+          endpointAdded: true,
+          bootstrappedAdmin: false,
+          isAdmin: false,
+        };
+      },
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runPairing(["pairing", "approve", "signal", "ABCDEFGH"]);
+      expect(approveChannelPairingCode).toHaveBeenCalledTimes(2);
+      expect(ensureCommunicationIdentityForPairing).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ identityPhone: undefined }),
+      );
+      expect(ensureCommunicationIdentityForPairing).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ identityPhone: phone }),
+      );
+      expect(mocks.adminQuestion).toHaveBeenCalledTimes(2);
+      expect(mocks.adminPromptClose).toHaveBeenCalledTimes(1);
+    } finally {
+      log.mockRestore();
+      if (stdinDescriptor) {
+        Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+      }
+      if (stdoutDescriptor) {
+        Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+      }
+    }
+  });
+
+  it("keeps opaque phone-backed pairing fail-closed outside a host terminal", async () => {
+    const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: false });
+    ensureCommunicationIdentityForPairing.mockRejectedValueOnce(
+      new CommunicationIdentityPhoneRequiredError("signal"),
+    );
+    try {
+      await expect(runPairing(["pairing", "approve", "signal", "ABCDEFGH"])).rejects.toThrow(
+        "interactive host terminal",
+      );
+      expect(approveChannelPairingCode).toHaveBeenCalledTimes(1);
+      expect(mocks.adminQuestion).not.toHaveBeenCalled();
+    } finally {
+      if (stdinDescriptor) {
+        Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+      }
+      if (stdoutDescriptor) {
+        Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+      }
+    }
+  });
+
+  it("does not approve an opaque Signal sender when phone confirmation mismatches", async () => {
+    const phone = "+15125550123";
+    const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+    mocks.adminQuestion.mockResolvedValueOnce(phone).mockResolvedValueOnce("+15125550124");
+    ensureCommunicationIdentityForPairing.mockRejectedValueOnce(
+      new CommunicationIdentityPhoneRequiredError("signal"),
+    );
+    try {
+      await expect(runPairing(["pairing", "approve", "signal", "ABCDEFGH"])).rejects.toThrow(
+        "confirmation did not match",
+      );
+      expect(approveChannelPairingCode).toHaveBeenCalledTimes(1);
+      expect(mocks.adminPromptClose).toHaveBeenCalledTimes(1);
+    } finally {
+      if (stdinDescriptor) {
+        Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+      }
+      if (stdoutDescriptor) {
+        Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+      }
+    }
+  });
+
+  it("rejects an invalid explicit pairing phone before touching stores", async () => {
+    await expect(
+      runPairing(["pairing", "approve", "signal", "ABCDEFGH", "--identity-phone", "not-a-phone"]),
+    ).rejects.toThrow("must be a valid E.164 number");
+    expect(approveChannelPairingCode).not.toHaveBeenCalled();
   });
 
   it("forwards --account for approve", async () => {
