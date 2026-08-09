@@ -283,6 +283,13 @@ export function seedCommunicationIdentityRegistryFromConfigOwners(params: {
   now?: Date;
 }): CommunicationIdentityRegistry {
   let registry = cloneRegistry(params.registry);
+  // This is a one-time migration path for pre-registry installations. Once the
+  // durable registry contains any identity, projected ownerAllowFrom entries
+  // are outputs of this system rather than legacy inputs. Re-importing them
+  // would lose account scope and could create a privileged "default" endpoint.
+  if (registry.adminIdentityId || Object.keys(registry.identities).length > 0) {
+    return registry;
+  }
   const owners = Array.isArray(params.config.commands?.ownerAllowFrom)
     ? params.config.commands.ownerAllowFrom
     : [];

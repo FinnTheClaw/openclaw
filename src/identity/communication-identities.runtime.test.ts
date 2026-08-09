@@ -90,6 +90,44 @@ describe("communication identity runtime durability", () => {
     ).toBe(25);
   });
 
+  it("does not re-import projected owners into a default-account admin endpoint", async () => {
+    const signal = await ensureCommunicationIdentityForPairing({
+      channel: "signal",
+      accountId: "main",
+      peerId: "+15125550101",
+      env,
+    });
+    expect(mocks.config.commands?.ownerAllowFrom).toEqual(["signal:+15125550101"]);
+
+    const whatsapp = await ensureCommunicationIdentityForPairing({
+      channel: "whatsapp",
+      accountId: "family",
+      peerId: "15125550101@s.whatsapp.net",
+      identityPhone: "+15125550101",
+      env,
+    });
+
+    expect(whatsapp.identity.id).toBe(signal.identity.id);
+    const listed = await listCommunicationIdentities(env);
+    expect(listed.identities).toHaveLength(1);
+    expect(listed.identities[0]?.endpoints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ channel: "signal", accountId: "main" }),
+        expect.objectContaining({ channel: "whatsapp", accountId: "family" }),
+      ]),
+    );
+    expect(listed.identities[0]?.endpoints).toHaveLength(2);
+    expect(
+      listed.identities[0]?.endpoints.some(
+        (endpoint) => endpoint.channel === "signal" && endpoint.accountId === "default",
+      ),
+    ).toBe(false);
+    expect(mocks.config.commands?.ownerAllowFrom).toEqual([
+      "signal:+15125550101",
+      "whatsapp:15125550101@s.whatsapp.net",
+    ]);
+  });
+
   it("recovers a durable pending projection after an injected config-write failure", async () => {
     mocks.failProjection = true;
     await expect(

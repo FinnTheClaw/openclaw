@@ -222,7 +222,7 @@ export function applyCommunicationIdentityConfig(params: {
       ...Object.fromEntries(
         identities.map((identity) => [
           `${MANAGED_LINK_PREFIX}${identity.id}`,
-          identity.endpoints.flatMap((endpoint) => [`${endpoint.channel}:${endpoint.peerId}`]),
+          [...new Set(identity.endpoints.map(ownerEntry))].toSorted(),
         ]),
       ),
     },
@@ -292,7 +292,7 @@ export function applyCommunicationIdentityConfig(params: {
   };
   config.commands = {
     ...config.commands,
-    ownerAllowFrom: adminEndpoints.map(ownerEntry).toSorted(),
+    ownerAllowFrom: [...new Set(adminEndpoints.map(ownerEntry))].toSorted(),
   };
 
   const existingBindings = Array.isArray(config.bindings)

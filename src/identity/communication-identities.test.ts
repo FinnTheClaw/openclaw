@@ -471,6 +471,26 @@ describe("communication identity isolation", () => {
     expect(migrated.identities[migrated.adminIdentityId ?? ""]?.phone).toBe(ADMIN_PHONE);
   });
 
+  it("never treats projected owners as migration input after the registry is initialized", () => {
+    const initialized = approve({
+      channel: "signal",
+      accountId: "main",
+      peerId: ADMIN_PHONE,
+    }).registry;
+    const migrated = seedCommunicationIdentityRegistryFromConfigOwners({
+      registry: initialized,
+      stateDir: STATE_DIR,
+      config: {
+        commands: {
+          ownerAllowFrom: [`signal:${ADMIN_PHONE}`, `whatsapp:${ADMIN_PHONE}`],
+        },
+      } as OpenClawConfig,
+    });
+    const admin = migrated.identities[migrated.adminIdentityId ?? ""];
+    expect(admin?.endpoints).toHaveLength(1);
+    expect(admin?.endpoints[0]).toMatchObject({ channel: "signal", accountId: "main" });
+  });
+
   it("does not let a non-phone first pairing silently become admin", () => {
     const discord = approve({ channel: "discord", peerId: "user-123" });
     expect(discord.bootstrappedAdmin).toBe(false);
