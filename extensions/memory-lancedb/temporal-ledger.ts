@@ -1004,13 +1004,34 @@ export class TemporalMemoryLedger {
    * content-free tombstone so transcript reconciliation cannot resurrect the
    * deleted memory. Capacity maintenance never calls this method. */
   deleteEvent(eventId: string, reason = "explicit_forget"): boolean {
+    return this.deleteEventInternal(eventId, reason);
+  }
+
+  /** User-facing deletion must prove that the requested memory belongs to the
+   * active communication identity. System reconciliation may continue using
+   * deleteEvent when it is already operating on trusted source checkpoints. */
+  deleteEventForAgent(
+    eventId: string,
+    expectedAgentId: string,
+    reason = "explicit_forget",
+  ): boolean {
+    return this.deleteEventInternal(eventId, reason, expectedAgentId);
+  }
+
+  private deleteEventInternal(eventId: string, reason: string, expectedAgentId?: string): boolean {
     this.assertOpen();
     const normalizedId = normalizeRequired(eventId, "eventId");
+    const normalizedExpectedAgentId = expectedAgentId
+      ? normalizeRequired(expectedAgentId, "expectedAgentId")
+      : undefined;
     const row = this.db
       .prepare(
-        "SELECT event_id, external_id, agent_id, content_sha256 FROM memory_events WHERE event_id = ?",
+        "SELECT event_id, external_id, agent_id, content_sha256 FROM memory_events " +
+          `WHERE event_id = ?${normalizedExpectedAgentId ? " AND agent_id = ?" : ""}`,
       )
-      .get(normalizedId) as SqlRow | undefined;
+      .get(
+        ...(normalizedExpectedAgentId ? [normalizedId, normalizedExpectedAgentId] : [normalizedId]),
+      ) as SqlRow | undefined;
     if (!row) {
       return false;
     }

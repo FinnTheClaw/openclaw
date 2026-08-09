@@ -45,7 +45,7 @@ import {
   memoryConfigSchema,
   vectorDimsForModel,
 } from "./config.js";
-import { DurableMemoryRuntime } from "./durable-memory-runtime.js";
+import { DurableMemoryRuntime, resolveDurableMemoryAgentId } from "./durable-memory-runtime.js";
 import type { HybridMemorySearchResult } from "./hybrid-memory-index.js";
 import { loadLanceDbModule } from "./lancedb-runtime.js";
 import { MemoryConsolidator } from "./memory-consolidator.js";
@@ -643,6 +643,24 @@ function buildMemoryRecallUnavailableResult(error: string): AgentToolResult<{
     details: {
       count: 0,
       disabled: true,
+      unavailable: true,
+      error,
+    },
+  };
+}
+
+function buildMemoryOperationUnavailableResult(
+  operation: "store" | "forget",
+  error: string,
+): AgentToolResult<{
+  action: "unavailable";
+  unavailable: true;
+  error: string;
+}> {
+  return {
+    content: [{ type: "text", text: `Memory ${operation} is unavailable right now.` }],
+    details: {
+      action: "unavailable",
       unavailable: true,
       error,
     },
@@ -1648,6 +1666,7 @@ export default definePluginEntry({
     let durableCloseTimer: ReturnType<typeof setTimeout> | undefined;
     const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
     let memoryRecallCooldown: { until: number; error: string } | undefined;
+    let durableConfigDriftWarned = false;
     const resolveCurrentHookConfig = () => {
       const runtimePluginConfig = resolveLivePluginConfigObject(
         api.runtime.config?.current
@@ -1680,6 +1699,29 @@ export default definePluginEntry({
         durableMemory: cfg.durableMemory,
         ...asRecord(runtimePluginConfig),
       });
+    };
+    const readDurableConfigDrift = (currentCfg: MemoryConfig): string | undefined => {
+      if (!durableRuntime || currentCfg.durableMemory.enabled) {
+        return undefined;
+      }
+      const message =
+        "durable memory was configured at startup but is disabled in the live config; " +
+        "legacy shared-memory fallback was refused";
+      if (!durableConfigDriftWarned) {
+        durableConfigDriftWarned = true;
+        api.logger.warn?.(`memory-v2: ${message}`);
+      }
+      return message;
+    };
+    const requireLiveDurableRuntime = (): DurableMemoryRuntime => {
+      if (!durableRuntime) {
+        throw new Error("durable memory is not enabled");
+      }
+      const drift = readDurableConfigDrift(resolveCurrentHookConfig());
+      if (drift) {
+        throw new Error(drift);
+      }
+      return durableRuntime;
     };
     const readMemoryRecallCooldown = (): { error: string } | undefined => {
       if (!memoryRecallCooldown) {
@@ -1728,16 +1770,24 @@ export default definePluginEntry({
           const limit = readPositiveIntegerParam(rawParams, "limit") ?? 5;
 
           const currentCfg = resolveCurrentHookConfig();
+          const durableDrift = readDurableConfigDrift(currentCfg);
+          if (durableDrift) {
+            return buildMemoryRecallUnavailableResult(durableDrift);
+          }
           const cooldown = readMemoryRecallCooldown();
           if (cooldown) {
             return buildMemoryRecallUnavailableResult(cooldown.error);
           }
-          if (durableRuntime && currentCfg.durableMemory.enabled) {
+          if (durableRuntime) {
             const normalizedQuery = normalizeRecallQuery(query, currentCfg.recallMaxChars);
             let durableRecall: Awaited<
               ReturnType<typeof runWithTimeout<HybridMemorySearchResult[]>>
             >;
             try {
+              const agentId = resolveDurableMemoryAgentId(
+                toolContext.agentId,
+                toolContext.sessionKey,
+              );
               durableRecall = await runWithTimeout({
                 timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
                 task: async () => {
@@ -1747,7 +1797,7 @@ export default definePluginEntry({
                   return await durableRuntime.index.search({
                     queryText: normalizedQuery,
                     vector,
-                    agentId: toolContext.agentId ?? "main",
+                    agentId,
                     channel: toolContext.messageChannel,
                     limit,
                   });
@@ -1921,9 +1971,20 @@ export default definePluginEntry({
             };
           }
 
-          if (durableRuntime && resolveCurrentHookConfig().durableMemory.enabled) {
+          const currentCfg = resolveCurrentHookConfig();
+          const durableDrift = readDurableConfigDrift(currentCfg);
+          if (durableDrift) {
+            return buildMemoryOperationUnavailableResult("store", durableDrift);
+          }
+          if (durableRuntime) {
+            let agentId: string;
+            try {
+              agentId = resolveDurableMemoryAgentId(toolContext.agentId, toolContext.sessionKey);
+            } catch (error) {
+              return buildMemoryOperationUnavailableResult("store", formatMemoryRecallError(error));
+            }
             const stored = durableRuntime.captureManualMemory({
-              agentId: toolContext.agentId ?? "main",
+              agentId,
               text,
               category,
               importance,
@@ -1987,24 +2048,35 @@ export default definePluginEntry({
         async execute(_toolCallId, params) {
           const { query, memoryId } = params as { query?: string; memoryId?: string };
           const currentCfg = resolveCurrentHookConfig();
+          const durableDrift = readDurableConfigDrift(currentCfg);
+          if (durableDrift) {
+            return buildMemoryOperationUnavailableResult("forget", durableDrift);
+          }
 
           if (memoryId) {
-            if (durableRuntime && currentCfg.durableMemory.enabled) {
-              const deleted = durableRuntime.ledger.deleteEvent(memoryId);
-              await durableRuntime.index.delete(memoryId);
-              scheduleDurableWorkers();
+            if (durableRuntime) {
+              let agentId: string;
+              try {
+                agentId = resolveDurableMemoryAgentId(toolContext.agentId, toolContext.sessionKey);
+              } catch (error) {
+                return buildMemoryOperationUnavailableResult(
+                  "forget",
+                  formatMemoryRecallError(error),
+                );
+              }
+              const deleted = durableRuntime.ledger.deleteEventForAgent(memoryId, agentId);
               if (deleted) {
+                await durableRuntime.index.delete(memoryId);
+                scheduleDurableWorkers();
                 return {
                   content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
                   details: { action: "deleted", id: memoryId },
                 };
               }
-              if (memoryId.startsWith("evt_") || memoryId.startsWith("rev_")) {
-                return {
-                  content: [{ type: "text", text: `Memory ${memoryId} was not found.` }],
-                  details: { action: "not_found", id: memoryId },
-                };
-              }
+              return {
+                content: [{ type: "text", text: `Memory ${memoryId} was not found.` }],
+                details: { action: "not_found", id: memoryId },
+              };
             }
             await db.delete(memoryId);
             return {
@@ -2014,13 +2086,22 @@ export default definePluginEntry({
           }
 
           if (query) {
-            if (durableRuntime && currentCfg.durableMemory.enabled) {
+            if (durableRuntime) {
+              let agentId: string;
+              try {
+                agentId = resolveDurableMemoryAgentId(toolContext.agentId, toolContext.sessionKey);
+              } catch (error) {
+                return buildMemoryOperationUnavailableResult(
+                  "forget",
+                  formatMemoryRecallError(error),
+                );
+              }
               const normalizedQuery = normalizeRecallQuery(query, currentCfg.recallMaxChars);
               const vector = await embeddings.embed(normalizedQuery);
               const results = await durableRuntime.index.search({
                 queryText: normalizedQuery,
                 vector,
-                agentId: toolContext.agentId ?? "main",
+                agentId,
                 channel: toolContext.messageChannel,
                 limit: 5,
               });
@@ -2035,13 +2116,15 @@ export default definePluginEntry({
                   result.entry.text.trim().toLocaleLowerCase() === query.trim().toLocaleLowerCase(),
               );
               if (exact) {
-                durableRuntime.ledger.deleteEvent(exact.entry.id);
-                await durableRuntime.index.delete(exact.entry.id);
-                scheduleDurableWorkers();
-                return {
-                  content: [{ type: "text", text: `Forgotten: "${exact.entry.text}"` }],
-                  details: { action: "deleted", id: exact.entry.id },
-                };
+                const deleted = durableRuntime.ledger.deleteEventForAgent(exact.entry.id, agentId);
+                if (deleted) {
+                  await durableRuntime.index.delete(exact.entry.id);
+                  scheduleDurableWorkers();
+                  return {
+                    content: [{ type: "text", text: `Forgotten: "${exact.entry.text}"` }],
+                    details: { action: "deleted", id: exact.entry.id },
+                  };
+                }
               }
               const candidates = results.map((result) => ({
                 id: result.entry.id,
@@ -2132,8 +2215,9 @@ export default definePluginEntry({
           .option("--order-by-created-at", "Order memories by createdAt descending", false)
           .action(async (opts) => {
             const limit = parsePositiveIntegerOption(opts.limit, "--limit");
-            if (durableRuntime && resolveCurrentHookConfig().durableMemory.enabled) {
-              const events = durableRuntime.ledger.listRecentEvents({
+            if (durableRuntime) {
+              const runtime = requireLiveDurableRuntime();
+              const events = runtime.ledger.listRecentEvents({
                 agentId: String(opts.agent),
                 limit,
               });
@@ -2153,10 +2237,11 @@ export default definePluginEntry({
           .option("--limit <n>", "Max results", "5")
           .option("--agent <id>", "Agent owner", "main")
           .action(async (query, opts) => {
+            const runtime = durableRuntime ? requireLiveDurableRuntime() : undefined;
             const vector = await embeddings.embed(normalizeRecallQuery(query, cfg.recallMaxChars));
             const limit = parsePositiveIntegerOption(opts.limit, "--limit");
-            if (durableRuntime && resolveCurrentHookConfig().durableMemory.enabled) {
-              const results = await durableRuntime.index.search({
+            if (runtime) {
+              const results = await runtime.index.search({
                 queryText: normalizeRecallQuery(query, cfg.recallMaxChars),
                 vector,
                 agentId: String(opts.agent),
@@ -2200,7 +2285,8 @@ export default definePluginEntry({
           .option("--limit <n>", "Limit number of results", "10")
           .option("--order-by <order>", "Order by column and direction (e.g., createdAt:desc)")
           .action(async (opts) => {
-            if (durableRuntime && resolveCurrentHookConfig().durableMemory.enabled) {
+            if (durableRuntime) {
+              requireLiveDurableRuntime();
               throw new Error(
                 "ltm query targets the legacy table only; use ltm search or ltm list in durable mode",
               );
@@ -2266,12 +2352,13 @@ export default definePluginEntry({
           .command("stats")
           .description("Show memory statistics")
           .action(async () => {
-            if (durableRuntime && resolveCurrentHookConfig().durableMemory.enabled) {
+            if (durableRuntime) {
+              const runtime = requireLiveDurableRuntime();
               console.log(
                 JSON.stringify(
                   {
-                    ledger: durableRuntime.ledger.getStats(),
-                    index: await durableRuntime.index.getStats(),
+                    ledger: runtime.ledger.getStats(),
+                    index: await runtime.index.getStats(),
                   },
                   null,
                   2,
@@ -2287,10 +2374,8 @@ export default definePluginEntry({
           .command("verify")
           .description("Verify durable memory ledger integrity")
           .action(() => {
-            if (!durableRuntime || !resolveCurrentHookConfig().durableMemory.enabled) {
-              throw new Error("durable memory is not enabled");
-            }
-            const result = durableRuntime.ledger.verifyIntegrity();
+            const runtime = requireLiveDurableRuntime();
+            const result = runtime.ledger.verifyIntegrity();
             console.log(JSON.stringify(result, null, 2));
             if (!result.ok) {
               process.exitCode = 1;
@@ -2302,11 +2387,9 @@ export default definePluginEntry({
           .description("Create a consistent durable-ledger snapshot")
           .argument("<path>", "New snapshot file path")
           .action((snapshotPath) => {
-            if (!durableRuntime || !resolveCurrentHookConfig().durableMemory.enabled) {
-              throw new Error("durable memory is not enabled");
-            }
+            const runtime = requireLiveDurableRuntime();
             const resolved = resolveMemoryCliPath(String(snapshotPath));
-            durableRuntime.ledger.createSnapshot(resolved);
+            runtime.ledger.createSnapshot(resolved);
             console.log(JSON.stringify({ created: resolved }, null, 2));
           });
 
@@ -2315,10 +2398,8 @@ export default definePluginEntry({
           .description("Atomically requeue selected durable-memory dead letters")
           .requiredOption("--queue <queue>", "Queue to recover: projection, extraction, or all")
           .action((opts) => {
-            if (!durableRuntime || !resolveCurrentHookConfig().durableMemory.enabled) {
-              throw new Error("durable memory is not enabled");
-            }
-            const result = durableRuntime.ledger.requeueDeadLetters({
+            const runtime = requireLiveDurableRuntime();
+            const result = runtime.ledger.requeueDeadLetters({
               queue: parseDeadLetterQueue(opts.queue),
             });
             console.log(JSON.stringify(result, null, 2));
@@ -2548,6 +2629,9 @@ export default definePluginEntry({
       if (!event.prompt || event.prompt.length < 5) {
         return undefined;
       }
+      if (readDurableConfigDrift(currentCfg)) {
+        return undefined;
+      }
       if (readMemoryRecallCooldown()) {
         return undefined;
       }
@@ -2558,7 +2642,8 @@ export default definePluginEntry({
             event.prompt,
           currentCfg.recallMaxChars,
         );
-        if (durableRuntime && currentCfg.durableMemory.enabled) {
+        if (durableRuntime) {
+          const agentId = resolveDurableMemoryAgentId(ctx.agentId, ctx.sessionKey);
           const recall = await runWithTimeout({
             timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
             task: async () => {
@@ -2568,7 +2653,7 @@ export default definePluginEntry({
               return await durableRuntime.index.search({
                 queryText: recallQuery,
                 vector,
-                agentId: ctx.agentId ?? "main",
+                agentId,
                 channel: ctx.channel,
                 limit: currentCfg.durableMemory.recallLimit,
               });
@@ -2652,8 +2737,10 @@ export default definePluginEntry({
       }
       // Durable mode captured every message before this point and reconciles
       // transcripts after interruptions. Re-running the legacy trigger-based
-      // capture here would create a second, lossy memory stream.
-      if (durableRuntime && currentCfg.durableMemory.enabled) {
+      // capture here would create a second, lossy memory stream. A live config
+      // drift must fail closed instead of reopening the shared legacy table.
+      if (durableRuntime) {
+        readDurableConfigDrift(currentCfg);
         return;
       }
       if (!event.success || !event.messages || event.messages.length === 0) {

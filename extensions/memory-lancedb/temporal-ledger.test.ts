@@ -290,6 +290,32 @@ describe("TemporalMemoryLedger", () => {
     expect(db.getStats()).toMatchObject({ events: 1, pendingProjection: 0 });
   });
 
+  it("refuses to delete a memory through another agent's identity", () => {
+    const db = open();
+    const personA = db.appendEvent({
+      agentId: "person-a",
+      role: "user",
+      content: "Person A private fact.",
+      sourceKind: "message_received",
+      externalId: "person-a-private-fact",
+    }).event;
+    db.appendEvent({
+      agentId: "person-b",
+      role: "user",
+      content: "Person B private fact.",
+      sourceKind: "message_received",
+      externalId: "person-b-private-fact",
+    });
+
+    expect(db.deleteEventForAgent(personA.eventId, "person-b")).toBe(false);
+    expect(db.listRecentEvents({ agentId: "person-a" })).toHaveLength(1);
+    expect(db.listRecentEvents({ agentId: "person-b" })).toHaveLength(1);
+
+    expect(db.deleteEventForAgent(personA.eventId, "person-a")).toBe(true);
+    expect(db.listRecentEvents({ agentId: "person-a" })).toHaveLength(0);
+    expect(db.listRecentEvents({ agentId: "person-b" })).toHaveLength(1);
+  });
+
   it("does not impose a count-based retention ceiling", () => {
     const db = open();
     db.appendEvents(

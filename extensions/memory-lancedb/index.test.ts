@@ -4012,7 +4012,9 @@ describe("memory plugin e2e", () => {
           ) {
             break;
           }
-          await new Promise((resolve) => setTimeout(resolve, 10));
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 10);
+          });
         }
         expect(mockApi.logger.info).toHaveBeenCalledWith(
           expect.stringContaining("workspace Markdown reconciliation tracked 1 sources"),
@@ -4046,7 +4048,9 @@ describe("memory plugin e2e", () => {
         await services[0]?.stop?.();
         await services[0]?.start?.();
         hookHandler(on, "gateway_start")?.({}, {});
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 0);
+        });
         expect(mockApi.logger.warn).not.toHaveBeenCalledWith(
           expect.stringContaining("memory ledger is closed"),
         );
@@ -4067,6 +4071,152 @@ describe("memory plugin e2e", () => {
         } finally {
           ledger.close();
         }
+      },
+    });
+  });
+
+  test("durable tools derive session ownership, enforce deletion ownership, and refuse legacy drift", async () => {
+    const post = vi.fn(async (_path: string, options: { body?: unknown }) => {
+      const input = (options.body as { input?: unknown })?.input;
+      const count = Array.isArray(input) ? input.length : 1;
+      return {
+        data: Array.from({ length: count }, () => ({
+          embedding: [1, ...Array.from({ length: 1_535 }, () => 0)],
+        })),
+      };
+    });
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher: vi.fn(),
+      openAiPost: post,
+      loadLanceDbModule: vi.fn(async () => await import("@lancedb/lancedb")),
+      run: async (dynamicMemoryPlugin) => {
+        const ledgerPath = path.join(getTmpDir(), "identity-scoped-ledger.sqlite3");
+        let liveDurableEnabled = true;
+        const registeredTools: Array<{ tool: any; opts: any }> = [];
+        const services: Array<{
+          start?: () => Promise<void> | void;
+          stop?: () => Promise<void> | void;
+        }> = [];
+        const on = vi.fn();
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: { apiKey: "sk-test", model: "text-embedding-3-small" },
+            dbPath: getDbPath(),
+            autoCapture: true,
+            autoRecall: true,
+            durableMemory: { enabled: true, ledgerPath, startupReconcile: false },
+          },
+          runtime: {
+            config: {
+              current: () => ({
+                plugins: {
+                  entries: {
+                    "memory-lancedb": {
+                      config: {
+                        autoCapture: true,
+                        autoRecall: true,
+                        durableMemory: {
+                          enabled: liveDurableEnabled,
+                          ledgerPath,
+                          startupReconcile: false,
+                        },
+                      },
+                    },
+                  },
+                },
+              }),
+            },
+          },
+          logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+          registerTool: (tool: any, opts: any) => registeredTools.push({ tool, opts }),
+          registerCli: vi.fn(),
+          registerService: (service: {
+            start?: () => Promise<void> | void;
+            stop?: () => Promise<void> | void;
+          }) => services.push(service),
+          on,
+          resolvePath: (filePath: string) => filePath,
+        };
+        dynamicMemoryPlugin.register(mockApi as any);
+        await services[0]?.start?.();
+
+        const toolFor = (name: string, context: Record<string, unknown>) => {
+          const registration = registeredTools.find((entry) => entry.opts?.name === name);
+          expect(registration).toBeDefined();
+          return typeof registration?.tool === "function"
+            ? registration.tool(context)
+            : registration?.tool;
+        };
+        const personASession = "agent:person-a:signal:main:direct:+12025550101";
+        const personBSession = "agent:person-b:signal:main:direct:+12025550102";
+        const personAStore = toolFor("memory_store", {
+          sessionKey: personASession,
+          messageChannel: "signal",
+        });
+        expectToolExecute(personAStore, "memory_store");
+        const stored = await personAStore.execute("store-person-a", {
+          text: "Person A prefers blue notebooks.",
+          category: "preference",
+        });
+        expect(stored.details?.action).toBe("created");
+        const memoryId = String(stored.details?.id);
+
+        const ledgerView = new TemporalMemoryLedger(ledgerPath);
+        try {
+          expect(ledgerView.listRecentEvents({ agentId: "person-a" })).toHaveLength(1);
+          expect(ledgerView.listRecentEvents({ agentId: "person-b" })).toHaveLength(0);
+          expect(ledgerView.listRecentEvents({ agentId: "main" })).toHaveLength(0);
+        } finally {
+          ledgerView.close();
+        }
+
+        const personBForget = toolFor("memory_forget", {
+          sessionKey: personBSession,
+          messageChannel: "signal",
+        });
+        expect((await personBForget.execute("forget-foreign", { memoryId })).details?.action).toBe(
+          "not_found",
+        );
+
+        liveDurableEnabled = false;
+        const embeddingCallsBeforeDrift = post.mock.calls.length;
+        const personARecall = toolFor("memory_recall", {
+          sessionKey: personASession,
+          messageChannel: "signal",
+        });
+        expect(
+          (await personARecall.execute("recall-drift", { query: "blue notebooks" })).details,
+        ).toMatchObject({ unavailable: true });
+        expect(
+          (
+            await personAStore.execute("store-drift", {
+              text: "This must never enter the legacy shared table.",
+            })
+          ).details,
+        ).toMatchObject({ action: "unavailable", unavailable: true });
+        await hookHandler(on, "agent_end")?.(
+          { success: true, messages: [{ role: "user", content: "I prefer green folders." }] },
+          { sessionKey: personASession },
+        );
+        expect(post).toHaveBeenCalledTimes(embeddingCallsBeforeDrift);
+
+        liveDurableEnabled = true;
+        const personAForget = toolFor("memory_forget", {
+          sessionKey: personASession,
+          messageChannel: "signal",
+        });
+        expect((await personAForget.execute("forget-owned", { memoryId })).details?.action).toBe(
+          "deleted",
+        );
+
+        vi.useFakeTimers();
+        await services[0]?.stop?.();
+        await vi.advanceTimersByTimeAsync(5_000);
+        vi.useRealTimers();
       },
     });
   });

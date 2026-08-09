@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DurableMemoryRuntime, type WorkspaceMemoryArtifact } from "./durable-memory-runtime.js";
+import {
+  DurableMemoryRuntime,
+  resolveDurableMemoryAgentId,
+  type WorkspaceMemoryArtifact,
+} from "./durable-memory-runtime.js";
 
 function embedding(text: string, dimensions = 8): number[] {
   const vector = Array.from({ length: dimensions }, () => 0);
@@ -73,6 +77,44 @@ describe("DurableMemoryRuntime", () => {
     expect(await memory.flush()).toBe(true);
     expect(memory.ledger.getStats()).toMatchObject({ events: 1, pendingProjection: 0 });
     expect((await memory.index.getStats()).rows).toBe(1);
+  });
+
+  it("derives canonical ownership and refuses missing or conflicting identities", () => {
+    expect(resolveDurableMemoryAgentId(undefined, "agent:person-a:signal:main:direct:+1")).toBe(
+      "person-a",
+    );
+    expect(resolveDurableMemoryAgentId("PERSON-A", "agent:person-a:whatsapp:main:direct:+1")).toBe(
+      "person-a",
+    );
+    expect(() => resolveDurableMemoryAgentId(undefined, undefined)).toThrow(
+      "refused an unscoped context",
+    );
+    expect(() =>
+      resolveDurableMemoryAgentId("person-b", "agent:person-a:signal:main:direct:+1"),
+    ).toThrow("identity mismatch");
+  });
+
+  it("never writes an unscoped or mismatched inbound event into main memory", () => {
+    const memory = open();
+    expect(
+      memory.captureInbound({
+        sessionKey: "agent:person-a:signal:main:direct:+1",
+        content: "Person A owns this fact.",
+      }),
+    ).toBe(true);
+    expect(() => memory.captureInbound({ content: "This must not fall back to main." })).toThrow(
+      "refused an unscoped context",
+    );
+    expect(() =>
+      memory.captureInbound({
+        agentId: "person-b",
+        sessionKey: "agent:person-a:signal:main:direct:+1",
+        content: "This must not cross identities.",
+      }),
+    ).toThrow("identity mismatch");
+    expect(memory.ledger.listRecentEvents({ agentId: "person-a" })).toHaveLength(1);
+    expect(memory.ledger.listRecentEvents({ agentId: "person-b" })).toHaveLength(0);
+    expect(memory.ledger.listRecentEvents({ agentId: "main" })).toHaveLength(0);
   });
 
   it("incrementally reconciles transcript JSONL and never reimports completed lines", async () => {

@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/routing";
+import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import { HybridMemoryIndex, type MemoryProjectionInput } from "./hybrid-memory-index.js";
 import {
   TemporalMemoryLedger,
@@ -163,14 +163,24 @@ function stableMessageExternalId(options: {
   return undefined;
 }
 
-function resolveAgentId(explicit: string | undefined, sessionKey: string | undefined): string {
-  if (explicit?.trim()) {
-    return explicit.trim();
+export function resolveDurableMemoryAgentId(
+  explicit: string | undefined,
+  sessionKey: string | undefined,
+): string {
+  const explicitAgentId = explicit?.trim() ? normalizeAgentId(explicit) : undefined;
+  const sessionAgentId = parseAgentSessionKey(sessionKey)?.agentId;
+  if (explicitAgentId && sessionAgentId && explicitAgentId !== sessionAgentId) {
+    throw new Error(
+      `durable memory identity mismatch: explicit agent ${explicitAgentId} does not match the session owner`,
+    );
   }
-  if (sessionKey) {
-    return resolveAgentIdFromSessionKey(sessionKey) ?? "main";
+  const agentId = explicitAgentId ?? sessionAgentId;
+  if (!agentId) {
+    throw new Error(
+      "durable memory capture refused an unscoped context without an agentId or canonical sessionKey",
+    );
   }
-  return "main";
+  return agentId;
 }
 
 function projectionImportance(event: ProjectionLease): number {
@@ -323,7 +333,7 @@ export class DurableMemoryRuntime {
     if (!content) {
       return false;
     }
-    const agentId = resolveAgentId(options.agentId, options.sessionKey);
+    const agentId = resolveDurableMemoryAgentId(options.agentId, options.sessionKey);
     const result = this.ledger.appendEvent({
       agentId,
       sessionKey: options.sessionKey,
@@ -361,7 +371,7 @@ export class DurableMemoryRuntime {
     }
     const observedAt = timestampMs(record.timestamp);
     const messageId = typeof record.id === "string" ? record.id : undefined;
-    const agentId = resolveAgentId(context.agentId, context.sessionKey);
+    const agentId = resolveDurableMemoryAgentId(context.agentId, context.sessionKey);
     const result = this.ledger.appendEvent({
       agentId,
       sessionKey: context.sessionKey,
@@ -437,7 +447,7 @@ export class DurableMemoryRuntime {
     let captured = 0;
     let sessionId = path.basename(options.file, path.extname(options.file));
     const pending: MemoryEventInput[] = [];
-    const agentId = resolveAgentId(
+    const agentId = resolveDurableMemoryAgentId(
       options.agentId ?? this.agentIdFromTranscriptPath(options.file),
       options.sessionKey,
     );
