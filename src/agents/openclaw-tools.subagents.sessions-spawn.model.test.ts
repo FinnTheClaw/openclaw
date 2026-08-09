@@ -97,6 +97,33 @@ describe("subagent spawn model + thinking plan", () => {
     expect(plan.initialSessionPatch.modelOverrideSource).toBe("auto");
   });
 
+  it("maps an exact configured raw model to its approved route when overrides are disabled", () => {
+    const plan = expectOkPlan(
+      resolveSubagentModelAndThinkingPlan({
+        cfg: createConfig({
+          agents: {
+            defaults: {
+              model: { primary: "remote-llm/moira/brain" },
+              subagents: {
+                defaultModelRoute: "general",
+                modelRoutes: {
+                  general: "remote-llm/moira/brain",
+                  coding: "remote-llm/moira/coding",
+                },
+                allowModelOverride: false,
+              },
+            },
+          },
+        }),
+        targetAgentId: "main",
+        modelOverride: "remote-llm/moira/coding",
+      }),
+    );
+    expect(plan.modelRoute).toBe("coding");
+    expect(plan.resolvedModel).toBe("remote-llm/moira/coding");
+    expect(plan.initialSessionPatch.modelOverrideSource).toBe("auto");
+  });
+
   it("automatically prefers the configured vision route for image attachments", () => {
     const plan = expectOkPlan(
       resolveSubagentModelAndThinkingPlan({

@@ -52,6 +52,51 @@ export function resolveConfiguredSubagentRunTimeoutSeconds(params: {
     : cfgSubagentTimeout;
 }
 
+/**
+ * Reconcile a disallowed raw model override with an administrator-approved
+ * route that selects the exact same model.
+ *
+ * Local models sometimes emit `model` even after being told to use
+ * `modelRoute`. Silently discarding that field can move specialty work onto
+ * the default route. Mapping only exact configured matches preserves the
+ * administrator boundary while making the accepted result deterministic.
+ */
+function resolveConfiguredRouteFromDisallowedModelOverride(params: {
+  cfg: OpenClawConfig;
+  targetAgentId: string;
+  modelOverride?: string;
+  modelRoute?: string;
+}): string | undefined {
+  const requestedModel = params.modelOverride?.trim();
+  if (
+    !requestedModel ||
+    params.modelRoute?.trim() ||
+    resolveSubagentModelOverrideAllowed({
+      cfg: params.cfg,
+      agentId: params.targetAgentId,
+    })
+  ) {
+    return undefined;
+  }
+  const defaultSelection = resolveSubagentModelRouteSelection({
+    cfg: params.cfg,
+    agentId: params.targetAgentId,
+  });
+  const matches = defaultSelection.availableRoutes
+    .map((route) =>
+      resolveSubagentModelRouteSelection({
+        cfg: params.cfg,
+        agentId: params.targetAgentId,
+        modelRoute: route,
+      }),
+    )
+    .filter((selection) => selection.model?.trim() === requestedModel);
+  return (
+    matches.find((selection) => selection.route === defaultSelection.route)?.route ??
+    matches[0]?.route
+  );
+}
+
 /** Resolves the subagent model plus thinking patch to apply to the spawned session. */
 export function resolveSubagentModelAndThinkingPlan(params: {
   cfg: OpenClawConfig;
@@ -64,7 +109,8 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   thinkingOverrideRaw?: string;
   callerThinkingRaw?: string;
 }) {
-  const requestedRoute = params.modelRoute?.trim() || undefined;
+  const requestedRoute =
+    params.modelRoute?.trim() || resolveConfiguredRouteFromDisallowedModelOverride(params);
   let routeSelection = resolveSubagentModelRouteSelection({
     cfg: params.cfg,
     agentId: params.targetAgentId,
