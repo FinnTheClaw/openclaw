@@ -66,7 +66,10 @@ import {
   OpenAICompatibleFactExtractor,
   OpenAICompatibleMemorySummarizer,
 } from "./openai-memory-consolidator.js";
-import { runMemoryScaleCertification } from "./scale-certification.js";
+import {
+  runMemoryIsolationCertification,
+  runMemoryScaleCertification,
+} from "./scale-certification.js";
 import type { DeadLetterQueue } from "./temporal-ledger.js";
 
 // ============================================================================
@@ -2711,6 +2714,32 @@ export default definePluginEntry({
               ? resolveMemoryCliPath(resolvedOptions.directory)
               : undefined;
             const report = await runMemoryScaleCertification({
+              facts,
+              queries,
+              directory,
+              keep: resolvedOptions.keep,
+            });
+            console.log(JSON.stringify(report, null, 2));
+            if (report.status !== "PASS") {
+              process.exitCode = 1;
+            }
+          });
+
+        memory
+          .command("certify-isolation")
+          .description("Run an isolated cross-principal memory boundary certification")
+          .option("--facts <n>", "Total paired synthetic fact count (must be even)", "4000")
+          .option("--queries <n>", "Random boundary query count", "100")
+          .option("--directory <path>", "Dedicated certification directory")
+          .option("--keep", "Keep an automatically-created temporary directory", false)
+          .action(async (opts, command) => {
+            const resolvedOptions = resolveCertifyCliOptions(opts, command);
+            const facts = parsePositiveIntegerOption(resolvedOptions.facts, "--facts") ?? 4_000;
+            const queries = parsePositiveIntegerOption(resolvedOptions.queries, "--queries") ?? 100;
+            const directory = resolvedOptions.directory
+              ? resolveMemoryCliPath(resolvedOptions.directory)
+              : undefined;
+            const report = await runMemoryIsolationCertification({
               facts,
               queries,
               directory,

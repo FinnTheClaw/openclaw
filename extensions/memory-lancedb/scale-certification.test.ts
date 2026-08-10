@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runMemoryScaleCertification } from "./scale-certification.js";
+import {
+  runMemoryIsolationCertification,
+  runMemoryScaleCertification,
+} from "./scale-certification.js";
 
 const directories: string[] = [];
 
@@ -32,5 +35,33 @@ describe("memory scale certification", () => {
     await expect(fs.stat(report.snapshotPath)).resolves.toMatchObject({
       isFile: expect.any(Function),
     });
+  });
+
+  it("keeps paired principals and conversations isolated across delete and reopen", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "memory-v2-isolation-test-"));
+    directories.push(directory);
+    const report = await runMemoryIsolationCertification({
+      facts: 1_000,
+      queries: 20,
+      directory,
+      keep: true,
+    });
+
+    expect(report).toMatchObject({
+      status: "PASS",
+      facts: 1_000,
+      principals: 2,
+      conversationsPerPrincipal: 3,
+      authorizedRecallFailures: 0,
+      crossPrincipalViolations: 0,
+      crossConversationViolations: 0,
+      principalFactFailures: 0,
+      deletionFailures: 0,
+      reopenFailures: 0,
+      secretCanaryMatches: 0,
+    });
+    expect(report.ledgerStats.events).toBe(1_000);
+    expect(report.reopenStats.events).toBe(1_000);
+    expect(report.indexStats.rows).toBe(1_001);
   });
 });
