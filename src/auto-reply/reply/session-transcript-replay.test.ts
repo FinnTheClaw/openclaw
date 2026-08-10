@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { replayRecentUserAssistantMessages } from "../../config/sessions/transcript-replay.js";
+import {
+  registerSecretValueForRedaction,
+  resetSecretRedactionRegistryForTest,
+} from "../../logging/secret-redaction-registry.js";
 
 const DEFAULT_REPLAY_MAX_MESSAGES = 6;
 
@@ -71,6 +75,7 @@ describe("replayRecentUserAssistantMessages", () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-replay-"));
   });
   afterEach(async () => {
+    resetSecretRedactionRegistryForTest();
     await fs.rm(root, { recursive: true, force: true });
   });
   const call = (source: string, target: string): Promise<number> =>
@@ -241,5 +246,43 @@ describe("replayRecentUserAssistantMessages", () => {
       "keep assistant",
     ]);
     expect(records.slice(1).every((record) => record.type === "message")).toBe(true);
+  });
+
+  it("re-serializes exactly four replayed messages without a registered secret canary", async () => {
+    const source = path.join(root, "prev.jsonl");
+    const target = path.join(root, "next.jsonl");
+    const canary = "fake-replay-secret-canary-0123456789";
+    registerSecretValueForRedaction(canary);
+    await fs.writeFile(
+      source,
+      [
+        messageEntry({ id: "u1", role: "user", content: `first ${canary}` }),
+        messageEntry({ id: "a1", role: "assistant", content: `second ${canary}`, parentId: "u1" }),
+        messageEntry({ id: "u2", role: "user", content: `third ${canary}`, parentId: "a1" }),
+        messageEntry({ id: "a2", role: "assistant", content: `fourth ${canary}`, parentId: "u2" }),
+        `{malformed:${canary}}\n`,
+      ].join(""),
+      "utf8",
+    );
+
+    expect(
+      await replayRecentUserAssistantMessages({
+        sourceTranscript: source,
+        targetTranscript: target,
+        newSessionId: "redacted-session",
+        maxMessages: 4,
+      }),
+    ).toBe(4);
+
+    const raw = await fs.readFile(target, "utf8");
+    const records = await readJsonlRecords(target);
+    expect(raw).not.toContain(canary);
+    expect(records.slice(1)).toHaveLength(4);
+    expect(records.slice(1).map((record) => record.message?.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
   });
 });

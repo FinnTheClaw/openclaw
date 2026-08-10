@@ -9,7 +9,9 @@ import type { InboundEventKind } from "../channels/inbound-event/kind.js";
 import { selectApplicableRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway } from "../gateway/call.js";
+import { COMMUNICATION_QUARANTINE_AGENT_ID } from "../identity/communication-identity-registry.js";
 import { isEmbeddedMode } from "../infra/embedded-mode.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
 import { getActiveRuntimeWebToolsMetadata } from "../secrets/runtime-web-tools-state.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
@@ -41,6 +43,7 @@ import type { ToolFsPolicy } from "./tool-fs-policy.js";
 import { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
 import type { AnyAgentTool } from "./tools/common.js";
+import { createCommunicationAccessTool } from "./tools/communication-access-tool.js";
 import { createCrestodianTool } from "./tools/crestodian-tool.js";
 import { createCronTool, type CronCreatorToolAllowlistEntry } from "./tools/cron-tool.js";
 import { createEmbeddedCallGateway } from "./tools/embedded-gateway-stub.js";
@@ -83,6 +86,36 @@ const defaultOpenClawToolsDeps: OpenClawToolsDeps = {
 };
 
 let openClawToolsDeps: OpenClawToolsDeps = defaultOpenClawToolsDeps;
+
+const NONINTERACTIVE_LOCAL_SESSION_KINDS = new Set([
+  "acp",
+  "cron",
+  "heartbeat",
+  "hook",
+  "subagent",
+]);
+
+function shouldIncludeCommunicationAccessTool(params: {
+  agentSessionKey?: string;
+  agentChannel?: GatewayMessageChannel;
+  sandboxed?: boolean;
+  senderIsOwner?: boolean;
+  sessionAgentId: string;
+}): boolean {
+  if (params.sandboxed === true || params.sessionAgentId === COMMUNICATION_QUARANTINE_AGENT_ID) {
+    return false;
+  }
+  if (params.senderIsOwner === true) {
+    return true;
+  }
+  if (params.agentChannel !== undefined || params.senderIsOwner === false) {
+    return false;
+  }
+  const key = params.agentSessionKey?.trim();
+  const rest = key ? (parseAgentSessionKey(key)?.rest ?? key) : "main";
+  const kind = rest.split(":")[0]?.trim().toLowerCase() ?? "";
+  return !NONINTERACTIVE_LOCAL_SESSION_KINDS.has(kind);
+}
 
 export function createOpenClawTools(
   options?: {
@@ -425,6 +458,13 @@ export function createOpenClawTools(
     pluginToolDenylist: options?.pluginToolDenylist,
   });
   const includeTranscriptsTool = resolveTranscriptsConfig(resolvedConfig?.transcripts).enabled;
+  const includeCommunicationAccessTool = shouldIncludeCommunicationAccessTool({
+    agentSessionKey: options?.agentSessionKey,
+    agentChannel: options?.agentChannel,
+    sandboxed: options?.sandboxed,
+    senderIsOwner: options?.senderIsOwner,
+    sessionAgentId,
+  });
   const tools: AnyAgentTool[] = [
     ...(options?.crestodianTool ? [createCrestodianTool(options.crestodianTool)] : []),
     ...(embedded
@@ -553,6 +593,7 @@ export function createOpenClawTools(
     createSubagentsTool({
       agentSessionKey: options?.agentSessionKey,
     }),
+    ...(includeCommunicationAccessTool ? [createCommunicationAccessTool()] : []),
     createSessionStatusTool({
       agentSessionKey: options?.agentSessionKey,
       runSessionKey: options?.runSessionKey,
@@ -622,6 +663,7 @@ export function createOpenClawTools(
 
 export const testing = {
   resolveOptionalMediaToolFactoryPlan,
+  shouldIncludeCommunicationAccessTool,
   setDepsForTest(overrides?: Partial<OpenClawToolsDeps>) {
     openClawToolsDeps = overrides
       ? {

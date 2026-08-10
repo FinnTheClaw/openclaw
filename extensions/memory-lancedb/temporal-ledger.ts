@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const DEFAULT_LEASE_MS = 60_000;
 const DEFAULT_MAX_PROJECTION_ATTEMPTS = 12;
 
@@ -148,6 +148,18 @@ export type DeadLetterRecoveryResult = {
   extraction: number;
   total: number;
   recoveredAt: number;
+};
+
+export type MemoryOperationReceipt = {
+  operationId: string;
+  kind: "store" | "forget" | "recover";
+  agentId: string;
+  targetRef?: string;
+  state: "accepted" | "completed" | "failed";
+  outcome?: string;
+  startedAt: number;
+  completedAt?: number;
+  evidence: Record<string, unknown>;
 };
 
 export type MemoryIngestCursor = {
@@ -447,6 +459,20 @@ export class TemporalMemoryLedger {
         ON memory_deletion_audit(agent_id, external_id)
         WHERE external_id IS NOT NULL;
 
+      CREATE TABLE IF NOT EXISTS memory_operation_receipts (
+        operation_id TEXT PRIMARY KEY,
+        operation_kind TEXT NOT NULL CHECK(operation_kind IN ('store', 'forget', 'recover')),
+        agent_id TEXT NOT NULL,
+        target_ref TEXT,
+        state TEXT NOT NULL CHECK(state IN ('accepted', 'completed', 'failed')),
+        outcome TEXT,
+        started_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        evidence_json TEXT NOT NULL DEFAULT '{}'
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS memory_operation_receipts_agent_time
+        ON memory_operation_receipts(agent_id, started_at DESC);
+
       CREATE TABLE IF NOT EXISTS memory_projection_outbox (
         event_id TEXT PRIMARY KEY REFERENCES memory_events(event_id) ON DELETE CASCADE,
         state TEXT NOT NULL DEFAULT 'pending'
@@ -695,7 +721,13 @@ export class TemporalMemoryLedger {
         const inserted = insertEvent.run(...values).changes > 0;
         if (inserted) {
           insertOutbox.run(eventId, now);
-          if (input.role === "user" || input.role === "assistant") {
+          const evidenceClass = input.metadata?.evidenceClass;
+          if (
+            input.role === "user" &&
+            (evidenceClass === undefined ||
+              evidenceClass === "direct_user" ||
+              evidenceClass === "verified_operator")
+          ) {
             insertExtraction.run(eventId, now);
           }
         }
@@ -1018,6 +1050,126 @@ export class TemporalMemoryLedger {
     return this.deleteEventInternal(eventId, reason, expectedAgentId);
   }
 
+  getEventForAgent(eventId: string, expectedAgentId: string): StoredMemoryEvent | undefined {
+    this.assertOpen();
+    const row = this.db
+      .prepare(
+        "SELECT * FROM memory_events WHERE event_id = ? AND agent_id = ? AND deleted_at IS NULL",
+      )
+      .get(
+        normalizeRequired(eventId, "eventId"),
+        normalizeRequired(expectedAgentId, "expectedAgentId"),
+      ) as SqlRow | undefined;
+    return row ? rowToEvent(row) : undefined;
+  }
+
+  retractFactRevisionForAgent(revisionId: string, expectedAgentId: string): boolean {
+    this.assertOpen();
+    const normalizedId = normalizeRequired(revisionId, "revisionId");
+    const agentId = normalizeRequired(expectedAgentId, "expectedAgentId");
+    const row = this.db
+      .prepare(
+        "SELECT revision_id, observed_at, scope FROM memory_fact_revisions " +
+          "WHERE revision_id = ? AND agent_id = ? AND status = 'active' AND system_to IS NULL",
+      )
+      .get(normalizedId, agentId) as SqlRow | undefined;
+    if (!row) {
+      return false;
+    }
+    const now = Date.now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          "UPDATE memory_fact_revisions SET status = 'retracted', system_to = ? " +
+            "WHERE revision_id = ? AND agent_id = ? AND status = 'active' AND system_to IS NULL",
+        )
+        .run(now, normalizedId, agentId);
+      this.enqueueMaterialization("fact", normalizedId, now);
+      this.markSummaryPathDirty({
+        agentId,
+        scope: String(row.scope),
+        observedAt: Number(row.observed_at),
+        now,
+      });
+      this.db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  beginOperation(options: {
+    kind: "store" | "forget" | "recover";
+    agentId: string;
+    targetRef?: string;
+    evidence?: Record<string, unknown>;
+  }): string {
+    this.assertOpen();
+    const operationId = `memop_${randomUUID()}`;
+    this.db
+      .prepare(
+        "INSERT INTO memory_operation_receipts(" +
+          "operation_id, operation_kind, agent_id, target_ref, state, started_at, evidence_json" +
+          ") VALUES(?, ?, ?, ?, 'accepted', ?, ?)",
+      )
+      .run(
+        operationId,
+        options.kind,
+        normalizeRequired(options.agentId, "agentId"),
+        normalizeOptional(options.targetRef) ?? null,
+        Date.now(),
+        stableJson(options.evidence),
+      );
+    return operationId;
+  }
+
+  completeOperation(options: {
+    operationId: string;
+    state: "completed" | "failed";
+    outcome: string;
+    evidence?: Record<string, unknown>;
+  }): void {
+    this.assertOpen();
+    const updated = this.db
+      .prepare(
+        "UPDATE memory_operation_receipts SET state = ?, outcome = ?, completed_at = ?, " +
+          "evidence_json = ? WHERE operation_id = ? AND state = 'accepted'",
+      )
+      .run(
+        options.state,
+        normalizeRequired(options.outcome, "outcome"),
+        Date.now(),
+        stableJson(options.evidence),
+        normalizeRequired(options.operationId, "operationId"),
+      ).changes;
+    if (updated !== 1) {
+      throw new Error("memory operation receipt was not in the accepted state");
+    }
+  }
+
+  getOperationReceipt(operationId: string): MemoryOperationReceipt | undefined {
+    this.assertOpen();
+    const row = this.db
+      .prepare("SELECT * FROM memory_operation_receipts WHERE operation_id = ?")
+      .get(normalizeRequired(operationId, "operationId")) as SqlRow | undefined;
+    if (!row) {
+      return undefined;
+    }
+    return {
+      operationId: String(row.operation_id),
+      kind: String(row.operation_kind) as MemoryOperationReceipt["kind"],
+      agentId: String(row.agent_id),
+      targetRef: optionalString(row.target_ref),
+      state: String(row.state) as MemoryOperationReceipt["state"],
+      outcome: optionalString(row.outcome),
+      startedAt: Number(row.started_at),
+      completedAt: optionalNumber(row.completed_at),
+      evidence: parseJsonObject(row.evidence_json),
+    };
+  }
+
   private deleteEventInternal(eventId: string, reason: string, expectedAgentId?: string): boolean {
     this.assertOpen();
     const normalizedId = normalizeRequired(eventId, "eventId");
@@ -1305,6 +1457,20 @@ export class TemporalMemoryLedger {
     const row = this.db
       .prepare("SELECT * FROM memory_fact_revisions WHERE revision_id = ?")
       .get(normalizeRequired(revisionId, "revisionId")) as SqlRow | undefined;
+    return row ? rowToFact(row) : undefined;
+  }
+
+  getFactRevisionForAgent(
+    revisionId: string,
+    expectedAgentId: string,
+  ): StoredFactRevision | undefined {
+    this.assertOpen();
+    const row = this.db
+      .prepare("SELECT * FROM memory_fact_revisions WHERE revision_id = ? AND agent_id = ?")
+      .get(
+        normalizeRequired(revisionId, "revisionId"),
+        normalizeRequired(expectedAgentId, "expectedAgentId"),
+      ) as SqlRow | undefined;
     return row ? rowToFact(row) : undefined;
   }
 

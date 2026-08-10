@@ -7,7 +7,7 @@
  */
 
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import type * as LanceDB from "@lancedb/lancedb";
@@ -19,6 +19,7 @@ import {
 import { BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES } from "openclaw/plugin-sdk/chat-channel-ids";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import { parseSessionDeliveryRoute } from "openclaw/plugin-sdk/routing";
 import type { MemoryEmbeddingProvider } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import { resolveMemoryDreamingWorkspaces } from "openclaw/plugin-sdk/memory-core-host-status";
 import { MESSAGE_TOOL_DELIVERY_HINTS } from "openclaw/plugin-sdk/message-tool-delivery-hints";
@@ -35,7 +36,7 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { Type } from "typebox";
-import { definePluginEntry, resolveStateDir, type OpenClawPluginApi } from "./api.js";
+import { definePluginEntry, type OpenClawPluginApi } from "./api.js";
 import {
   DEFAULT_CAPTURE_MAX_CHARS,
   DEFAULT_RECALL_MAX_CHARS,
@@ -46,9 +47,23 @@ import {
   vectorDimsForModel,
 } from "./config.js";
 import { DurableMemoryRuntime, resolveDurableMemoryAgentId } from "./durable-memory-runtime.js";
-import type { HybridMemorySearchResult } from "./hybrid-memory-index.js";
+import {
+  deduplicateHybridResults,
+  type HybridMemorySearchResult,
+} from "./hybrid-memory-index.js";
 import { loadLanceDbModule } from "./lancedb-runtime.js";
+import {
+  assertMemoryContentSafe,
+  guardMemoryEmbeddingProvider,
+  MemorySensitiveContentError,
+} from "./memory-content-guard.js";
 import { MemoryConsolidator } from "./memory-consolidator.js";
+import {
+  isMemoryScopeCompatible,
+  memoryScopeMetadata,
+  resolveTrustedMemoryScope,
+  type TrustedMemoryScope,
+} from "./memory-scope.js";
 import {
   OpenAICompatibleFactExtractor,
   OpenAICompatibleMemorySummarizer,
@@ -162,6 +177,12 @@ function messageFingerprint(message: unknown): string {
   } catch {
     return `${String(msgObj.role)}:${String(msgObj.content)}`;
   }
+}
+
+function opaqueEvidenceRef(...values: Array<string | number | undefined>): string {
+  return `evidence_${createHash("sha256")
+    .update(values.map((value) => String(value ?? "")).join("\u0000"))
+    .digest("hex")}`;
 }
 
 function resolveAutoCaptureStartIndex(
@@ -417,6 +438,15 @@ class MemoryDB {
     }
     await this.table!.delete(`id = '${id}'`);
     return true;
+  }
+
+  async has(id: string): Promise<boolean> {
+    await this.ensureInitialized();
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(id)) {
+      return false;
+    }
+    return (await this.table!.countRows(`id = '${id}'`)) > 0;
   }
 
   async count(): Promise<number> {
@@ -1608,7 +1638,7 @@ export default definePluginEntry({
 
     const vectorDim = dimensions ?? vectorDimsForModel(model);
     const db = new MemoryDB(resolvedDbPath, vectorDim, cfg.storageOptions);
-    const embeddings = createEmbeddings(api, cfg);
+    const embeddings = guardMemoryEmbeddingProvider(createEmbeddings(api, cfg));
     const durableLedgerPath = cfg.durableMemory.ledgerPath.includes("://")
       ? (() => {
           throw new Error("durableMemory.ledgerPath must be a local filesystem path");
@@ -1723,6 +1753,65 @@ export default definePluginEntry({
       }
       return durableRuntime;
     };
+    const resolveMemoryScope = (input: {
+      agentId?: string;
+      workspaceDir?: string;
+      sessionKey?: string;
+      sessionId?: string;
+      channel?: string;
+      accountId?: string;
+      conversationId?: string;
+    }): TrustedMemoryScope => {
+      const agentId = resolveDurableMemoryAgentId(input.agentId, input.sessionKey);
+      const route = parseSessionDeliveryRoute(input.sessionKey);
+      const liveConfig = (api.runtime.config?.current?.() ?? api.config) as OpenClawConfig;
+      const workspaceDir =
+        input.workspaceDir ?? api.runtime.agent.resolveAgentWorkspaceDir(liveConfig, agentId);
+      return resolveTrustedMemoryScope({
+        agentId,
+        workspaceDir,
+        sessionKey: input.sessionKey,
+        sessionId: input.sessionId,
+        channel: input.channel ?? route?.channel,
+        accountId: input.accountId ?? route?.accountId,
+        conversationId: input.conversationId ?? route?.peerId,
+      });
+    };
+    const searchScopedMemory = async (options: {
+      scope: TrustedMemoryScope;
+      queryText: string;
+      vector: number[];
+      limit: number;
+    }): Promise<HybridMemorySearchResult[]> => {
+      if (!durableRuntime) {
+        return [];
+      }
+      const perScopeLimit = Math.min(50, Math.max(options.limit, options.limit * 2));
+      const [conversation, principal] = await Promise.all([
+        durableRuntime.index.search({
+          queryText: options.queryText,
+          vector: options.vector,
+          agentId: options.scope.storageAgentId,
+          scope: options.scope.conversationScope,
+          channel: options.scope.channel,
+          limit: perScopeLimit,
+        }),
+        durableRuntime.index.search({
+          queryText: options.queryText,
+          vector: options.vector,
+          agentId: options.scope.storageAgentId,
+          scope: options.scope.principalScope,
+          limit: perScopeLimit,
+          recordTypes: ["fact"],
+        }),
+      ]);
+      return deduplicateHybridResults(
+        [...conversation, ...principal].toSorted(
+          (left, right) => right.score - left.score || right.entry.observedAt - left.entry.observedAt,
+        ),
+        options.limit,
+      );
+    };
     const readMemoryRecallCooldown = (): { error: string } | undefined => {
       if (!memoryRecallCooldown) {
         return undefined;
@@ -1784,21 +1873,27 @@ export default definePluginEntry({
               ReturnType<typeof runWithTimeout<HybridMemorySearchResult[]>>
             >;
             try {
-              const agentId = resolveDurableMemoryAgentId(
-                toolContext.agentId,
-                toolContext.sessionKey,
-              );
+              const scope = resolveMemoryScope({
+                agentId: toolContext.agentId,
+                workspaceDir: toolContext.workspaceDir,
+                sessionKey: toolContext.sessionKey,
+                sessionId: toolContext.sessionId,
+                channel: toolContext.messageChannel ?? toolContext.deliveryContext?.channel,
+                accountId:
+                  toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
+                conversationId:
+                  toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
+              });
               durableRecall = await runWithTimeout({
                 timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
                 task: async () => {
                   const vector = await embeddings.embed(normalizedQuery, {
                     timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
                   });
-                  return await durableRuntime.index.search({
+                  return await searchScopedMemory({
+                    scope,
                     queryText: normalizedQuery,
                     vector,
-                    agentId,
-                    channel: toolContext.messageChannel,
                     limit,
                   });
                 },
@@ -1849,6 +1944,11 @@ export default definePluginEntry({
                 })),
               },
             };
+          }
+          if (toolContext.messageChannel || toolContext.deliveryContext?.channel) {
+            return buildMemoryRecallUnavailableResult(
+              "identity-scoped durable memory is unavailable; shared legacy recall was refused",
+            );
           }
           let recall: Awaited<ReturnType<typeof runWithTimeout<MemorySearchResult[]>>>;
           try {
@@ -1956,6 +2056,23 @@ export default definePluginEntry({
               max: 1,
             }) ?? 0.7;
 
+          try {
+            assertMemoryContentSafe(text);
+          } catch (error) {
+            if (error instanceof MemorySensitiveContentError) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: "Memory was not stored because it contains secret-like material.",
+                  },
+                ],
+                details: { action: "rejected", reason: error.code },
+              };
+            }
+            throw error;
+          }
+
           if (looksLikePromptInjection(text)) {
             return {
               content: [
@@ -1977,28 +2094,74 @@ export default definePluginEntry({
             return buildMemoryOperationUnavailableResult("store", durableDrift);
           }
           if (durableRuntime) {
-            let agentId: string;
+            let scope: TrustedMemoryScope;
             try {
-              agentId = resolveDurableMemoryAgentId(toolContext.agentId, toolContext.sessionKey);
+              scope = resolveMemoryScope({
+                agentId: toolContext.agentId,
+                workspaceDir: toolContext.workspaceDir,
+                sessionKey: toolContext.sessionKey,
+                sessionId: toolContext.sessionId,
+                channel: toolContext.messageChannel ?? toolContext.deliveryContext?.channel,
+                accountId:
+                  toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
+                conversationId:
+                  toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
+              });
             } catch (error) {
               return buildMemoryOperationUnavailableResult("store", formatMemoryRecallError(error));
             }
+            const operationId = durableRuntime.ledger.beginOperation({
+              kind: "store",
+              agentId: scope.storageAgentId,
+              evidence: { requestedState: "candidate" },
+            });
             const stored = durableRuntime.captureManualMemory({
-              agentId,
+              agentId: scope.storageAgentId,
+              sessionKey: scope.sessionRef,
+              channel: scope.channel,
+              conversationId: scope.conversationRef,
+              scope: scope.conversationScope,
               text,
               category,
               importance,
+              metadata: memoryScopeMetadata(scope, "assistant_claim"),
             });
             const indexed = await durableRuntime.flush(20_000);
             scheduleDurableWorkers();
+            durableRuntime.ledger.completeOperation({
+              operationId,
+              state: indexed ? "completed" : "failed",
+              outcome: indexed ? "candidate_recorded" : "projection_pending",
+              evidence: {
+                targetId: stored.id,
+                projectionComplete: indexed,
+                verificationStatus: "candidate",
+              },
+            });
             return {
-              content: [{ type: "text", text: `Stored: "${truncateUtf16Safe(text, 100)}..."` }],
+              content: [
+                {
+                  type: "text",
+                  text: indexed
+                    ? "Memory candidate recorded. It remains non-authoritative until verified from direct or structured evidence."
+                    : "Memory candidate was committed, but projection did not reach a verified terminal state.",
+                },
+              ],
               details: {
-                action: stored.inserted ? "created" : "duplicate",
+                action: indexed ? "candidate" : "partial_failure",
                 id: stored.id,
+                operationId,
+                verificationStatus: "candidate",
                 projectionPending: !indexed,
               },
             };
+          }
+
+          if (toolContext.messageChannel || toolContext.deliveryContext?.channel) {
+            return buildMemoryOperationUnavailableResult(
+              "store",
+              "identity-scoped durable memory is unavailable; shared legacy storage was refused",
+            );
           }
 
           const vector = await embeddings.embed(text);
@@ -2055,41 +2218,196 @@ export default definePluginEntry({
 
           if (memoryId) {
             if (durableRuntime) {
-              let agentId: string;
+              let scope: TrustedMemoryScope;
               try {
-                agentId = resolveDurableMemoryAgentId(toolContext.agentId, toolContext.sessionKey);
+                scope = resolveMemoryScope({
+                  agentId: toolContext.agentId,
+                  workspaceDir: toolContext.workspaceDir,
+                  sessionKey: toolContext.sessionKey,
+                  sessionId: toolContext.sessionId,
+                  channel: toolContext.messageChannel ?? toolContext.deliveryContext?.channel,
+                  accountId:
+                    toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
+                  conversationId:
+                    toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
+                });
               } catch (error) {
                 return buildMemoryOperationUnavailableResult(
                   "forget",
                   formatMemoryRecallError(error),
                 );
               }
-              const deleted = durableRuntime.ledger.deleteEventForAgent(memoryId, agentId);
-              if (deleted) {
-                await durableRuntime.index.delete(memoryId);
-                scheduleDurableWorkers();
+              const event = durableRuntime.ledger.getEventForAgent(
+                memoryId,
+                scope.storageAgentId,
+              );
+              const fact = durableRuntime.ledger.getFactRevisionForAgent(
+                memoryId,
+                scope.storageAgentId,
+              );
+              const eventAllowed = event
+                ? isMemoryScopeCompatible(scope, event.metadata)
+                : false;
+              const factAllowed = fact
+                ? fact.scope === scope.conversationScope || fact.scope === scope.principalScope
+                : false;
+              if ((!event || !eventAllowed) && (!fact || !factAllowed)) {
                 return {
-                  content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
-                  details: { action: "deleted", id: memoryId },
+                  content: [{ type: "text", text: "Memory target was not found in this scope." }],
+                  details: { action: "not_found", id: memoryId },
                 };
               }
+
+              const targetText = eventAllowed ? event!.content : fact!.text;
+              const operationId = durableRuntime.ledger.beginOperation({
+                kind: "forget",
+                agentId: scope.storageAgentId,
+                targetRef: memoryId,
+                evidence: { recordType: eventAllowed ? "event" : "fact_revision" },
+              });
+              const ledgerDeleted = eventAllowed
+                ? durableRuntime.ledger.deleteEventForAgent(memoryId, scope.storageAgentId)
+                : durableRuntime.ledger.retractFactRevisionForAgent(
+                    memoryId,
+                    scope.storageAgentId,
+                  );
+              await durableRuntime.index.delete(memoryId);
+              scheduleDurableWorkers();
+              const projectionComplete = await durableRuntime.flush(20_000);
+              const consolidationComplete = consolidator
+                ? await consolidator.flush(20_000)
+                : true;
+              // A retracted fact may be materialized once as a retracted row so
+              // downstream rebuilds observe the tombstone. Remove that derived
+              // row after the durable drain; the ledger remains authoritative.
+              await durableRuntime.index.delete(memoryId);
+              const exactAbsent = !(await durableRuntime.index.has(memoryId, {
+                agentId: scope.storageAgentId,
+              }));
+              const normalizedTarget = targetText.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+              let semanticAbsent = false;
+              try {
+                const normalizedQuery = normalizeRecallQuery(
+                  targetText,
+                  currentCfg.recallMaxChars,
+                );
+                const vector = await embeddings.embed(normalizedQuery, {
+                  timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
+                });
+                const verification = await searchScopedMemory({
+                  scope,
+                  queryText: normalizedQuery,
+                  vector,
+                  limit: 20,
+                });
+                semanticAbsent = !verification.some(
+                  (result) =>
+                    result.entry.id === memoryId ||
+                    result.entry.text.replace(/\s+/gu, " ").trim().toLocaleLowerCase() ===
+                      normalizedTarget,
+                );
+              } catch {
+                semanticAbsent = false;
+              }
+              const completed =
+                ledgerDeleted &&
+                projectionComplete &&
+                consolidationComplete &&
+                exactAbsent &&
+                semanticAbsent;
+              durableRuntime.ledger.completeOperation({
+                operationId,
+                state: completed ? "completed" : "failed",
+                outcome: completed ? "deleted" : "partial_failure",
+                evidence: {
+                  ledgerDeleted,
+                  projectionComplete,
+                  consolidationComplete,
+                  exactAbsent,
+                  semanticAbsent,
+                },
+              });
+              memoryRecallCooldown = undefined;
               return {
-                content: [{ type: "text", text: `Memory ${memoryId} was not found.` }],
+                content: [
+                  {
+                    type: "text",
+                    text: completed
+                      ? "Memory deletion completed and was verified by exact and semantic recall."
+                      : "Memory deletion did not satisfy every postcondition; it was not accepted as success.",
+                  },
+                ],
+                details: {
+                  action: completed ? "deleted" : "partial_failure",
+                  id: memoryId,
+                  operationId,
+                  postconditions: {
+                    ledgerDeleted,
+                    projectionComplete,
+                    consolidationComplete,
+                    exactAbsent,
+                    semanticAbsent,
+                  },
+                },
+              };
+            }
+            if (toolContext.messageChannel || toolContext.deliveryContext?.channel) {
+              return buildMemoryOperationUnavailableResult(
+                "forget",
+                "identity-scoped durable memory is unavailable; shared legacy deletion was refused",
+              );
+            }
+            const legacyTarget = (await db.list()).find((entry) => entry.id === memoryId);
+            if (!legacyTarget) {
+              return {
+                content: [{ type: "text", text: "Memory target was not found." }],
                 details: { action: "not_found", id: memoryId },
               };
             }
             await db.delete(memoryId);
+            const exactAbsent = !(await db.has(memoryId));
+            const vector = await embeddings.embed(legacyTarget.text);
+            const semanticResults = await db.search(vector, 20, 0.1);
+            const normalizedTarget = legacyTarget.text.replace(/\s+/gu, " ").trim().toLowerCase();
+            const semanticAbsent = !semanticResults.some(
+              (result) =>
+                result.entry.id === memoryId ||
+                result.entry.text.replace(/\s+/gu, " ").trim().toLowerCase() === normalizedTarget,
+            );
+            const completed = exactAbsent && semanticAbsent;
             return {
-              content: [{ type: "text", text: `Memory ${memoryId} forgotten.` }],
-              details: { action: "deleted", id: memoryId },
+              content: [
+                {
+                  type: "text",
+                  text: completed
+                    ? "Memory deletion completed and was verified by exact and semantic recall."
+                    : "Memory deletion did not satisfy every postcondition; it was not accepted as success.",
+                },
+              ],
+              details: {
+                action: completed ? "deleted" : "partial_failure",
+                id: memoryId,
+                postconditions: { exactAbsent, semanticAbsent },
+              },
             };
           }
 
           if (query) {
             if (durableRuntime) {
-              let agentId: string;
+              let scope: TrustedMemoryScope;
               try {
-                agentId = resolveDurableMemoryAgentId(toolContext.agentId, toolContext.sessionKey);
+                assertMemoryContentSafe(query);
+                scope = resolveMemoryScope({
+                  agentId: toolContext.agentId,
+                  workspaceDir: toolContext.workspaceDir,
+                  sessionKey: toolContext.sessionKey,
+                  sessionId: toolContext.sessionId,
+                  channel: toolContext.messageChannel ?? toolContext.deliveryContext?.channel,
+                  accountId:
+                    toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
+                  conversationId:
+                    toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
+                });
               } catch (error) {
                 return buildMemoryOperationUnavailableResult(
                   "forget",
@@ -2098,36 +2416,22 @@ export default definePluginEntry({
               }
               const normalizedQuery = normalizeRecallQuery(query, currentCfg.recallMaxChars);
               const vector = await embeddings.embed(normalizedQuery);
-              const results = await durableRuntime.index.search({
+              const results = (await searchScopedMemory({
+                scope,
                 queryText: normalizedQuery,
                 vector,
-                agentId,
-                channel: toolContext.messageChannel,
                 limit: 5,
-              });
+              })).filter((result) => result.entry.recordType !== "summary");
               if (results.length === 0) {
                 return {
                   content: [{ type: "text", text: "No matching memories found." }],
-                  details: { found: 0 },
+                  details: { action: "candidates", candidates: [] },
                 };
-              }
-              const exact = results.find(
-                (result) =>
-                  result.entry.text.trim().toLocaleLowerCase() === query.trim().toLocaleLowerCase(),
-              );
-              if (exact) {
-                const deleted = durableRuntime.ledger.deleteEventForAgent(exact.entry.id, agentId);
-                if (deleted) {
-                  await durableRuntime.index.delete(exact.entry.id);
-                  scheduleDurableWorkers();
-                  return {
-                    content: [{ type: "text", text: `Forgotten: "${exact.entry.text}"` }],
-                    details: { action: "deleted", id: exact.entry.id },
-                  };
-                }
               }
               const candidates = results.map((result) => ({
                 id: result.entry.id,
+                recordType:
+                  result.entry.recordType === "fact" ? "fact_revision" : "event",
                 text: result.entry.text,
                 category: result.entry.category,
                 score: result.score,
@@ -2147,6 +2451,20 @@ export default definePluginEntry({
                 details: { action: "candidates", candidates },
               };
             }
+            if (toolContext.messageChannel || toolContext.deliveryContext?.channel) {
+              return buildMemoryOperationUnavailableResult(
+                "forget",
+                "identity-scoped durable memory is unavailable; shared legacy search was refused",
+              );
+            }
+            try {
+              assertMemoryContentSafe(query);
+            } catch (error) {
+              return buildMemoryOperationUnavailableResult(
+                "forget",
+                formatMemoryRecallError(error),
+              );
+            }
             const vector = await embeddings.embed(
               normalizeRecallQuery(query, currentCfg.recallMaxChars),
             );
@@ -2155,15 +2473,7 @@ export default definePluginEntry({
             if (results.length === 0) {
               return {
                 content: [{ type: "text", text: "No matching memories found." }],
-                details: { found: 0 },
-              };
-            }
-
-            if (results.length === 1 && results[0].score > 0.9) {
-              await db.delete(results[0].entry.id);
-              return {
-                content: [{ type: "text", text: `Forgotten: "${results[0].entry.text}"` }],
-                details: { action: "deleted", id: results[0].entry.id },
+                details: { action: "candidates", candidates: [] },
               };
             }
 
@@ -2192,7 +2502,7 @@ export default definePluginEntry({
 
           return {
             content: [{ type: "text", text: "Provide query or memoryId." }],
-            details: { error: "missing_param" },
+            details: { action: "invalid_request", error: "missing_param" },
           };
         },
       }),
@@ -2444,14 +2754,29 @@ export default definePluginEntry({
 
     const reconcileTranscript = async (
       file: string | undefined,
-      agentId?: string,
-      sessionKey?: string,
+      context: {
+        agentId?: string;
+        workspaceDir?: string;
+        sessionKey?: string;
+        sessionId?: string;
+        channel?: string;
+        accountId?: string;
+        conversationId?: string;
+      },
     ) => {
       if (!durableRuntime || !file) {
         return;
       }
       try {
-        const result = await durableRuntime.reconcileTranscript({ file, agentId, sessionKey });
+        const scope = resolveMemoryScope(context);
+        const result = await durableRuntime.reconcileTranscript({
+          file,
+          agentId: scope.storageAgentId,
+          sessionKey: scope.sessionRef,
+          channel: scope.channel,
+          conversationId: scope.conversationRef,
+          metadata: memoryScopeMetadata(scope, "direct_user"),
+        });
         if (result.captured > 0) {
           scheduleDurableWorkers();
         }
@@ -2465,16 +2790,27 @@ export default definePluginEntry({
         return;
       }
       try {
-        durableRuntime.captureInbound({
+        const scope = resolveMemoryScope({
           sessionKey: ctx.sessionKey ?? event.sessionKey,
           channel: ctx.channelId,
+          accountId: ctx.accountId,
           conversationId: ctx.conversationId,
+        });
+        durableRuntime.captureInbound({
+          agentId: scope.storageAgentId,
+          sessionKey: scope.sessionRef,
+          channel: scope.channel,
+          conversationId: scope.conversationRef,
           content: event.content,
           timestamp: event.timestamp,
           messageId: event.messageId ?? ctx.messageId,
           runId: event.runId ?? ctx.runId,
-          from: event.from,
-          metadata: event.metadata,
+          from: opaqueEvidenceRef(
+            scope.storageAgentId,
+            event.messageId ?? ctx.messageId,
+            event.timestamp,
+          ),
+          metadata: memoryScopeMetadata(scope, "direct_user"),
         });
         scheduleDurableWorkers();
       } catch (error) {
@@ -2489,10 +2825,23 @@ export default definePluginEntry({
         return;
       }
       try {
-        durableRuntime.captureMessage(event.message, {
+        const sessionKey = event.sessionKey ?? ctx.sessionKey;
+        const scope = resolveMemoryScope({
           agentId: event.agentId ?? ctx.agentId,
-          sessionKey: event.sessionKey ?? ctx.sessionKey,
+          workspaceDir: ctx.workspaceDir,
+          sessionKey,
+          sessionId: ctx.sessionId,
+          channel: ctx.channel,
+          conversationId: ctx.chatId,
+        });
+        durableRuntime.captureMessage(event.message, {
+          agentId: scope.storageAgentId,
+          sessionKey: scope.sessionRef,
+          channel: scope.channel,
+          conversationId: scope.conversationRef,
           sourceKind: "before_message_write",
+          sourceRef: opaqueEvidenceRef(scope.storageAgentId, ctx.runId, ctx.sessionId),
+          metadata: memoryScopeMetadata(scope, "direct_user"),
         });
         scheduleDurableWorkers();
       } catch (error) {
@@ -2506,17 +2855,33 @@ export default definePluginEntry({
       }
       try {
         if (Array.isArray(event.messages) && event.messages.length > 0) {
-          durableRuntime.captureMessages(event.messages, {
+          const scope = resolveMemoryScope({
             agentId: ctx.agentId,
+            workspaceDir: ctx.workspaceDir,
             sessionKey: ctx.sessionKey,
+            sessionId: ctx.sessionId,
             channel: ctx.channel,
             conversationId: ctx.chatId,
+          });
+          durableRuntime.captureMessages(event.messages, {
+            agentId: scope.storageAgentId,
+            sessionKey: scope.sessionRef,
+            channel: scope.channel,
+            conversationId: scope.conversationRef,
+            metadata: memoryScopeMetadata(scope, "direct_user"),
             sourceKind: "before_compaction",
-            sourceRef: event.sessionFile,
+            sourceRef: opaqueEvidenceRef(ctx.sessionId, event.sessionFile),
           });
           scheduleDurableWorkers();
         } else {
-          await reconcileTranscript(event.sessionFile, ctx.agentId, ctx.sessionKey);
+          await reconcileTranscript(event.sessionFile, {
+            agentId: ctx.agentId,
+            workspaceDir: ctx.workspaceDir,
+            sessionKey: ctx.sessionKey,
+            sessionId: ctx.sessionId,
+            channel: ctx.channel,
+            conversationId: ctx.chatId,
+          });
         }
         durableRuntime.ledger.checkpoint("PASSIVE");
       } catch (error) {
@@ -2531,17 +2896,33 @@ export default definePluginEntry({
       }
       try {
         if (Array.isArray(event.messages) && event.messages.length > 0) {
-          durableRuntime.captureMessages(event.messages, {
+          const scope = resolveMemoryScope({
             agentId: ctx.agentId,
+            workspaceDir: ctx.workspaceDir,
             sessionKey: ctx.sessionKey,
+            sessionId: ctx.sessionId,
             channel: ctx.channel,
             conversationId: ctx.chatId,
+          });
+          durableRuntime.captureMessages(event.messages, {
+            agentId: scope.storageAgentId,
+            sessionKey: scope.sessionRef,
+            channel: scope.channel,
+            conversationId: scope.conversationRef,
+            metadata: memoryScopeMetadata(scope, "direct_user"),
             sourceKind: "before_reset",
-            sourceRef: event.sessionFile,
+            sourceRef: opaqueEvidenceRef(ctx.sessionId, event.sessionFile),
           });
           scheduleDurableWorkers();
         } else {
-          await reconcileTranscript(event.sessionFile, ctx.agentId, ctx.sessionKey);
+          await reconcileTranscript(event.sessionFile, {
+            agentId: ctx.agentId,
+            workspaceDir: ctx.workspaceDir,
+            sessionKey: ctx.sessionKey,
+            sessionId: ctx.sessionId,
+            channel: ctx.channel,
+            conversationId: ctx.chatId,
+          });
         }
         durableRuntime.ledger.checkpoint("FULL");
       } catch (error) {
@@ -2563,20 +2944,15 @@ export default definePluginEntry({
         }
         const migrationKey = "legacy_lancedb_v1_migrated";
         if (durableRuntime.ledger.getMetadata(migrationKey) !== "1") {
-          const legacy = await db.list();
-          for (const entry of legacy) {
-            durableRuntime.captureManualMemory({
-              agentId: "main",
-              text: entry.text,
-              category: entry.category,
-              importance: entry.importance,
-              externalId: `legacy-lancedb:${entry.id}`,
-              observedAt: entry.createdAt,
-              metadata: { legacyId: entry.id },
-            });
-          }
+          const legacyCount = await db.count();
           durableRuntime.ledger.setMetadata(migrationKey, "1");
-          api.logger.info?.(`memory-v2: migrated ${legacy.length} legacy memories`);
+          durableRuntime.ledger.setMetadata(
+            "legacy_lancedb_v1_quarantined_count",
+            String(legacyCount),
+          );
+          api.logger.info?.(
+            `memory-v2: quarantined ${legacyCount} unscoped legacy memories; no automatic promotion was attempted`,
+          );
         }
         try {
           const { listMemoryHostPublicArtifacts } = await loadMemoryHostCoreModule();
@@ -2598,9 +2974,9 @@ export default definePluginEntry({
           logDurableHookFailure("workspace Markdown reconciliation", error);
         }
         if (cfg.durableMemory.startupReconcile) {
-          const result = await durableRuntime.reconcileStateDir(resolveStateDir());
           api.logger.info?.(
-            `memory-v2: startup transcript reconciliation scanned ${result.files} files and captured ${result.captured} missing messages`,
+            "memory-v2: unscoped filesystem-wide transcript replay is disabled; " +
+              "the durable inbound ledger and scoped compaction/reset reconciliation own recovery",
           );
         }
         scheduleDurableWorkers();
@@ -2643,18 +3019,25 @@ export default definePluginEntry({
           currentCfg.recallMaxChars,
         );
         if (durableRuntime) {
-          const agentId = resolveDurableMemoryAgentId(ctx.agentId, ctx.sessionKey);
+          assertMemoryContentSafe(recallQuery);
+          const scope = resolveMemoryScope({
+            agentId: ctx.agentId,
+            workspaceDir: ctx.workspaceDir,
+            sessionKey: ctx.sessionKey,
+            sessionId: ctx.sessionId,
+            channel: ctx.channel,
+            conversationId: ctx.chatId,
+          });
           const recall = await runWithTimeout({
             timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
             task: async () => {
               const vector = await embeddings.embed(recallQuery, {
                 timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
               });
-              return await durableRuntime.index.search({
+              return await searchScopedMemory({
+                scope,
                 queryText: recallQuery,
                 vector,
-                agentId,
-                channel: ctx.channel,
                 limit: currentCfg.durableMemory.recallLimit,
               });
             },
@@ -2743,6 +3126,12 @@ export default definePluginEntry({
         readDurableConfigDrift(currentCfg);
         return;
       }
+      if (ctx.channel) {
+        api.logger.warn?.(
+          "memory-lancedb: channel auto-capture refused because identity-scoped durable memory is unavailable",
+        );
+        return;
+      }
       if (!event.success || !event.messages || event.messages.length === 0) {
         return;
       }
@@ -2813,7 +3202,11 @@ export default definePluginEntry({
     });
 
     api.on("session_end", async (event, ctx) => {
-      await reconcileTranscript(event.sessionFile, ctx.agentId, ctx.sessionKey ?? event.sessionKey);
+      await reconcileTranscript(event.sessionFile, {
+        agentId: ctx.agentId,
+        sessionKey: ctx.sessionKey ?? event.sessionKey,
+        sessionId: event.sessionId,
+      });
       const cursorKey = ctx.sessionKey ?? event.sessionKey ?? ctx.sessionId ?? event.sessionId;
       autoCaptureCursors.delete(cursorKey);
       const nextCursorKey = event.nextSessionKey ?? event.nextSessionId;

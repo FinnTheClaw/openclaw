@@ -3,6 +3,7 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../routing/session-key.js";
 import { normalizeE164 } from "../utils.js";
 
@@ -90,13 +91,15 @@ function cloneRegistry(registry: CommunicationIdentityRegistry): CommunicationId
 }
 
 export function createCommunicationIdentityRegistry(now?: Date): CommunicationIdentityRegistry {
-  return {
+  const registry = {
     version: COMMUNICATION_IDENTITY_REGISTRY_VERSION,
     hmacKey: crypto.randomBytes(32).toString("base64"),
     adminIdentityId: null,
     identities: {},
     updatedAt: nowIso(now),
   };
+  registerSecretValueForRedaction(registry.hmacKey);
+  return registry;
 }
 
 function isStrictE164(value: string): boolean {

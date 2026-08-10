@@ -3,8 +3,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { callGateway as gatewayCall } from "../../gateway/call.js";
+import {
+  registerSecretValueForRedaction,
+  resetSecretRedactionRegistryForTest,
+} from "../../logging/secret-redaction-registry.js";
 import { deleteTestEnvValue, setTestEnvValue } from "../../test-utils/env.js";
 
 type CallGatewayRequest = Parameters<typeof gatewayCall>[0];
@@ -46,6 +50,18 @@ function createHistoryToolWithMessage(content: string) {
   });
 }
 
+function createHistoryToolWithMessages(messages: unknown[]) {
+  return createSessionsHistoryTool({
+    config: {},
+    callGateway: async <T = Record<string, unknown>>(request: CallGatewayRequest): Promise<T> => {
+      if (request.method === "chat.history") {
+        return { messages } as T;
+      }
+      return {} as T;
+    },
+  });
+}
+
 function readHistoryDetails(result: { details: unknown }) {
   return result.details as Record<string, unknown>;
 }
@@ -81,6 +97,10 @@ describe("sessions_history redaction", () => {
     }
   });
 
+  afterEach(() => {
+    resetSecretRedactionRegistryForTest();
+  });
+
   it("redacts recalled session text even when log redaction is disabled", async () => {
     // Recalled transcript content is model-visible, so it is always redacted
     // even when normal logging redaction is configured off.
@@ -108,6 +128,42 @@ describe("sessions_history redaction", () => {
     expect(serialized).not.toContain("internal-ticket-AbC12345");
     expect(serialized).toContain("intern");
     expect((result.details as { contentRedacted?: unknown }).contentRedacted).toBe(true);
+  });
+
+  it("omits hidden reasoning while preserving visible content and tool calls", async () => {
+    const canary = "fake-history-secret-canary-0123456789";
+    registerSecretValueForRedaction(canary);
+    const tool = createHistoryToolWithMessages([
+      {
+        role: "assistant",
+        reasoning_content: `hidden top-level ${canary}`,
+        reasoning: `hidden reasoning ${canary}`,
+        content: [
+          { type: "thinking", thinking: `hidden block ${canary}` },
+          { type: "reasoning", text: `hidden reasoning block ${canary}` },
+          { type: "text", text: "Visible answer." },
+          { type: "toolCall", id: "call-1", name: "read", arguments: { path: "safe.txt" } },
+        ],
+      },
+    ]);
+
+    const result = await tool.execute("call-1", { sessionKey: "main", includeTools: true });
+    const details = readHistoryDetails(result);
+    const serialized = JSON.stringify(details);
+
+    expect(serialized).not.toContain(canary);
+    expect(serialized).not.toContain("hidden top-level");
+    expect(serialized).not.toContain("hidden reasoning");
+    expect(details.messages).toEqual([
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Visible answer." },
+          { type: "toolCall", id: "call-1", name: "read", arguments: { path: "safe.txt" } },
+        ],
+      },
+    ]);
+    expect(details.contentTruncated).toBe(true);
   });
 
   it.each([0, 1.5])("rejects invalid limit value %s", async (limit) => {

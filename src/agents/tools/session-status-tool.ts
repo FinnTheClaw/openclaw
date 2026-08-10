@@ -21,6 +21,10 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { triggerSessionPatchHook } from "../../gateway/session-patch-hooks.js";
 import { resolveSessionModelIdentityRef } from "../../gateway/session-utils.js";
+import {
+  loadCommunicationSessionOrigin,
+  type SanitizedCommunicationAccess,
+} from "../../identity/communication-identity-inventory.js";
 import { loadManifestMetadataSnapshot } from "../../plugins/manifest-contract-eligibility.js";
 import {
   buildAgentMainSessionKey,
@@ -50,12 +54,13 @@ import {
   resolveThinkingDefaultWithRuntimeCatalog,
 } from "../model-selection.js";
 import { createModelVisibilityPolicy } from "../model-visibility-policy.js";
+import { optionalStringEnum } from "../schema/typebox.js";
 import {
   describeSessionStatusTool,
   SESSION_STATUS_TOOL_DISPLAY_SUMMARY,
 } from "../tool-description-presets.js";
 import type { AnyAgentTool } from "./common.js";
-import { normalizeToolModelOverride, readStringParam } from "./common.js";
+import { jsonResult, normalizeToolModelOverride, readStringParam } from "./common.js";
 import {
   listImplicitDefaultDirectFallbackKeys,
   resolveImplicitCurrentSessionFallback,
@@ -76,6 +81,7 @@ import {
 const SessionStatusToolSchema = Type.Object({
   sessionKey: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
+  view: optionalStringEnum(["origin"] as const),
 });
 
 type CommandsStatusRuntimeModule = {
@@ -386,6 +392,10 @@ export function createSessionStatusTool(opts?: {
   activeModelId?: string;
   /** Active live-run route, kept separate from the persisted/origin delivery route. */
   activeDeliveryContext?: DeliveryContext;
+  loadCommunicationOrigin?: (params: {
+    entry: SessionEntry;
+    sessionKey: string;
+  }) => Promise<SanitizedCommunicationAccess>;
 }): AnyAgentTool {
   return {
     label: "Session Status",
@@ -395,6 +405,10 @@ export function createSessionStatusTool(opts?: {
     parameters: SessionStatusToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
+      const view = readStringParam(params, "view");
+      if (view !== undefined && view !== "origin") {
+        throw new Error(`Unknown session_status view: ${view}`);
+      }
       const cfg = opts?.config ?? getRuntimeConfig();
       const { mainKey, alias, effectiveRequesterKey } = resolveSandboxedSessionToolContext({
         cfg,
@@ -673,6 +687,22 @@ export function createSessionStatusTool(opts?: {
       const access = visibilityGuard.check(visibilityTargetKey);
       if (!access.allowed) {
         throw new Error(access.error);
+      }
+
+      if (view === "origin") {
+        if (readStringParam(params, "model") !== undefined) {
+          throw new Error("model cannot be changed when view=origin");
+        }
+        let origin: SanitizedCommunicationAccess;
+        try {
+          origin = await (opts?.loadCommunicationOrigin ?? loadCommunicationSessionOrigin)({
+            entry: resolved.entry,
+            sessionKey: resolved.key,
+          });
+        } catch {
+          throw new Error("Sanitized session origin is unavailable.");
+        }
+        return jsonResult({ origin });
       }
 
       const configured = resolveDefaultModelForAgent({ cfg, agentId });

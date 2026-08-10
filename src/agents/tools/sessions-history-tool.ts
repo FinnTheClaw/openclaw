@@ -52,6 +52,23 @@ type ChatHistoryPaginationMetadata = {
   totalMessages?: number;
 };
 
+const HIDDEN_REASONING_BLOCK_TYPES = new Set([
+  "analysis",
+  "reasoning",
+  "reasoning_text",
+  "redacted_thinking",
+  "thinking",
+]);
+const HIDDEN_REASONING_MESSAGE_FIELDS = [
+  "thinking",
+  "reasoning",
+  "reasoning_content",
+  "reasoning_text",
+  "reasoning_details",
+  "thinkingSignature",
+  "openclawReasoningReplay",
+] as const;
+
 function readOffsetParam(params: Record<string, unknown>): number | undefined {
   const offset = readNumberParam(params, "offset", {
     integer: true,
@@ -92,27 +109,15 @@ function sanitizeHistoryContentBlock(block: unknown): {
   const entry = { ...(block as Record<string, unknown>) };
   let truncated = false;
   let redacted = false;
-  const type = typeof entry.type === "string" ? entry.type : "";
   if (typeof entry.text === "string") {
     const res = truncateHistoryText(entry.text);
     entry.text = res.text;
     truncated ||= res.truncated;
     redacted ||= res.redacted;
   }
-  if (type === "thinking") {
-    if (typeof entry.thinking === "string") {
-      const res = truncateHistoryText(entry.thinking);
-      entry.thinking = res.text;
-      truncated ||= res.truncated;
-      redacted ||= res.redacted;
-    }
-    // The encrypted signature can be extremely large and is not useful for history recall.
-    if ("thinkingSignature" in entry) {
-      delete entry.thinkingSignature;
-      truncated = true;
-    }
-    if ("openclawReasoningReplay" in entry) {
-      delete entry.openclawReasoningReplay;
+  for (const field of HIDDEN_REASONING_MESSAGE_FIELDS) {
+    if (field in entry) {
+      delete entry[field];
       truncated = true;
     }
   }
@@ -122,7 +127,7 @@ function sanitizeHistoryContentBlock(block: unknown): {
     truncated ||= res.truncated;
     redacted ||= res.redacted;
   }
-  if (type === "image") {
+  if (entry.type === "image") {
     const data = readStringValue(entry.data);
     const bytes = data ? data.length : undefined;
     if ("data" in entry) {
@@ -148,6 +153,12 @@ function sanitizeHistoryMessage(message: unknown): {
   const entry = { ...(message as Record<string, unknown>) };
   let truncated = false;
   let redacted = false;
+  for (const field of HIDDEN_REASONING_MESSAGE_FIELDS) {
+    if (field in entry) {
+      delete entry[field];
+      truncated = true;
+    }
+  }
   // Tool result details often contain very large nested payloads.
   if ("details" in entry) {
     delete entry.details;
@@ -168,8 +179,17 @@ function sanitizeHistoryMessage(message: unknown): {
     truncated ||= res.truncated;
     redacted ||= res.redacted;
   } else if (Array.isArray(entry.content)) {
-    const updated = entry.content.map((block) => sanitizeHistoryContentBlock(block));
+    const originalBlocks = entry.content;
+    const visibleBlocks = originalBlocks.filter((block) => {
+      if (!block || typeof block !== "object" || Array.isArray(block)) {
+        return true;
+      }
+      const type = (block as Record<string, unknown>).type;
+      return typeof type !== "string" || !HIDDEN_REASONING_BLOCK_TYPES.has(type);
+    });
+    const updated = visibleBlocks.map((block) => sanitizeHistoryContentBlock(block));
     entry.content = updated.map((item) => item.block);
+    truncated ||= visibleBlocks.length !== originalBlocks.length;
     truncated ||= updated.some((item) => item.truncated);
     redacted ||= updated.some((item) => item.redacted);
   }

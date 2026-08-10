@@ -11,6 +11,7 @@ import { ensureAgentWorkspace } from "../agents/workspace.js";
 import { getRuntimeConfig, mutateConfigFileWithRetry } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { withFileLock } from "../infra/file-lock.js";
+import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import { writeJsonFileAtomically } from "../plugin-sdk/json-store.js";
 import { applyCommunicationIdentityConfig } from "./communication-identity-policy.js";
 import {
@@ -88,6 +89,7 @@ async function readRegistry(filePath: string): Promise<CommunicationIdentityRegi
   if (!isCommunicationIdentityRegistry(parsed)) {
     throw new Error(`Invalid communication identity registry: ${filePath}`);
   }
+  registerSecretValueForRedaction(parsed.hmacKey);
   return parsed;
 }
 

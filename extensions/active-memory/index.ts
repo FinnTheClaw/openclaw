@@ -38,6 +38,13 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { tempWorkspace, resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import {
+  DEFAULT_RECALL_TOOL_CALL_BUDGET,
+  EvidenceRecoveryTracker,
+  MAX_RECALL_TOOL_CALL_BUDGET,
+  MIN_RECALL_TOOL_CALL_BUDGET,
+  type EvidenceRecoveryReceipt,
+} from "./evidence-recovery.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_AGENT_ID = "main";
@@ -178,6 +185,7 @@ type ActiveRecallPluginConfig = {
     | "precision-heavy"
     | "preference-only";
   toolsAllow?: string[];
+  toolCallBudget?: number;
   promptOverride?: string;
   promptAppend?: string;
   timeoutMs?: number;
@@ -219,6 +227,7 @@ type ResolvedActiveRecallPluginConfig = {
     | "precision-heavy"
     | "preference-only";
   toolsAllow: string[];
+  toolCallBudget: number;
   promptOverride?: string;
   promptAppend?: string;
   timeoutMs: number;
@@ -262,7 +271,7 @@ type ActiveMemorySearchDebug = {
   error?: string;
 };
 
-type ActiveRecallResult =
+type ActiveRecallResult = (
   | {
       status: "empty" | "failed" | "no_relevant_memory" | "timeout" | "unavailable";
       elapsedMs: number;
@@ -281,7 +290,8 @@ type ActiveRecallResult =
       rawReply: string;
       summary: string;
       searchDebug?: ActiveMemorySearchDebug;
-    };
+    }
+) & { recoveryReceipt?: EvidenceRecoveryReceipt };
 
 type ActiveMemoryPartialTimeoutError = Error & {
   activeMemoryPartialReply?: string;
@@ -298,6 +308,7 @@ type TranscriptReadLimits = {
 type RecallSubagentResult = {
   rawReply: string;
   resultStatus?: "failed" | "unavailable";
+  recoveryReceipt: EvidenceRecoveryReceipt;
   transcriptPath?: string;
   searchDebug?: ActiveMemorySearchDebug;
   hasUsableMemoryResult?: boolean;
@@ -314,6 +325,16 @@ type TerminalMemorySearchWatch = {
   promise: Promise<TerminalMemorySearchResult>;
   stop: () => void;
 };
+
+class EvidenceRecoveryStopError extends Error {
+  readonly receipt: EvidenceRecoveryReceipt;
+
+  constructor(receipt: EvidenceRecoveryReceipt) {
+    super(`Active Memory recall stopped: ${receipt.terminationReason}`);
+    this.name = "EvidenceRecoveryStopError";
+    this.receipt = receipt;
+  }
+}
 
 type CachedActiveRecallResult = {
   expiresAt: number;
@@ -871,6 +892,12 @@ function normalizePluginConfig(
     thinking: resolveThinkingLevel(raw.thinking),
     promptStyle: resolvePromptStyle(raw.promptStyle, raw.queryMode),
     toolsAllow: resolveToolsAllow({ pluginToolsAllow: raw.toolsAllow, cfg }),
+    toolCallBudget: clampInt(
+      raw.toolCallBudget,
+      DEFAULT_RECALL_TOOL_CALL_BUDGET,
+      MIN_RECALL_TOOL_CALL_BUDGET,
+      MAX_RECALL_TOOL_CALL_BUDGET,
+    ),
     promptOverride: normalizePromptConfigText(raw.promptOverride),
     promptAppend: normalizePromptConfigText(raw.promptAppend),
     timeoutMs: clampInt(
@@ -1081,6 +1108,10 @@ function buildRecallPrompt(params: {
     "Use only the available memory tools.",
     "Use the bounded search query with the configured memory tools.",
     `Configured memory tools: ${params.config.toolsAllow.join(", ")}.`,
+    `Hard tool-call budget: ${params.config.toolCallBudget} actual memory-tool calls.`,
+    "After a tool call, try again only when the next call uses new discriminating evidence or a changed query/tool strategy.",
+    "Never reattempt by merely using more tools, repeating the same query, or requesting the same unchanged evidence.",
+    "Finalize immediately when the evidence is sufficient; do not spend the remaining budget automatically.",
     "Do not use channel metadata, provider metadata, debug output, or the full conversation context as the memory tool query.",
     "If the available memory tools find nothing useful, reply with NONE.",
     "When searching for preference or habit recall, use permissive search limits or thresholds before deciding that no useful memory exists.",
@@ -2408,6 +2439,7 @@ function buildSubagentRecallResult(params: {
         rawReply,
         summary,
         searchDebug,
+        recoveryReceipt: params.subagentResult.recoveryReceipt,
       }
     : resultStatus === "failed"
       ? {
@@ -2415,6 +2447,7 @@ function buildSubagentRecallResult(params: {
           elapsedMs: params.elapsedMs,
           summary: null,
           searchDebug,
+          recoveryReceipt: params.subagentResult.recoveryReceipt,
         }
       : resultStatus === "unavailable" ||
           isUnavailableMemorySearchDebug(searchDebug) ||
@@ -2424,12 +2457,14 @@ function buildSubagentRecallResult(params: {
             elapsedMs: params.elapsedMs,
             summary: null,
             searchDebug,
+            recoveryReceipt: params.subagentResult.recoveryReceipt,
           }
         : {
             status: "no_relevant_memory",
             elapsedMs: params.elapsedMs,
             summary: null,
             searchDebug,
+            recoveryReceipt: params.subagentResult.recoveryReceipt,
           };
 }
 
@@ -2930,7 +2965,17 @@ async function runRecallSubagent(params: {
       modelId: params.currentModelId,
     });
   if (!modelRef) {
-    return { rawReply: "NONE" };
+    const tracker = new EvidenceRecoveryTracker(params.config.toolCallBudget);
+    return {
+      rawReply: "NONE",
+      recoveryReceipt: tracker.finalize({
+        hasUsableEvidence: false,
+        hasFinalSummary: false,
+        noReply: true,
+        unavailable: true,
+        missingEvidence: ["No memory sidecar model was available."],
+      }),
+    };
   }
   const subagentSessionId = `active-memory-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
   const parentSessionKey =
@@ -2988,6 +3033,14 @@ async function runRecallSubagent(params: {
   let activeSessionFile = sessionFile;
   let harnessHasUsableMemoryResult = false;
   let harnessHasUnavailableMemorySearchResult = false;
+  const recoveryTracker = new EvidenceRecoveryTracker(params.config.toolCallBudget);
+  const recoveryController = new AbortController();
+  const abortRecoveryFromParent = () => recoveryController.abort(params.abortSignal?.reason);
+  if (params.abortSignal?.aborted) {
+    abortRecoveryFromParent();
+  } else {
+    params.abortSignal?.addEventListener("abort", abortRecoveryFromParent, { once: true });
+  }
   try {
     const embeddedConfig = applyActiveMemoryRuntimeConfigSnapshot(params.api.config, params.config);
     const embeddedTimeoutMs = params.config.timeoutMs + params.config.setupGraceTimeoutMs;
@@ -3018,7 +3071,7 @@ async function runRecallSubagent(params: {
       silentExpected: true,
       authProfileFailurePolicy: "local",
       cleanupBundleMcpOnRunEnd: true,
-      abortSignal: params.abortSignal,
+      abortSignal: recoveryController.signal,
       onAgentToolResult: (event) => {
         const evidence = readMemoryToolResultEvidence({
           ...event,
@@ -3026,6 +3079,24 @@ async function runRecallSubagent(params: {
         });
         harnessHasUsableMemoryResult ||= evidence.hasUsableMemoryResult;
         harnessHasUnavailableMemorySearchResult ||= evidence.hasUnavailableMemorySearchResult;
+        const terminationReason = recoveryTracker.observe({
+          toolName: event.toolName,
+          result: event.result,
+          isError: event.isError,
+          hasUsableEvidence: evidence.hasUsableMemoryResult,
+          isUnavailable: evidence.hasUnavailableMemorySearchResult,
+        });
+        if (terminationReason && !recoveryController.signal.aborted) {
+          recoveryController.abort(
+            new EvidenceRecoveryStopError(
+              recoveryTracker.finalize({
+                hasUsableEvidence: harnessHasUsableMemoryResult,
+                hasFinalSummary: false,
+                noReply: false,
+              }),
+            ),
+          );
+        }
       },
     });
     activeSessionFile = readActiveMemorySessionFileFromRunResult(result) ?? sessionFile;
@@ -3052,15 +3123,51 @@ async function runRecallSubagent(params: {
     });
     const searchDebug =
       transcriptState.searchDebug ?? readActiveMemorySearchDebugFromRunResult(result);
+    const finalRawReply = rawReply || "NONE";
+    const hasUsableMemoryResult =
+      transcriptState.hasUsableMemoryResult || harnessHasUsableMemoryResult;
     return {
-      rawReply: rawReply || "NONE",
+      rawReply: finalRawReply,
       transcriptPath: params.config.persistTranscripts ? activeSessionFile : undefined,
       searchDebug,
-      hasUsableMemoryResult: transcriptState.hasUsableMemoryResult || harnessHasUsableMemoryResult,
+      recoveryReceipt: recoveryTracker.finalize({
+        hasUsableEvidence: hasUsableMemoryResult,
+        hasFinalSummary: normalizeActiveSummary(finalRawReply) !== null,
+        noReply: normalizeNoRecallValue(finalRawReply),
+        unsupportedClaims:
+          normalizeActiveSummary(finalRawReply) !== null && !hasUsableMemoryResult
+            ? ["The sidecar returned a memory note without usable tool evidence."]
+            : [],
+      }),
+      hasUsableMemoryResult,
       hasUnavailableMemorySearchResult:
         transcriptState.hasUnavailableMemorySearchResult || harnessHasUnavailableMemorySearchResult,
     };
   } catch (error) {
+    if (
+      recoveryController.signal.aborted &&
+      recoveryController.signal.reason instanceof EvidenceRecoveryStopError
+    ) {
+      const partialReply = await readPartialAssistantText(activeSessionFile);
+      const finalPartialReply = partialReply ?? "NONE";
+      const hasFinalSummary = normalizeActiveSummary(finalPartialReply) !== null;
+      return {
+        rawReply: finalPartialReply,
+        resultStatus: harnessHasUnavailableMemorySearchResult ? "unavailable" : "failed",
+        transcriptPath: params.config.persistTranscripts ? activeSessionFile : undefined,
+        recoveryReceipt: recoveryTracker.finalize({
+          hasUsableEvidence: harnessHasUsableMemoryResult,
+          hasFinalSummary,
+          noReply: normalizeNoRecallValue(finalPartialReply),
+          unsupportedClaims:
+            hasFinalSummary && !harnessHasUsableMemoryResult
+              ? ["The sidecar returned a memory note without usable tool evidence."]
+              : [],
+        }),
+        hasUsableMemoryResult: harnessHasUsableMemoryResult,
+        hasUnavailableMemorySearchResult: harnessHasUnavailableMemorySearchResult,
+      };
+    }
     if (params.abortSignal?.aborted) {
       const partialReply = await readPartialAssistantText(activeSessionFile);
       const transcriptState = await readActiveMemoryTranscriptState(
@@ -3082,17 +3189,38 @@ async function runRecallSubagent(params: {
       params.api.logger.debug?.(
         `active-memory: no configured memory tools available; skipping sub-agent`,
       );
-      return { rawReply: "NONE", resultStatus: "unavailable" };
+      return {
+        rawReply: "NONE",
+        resultStatus: "unavailable",
+        recoveryReceipt: recoveryTracker.finalize({
+          hasUsableEvidence: false,
+          hasFinalSummary: false,
+          noReply: true,
+          unavailable: true,
+          semanticFailures: ["Configured memory tools were unavailable."],
+        }),
+      };
     }
     if (!params.abortSignal?.aborted) {
       const message = toSingleLineLogValue(error instanceof Error ? error.message : String(error));
       params.api.logger.warn?.(
         `active-memory: memory sub-agent failed, skipping recall: ${message}`,
       );
-      return { rawReply: "NONE", resultStatus: "failed" };
+      return {
+        rawReply: "NONE",
+        resultStatus: "failed",
+        recoveryReceipt: recoveryTracker.finalize({
+          hasUsableEvidence: harnessHasUsableMemoryResult,
+          hasFinalSummary: false,
+          noReply: false,
+          failed: true,
+          semanticFailures: ["The memory sidecar run failed before finalization."],
+        }),
+      };
     }
     throw error;
   } finally {
+    params.abortSignal?.removeEventListener("abort", abortRecoveryFromParent);
     await transientWorkspace?.cleanup();
   }
 }

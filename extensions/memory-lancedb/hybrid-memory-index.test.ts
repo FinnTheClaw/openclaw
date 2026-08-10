@@ -158,6 +158,59 @@ describe("HybridMemoryIndex", () => {
     expect(personB.map((result) => result.entry.id)).toEqual(["private-b"]);
   });
 
+  it("preserves opaque conversation isolation across close and reopen", async () => {
+    const dbPath = path.join(tmpDir, "scope-restart");
+    const storageAgentId = "principal_opaque";
+    const firstScope = "scope_conversation_9113";
+    const secondScope = "scope_conversation_7255";
+    const vector = [1, 0, 0, 0];
+    const first = new HybridMemoryIndex(dbPath, 4);
+    await first.upsertBatch([
+      {
+        id: "event-first",
+        recordType: "event",
+        text: "The fake first contact owns heliotrope alpha.",
+        vector,
+        agentId: storageAgentId,
+        scope: firstScope,
+      },
+      {
+        id: "event-second",
+        recordType: "event",
+        text: "The fake second contact owns heliotrope beta.",
+        vector,
+        agentId: storageAgentId,
+        scope: secondScope,
+      },
+    ]);
+    const firstResults = await first.search({
+      queryText: "heliotrope",
+      vector,
+      agentId: storageAgentId,
+      scope: firstScope,
+      limit: 10,
+    });
+    expect(firstResults.map((result) => result.entry.id)).toEqual(["event-first"]);
+    first.close();
+
+    const reopened = new HybridMemoryIndex(dbPath, 4);
+    const secondResults = await reopened.search({
+      queryText: "heliotrope",
+      vector,
+      agentId: storageAgentId,
+      scope: secondScope,
+      limit: 10,
+    });
+    expect(secondResults.map((result) => result.entry.id)).toEqual(["event-second"]);
+    expect(await reopened.has("event-first", { agentId: storageAgentId, scope: firstScope })).toBe(
+      true,
+    );
+    expect(await reopened.has("event-first", { agentId: storageAgentId, scope: secondScope })).toBe(
+      false,
+    );
+    reopened.close();
+  });
+
   it("updates projections idempotently and excludes superseded or future facts", async () => {
     const db = new HybridMemoryIndex(path.join(tmpDir, "lance"), 4);
     await db.upsertBatch([

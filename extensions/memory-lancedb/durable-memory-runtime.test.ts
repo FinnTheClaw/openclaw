@@ -144,7 +144,7 @@ describe("DurableMemoryRuntime", () => {
 
     expect(await memory.reconcileTranscript({ file: transcript, agentId: "jake" })).toMatchObject({
       lines: 3,
-      captured: 2,
+      captured: 1,
       reset: true,
     });
     expect(await memory.reconcileTranscript({ file: transcript, agentId: "jake" })).toMatchObject({
@@ -168,7 +168,7 @@ describe("DurableMemoryRuntime", () => {
       captured: 1,
       reset: false,
     });
-    expect(memory.ledger.getStats()).toMatchObject({ events: 3 });
+    expect(memory.ledger.getStats()).toMatchObject({ events: 2 });
   });
 
   it("replays unprojected durable events after a clean runtime restart", async () => {

@@ -805,6 +805,8 @@ export function buildAgentSystemPrompt(params: {
     sessions_yield: "End this turn and wait for spawned sub-agent completion events",
     subagents:
       "On-demand list/status visibility for sub-agent runs in this requester session; do not use for wait loops",
+    communication_access:
+      "Inspect authorized communication bindings using only redacted identifiers and opaque evidence references",
     session_status:
       "Show a /status-equivalent status card (usage + time + Reasoning/Verbose/Elevated); use for model-use questions (📊 session_status); optional per-session model override",
     skill_workshop:
@@ -838,6 +840,7 @@ export function buildAgentSystemPrompt(params: {
     "sessions_spawn",
     "sessions_yield",
     "subagents",
+    "communication_access",
     "session_status",
     "skill_workshop",
     "image",

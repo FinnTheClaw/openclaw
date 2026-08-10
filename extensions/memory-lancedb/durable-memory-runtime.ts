@@ -6,6 +6,11 @@ import { createInterface } from "node:readline";
 import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import { HybridMemoryIndex, type MemoryProjectionInput } from "./hybrid-memory-index.js";
 import {
+  assertMemoryContentSafe,
+  MemorySensitiveContentError,
+} from "./memory-content-guard.js";
+import { memoryScopeMetadata, resolveTrustedMemoryScope } from "./memory-scope.js";
+import {
   TemporalMemoryLedger,
   type MemoryEventInput,
   type MemoryRole,
@@ -78,6 +83,7 @@ type MessageCaptureContext = {
   conversationId?: string;
   sourceKind: string;
   sourceRef?: string;
+  metadata?: Record<string, unknown>;
 };
 
 type IndexedProjectionLease = {
@@ -122,6 +128,16 @@ function extractText(value: unknown): string {
     }
     const record = asRecord(block);
     if (!record) {
+      continue;
+    }
+    const blockType = typeof record.type === "string" ? record.type.toLocaleLowerCase() : "";
+    if (
+      blockType === "thinking" ||
+      blockType === "reasoning" ||
+      blockType === "reasoning_text" ||
+      blockType === "analysis" ||
+      blockType === "redacted_thinking"
+    ) {
       continue;
     }
     if (typeof record.text === "string") {
@@ -329,10 +345,7 @@ export class DurableMemoryRuntime {
     from?: string;
     metadata?: Record<string, unknown>;
   }): boolean {
-    const content = options.content.trim();
-    if (!content) {
-      return false;
-    }
+    const content = assertMemoryContentSafe(options.content);
     const agentId = resolveDurableMemoryAgentId(options.agentId, options.sessionKey);
     const result = this.ledger.appendEvent({
       agentId,
@@ -351,7 +364,12 @@ export class DurableMemoryRuntime {
         messageId: options.messageId,
         runId: options.runId,
       }),
-      metadata: options.metadata,
+      metadata: {
+        ...options.metadata,
+        evidenceClass: options.metadata?.evidenceClass ?? "direct_user",
+        verificationStatus: options.metadata?.verificationStatus ?? "observed",
+        retrievalStatus: options.metadata?.retrievalStatus ?? "active",
+      },
     });
     if (result.inserted) {
       this.scheduleProjection();
@@ -365,10 +383,17 @@ export class DurableMemoryRuntime {
       return false;
     }
     const role = messageRole(record.role);
-    const content = extractText(record.content);
-    if (!content) {
+    // Assistant prose, summaries, hidden reasoning, system prompts, and tool
+    // narration are not evidence. Durable action receipts have their own
+    // structured path; only the user's source message is captured here.
+    if (role !== "user") {
       return false;
     }
+    const extracted = extractText(record.content);
+    if (!extracted) {
+      return false;
+    }
+    const content = assertMemoryContentSafe(extracted);
     const observedAt = timestampMs(record.timestamp);
     const messageId = typeof record.id === "string" ? record.id : undefined;
     const agentId = resolveDurableMemoryAgentId(context.agentId, context.sessionKey);
@@ -383,7 +408,13 @@ export class DurableMemoryRuntime {
       sourceRef: context.sourceRef,
       observedAt,
       externalId: stableMessageExternalId({ role, content, timestamp: observedAt, messageId }),
-      metadata: { messageType: typeof record.type === "string" ? record.type : undefined },
+      metadata: {
+        ...context.metadata,
+        messageType: typeof record.type === "string" ? record.type : undefined,
+        evidenceClass: "direct_user",
+        verificationStatus: "observed",
+        retrievalStatus: "active",
+      },
     });
     if (result.inserted) {
       this.scheduleProjection();
@@ -393,6 +424,10 @@ export class DurableMemoryRuntime {
 
   captureManualMemory(options: {
     agentId: string;
+    sessionKey?: string;
+    channel?: string;
+    conversationId?: string;
+    scope?: string;
     text: string;
     category?: string;
     importance?: number;
@@ -400,10 +435,14 @@ export class DurableMemoryRuntime {
     observedAt?: number;
     metadata?: Record<string, unknown>;
   }): { id: string; inserted: boolean } {
+    const content = assertMemoryContentSafe(options.text);
     const result = this.ledger.appendEvent({
       agentId: options.agentId,
-      role: "user",
-      content: options.text,
+      sessionKey: options.sessionKey,
+      channel: options.channel,
+      conversationId: options.conversationId,
+      role: "assistant",
+      content,
       sourceKind: "manual_memory",
       externalId: options.externalId,
       observedAt: options.observedAt,
@@ -412,7 +451,11 @@ export class DurableMemoryRuntime {
         category: options.category ?? "other",
         importance: options.importance ?? 0.7,
         confidence: 1,
-        authority: 1,
+        authority: 0,
+        evidenceClass: "assistant_claim",
+        verificationStatus: "candidate",
+        retrievalStatus: "candidate",
+        ...(options.scope ? { memoryScope: options.scope } : {}),
       },
     });
     if (result.inserted) {
@@ -424,8 +467,14 @@ export class DurableMemoryRuntime {
   captureMessages(messages: unknown[], context: MessageCaptureContext): number {
     let captured = 0;
     for (const message of messages) {
-      if (this.captureMessage(message, context)) {
-        captured++;
+      try {
+        if (this.captureMessage(message, context)) {
+          captured++;
+        }
+      } catch (error) {
+        if (!(error instanceof MemorySensitiveContentError)) {
+          throw error;
+        }
       }
     }
     return captured;
@@ -435,6 +484,9 @@ export class DurableMemoryRuntime {
     file: string;
     agentId?: string;
     sessionKey?: string;
+    channel?: string;
+    conversationId?: string;
+    metadata?: Record<string, unknown>;
   }): Promise<{ lines: number; captured: number; reset: boolean }> {
     const fileStat = await stat(options.file);
     const identity = `${String(fileStat.dev)}:${String(fileStat.ino)}`;
@@ -480,9 +532,21 @@ export class DurableMemoryRuntime {
         continue;
       }
       const role = messageRole(message.role);
-      const content = extractText(message.content);
-      if (!content) {
+      if (role !== "user") {
         continue;
+      }
+      const extracted = extractText(message.content);
+      if (!extracted) {
+        continue;
+      }
+      let content: string;
+      try {
+        content = assertMemoryContentSafe(extracted);
+      } catch (error) {
+        if (error instanceof MemorySensitiveContentError) {
+          continue;
+        }
+        throw error;
       }
       const observedAt = timestampMs(message.timestamp) ?? timestampMs(parsed.timestamp);
       const outerId = typeof parsed.id === "string" ? parsed.id : undefined;
@@ -495,13 +559,22 @@ export class DurableMemoryRuntime {
       pending.push({
         agentId,
         sessionKey: options.sessionKey ?? sessionId,
+        channel: options.channel,
+        conversationId: options.conversationId,
         role,
         content,
         sourceKind: "transcript_reconcile",
-        sourceRef: `${options.file}:${lineNumber}`,
+        sourceRef: `evidence_${sha256(`${options.file}\u0000${lineNumber}`)}`,
         observedAt,
         externalId,
-        metadata: { transcriptId: sessionId, transcriptLine: lineNumber },
+        metadata: {
+          ...options.metadata,
+          transcriptRef: `transcript_${sha256(sessionId)}`,
+          transcriptLine: lineNumber,
+          evidenceClass: "direct_user",
+          verificationStatus: "observed",
+          retrievalStatus: "active",
+        },
       });
       if (pending.length >= 1_000) {
         const stored = this.ledger.appendEvents(pending.splice(0));
@@ -586,7 +659,12 @@ export class DurableMemoryRuntime {
     );
     const desired = new Map<
       string,
-      { artifact: WorkspaceMemoryArtifact; agentId: string; absolutePath: string }
+      {
+        artifact: WorkspaceMemoryArtifact;
+        agentId: string;
+        absolutePath: string;
+        scope: ReturnType<typeof resolveTrustedMemoryScope>;
+      }
     >();
     for (const artifact of artifacts) {
       if (artifact.contentType !== "markdown") {
@@ -598,7 +676,16 @@ export class DurableMemoryRuntime {
         if (!agentId) {
           continue;
         }
-        desired.set(workspaceSourceKey(agentId, absolutePath), { artifact, agentId, absolutePath });
+        const scope = resolveTrustedMemoryScope({
+          agentId,
+          workspaceDir: artifact.workspaceDir,
+        });
+        desired.set(workspaceSourceKey(scope.storageAgentId, absolutePath), {
+          artifact,
+          agentId: scope.storageAgentId,
+          absolutePath,
+          scope,
+        });
       }
     }
 
@@ -671,6 +758,7 @@ export class DurableMemoryRuntime {
     artifact: WorkspaceMemoryArtifact;
     agentId: string;
     absolutePath: string;
+    scope: ReturnType<typeof resolveTrustedMemoryScope>;
   }): Promise<{ changed: boolean; captured: number }> {
     const before = await stat(source.absolutePath);
     if (!before.isFile()) {
@@ -713,26 +801,40 @@ export class DurableMemoryRuntime {
     }
 
     const chunks = chunkMarkdown(text);
-    const inputs: MemoryEventInput[] = chunks.map((content, chunkIndex) => ({
-      agentId: source.agentId,
-      role: "user",
-      content,
-      sourceKind: WORKSPACE_MARKDOWN_SOURCE_KIND,
-      sourceRef: `${source.absolutePath}#chunk=${chunkIndex + 1}`,
-      observedAt: Math.floor(after.mtimeMs),
-      externalId: `workspace-markdown:v1:${sha256(source.absolutePath)}:${contentSha256}:${chunkIndex}`,
-      metadata: {
-        workspaceDir: source.artifact.workspaceDir,
-        relativePath: source.artifact.relativePath,
-        artifactKind: source.artifact.kind,
-        chunkIndex,
-        chunkCount: chunks.length,
-        category: source.artifact.kind === "memory-root" ? "canonical" : "episodic",
-        importance: source.artifact.kind === "memory-root" ? 0.95 : 0.8,
-        confidence: 1,
-        authority: source.artifact.kind === "memory-root" ? 1 : 0.9,
-      },
-    }));
+    const inputs: MemoryEventInput[] = chunks.flatMap((rawContent, chunkIndex) => {
+      let content: string;
+      try {
+        content = assertMemoryContentSafe(rawContent);
+      } catch (error) {
+        if (error instanceof MemorySensitiveContentError) {
+          return [];
+        }
+        throw error;
+      }
+      return [
+        {
+          agentId: source.agentId,
+          role: "user",
+          content,
+          sourceKind: WORKSPACE_MARKDOWN_SOURCE_KIND,
+          sourceRef: `evidence_${sha256(`${source.absolutePath}\u0000${chunkIndex}`)}`,
+          observedAt: Math.floor(after.mtimeMs),
+          externalId: `workspace-markdown:v2:${sha256(source.absolutePath)}:${contentSha256}:${chunkIndex}`,
+          metadata: memoryScopeMetadata(source.scope, "verified_operator", {
+            memoryScope: source.scope.principalScope,
+            artifactKind: source.artifact.kind,
+            chunkIndex,
+            chunkCount: chunks.length,
+            category: source.artifact.kind === "memory-root" ? "canonical" : "episodic",
+            importance: source.artifact.kind === "memory-root" ? 0.95 : 0.8,
+            confidence: 1,
+            authority: source.artifact.kind === "memory-root" ? 1 : 0.9,
+            verificationStatus: "verified",
+            retrievalStatus: "active",
+          }),
+        },
+      ];
+    });
     const stored = this.ledger.appendEvents(inputs);
     const eventIds = stored.map((result) => result.event.eventId);
     const retained = new Set(eventIds);
@@ -971,18 +1073,22 @@ export class DurableMemoryRuntime {
   }
 
   private projectionForEvent(event: ProjectionLease, vector: number[]): MemoryProjectionInput {
+    const memoryScope =
+      typeof event.metadata.memoryScope === "string" ? event.metadata.memoryScope : "global";
+    const retrievalStatus =
+      event.metadata.retrievalStatus === "active" ? "active" : "retracted";
     return {
       id: event.eventId,
       recordType: "event",
       text: event.content,
       vector,
       agentId: event.agentId,
-      scope: "global",
+      scope: memoryScope,
       sessionKey: event.sessionKey,
       channel: event.channel,
       conversationId: event.conversationId,
       category: typeof event.metadata.category === "string" ? event.metadata.category : event.role,
-      status: "active",
+      status: retrievalStatus,
       importance:
         typeof event.metadata.importance === "number"
           ? event.metadata.importance

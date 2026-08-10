@@ -64,6 +64,7 @@
         },
         "maxItems": 32
       },
+      "toolCallBudget": { "type": "integer", "minimum": 3, "maximum": 6 },
       "promptOverride": { "type": "string" },
       "promptAppend": { "type": "string" },
       "maxSummaryChars": { "type": "integer", "minimum": 40, "maximum": 1000 },
@@ -141,6 +142,10 @@
     "toolsAllow": {
       "label": "Allowed Memory Tools",
       "help": "Advanced: tool names the blocking memory sub-agent may use. Defaults to memory_search and memory_get, or memory_recall when plugins.slots.memory selects memory-lancedb; configure this for other non-core memory providers. Wildcards, group entries, and core agent tools are ignored."
+    },
+    "toolCallBudget": {
+      "label": "Recall Tool-Call Budget",
+      "help": "Hard limit for meaningful memory-tool calls in one recall sidecar run. Valid range: 3–6; default: 4. Repeated non-progress stops earlier."
     },
     "thinking": {
       "label": "Thinking Override",

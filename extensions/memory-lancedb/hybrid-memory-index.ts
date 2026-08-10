@@ -422,6 +422,18 @@ export class HybridMemoryIndex {
     });
   }
 
+  async has(id: string, options?: { agentId?: string; scope?: string }): Promise<boolean> {
+    await this.ensureInitialized();
+    const conditions = [`id = ${sqlString(requiredText(id, "id"))}`];
+    if (options?.agentId) {
+      conditions.push(`agentId = ${sqlString(requiredText(options.agentId, "agentId"))}`);
+    }
+    if (options?.scope) {
+      conditions.push(`scope = ${sqlString(requiredText(options.scope, "scope"))}`);
+    }
+    return (await this.table!.countRows(conditions.join(" AND "))) > 0;
+  }
+
   async ensureIndices(options: { minRows?: number; force?: boolean } = {}): Promise<void> {
     await this.ensureInitialized();
     await this.runExclusive(async () => this.ensureIndicesUnlocked(options));

@@ -197,6 +197,14 @@ const CORE_TOOL_DEFINITIONS: CoreToolDefinition[] = [
     includeInOpenClawGroup: true,
   },
   {
+    id: "communication_access",
+    label: "communication_access",
+    description: "Inspect sanitized communication access bindings",
+    sectionId: "sessions",
+    profiles: ["coding", "messaging"],
+    includeInOpenClawGroup: true,
+  },
+  {
     id: "session_status",
     label: "session_status",
     description: SESSION_STATUS_TOOL_DISPLAY_SUMMARY,

@@ -40,6 +40,26 @@ describe("active-memory manifest config schema", () => {
     expect(result.ok).toBe(true);
   });
 
+  it.each([3, 4, 5, 6])("accepts toolCallBudget=%s", (toolCallBudget) => {
+    const result = validateJsonSchemaValue({
+      schema: manifest.configSchema,
+      cacheKey: `active-memory.manifest.tool-call-budget.${toolCallBudget}`,
+      value: { enabled: true, agents: ["main"], toolCallBudget },
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([2, 7])("rejects toolCallBudget=%s", (toolCallBudget) => {
+    const result = validateJsonSchemaValue({
+      schema: manifest.configSchema,
+      cacheKey: `active-memory.manifest.tool-call-budget.invalid.${toolCallBudget}`,
+      value: { enabled: true, agents: ["main"], toolCallBudget },
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
   it("rejects wildcard and group toolsAllow entries", () => {
     const result = validateJsonSchemaValue({
       schema: manifest.configSchema,

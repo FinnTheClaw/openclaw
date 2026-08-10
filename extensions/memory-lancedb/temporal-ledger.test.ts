@@ -316,6 +316,64 @@ describe("TemporalMemoryLedger", () => {
     expect(db.listRecentEvents({ agentId: "person-b" })).toHaveLength(1);
   });
 
+  it("retracts canonical fact-revision targets only for their scoped owner", () => {
+    const db = open();
+    const event = db.appendEvent({
+      agentId: "principal-9113",
+      role: "user",
+      content: "The fake orchard controller is Juniper.",
+      sourceKind: "message_received",
+      metadata: { evidenceClass: "direct_user" },
+    }).event;
+    const fact = db.appendFactRevision({
+      agentId: "principal-9113",
+      scope: "scope-principal-9113",
+      subject: "orchard_controller",
+      predicate: "name",
+      object: "Juniper",
+      text: "The fake orchard controller is Juniper.",
+      sourceEventId: event.eventId,
+    }).fact;
+
+    expect(db.retractFactRevisionForAgent(fact.revisionId, "principal-7255")).toBe(false);
+    expect(db.retractFactRevisionForAgent(fact.revisionId, "principal-9113")).toBe(true);
+    expect(
+      db.findCurrentFacts({
+        agentId: "principal-9113",
+        scope: "scope-principal-9113",
+      }),
+    ).toEqual([]);
+    expect(db.getFactRevisionForAgent(fact.revisionId, "principal-9113")).toMatchObject({
+      status: "retracted",
+    });
+  });
+
+  it("persists closed operation receipts without memory content", () => {
+    const db = open();
+    const operationId = db.beginOperation({
+      kind: "forget",
+      agentId: "principal-opaque",
+      targetRef: "rev_fake_target",
+      evidence: { recordType: "fact_revision" },
+    });
+    expect(db.getOperationReceipt(operationId)).toMatchObject({
+      state: "accepted",
+      kind: "forget",
+      targetRef: "rev_fake_target",
+    });
+    db.completeOperation({
+      operationId,
+      state: "failed",
+      outcome: "partial_failure",
+      evidence: { exactAbsent: true, semanticAbsent: false },
+    });
+    expect(db.getOperationReceipt(operationId)).toMatchObject({
+      state: "failed",
+      outcome: "partial_failure",
+      evidence: { exactAbsent: true, semanticAbsent: false },
+    });
+  });
+
   it("does not impose a count-based retention ceiling", () => {
     const db = open();
     db.appendEvents(

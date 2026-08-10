@@ -20,4 +20,5 @@ export {
   redactSensitiveText,
   redactToolPayloadText,
 } from "../logging/redact.js";
+export { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 export { redactIdentifier } from "../logging/redact-identifier.js";

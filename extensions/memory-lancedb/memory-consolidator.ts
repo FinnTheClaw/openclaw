@@ -90,6 +90,39 @@ function normalizeExtractedFact(fact: ExtractedMemoryFact): ExtractedMemoryFact 
   };
 }
 
+function isIdentityOrAccessFact(fact: ExtractedMemoryFact): boolean {
+  return /\b(identity|phone|sender|contact|admin|administrator|owner|ownership|access|authoriz|permission|credential|pairing)\b/iu.test(
+    `${fact.category ?? ""} ${fact.subject} ${fact.predicate} ${fact.text}`,
+  );
+}
+
+function extractionScopeForEvent(
+  event: FactExtractionLease,
+  fact: ExtractedMemoryFact,
+): { scope: string; sensitivity: "identity_access" | "ordinary" } | undefined {
+  const conversationScope =
+    typeof event.metadata.memoryScope === "string" ? event.metadata.memoryScope : "global";
+  const principalScope =
+    typeof event.metadata.principalScope === "string"
+      ? event.metadata.principalScope
+      : conversationScope;
+  if (isIdentityOrAccessFact(fact)) {
+    // Historical prose is never authorization evidence. Identity/access facts
+    // require a current structured verifier to stamp the source event.
+    if (
+      event.metadata.verificationStatus !== "verified" ||
+      event.metadata.evidenceClass !== "verified_operator" ||
+      event.sourceKind !== "structured_identity_inventory" ||
+      typeof event.sourceRef !== "string" ||
+      !event.sourceRef.startsWith("evidence_")
+    ) {
+      return undefined;
+    }
+    return { scope: principalScope, sensitivity: "identity_access" };
+  }
+  return { scope: principalScope, sensitivity: "ordinary" };
+}
+
 async function mapConcurrent<T>(
   values: T[],
   concurrency: number,
@@ -285,19 +318,37 @@ export class MemoryConsolidator {
     });
     await mapConcurrent(events, this.extractionConcurrency, async (event) => {
       try {
+        const evidenceClass = event.metadata.evidenceClass ?? "direct_user";
+        if (evidenceClass !== "direct_user" && evidenceClass !== "verified_operator") {
+          this.options.ledger.markFactExtractionCompleted(event.eventId, this.workerId);
+          return;
+        }
         const extracted = await extractor.extract(event);
         if (!Array.isArray(extracted) || extracted.length > 32) {
           throw new Error("memory extractor must return an array of at most 32 facts");
         }
         for (const rawFact of extracted) {
           const fact = normalizeExtractedFact(rawFact);
+          const scoped = extractionScopeForEvent(event, fact);
+          if (!scoped) {
+            continue;
+          }
           this.options.ledger.appendFactRevision({
             ...fact,
             agentId: event.agentId,
+            scope: scoped.scope,
             sourceEventId: event.eventId,
             observedAt: event.observedAt,
             validFrom: fact.validFrom ?? event.validFrom ?? event.observedAt,
-            metadata: { ...fact.metadata, extractorVersion: extractor.version },
+            metadata: {
+              ...fact.metadata,
+              extractorVersion: extractor.version,
+              evidenceClass,
+              evidenceRef: `evidence_${event.eventId}`,
+              evidenceObservedAt: event.observedAt,
+              verificationStatus: event.metadata.verificationStatus ?? "observed",
+              sensitivity: scoped.sensitivity,
+            },
           });
         }
         this.options.ledger.markFactExtractionCompleted(event.eventId, this.workerId);

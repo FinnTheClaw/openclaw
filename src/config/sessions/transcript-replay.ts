@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { redactSecrets } from "../../logging/redact.js";
 import { CURRENT_SESSION_VERSION } from "./version.js";
 
 /** Tail kept so DM continuity survives silent session rotations. */
@@ -14,7 +15,7 @@ type SessionRecord = {
   timestamp?: unknown;
   message?: { role?: unknown };
 };
-type KeptRecord = { role: "user" | "assistant"; line: string };
+type KeptRecord = { role: "user" | "assistant"; record: SessionRecord };
 
 function isValidReplayTimestamp(value: unknown): boolean {
   if (typeof value === "number") {
@@ -68,9 +69,10 @@ export async function replayRecentUserAssistantMessages(params: {
         continue;
       }
       try {
-        const role = replayableRole(JSON.parse(line) as SessionRecord | null);
+        const record = JSON.parse(line) as SessionRecord | null;
+        const role = replayableRole(record);
         if (role) {
-          kept.push({ role, line });
+          kept.push({ role, record });
         }
       } catch {
         // Skip malformed lines.
@@ -88,7 +90,11 @@ export async function replayRecentUserAssistantMessages(params: {
       // role-ordering hazard this reset path is recovering from.
       return 0;
     }
-    const tail = coalesceAlternatingReplayTail(kept.slice(startIdx)).map((entry) => entry.line);
+    // Replay is a new persistence boundary: never copy prior JSONL bytes. Rebuild
+    // each accepted record through mandatory structured secret redaction first.
+    const tail = coalesceAlternatingReplayTail(kept.slice(startIdx)).map((entry) =>
+      JSON.stringify(redactSecrets(entry.record)),
+    );
     if (!fs.existsSync(params.targetTranscript)) {
       await fsp.mkdir(path.dirname(params.targetTranscript), { recursive: true });
       const header = JSON.stringify({
@@ -110,8 +116,7 @@ export async function replayRecentUserAssistantMessages(params: {
   }
 }
 
-// Keep the newest record from each same-role run, preserving original JSONL bytes
-// for replay while ensuring strict provider alternation.
+// Keep the newest record from each same-role run while ensuring strict provider alternation.
 function coalesceAlternatingReplayTail(entries: KeptRecord[]): KeptRecord[] {
   const tail: KeptRecord[] = [];
   for (const entry of entries) {

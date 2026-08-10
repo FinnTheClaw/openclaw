@@ -5845,6 +5845,14 @@ describe("active-memory plugin", () => {
     expect(testing.normalizePluginConfig({ setupGraceTimeoutMs: -1 }).setupGraceTimeoutMs).toBe(0);
   });
 
+  it("defaults and bounds the recall tool-call budget", () => {
+    expect(testing.normalizePluginConfig({}).toolCallBudget).toBe(4);
+    expect(testing.normalizePluginConfig({ toolCallBudget: 3 }).toolCallBudget).toBe(3);
+    expect(testing.normalizePluginConfig({ toolCallBudget: 6 }).toolCallBudget).toBe(6);
+    expect(testing.normalizePluginConfig({ toolCallBudget: 2 }).toolCallBudget).toBe(3);
+    expect(testing.normalizePluginConfig({ toolCallBudget: 7 }).toolCallBudget).toBe(6);
+  });
+
   it("clamps circuit breaker config within valid ranges", () => {
     const config = testing.normalizePluginConfig({
       circuitBreakerMaxTimeouts: 0,

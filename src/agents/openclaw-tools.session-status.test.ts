@@ -502,13 +502,21 @@ function latestMockCallArg(mock: ReturnType<typeof vi.fn>, argIndex = 0) {
 
 function getSessionStatusTool(
   agentSessionKey = "main",
-  options?: { sandboxed?: boolean; activeModelProvider?: string; activeModelId?: string },
+  options?: {
+    sandboxed?: boolean;
+    activeModelProvider?: string;
+    activeModelId?: string;
+    loadCommunicationOrigin?: NonNullable<
+      Parameters<typeof createSessionStatusTool>[0]
+    >["loadCommunicationOrigin"];
+  },
 ) {
   const tool = createSessionStatusTool({
     agentSessionKey,
     sandboxed: options?.sandboxed,
     activeModelProvider: options?.activeModelProvider,
     activeModelId: options?.activeModelId,
+    loadCommunicationOrigin: options?.loadCommunicationOrigin,
     config: mockConfig as never,
   });
   expect(tool.name).toBe("session_status");
@@ -537,6 +545,94 @@ describe("session_status tool", () => {
     expect(details.statusText).toContain("OpenClaw");
     expect(details.statusText).toContain("🧠 Model:");
     expect(details.statusText).not.toContain("OAuth/token status");
+  });
+
+  it("returns only a sanitized origin view without building model status", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "fake-origin-session",
+        updatedAt: 10,
+        origin: {
+          provider: "signal",
+          from: "+15125559113",
+          accountId: "fake-raw-account",
+          threadId: "fake-raw-thread",
+        },
+      },
+    });
+    const loadCommunicationOrigin = vi.fn(async () => ({
+      endpointType: "signal",
+      boundState: "bound" as const,
+      routingState: "admin" as const,
+      authState: "authorized" as const,
+      redactedIdentifier: "***9113",
+      label: "Administrator",
+      linkedAt: "2026-08-09T10:00:00.000Z",
+      evidenceRefs: ["communication-endpoint:fake-opaque-ref"],
+    }));
+    const tool = getSessionStatusTool("main", { loadCommunicationOrigin });
+
+    const result = await tool.execute("call-origin-view", { view: "origin" });
+    const serialized = JSON.stringify(result);
+
+    expect(result.details).toEqual({
+      origin: expect.objectContaining({
+        endpointType: "signal",
+        redactedIdentifier: "***9113",
+        authState: "authorized",
+      }),
+    });
+    expect(loadCommunicationOrigin).toHaveBeenCalledWith({
+      entry: expect.objectContaining({ sessionId: "fake-origin-session" }),
+      sessionKey: "main",
+    });
+    expect(buildStatusMessageMock).not.toHaveBeenCalled();
+    expect(serialized).not.toContain("+15125559113");
+    expect(serialized).not.toContain("fake-raw-account");
+    expect(serialized).not.toContain("fake-raw-thread");
+  });
+
+  it("does not allow origin view to mutate the model override", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "fake-origin-session",
+        updatedAt: 10,
+      },
+    });
+    const tool = getSessionStatusTool("main", {
+      loadCommunicationOrigin: async () => ({
+        endpointType: "local",
+        boundState: "local",
+        routingState: "local",
+        authState: "local",
+        label: "Local session",
+        evidenceRefs: ["communication-session:fake-opaque-ref"],
+      }),
+    });
+
+    await expect(
+      tool.execute("call-origin-model", { view: "origin", model: "default" }),
+    ).rejects.toThrow("model cannot be changed when view=origin");
+    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(buildStatusMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("does not reflect protected-state failures from origin view", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "fake-origin-session",
+        updatedAt: 10,
+      },
+    });
+    const tool = getSessionStatusTool("main", {
+      loadCommunicationOrigin: async () => {
+        throw new Error("fake-hmac-secret-canary-never-expose at /fake/registry");
+      },
+    });
+
+    await expect(tool.execute("call-origin-failure", { view: "origin" })).rejects.toThrow(
+      "Sanitized session origin is unavailable.",
+    );
   });
 
   it("enables transcript usage fallback for session_status", async () => {
