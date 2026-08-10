@@ -3168,7 +3168,10 @@ async function runRecallSubagent(params: {
         hasUnavailableMemorySearchResult: harnessHasUnavailableMemorySearchResult,
       };
     }
-    if (params.abortSignal?.aborted) {
+    const recallAborted = Boolean(
+      params.abortSignal?.aborted || recoveryController.signal.aborted,
+    );
+    if (recallAborted) {
       const partialReply = await readPartialAssistantText(activeSessionFile);
       const transcriptState = await readActiveMemoryTranscriptState(
         activeSessionFile,
@@ -3183,7 +3186,7 @@ async function runRecallSubagent(params: {
       );
     }
     if (
-      !params.abortSignal?.aborted &&
+      !recallAborted &&
       isMissingRegisteredMemoryToolsError(error, params.config.toolsAllow)
     ) {
       params.api.logger.debug?.(
@@ -3201,7 +3204,7 @@ async function runRecallSubagent(params: {
         }),
       };
     }
-    if (!params.abortSignal?.aborted) {
+    if (!recallAborted) {
       const message = toSingleLineLogValue(error instanceof Error ? error.message : String(error));
       params.api.logger.warn?.(
         `active-memory: memory sub-agent failed, skipping recall: ${message}`,
