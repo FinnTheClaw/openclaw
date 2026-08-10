@@ -13,6 +13,8 @@ export type GovernorRecoveryDirective = {
   contradictions: readonly string[];
   reconciliationEffectIds: readonly string[];
   unverifiedMutationEffectIds: readonly string[];
+  runningActionIds: readonly string[];
+  pendingUserUpdate: boolean;
   prohibitedFingerprints: readonly string[];
   nextUsefulCapabilities: readonly string[];
 };
@@ -48,6 +50,8 @@ export function evaluateGovernorFinish(params: {
   effects: readonly GovernorEffectRecord[];
   evidence: readonly GovernorEvidenceRecord[];
   contradictions?: readonly string[];
+  runningActionIds?: readonly string[];
+  pendingUserUpdate?: boolean;
   now: number;
 }): GovernorFinishDecision {
   const evidence = currentEvidence(params);
@@ -75,12 +79,16 @@ export function evaluateGovernorFinish(params: {
     )
     .map((effect) => `${effect.effectId}:${effect.outcome.semantic}`);
   const contradictions = [...(params.contradictions ?? [])];
+  const runningActionIds = [...(params.runningActionIds ?? [])];
+  const pendingUserUpdate = params.pendingUserUpdate ?? false;
   if (
     unmetCriteria.length > 0 ||
     semanticFailures.length > 0 ||
     contradictions.length > 0 ||
     reconciliationEffectIds.length > 0 ||
-    unverifiedMutationEffectIds.length > 0
+    unverifiedMutationEffectIds.length > 0 ||
+    runningActionIds.length > 0 ||
+    pendingUserUpdate
   ) {
     const prohibitedFingerprints = currentEffects
       .filter((effect) => !isGovernorEffectSemanticallySuccessful(effect))
@@ -94,6 +102,8 @@ export function evaluateGovernorFinish(params: {
         contradictions,
         reconciliationEffectIds,
         unverifiedMutationEffectIds,
+        runningActionIds,
+        pendingUserUpdate,
         prohibitedFingerprints,
         nextUsefulCapabilities: currentEffects
           .filter((effect) => !isGovernorEffectSemanticallySuccessful(effect))

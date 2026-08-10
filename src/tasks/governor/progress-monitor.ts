@@ -25,7 +25,11 @@ export function governorProgressVectorHash(value: GovernorJsonValue): string {
 
 export type GovernorActionAdmission =
   | { admitted: true; forceReplanAfterOutcome: boolean }
-  | { admitted: false; reason: "no_progress_limit"; fingerprint: string };
+  | {
+      admitted: false;
+      reason: "no_progress_limit" | "reconcile_before_retry";
+      fingerprint: string;
+    };
 
 export function evaluateGovernorActionAdmission(params: {
   proposal: GovernorActionProposal;
@@ -35,6 +39,16 @@ export function evaluateGovernorActionAdmission(params: {
 }): GovernorActionAdmission {
   const fingerprint = createGovernorActionFingerprint(params.proposal);
   const progressVectorHash = governorProgressVectorHash(params.progressVector);
+  if (
+    params.priorEffects.some(
+      (effect) =>
+        effect.objectiveRevision === params.objectiveRevision &&
+        effect.actionFingerprint === fingerprint &&
+        effect.reconcileRequired,
+    )
+  ) {
+    return { admitted: false, reason: "reconcile_before_retry", fingerprint };
+  }
   const equivalentNoDelta = params.priorEffects.filter(
     (effect) =>
       effect.objectiveRevision === params.objectiveRevision &&

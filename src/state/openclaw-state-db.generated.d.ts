@@ -724,10 +724,13 @@ export interface GovernorMemories {
 
 export interface GovernorOutbox {
   claimed_at: number | null;
+  claimed_by: string | null;
   created_at: number;
+  delivery_claim_epoch: Generated<number>;
   delivery_key: string;
   effect_id: string;
   lease_epoch: number;
+  lease_expires_at: number | null;
   objective_revision: number;
   payload_json: string;
   provider_receipt_json: string | null;

@@ -288,6 +288,7 @@ describe("durable behavior governor", () => {
         taskId,
         effectId,
         expectedLeaseEpoch: completed.task.leaseEpoch,
+        workerId: "delivery-worker-1",
         provider: { send },
         now: 150,
       });
@@ -295,6 +296,7 @@ describe("durable behavior governor", () => {
         taskId,
         effectId,
         expectedLeaseEpoch: completed.task.leaseEpoch,
+        workerId: "delivery-worker-2",
         provider: { send },
         now: 151,
       });

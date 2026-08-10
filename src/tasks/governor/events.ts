@@ -1,5 +1,6 @@
 // Defines immutable behavior-governor event records.
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import {
   createGovernorEventId,
   type GovernorEventId,
@@ -14,6 +15,7 @@ export type GovernorEventType =
   | "state_transitioned"
   | "plan_replaced"
   | "tool_outcome_recorded"
+  | "mutation_reconciled"
   | "late_tool_result_ignored"
   | "evidence_admitted"
   | "finish_rejected"
@@ -44,6 +46,7 @@ export function createGovernorEventRecord(params: {
   sourceMessageId?: string;
   sourceSequence?: number;
 }): GovernorEventRecord {
+  const payload = assertGovernorBoundarySafe("log", params.payload);
   return {
     eventId: params.eventId ?? createGovernorEventId(),
     taskId: params.task.taskId,
@@ -53,8 +56,8 @@ export function createGovernorEventRecord(params: {
     eventType: params.eventType,
     taskVersion: params.task.taskVersion,
     objectiveRevision: params.task.objectiveRevision,
-    payload: structuredClone(params.payload),
-    payloadDigest: governorDigest(params.payload),
+    payload,
+    payloadDigest: governorDigest(payload),
     createdAt: params.now,
   };
 }

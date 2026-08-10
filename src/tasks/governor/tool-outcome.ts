@@ -3,6 +3,7 @@ import { createGovernorActionFingerprint } from "./action-fingerprint.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
 import { governorDigest } from "./canonical-json.js";
 import { governorProgressVectorHash } from "./progress-monitor.js";
+import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorEffectId, GovernorTaskId } from "./types.js";
 
 export type GovernorSemanticOutcome =
@@ -74,28 +75,36 @@ export function createGovernorEffectRecord(params: {
   outcome: GovernorToolOutcome;
   now: number;
 }): GovernorEffectRecord {
+  const safeProposal = assertGovernorBoundarySafe(
+    "log",
+    params.proposal as unknown as GovernorJsonValue,
+  ) as unknown as GovernorActionProposal;
+  const safeOutcome = assertGovernorBoundarySafe(
+    "model",
+    params.outcome as unknown as GovernorJsonValue,
+  ) as unknown as GovernorToolOutcome;
   const reconcileRequired =
-    params.proposal.mutating &&
-    (params.outcome.transport === "unknown" || params.outcome.sideEffect === "unknown");
-  const verificationState = params.proposal.mutating
-    ? params.outcome.verification === "verified"
+    safeProposal.mutating &&
+    (safeOutcome.transport === "unknown" || safeOutcome.sideEffect === "unknown");
+  const verificationState = safeProposal.mutating
+    ? safeOutcome.verification === "verified"
       ? "verified"
       : "required"
-    : params.outcome.verification;
+    : safeOutcome.verification;
   return {
-    ...params.proposal,
+    ...safeProposal,
     idempotencyKey: governorDigest({
-      taskId: params.proposal.taskId,
-      effectId: params.proposal.effectId,
+      taskId: safeProposal.taskId,
+      effectId: safeProposal.effectId,
     }),
     taskVersion: params.taskVersion,
     objectiveRevision: params.objectiveRevision,
     planVersion: params.planVersion,
     leaseEpoch: params.leaseEpoch,
     executionGeneration: params.executionGeneration,
-    actionFingerprint: createGovernorActionFingerprint(params.proposal),
+    actionFingerprint: createGovernorActionFingerprint(safeProposal),
     progressVectorHash: governorProgressVectorHash(params.progressVector),
-    outcome: structuredClone(params.outcome),
+    outcome: safeOutcome,
     verificationState,
     reconcileRequired,
     createdAt: params.now,

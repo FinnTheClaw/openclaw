@@ -1,6 +1,7 @@
 // Admits only current, same-scope, externally sourced evidence.
 import type { GovernorJsonValue } from "./canonical-json.js";
 import { governorDigest } from "./canonical-json.js";
+import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export type GovernorEvidenceSourceKind =
@@ -47,9 +48,13 @@ export type GovernorEvidenceAdmission =
 export function createGovernorEvidenceCandidate(
   params: Omit<GovernorEvidenceCandidate, "evidenceDigest">,
 ): GovernorEvidenceCandidate {
+  const safe = assertGovernorBoundarySafe(
+    "model",
+    params as unknown as GovernorJsonValue,
+  ) as unknown as Omit<GovernorEvidenceCandidate, "evidenceDigest">;
   return {
-    ...params,
-    evidenceDigest: governorDigest(params.payload),
+    ...safe,
+    evidenceDigest: governorDigest(safe.payload),
   };
 }
 

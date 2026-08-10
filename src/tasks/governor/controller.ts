@@ -19,6 +19,7 @@ import {
   type GovernorRecoveryDirective,
 } from "./finish-gate.js";
 import { evaluateGovernorActionAdmission } from "./progress-monitor.js";
+import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { applyGovernorTransition } from "./state-machine.js";
 import {
   GovernorSqliteStore,
@@ -61,6 +62,8 @@ export type GovernorToolRecordResult =
       evidence?: GovernorEvidenceRecord;
     }
   | { accepted: false; reason: "stale_execution"; task: GovernorTaskProjection };
+
+export type GovernorMutationResolution = "applied_verified" | "not_applied_verified" | "failed";
 
 export type GovernorDeliveryProvider = {
   send: (params: { deliveryKey: string; payload: GovernorJsonValue }) => Promise<GovernorJsonValue>;
@@ -133,7 +136,11 @@ export class GovernorController {
     now: number;
   }): GovernorTaskProjection {
     let task = this.#task(params.taskId);
-    assertValidGovernorPlan(params.plan, task.contract);
+    const plan = assertGovernorBoundarySafe(
+      "session",
+      params.plan as unknown as GovernorJsonValue,
+    ) as unknown as GovernorPlan;
+    assertValidGovernorPlan(plan, task.contract);
     if (task.state === "RECEIVED") {
       task = this.#transition(task, "CONTRACTING", params.now);
     }
@@ -145,7 +152,7 @@ export class GovernorController {
     }
     const planned: GovernorTaskProjection = {
       ...task,
-      plan: structuredClone(params.plan),
+      plan,
       planVersion: task.planVersion + 1,
       taskVersion: task.taskVersion + 1,
       updatedAt: params.now + 2,
@@ -153,7 +160,7 @@ export class GovernorController {
     const event = createGovernorEventRecord({
       task: planned,
       eventType: "plan_replaced",
-      payload: { kind: params.plan.kind, stepCount: params.plan.steps.length },
+      payload: { kind: plan.kind, stepCount: plan.steps.length },
       now: params.now + 2,
     });
     task = assertApplied(this.store.commit({ current: task, next: planned, event }));
@@ -244,6 +251,7 @@ export class GovernorController {
       params.proposal.criterionId &&
       params.outcome.transport === "completed" &&
       params.outcome.semantic === "success" &&
+      (!params.proposal.mutating || params.outcome.verification === "verified") &&
       params.outcome.evidence !== undefined
     ) {
       const candidate = createGovernorEvidenceCandidate({
@@ -298,12 +306,123 @@ export class GovernorController {
     return this.#transition(this.#task(taskId), "VERIFYING", now);
   }
 
+  resolveMutation(params: {
+    taskId: GovernorTaskId;
+    executionFence: Omit<GovernorExecutionFence, "taskVersion">;
+    effectId: string;
+    resolution: GovernorMutationResolution;
+    evidence: GovernorJsonValue;
+    sourceIdentity: string;
+    now: number;
+  }): GovernorToolRecordResult {
+    const task = this.#task(params.taskId);
+    const safeEvidence = assertGovernorBoundarySafe("model", params.evidence);
+    const effect = this.store.loadEffect(task.taskId, params.effectId);
+    if (!effect || !effect.mutating) {
+      throw new Error(`Governor mutation effect not found: ${params.effectId}`);
+    }
+    if (
+      params.executionFence.objectiveRevision !== task.objectiveRevision ||
+      params.executionFence.planVersion !== task.planVersion ||
+      params.executionFence.executionGeneration !== task.executionGeneration ||
+      effect.objectiveRevision !== task.objectiveRevision ||
+      effect.executionGeneration !== task.executionGeneration
+    ) {
+      return { accepted: false, reason: "stale_execution", task };
+    }
+    const outcome: GovernorToolOutcome =
+      params.resolution === "applied_verified"
+        ? {
+            transport: "completed",
+            semantic: "success",
+            sideEffect: "applied",
+            verification: "verified",
+            summaryCode: "mutation_applied_verified",
+            evidence: safeEvidence,
+          }
+        : params.resolution === "not_applied_verified"
+          ? {
+              transport: "completed",
+              semantic: "transient_failure",
+              sideEffect: "none",
+              verification: "verified",
+              summaryCode: "mutation_not_applied_verified",
+              evidence: safeEvidence,
+            }
+          : {
+              transport: "completed",
+              semantic: "partial",
+              sideEffect: "unknown",
+              verification: "failed",
+              summaryCode: "mutation_reconciliation_failed",
+              evidence: safeEvidence,
+            };
+    const updatedEffect: GovernorEffectRecord = {
+      ...effect,
+      outcome,
+      verificationState: outcome.verification,
+      reconcileRequired: params.resolution === "failed",
+      updatedAt: params.now,
+    };
+    let evidence: GovernorEvidenceRecord | undefined;
+    if (params.resolution === "applied_verified" && effect.criterionId) {
+      const candidate = createGovernorEvidenceCandidate({
+        evidenceId: `verification_${effect.effectId}`,
+        taskId: task.taskId,
+        criterionId: effect.criterionId,
+        sourceKind: "structured_external",
+        sourceIdentity: params.sourceIdentity,
+        taskVersion: task.taskVersion,
+        objectiveRevision: task.objectiveRevision,
+        scopeKey: task.scopeKey,
+        observedAt: params.now,
+        payload: safeEvidence,
+      });
+      const admission = admitGovernorEvidence({ task, candidate, now: params.now });
+      if (!admission.admitted) {
+        throw new Error(`Governor mutation verification evidence rejected: ${admission.reason}`);
+      }
+      evidence = admission.evidence;
+    }
+    const next = nextTaskVersion(task, params.now);
+    const event = createGovernorEventRecord({
+      task: next,
+      eventType: "mutation_reconciled",
+      payload: {
+        effectId: effect.effectId,
+        resolution: params.resolution,
+        evidenceDigest: governorDigest(safeEvidence),
+      },
+      now: params.now,
+    });
+    const committed = assertApplied(
+      this.store.commit({
+        current: task,
+        next,
+        event,
+        effectUpdates: [{ current: effect, next: updatedEffect }],
+        ...(evidence ? { evidence: [evidence] } : {}),
+      }),
+    );
+    return {
+      accepted: true,
+      task: committed,
+      effect: updatedEffect,
+      ...(evidence ? { evidence } : {}),
+    };
+  }
+
   proposeFinish(params: {
     taskId: GovernorTaskId;
     responseText: string;
     contradictions?: readonly string[];
+    pendingUserUpdate?: boolean;
     now: number;
   }): GovernorFinishResult {
+    const safeFinish = assertGovernorBoundarySafe("session", {
+      responseText: params.responseText,
+      contradictions: [...(params.contradictions ?? [])],
+    }) as { responseText: string; contradictions: string[] };
     let task = this.#task(params.taskId);
     if (task.state !== "VERIFYING") {
       throw new Error(`Cannot propose finish while task is ${task.state}`);
@@ -313,7 +432,9 @@ export class GovernorController {
       task,
       effects: this.store.listEffects(task.taskId),
       evidence: this.store.listEvidence(task.taskId),
-      contradictions: params.contradictions,
+      contradictions: safeFinish.contradictions,
+      runningActionIds: this.store.listUnfinishedFanoutJobIds(task.taskId),
+      pendingUserUpdate: params.pendingUserUpdate,
       now: params.now + 1,
     });
     if (!decision.accepted) {
@@ -334,6 +455,8 @@ export class GovernorController {
           unmetCriteria: [...decision.recovery.unmetCriteria],
           semanticFailures: [...decision.recovery.semanticFailures],
           reconciliationEffectIds: [...decision.recovery.reconciliationEffectIds],
+          runningActionIds: [...decision.recovery.runningActionIds],
+          pendingUserUpdate: decision.recovery.pendingUserUpdate,
         },
         now: params.now + 1,
       });
@@ -355,7 +478,7 @@ export class GovernorController {
     const effectId = `completion_${transition.task.objectiveRevision}`;
     const payload: GovernorJsonValue = {
       kind: "completion",
-      text: params.responseText,
+      text: safeFinish.responseText,
       certificateDigest: decision.certificate.certificateDigest,
     };
     const outbox = this.store.createCompletionOutbox({
@@ -383,6 +506,8 @@ export class GovernorController {
     taskId: GovernorTaskId;
     effectId: string;
     expectedLeaseEpoch: number;
+    workerId: string;
+    leaseDurationMs?: number;
     provider: GovernorDeliveryProvider;
     now: number;
   }): Promise<GovernorOutboxClaimResult> {
@@ -398,6 +523,8 @@ export class GovernorController {
       taskId: params.taskId,
       effectId: params.effectId,
       expectedLeaseEpoch: params.expectedLeaseEpoch,
+      expectedDeliveryClaimEpoch: claim.entry.deliveryClaimEpoch,
+      workerId: params.workerId,
       providerReceipt: receipt,
       now: params.now + 1,
     });

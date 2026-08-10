@@ -17,6 +17,7 @@ import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { assertValidGovernorContract } from "./contracts.js";
 import { createGovernorEventRecord, type GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceRecord } from "./evidence.js";
+import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
   createGovernorTaskProjection,
@@ -36,6 +37,7 @@ type GovernorDatabase = Pick<
   | "governor_evidence"
   | "governor_outbox"
   | "governor_scope_epochs"
+  | "governor_fanout_jobs"
 >;
 
 type GovernorTaskRow = Selectable<OpenClawStateKyselyDatabase["governor_tasks"]>;
@@ -53,6 +55,9 @@ export type GovernorOutboxRecord = {
   taskVersion: number;
   objectiveRevision: number;
   leaseEpoch: number;
+  deliveryClaimEpoch: number;
+  claimedBy?: string;
+  leaseExpiresAt?: number;
   state: GovernorOutboxState;
   payload: GovernorJsonValue;
   providerReceipt?: GovernorJsonValue;
@@ -77,8 +82,13 @@ export type GovernorCommitResult =
 
 export type GovernorOutboxClaimResult =
   | { kind: "claimed"; entry: GovernorOutboxRecord }
-  | { kind: "not_found" | "stale_worker" | "obsolete" }
+  | { kind: "not_found" | "stale_worker" | "obsolete" | "busy" }
   | { kind: "already_sent"; entry: GovernorOutboxRecord };
+
+export type GovernorEffectUpdate = {
+  current: GovernorEffectRecord;
+  next: GovernorEffectRecord;
+};
 
 function parseJson<T>(raw: string, label: string): T {
   try {
@@ -242,6 +252,9 @@ function bindOutbox(entry: GovernorOutboxRecord): Insertable<GovernorOutboxRow> 
     task_version: entry.taskVersion,
     objective_revision: entry.objectiveRevision,
     lease_epoch: entry.leaseEpoch,
+    delivery_claim_epoch: entry.deliveryClaimEpoch,
+    claimed_by: entry.claimedBy ?? null,
+    lease_expires_at: entry.leaseExpiresAt ?? null,
     state: entry.state,
     payload_json: JSON.stringify(entry.payload),
     provider_receipt_json: entry.providerReceipt ? JSON.stringify(entry.providerReceipt) : null,
@@ -260,6 +273,11 @@ function parseOutboxRow(row: GovernorOutboxRow): GovernorOutboxRecord {
     taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
     objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
     leaseEpoch: normalizeSqliteNumber(row.lease_epoch) ?? 0,
+    deliveryClaimEpoch: normalizeSqliteNumber(row.delivery_claim_epoch) ?? 0,
+    ...(row.claimed_by == null ? {} : { claimedBy: row.claimed_by }),
+    ...(row.lease_expires_at == null
+      ? {}
+      : { leaseExpiresAt: normalizeSqliteNumber(row.lease_expires_at) ?? 0 }),
     state: row.state as GovernorOutboxState,
     payload: parseJson<GovernorJsonValue>(row.payload_json, "outbox payload"),
     ...(row.provider_receipt_json
@@ -316,7 +334,11 @@ export class GovernorSqliteStore {
     flowId?: string;
     now: number;
   }): GovernorIngressResult {
-    assertValidGovernorContract(params.contract);
+    const contract = assertGovernorBoundarySafe(
+      "session",
+      params.contract as unknown as GovernorJsonValue,
+    ) as unknown as GovernorTaskContract;
+    assertValidGovernorContract(contract);
     if (!params.sourceMessageId.trim()) {
       throw new Error("sourceMessageId must not be empty");
     }
@@ -325,7 +347,7 @@ export class GovernorSqliteStore {
       const incoming = createGovernorTaskProjection({
         scope: params.scope,
         mode: params.mode,
-        contract: params.contract,
+        contract,
         authenticatedSourceSequence: params.sourceSequence,
         flowId: params.flowId,
         now: params.now,
@@ -387,7 +409,7 @@ export class GovernorSqliteStore {
       const corrected: GovernorTaskProjection = {
         ...current,
         mode: params.mode,
-        contract: structuredClone(params.contract),
+        contract,
         plan: undefined,
         state:
           current.state === "RECEIVED" || current.state === "CONTRACTING"
@@ -431,6 +453,7 @@ export class GovernorSqliteStore {
     next: GovernorTaskProjection;
     event: GovernorEventRecord;
     effects?: readonly GovernorEffectRecord[];
+    effectUpdates?: readonly GovernorEffectUpdate[];
     evidence?: readonly GovernorEvidenceRecord[];
     outbox?: readonly GovernorOutboxRecord[];
   }): GovernorCommitResult {
@@ -481,6 +504,29 @@ export class GovernorSqliteStore {
             .values(bindEffect(effect))
             .onConflict((conflict) => conflict.columns(["task_id", "effect_id"]).doNothing()),
         );
+      }
+      for (const effectUpdate of params.effectUpdates ?? []) {
+        if (
+          effectUpdate.current.taskId !== params.current.taskId ||
+          effectUpdate.next.taskId !== effectUpdate.current.taskId ||
+          effectUpdate.next.effectId !== effectUpdate.current.effectId ||
+          effectUpdate.next.objectiveRevision !== params.next.objectiveRevision ||
+          effectUpdate.next.updatedAt < effectUpdate.current.updatedAt
+        ) {
+          throw new Error(`Invalid governor effect update ${effectUpdate.current.effectId}`);
+        }
+        const effectUpdateResult = executeSqliteQuerySync(
+          db,
+          dbx
+            .updateTable("governor_effects")
+            .set(bindEffect(effectUpdate.next))
+            .where("task_id", "=", effectUpdate.current.taskId)
+            .where("effect_id", "=", effectUpdate.current.effectId)
+            .where("updated_at", "=", effectUpdate.current.updatedAt),
+        );
+        if (effectUpdateResult.numAffectedRows !== 1n) {
+          throw new Error(`Concurrent governor effect update ${effectUpdate.current.effectId}`);
+        }
       }
       for (const evidence of params.evidence ?? []) {
         executeSqliteQuerySync(
@@ -591,12 +637,36 @@ export class GovernorSqliteStore {
     ).rows.map(parseOutboxRow);
   }
 
+  listUnfinishedFanoutJobIds(taskId: GovernorTaskId): string[] {
+    const { db } = this.#database();
+    return executeSqliteQuerySync(
+      db,
+      governorDb(db)
+        .selectFrom("governor_fanout_jobs")
+        .select(["job_id"])
+        .where("task_id", "=", taskId)
+        .where("state", "in", ["queued", "running"])
+        .orderBy("queue_sequence", "asc")
+        .orderBy("job_id", "asc"),
+    ).rows.map((row) => row.job_id);
+  }
+
   claimOutbox(params: {
     taskId: GovernorTaskId;
     effectId: string;
     expectedLeaseEpoch: number;
+    workerId: string;
     now: number;
+    leaseDurationMs?: number;
   }): GovernorOutboxClaimResult {
+    const workerId = params.workerId.trim();
+    if (!workerId) {
+      throw new Error("Governor outbox workerId must not be empty");
+    }
+    const leaseDurationMs = params.leaseDurationMs ?? 60_000;
+    if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs <= 0) {
+      throw new Error("Governor outbox leaseDurationMs must be a positive safe integer");
+    }
     return runOpenClawStateWriteTransaction(({ db }) => {
       const task = this.#loadTaskFromDatabase(db, params.taskId);
       if (!task) {
@@ -624,9 +694,19 @@ export class GovernorSqliteStore {
       if (entry.state === "sent") {
         return { kind: "already_sent", entry };
       }
+      if (
+        entry.state === "claimed" &&
+        entry.leaseExpiresAt !== undefined &&
+        entry.leaseExpiresAt > params.now
+      ) {
+        return { kind: "busy" };
+      }
       const claimed: GovernorOutboxRecord = {
         ...entry,
         leaseEpoch: task.leaseEpoch,
+        deliveryClaimEpoch: entry.deliveryClaimEpoch + 1,
+        claimedBy: workerId,
+        leaseExpiresAt: params.now + leaseDurationMs,
         state: "claimed",
         claimedAt: params.now,
         updatedAt: params.now,
@@ -648,6 +728,8 @@ export class GovernorSqliteStore {
     taskId: GovernorTaskId;
     effectId: string;
     expectedLeaseEpoch: number;
+    expectedDeliveryClaimEpoch: number;
+    workerId: string;
     providerReceipt: GovernorJsonValue;
     now: number;
   }): GovernorOutboxClaimResult {
@@ -678,8 +760,16 @@ export class GovernorSqliteStore {
       if (entry.objectiveRevision !== task.objectiveRevision) {
         return { kind: "obsolete" };
       }
+      if (
+        entry.state !== "claimed" ||
+        entry.deliveryClaimEpoch !== params.expectedDeliveryClaimEpoch ||
+        entry.claimedBy !== params.workerId
+      ) {
+        return { kind: "stale_worker" };
+      }
+      const { leaseExpiresAt: _leaseExpiresAt, ...entryWithoutLease } = entry;
       const sent: GovernorOutboxRecord = {
-        ...entry,
+        ...entryWithoutLease,
         state: "sent",
         providerReceipt: structuredClone(params.providerReceipt),
         sentAt: params.now,
@@ -704,6 +794,7 @@ export class GovernorSqliteStore {
     payload: GovernorJsonValue;
     now: number;
   }): GovernorOutboxRecord {
+    const payload = assertGovernorBoundarySafe("session", params.payload);
     return {
       taskId: params.task.taskId,
       effectId: params.effectId,
@@ -711,8 +802,9 @@ export class GovernorSqliteStore {
       taskVersion: params.task.taskVersion,
       objectiveRevision: params.task.objectiveRevision,
       leaseEpoch: params.task.leaseEpoch,
+      deliveryClaimEpoch: 0,
       state: "pending",
-      payload: structuredClone(params.payload),
+      payload,
       createdAt: params.now,
       updatedAt: params.now,
     };
