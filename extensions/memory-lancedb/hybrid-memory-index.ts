@@ -17,8 +17,6 @@ export type MemoryProjectionInput = {
   vector: number[];
   agentId: string;
   scope?: string;
-  /** Trusted local diagnostics only: search every scope owned by one opaque principal. */
-  allScopes?: boolean;
   sessionKey?: string;
   channel?: string;
   conversationId?: string;
@@ -46,6 +44,8 @@ export type HybridMemorySearchOptions = {
   vector: number[];
   agentId: string;
   scope?: string;
+  /** Trusted local diagnostics only: search every scope owned by one opaque principal. */
+  allScopes?: boolean;
   channel?: string;
   validAt?: number;
   limit?: number;
