@@ -19,7 +19,6 @@ import {
 import { BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES } from "openclaw/plugin-sdk/chat-channel-ids";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
-import { parseSessionDeliveryRoute } from "openclaw/plugin-sdk/routing";
 import type { MemoryEmbeddingProvider } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import { resolveMemoryDreamingWorkspaces } from "openclaw/plugin-sdk/memory-core-host-status";
 import { MESSAGE_TOOL_DELIVERY_HINTS } from "openclaw/plugin-sdk/message-tool-delivery-hints";
@@ -29,6 +28,7 @@ import {
 } from "openclaw/plugin-sdk/number-runtime";
 import { readFiniteNumberParam, readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
 import { resolveLivePluginConfigObject } from "openclaw/plugin-sdk/plugin-config-runtime";
+import { parseSessionDeliveryRoute } from "openclaw/plugin-sdk/routing";
 import { ensureGlobalUndiciEnvProxyDispatcher } from "openclaw/plugin-sdk/runtime-env";
 import {
   asOptionalRecord as asRecord,
@@ -47,17 +47,14 @@ import {
   vectorDimsForModel,
 } from "./config.js";
 import { DurableMemoryRuntime, resolveDurableMemoryAgentId } from "./durable-memory-runtime.js";
-import {
-  deduplicateHybridResults,
-  type HybridMemorySearchResult,
-} from "./hybrid-memory-index.js";
+import { deduplicateHybridResults, type HybridMemorySearchResult } from "./hybrid-memory-index.js";
 import { loadLanceDbModule } from "./lancedb-runtime.js";
+import { MemoryConsolidator } from "./memory-consolidator.js";
 import {
   assertMemoryContentSafe,
   guardMemoryEmbeddingProvider,
   MemorySensitiveContentError,
 } from "./memory-content-guard.js";
-import { MemoryConsolidator } from "./memory-consolidator.js";
 import {
   isMemoryScopeCompatible,
   memoryScopeMetadata,
@@ -1807,7 +1804,8 @@ export default definePluginEntry({
       ]);
       return deduplicateHybridResults(
         [...conversation, ...principal].toSorted(
-          (left, right) => right.score - left.score || right.entry.observedAt - left.entry.observedAt,
+          (left, right) =>
+            right.score - left.score || right.entry.observedAt - left.entry.observedAt,
         ),
         options.limit,
       );
@@ -1879,10 +1877,8 @@ export default definePluginEntry({
                 sessionKey: toolContext.sessionKey,
                 sessionId: toolContext.sessionId,
                 channel: toolContext.messageChannel ?? toolContext.deliveryContext?.channel,
-                accountId:
-                  toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
-                conversationId:
-                  toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
+                accountId: toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
+                conversationId: toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
               });
               durableRecall = await runWithTimeout({
                 timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
@@ -2102,10 +2098,8 @@ export default definePluginEntry({
                 sessionKey: toolContext.sessionKey,
                 sessionId: toolContext.sessionId,
                 channel: toolContext.messageChannel ?? toolContext.deliveryContext?.channel,
-                accountId:
-                  toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
-                conversationId:
-                  toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
+                accountId: toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
+                conversationId: toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
               });
             } catch (error) {
               return buildMemoryOperationUnavailableResult("store", formatMemoryRecallError(error));
@@ -2226,10 +2220,8 @@ export default definePluginEntry({
                   sessionKey: toolContext.sessionKey,
                   sessionId: toolContext.sessionId,
                   channel: toolContext.messageChannel ?? toolContext.deliveryContext?.channel,
-                  accountId:
-                    toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
-                  conversationId:
-                    toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
+                  accountId: toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
+                  conversationId: toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
                 });
               } catch (error) {
                 return buildMemoryOperationUnavailableResult(
@@ -2237,17 +2229,12 @@ export default definePluginEntry({
                   formatMemoryRecallError(error),
                 );
               }
-              const event = durableRuntime.ledger.getEventForAgent(
-                memoryId,
-                scope.storageAgentId,
-              );
+              const event = durableRuntime.ledger.getEventForAgent(memoryId, scope.storageAgentId);
               const fact = durableRuntime.ledger.getFactRevisionForAgent(
                 memoryId,
                 scope.storageAgentId,
               );
-              const eventAllowed = event
-                ? isMemoryScopeCompatible(scope, event.metadata)
-                : false;
+              const eventAllowed = event ? isMemoryScopeCompatible(scope, event.metadata) : false;
               const factAllowed = fact
                 ? fact.scope === scope.conversationScope || fact.scope === scope.principalScope
                 : false;
@@ -2267,16 +2254,11 @@ export default definePluginEntry({
               });
               const ledgerDeleted = eventAllowed
                 ? durableRuntime.ledger.deleteEventForAgent(memoryId, scope.storageAgentId)
-                : durableRuntime.ledger.retractFactRevisionForAgent(
-                    memoryId,
-                    scope.storageAgentId,
-                  );
+                : durableRuntime.ledger.retractFactRevisionForAgent(memoryId, scope.storageAgentId);
               await durableRuntime.index.delete(memoryId);
               scheduleDurableWorkers();
               const projectionComplete = await durableRuntime.flush(20_000);
-              const consolidationComplete = consolidator
-                ? await consolidator.flush(20_000)
-                : true;
+              const consolidationComplete = consolidator ? await consolidator.flush(20_000) : true;
               // A retracted fact may be materialized once as a retracted row so
               // downstream rebuilds observe the tombstone. Remove that derived
               // row after the durable drain; the ledger remains authoritative.
@@ -2287,10 +2269,7 @@ export default definePluginEntry({
               const normalizedTarget = targetText.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
               let semanticAbsent = false;
               try {
-                const normalizedQuery = normalizeRecallQuery(
-                  targetText,
-                  currentCfg.recallMaxChars,
-                );
+                const normalizedQuery = normalizeRecallQuery(targetText, currentCfg.recallMaxChars);
                 const vector = await embeddings.embed(normalizedQuery, {
                   timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
                 });
@@ -2403,10 +2382,8 @@ export default definePluginEntry({
                   sessionKey: toolContext.sessionKey,
                   sessionId: toolContext.sessionId,
                   channel: toolContext.messageChannel ?? toolContext.deliveryContext?.channel,
-                  accountId:
-                    toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
-                  conversationId:
-                    toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
+                  accountId: toolContext.agentAccountId ?? toolContext.deliveryContext?.accountId,
+                  conversationId: toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
                 });
               } catch (error) {
                 return buildMemoryOperationUnavailableResult(
@@ -2416,12 +2393,14 @@ export default definePluginEntry({
               }
               const normalizedQuery = normalizeRecallQuery(query, currentCfg.recallMaxChars);
               const vector = await embeddings.embed(normalizedQuery);
-              const results = (await searchScopedMemory({
-                scope,
-                queryText: normalizedQuery,
-                vector,
-                limit: 5,
-              })).filter((result) => result.entry.recordType !== "summary");
+              const results = (
+                await searchScopedMemory({
+                  scope,
+                  queryText: normalizedQuery,
+                  vector,
+                  limit: 5,
+                })
+              ).filter((result) => result.entry.recordType !== "summary");
               if (results.length === 0) {
                 return {
                   content: [{ type: "text", text: "No matching memories found." }],
@@ -2430,8 +2409,7 @@ export default definePluginEntry({
               }
               const candidates = results.map((result) => ({
                 id: result.entry.id,
-                recordType:
-                  result.entry.recordType === "fact" ? "fact_revision" : "event",
+                recordType: result.entry.recordType === "fact" ? "fact_revision" : "event",
                 text: result.entry.text,
                 category: result.entry.category,
                 score: result.score,

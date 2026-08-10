@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerSecretValueForRedaction } from "openclaw/plugin-sdk/logging-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertMemoryContentSafe,
   guardMemoryEmbeddingProvider,

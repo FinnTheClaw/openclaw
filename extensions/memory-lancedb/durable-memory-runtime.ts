@@ -5,10 +5,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import { HybridMemoryIndex, type MemoryProjectionInput } from "./hybrid-memory-index.js";
-import {
-  assertMemoryContentSafe,
-  MemorySensitiveContentError,
-} from "./memory-content-guard.js";
+import { assertMemoryContentSafe, MemorySensitiveContentError } from "./memory-content-guard.js";
 import { memoryScopeMetadata, resolveTrustedMemoryScope } from "./memory-scope.js";
 import {
   TemporalMemoryLedger,
@@ -1075,8 +1072,7 @@ export class DurableMemoryRuntime {
   private projectionForEvent(event: ProjectionLease, vector: number[]): MemoryProjectionInput {
     const memoryScope =
       typeof event.metadata.memoryScope === "string" ? event.metadata.memoryScope : "global";
-    const retrievalStatus =
-      event.metadata.retrievalStatus === "active" ? "active" : "retracted";
+    const retrievalStatus = event.metadata.retrievalStatus === "active" ? "active" : "retracted";
     return {
       id: event.eventId,
       recordType: "event",

@@ -138,10 +138,7 @@ describe("Active Memory evidence recovery", () => {
   it("preserves NONE and NO_REPLY as a conclusive no-relevant-memory outcome", () => {
     const tracker = new EvidenceRecoveryTracker(4);
     tracker.observe(
-      observation(
-        { status: "empty" },
-        { hasUsableEvidence: false, isUnavailable: false },
-      ),
+      observation({ status: "empty" }, { hasUsableEvidence: false, isUnavailable: false }),
     );
 
     expect(
