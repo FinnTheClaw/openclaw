@@ -194,8 +194,16 @@ export class EvidenceRecoveryTracker {
       explicitUnsupportedClaims.length > 0 ||
       explicitContradictions.length > 0 ||
       explicitSemanticFailures.length > 0;
+    const completedAtBudget =
+      this.terminationReason === "hard_budget" &&
+      !params.failed &&
+      !params.unavailable &&
+      !params.noReply &&
+      !hasExplicitBlocker &&
+      params.hasUsableEvidence &&
+      params.hasFinalSummary;
     const terminationReason =
-      this.terminationReason ??
+      (completedAtBudget ? "completed" : this.terminationReason) ??
       (params.failed || hasExplicitBlocker
         ? "failed"
         : params.unavailable

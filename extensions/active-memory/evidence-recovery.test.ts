@@ -117,6 +117,21 @@ describe("Active Memory evidence recovery", () => {
     });
   });
 
+  it("accepts a valid terminal receipt on the exact budget boundary", () => {
+    const tracker = new EvidenceRecoveryTracker(3);
+    expect(tracker.observe(observation({ hits: ["alpha"] }))).toBeUndefined();
+    expect(tracker.observe(observation({ hits: ["beta"] }))).toBeUndefined();
+    expect(tracker.observe(observation({ hits: ["gamma"] }))).toBe("hard_budget");
+
+    expect(
+      tracker.finalize({ hasUsableEvidence: true, hasFinalSummary: true, noReply: false }),
+    ).toMatchObject({
+      callsUsed: 3,
+      terminationReason: "completed",
+      unmetAcceptanceCriteria: [],
+    });
+  });
+
   it("emits a complete successful finalization receipt", () => {
     const tracker = new EvidenceRecoveryTracker(4);
     tracker.observe(observation({ hits: ["alpha"] }));
