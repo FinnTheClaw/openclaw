@@ -7,6 +7,7 @@ import {
   resolveDurableMemoryAgentId,
   type WorkspaceMemoryArtifact,
 } from "./durable-memory-runtime.js";
+import { resolveTrustedMemoryScope } from "./memory-scope.js";
 
 function embedding(text: string, dimensions = 8): number[] {
   const vector = Array.from({ length: dimensions }, () => 0);
@@ -379,12 +380,18 @@ describe("DurableMemoryRuntime", () => {
     const changed = await memory.reconcileWorkspaceMarkdown(artifacts);
     expect(changed).toMatchObject({ changed: 1, unchanged: 1, captured: 1, errors: 0 });
     expect(await memory.flush()).toBe(true);
+    const storageAgentId = resolveTrustedMemoryScope({
+      agentId: "jake",
+      workspaceDir: tmpDir,
+    }).storageAgentId;
     expect(
-      memory.ledger.listRecentEvents({ agentId: "jake", limit: 100 }).map((event) => event.content),
+      memory.ledger
+        .listRecentEvents({ agentId: storageAgentId, limit: 100 })
+        .map((event) => event.content),
     ).toEqual(expect.arrayContaining(["# Canonical\n\nJuniper now controls both orchard pumps."]));
     expect(
       memory.ledger
-        .listRecentEvents({ agentId: "jake", limit: 100 })
+        .listRecentEvents({ agentId: storageAgentId, limit: 100 })
         .some((event) => event.content.includes("Juniper irrigation detail")),
     ).toBe(false);
 
@@ -406,7 +413,7 @@ describe("DurableMemoryRuntime", () => {
     ).toMatchObject({ files: 1, removed: 1, preserved: 0, errors: 0 });
     expect(
       memory.ledger
-        .listRecentEvents({ agentId: "jake", limit: 100 })
+        .listRecentEvents({ agentId: storageAgentId, limit: 100 })
         .some((event) => event.content.includes("circuit C")),
     ).toBe(false);
   });
