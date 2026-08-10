@@ -1423,6 +1423,33 @@ CREATE TABLE IF NOT EXISTS governor_scope_epochs (
   updated_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS governor_memories (
+  memory_id TEXT NOT NULL PRIMARY KEY,
+  scope_key TEXT NOT NULL,
+  scope_epoch INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  source_identity TEXT NOT NULL,
+  source_rank INTEGER NOT NULL,
+  observed_at INTEGER NOT NULL,
+  freshness_expires_at INTEGER,
+  confidence REAL NOT NULL,
+  sensitivity TEXT NOT NULL,
+  provenance_json TEXT NOT NULL,
+  content_json TEXT NOT NULL,
+  content_digest TEXT NOT NULL,
+  supersedes_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  tombstoned_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_memories_scope
+  ON governor_memories(scope_key, status, source_rank, observed_at DESC, memory_id);
+
+CREATE INDEX IF NOT EXISTS idx_governor_memories_digest
+  ON governor_memories(scope_key, content_digest, status);
+
 CREATE TABLE IF NOT EXISTS migration_runs (
   id TEXT NOT NULL PRIMARY KEY,
   started_at INTEGER NOT NULL,

@@ -648,6 +648,27 @@ export interface GovernorEvidence {
   task_version: number;
 }
 
+export interface GovernorMemories {
+  confidence: number;
+  content_digest: string;
+  content_json: string;
+  created_at: number;
+  freshness_expires_at: number | null;
+  memory_id: string;
+  observed_at: number;
+  provenance_json: string;
+  scope_epoch: number;
+  scope_key: string;
+  sensitivity: string;
+  source_identity: string;
+  source_kind: string;
+  source_rank: number;
+  status: string;
+  supersedes_id: string | null;
+  tombstoned_at: number | null;
+  updated_at: number;
+}
+
 export interface GovernorOutbox {
   claimed_at: number | null;
   created_at: number;
@@ -1190,6 +1211,7 @@ export interface DB {
   governor_effects: GovernorEffects;
   governor_events: GovernorEvents;
   governor_evidence: GovernorEvidence;
+  governor_memories: GovernorMemories;
   governor_outbox: GovernorOutbox;
   governor_scope_epochs: GovernorScopeEpochs;
   governor_tasks: GovernorTasks;
