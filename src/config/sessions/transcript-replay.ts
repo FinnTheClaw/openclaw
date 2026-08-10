@@ -13,9 +13,55 @@ type SessionRecord = {
   id?: unknown;
   parentId?: unknown;
   timestamp?: unknown;
-  message?: { role?: unknown };
+  message?: Record<string, unknown> & { role?: unknown; content?: unknown };
 };
 type KeptRecord = { role: "user" | "assistant"; record: SessionRecord };
+
+const HIDDEN_REPLAY_BLOCK_TYPES = new Set([
+  "analysis",
+  "reasoning",
+  "reasoning_text",
+  "redacted_thinking",
+  "thinking",
+]);
+const HIDDEN_REPLAY_FIELDS = [
+  "thinking",
+  "reasoning",
+  "reasoning_content",
+  "reasoning_text",
+  "reasoning_details",
+  "thinkingSignature",
+  "openclawReasoningReplay",
+] as const;
+
+function stripHiddenReplayReasoning(record: SessionRecord): SessionRecord {
+  const sanitized = redactSecrets(record);
+  const message = sanitized.message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return sanitized;
+  }
+  const visibleMessage = { ...message };
+  for (const field of HIDDEN_REPLAY_FIELDS) {
+    delete visibleMessage[field];
+  }
+  if (Array.isArray(visibleMessage.content)) {
+    visibleMessage.content = visibleMessage.content.flatMap((block) => {
+      if (!block || typeof block !== "object" || Array.isArray(block)) {
+        return [block];
+      }
+      const visibleBlock = { ...(block as Record<string, unknown>) };
+      const type = typeof visibleBlock.type === "string" ? visibleBlock.type : "";
+      if (HIDDEN_REPLAY_BLOCK_TYPES.has(type)) {
+        return [];
+      }
+      for (const field of HIDDEN_REPLAY_FIELDS) {
+        delete visibleBlock[field];
+      }
+      return [visibleBlock];
+    });
+  }
+  return { ...sanitized, message: visibleMessage };
+}
 
 function isValidReplayTimestamp(value: unknown): boolean {
   if (typeof value === "number") {
@@ -71,7 +117,7 @@ export async function replayRecentUserAssistantMessages(params: {
       try {
         const record = JSON.parse(line) as SessionRecord | null;
         const role = replayableRole(record);
-        if (role) {
+        if (role && record) {
           kept.push({ role, record });
         }
       } catch {
@@ -91,9 +137,9 @@ export async function replayRecentUserAssistantMessages(params: {
       return 0;
     }
     // Replay is a new persistence boundary: never copy prior JSONL bytes. Rebuild
-    // each accepted record through mandatory structured secret redaction first.
+    // each accepted record through mandatory secret and hidden-reasoning removal.
     const tail = coalesceAlternatingReplayTail(kept.slice(startIdx)).map((entry) =>
-      JSON.stringify(redactSecrets(entry.record)),
+      JSON.stringify(stripHiddenReplayReasoning(entry.record)),
     );
     if (!fs.existsSync(params.targetTranscript)) {
       await fsp.mkdir(path.dirname(params.targetTranscript), { recursive: true });

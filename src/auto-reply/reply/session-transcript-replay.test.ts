@@ -37,7 +37,7 @@ type ReplayRecord = {
   id?: string;
   message?: {
     role?: string;
-    content?: string;
+    content?: unknown;
   };
 };
 
@@ -284,5 +284,42 @@ describe("replayRecentUserAssistantMessages", () => {
       "user",
       "assistant",
     ]);
+  });
+
+  it("removes hidden reasoning blocks and fields before replay", async () => {
+    const source = path.join(root, "reasoning.jsonl");
+    const target = path.join(root, "reasoning-out.jsonl");
+    const canary = "fake-hidden-reasoning-canary-0123456789";
+    registerSecretValueForRedaction(canary);
+    await fs.writeFile(
+      source,
+      [
+        messageEntry({ id: "u1", role: "user", content: "visible request" }),
+        j({
+          type: "message",
+          id: "a1",
+          parentId: "u1",
+          timestamp: "2026-05-16T00:00:01.000Z",
+          message: {
+            role: "assistant",
+            reasoning_content: `hidden top-level ${canary}`,
+            content: [
+              { type: "analysis", text: `hidden analysis ${canary}` },
+              { type: "redacted_thinking", data: canary },
+              { type: "text", text: "visible answer" },
+            ],
+          },
+        }),
+      ].join(""),
+      "utf8",
+    );
+
+    expect(await call(source, target)).toBe(2);
+    const raw = await fs.readFile(target, "utf8");
+    const records = await readJsonlRecords(target);
+    expect(raw).not.toContain(canary);
+    expect(raw).not.toContain("hidden top-level");
+    expect(raw).not.toContain("hidden analysis");
+    expect(records[2]?.message?.content).toEqual([{ type: "text", text: "visible answer" }]);
   });
 });
