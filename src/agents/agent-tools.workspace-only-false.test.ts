@@ -270,6 +270,9 @@ describe("FS tools with workspaceOnly=false", () => {
       details: {
         path: "memory/2026-03-07.md",
         appendOnly: true,
+        bytesAppended: 9,
+        noOp: false,
+        normalizedFromSnapshot: false,
       },
     });
     await expect(fs.readFile(allowedAbsolutePath, "utf-8")).resolves.toBe("seed\nnew note");
@@ -298,6 +301,9 @@ describe("FS tools with workspaceOnly=false", () => {
       details: {
         path: "memory/2026-03-08.md",
         appendOnly: true,
+        bytesAppended: 8,
+        noOp: false,
+        normalizedFromSnapshot: false,
       },
     });
     await expect(fs.readFile(allowedAbsolutePath, "utf-8")).resolves.toBe("new note");
