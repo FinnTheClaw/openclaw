@@ -2806,11 +2806,7 @@ export default definePluginEntry({
         const sessionKey = event.sessionKey ?? ctx.sessionKey;
         const scope = resolveMemoryScope({
           agentId: event.agentId ?? ctx.agentId,
-          workspaceDir: ctx.workspaceDir,
           sessionKey,
-          sessionId: ctx.sessionId,
-          channel: ctx.channel,
-          conversationId: ctx.chatId,
         });
         durableRuntime.captureMessage(event.message, {
           agentId: scope.storageAgentId,
@@ -2818,7 +2814,7 @@ export default definePluginEntry({
           channel: scope.channel,
           conversationId: scope.conversationRef,
           sourceKind: "before_message_write",
-          sourceRef: opaqueEvidenceRef(scope.storageAgentId, ctx.runId, ctx.sessionId),
+          sourceRef: opaqueEvidenceRef(scope.storageAgentId, scope.sessionRef),
           metadata: memoryScopeMetadata(scope, "direct_user"),
         });
         scheduleDurableWorkers();
