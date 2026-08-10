@@ -225,13 +225,19 @@ export class EvidenceRecoveryTracker {
       unmetAcceptanceCriteria.push(FINAL_REPLY_CRITERION);
     }
     if (explicitUnsupportedClaims.length > 0) {
-      unmetAcceptanceCriteria.push("Every unsupported claim must be removed or supported by evidence.");
+      unmetAcceptanceCriteria.push(
+        "Every unsupported claim must be removed or supported by evidence.",
+      );
     }
     if (explicitContradictions.length > 0) {
-      unmetAcceptanceCriteria.push("Every contradiction must be resolved against current evidence.");
+      unmetAcceptanceCriteria.push(
+        "Every contradiction must be resolved against current evidence.",
+      );
     }
     if (explicitSemanticFailures.length > 0) {
-      unmetAcceptanceCriteria.push("Every semantic failure must reach a typed successful postcondition.");
+      unmetAcceptanceCriteria.push(
+        "Every semantic failure must reach a typed successful postcondition.",
+      );
     }
     return {
       callsUsed: this.callsUsed,

@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { EvidenceRecoveryTracker } from "../active-memory/evidence-recovery.js";
 import type { SessionEntry } from "../../src/config/sessions.js";
 import {
   sanitizeCommunicationIdentityInventory,
@@ -14,6 +13,7 @@ import {
   registerSecretValueForRedaction,
   resetSecretRedactionRegistryForTest,
 } from "../../src/logging/secret-redaction-registry.js";
+import { EvidenceRecoveryTracker } from "../active-memory/evidence-recovery.js";
 import { HybridMemoryIndex } from "./hybrid-memory-index.js";
 import { resolveTrustedMemoryScope } from "./memory-scope.js";
 import { TemporalMemoryLedger } from "./temporal-ledger.js";
@@ -86,7 +86,10 @@ describe("P0 redacted identity-memory replay contract", () => {
     const fourMessageReplay = [
       { sender: "***9113", text: "List the currently authorized contacts and their labels." },
       { sender: "***9113", text: "Correction: current structured access state outranks history." },
-      { sender: "***9113", text: "Forget the stale access claim and verify deletion semantically." },
+      {
+        sender: "***9113",
+        text: "Forget the stale access claim and verify deletion semantically.",
+      },
       { sender: "***9113", text: "Finalize only after every typed postcondition is satisfied." },
     ];
     expect(fourMessageReplay).toHaveLength(4);
