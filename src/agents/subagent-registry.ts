@@ -737,6 +737,14 @@ function resumeSubagentRun(runId: string) {
   if (entry.pauseReason === "sessions_yield" && entry.wakeOnDescendantSettle !== true) {
     return;
   }
+  if (isGatewayRestartInterruptedRun(entry)) {
+    // The provider execution that owned this persisted run id died with the
+    // previous gateway process. Recovery must remap a new run instead of
+    // waiting forever on the obsolete id.
+    scheduleSubagentOrphanRecovery({ delayMs: 1_000 });
+    resumedRuns.add(runId);
+    return;
+  }
   // Skip entries that have exhausted their retry budget or expired (#18264).
   if (getDeliveryAttemptCount(entry) >= MAX_ANNOUNCE_RETRY_COUNT) {
     void finalizeResumedAnnounceGiveUp({
@@ -821,6 +829,35 @@ function resumeSubagentRun(runId: string) {
   resumedRuns.add(runId);
 }
 
+function isGatewayRestartInterruptedRun(entry: SubagentRunRecord): boolean {
+  return (
+    typeof entry.endedAt !== "number" &&
+    entry.execution?.status === "interrupted" &&
+    entry.execution.interruptionReason === "gateway-restart"
+  );
+}
+
+function markRestoredRunsInterruptedByGatewayRestart(): boolean {
+  const now = Date.now();
+  let mutated = false;
+  for (const [runId, entry] of subagentRuns) {
+    if (typeof entry.endedAt === "number" || getAgentRunContext(runId)) {
+      continue;
+    }
+    entry.execution = {
+      ...entry.execution,
+      status: "interrupted",
+      interruptedAt: entry.execution?.interruptedAt ?? now,
+      interruptionReason: "gateway-restart",
+      endedAt: undefined,
+      outcome: undefined,
+    };
+    resumedRuns.delete(runId);
+    mutated = true;
+  }
+  return mutated;
+}
+
 function restoreSubagentRunsOnce() {
   if (restoreAttempted) {
     return;
@@ -834,12 +871,12 @@ function restoreSubagentRunsOnce() {
     if (restoredCount === 0) {
       return;
     }
-    if (
-      reconcileOrphanedRestoredRuns({
-        runs: subagentRuns,
-        resumedRuns,
-      })
-    ) {
+    const reconciledRestoredRuns = reconcileOrphanedRestoredRuns({
+      runs: subagentRuns,
+      resumedRuns,
+    });
+    const interruptedRestoredRuns = markRestoredRunsInterruptedByGatewayRestart();
+    if (reconciledRestoredRuns || interruptedRestoredRuns) {
       persistSubagentRuns();
     }
     if (subagentRuns.size === 0) {
@@ -1044,6 +1081,10 @@ async function sweepSubagentRuns() {
         continue;
       }
       if (typeof entry.endedAt !== "number") {
+        if (isGatewayRestartInterruptedRun(entry)) {
+          scheduleSubagentOrphanRecovery({ delayMs: 1_000 });
+          continue;
+        }
         const hasLiveRunContext = Boolean(getAgentRunContext(runId));
         const activeAgeMs = now - (entry.startedAt ?? entry.createdAt);
         if (!hasLiveRunContext && activeAgeMs >= STALE_ACTIVE_SUBAGENT_GRACE_MS) {

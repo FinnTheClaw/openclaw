@@ -67,6 +67,38 @@ function reclassifyLegacyRestartInterruptedRun(runRecord: SubagentRunRecord): vo
   runRecord.outcome = undefined;
 }
 
+function isGatewayRestartInterruptedRun(runRecord: SubagentRunRecord): boolean {
+  return (
+    typeof runRecord.endedAt !== "number" &&
+    runRecord.execution?.status === "interrupted" &&
+    runRecord.execution.interruptionReason === "gateway-restart"
+  );
+}
+
+async function markSessionRestartInterrupted(params: {
+  storePath: string;
+  childSessionKey: string;
+  cachedEntry: SessionEntry;
+  now: number;
+}): Promise<boolean> {
+  let marked = false;
+  await updateSessionStore(params.storePath, (currentStore) => {
+    const current = currentStore[params.childSessionKey];
+    if (!current) {
+      return;
+    }
+    current.abortedLastRun = true;
+    current.updatedAt = params.now;
+    currentStore[params.childSessionKey] = current;
+    marked = true;
+  });
+  if (marked) {
+    params.cachedEntry.abortedLastRun = true;
+    params.cachedEntry.updatedAt = params.now;
+  }
+  return marked;
+}
+
 /**
  * Build the resume message for an orphaned subagent.
  */
@@ -236,7 +268,16 @@ export async function recoverOrphanedSubagentSessions(params: {
 
         const entry = store[childSessionKey];
         if (!entry) {
-          result.skipped++;
+          if (isGatewayRestartInterruptedRun(runRecord)) {
+            result.failed++;
+            result.failedRuns.push({
+              runId,
+              childSessionKey,
+              error: "restart-interrupted subagent session entry is missing",
+            });
+          } else {
+            result.skipped++;
+          }
           continue;
         }
 
@@ -252,7 +293,30 @@ export async function recoverOrphanedSubagentSessions(params: {
           continue;
         }
 
-        // Check if this session was aborted by the restart
+        // A clean process restart can persist the active registry row before
+        // the session writer records abortedLastRun. The registry's explicit
+        // interrupted execution state is authoritative for that narrow case;
+        // persist the session marker atomically before attempting recovery.
+        if (!entry.abortedLastRun && isGatewayRestartInterruptedRun(runRecord)) {
+          try {
+            const marked = await markSessionRestartInterrupted({
+              storePath,
+              childSessionKey,
+              cachedEntry: entry,
+              now,
+            });
+            if (!marked) {
+              throw new Error("session entry disappeared while marking restart interruption");
+            }
+          } catch (err) {
+            const error = formatErrorMessage(err);
+            result.failed++;
+            result.failedRuns.push({ runId, childSessionKey, error });
+            continue;
+          }
+        }
+
+        // Check if this session was aborted by the restart.
         if (!entry.abortedLastRun) {
           result.skipped++;
           continue;

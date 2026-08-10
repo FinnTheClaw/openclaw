@@ -850,18 +850,42 @@ describe("subagent registry persistence", () => {
     expect(listSubagentRunsForRequester("agent:main:main")).toHaveLength(0);
   });
 
-  it("keeps stale unended restored runs with abortedLastRun for restart recovery", async () => {
-    vi.mocked(callGateway).mockImplementationOnce(async (request) => {
-      expectFields(request, {
-        method: "agent.wait",
-      });
-      expectFields((request as { params?: unknown }).params, {
-        runId: "run-stale-aborted-restore",
-      });
-      return {
-        status: "pending",
-      };
+  it("marks a fresh unended restored run interrupted without waiting on its obsolete run id", async () => {
+    const now = Date.now();
+    const runId = "run-fresh-unended-restore";
+    const childSessionKey = "agent:main:subagent:fresh-unended-restore";
+    await writePersistedRegistry({
+      version: 2,
+      runs: {
+        [runId]: {
+          runId,
+          childSessionKey,
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          task: "fresh interrupted work",
+          cleanup: "keep",
+          createdAt: now - 100,
+          startedAt: now - 50,
+          execution: { status: "running", startedAt: now - 50 },
+        },
+      },
     });
+
+    restartRegistry();
+    await flushQueuedRegistryWork();
+
+    expect(callGateway).not.toHaveBeenCalled();
+    const restored = listSubagentRunsForRequester("agent:main:main").find(
+      (entry) => entry.runId === runId,
+    );
+    expect(restored?.endedAt).toBeUndefined();
+    expect(restored?.execution).toMatchObject({
+      status: "interrupted",
+      interruptionReason: "gateway-restart",
+    });
+  });
+
+  it("keeps stale unended restored runs for restart recovery without waiting on old ids", async () => {
     const now = Date.now();
     const runId = "run-stale-aborted-restore";
     const childSessionKey = "agent:main:subagent:stale-aborted-restore";
@@ -891,15 +915,16 @@ describe("subagent registry persistence", () => {
     });
 
     restartRegistry();
-    await waitForRegistryWork(() => vi.mocked(callGateway).mock.calls.length > 0);
+    await flushQueuedRegistryWork();
 
-    expect(callGateway).toHaveBeenCalledTimes(1);
-    const [request] = vi.mocked(callGateway).mock.calls.at(0) ?? [];
-    expectFields(request, { method: "agent.wait" });
-    expectFields((request as { params?: unknown } | undefined)?.params, { runId });
-    expect(
-      listSubagentRunsForRequester("agent:main:main").some((entry) => entry.runId === runId),
-    ).toBe(true);
+    expect(callGateway).not.toHaveBeenCalled();
+    const restored = listSubagentRunsForRequester("agent:main:main").find(
+      (entry) => entry.runId === runId,
+    );
+    expect(restored?.execution).toMatchObject({
+      status: "interrupted",
+      interruptionReason: "gateway-restart",
+    });
   });
 
   it("removes attachments when pruning orphaned restored runs", async () => {

@@ -13,6 +13,7 @@ const sharedMocks = vi.hoisted(() => ({
     startedAt: 111,
     endedAt: 222,
   })),
+  getAgentRunContext: vi.fn(() => undefined),
   onAgentEvent: vi.fn(() => noop),
 }));
 
@@ -21,5 +22,6 @@ vi.mock("../gateway/call.js", () => ({
 }));
 
 vi.mock("../infra/agent-events.js", () => ({
+  getAgentRunContext: sharedMocks.getAgentRunContext,
   onAgentEvent: sharedMocks.onAgentEvent,
 }));

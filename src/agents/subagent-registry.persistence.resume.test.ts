@@ -120,6 +120,8 @@ describe("subagent registry persistence resume", () => {
       }),
     });
     mod.resetSubagentRegistryForTests({ persist: false });
+    vi.mocked(agentEventsModule.getAgentRunContext).mockReset();
+    vi.mocked(agentEventsModule.getAgentRunContext).mockReturnValue(undefined);
     vi.mocked(agentEventsModule.onAgentEvent).mockReset();
     vi.mocked(agentEventsModule.onAgentEvent).mockReturnValue(() => undefined);
   });
@@ -138,7 +140,7 @@ describe("subagent registry persistence resume", () => {
     hoisted.allowedRunIds = undefined;
   });
 
-  it("persists runs to disk and resumes after restart", async () => {
+  it("persists runs to disk and resumes when the execution context remains live", async () => {
     // Persisted requesterOrigin is the current contract; legacy flat requester
     // channel/account fields should not reappear during resume.
     tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
@@ -191,6 +193,9 @@ describe("subagent registry persistence resume", () => {
       expect(run.requesterOrigin?.channel).toBe("whatsapp");
       expect(run?.requesterOrigin?.accountId).toBe("acct-main");
 
+      vi.mocked(agentEventsModule.getAgentRunContext).mockReturnValue({
+        sessionKey: "agent:main:subagent:test",
+      });
       mod.initSubagentRegistry();
 
       await vi.waitFor(() => expect(announceSpy).toHaveBeenCalled(), {

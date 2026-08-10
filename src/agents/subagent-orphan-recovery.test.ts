@@ -191,6 +191,69 @@ describe("subagent-orphan-recovery", () => {
     );
   });
 
+  it("atomically marks and resumes a fresh registry-interrupted session after restart", async () => {
+    const childSessionKey = "agent:main:subagent:test-session-1";
+    const store = {
+      [childSessionKey]: {
+        sessionId: "session-abc",
+        updatedAt: Date.now(),
+        abortedLastRun: false,
+      },
+    };
+    vi.mocked(sessions.loadSessionStore).mockReturnValue(store);
+    const applyStoreUpdate = async (
+      _storePath: string,
+      mutator: Parameters<typeof sessions.updateSessionStore>[1],
+    ) => {
+      await mutator(store);
+    };
+    vi.mocked(sessions.updateSessionStore)
+      .mockImplementationOnce(applyStoreUpdate)
+      .mockImplementationOnce(applyStoreUpdate);
+    const run = createTestRunRecord({
+      execution: {
+        status: "interrupted",
+        interruptedAt: Date.now(),
+        interruptionReason: "gateway-restart",
+      },
+    });
+
+    const result = await recoverOrphanedSubagentSessions({
+      getActiveRuns: () => createActiveRuns(run),
+    });
+
+    expect(result).toMatchObject({ recovered: 1, failed: 0, skipped: 0 });
+    expect(sessions.updateSessionStore).toHaveBeenCalledTimes(2);
+    expect(gateway.callGateway).toHaveBeenCalledOnce();
+    expect(store[childSessionKey].abortedLastRun).toBe(false);
+    expect(subagentRegistrySteerRuntime.replaceSubagentRunAfterSteer).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when a restart-interrupted registry row has no session entry", async () => {
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({});
+    const run = createTestRunRecord({
+      execution: {
+        status: "interrupted",
+        interruptedAt: Date.now(),
+        interruptionReason: "gateway-restart",
+      },
+    });
+
+    const result = await recoverOrphanedSubagentSessions({
+      getActiveRuns: () => createActiveRuns(run),
+    });
+
+    expect(result).toMatchObject({ recovered: 0, failed: 1, skipped: 0 });
+    expect(result.failedRuns).toEqual([
+      expect.objectContaining({
+        runId: run.runId,
+        childSessionKey: run.childSessionKey,
+        error: "restart-interrupted subagent session entry is missing",
+      }),
+    ]);
+    expect(gateway.callGateway).not.toHaveBeenCalled();
+  });
+
   it("skips sessions that are not aborted", async () => {
     await expectSkippedRecovery({
       "agent:main:subagent:test-session-1": {

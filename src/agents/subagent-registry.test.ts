@@ -1320,6 +1320,7 @@ describe("subagent registry seam flow", () => {
       }
       return {};
     });
+    mocks.getAgentRunContext.mockReturnValue({ status: "running" });
 
     mod.initSubagentRegistry();
 
@@ -1375,6 +1376,7 @@ describe("subagent registry seam flow", () => {
       }
       return {};
     });
+    mocks.getAgentRunContext.mockReturnValue({ status: "running" });
 
     mod.initSubagentRegistry();
 
@@ -1818,6 +1820,7 @@ describe("subagent registry seam flow", () => {
         return {};
       },
     );
+    mocks.getAgentRunContext.mockReturnValue({ status: "running" });
 
     mod.initSubagentRegistry();
 
