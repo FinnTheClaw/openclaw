@@ -4196,6 +4196,8 @@ describe("memory plugin e2e", () => {
         });
         expect(stored.details?.action).toBe("candidate");
         const memoryId = String(stored.details?.id);
+        expect(stored.content?.[0]?.text).toContain(`Canonical memory id: ${memoryId}.`);
+        expect(stored.content?.[0]?.text).not.toContain("Person A prefers blue notebooks.");
 
         const cliRegistrar = firstMockArg(
           registerCli as unknown as MockCallSource,

@@ -2144,8 +2144,8 @@ export default definePluginEntry({
                 {
                   type: "text",
                   text: indexed
-                    ? "Memory candidate recorded. It remains non-authoritative until verified from direct or structured evidence."
-                    : "Memory candidate was committed, but projection did not reach a verified terminal state.",
+                    ? `Memory candidate recorded. Canonical memory id: ${stored.id}. It remains non-authoritative until verified from direct or structured evidence.`
+                    : `Memory candidate was committed with canonical memory id ${stored.id}, but projection did not reach a verified terminal state.`,
                 },
               ],
               details: {
