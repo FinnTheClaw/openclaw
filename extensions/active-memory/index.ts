@@ -297,6 +297,7 @@ type ActiveMemoryPartialTimeoutError = Error & {
   activeMemoryPartialReply?: string;
   activeMemorySearchDebug?: ActiveMemorySearchDebug;
   activeMemoryUnavailableMemorySearch?: boolean;
+  activeMemoryRecallAborted?: boolean;
 };
 
 type TranscriptReadLimits = {
@@ -2318,12 +2319,14 @@ function attachPartialTimeoutData(
   if (hasUnavailableMemorySearchResult) {
     target.activeMemoryUnavailableMemorySearch = true;
   }
+  target.activeMemoryRecallAborted = true;
 }
 
 function readPartialTimeoutData(error: unknown): {
   rawReply?: string;
   searchDebug?: ActiveMemorySearchDebug;
   hasUnavailableMemorySearchResult?: boolean;
+  recallAborted?: boolean;
 } {
   if (!error || typeof error !== "object") {
     return {};
@@ -2333,6 +2336,7 @@ function readPartialTimeoutData(error: unknown): {
     rawReply: normalizeOptionalString(source.activeMemoryPartialReply),
     searchDebug: source.activeMemorySearchDebug,
     hasUnavailableMemorySearchResult: source.activeMemoryUnavailableMemorySearch,
+    recallAborted: source.activeMemoryRecallAborted,
   };
 }
 
@@ -3523,11 +3527,11 @@ async function maybeResolveActiveRecall(params: {
       }
       params.abortSignal.throwIfAborted();
     }
-    if (controller.signal.aborted) {
+    const partialTimeoutData = readPartialTimeoutData(error);
+    if (controller.signal.aborted || partialTimeoutData.recallAborted) {
       if (recallTimedOut) {
         recordRecallTimeout();
       }
-      const partialTimeoutData = readPartialTimeoutData(error);
       const result = await buildTimeoutRecallResult({
         elapsedMs: Date.now() - startedAt,
         maxSummaryChars: params.config.maxSummaryChars,
