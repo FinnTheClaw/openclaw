@@ -648,6 +648,59 @@ export interface GovernorEvidence {
   task_version: number;
 }
 
+export interface GovernorFaninEnvelopes {
+  created_at: number;
+  envelope_digest: string;
+  envelope_id: string;
+  envelope_json: string;
+  execution_generation: number;
+  job_id: string;
+  lease_epoch: number;
+  plan_version: number;
+  round: number;
+  task_id: string;
+  task_version: number;
+}
+
+export interface GovernorFaninReducers {
+  claimed_at: number | null;
+  completed_at: number | null;
+  envelope_set_digest: string;
+  plan_version: number;
+  reducer_epoch: number;
+  result_digest: string | null;
+  result_json: string | null;
+  round: number;
+  state: string;
+  task_id: string;
+  updated_at: number;
+}
+
+export interface GovernorFanoutJobs {
+  cancelled_at: number | null;
+  claim_epoch: Generated<number>;
+  completed_at: number | null;
+  created_at: number;
+  execution_generation: number;
+  expected_duration_ms: number | null;
+  expected_output_tokens: number | null;
+  fanout_group: string;
+  job_id: string;
+  lease_epoch: number;
+  lease_expires_at: number | null;
+  payload_json: string;
+  plan_version: number;
+  priority: number;
+  queue_sequence: number;
+  round: number;
+  started_at: number | null;
+  state: string;
+  task_id: string;
+  task_version: number;
+  updated_at: number;
+  worker_id: string | null;
+}
+
 export interface GovernorMemories {
   confidence: number;
   content_digest: string;
@@ -1211,6 +1264,9 @@ export interface DB {
   governor_effects: GovernorEffects;
   governor_events: GovernorEvents;
   governor_evidence: GovernorEvidence;
+  governor_fanin_envelopes: GovernorFaninEnvelopes;
+  governor_fanin_reducers: GovernorFaninReducers;
+  governor_fanout_jobs: GovernorFanoutJobs;
   governor_memories: GovernorMemories;
   governor_outbox: GovernorOutbox;
   governor_scope_epochs: GovernorScopeEpochs;

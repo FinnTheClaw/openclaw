@@ -1455,6 +1455,73 @@ CREATE INDEX IF NOT EXISTS idx_governor_memories_scope
 CREATE INDEX IF NOT EXISTS idx_governor_memories_digest
   ON governor_memories(scope_key, content_digest, status);
 
+CREATE TABLE IF NOT EXISTS governor_fanout_jobs (
+  job_id TEXT NOT NULL PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  plan_version INTEGER NOT NULL,
+  round INTEGER NOT NULL,
+  queue_sequence INTEGER NOT NULL UNIQUE,
+  priority INTEGER NOT NULL,
+  fanout_group TEXT NOT NULL,
+  state TEXT NOT NULL,
+  task_version INTEGER NOT NULL,
+  lease_epoch INTEGER NOT NULL,
+  execution_generation INTEGER NOT NULL,
+  claim_epoch INTEGER NOT NULL DEFAULT 0,
+  worker_id TEXT,
+  lease_expires_at INTEGER,
+  expected_output_tokens INTEGER,
+  expected_duration_ms INTEGER,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  completed_at INTEGER,
+  cancelled_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_fanout_jobs_queue
+  ON governor_fanout_jobs(state, queue_sequence, job_id);
+
+CREATE INDEX IF NOT EXISTS idx_governor_fanout_jobs_round
+  ON governor_fanout_jobs(task_id, plan_version, round, queue_sequence, job_id);
+
+CREATE TABLE IF NOT EXISTS governor_fanin_envelopes (
+  envelope_id TEXT NOT NULL PRIMARY KEY,
+  job_id TEXT NOT NULL UNIQUE,
+  task_id TEXT NOT NULL,
+  plan_version INTEGER NOT NULL,
+  round INTEGER NOT NULL,
+  task_version INTEGER NOT NULL,
+  lease_epoch INTEGER NOT NULL,
+  execution_generation INTEGER NOT NULL,
+  envelope_json TEXT NOT NULL,
+  envelope_digest TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE,
+  FOREIGN KEY (job_id) REFERENCES governor_fanout_jobs(job_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_fanin_envelopes_round
+  ON governor_fanin_envelopes(task_id, plan_version, round, job_id);
+
+CREATE TABLE IF NOT EXISTS governor_fanin_reducers (
+  task_id TEXT NOT NULL,
+  plan_version INTEGER NOT NULL,
+  round INTEGER NOT NULL,
+  reducer_epoch INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  envelope_set_digest TEXT NOT NULL,
+  result_json TEXT,
+  result_digest TEXT,
+  claimed_at INTEGER,
+  completed_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, plan_version, round),
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS migration_runs (
   id TEXT NOT NULL PRIMARY KEY,
   started_at INTEGER NOT NULL,
