@@ -3,6 +3,7 @@
  */
 import { isTranscriptOnlyOpenClawAssistantMessage } from "../../../shared/transcript-only-openclaw-assistant.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import { resolveSessionsYieldPendingDescendantError } from "../../tools/sessions-yield-tool.js";
 import { log } from "../logger.js";
 import { resolveEmbeddedAbortSettleTimeoutMs } from "./attempt.abort-settle-timeout.js";
 
@@ -34,10 +35,7 @@ export async function waitForSessionsYieldSiblingTools(params: {
   timeoutMs?: number;
   pollIntervalMs?: number;
 }): Promise<boolean> {
-  const timeoutMs = Math.max(
-    0,
-    params.timeoutMs ?? SESSIONS_YIELD_SIBLING_SETTLE_TIMEOUT_MS,
-  );
+  const timeoutMs = Math.max(0, params.timeoutMs ?? SESSIONS_YIELD_SIBLING_SETTLE_TIMEOUT_MS);
   const pollIntervalMs = Math.max(
     1,
     params.pollIntervalMs ?? SESSIONS_YIELD_SIBLING_POLL_INTERVAL_MS,
@@ -61,6 +59,34 @@ export async function waitForSessionsYieldSiblingTools(params: {
     }
     await delay(pollIntervalMs);
   }
+}
+
+/**
+ * Admit a cooperative yield only when this session still owns descendant work.
+ *
+ * The sibling barrier closes the same-message race where sessions_spawn and
+ * sessions_yield execute concurrently. Once sibling tools settle, the durable
+ * subagent registry is authoritative: a leaf task has nothing to wait for and
+ * must continue its assignment instead of being recorded as a successful pause.
+ */
+export async function validateSessionsYieldPendingDescendants(params: {
+  countActiveTools: () => number;
+  countPendingDescendants: () => number;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}): Promise<string | null> {
+  const siblingsSettled = await waitForSessionsYieldSiblingTools({
+    countActiveTools: params.countActiveTools,
+    timeoutMs: params.timeoutMs,
+    pollIntervalMs: params.pollIntervalMs,
+  });
+  if (!siblingsSettled) {
+    return (
+      "sessions_yield could not pause because sibling tool calls are still active; " +
+      "wait for them to finish, then call sessions_yield by itself."
+    );
+  }
+  return resolveSessionsYieldPendingDescendantError(params.countPendingDescendants());
 }
 
 // Persist a hidden context reminder so the next turn knows why the runner stopped.

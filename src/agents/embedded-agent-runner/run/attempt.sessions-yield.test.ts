@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { waitForSessionsYieldSiblingTools } from "./attempt.sessions-yield.js";
+import { describe, expect, it, vi } from "vitest";
+import { resolveSessionsYieldPendingDescendantError } from "../../tools/sessions-yield-tool.js";
+import {
+  validateSessionsYieldPendingDescendants,
+  waitForSessionsYieldSiblingTools,
+} from "./attempt.sessions-yield.js";
 
 describe("sessions_yield sibling tool settlement", () => {
   it("waits through active sibling tools before allowing the yield abort", async () => {
@@ -8,8 +12,7 @@ describe("sessions_yield sibling tool settlement", () => {
 
     await expect(
       waitForSessionsYieldSiblingTools({
-        countActiveTools: () =>
-          observations[Math.min(index++, observations.length - 1)] ?? 1,
+        countActiveTools: () => observations[Math.min(index++, observations.length - 1)] ?? 1,
         timeoutMs: 100,
         pollIntervalMs: 1,
       }),
@@ -41,5 +44,49 @@ describe("sessions_yield sibling tool settlement", () => {
       }),
     ).resolves.toBe(true);
     expect(observations).toBe(2);
+  });
+
+  it("rejects a leaf yield after same-batch tools settle", async () => {
+    const observations = [2, 1, 1];
+    let index = 0;
+
+    await expect(
+      validateSessionsYieldPendingDescendants({
+        countActiveTools: () => observations[Math.min(index++, observations.length - 1)] ?? 1,
+        countPendingDescendants: () => 0,
+        timeoutMs: 100,
+        pollIntervalMs: 1,
+      }),
+    ).resolves.toContain("no descendant work");
+  });
+
+  it("admits an orchestrator yield while a descendant remains pending", async () => {
+    await expect(
+      validateSessionsYieldPendingDescendants({
+        countActiveTools: () => 1,
+        countPendingDescendants: () => 1,
+        timeoutMs: 100,
+        pollIntervalMs: 1,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("rejects before inspecting descendants when sibling tools remain active", async () => {
+    const countPendingDescendants = vi.fn(() => 1);
+
+    await expect(
+      validateSessionsYieldPendingDescendants({
+        countActiveTools: () => 2,
+        countPendingDescendants,
+        timeoutMs: 5,
+        pollIntervalMs: 1,
+      }),
+    ).resolves.toContain("sibling tool calls are still active");
+    expect(countPendingDescendants).not.toHaveBeenCalled();
+  });
+
+  it("fails the final synchronous recheck when the last descendant just settled", () => {
+    expect(resolveSessionsYieldPendingDescendantError(1)).toBeNull();
+    expect(resolveSessionsYieldPendingDescendantError(0)).toContain("no descendant work");
   });
 });

@@ -181,6 +181,36 @@ describe("buildSubagentList", () => {
     expect(list.recent).toStrictEqual([]);
   });
 
+  it("reports a yielded subagent as paused instead of done", () => {
+    const now = Date.now();
+    const yieldedRun = {
+      runId: "run-yielded-awaiting-continuation",
+      childSessionKey: "agent:main:subagent:yielded-awaiting-continuation",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "wait for child completion delivery",
+      cleanup: "keep",
+      createdAt: now - 120_000,
+      startedAt: now - 120_000,
+      endedAt: now - 60_000,
+      pauseReason: "sessions_yield",
+    } satisfies SubagentRunRecord;
+    addSubagentRunForTests(yieldedRun);
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+
+    const list = buildSubagentList({
+      cfg,
+      runs: [yieldedRun],
+      recentMinutes: 30,
+    });
+
+    expect(list.active[0]?.status).toBe("paused (awaiting continuation)");
+    expect(list.recent).toStrictEqual([]);
+  });
+
   it("omits old ended descendants from child session summaries", () => {
     const now = Date.now();
     const parentRun = {

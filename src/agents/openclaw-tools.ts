@@ -222,8 +222,12 @@ export function createOpenClawTools(
      * subagents inherit the real workspace path instead of the sandbox copy.
      */
     spawnWorkspaceDir?: string;
-    /** Callback invoked when sessions_yield tool is called. */
+    /** Callback invoked when an asynchronous media task needs to yield the turn. */
     onYield?: (message: string) => Promise<void> | void;
+    /** Callback invoked only after a sessions_yield tool call passes admission. */
+    onSessionsYield?: (message: string) => Promise<void> | void;
+    /** Runtime admission check invoked only by the sessions_yield tool. */
+    validateSessionsYield?: () => Promise<string | null> | string | null;
     /** Allow plugin tools for this tool set to late-bind the gateway subagent. */
     allowGatewaySubagentBinding?: boolean;
   } & SpawnedToolContext,
@@ -588,7 +592,8 @@ export function createOpenClawTools(
       : []),
     createSessionsYieldTool({
       sessionId: options?.sessionId,
-      onYield: options?.onYield,
+      validateYield: options?.validateSessionsYield,
+      onYield: options?.onSessionsYield,
     }),
     createSubagentsTool({
       agentSessionKey: options?.agentSessionKey,

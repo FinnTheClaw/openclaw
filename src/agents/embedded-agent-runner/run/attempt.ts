@@ -221,6 +221,7 @@ import { detectRuntimeShell } from "../../shell-utils.js";
 import { buildActiveSubagentSystemPromptAddition } from "../../subagent-active-context.js";
 import {
   ackPendingAgentSteeringItems,
+  countPendingDescendantRuns,
   leasePendingAgentSteeringItems,
   prependAgentSteeringPrompt,
   releasePendingAgentSteeringItems,
@@ -261,6 +262,7 @@ import {
   replaceWithEffectiveCronCreatorToolAllowlist,
   type CronCreatorToolAllowlistEntry,
 } from "../../tools/cron-tool.js";
+import { resolveSessionsYieldPendingDescendantError } from "../../tools/sessions-yield-tool.js";
 import { shouldAllowProviderOwnedThinkingReplay } from "../../transcript-policy.js";
 import { normalizeUsage, type NormalizedUsage } from "../../usage.js";
 import {
@@ -439,6 +441,7 @@ import {
   persistSessionsYieldContextMessage,
   queueSessionsYieldInterruptMessage,
   stripSessionsYieldArtifacts,
+  validateSessionsYieldPendingDescendants,
   waitForSessionsYieldAbortSettle,
   waitForSessionsYieldSiblingTools,
 } from "./attempt.sessions-yield.js";
@@ -1442,6 +1445,33 @@ export async function runEmbeddedAttempt(
             skillsSnapshot: skillsSnapshotForRun,
             skillUsagePaths,
             conversationCapabilityProfile: runtimeCapabilityProfile,
+            validateSessionsYield: async () => {
+              const controllerSessionKey = params.sessionKey?.trim();
+              if (!controllerSessionKey) {
+                return "sessions_yield requires a durable session key.";
+              }
+              return validateSessionsYieldPendingDescendants({
+                countActiveTools: () => countActiveToolExecutions(params.runId),
+                countPendingDescendants: () => countPendingDescendantRuns(controllerSessionKey),
+              });
+            },
+            onSessionsYield: (message) => {
+              const controllerSessionKey = params.sessionKey?.trim();
+              const validationError = controllerSessionKey
+                ? resolveSessionsYieldPendingDescendantError(
+                    countPendingDescendantRuns(controllerSessionKey),
+                  )
+                : "sessions_yield requires a durable session key.";
+              if (validationError) {
+                throw new Error(validationError);
+              }
+              yieldDetected = true;
+              yieldMessage = message;
+              requestPostAgentRunStopForYield?.();
+              queueYieldInterruptForSession?.();
+              runAbortController.abort("sessions_yield");
+              abortSessionForYield?.();
+            },
             onYield: async (message) => {
               const siblingsSettled = await waitForSessionsYieldSiblingTools({
                 countActiveTools: () => countActiveToolExecutions(params.runId),

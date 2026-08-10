@@ -162,7 +162,11 @@ function isActiveSubagentRun(
   entry: SubagentRunRecord,
   pendingDescendantCount: (sessionKey: string) => number,
 ) {
-  return isLiveUnendedSubagentRun(entry) || pendingDescendantCount(entry.childSessionKey) > 0;
+  return (
+    isLiveUnendedSubagentRun(entry) ||
+    entry.pauseReason === "sessions_yield" ||
+    pendingDescendantCount(entry.childSessionKey) > 0
+  );
 }
 
 function resolveRunStatus(entry: SubagentRunRecord, options?: { pendingDescendants?: number }) {
@@ -170,6 +174,9 @@ function resolveRunStatus(entry: SubagentRunRecord, options?: { pendingDescendan
   if (pendingDescendants > 0) {
     const childLabel = pendingDescendants === 1 ? "child" : "children";
     return `active (waiting on ${pendingDescendants} ${childLabel})`;
+  }
+  if (entry.pauseReason === "sessions_yield") {
+    return "paused (awaiting continuation)";
   }
   if (!hasSubagentRunEnded(entry)) {
     return "running";

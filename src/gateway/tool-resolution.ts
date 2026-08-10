@@ -11,6 +11,7 @@ import {
   isSubagentEnvelopeSession,
   resolveSubagentCapabilityStore,
 } from "../agents/subagent-capabilities.js";
+import { countPendingDescendantRuns } from "../agents/subagent-registry.js";
 import { buildDeclaredToolAllowlistContext } from "../agents/tool-policy-declared-context.js";
 import {
   applyToolPolicyPipeline,
@@ -29,6 +30,7 @@ import {
   replaceWithEffectiveCronCreatorToolAllowlist,
   type CronCreatorToolAllowlistEntry,
 } from "../agents/tools/cron-tool.js";
+import { resolveSessionsYieldPendingDescendantError } from "../agents/tools/sessions-yield-tool.js";
 import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
 import type { InboundEventKind } from "../channels/inbound-event/kind.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -169,6 +171,18 @@ export function resolveGatewayScopedTools(params: {
     explicitDenylist.length > 0 ||
     excludedToolNames.length > 0;
 
+  const validateSessionsYield = () =>
+    resolveSessionsYieldPendingDescendantError(countPendingDescendantRuns(params.sessionKey));
+  const onSessionsYield = params.onYield
+    ? (message: string) => {
+        const validationError = validateSessionsYield();
+        if (validationError) {
+          throw new Error(validationError);
+        }
+        return params.onYield?.(message);
+      }
+    : undefined;
+
   const allTools = createOpenClawTools({
     agentSessionKey: params.sessionKey,
     agentChannel: params.messageProvider ?? undefined,
@@ -183,6 +197,8 @@ export function resolveGatewayScopedTools(params: {
     currentInboundAudio: params.currentInboundAudio,
     sessionId: params.sessionId,
     onYield: params.onYield,
+    onSessionsYield,
+    validateSessionsYield,
     requireExplicitMessageTarget: params.requireExplicitMessageTarget,
     senderIsOwner: params.senderIsOwner,
     allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,

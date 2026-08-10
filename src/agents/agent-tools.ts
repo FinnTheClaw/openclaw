@@ -528,8 +528,12 @@ export function createOpenClawCodingTools(options?: {
   senderIsOwner?: boolean;
   /** Auth profiles already loaded for this run; used for prompt-time tool availability. */
   authProfileStore?: AuthProfileStore;
-  /** Callback invoked when sessions_yield tool is called. */
+  /** Callback invoked when an asynchronous media task needs to yield the turn. */
   onYield?: (message: string) => Promise<void> | void;
+  /** Callback invoked only after a sessions_yield tool call passes admission. */
+  onSessionsYield?: (message: string) => Promise<void> | void;
+  /** Runtime admission check invoked only by the sessions_yield tool. */
+  validateSessionsYield?: () => Promise<string | null> | string | null;
   /** Optional instrumentation callback for tool preparation stage timing. */
   recordToolPrepStage?: (name: string) => void;
   /** Lower routine policy-removal audits for diagnostic-only tool probes. */
@@ -1043,6 +1047,8 @@ export function createOpenClawCodingTools(options?: {
           inheritedToolAllowlist,
           inheritedToolDenylist,
           onYield: options?.onYield,
+          onSessionsYield: options?.onSessionsYield,
+          validateSessionsYield: options?.validateSessionsYield,
           allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
           recordToolPrepStage: options?.recordToolPrepStage,
         })

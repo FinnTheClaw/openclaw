@@ -1,11 +1,20 @@
 /**
  * Gateway tool-resolution tests.
  */
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  addSubagentRunForTests,
+  resetSubagentRegistryForTests,
+} from "../agents/subagent-registry.test-helpers.js";
+import type { SubagentRunRecord } from "../agents/subagent-registry.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveGatewayScopedTools } from "./tool-resolution.js";
 
 describe("resolveGatewayScopedTools", () => {
+  beforeEach(() => {
+    resetSubagentRegistryForTests();
+  });
+
   beforeAll(() => {
     resolveGatewayScopedTools({
       cfg: { tools: { profile: "minimal" } } as OpenClawConfig,
@@ -73,6 +82,16 @@ describe("resolveGatewayScopedTools", () => {
 
   it("passes loopback yield context into sessions_yield", async () => {
     const onYield = vi.fn();
+    addSubagentRunForTests({
+      runId: "run-loopback-yield-child",
+      childSessionKey: "agent:main:subagent:loopback-yield-child",
+      requesterSessionKey: "agent:main:telegram:group:-100123",
+      requesterDisplayKey: "telegram:group:-100123",
+      task: "finish bounded child work",
+      cleanup: "keep",
+      createdAt: Date.now(),
+      startedAt: Date.now(),
+    } satisfies SubagentRunRecord);
     const result = resolveGatewayScopedTools({
       cfg: { tools: { profile: "minimal", alsoAllow: ["sessions_yield"] } } as OpenClawConfig,
       sessionKey: "agent:main:telegram:group:-100123",
@@ -93,6 +112,29 @@ describe("resolveGatewayScopedTools", () => {
     expect(toolResult.details).toEqual({
       status: "yielded",
       message: "waiting on subagents",
+    });
+  });
+
+  it("rejects loopback yield when the session has no pending descendants", async () => {
+    const onYield = vi.fn();
+    const result = resolveGatewayScopedTools({
+      cfg: { tools: { profile: "minimal", alsoAllow: ["sessions_yield"] } } as OpenClawConfig,
+      sessionKey: "agent:main:telegram:group:-100123",
+      sessionId: "session-no-descendants",
+      onYield,
+      surface: "loopback",
+    });
+    const yieldTool = result.tools.find((tool) => tool.name === "sessions_yield");
+    if (!yieldTool) {
+      throw new Error("expected sessions_yield tool");
+    }
+
+    const toolResult = await yieldTool.execute("tool-call-no-descendants", {});
+
+    expect(onYield).not.toHaveBeenCalled();
+    expect(toolResult.details).toEqual({
+      status: "error",
+      error: expect.stringContaining("no descendant work"),
     });
   });
 });
