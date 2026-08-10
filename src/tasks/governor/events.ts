@@ -14,6 +14,7 @@ export type GovernorEventType =
   | "state_transitioned"
   | "plan_replaced"
   | "tool_outcome_recorded"
+  | "late_tool_result_ignored"
   | "evidence_admitted"
   | "finish_rejected"
   | "completion_certified"

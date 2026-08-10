@@ -504,6 +504,28 @@ export class GovernorSqliteStore {
     }, this.#options);
   }
 
+  appendAuditEvent(params: { task: GovernorTaskProjection; event: GovernorEventRecord }): boolean {
+    return runOpenClawStateWriteTransaction(({ db }) => {
+      const current = this.#loadTaskFromDatabase(db, params.task.taskId);
+      if (
+        !current ||
+        current.taskVersion !== params.task.taskVersion ||
+        current.leaseEpoch !== params.task.leaseEpoch ||
+        params.event.taskId !== current.taskId ||
+        params.event.taskVersion !== current.taskVersion ||
+        params.event.objectiveRevision !== current.objectiveRevision ||
+        params.event.payloadDigest !== governorDigest(params.event.payload)
+      ) {
+        return false;
+      }
+      executeSqliteQuerySync(
+        db,
+        governorDb(db).insertInto("governor_events").values(bindEvent(params.event)),
+      );
+      return true;
+    }, this.#options);
+  }
+
   listEvents(taskId: GovernorTaskId): GovernorEventRecord[] {
     const { db } = this.#database();
     return executeSqliteQuerySync(

@@ -1,6 +1,8 @@
+import { createGovernorActionFingerprint } from "./action-fingerprint.js";
 // Separates tool transport, semantic, side-effect, and verification outcomes.
 import type { GovernorJsonValue } from "./canonical-json.js";
 import { governorDigest } from "./canonical-json.js";
+import { governorProgressVectorHash } from "./progress-monitor.js";
 import type { GovernorEffectId, GovernorTaskId } from "./types.js";
 
 export type GovernorSemanticOutcome =
@@ -27,12 +29,20 @@ export type GovernorActionProposal = {
   effectId: GovernorEffectId;
   criterionId?: string;
   capability: string;
+  capabilityVersion: string;
   canonicalTarget: string;
   expectedEvidence: string;
   sourceRank: "structured_exact" | "scoped_index" | "targeted_search" | "broad_scan";
   stopCondition: string;
   mutating: boolean;
   argumentsDigest: string;
+  approvalGrant?: {
+    grantId: string;
+    objectiveRevision: number;
+    capabilityVersion: string;
+    canonicalTarget: string;
+    revokedAt?: number;
+  };
 };
 
 export type GovernorEffectRecord = GovernorActionProposal & {
@@ -51,15 +61,7 @@ export type GovernorEffectRecord = GovernorActionProposal & {
   updatedAt: number;
 };
 
-export function createGovernorActionFingerprint(proposal: GovernorActionProposal): string {
-  return governorDigest({
-    capability: proposal.capability,
-    canonicalTarget: proposal.canonicalTarget,
-    criterionId: proposal.criterionId ?? null,
-    argumentsDigest: proposal.argumentsDigest,
-    mutating: proposal.mutating,
-  });
-}
+export { createGovernorActionFingerprint } from "./action-fingerprint.js";
 
 export function createGovernorEffectRecord(params: {
   proposal: GovernorActionProposal;
@@ -92,7 +94,7 @@ export function createGovernorEffectRecord(params: {
     leaseEpoch: params.leaseEpoch,
     executionGeneration: params.executionGeneration,
     actionFingerprint: createGovernorActionFingerprint(params.proposal),
-    progressVectorHash: governorDigest(params.progressVector),
+    progressVectorHash: governorProgressVectorHash(params.progressVector),
     outcome: structuredClone(params.outcome),
     verificationState,
     reconcileRequired,

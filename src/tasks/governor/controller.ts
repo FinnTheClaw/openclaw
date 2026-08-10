@@ -1,5 +1,9 @@
 // Orchestrates the feature-flagged governed task loop over durable state.
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import {
+  GovernorCapabilityRegistry,
+  type GovernorCapabilityDefinition,
+} from "./capability-registry.js";
 import { assertValidGovernorPlan } from "./contracts.js";
 import { createGovernorEventRecord } from "./events.js";
 import {
@@ -14,6 +18,7 @@ import {
   type GovernorCompletionCertificate,
   type GovernorRecoveryDirective,
 } from "./finish-gate.js";
+import { evaluateGovernorActionAdmission } from "./progress-monitor.js";
 import { applyGovernorTransition } from "./state-machine.js";
 import {
   GovernorSqliteStore,
@@ -41,6 +46,22 @@ export type GovernorFinishResult =
   | { completed: true; task: GovernorTaskProjection; certificate: GovernorCompletionCertificate }
   | { completed: false; task: GovernorTaskProjection; recovery: GovernorRecoveryDirective };
 
+export type GovernorExecutionFence = {
+  taskVersion: number;
+  objectiveRevision: number;
+  planVersion: number;
+  executionGeneration: number;
+};
+
+export type GovernorToolRecordResult =
+  | {
+      accepted: true;
+      task: GovernorTaskProjection;
+      effect: GovernorEffectRecord;
+      evidence?: GovernorEvidenceRecord;
+    }
+  | { accepted: false; reason: "stale_execution"; task: GovernorTaskProjection };
+
 export type GovernorDeliveryProvider = {
   send: (params: { deliveryKey: string; payload: GovernorJsonValue }) => Promise<GovernorJsonValue>;
 };
@@ -57,7 +78,10 @@ function nextTaskVersion(task: GovernorTaskProjection, now: number): GovernorTas
 }
 
 export class GovernorController {
-  constructor(readonly store: GovernorSqliteStore) {}
+  constructor(
+    readonly store: GovernorSqliteStore,
+    readonly capabilities: GovernorCapabilityRegistry,
+  ) {}
 
   ingest(params: {
     sourceMessageId: string;
@@ -140,21 +164,43 @@ export class GovernorController {
     return this.#transition(this.#task(taskId), "EXECUTING", now);
   }
 
+  captureExecutionFence(taskId: GovernorTaskId): GovernorExecutionFence {
+    const task = this.#task(taskId);
+    return {
+      taskVersion: task.taskVersion,
+      objectiveRevision: task.objectiveRevision,
+      planVersion: task.planVersion,
+      executionGeneration: task.executionGeneration,
+    };
+  }
+
   recordToolOutcome(params: {
     taskId: GovernorTaskId;
+    executionFence: GovernorExecutionFence;
     proposal: Omit<GovernorActionProposal, "taskId">;
     progressVector: GovernorJsonValue;
     outcome: GovernorToolOutcome;
     evidenceSourceKind?: GovernorEvidenceSourceKind;
     now: number;
-  }): {
-    task: GovernorTaskProjection;
-    effect: GovernorEffectRecord;
-    evidence?: GovernorEvidenceRecord;
-  } {
+  }): GovernorToolRecordResult {
     const task = this.#task(params.taskId);
-    if (task.state !== "EXECUTING") {
-      throw new Error(`Cannot record tool outcome while task is ${task.state}`);
+    if (
+      params.executionFence.objectiveRevision !== task.objectiveRevision ||
+      params.executionFence.planVersion !== task.planVersion ||
+      params.executionFence.executionGeneration !== task.executionGeneration ||
+      params.executionFence.taskVersion > task.taskVersion
+    ) {
+      const event = createGovernorEventRecord({
+        task,
+        eventType: "late_tool_result_ignored",
+        payload: {
+          effectId: params.proposal.effectId,
+          executionGeneration: params.executionFence.executionGeneration,
+        },
+        now: params.now,
+      });
+      this.store.appendAuditEvent({ task, event });
+      return { accepted: false, reason: "stale_execution", task };
     }
     const existingEffect = this.store.loadEffect(task.taskId, params.proposal.effectId);
     if (existingEffect) {
@@ -162,14 +208,29 @@ export class GovernorController {
         .listEvidence(task.taskId)
         .find((item) => item.evidenceId === `evidence_${params.proposal.effectId}`);
       return {
+        accepted: true,
         task,
         effect: existingEffect,
         ...(existingEvidence ? { evidence: existingEvidence } : {}),
       };
     }
+    if (task.state !== "EXECUTING") {
+      throw new Error(`Cannot record tool outcome while task is ${task.state}`);
+    }
+    const proposal = { ...params.proposal, taskId: task.taskId };
+    this.capabilities.assertAuthorized(task, proposal);
+    const admission = evaluateGovernorActionAdmission({
+      proposal,
+      progressVector: params.progressVector,
+      priorEffects: this.store.listEffects(task.taskId),
+      objectiveRevision: task.objectiveRevision,
+    });
+    if (!admission.admitted) {
+      throw new Error(`Governor action rejected: ${admission.reason}`);
+    }
     const effect = createGovernorEffectRecord({
-      proposal: { ...params.proposal, taskId: task.taskId },
-      taskVersion: task.taskVersion,
+      proposal,
+      taskVersion: params.executionFence.taskVersion,
       objectiveRevision: task.objectiveRevision,
       planVersion: task.planVersion,
       leaseEpoch: task.leaseEpoch,
@@ -191,7 +252,7 @@ export class GovernorController {
         criterionId: params.proposal.criterionId,
         sourceKind: params.evidenceSourceKind ?? "tool",
         sourceIdentity: params.proposal.capability,
-        taskVersion: task.taskVersion,
+        taskVersion: params.executionFence.taskVersion,
         objectiveRevision: task.objectiveRevision,
         scopeKey: task.scopeKey,
         observedAt: params.now,
@@ -202,7 +263,14 @@ export class GovernorController {
         evidence = admission.evidence;
       }
     }
-    const next = nextTaskVersion(task, params.now);
+    const next = admission.forceReplanAfterOutcome
+      ? {
+          ...task,
+          state: "REPLAN_REQUIRED" as const,
+          taskVersion: task.taskVersion + 1,
+          updatedAt: params.now,
+        }
+      : nextTaskVersion(task, params.now);
     const event = createGovernorEventRecord({
       task: next,
       eventType: "tool_outcome_recorded",
@@ -210,6 +278,7 @@ export class GovernorController {
         effectId: effect.effectId,
         semantic: effect.outcome.semantic,
         reconcileRequired: effect.reconcileRequired,
+        forcedReplan: admission.forceReplanAfterOutcome,
       },
       now: params.now,
     });
@@ -222,7 +291,7 @@ export class GovernorController {
         ...(evidence ? { evidence: [evidence] } : {}),
       }),
     );
-    return { task: committed, effect, ...(evidence ? { evidence } : {}) };
+    return { accepted: true, task: committed, effect, ...(evidence ? { evidence } : {}) };
   }
 
   beginVerification(taskId: GovernorTaskId, now: number): GovernorTaskProjection {
@@ -338,11 +407,15 @@ export class GovernorController {
 export function createGovernorControllerIfEnabled(params: {
   env?: NodeJS.ProcessEnv;
   stateDir?: string;
+  capabilities: readonly GovernorCapabilityDefinition[];
 }): GovernorController | null {
   if (!isBehaviorGovernorEnabled(params.env)) {
     return null;
   }
-  return new GovernorController(new GovernorSqliteStore({ stateDir: params.stateDir }));
+  return new GovernorController(
+    new GovernorSqliteStore({ stateDir: params.stateDir }),
+    new GovernorCapabilityRegistry(params.capabilities),
+  );
 }
 
 export function governorArgumentsDigest(value: GovernorJsonValue): string {

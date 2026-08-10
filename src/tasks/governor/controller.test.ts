@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
 import {
@@ -50,6 +51,27 @@ const plan: GovernorPlan = {
   ],
 };
 
+function capabilities(): GovernorCapabilityRegistry {
+  return new GovernorCapabilityRegistry([
+    {
+      capability: "synthetic.inventory",
+      version: "1",
+      sourceRank: "structured_exact",
+      mutating: false,
+      canonicalTargetPrefixes: ["fixture://"],
+      requiresApproval: false,
+    },
+    {
+      capability: "assistant.summary",
+      version: "1",
+      sourceRank: "broad_scan",
+      mutating: false,
+      canonicalTargetPrefixes: ["assistant://"],
+      requiresApproval: false,
+    },
+  ]);
+}
+
 async function withGovernor(
   run: (params: {
     controller: GovernorController;
@@ -62,7 +84,11 @@ async function withGovernor(
     async (state) => {
       const store = new GovernorSqliteStore({ stateDir: state.stateDir });
       try {
-        await run({ controller: new GovernorController(store), store, stateDir: state.stateDir });
+        await run({
+          controller: new GovernorController(store, capabilities()),
+          store,
+          stateDir: state.stateDir,
+        });
       } finally {
         closeOpenClawStateDatabase();
       }
@@ -150,10 +176,12 @@ describe("durable behavior governor", () => {
       controller.startExecution(taskId, 120);
       controller.recordToolOutcome({
         taskId,
+        executionFence: controller.captureExecutionFence(taskId),
         proposal: {
           effectId: createGovernorEffectId("first-inspection"),
           criterionId: "state-verified",
           capability: "synthetic.inventory",
+          capabilityVersion: "1",
           canonicalTarget: "fixture://state",
           expectedEvidence: "An exact state record",
           sourceRank: "structured_exact",
@@ -190,10 +218,12 @@ describe("durable behavior governor", () => {
       controller.startExecution(taskId, 140);
       const successfulOutcome: Parameters<GovernorController["recordToolOutcome"]>[0] = {
         taskId,
+        executionFence: controller.captureExecutionFence(taskId),
         proposal: {
           effectId: createGovernorEffectId("second-inspection"),
           criterionId: "state-verified",
           capability: "synthetic.inventory",
+          capabilityVersion: "1",
           canonicalTarget: "fixture://state",
           expectedEvidence: "An exact state record",
           sourceRank: "structured_exact",
@@ -213,8 +243,16 @@ describe("durable behavior governor", () => {
         now: 141,
       };
       const firstSuccess = controller.recordToolOutcome(successfulOutcome);
+      expect(firstSuccess.accepted).toBe(true);
+      if (!firstSuccess.accepted) {
+        throw new Error(firstSuccess.reason);
+      }
       const versionAfterSuccess = firstSuccess.task.taskVersion;
       const duplicateSuccess = controller.recordToolOutcome(successfulOutcome);
+      expect(duplicateSuccess.accepted).toBe(true);
+      if (!duplicateSuccess.accepted) {
+        throw new Error(duplicateSuccess.reason);
+      }
       expect(duplicateSuccess.task.taskVersion).toBe(versionAfterSuccess);
       expect(store.listEffects(taskId)).toHaveLength(2);
       controller.beginVerification(taskId, 142);
@@ -231,7 +269,7 @@ describe("durable behavior governor", () => {
 
       closeOpenClawStateDatabase();
       const restartedStore = new GovernorSqliteStore({ stateDir });
-      const restarted = new GovernorController(restartedStore);
+      const restarted = new GovernorController(restartedStore, capabilities());
       expect(restartedStore.loadTask(taskId)).toMatchObject({ state: "COMPLETED" });
       expect(restartedStore.listOutbox(taskId)).toHaveLength(1);
 
@@ -280,10 +318,12 @@ describe("durable behavior governor", () => {
       controller.startExecution(taskId, 120);
       const result = controller.recordToolOutcome({
         taskId,
+        executionFence: controller.captureExecutionFence(taskId),
         proposal: {
           effectId: createGovernorEffectId("assistant-claim"),
           criterionId: "state-verified",
           capability: "assistant.summary",
+          capabilityVersion: "1",
           canonicalTarget: "assistant://self",
           expectedEvidence: "A claim",
           sourceRank: "broad_scan",
@@ -303,6 +343,10 @@ describe("durable behavior governor", () => {
         evidenceSourceKind: "assistant_text",
         now: 121,
       });
+      expect(result.accepted).toBe(true);
+      if (!result.accepted) {
+        throw new Error(result.reason);
+      }
       expect(result.evidence).toBeUndefined();
       controller.beginVerification(taskId, 122);
       const finish = controller.proposeFinish({ taskId, responseText: "Done", now: 123 });
