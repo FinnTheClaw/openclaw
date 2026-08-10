@@ -3172,9 +3172,7 @@ async function runRecallSubagent(params: {
         hasUnavailableMemorySearchResult: harnessHasUnavailableMemorySearchResult,
       };
     }
-    const recallAborted = Boolean(
-      params.abortSignal?.aborted || recoveryController.signal.aborted,
-    );
+    const recallAborted = Boolean(params.abortSignal?.aborted || recoveryController.signal.aborted);
     if (recallAborted) {
       const partialReply = await readPartialAssistantText(activeSessionFile);
       const transcriptState = await readActiveMemoryTranscriptState(
@@ -3189,10 +3187,7 @@ async function runRecallSubagent(params: {
         transcriptState.hasUnavailableMemorySearchResult || harnessHasUnavailableMemorySearchResult,
       );
     }
-    if (
-      !recallAborted &&
-      isMissingRegisteredMemoryToolsError(error, params.config.toolsAllow)
-    ) {
+    if (!recallAborted && isMissingRegisteredMemoryToolsError(error, params.config.toolsAllow)) {
       params.api.logger.debug?.(
         `active-memory: no configured memory tools available; skipping sub-agent`,
       );
