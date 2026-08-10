@@ -1,0 +1,94 @@
+// Validates governor task contracts and executable ordered/DAG plans.
+import type { GovernorPlan, GovernorTaskContract } from "./types.js";
+
+function assertUniqueNonEmpty(values: readonly string[], label: string): void {
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized) {
+      throw new Error(`${label} must not contain empty values`);
+    }
+    if (seen.has(normalized)) {
+      throw new Error(`${label} contains duplicate value ${normalized}`);
+    }
+    seen.add(normalized);
+  }
+}
+
+export function assertValidGovernorContract(contract: GovernorTaskContract): void {
+  if (!contract.objective.trim()) {
+    throw new Error("task objective must not be empty");
+  }
+  const criterionIds = contract.completionCriteria.map((criterion) => criterion.criterionId);
+  assertUniqueNonEmpty(criterionIds, "completion criteria");
+  for (const criterion of contract.completionCriteria) {
+    if (!criterion.description.trim()) {
+      throw new Error(`completion criterion ${criterion.criterionId} must have a description`);
+    }
+  }
+  assertUniqueNonEmpty(contract.authority.mutationCapabilities, "mutation capabilities");
+  assertUniqueNonEmpty(contract.authority.canonicalTargets, "canonical targets");
+}
+
+function visitPlanStep(
+  stepId: string,
+  dependencies: ReadonlyMap<string, readonly string[]>,
+  visiting: Set<string>,
+  visited: Set<string>,
+): void {
+  if (visited.has(stepId)) {
+    return;
+  }
+  if (visiting.has(stepId)) {
+    throw new Error(`plan contains a dependency cycle at ${stepId}`);
+  }
+  visiting.add(stepId);
+  for (const dependency of dependencies.get(stepId) ?? []) {
+    visitPlanStep(dependency, dependencies, visiting, visited);
+  }
+  visiting.delete(stepId);
+  visited.add(stepId);
+}
+
+export function assertValidGovernorPlan(plan: GovernorPlan, contract: GovernorTaskContract): void {
+  const stepIds = plan.steps.map((step) => step.stepId);
+  assertUniqueNonEmpty(stepIds, "plan steps");
+  const knownSteps = new Set(stepIds);
+  const knownCriteria = new Set(
+    contract.completionCriteria.map((criterion) => criterion.criterionId),
+  );
+  const dependencies = new Map<string, readonly string[]>();
+  for (const step of plan.steps) {
+    if (!step.description.trim()) {
+      throw new Error(`plan step ${step.stepId} must have a description`);
+    }
+    assertUniqueNonEmpty(step.dependsOn, `dependencies for ${step.stepId}`);
+    assertUniqueNonEmpty(step.criterionIds, `criteria for ${step.stepId}`);
+    for (const dependency of step.dependsOn) {
+      if (!knownSteps.has(dependency)) {
+        throw new Error(`plan step ${step.stepId} depends on unknown step ${dependency}`);
+      }
+    }
+    for (const criterionId of step.criterionIds) {
+      if (!knownCriteria.has(criterionId)) {
+        throw new Error(`plan step ${step.stepId} references unknown criterion ${criterionId}`);
+      }
+    }
+    dependencies.set(step.stepId, step.dependsOn);
+  }
+  const visited = new Set<string>();
+  for (const stepId of stepIds) {
+    visitPlanStep(stepId, dependencies, new Set(), visited);
+  }
+  if (plan.kind === "ordered") {
+    for (const [index, step] of plan.steps.entries()) {
+      const laterSteps = new Set(stepIds.slice(index + 1));
+      const invalidDependency = step.dependsOn.find((dependency) => laterSteps.has(dependency));
+      if (invalidDependency) {
+        throw new Error(
+          `ordered plan step ${step.stepId} depends on later step ${invalidDependency}`,
+        );
+      }
+    }
+  }
+}

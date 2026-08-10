@@ -83,7 +83,8 @@ export function applyGovernorTransition(params: {
   if (params.task.leaseEpoch !== params.expectedLeaseEpoch) {
     return { applied: false, reason: "lease_epoch_conflict", current: params.task };
   }
-  if (!TRANSITIONS[params.task.state].includes(params.to)) {
+  const allowedStates = TRANSITIONS[params.task.state] as readonly GovernorTaskState[];
+  if (!allowedStates.includes(params.to)) {
     return { applied: false, reason: "invalid_transition", current: params.task };
   }
   return {

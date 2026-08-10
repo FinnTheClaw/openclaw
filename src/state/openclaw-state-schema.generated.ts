@@ -1301,6 +1301,133 @@ CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_owner_key ON flow_runs(owner_key);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_updated_at ON flow_runs(updated_at);
 
+CREATE TABLE IF NOT EXISTS governor_tasks (
+  task_id TEXT NOT NULL PRIMARY KEY,
+  flow_id TEXT,
+  scope_key TEXT NOT NULL,
+  state TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  task_version INTEGER NOT NULL,
+  objective_revision INTEGER NOT NULL,
+  plan_version INTEGER NOT NULL,
+  lease_epoch INTEGER NOT NULL,
+  execution_generation INTEGER NOT NULL,
+  source_sequence INTEGER NOT NULL,
+  projection_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  terminal_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_tasks_scope_active
+  ON governor_tasks(scope_key, terminal_at, updated_at DESC, task_id);
+
+CREATE INDEX IF NOT EXISTS idx_governor_tasks_flow
+  ON governor_tasks(flow_id, updated_at DESC, task_id)
+  WHERE flow_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS governor_events (
+  event_id TEXT NOT NULL PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  source_message_id TEXT,
+  source_sequence INTEGER,
+  event_type TEXT NOT NULL,
+  task_version INTEGER NOT NULL,
+  objective_revision INTEGER NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_digest TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_governor_events_ingress_dedupe
+  ON governor_events(scope_key, source_message_id)
+  WHERE source_message_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_governor_events_task
+  ON governor_events(task_id, created_at, event_id);
+
+CREATE TABLE IF NOT EXISTS governor_effects (
+  task_id TEXT NOT NULL,
+  effect_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  task_version INTEGER NOT NULL,
+  objective_revision INTEGER NOT NULL,
+  plan_version INTEGER NOT NULL,
+  lease_epoch INTEGER NOT NULL,
+  execution_generation INTEGER NOT NULL,
+  capability TEXT NOT NULL,
+  canonical_target TEXT NOT NULL,
+  criterion_id TEXT,
+  action_fingerprint TEXT NOT NULL,
+  progress_vector_hash TEXT NOT NULL,
+  mutating INTEGER NOT NULL,
+  effect_json TEXT NOT NULL,
+  outcome_json TEXT NOT NULL,
+  verification_state TEXT NOT NULL,
+  reconcile_required INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, effect_id),
+  UNIQUE (idempotency_key),
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_effects_task
+  ON governor_effects(task_id, created_at, effect_id);
+
+CREATE INDEX IF NOT EXISTS idx_governor_effects_fingerprint
+  ON governor_effects(task_id, objective_revision, action_fingerprint, created_at);
+
+CREATE TABLE IF NOT EXISTS governor_evidence (
+  evidence_id TEXT NOT NULL PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  criterion_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  source_identity TEXT NOT NULL,
+  task_version INTEGER NOT NULL,
+  objective_revision INTEGER NOT NULL,
+  scope_key TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  evidence_digest TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  admissibility TEXT NOT NULL,
+  invalidated_at INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_evidence_task
+  ON governor_evidence(task_id, objective_revision, criterion_id, created_at, evidence_id);
+
+CREATE TABLE IF NOT EXISTS governor_outbox (
+  task_id TEXT NOT NULL,
+  effect_id TEXT NOT NULL,
+  delivery_key TEXT NOT NULL UNIQUE,
+  task_version INTEGER NOT NULL,
+  objective_revision INTEGER NOT NULL,
+  lease_epoch INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  provider_receipt_json TEXT,
+  claimed_at INTEGER,
+  sent_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, effect_id),
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_outbox_pending
+  ON governor_outbox(state, created_at, task_id, effect_id);
+
+CREATE TABLE IF NOT EXISTS governor_scope_epochs (
+  scope_key TEXT NOT NULL PRIMARY KEY,
+  epoch INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS migration_runs (
   id TEXT NOT NULL PRIMARY KEY,
   started_at INTEGER NOT NULL,

@@ -594,6 +594,100 @@ export interface GatewayRestartSentinel {
   version: number;
 }
 
+export interface GovernorEffects {
+  action_fingerprint: string;
+  canonical_target: string;
+  capability: string;
+  created_at: number;
+  criterion_id: string | null;
+  effect_id: string;
+  effect_json: string;
+  execution_generation: number;
+  idempotency_key: string;
+  lease_epoch: number;
+  mutating: number;
+  objective_revision: number;
+  outcome_json: string;
+  plan_version: number;
+  progress_vector_hash: string;
+  reconcile_required: number;
+  task_id: string;
+  task_version: number;
+  updated_at: number;
+  verification_state: string;
+}
+
+export interface GovernorEvents {
+  created_at: number;
+  event_id: string;
+  event_type: string;
+  objective_revision: number;
+  payload_digest: string;
+  payload_json: string;
+  scope_key: string;
+  source_message_id: string | null;
+  source_sequence: number | null;
+  task_id: string;
+  task_version: number;
+}
+
+export interface GovernorEvidence {
+  admissibility: string;
+  created_at: number;
+  criterion_id: string;
+  evidence_digest: string;
+  evidence_id: string;
+  invalidated_at: number | null;
+  objective_revision: number;
+  observed_at: number;
+  payload_json: string;
+  scope_key: string;
+  source_identity: string;
+  source_kind: string;
+  task_id: string;
+  task_version: number;
+}
+
+export interface GovernorOutbox {
+  claimed_at: number | null;
+  created_at: number;
+  delivery_key: string;
+  effect_id: string;
+  lease_epoch: number;
+  objective_revision: number;
+  payload_json: string;
+  provider_receipt_json: string | null;
+  sent_at: number | null;
+  state: string;
+  task_id: string;
+  task_version: number;
+  updated_at: number;
+}
+
+export interface GovernorScopeEpochs {
+  epoch: number;
+  scope_key: string;
+  updated_at: number;
+}
+
+export interface GovernorTasks {
+  created_at: number;
+  execution_generation: number;
+  flow_id: string | null;
+  lease_epoch: number;
+  mode: string;
+  objective_revision: number;
+  plan_version: number;
+  projection_json: string;
+  scope_key: string;
+  source_sequence: number;
+  state: string;
+  task_id: string;
+  task_version: number;
+  terminal_at: number | null;
+  updated_at: number;
+}
+
 export interface InstalledPluginIndex {
   compat_registry_version: string;
   diagnostics_json: string;
@@ -1093,6 +1187,12 @@ export interface DB {
   gateway_restart_handoff: GatewayRestartHandoff;
   gateway_restart_intent: GatewayRestartIntent;
   gateway_restart_sentinel: GatewayRestartSentinel;
+  governor_effects: GovernorEffects;
+  governor_events: GovernorEvents;
+  governor_evidence: GovernorEvidence;
+  governor_outbox: GovernorOutbox;
+  governor_scope_epochs: GovernorScopeEpochs;
+  governor_tasks: GovernorTasks;
   installed_plugin_index: InstalledPluginIndex;
   macos_port_guardian_records: MacosPortGuardianRecords;
   managed_outgoing_image_records: ManagedOutgoingImageRecords;
