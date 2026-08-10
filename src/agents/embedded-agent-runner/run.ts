@@ -315,7 +315,8 @@ function isDurableProgressToolCall(call: { name: string; arguments: unknown }): 
     call.arguments && typeof call.arguments === "object"
       ? (call.arguments as Record<string, unknown>)
       : {};
-  const command = String(args.command ?? args.cmd ?? args.script ?? "");
+  const commandValue = args.command ?? args.cmd ?? args.script;
+  const command = typeof commandValue === "string" ? commandValue : "";
   const mutationCommand = command
     .replace(/(?:^|[\s;&|])\d*>\s*&\s*\d+\b/g, " ")
     .replace(/(?:^|[\s;&|])\d*>>?\s*\/dev\/(?:null|stdout|stderr)\b/g, " ");
@@ -354,7 +355,7 @@ function resolveCompletedSynchronousToolResultProgress(attempt: EmbeddedRunAttem
         }
       | undefined;
     if (
-      String(assistant?.role ?? "").toLowerCase() !== "assistant" ||
+      (typeof assistant?.role === "string" ? assistant.role.toLowerCase() : "") !== "assistant" ||
       assistant?.stopReason !== "toolUse" ||
       !Array.isArray(assistant.content)
     ) {
@@ -372,7 +373,7 @@ function resolveCompletedSynchronousToolResultProgress(attempt: EmbeddedRunAttem
         arguments?: unknown;
         input?: unknown;
       };
-      const type = String(candidate.type ?? "").toLowerCase();
+      const type = typeof candidate.type === "string" ? candidate.type.toLowerCase() : "";
       return (type === "toolcall" || type === "tool_call" || type === "tool_use") &&
         typeof candidate.id === "string"
         ? [
@@ -402,9 +403,7 @@ function resolveCompletedSynchronousToolResultProgress(attempt: EmbeddedRunAttem
             isError?: boolean;
           }
         | undefined;
-      const role = String(message?.role ?? "")
-        .trim()
-        .toLowerCase();
+      const role = typeof message?.role === "string" ? message.role.trim().toLowerCase() : "";
       if (
         (role === "toolresult" || role === "tool_result" || role === "tool") &&
         message?.isError !== true &&
@@ -4087,7 +4086,7 @@ async function runEmbeddedAgentInternal(
             !attempt.didSendDeterministicApprovalPrompt &&
             !attempt.heartbeatToolResponse &&
             (attempt.acceptedSessionSpawns?.length ?? 0) === 0 &&
-            attempt.replayMetadata?.hadPotentialSideEffects !== true &&
+            !attempt.replayMetadata?.hadPotentialSideEffects &&
             params.trigger !== "cron" &&
             params.trigger !== "heartbeat" &&
             needsCompletedToolResultContinuation({ payloadCount, attempt });

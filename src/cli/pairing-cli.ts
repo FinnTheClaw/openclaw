@@ -1,4 +1,4 @@
-import { createInterface } from "node:readline/promises";
+import { isCancel, password } from "@clack/prompts";
 // Pairing CLI for listing and approving channel DM pairing requests.
 import {
   normalizeLowercaseStringOrEmpty,
@@ -20,6 +20,7 @@ import {
   setCommunicationAdminPhone,
   type EnsuredCommunicationIdentity,
 } from "../identity/communication-identities.js";
+import { redactIdentifier } from "../logging/redact-identifier.js";
 import { resolvePairingIdLabel } from "../pairing/pairing-labels.js";
 import { approveChannelPairingCode, listChannelPairingRequests } from "../pairing/pairing-store.js";
 import type { PairingChannel } from "../pairing/pairing-store.types.js";
@@ -87,42 +88,40 @@ async function promptForPairingIdentityPhone(channel: string): Promise<string> {
         "Run this approval from an interactive host terminal or supply --identity-phone with the sender's E.164 number.",
     );
   }
-  const prompt = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const answer = await prompt.question(
+  const answer = await password({
+    message:
       `${channel} did not expose this sender's phone number. Enter the canonical E.164 number ` +
-        "to bind this person's channels (for example +15125550123): ",
-    );
-    const phone = normalizeCommunicationPhone(answer);
-    if (!phone) {
-      throw new Error("Pairing identity phone must be a valid E.164 number.");
-    }
-    const confirmation = await prompt.question(
-      `Re-enter ${phone} to confirm this cross-channel identity binding: `,
-    );
-    if (normalizeCommunicationPhone(confirmation) !== phone) {
-      throw new Error("Pairing identity confirmation did not match; no sender was approved.");
-    }
-    return phone;
-  } finally {
-    prompt.close();
+      "to bind this person's channels (leading +, country code, and subscriber number)",
+  });
+  if (isCancel(answer)) {
+    throw new Error("Pairing identity prompt was cancelled; no sender was approved.");
   }
+  const phone = normalizeCommunicationPhone(answer);
+  if (!phone) {
+    throw new Error("Pairing identity phone must be a valid E.164 number.");
+  }
+  const confirmation = await password({
+    message:
+      "Re-enter the same canonical E.164 number to confirm this cross-channel identity binding",
+  });
+  if (isCancel(confirmation)) {
+    throw new Error("Pairing identity confirmation was cancelled; no sender was approved.");
+  }
+  if (normalizeCommunicationPhone(confirmation) !== phone) {
+    throw new Error("Pairing identity confirmation did not match; no sender was approved.");
+  }
+  return phone;
 }
 
 async function confirmAdminTransfer(phone: string): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("Changing the communication admin requires an interactive host terminal.");
   }
-  const prompt = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const answer = await prompt.question(
-      `Type ${phone} to transfer communication-admin authority to that phone: `,
-    );
-    if (answer.trim() !== phone) {
-      throw new Error("Communication-admin transfer cancelled; confirmation did not match.");
-    }
-  } finally {
-    prompt.close();
+  const answer = await password({
+    message: "Re-enter the target E.164 number to confirm communication-admin transfer",
+  });
+  if (isCancel(answer) || answer.trim() !== phone) {
+    throw new Error("Communication-admin transfer cancelled; confirmation did not match.");
   }
 }
 
@@ -282,15 +281,15 @@ export function registerPairingCli(program: Command) {
       }
 
       defaultRuntime.log(
-        `${theme.success("Approved")} ${theme.muted(channel)} sender ${theme.command(approved.id)}.`,
+        `${theme.success("Approved")} ${theme.muted(channel)} sender ${theme.command(redactIdentifier(approved.id))}.`,
       );
       if (!identity) {
         throw new Error("Pairing identity provisioning did not complete.");
       }
       defaultRuntime.log(
         identity.bootstrappedAdmin
-          ? `${theme.success("Initial communication admin configured")} ${theme.command(identity.identity.id)}.`
-          : `${theme.success("Isolated identity ready")} ${theme.command(identity.identity.id)} ${theme.muted(identity.isAdmin ? "(admin)" : "(sandboxed)")}.`,
+          ? `${theme.success("Initial communication admin configured")} ${theme.command(redactIdentifier(identity.identity.id))}.`
+          : `${theme.success("Isolated identity ready")} ${theme.command(redactIdentifier(identity.identity.id))} ${theme.muted(identity.isAdmin ? "(admin)" : "(sandboxed)")}.`,
       );
 
       if (!opts.notify) {

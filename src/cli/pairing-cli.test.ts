@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { theme } from "../../packages/terminal-core/src/theme.js";
+import { redactIdentifier } from "../logging/redact-identifier.js";
 import { registerPairingCli } from "./pairing-cli.js";
 
 const mocks = vi.hoisted(() => {
@@ -27,8 +28,7 @@ const mocks = vi.hoisted(() => {
     listCommunicationIdentities: vi.fn(),
     reconcileCommunicationIdentityConfig: vi.fn(),
     setCommunicationAdminPhone: vi.fn(),
-    adminQuestion: vi.fn(),
-    adminPromptClose: vi.fn(),
+    maskedQuestion: vi.fn(),
     readConfigFileSnapshotForWrite: vi.fn(),
     replaceConfigFile: vi.fn(),
     normalizeChannelId: vi.fn((raw: string) => {
@@ -66,11 +66,9 @@ const {
   listPairingChannels,
 } = mocks;
 
-vi.mock("node:readline/promises", () => ({
-  createInterface: () => ({
-    question: mocks.adminQuestion,
-    close: mocks.adminPromptClose,
-  }),
+vi.mock("@clack/prompts", () => ({
+  isCancel: (value: unknown) => typeof value === "symbol",
+  password: mocks.maskedQuestion,
 }));
 
 const pairingIdLabels: Record<string, string> = {
@@ -178,8 +176,7 @@ describe("pairing cli", () => {
     reconcileCommunicationIdentityConfig.mockReset();
     reconcileCommunicationIdentityConfig.mockResolvedValue({ identities: {} });
     setCommunicationAdminPhone.mockReset();
-    mocks.adminQuestion.mockReset();
-    mocks.adminPromptClose.mockReset();
+    mocks.maskedQuestion.mockReset();
   });
 
   function createProgram() {
@@ -352,7 +349,7 @@ describe("pairing cli", () => {
       expect(replaceConfigFile).not.toHaveBeenCalled();
       expect(log.mock.calls).toHaveLength(2);
       expect(log.mock.calls[0]?.[0]).toBe(
-        `${theme.success("Approved")} ${theme.muted("telegram")} sender ${theme.command("123")}.`,
+        `${theme.success("Approved")} ${theme.muted("telegram")} sender ${theme.command(redactIdentifier("123"))}.`,
       );
       expect(log.mock.calls[1]?.[0]).toContain("Isolated identity ready");
     } finally {
@@ -423,7 +420,7 @@ describe("pairing cli", () => {
     const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
     Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
-    mocks.adminQuestion.mockResolvedValueOnce(phone).mockResolvedValueOnce(phone);
+    mocks.maskedQuestion.mockResolvedValueOnce(phone).mockResolvedValueOnce(phone);
     ensureCommunicationIdentityForPairing.mockImplementation(
       async (params: { identityPhone?: string }) => {
         if (!params.identityPhone) {
@@ -460,8 +457,8 @@ describe("pairing cli", () => {
         2,
         expect.objectContaining({ identityPhone: phone }),
       );
-      expect(mocks.adminQuestion).toHaveBeenCalledTimes(2);
-      expect(mocks.adminPromptClose).toHaveBeenCalledTimes(1);
+      expect(mocks.maskedQuestion).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(mocks.maskedQuestion.mock.calls)).not.toContain(phone);
     } finally {
       log.mockRestore();
       if (stdinDescriptor) {
@@ -486,7 +483,7 @@ describe("pairing cli", () => {
         "interactive host terminal",
       );
       expect(approveChannelPairingCode).toHaveBeenCalledTimes(1);
-      expect(mocks.adminQuestion).not.toHaveBeenCalled();
+      expect(mocks.maskedQuestion).not.toHaveBeenCalled();
     } finally {
       if (stdinDescriptor) {
         Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
@@ -503,7 +500,7 @@ describe("pairing cli", () => {
     const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
     Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
-    mocks.adminQuestion.mockResolvedValueOnce(phone).mockResolvedValueOnce("+15125550124");
+    mocks.maskedQuestion.mockResolvedValueOnce(phone).mockResolvedValueOnce("+15125550124");
     ensureCommunicationIdentityForPairing.mockRejectedValueOnce(
       new CommunicationIdentityPhoneRequiredError("signal"),
     );
@@ -512,7 +509,6 @@ describe("pairing cli", () => {
         "confirmation did not match",
       );
       expect(approveChannelPairingCode).toHaveBeenCalledTimes(1);
-      expect(mocks.adminPromptClose).toHaveBeenCalledTimes(1);
     } finally {
       if (stdinDescriptor) {
         Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
@@ -583,7 +579,7 @@ describe("pairing cli", () => {
         "interactive host terminal",
       );
       expect(setCommunicationAdminPhone).not.toHaveBeenCalled();
-      expect(mocks.adminQuestion).not.toHaveBeenCalled();
+      expect(mocks.maskedQuestion).not.toHaveBeenCalled();
     } finally {
       if (stdinDescriptor) {
         Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
@@ -600,13 +596,14 @@ describe("pairing cli", () => {
     const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
     Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
-    mocks.adminQuestion.mockResolvedValue(phone);
+    mocks.maskedQuestion.mockResolvedValue(phone);
     setCommunicationAdminPhone.mockResolvedValue({ id: "id-new-admin" });
     try {
       await runPairing(["pairing", "admin", "set", phone]);
-      expect(mocks.adminQuestion).toHaveBeenCalledWith(expect.stringContaining(phone));
+      expect(mocks.maskedQuestion).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.not.stringContaining(phone) }),
+      );
       expect(setCommunicationAdminPhone).toHaveBeenCalledWith({ phone });
-      expect(mocks.adminPromptClose).toHaveBeenCalledTimes(1);
     } finally {
       if (stdinDescriptor) {
         Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);

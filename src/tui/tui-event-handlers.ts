@@ -210,41 +210,43 @@ export function createEventHandlers(context: EventHandlerContext) {
       clearTimeout(streamingWatchdogTimer);
     }
     streamingWatchdogRunId = runId;
-    streamingWatchdogTimer = setTimeout(async () => {
-      streamingWatchdogTimer = null;
-      if (streamingWatchdogRunId !== runId || state.activeChatRunId !== runId) {
-        return;
-      }
-      streamingWatchdogRunId = null;
-      if (reconnectPendingRunId === runId) {
-        reconnectPendingRunId = null;
-        state.activeChatRunId = null;
-        state.activityStatus = "idle";
-        setActivityStatus("idle");
-        pendingHistoryRefresh = false;
-        void loadHistory?.();
-        tui.requestRender();
-        return;
-      }
-      if (!streamingWatchdogReconcileInFlight) {
-        streamingWatchdogReconcileInFlight = true;
-        try {
-          if (await reconcileWatchedRunFromHistory(runId)) {
-            return;
-          }
-        } catch {
-          // Canonical history can be briefly unavailable during reconnect.
-          // Preserve ownership and retry on the next watchdog interval.
-        } finally {
-          streamingWatchdogReconcileInFlight = false;
+    streamingWatchdogTimer = setTimeout(() => {
+      void (async () => {
+        streamingWatchdogTimer = null;
+        if (streamingWatchdogRunId !== runId || state.activeChatRunId !== runId) {
+          return;
         }
-      }
-      if (state.activeChatRunId !== runId) {
-        return;
-      }
-      chatLog.addPendingSystem(runId, STREAMING_WATCHDOG_USER_MESSAGE);
-      armStreamingWatchdog(runId);
-      tui.requestRender();
+        streamingWatchdogRunId = null;
+        if (reconnectPendingRunId === runId) {
+          reconnectPendingRunId = null;
+          state.activeChatRunId = null;
+          state.activityStatus = "idle";
+          setActivityStatus("idle");
+          pendingHistoryRefresh = false;
+          void loadHistory?.();
+          tui.requestRender();
+          return;
+        }
+        if (!streamingWatchdogReconcileInFlight) {
+          streamingWatchdogReconcileInFlight = true;
+          try {
+            if (await reconcileWatchedRunFromHistory(runId)) {
+              return;
+            }
+          } catch {
+            // Canonical history can be briefly unavailable during reconnect.
+            // Preserve ownership and retry on the next watchdog interval.
+          } finally {
+            streamingWatchdogReconcileInFlight = false;
+          }
+        }
+        if (state.activeChatRunId !== runId) {
+          return;
+        }
+        chatLog.addPendingSystem(runId, STREAMING_WATCHDOG_USER_MESSAGE);
+        armStreamingWatchdog(runId);
+        tui.requestRender();
+      })();
     }, streamingWatchdogMs);
     const maybeUnref = (streamingWatchdogTimer as { unref?: () => void }).unref;
     if (typeof maybeUnref === "function") {

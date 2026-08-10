@@ -673,9 +673,7 @@ async function executeToolCallsSequential(
         ...(preparation.validationFailureCount
           ? { validationFailureCount: preparation.validationFailureCount }
           : {}),
-        ...(preparation.outputBudgetExhausted
-          ? { outputBudgetExhausted: true }
-          : {}),
+        ...(preparation.outputBudgetExhausted ? { outputBudgetExhausted: true } : {}),
         ...(hideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
       };
     } else {
@@ -752,9 +750,7 @@ async function executeToolCallsParallel(
         ...(preparation.validationFailureCount
           ? { validationFailureCount: preparation.validationFailureCount }
           : {}),
-        ...(preparation.outputBudgetExhausted
-          ? { outputBudgetExhausted: true }
-          : {}),
+        ...(preparation.outputBudgetExhausted ? { outputBudgetExhausted: true } : {}),
         ...(hideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
       } satisfies FinalizedToolCallOutcome;
       await emitToolExecutionEnd(finalized, emit);
@@ -849,9 +845,7 @@ function readPersistedArgumentValidationFailure(
   if (!details || typeof details !== "object" || Array.isArray(details)) {
     return undefined;
   }
-  const recovery = (details as Record<string, unknown>)[
-    ARGUMENT_VALIDATION_RECOVERY_DETAILS_KEY
-  ];
+  const recovery = (details as Record<string, unknown>)[ARGUMENT_VALIDATION_RECOVERY_DETAILS_KEY];
   if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) {
     return undefined;
   }
@@ -907,7 +901,7 @@ function describeArgumentShape(value: unknown, depth = 0): string {
     return "object";
   }
   const entries = Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
+    .toSorted(([left], [right]) => left.localeCompare(right))
     .slice(0, 32)
     .map(([key, nested]) => `${key}:${describeArgumentShape(nested, depth + 1)}`);
   return `{${entries.join(",")}}`;
