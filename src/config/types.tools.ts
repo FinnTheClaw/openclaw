@@ -735,7 +735,12 @@ export type ToolsConfig = {
   subagents?: {
     tools?: {
       allow?: string[];
-      /** Additional allowlist entries merged into allow and/or default sub-agent denylist. */
+      /**
+       * Additional administrator-approved sub-agent capabilities. For trusted
+       * owner/internal callers these may widen a child's inherited allowlist
+       * without widening the parent turn. Explicit non-owner callers never gain
+       * this delegation expansion, and deny/sandbox policy still wins.
+       */
       alsoAllow?: string[];
       deny?: string[];
     };

@@ -903,6 +903,14 @@ export function createOpenClawCodingTools(options?: {
   const toolPolicyInheritanceSources = capabilityProfile.policy.inheritancePolicies;
   const shouldInheritEffectiveToolAllowlist =
     toolPolicyInheritanceSources.some(hasRestrictiveAllowPolicy);
+  // `alsoAllow` is administrator-authored child delegation policy. Let trusted
+  // owner/internal runs add those capabilities to a child's inherited ceiling
+  // without exposing them to the current parent turn. Explicit non-owner runs
+  // remain bounded by their exact effective parent surface and deny policies.
+  const trustedDelegatedSubagentToolAllowlist =
+    options?.senderIsOwner === false
+      ? []
+      : expandToolGroups(options?.config?.tools?.subagents?.tools?.alsoAllow ?? []);
   const cronCreatorToolAllowlist = options?.cronCreatorToolAllowlistRef ?? [];
   const shouldCaptureCronCreatorToolAllowlist = toolPolicyInheritanceSources.some(
     (policy) => hasRestrictiveAllowPolicy(policy) || hasExplicitDenyPolicy(policy),
@@ -1151,6 +1159,15 @@ export function createOpenClawCodingTools(options?: {
   });
   if (shouldInheritEffectiveToolAllowlist) {
     replaceWithEffectiveToolAllowlist(inheritedToolAllowlist, subagentFiltered);
+    const inheritedNames = new Set(inheritedToolAllowlist);
+    for (const entry of trustedDelegatedSubagentToolAllowlist) {
+      const normalized = normalizeToolName(entry);
+      if (!normalized || inheritedNames.has(normalized)) {
+        continue;
+      }
+      inheritedNames.add(normalized);
+      inheritedToolAllowlist.push(normalized);
+    }
   }
   if (shouldCaptureCronCreatorToolAllowlist) {
     replaceWithEffectiveCronCreatorToolAllowlist(

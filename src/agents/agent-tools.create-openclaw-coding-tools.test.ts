@@ -851,6 +851,50 @@ describe("createOpenClawCodingTools", () => {
     expect(inheritedAllow?.includes("process")).toBe(false);
   });
 
+  it("delegates administrator-approved child tools without widening the trusted parent", () => {
+    const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
+    createOpenClawToolsMock.mockClear();
+
+    const parentTools = createOpenClawCodingTools({
+      config: {
+        tools: {
+          allow: ["sessions_spawn"],
+          subagents: { tools: { alsoAllow: ["*"] } },
+        },
+      },
+    });
+
+    expect(createOpenClawToolsMock).toHaveBeenCalledTimes(1);
+    const parentNames = new Set(parentTools.map((tool) => tool.name));
+    expect(parentNames.has("sessions_spawn")).toBe(true);
+    expect(parentNames.has("exec")).toBe(false);
+    expect(parentNames.has("write")).toBe(false);
+    const inheritedAllow = latestCreateOpenClawToolsOptions().inheritedToolAllowlist;
+    expectListIncludes(inheritedAllow, ["sessions_spawn", "*"]);
+  });
+
+  it("does not widen child inheritance for an explicit non-owner", () => {
+    const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
+    createOpenClawToolsMock.mockClear();
+
+    createOpenClawCodingTools({
+      senderIsOwner: false,
+      messageProvider: "signal",
+      senderId: "non-owner",
+      config: {
+        tools: {
+          allow: ["sessions_spawn"],
+          subagents: { tools: { alsoAllow: ["exec", "write"] } },
+        },
+      },
+    });
+
+    expect(createOpenClawToolsMock).toHaveBeenCalledTimes(1);
+    const inheritedAllow = latestCreateOpenClawToolsOptions().inheritedToolAllowlist;
+    expect(inheritedAllow?.includes("exec")).toBe(false);
+    expect(inheritedAllow?.includes("write")).toBe(false);
+  });
+
   it("passes group-restricted tool surface to cron-created agent turns", () => {
     const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
     createOpenClawToolsMock.mockClear();
