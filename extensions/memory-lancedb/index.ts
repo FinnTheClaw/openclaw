@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import type * as LanceDB from "@lancedb/lancedb";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
+import { resolveAgentWorkspaceDir } from "openclaw/plugin-sdk/agent-runtime";
 import {
   optionalFiniteNumberSchema,
   optionalPositiveIntegerSchema,
@@ -1762,8 +1763,7 @@ export default definePluginEntry({
       const agentId = resolveDurableMemoryAgentId(input.agentId, input.sessionKey);
       const route = parseSessionDeliveryRoute(input.sessionKey);
       const liveConfig = (api.runtime.config?.current?.() ?? api.config) as OpenClawConfig;
-      const workspaceDir =
-        input.workspaceDir ?? api.runtime.agent.resolveAgentWorkspaceDir(liveConfig, agentId);
+      const workspaceDir = input.workspaceDir ?? resolveAgentWorkspaceDir(liveConfig, agentId);
       return resolveTrustedMemoryScope({
         agentId,
         workspaceDir,

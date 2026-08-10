@@ -38,6 +38,7 @@ import memoryPlugin, {
   testing,
 } from "./index.js";
 import { createLanceDbRuntimeLoader } from "./lancedb-runtime.js";
+import { resolveTrustedMemoryScope } from "./memory-scope.js";
 import { TemporalMemoryLedger } from "./temporal-ledger.js";
 import { installTmpDirHarness } from "./test-helpers.js";
 
@@ -164,7 +165,7 @@ function expectToolExecute(tool: unknown, name?: string) {
 }
 
 function instantiateRegisteredTool(tool: unknown) {
-  return typeof tool === "function" ? tool({ agentId: "main", messageChannel: "test" }) : tool;
+  return typeof tool === "function" ? tool({ agentId: "main" }) : tool;
 }
 
 function firstAddedMemory(add: ReturnType<typeof vi.fn>) {
@@ -4153,21 +4154,35 @@ describe("memory plugin e2e", () => {
         };
         const personASession = "agent:person-a:signal:main:direct:+12025550101";
         const personBSession = "agent:person-b:signal:main:direct:+12025550102";
+        const personAWorkspace = path.join(getTmpDir(), "identity-person-a");
+        const personBWorkspace = path.join(getTmpDir(), "identity-person-b");
+        const personAScope = resolveTrustedMemoryScope({
+          agentId: "person-a",
+          workspaceDir: personAWorkspace,
+          sessionKey: personASession,
+          channel: "signal",
+          accountId: "main",
+          conversationId: "+12025550101",
+        });
         const personAStore = toolFor("memory_store", {
           sessionKey: personASession,
           messageChannel: "signal",
+          workspaceDir: personAWorkspace,
         });
         expectToolExecute(personAStore, "memory_store");
         const stored = await personAStore.execute("store-person-a", {
           text: "Person A prefers blue notebooks.",
           category: "preference",
         });
-        expect(stored.details?.action).toBe("created");
+        expect(stored.details?.action).toBe("candidate");
         const memoryId = String(stored.details?.id);
 
         const ledgerView = new TemporalMemoryLedger(ledgerPath);
         try {
-          expect(ledgerView.listRecentEvents({ agentId: "person-a" })).toHaveLength(1);
+          expect(
+            ledgerView.listRecentEvents({ agentId: personAScope.storageAgentId }),
+          ).toHaveLength(1);
+          expect(ledgerView.listRecentEvents({ agentId: "person-a" })).toHaveLength(0);
           expect(ledgerView.listRecentEvents({ agentId: "person-b" })).toHaveLength(0);
           expect(ledgerView.listRecentEvents({ agentId: "main" })).toHaveLength(0);
         } finally {
@@ -4177,6 +4192,7 @@ describe("memory plugin e2e", () => {
         const personBForget = toolFor("memory_forget", {
           sessionKey: personBSession,
           messageChannel: "signal",
+          workspaceDir: personBWorkspace,
         });
         expect((await personBForget.execute("forget-foreign", { memoryId })).details?.action).toBe(
           "not_found",
@@ -4187,6 +4203,7 @@ describe("memory plugin e2e", () => {
         const personARecall = toolFor("memory_recall", {
           sessionKey: personASession,
           messageChannel: "signal",
+          workspaceDir: personAWorkspace,
         });
         expect(
           (await personARecall.execute("recall-drift", { query: "blue notebooks" })).details,
@@ -4208,6 +4225,7 @@ describe("memory plugin e2e", () => {
         const personAForget = toolFor("memory_forget", {
           sessionKey: personASession,
           messageChannel: "signal",
+          workspaceDir: personAWorkspace,
         });
         expect((await personAForget.execute("forget-owned", { memoryId })).details?.action).toBe(
           "deleted",
