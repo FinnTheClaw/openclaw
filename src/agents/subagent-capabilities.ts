@@ -27,6 +27,7 @@ import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 
 /** Resolved role for a main session, orchestrating subagent, or leaf subagent. */
 export type SubagentSessionRole = "main" | "orchestrator" | "leaf";
+export type SpawnedSubagentSessionRole = Exclude<SubagentSessionRole, "main">;
 const SUBAGENT_SESSION_ROLES: readonly SubagentSessionRole[] = [
   "main",
   "orchestrator",
@@ -181,9 +182,16 @@ function resolveSubagentControlScopeForRole(role: SubagentSessionRole): Subagent
 }
 
 /** Resolve depth-derived role, scope, and spawn/control booleans. */
-export function resolveSubagentCapabilities(params: { depth: number; maxSpawnDepth?: number }) {
+export function resolveSubagentCapabilities(params: {
+  depth: number;
+  maxSpawnDepth?: number;
+  requestedRole?: SpawnedSubagentSessionRole;
+}) {
   const depth = resolveNonNegativeIntegerOption(params.depth, 0);
-  const role = resolveSubagentRoleForDepth(params);
+  const role =
+    depth > 0 && (params.requestedRole === "leaf" || params.requestedRole === "orchestrator")
+      ? params.requestedRole
+      : resolveSubagentRoleForDepth(params);
   const controlScope = resolveSubagentControlScopeForRole(role);
   return {
     depth,

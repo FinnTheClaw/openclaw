@@ -18,6 +18,7 @@ const hoisted = vi.hoisted(() => {
 vi.mock("../subagent-spawn.js", () => ({
   SUBAGENT_SPAWN_CONTEXT_MODES: ["isolated", "fork"],
   SUBAGENT_SPAWN_MODES: ["run", "session"],
+  SUBAGENT_SPAWN_ROLES: ["leaf", "orchestrator"],
   spawnSubagentDirect: (...args: unknown[]) => hoisted.spawnSubagentDirectMock(...args),
 }));
 
@@ -141,6 +142,7 @@ describe("sessions_spawn tool", () => {
         task?: { description?: string };
         model?: { description?: string };
         modelRoute?: { description?: string };
+        subagentRole?: { description?: string; enum?: string[] };
       };
     };
 
@@ -151,6 +153,9 @@ describe("sessions_spawn tool", () => {
     );
     expect(schema.properties?.model?.description).toContain("Prefer modelRoute");
     expect(schema.properties?.modelRoute?.description).toContain("administrator");
+    expect(schema.properties?.subagentRole?.enum).toEqual(["leaf", "orchestrator"]);
+    expect(schema.properties?.subagentRole?.description).toContain("cannot delegate");
+    expect(tool.description).toContain('subagentRole="leaf"');
   });
 
   it("advertises ACP runtime affordances when an ACP backend is loaded", () => {
@@ -363,10 +368,51 @@ describe("sessions_spawn tool", () => {
     expect(spawnArgs).not.toHaveProperty("runTimeoutSeconds");
     expect(spawnArgs.thread).toBe(true);
     expect(spawnArgs.mode).toBe("session");
+    expect(spawnArgs.subagentRole).toBe("leaf");
     expect(spawnArgs.cleanup).toBe("keep");
     const spawnContext = mockCallArg(hoisted.spawnSubagentDirectMock, 0, 1, "spawnSubagentDirect");
     expect(spawnContext.agentSessionKey).toBe("agent:main:main");
     expect(hoisted.spawnAcpDirectMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards explicit orchestrator capability and preserves it in the accepted receipt", async () => {
+    hoisted.spawnSubagentDirectMock.mockResolvedValueOnce({
+      status: "accepted",
+      childSessionKey: "agent:main:subagent:orchestrator",
+      runId: "run-orchestrator",
+      subagentRole: "orchestrator",
+    });
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+    });
+
+    const result = await tool.execute("call-orchestrator", {
+      task: "decompose three independent verification shards",
+      subagentRole: "orchestrator",
+    });
+
+    const spawnArgs = mockCallArg(hoisted.spawnSubagentDirectMock, 0, 0, "spawnSubagentDirect");
+    expect(spawnArgs.subagentRole).toBe("orchestrator");
+    expectDetailFields(result.details, {
+      status: "accepted",
+      childSessionKey: "agent:main:subagent:orchestrator",
+      runId: "run-orchestrator",
+      subagentRole: "orchestrator",
+    });
+  });
+
+  it("rejects an unknown subagent role before dispatch", async () => {
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+    });
+
+    await expect(
+      tool.execute("call-unknown-role", {
+        task: "do work",
+        subagentRole: "manager",
+      }),
+    ).rejects.toThrow('subagentRole must be either "leaf" or "orchestrator"');
+    expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
   });
 
   it("admits distinct batch tasks concurrently in one model tool call", async () => {
@@ -725,6 +771,25 @@ describe("sessions_spawn tool", () => {
         modelRoute: "coding",
       }),
     ).rejects.toThrow('modelRoute is only supported for runtime="subagent"');
+
+    expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
+    expect(hoisted.spawnAcpDirectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects subagentRole when runtime is "acp" instead of silently ignoring it', async () => {
+    registerAcpBackendForTest();
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+    });
+
+    await expect(
+      tool.execute("call-role-acp", {
+        runtime: "acp",
+        task: "investigate this",
+        agentId: "codex",
+        subagentRole: "leaf",
+      }),
+    ).rejects.toThrow('subagentRole is only supported for runtime="subagent"');
 
     expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
     expect(hoisted.spawnAcpDirectMock).not.toHaveBeenCalled();

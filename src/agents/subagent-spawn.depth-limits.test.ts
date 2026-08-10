@@ -135,6 +135,46 @@ describe("subagent spawn depth + child limits", () => {
     expect(typeof childSession?.spawnedWorkspaceDir).toBe("string");
   });
 
+  it("persists an explicit leaf role at depth 1 even when deeper nesting is available", async () => {
+    hoisted.configOverride = createDepthLimitConfig({ maxSpawnDepth: 5 });
+
+    const result = await spawnFrom("agent:main:main", { subagentRole: "leaf" });
+
+    const accepted = expectAccepted(result, "run-1");
+    expect(accepted.subagentRole).toBe("leaf");
+    const childSession = persistedStore?.[accepted.childSessionKey];
+    expect(childSession?.spawnDepth).toBe(1);
+    expect(childSession?.subagentRole).toBe("leaf");
+    expect(childSession?.subagentControlScope).toBe("none");
+  });
+
+  it("persists an explicit orchestrator role only when child capacity remains", async () => {
+    hoisted.configOverride = createDepthLimitConfig({ maxSpawnDepth: 3 });
+
+    const result = await spawnFrom("agent:main:main", { subagentRole: "orchestrator" });
+
+    const accepted = expectAccepted(result, "run-1");
+    expect(accepted.subagentRole).toBe("orchestrator");
+    const childSession = persistedStore?.[accepted.childSessionKey];
+    expect(childSession?.spawnDepth).toBe(1);
+    expect(childSession?.subagentRole).toBe("orchestrator");
+    expect(childSession?.subagentControlScope).toBe("children");
+  });
+
+  it("rejects an orchestrator role when the child would have no spawn capacity", async () => {
+    hoisted.configOverride = createDepthLimitConfig({ maxSpawnDepth: 2 });
+    hoisted.depthBySession.set("agent:main:subagent:parent", 1);
+
+    const result = await spawnFrom("agent:main:subagent:parent", {
+      subagentRole: "orchestrator",
+    });
+
+    expectForbidden(
+      result,
+      'sessions_spawn cannot assign orchestrator role at depth 2; max spawn depth 2 leaves no child capacity. Use subagentRole="leaf".',
+    );
+  });
+
   it("persists inherited tool denies on spawned child sessions", async () => {
     hoisted.configOverride = createDepthLimitConfig({ maxSpawnDepth: 2 });
 

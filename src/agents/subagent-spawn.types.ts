@@ -4,6 +4,10 @@
 export const SUBAGENT_SPAWN_MODES = ["run", "session"] as const;
 export type SpawnSubagentMode = (typeof SUBAGENT_SPAWN_MODES)[number];
 
+/** Capability role assigned to a native spawned subagent. */
+export const SUBAGENT_SPAWN_ROLES = ["leaf", "orchestrator"] as const;
+export type SpawnSubagentRole = (typeof SUBAGENT_SPAWN_ROLES)[number];
+
 /** Sandbox escalation policy requested for a spawned subagent. */
 export const SUBAGENT_SPAWN_SANDBOX_MODES = ["inherit", "require"] as const;
 export type SpawnSubagentSandboxMode = (typeof SUBAGENT_SPAWN_SANDBOX_MODES)[number];

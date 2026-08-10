@@ -32,6 +32,7 @@ import { resolveSubagentSpawnOwnership } from "../subagent-spawn-ownership.js";
 import {
   SUBAGENT_SPAWN_CONTEXT_MODES,
   SUBAGENT_SPAWN_MODES,
+  SUBAGENT_SPAWN_ROLES,
   spawnSubagentDirect,
 } from "../subagent-spawn.js";
 import { normalizeSubagentTaskName } from "../subagent-task-name.js";
@@ -204,6 +205,8 @@ function createSessionsSpawnToolSchema(params: {
     "Optional raw model override. Prefer modelRoute so deployments can select an administrator-approved specialist; deployments may disallow raw overrides.";
   const modelRouteDescription =
     "Named specialist/capability route configured by the administrator (for example general, coding, creative, reasoning, research, vision, vision_reasoning, audio, video, or compaction). Match the task and honor an explicit user route request. Image attachments automatically prefer vision when omitted.";
+  const subagentRoleDescription =
+    'Native subagent capability boundary. Omit or use "leaf" for an atomic worker that cannot delegate. Use "orchestrator" only when this child must itself decompose work.';
   const batchTaskSchema = Type.Object({
     task: Type.String({ description: taskDescription }),
     taskName: Type.Optional(Type.String({ description: taskNameDescription })),
@@ -211,6 +214,9 @@ function createSessionsSpawnToolSchema(params: {
     agentId: Type.Optional(Type.String()),
     model: Type.Optional(Type.String({ description: modelDescription })),
     modelRoute: Type.Optional(Type.String({ description: modelRouteDescription })),
+    subagentRole: optionalStringEnum(SUBAGENT_SPAWN_ROLES, {
+      description: subagentRoleDescription,
+    }),
     thinking: Type.Optional(Type.String()),
     cwd: Type.Optional(Type.String()),
     mode: optionalStringEnum(spawnModes),
@@ -244,6 +250,9 @@ function createSessionsSpawnToolSchema(params: {
     agentId: Type.Optional(Type.String()),
     model: Type.Optional(Type.String({ description: modelDescription })),
     modelRoute: Type.Optional(Type.String({ description: modelRouteDescription })),
+    subagentRole: optionalStringEnum(SUBAGENT_SPAWN_ROLES, {
+      description: subagentRoleDescription,
+    }),
     thinking: Type.Optional(Type.String()),
     cwd: Type.Optional(Type.String()),
     ...(params.threadAvailable
@@ -480,6 +489,15 @@ export function createSessionsSpawnTool(
       const taskName = taskNameResult.taskName;
       const label = readStringParam(params, "label") ?? "";
       const runtime = params.runtime === "acp" ? "acp" : "subagent";
+      const requestedSubagentRole = readStringParam(params, "subagentRole");
+      if (
+        requestedSubagentRole &&
+        requestedSubagentRole !== "leaf" &&
+        requestedSubagentRole !== "orchestrator"
+      ) {
+        throw new ToolInputError('subagentRole must be either "leaf" or "orchestrator".');
+      }
+      const subagentRole = requestedSubagentRole === "orchestrator" ? "orchestrator" : "leaf";
       const requestedAgentId = readStringParam(params, "agentId");
       const resumeSessionId = readStringParam(params, "resumeSessionId");
       const modelOverride = normalizeToolModelOverride(readStringParam(params, "model"));
@@ -535,6 +553,11 @@ export function createSessionsSpawnTool(
       if (runtime === "acp" && modelRoute) {
         throw new ToolInputError(
           'modelRoute is only supported for runtime="subagent"; use model for ACP sessions.',
+        );
+      }
+      if (runtime === "acp" && Object.hasOwn(params, "subagentRole")) {
+        throw new ToolInputError(
+          'subagentRole is only supported for runtime="subagent"; ACP capability policy belongs to its runtime.',
         );
       }
       const thread = params.thread === true;
@@ -661,6 +684,7 @@ export function createSessionsSpawnTool(
           cwd,
           thread,
           mode,
+          subagentRole,
           cleanup,
           sandbox,
           context,

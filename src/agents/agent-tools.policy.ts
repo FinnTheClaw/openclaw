@@ -35,11 +35,7 @@ import {
   type SubagentSessionRole,
 } from "./subagent-capabilities.js";
 import { isToolAllowedByPolicyName } from "./tool-policy-match.js";
-import {
-  mergeAlsoAllowPolicy,
-  normalizeToolName,
-  resolveToolProfilePolicy,
-} from "./tool-policy.js";
+import { mergeAlsoAllowPolicy, resolveToolProfilePolicy } from "./tool-policy.js";
 
 export { resolveProviderToolPolicy };
 
@@ -99,13 +95,10 @@ export function resolveSubagentToolPolicyForSession(
   });
   const allow = Array.isArray(configured?.allow) ? configured.allow : undefined;
   const alsoAllow = Array.isArray(configured?.alsoAllow) ? configured.alsoAllow : undefined;
-  const explicitAllow = new Set(
-    [...(allow ?? []), ...(alsoAllow ?? [])].map((toolName) => normalizeToolName(toolName)),
-  );
   const deny = [
-    ...resolveSubagentDenyListForRole(capabilities.role).filter(
-      (toolName) => !explicitAllow.has(normalizeToolName(toolName)),
-    ),
+    // Role boundaries are capabilities, not preference defaults. An allowlist
+    // may narrow a subagent but cannot grant leaf orchestration or admin tools.
+    ...resolveSubagentDenyListForRole(capabilities.role),
     ...(Array.isArray(configured?.deny) ? configured.deny : []),
   ];
   const mergedAllow = mergeConfiguredSubagentAllow(allow, alsoAllow);

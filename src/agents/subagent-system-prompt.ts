@@ -23,6 +23,8 @@ export function buildSubagentSystemPrompt(params: {
   childDepth?: number;
   /** Config value: max allowed spawn depth. */
   maxSpawnDepth?: number;
+  /** Explicit persisted capability role for this native subagent. */
+  subagentRole?: "leaf" | "orchestrator";
 }) {
   const childDepth = typeof params.childDepth === "number" ? params.childDepth : 1;
   const maxSpawnDepth =
@@ -33,7 +35,9 @@ export function buildSubagentSystemPrompt(params: {
   const nativeCommandGuidanceLines = normalizeUniqueStringEntries(
     params.nativeCommandGuidanceLines,
   );
-  const canSpawn = childDepth < maxSpawnDepth;
+  const canSpawn =
+    childDepth < maxSpawnDepth &&
+    (params.subagentRole == null || params.subagentRole === "orchestrator");
   const parentLabel = childDepth >= 2 ? "parent orchestrator" : "main agent";
   const roleLines = [
     "## Your Role",
@@ -77,6 +81,8 @@ export function buildSubagentSystemPrompt(params: {
     lines.push(
       "## Sub-Agent Spawning",
       "You CAN spawn your own sub-agents for parallel or complex work using `sessions_spawn`.",
+      'Spawn bounded workers with `subagentRole:"leaf"`; use `subagentRole:"orchestrator"` only when that child must itself decompose work.',
+      "Do not delegate your entire assignment, and do not spawn a replacement merely because one tool call failed.",
       "Before spawning, decide which work stays local and which child owns which sidecar/blocking task.",
       "Give each child a clear objective, expected output, relevant files/inputs, write scope, verification ask, and whether it blocks your final answer. Set `taskName` when you need a stable handle later.",
       "Use the `subagents` tool only for on-demand status checks for your spawned sub-agents.",
@@ -104,7 +110,7 @@ export function buildSubagentSystemPrompt(params: {
         : []),
       "",
     );
-  } else if (childDepth >= 2) {
+  } else if (params.subagentRole === "leaf" || childDepth >= 2) {
     lines.push(
       "## Sub-Agent Spawning",
       "You are a leaf worker and CANNOT spawn further sub-agents. Focus on your assigned task.",

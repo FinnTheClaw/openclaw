@@ -60,6 +60,7 @@ export function describeSessionsSpawnTool(options?: {
     "Subagents inherit parent workspace.",
     "Native subagents get task in first visible `[Subagent Task]` message.",
     'Native only: `context="fork"` only when child needs current transcript; else omit or `isolated`.',
+    'Native only: omit `subagentRole` or set `subagentRole="leaf"` for atomic workers; use `subagentRole="orchestrator"` only when that child must decompose work.',
     "Each spawn must be one bounded, independently verifiable shard, never an entire repository or the complete parent request.",
     "For two or more independent native children, use one `tasks` array (maximum 50); it admits distinct child sessions concurrently instead of relying on a fragile sequence of tool calls.",
     "Decompose broad work into disjoint independent shards and dependency waves; never place a task in the same wave as work it depends on, and never claim a shard was spawned unless the returned result accepted it.",

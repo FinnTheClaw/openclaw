@@ -106,6 +106,7 @@ function buildSubagentDelegationPreferenceSection(params: {
     "- Anything requiring more work than a direct reply should go through `sessions_spawn`; avoid doing expensive tool calls yourself.",
     "- Delegate file/code inspection, shell commands, web/browser use, long reads, debugging, coding, multi-step analysis, comparisons, non-trivial summarization, and background waiting.",
     "- Before spawning, decide what stays local and what is delegated. Give each child a clear objective, expected output, relevant files/inputs, write scope, verification ask, and whether it blocks your final answer.",
+    '- Use `subagentRole:"leaf"` for every atomic worker. Use `subagentRole:"orchestrator"` only when that child must itself decompose work; its children should default to leaf.',
     '- Set `taskName` when you will need a stable handle later; keep it lowercase with underscores or hyphens. Omit `context` for isolated children; set `context:"fork"` only when current transcript details matter.',
     params.hasSessionsYield
       ? "- After spawning required work, call `sessions_yield` if you need completion events before answering. Do not poll for completion."
@@ -131,6 +132,7 @@ function buildProactiveSubagentOrchestrationSection(params: {
     "Ultra mode is active. Proactively use `sessions_spawn` for independent workstreams when it materially improves speed or quality.",
     "- Parallelize independent investigation, implementation, and verification when useful.",
     "- Keep simple or tightly coupled work local; do not delegate just to delegate.",
+    '- Spawn atomic workers with `subagentRole:"leaf"`; opt into `subagentRole:"orchestrator"` only for genuine nested decomposition.',
     "- Give each child a clear, bounded objective, then synthesize its result before replying.",
     "",
   ];
@@ -529,6 +531,9 @@ function buildMessagingSection(params: {
   const completionEventGuidance = suppressSilentTokenGuidance
     ? "- Runtime-generated completion events may ask for a user update. Rewrite those in your normal assistant voice and send the update (do not forward raw internal metadata or default to a silent placeholder)."
     : `- Runtime-generated completion events may ask for a user update. Rewrite those in your normal assistant voice and send the update (do not forward raw internal metadata or default to ${SILENT_REPLY_TOKEN}).`;
+  const subagentRoleGuidance = hasSessionsSpawn
+    ? '- Spawn atomic workers with `subagentRole:"leaf"`; use `subagentRole:"orchestrator"` only when that child must itself decompose work.'
+    : "";
   const subagentOrchestrationGuidance = hasSessionsSpawn
     ? hasSubagents
       ? `- Sub-agent orchestration → use \`sessions_spawn(...)\` to start delegated work; include a clear objective/output/write-scope/verification brief and \`taskName\` when a stable handle helps; omit \`context\` for isolated children, set \`context:"fork"\` only when the child needs the current transcript; ${hasSessionsYield ? "use `sessions_yield` to wait for completion events; " : ""}use \`subagents(action=list)\` only for on-demand status/debugging visibility.`
@@ -548,6 +553,7 @@ function buildMessagingSection(params: {
       : "",
     "- Cross-session messaging → use sessions_send(sessionKey, message)",
     subagentOrchestrationGuidance,
+    subagentRoleGuidance,
     completionEventGuidance,
     "- Never use exec/curl for provider messaging; OpenClaw handles all routing internally.",
     params.availableTools.has("message")
@@ -1083,6 +1089,7 @@ export function buildAgentSystemPrompt(params: {
             `For long waits, avoid rapid poll loops: use ${execToolName} with enough yieldMs or ${processToolName}(action=poll, timeout=<ms>).`,
             "Larger work: use `sessions_spawn`; completion is push-based.",
             '`sessions_spawn`: omit `context` unless transcript needed; then set `context:"fork"`.',
+            '`sessions_spawn`: use `subagentRole:"leaf"` for atomic workers; opt into `subagentRole:"orchestrator"` only for nested decomposition.',
           ]
         : []),
       ...nativeCommandGuidanceLines,

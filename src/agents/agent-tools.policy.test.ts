@@ -229,6 +229,44 @@ describe("resolveSubagentToolPolicyForSession", () => {
     expect(isToolAllowedByPolicyName("memory_get", policy)).toBe(true);
   });
 
+  it("does not let configured allowlists re-enable orchestration or admin tools for a leaf", () => {
+    const storePath = path.join(
+      os.tmpdir(),
+      `openclaw-subagent-policy-hard-leaf-${Date.now()}-${Math.random().toString(16).slice(2)}.json`,
+    );
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    fs.writeFileSync(
+      storePath,
+      JSON.stringify({
+        "agent:main:subagent:hard-leaf": {
+          sessionId: "hard-leaf",
+          updatedAt: Date.now(),
+          spawnDepth: 1,
+          subagentRole: "leaf",
+          subagentControlScope: "none",
+        },
+      }),
+      "utf-8",
+    );
+    const cfg = {
+      ...baseCfg,
+      tools: {
+        subagents: {
+          tools: {
+            allow: ["read", "sessions_spawn", "subagents", "gateway"],
+          },
+        },
+      },
+      session: { store: storePath },
+    } as unknown as OpenClawConfig;
+
+    const policy = resolveSubagentToolPolicyForSession(cfg, "agent:main:subagent:hard-leaf");
+    expect(isToolAllowedByPolicyName("read", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("sessions_spawn", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("subagents", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("gateway", policy)).toBe(false);
+  });
+
   it("resolves inherited tool denies from stored subagent sessions", () => {
     const storePath = path.join(
       os.tmpdir(),

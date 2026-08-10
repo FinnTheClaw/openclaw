@@ -1555,6 +1555,7 @@ describe("buildSubagentSystemPrompt", () => {
       task: "research task",
       childDepth: 1,
       maxSpawnDepth: 2,
+      subagentRole: "orchestrator",
       acpEnabled: true,
     });
 
@@ -1563,6 +1564,9 @@ describe("buildSubagentSystemPrompt", () => {
       "You CAN spawn your own sub-agents for parallel or complex work using `sessions_spawn`.",
     );
     expect(prompt).toContain("sessions_spawn");
+    expect(prompt).toContain('subagentRole:"leaf"');
+    expect(prompt).toContain('subagentRole:"orchestrator"');
+    expect(prompt).toContain("Do not delegate your entire assignment");
     expect(prompt).toContain('runtime: "acp"');
     expect(prompt).toContain("For ACP harness sessions (claudecode/gemini/opencode");
     expect(prompt).toContain("set `agentId` unless `acp.defaultAgent` is configured");
@@ -1681,6 +1685,20 @@ describe("buildSubagentSystemPrompt", () => {
     expect(prompt).toContain("CANNOT spawn further sub-agents");
     expect(prompt).toContain("spawned by the parent orchestrator");
     expect(prompt).toContain("reported to the parent orchestrator");
+  });
+
+  it("renders an explicit depth-1 leaf as non-delegating even when depth remains", () => {
+    const prompt = buildSubagentSystemPrompt({
+      childSessionKey: "agent:main:subagent:atomic",
+      task: "run two exact checks",
+      childDepth: 1,
+      maxSpawnDepth: 5,
+      subagentRole: "leaf",
+    });
+
+    expect(prompt).toContain("leaf worker");
+    expect(prompt).toContain("CANNOT spawn further sub-agents");
+    expect(prompt).not.toContain("You CAN spawn your own sub-agents");
   });
 
   it("omits spawning guidance for depth-1 leaf agents", () => {

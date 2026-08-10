@@ -111,17 +111,20 @@ import {
 import type {
   SpawnSubagentContextMode,
   SpawnSubagentMode,
+  SpawnSubagentRole,
   SpawnSubagentSandboxMode,
 } from "./subagent-spawn.types.js";
 
 export {
   SUBAGENT_SPAWN_CONTEXT_MODES,
   SUBAGENT_SPAWN_MODES,
+  SUBAGENT_SPAWN_ROLES,
   SUBAGENT_SPAWN_SANDBOX_MODES,
 } from "./subagent-spawn.types.js";
 export type {
   SpawnSubagentContextMode,
   SpawnSubagentMode,
+  SpawnSubagentRole,
   SpawnSubagentSandboxMode,
 } from "./subagent-spawn.types.js";
 
@@ -170,6 +173,8 @@ type SpawnSubagentParams = {
   runTimeoutSeconds?: number;
   thread?: boolean;
   mode?: SpawnSubagentMode;
+  /** Explicit capability boundary. Omitted direct callers retain depth-derived compatibility. */
+  subagentRole?: SpawnSubagentRole;
   cleanup?: "delete" | "keep";
   sandbox?: SpawnSubagentSandboxMode;
   context?: SpawnSubagentContextMode;
@@ -212,6 +217,7 @@ export type SpawnSubagentResult = {
   runId?: string;
   mode?: SpawnSubagentMode;
   taskName?: string;
+  subagentRole?: SpawnSubagentRole;
   note?: string;
   modelRoute?: string;
   /** Fully resolved model ref applied to the spawned child session. */
@@ -1173,6 +1179,16 @@ export async function spawnSubagentDirect(
       error: `sessions_spawn is not allowed at this depth (current depth: ${callerDepth}, max: ${maxSpawnDepth})`,
     };
   }
+  const requestedSubagentRole =
+    params.subagentRole === "leaf" || params.subagentRole === "orchestrator"
+      ? params.subagentRole
+      : undefined;
+  if (requestedSubagentRole === "orchestrator" && callerDepth + 1 >= maxSpawnDepth) {
+    return {
+      status: "forbidden",
+      error: `sessions_spawn cannot assign orchestrator role at depth ${callerDepth + 1}; max spawn depth ${maxSpawnDepth} leaves no child capacity. Use subagentRole="leaf".`,
+    };
+  }
 
   const maxChildren =
     cfg.agents?.defaults?.subagents?.maxChildrenPerAgent ?? DEFAULT_SUBAGENT_MAX_CHILDREN_PER_AGENT;
@@ -1286,6 +1302,7 @@ export async function spawnSubagentDirect(
   const childCapabilities = resolveSubagentCapabilities({
     depth: childDepth,
     maxSpawnDepth,
+    requestedRole: requestedSubagentRole,
   });
   const targetAgentDir = resolveAgentDir(cfg, targetAgentId);
   const requesterAgentConfig = resolveAgentConfig(cfg, requesterAgentId);
@@ -1457,6 +1474,7 @@ export async function spawnSubagentDirect(
     }),
     childDepth,
     maxSpawnDepth,
+    subagentRole: childCapabilities.role === "main" ? undefined : childCapabilities.role,
   });
 
   let retainOnSessionKeep = false;
@@ -1768,6 +1786,7 @@ export async function spawnSubagentDirect(
     runId: childRunId,
     mode: spawnMode,
     taskName,
+    subagentRole: childCapabilities.role === "main" ? undefined : childCapabilities.role,
     modelRoute: resolvedModelRoute,
     note: preparedSpawnContext.forkFallbackNote
       ? `${acceptedNote} ${preparedSpawnContext.forkFallbackNote}`
