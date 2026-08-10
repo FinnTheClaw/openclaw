@@ -17,6 +17,8 @@ export type MemoryProjectionInput = {
   vector: number[];
   agentId: string;
   scope?: string;
+  /** Trusted local diagnostics only: search every scope owned by one opaque principal. */
+  allScopes?: boolean;
   sessionKey?: string;
   channel?: string;
   conversationId?: string;
@@ -208,13 +210,18 @@ function rowToProjection(row: Record<string, unknown>): MemoryProjectionEntry {
 
 function buildFilter(options: HybridMemorySearchOptions): string {
   const validAt = finiteTime(options.validAt, Date.now());
+  if (options.scope && options.allScopes) {
+    throw new Error("memory search cannot combine scope with allScopes");
+  }
   const conditions = [
     `agentId = ${sqlString(requiredText(options.agentId, "agentId"))}`,
-    `scope = ${sqlString(optionalText(options.scope, "global"))}`,
     "status = 'active'",
     `validFrom <= ${validAt}`,
     `(validTo = 0 OR validTo > ${validAt})`,
   ];
+  if (!options.allScopes) {
+    conditions.splice(1, 0, `scope = ${sqlString(optionalText(options.scope, "global"))}`);
+  }
   if (options.channel) {
     conditions.push(`(channel = '' OR channel = ${sqlString(options.channel)})`);
   }

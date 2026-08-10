@@ -191,6 +191,26 @@ describe("HybridMemoryIndex", () => {
       limit: 10,
     });
     expect(firstResults.map((result) => result.entry.id)).toEqual(["event-first"]);
+    const trustedLocalResults = await first.search({
+      queryText: "heliotrope",
+      vector,
+      agentId: storageAgentId,
+      allScopes: true,
+      limit: 10,
+    });
+    expect(trustedLocalResults.map((result) => result.entry.id).toSorted()).toEqual([
+      "event-first",
+      "event-second",
+    ]);
+    await expect(
+      first.search({
+        queryText: "heliotrope",
+        vector,
+        agentId: storageAgentId,
+        scope: firstScope,
+        allScopes: true,
+      }),
+    ).rejects.toThrow("memory search cannot combine scope with allScopes");
     first.close();
 
     const reopened = new HybridMemoryIndex(dbPath, 4);

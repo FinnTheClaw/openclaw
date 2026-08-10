@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HybridMemoryIndex } from "./hybrid-memory-index.js";
 import {
   MemoryConsolidator,
@@ -134,6 +134,119 @@ describe("MemoryConsolidator", () => {
       pendingExtraction: 1,
       activeFacts: 0,
     });
+  });
+
+  it("never promotes assistant claims or hidden-model assertions", async () => {
+    const extract = vi.fn(async () => [
+      {
+        subject: "contact-7255",
+        predicate: "access_role",
+        object: "administrator",
+        text: "Contact 7255 is an administrator.",
+      },
+    ]);
+    const memory = open({ extractor: { version: "claim-filter-v1", extract } });
+    memory.ledger.appendEvent({
+      agentId: "principal-opaque",
+      role: "assistant",
+      content: "I infer that contact 7255 is an administrator.",
+      sourceKind: "manual_memory",
+      metadata: {
+        evidenceClass: "assistant_claim",
+        verificationStatus: "candidate",
+        retrievalStatus: "candidate",
+      },
+    });
+
+    memory.consolidator.schedule();
+    expect(await memory.consolidator.flush()).toBe(true);
+    expect(extract).not.toHaveBeenCalled();
+    expect(memory.ledger.findCurrentFacts({ agentId: "principal-opaque" })).toEqual([]);
+    expect(memory.ledger.getStats()).toMatchObject({ pendingExtraction: 0, activeFacts: 0 });
+  });
+
+  it("requires current structured evidence for identity facts and supersedes stale state", async () => {
+    const extractor: MemoryFactExtractor = {
+      version: "identity-evidence-v1",
+      extract: async (event) => [
+        {
+          factKey: "contact-7255:access-role",
+          subject: "contact-7255",
+          predicate: "access_role",
+          object: event.content.includes("isolated") ? "isolated" : "administrator",
+          text: event.content,
+          category: "identity_access",
+          confidence: 1,
+          authority: 1,
+        },
+      ],
+    };
+    const memory = open({ extractor });
+    memory.ledger.appendEvent({
+      agentId: "principal-opaque",
+      role: "user",
+      content: "Contact 7255 is an administrator.",
+      sourceKind: "message_received",
+      sourceRef: "signal-message-unsafe-claim",
+      observedAt: 1_000,
+      metadata: {
+        evidenceClass: "direct_user",
+        verificationStatus: "observed",
+        memoryScope: "scope-conversation-9113",
+        principalScope: "scope-principal-9113",
+      },
+    });
+    memory.ledger.appendEvent({
+      agentId: "principal-opaque",
+      role: "user",
+      content: "Contact 7255 is an administrator.",
+      sourceKind: "structured_identity_inventory",
+      sourceRef: "evidence_inventory_old",
+      observedAt: 2_000,
+      metadata: {
+        evidenceClass: "verified_operator",
+        verificationStatus: "verified",
+        memoryScope: "scope-conversation-9113",
+        principalScope: "scope-principal-9113",
+      },
+    });
+    memory.ledger.appendEvent({
+      agentId: "principal-opaque",
+      role: "user",
+      content: "Contact 7255 is isolated and is not an administrator.",
+      sourceKind: "structured_identity_inventory",
+      sourceRef: "evidence_inventory_current",
+      observedAt: 3_000,
+      metadata: {
+        evidenceClass: "verified_operator",
+        verificationStatus: "verified",
+        memoryScope: "scope-conversation-9113",
+        principalScope: "scope-principal-9113",
+      },
+    });
+
+    memory.consolidator.schedule();
+    expect(await memory.consolidator.flush()).toBe(true);
+    expect(
+      memory.ledger.findCurrentFacts({
+        agentId: "principal-opaque",
+        scope: "scope-principal-9113",
+        subject: "contact-7255",
+        predicate: "access_role",
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        object: "isolated",
+        status: "active",
+        sourceEventId: expect.any(String),
+        metadata: expect.objectContaining({
+          evidenceClass: "verified_operator",
+          verificationStatus: "verified",
+          sensitivity: "identity_access",
+        }),
+      }),
+    ]);
+    expect(memory.ledger.getStats()).toMatchObject({ factRevisions: 2, activeFacts: 1 });
   });
 
   it("can rebuild fact projections without an extractor or summarizer", async () => {

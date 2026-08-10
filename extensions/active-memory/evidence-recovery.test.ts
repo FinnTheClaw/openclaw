@@ -135,6 +135,35 @@ describe("Active Memory evidence recovery", () => {
     });
   });
 
+  it("refuses success while explicit semantic or evidence blockers remain", () => {
+    const tracker = new EvidenceRecoveryTracker(4);
+    tracker.observe({
+      toolName: "memory_forget",
+      result: { action: "partial_failure", postconditions: { semanticAbsent: false } },
+      isError: false,
+      hasUsableEvidence: true,
+      isUnavailable: false,
+    });
+
+    expect(
+      tracker.finalize({
+        hasUsableEvidence: true,
+        hasFinalSummary: true,
+        noReply: false,
+        unsupportedClaims: ["The old contact label was asserted without structured evidence."],
+        contradictions: ["Historical memory conflicts with the current access inventory."],
+        semanticFailures: ["Forget returned partial_failure: semanticAbsent=false."],
+      }),
+    ).toMatchObject({
+      terminationReason: "failed",
+      unmetAcceptanceCriteria: [
+        "Every unsupported claim must be removed or supported by evidence.",
+        "Every contradiction must be resolved against current evidence.",
+        "Every semantic failure must reach a typed successful postcondition.",
+      ],
+    });
+  });
+
   it("preserves NONE and NO_REPLY as a conclusive no-relevant-memory outcome", () => {
     const tracker = new EvidenceRecoveryTracker(4);
     tracker.observe(

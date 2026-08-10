@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import type { SessionEntry } from "../config/sessions.js";
+import { redactSensitiveText } from "../logging/redact.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import { parseSessionDeliveryRoute, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import {
@@ -61,10 +62,38 @@ function evidenceRef(kind: "endpoint" | "session", parts: readonly string[]): st
   return `communication-${kind}:${digest.slice(0, 24)}`;
 }
 
+function safeBoundLabel(entry: SessionEntry, peerIds: readonly string[]): string | undefined {
+  const candidates = [entry.origin?.label, entry.displayName, entry.label];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    const normalized = candidate.normalize("NFKC").replaceAll(/\s+/gu, " ").trim().slice(0, 80);
+    if (!normalized || !/[\p{L}\p{N}]/u.test(normalized)) {
+      continue;
+    }
+    if (!/^[\p{L}\p{M}\p{N} .,'’()_\-]{1,80}$/u.test(normalized)) {
+      continue;
+    }
+    if (/\+?\d(?:[\d ().-]*\d){6,}/u.test(normalized)) {
+      continue;
+    }
+    if (peerIds.some((peerId) => peerId.length > 0 && normalized.includes(peerId))) {
+      continue;
+    }
+    if (redactSensitiveText(normalized, { mode: "tools" }) !== normalized) {
+      continue;
+    }
+    return normalized;
+  }
+  return undefined;
+}
+
 function sanitizeBoundEndpoint(params: {
   identity: CommunicationIdentity;
   endpoint: CommunicationIdentityEndpoint;
   isAdmin: boolean;
+  label?: string;
 }): SanitizedCommunicationAccess {
   const redactedIdentifier = redactIdentifier(params.identity.phone ?? params.endpoint.peerId);
   const createdAt = safeTimestamp(params.identity.createdAt);
@@ -76,7 +105,7 @@ function sanitizeBoundEndpoint(params: {
     routingState: params.isAdmin ? "admin" : "isolated",
     authState: "authorized",
     ...(redactedIdentifier ? { redactedIdentifier } : {}),
-    label: params.isAdmin ? "Administrator" : "Isolated member",
+    label: params.label ?? (params.isAdmin ? "Administrator" : "Isolated member"),
     ...(createdAt ? { createdAt } : {}),
     ...(linkedAt ? { linkedAt } : {}),
     ...(updatedAt ? { updatedAt } : {}),
@@ -214,6 +243,10 @@ export function sanitizeCommunicationSessionOrigin(params: {
     return sanitizeBoundEndpoint({
       ...match,
       isAdmin: match.identity.id === params.registry.adminIdentityId,
+      label: safeBoundLabel(params.entry, [
+        ...source.peerIds,
+        ...(match.identity.phone ? [match.identity.phone] : []),
+      ]),
     });
   }
 

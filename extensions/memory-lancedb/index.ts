@@ -2505,8 +2505,9 @@ export default definePluginEntry({
             const limit = parsePositiveIntegerOption(opts.limit, "--limit");
             if (durableRuntime) {
               const runtime = requireLiveDurableRuntime();
+              const owner = resolveMemoryScope({ agentId: String(opts.agent) }).storageAgentId;
               const events = runtime.ledger.listRecentEvents({
-                agentId: String(opts.agent),
+                agentId: owner,
                 limit,
               });
               console.log(JSON.stringify(events, null, 2));
@@ -2529,10 +2530,12 @@ export default definePluginEntry({
             const vector = await embeddings.embed(normalizeRecallQuery(query, cfg.recallMaxChars));
             const limit = parsePositiveIntegerOption(opts.limit, "--limit");
             if (runtime) {
+              const owner = resolveMemoryScope({ agentId: String(opts.agent) }).storageAgentId;
               const results = await runtime.index.search({
                 queryText: normalizeRecallQuery(query, cfg.recallMaxChars),
                 vector,
-                agentId: String(opts.agent),
+                agentId: owner,
+                allScopes: true,
                 limit,
               });
               console.log(

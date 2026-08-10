@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  isSecretValueRegisteredForRedaction,
+  resetSecretRedactionRegistryForTest,
+} from "../logging/secret-redaction-registry.js";
 
 const mocks = vi.hoisted(() => ({
   config: {} as OpenClawConfig,
@@ -44,6 +48,7 @@ describe("communication identity runtime durability", () => {
   let env: NodeJS.ProcessEnv;
 
   beforeEach(async () => {
+    resetSecretRedactionRegistryForTest();
     tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openclaw-identity-runtime-"));
     stateDir = path.join(tempRoot, "state");
     env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
@@ -55,6 +60,7 @@ describe("communication identity runtime durability", () => {
   });
 
   afterEach(async () => {
+    resetSecretRedactionRegistryForTest();
     mocks.failProjection = false;
     if (tempRoot) {
       await fs.promises.rm(tempRoot, { recursive: true, force: true });
@@ -80,6 +86,10 @@ describe("communication identity runtime durability", () => {
       ),
     );
     const listed = await listCommunicationIdentities(env);
+    const registryOnDisk = JSON.parse(
+      await fs.promises.readFile(resolveCommunicationIdentityRegistryPath(env), "utf8"),
+    ) as { hmacKey: string };
+    expect(isSecretValueRegisteredForRedaction(registryOnDisk.hmacKey)).toBe(true);
     expect(listed.identities).toHaveLength(25);
     expect(new Set(listed.identities.map((identity) => identity.id)).size).toBe(25);
     expect(new Set(listed.identities.map((identity) => identity.workspace)).size).toBe(25);

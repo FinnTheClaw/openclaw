@@ -4084,7 +4084,11 @@ describe("memory plugin e2e", () => {
   });
 
   test("durable tools derive session ownership, enforce deletion ownership, and refuse legacy drift", async () => {
+    let failEmbeddings = false;
     const post = vi.fn(async (_path: string, options: { body?: unknown }) => {
+      if (failEmbeddings) {
+        throw new Error("injected semantic verification failure");
+      }
       const input = (options.body as { input?: unknown })?.input;
       const count = Array.isArray(input) ? input.length : 1;
       return {
@@ -4099,6 +4103,8 @@ describe("memory plugin e2e", () => {
       loadLanceDbModule: vi.fn(async () => await import("@lancedb/lancedb")),
       run: async (dynamicMemoryPlugin) => {
         const ledgerPath = path.join(getTmpDir(), "identity-scoped-ledger.sqlite3");
+        const personAWorkspace = path.join(getTmpDir(), "identity-person-a");
+        const personBWorkspace = path.join(getTmpDir(), "identity-person-b");
         let liveDurableEnabled = true;
         const registeredTools: Array<{ tool: any; opts: any }> = [];
         const services: Array<{
@@ -4106,6 +4112,7 @@ describe("memory plugin e2e", () => {
           stop?: () => Promise<void> | void;
         }> = [];
         const on = vi.fn();
+        const registerCli = vi.fn();
         const mockApi = {
           id: "memory-lancedb",
           name: "Memory (LanceDB)",
@@ -4121,6 +4128,12 @@ describe("memory plugin e2e", () => {
           runtime: {
             config: {
               current: () => ({
+                agents: {
+                  list: [
+                    { id: "person-a", workspace: personAWorkspace },
+                    { id: "person-b", workspace: personBWorkspace },
+                  ],
+                },
                 plugins: {
                   entries: {
                     "memory-lancedb": {
@@ -4141,7 +4154,7 @@ describe("memory plugin e2e", () => {
           },
           logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
           registerTool: (tool: any, opts: any) => registeredTools.push({ tool, opts }),
-          registerCli: vi.fn(),
+          registerCli,
           registerService: (service: {
             start?: () => Promise<void> | void;
             stop?: () => Promise<void> | void;
@@ -4161,8 +4174,6 @@ describe("memory plugin e2e", () => {
         };
         const personASession = "agent:person-a:signal:main:direct:+12025550101";
         const personBSession = "agent:person-b:signal:main:direct:+12025550102";
-        const personAWorkspace = path.join(getTmpDir(), "identity-person-a");
-        const personBWorkspace = path.join(getTmpDir(), "identity-person-b");
         const personAScope = resolveTrustedMemoryScope({
           agentId: "person-a",
           workspaceDir: personAWorkspace,
@@ -4184,8 +4195,78 @@ describe("memory plugin e2e", () => {
         expect(stored.details?.action).toBe("candidate");
         const memoryId = String(stored.details?.id);
 
+        const cliRegistrar = firstMockArg(
+          registerCli as unknown as MockCallSource,
+          "durable CLI registrar",
+        ) as (params: { program: Command }) => void;
+        const runList = async (agentId: string) => {
+          const program = new Command();
+          cliRegistrar({ program });
+          const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+          try {
+            await program.parseAsync([
+              "node",
+              "openclaw",
+              "ltm",
+              "list",
+              "--agent",
+              agentId,
+              "--limit",
+              "10",
+            ]);
+            return JSON.parse(String(log.mock.calls.at(-1)?.[0])) as Array<{ eventId: string }>;
+          } finally {
+            log.mockRestore();
+          }
+        };
+        expect((await runList("person-a")).map((event) => event.eventId)).toContain(memoryId);
+        expect(await runList("person-b")).toEqual([]);
+
+        const personARecallBeforePromotion = toolFor("memory_recall", {
+          sessionKey: personASession,
+          messageChannel: "signal",
+          workspaceDir: personAWorkspace,
+        });
+        expect(
+          (
+            await personARecallBeforePromotion.execute("recall-candidate", {
+              query: "blue notebooks",
+            })
+          ).details,
+        ).toMatchObject({ count: 0 });
+        const personAForgetSearch = toolFor("memory_forget", {
+          sessionKey: personASession,
+          messageChannel: "signal",
+          workspaceDir: personAWorkspace,
+        });
+        expect(
+          (
+            await personAForgetSearch.execute("find-candidate", {
+              query: "blue notebooks",
+            })
+          ).details,
+        ).toEqual({ action: "candidates", candidates: [] });
+
+        const partialCandidate = await personAStore.execute("store-partial-candidate", {
+          text: "Person A temporary deletion verification marker.",
+          category: "other",
+        });
+        expect(partialCandidate.details?.action).toBe("candidate");
+        failEmbeddings = true;
+        const partialForget = await personAForgetSearch.execute("forget-partial", {
+          memoryId: String(partialCandidate.details?.id),
+        });
+        failEmbeddings = false;
+        expect(partialForget.details).toMatchObject({
+          action: "partial_failure",
+          postconditions: { semanticAbsent: false },
+        });
+
         const ledgerView = new TemporalMemoryLedger(ledgerPath);
         try {
+          expect(
+            ledgerView.getOperationReceipt(String(partialForget.details?.operationId)),
+          ).toMatchObject({ state: "failed", outcome: "partial_failure" });
           expect(
             ledgerView.listRecentEvents({ agentId: personAScope.storageAgentId }),
           ).toHaveLength(1);

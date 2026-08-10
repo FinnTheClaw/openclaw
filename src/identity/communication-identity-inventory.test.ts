@@ -7,6 +7,7 @@ import {
 import type { CommunicationIdentityRegistry } from "./communication-identity-registry.js";
 
 const SECRET_CANARY = "fake-hmac-secret-canary-never-expose";
+const SENSITIVE_LABEL_CANARY = "sk-testsecret1234567890abcd";
 
 function fakeRegistry(): CommunicationIdentityRegistry {
   return {
@@ -98,6 +99,7 @@ describe("communication identity inventory", () => {
       sessionId: "fake-session",
       updatedAt: Date.parse("2026-08-09T12:30:00.000Z"),
       origin: {
+        label: "Owen Kidd",
         provider: "signal",
         accountId: "primary",
         nativeDirectUserId: "fake-signal-uuid-9113",
@@ -119,6 +121,7 @@ describe("communication identity inventory", () => {
       boundState: "bound",
       routingState: "admin",
       authState: "authorized",
+      label: "Owen Kidd",
     });
     for (const forbidden of [
       SECRET_CANARY,
@@ -150,6 +153,50 @@ describe("communication identity inventory", () => {
       authState: "authorized",
     });
     expect(JSON.stringify(origin)).not.toContain("fake-signal-uuid-9113");
+  });
+
+  it("rejects secret-bearing or identifier-bearing labels", () => {
+    const entry: SessionEntry = {
+      sessionId: "fake-sensitive-label-session",
+      updatedAt: Date.parse("2026-08-09T12:40:00.000Z"),
+      origin: {
+        label: `Contact ${SENSITIVE_LABEL_CANARY}`,
+        provider: "signal",
+        accountId: "primary",
+        nativeDirectUserId: "fake-signal-uuid-9113",
+      },
+      displayName: "fake-signal-uuid-9113",
+    };
+    const origin = sanitizeCommunicationSessionOrigin({
+      registry: fakeRegistry(),
+      entry,
+      sessionKey: "agent:finn:signal:primary:direct:fake-signal-uuid-9113",
+    });
+
+    expect(origin.label).toBe("Administrator");
+    expect(JSON.stringify(origin)).not.toContain(SENSITIVE_LABEL_CANARY);
+    expect(JSON.stringify(origin)).not.toContain("fake-signal-uuid-9113");
+  });
+
+  it("rejects phone-shaped and markup-bearing labels rather than rewriting them", () => {
+    const baseEntry: SessionEntry = {
+      sessionId: "fake-unsafe-label-session",
+      updatedAt: Date.parse("2026-08-09T12:40:00.000Z"),
+      origin: {
+        provider: "signal",
+        accountId: "primary",
+        nativeDirectUserId: "fake-signal-uuid-9113",
+      },
+    };
+    for (const label of ["Call +1 (512) 555-9113", "<admin>Owen</admin>"]) {
+      const origin = sanitizeCommunicationSessionOrigin({
+        registry: fakeRegistry(),
+        entry: { ...baseEntry, origin: { ...baseEntry.origin, label } },
+        sessionKey: "agent:finn:signal:primary:direct:fake-signal-uuid-9113",
+      });
+      expect(origin.label).toBe("Administrator");
+      expect(JSON.stringify(origin)).not.toContain(label);
+    }
   });
 
   it("reports an unknown quarantine origin without treating it as authorized", () => {

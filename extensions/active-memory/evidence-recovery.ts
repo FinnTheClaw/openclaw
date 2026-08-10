@@ -187,9 +187,16 @@ export class EvidenceRecoveryTracker {
     semanticFailures?: readonly string[];
     missingEvidence?: readonly string[];
   }): EvidenceRecoveryReceipt {
+    const explicitUnsupportedClaims = unique(params.unsupportedClaims ?? []);
+    const explicitContradictions = unique(params.contradictions ?? []);
+    const explicitSemanticFailures = unique(params.semanticFailures ?? []);
+    const hasExplicitBlocker =
+      explicitUnsupportedClaims.length > 0 ||
+      explicitContradictions.length > 0 ||
+      explicitSemanticFailures.length > 0;
     const terminationReason =
       this.terminationReason ??
-      (params.failed
+      (params.failed || hasExplicitBlocker
         ? "failed"
         : params.unavailable
           ? "unavailable"
@@ -209,14 +216,23 @@ export class EvidenceRecoveryTracker {
     if (params.hasUsableEvidence && !params.hasFinalSummary && !params.noReply) {
       unmetAcceptanceCriteria.push(FINAL_REPLY_CRITERION);
     }
+    if (explicitUnsupportedClaims.length > 0) {
+      unmetAcceptanceCriteria.push("Every unsupported claim must be removed or supported by evidence.");
+    }
+    if (explicitContradictions.length > 0) {
+      unmetAcceptanceCriteria.push("Every contradiction must be resolved against current evidence.");
+    }
+    if (explicitSemanticFailures.length > 0) {
+      unmetAcceptanceCriteria.push("Every semantic failure must reach a typed successful postcondition.");
+    }
     return {
       callsUsed: this.callsUsed,
       progressTransitions: this.progressTransitions,
       terminationReason,
       unmetAcceptanceCriteria,
-      unsupportedClaims: unique(params.unsupportedClaims ?? []),
-      contradictions: unique(params.contradictions ?? []),
-      semanticFailures: unique([...this.semanticFailures, ...(params.semanticFailures ?? [])]),
+      unsupportedClaims: explicitUnsupportedClaims,
+      contradictions: explicitContradictions,
+      semanticFailures: unique([...this.semanticFailures, ...explicitSemanticFailures]),
       missingEvidence: unique([...this.missingEvidence, ...(params.missingEvidence ?? [])]),
     };
   }
