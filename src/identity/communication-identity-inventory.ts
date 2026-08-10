@@ -72,7 +72,7 @@ function safeBoundLabel(entry: SessionEntry, peerIds: readonly string[]): string
     if (!normalized || !/[\p{L}\p{N}]/u.test(normalized)) {
       continue;
     }
-    if (!/^[\p{L}\p{M}\p{N} .,'’()_\-]{1,80}$/u.test(normalized)) {
+    if (!/^[\p{L}\p{M}\p{N} .,'’()_-]{1,80}$/u.test(normalized)) {
       continue;
     }
     if (/\+?\d(?:[\d ().-]*\d){6,}/u.test(normalized)) {
