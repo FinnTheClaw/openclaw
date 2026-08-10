@@ -1063,6 +1063,22 @@ export class TemporalMemoryLedger {
     return row ? rowToEvent(row) : undefined;
   }
 
+  listActiveFactRevisionIdsForEvent(eventId: string, expectedAgentId: string): string[] {
+    this.assertOpen();
+    const normalizedId = normalizeRequired(eventId, "eventId");
+    const agentId = normalizeRequired(expectedAgentId, "expectedAgentId");
+    const rows = this.db
+      .prepare(
+        "SELECT facts.revision_id FROM memory_fact_revisions AS facts " +
+          "INNER JOIN memory_events AS events ON events.event_id = facts.source_event_id " +
+          "WHERE facts.source_event_id = ? AND facts.agent_id = ? AND events.agent_id = ? " +
+          "AND events.deleted_at IS NULL AND facts.status = 'active' " +
+          "AND facts.system_to IS NULL ORDER BY facts.revision_id",
+      )
+      .all(normalizedId, agentId, agentId) as SqlRow[];
+    return rows.map((row) => String(row.revision_id));
+  }
+
   retractFactRevisionForAgent(revisionId: string, expectedAgentId: string): boolean {
     this.assertOpen();
     const normalizedId = normalizeRequired(revisionId, "revisionId");

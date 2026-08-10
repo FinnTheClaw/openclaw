@@ -404,6 +404,38 @@ describe("TemporalMemoryLedger", () => {
     });
   });
 
+  it("reports active event fact lineage only to the scoped owner", () => {
+    const db = open();
+    const event = db.appendEvent({
+      agentId: "principal-9113",
+      role: "user",
+      content: "The fake greenhouse controller is Juniper.",
+      sourceKind: "message_received",
+      metadata: { evidenceClass: "direct_user" },
+    }).event;
+
+    expect(db.listActiveFactRevisionIdsForEvent(event.eventId, "principal-9113")).toEqual([]);
+    expect(db.listActiveFactRevisionIdsForEvent(event.eventId, "principal-7255")).toEqual([]);
+
+    const fact = db.appendFactRevision({
+      agentId: "principal-9113",
+      scope: "scope-principal-9113",
+      subject: "greenhouse_controller",
+      predicate: "name",
+      object: "Juniper",
+      text: "The fake greenhouse controller is Juniper.",
+      sourceEventId: event.eventId,
+    }).fact;
+
+    expect(db.listActiveFactRevisionIdsForEvent(event.eventId, "principal-9113")).toEqual([
+      fact.revisionId,
+    ]);
+    expect(db.listActiveFactRevisionIdsForEvent(event.eventId, "principal-7255")).toEqual([]);
+
+    expect(db.deleteEventForAgent(event.eventId, "principal-9113")).toBe(true);
+    expect(db.listActiveFactRevisionIdsForEvent(event.eventId, "principal-9113")).toEqual([]);
+  });
+
   it("persists closed operation receipts without memory content", () => {
     const db = open();
     const operationId = db.beginOperation({

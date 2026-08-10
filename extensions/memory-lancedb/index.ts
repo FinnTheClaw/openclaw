@@ -2252,6 +2252,12 @@ export default definePluginEntry({
                 };
               }
 
+              const relatedFactIds = eventAllowed
+                ? durableRuntime.ledger.listActiveFactRevisionIdsForEvent(
+                    memoryId,
+                    scope.storageAgentId,
+                  )
+                : [memoryId];
               const targetText = eventAllowed ? event!.content : fact!.text;
               const operationId = durableRuntime.ledger.beginOperation({
                 kind: "forget",
@@ -2265,14 +2271,28 @@ export default definePluginEntry({
               await durableRuntime.index.delete(memoryId);
               scheduleDurableWorkers();
               const projectionComplete = await durableRuntime.flush(20_000);
-              const consolidationComplete = consolidator ? await consolidator.flush(20_000) : true;
+              // Candidate events have no derived fact lineage. Their deletion
+              // must not fail merely because unrelated global extraction or
+              // summary work is still draining. Promoted facts retain the
+              // fail-closed consolidation requirement.
+              const consolidationComplete =
+                relatedFactIds.length === 0 || !consolidator
+                  ? true
+                  : await consolidator.flush(20_000);
               // A retracted fact may be materialized once as a retracted row so
               // downstream rebuilds observe the tombstone. Remove that derived
               // row after the durable drain; the ledger remains authoritative.
-              await durableRuntime.index.delete(memoryId);
-              const exactAbsent = !(await durableRuntime.index.has(memoryId, {
-                agentId: scope.storageAgentId,
-              }));
+              const targetIds = [...new Set([memoryId, ...relatedFactIds])];
+              for (const targetId of targetIds) {
+                await durableRuntime.index.delete(targetId);
+              }
+              const exactAbsent = (
+                await Promise.all(
+                  targetIds.map(async (targetId) =>
+                    durableRuntime.index.has(targetId, { agentId: scope.storageAgentId }),
+                  ),
+                )
+              ).every((present) => !present);
               const normalizedTarget = targetText.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
               let semanticAbsent: boolean;
               try {
@@ -2288,7 +2308,8 @@ export default definePluginEntry({
                 });
                 semanticAbsent = !verification.some(
                   (result) =>
-                    result.entry.id === memoryId ||
+                    targetIds.includes(result.entry.id) ||
+                    (eventAllowed && result.entry.sourceEventId === memoryId) ||
                     result.entry.text.replace(/\s+/gu, " ").trim().toLocaleLowerCase() ===
                       normalizedTarget,
                 );
