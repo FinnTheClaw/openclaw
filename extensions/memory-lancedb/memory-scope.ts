@@ -72,16 +72,18 @@ function canonicalWorkspace(workspaceDir: string): string {
 export function resolveTrustedMemoryScope(input: TrustedMemoryScopeInput): TrustedMemoryScope {
   const agentId = required(input.agentId, "agentId").toLocaleLowerCase();
   const workspace = canonicalWorkspace(input.workspaceDir);
-  const requestedChannel = optional(input.channel, "local").toLocaleLowerCase();
-  // Gateway-backed TUI/CLI turns use the internal `webchat` transport label
-  // even though they are local operator sessions and have no external peer.
-  // Canonicalize that transport to the local scope so an otherwise identical
-  // turn cannot fail or change ownership merely because it crossed the local
-  // Gateway boundary. External channel names remain fail-closed below.
-  const channel = requestedChannel === "webchat" ? "local" : requestedChannel;
+  const channel = optional(input.channel, "local").toLocaleLowerCase();
   const account = optional(input.accountId, "default");
-  const conversation = optional(input.conversationId, "local");
   const session = optional(input.sessionId ?? input.sessionKey, "local");
+  // Gateway-backed CLI/TUI turns and authenticated WebChat both use the
+  // internal `webchat` transport label. When no external peer is available,
+  // bind that transport to its canonical session instead of collapsing every
+  // WebChat caller into the shared local conversation. This keeps local CLI
+  // memory functional while preserving per-session WebChat isolation.
+  const conversation = optional(
+    input.conversationId,
+    channel === "webchat" && session !== "local" ? session : "local",
+  );
 
   if (channel !== "local" && conversation === "local") {
     throw new Error("memory scope refused a channel context without a conversation identity");

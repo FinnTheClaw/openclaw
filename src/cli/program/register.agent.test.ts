@@ -156,6 +156,14 @@ describe("agent command registration", () => {
     ]);
   });
 
+  it("rejects an explicitly empty tool allow-list instead of running unrestricted", async () => {
+    await runCli(["agent", "--message", "store the fixture", "--tools", " ,  "]);
+
+    expect(agentCliCommandMock).not.toHaveBeenCalled();
+    expect(runtime.error).toHaveBeenCalledWith("Error: --tools requires at least one tool name");
+    expect(runtime.exit).toHaveBeenCalledWith(1);
+  });
+
   it("forwards an explicit session key to the agent command", async () => {
     await runCli(["agent", "--message", "hi", "--session-key", "agent:ops:incident-42"]);
 

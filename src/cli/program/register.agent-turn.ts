@@ -27,14 +27,20 @@ async function loadSetVerbose(): Promise<GlobalStateModule["setVerbose"]> {
 }
 
 function parseAgentToolsAllow(value: unknown): string[] | undefined {
-  if (typeof value !== "string") {
+  if (value === undefined) {
     return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new Error("--tools requires a comma- or space-separated list of tool names");
   }
   const tools = value
     .split(/[,\s]+/u)
     .map((entry) => entry.trim())
     .filter(Boolean);
-  return tools.length > 0 ? [...new Set(tools)] : undefined;
+  if (tools.length === 0) {
+    throw new Error("--tools requires at least one tool name");
+  }
+  return [...new Set(tools)];
 }
 
 /** Register `openclaw agent` for one Gateway-backed agent turn. */

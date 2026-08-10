@@ -76,7 +76,7 @@ describe("trusted memory scope", () => {
     ).toThrow("without a canonical session identity");
   });
 
-  it("treats the Gateway webchat transport as a local operator session", () => {
+  it("binds Gateway webchat memory to its session without collapsing callers", () => {
     const sessionKey = "agent:person-owner:agent-agentic-suite-memory";
     const viaGateway = resolveTrustedMemoryScope({
       agentId: "person-owner",
@@ -84,13 +84,32 @@ describe("trusted memory scope", () => {
       channel: "webchat",
       sessionKey,
     });
-    const embedded = resolveTrustedMemoryScope({
+    const repeated = resolveTrustedMemoryScope({
       agentId: "person-owner",
       workspaceDir: "/srv/openclaw/workspaces/person-owner",
+      channel: "webchat",
       sessionKey,
     });
+    const anotherSession = resolveTrustedMemoryScope({
+      agentId: "person-owner",
+      workspaceDir: "/srv/openclaw/workspaces/person-owner",
+      channel: "webchat",
+      sessionKey: `${sessionKey}:other`,
+    });
 
-    expect(viaGateway.channel).toBe("local");
-    expect(viaGateway).toEqual(embedded);
+    expect(viaGateway.channel).toBe("webchat");
+    expect(viaGateway).toEqual(repeated);
+    expect(anotherSession.storageAgentId).toBe(viaGateway.storageAgentId);
+    expect(anotherSession.conversationScope).not.toBe(viaGateway.conversationScope);
+  });
+
+  it("fails closed for webchat without a canonical session", () => {
+    expect(() =>
+      resolveTrustedMemoryScope({
+        agentId: "person-owner",
+        workspaceDir: "/srv/openclaw/workspaces/person-owner",
+        channel: "webchat",
+      }),
+    ).toThrow("without a conversation identity");
   });
 });

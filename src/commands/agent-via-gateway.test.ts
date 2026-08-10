@@ -1600,6 +1600,31 @@ describe("agentCliCommand", () => {
     });
   });
 
+  it("preserves a narrowing tool allow-list through embedded gateway fallback", async () => {
+    await withTempStore(async () => {
+      callGateway.mockRejectedValue(createGatewayClosedError());
+      mockLocalAgentReply();
+
+      await agentCliCommand(
+        { message: "store the fixture", to: "+1555", toolsAllow: ["memory_store"] },
+        runtime,
+      );
+
+      const gatewayRequest = requireRecord(
+        requireFirstCallArg(callGateway, "gateway"),
+        "gateway request",
+      );
+      expect(requireRecord(gatewayRequest.params, "gateway params").toolsAllow).toEqual([
+        "memory_store",
+      ]);
+      const fallbackOpts = requireRecord(
+        requireFirstCallArg(agentCommand, "embedded agent"),
+        "embedded agent options",
+      );
+      expect(fallbackOpts.toolsAllow).toEqual(["memory_store"]);
+    });
+  });
+
   it("retries transient normal gateway closes before embedded fallback", async () => {
     vi.useFakeTimers();
     try {
