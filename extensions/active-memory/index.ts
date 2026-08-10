@@ -3172,7 +3172,7 @@ async function runRecallSubagent(params: {
         hasUnavailableMemorySearchResult: harnessHasUnavailableMemorySearchResult,
       };
     }
-    const recallAborted = Boolean(params.abortSignal?.aborted || recoveryController.signal.aborted);
+    const recallAborted = params.abortSignal?.aborted || recoveryController.signal.aborted;
     if (recallAborted) {
       const partialReply = await readPartialAssistantText(activeSessionFile);
       const transcriptState = await readActiveMemoryTranscriptState(
