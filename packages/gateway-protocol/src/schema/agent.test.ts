@@ -57,6 +57,23 @@ const musicCompletionEvent: AgentInternalEvent = {
 };
 
 describe("AgentParamsSchema", () => {
+  it("accepts a bounded runtime tool allow-list", () => {
+    expect(
+      Value.Check(AgentParamsSchema, {
+        message: "store the fixture",
+        idempotencyKey: "tool-allow-list",
+        toolsAllow: ["memory_store"],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(AgentParamsSchema, {
+        message: "store the fixture",
+        idempotencyKey: "tool-allow-list-invalid",
+        toolsAllow: [""],
+      }),
+    ).toBe(false);
+  });
+
   it("accepts generated music attachments on internal completion events", () => {
     const params = makeAgentParamsWithInternalEvent(musicCompletionEvent);
 

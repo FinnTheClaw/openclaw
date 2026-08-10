@@ -942,16 +942,18 @@ describe("memory plugin e2e", () => {
           );
           expect(loadLanceDbModule).not.toHaveBeenCalled();
 
-          const cooldownResult = await recallTool.execute("cooldown-call", {
+          const retryPromise = recallTool.execute("retry-call", {
             query: "project memory again",
           });
-          expect(cooldownResult.details).toMatchObject({
+          await vi.advanceTimersByTimeAsync(15_000);
+          const retryResult = await retryPromise;
+          expect(retryResult.details).toMatchObject({
             count: 0,
             disabled: true,
             unavailable: true,
             error: "memory_recall timed out after 15s",
           });
-          expect(post).toHaveBeenCalledTimes(1);
+          expect(post).toHaveBeenCalledTimes(2);
           expect(loadLanceDbModule).not.toHaveBeenCalled();
         },
       });

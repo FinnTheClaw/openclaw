@@ -215,6 +215,9 @@ export const AgentParamsSchema = Type.Object(
       Type.Union([Type.Literal("full"), Type.Literal("minimal"), Type.Literal("none")]),
     ),
     extraSystemPrompt: Type.Optional(Type.String()),
+    // Runtime tool allow-lists only narrow the configured surface; they cannot
+    // grant tools that the caller or agent policy did not already expose.
+    toolsAllow: Type.Optional(Type.Array(NonEmptyString, { maxItems: 256 })),
     bootstrapContextMode: Type.Optional(
       Type.Union([Type.Literal("full"), Type.Literal("lightweight")]),
     ),

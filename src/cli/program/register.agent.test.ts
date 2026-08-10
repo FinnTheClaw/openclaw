@@ -1,8 +1,8 @@
 // Register agent tests cover agent command registration and option wiring.
 import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { registerAgentsCommands } from "./register.agent.js";
 import { registerAgentTurnCommand } from "./register.agent-turn.js";
+import { registerAgentsCommands } from "./register.agent.js";
 
 const mocks = vi.hoisted(() => ({
   agentCliCommandMock: vi.fn(),
@@ -138,6 +138,22 @@ describe("agent command registration", () => {
     expect((options as { model?: string }).model).toBe("openai/gpt-5.4");
     expect(callRuntime).toBe(runtime);
     expect(deps).toBeUndefined();
+  });
+
+  it("normalizes a per-run tool allow-list", async () => {
+    await runCli([
+      "agent",
+      "--message",
+      "store the fixture",
+      "--tools",
+      "memory_store, memory_recall memory_store",
+    ]);
+
+    const [options] = commandCall(agentCliCommandMock);
+    expect((options as { toolsAllow?: string[] }).toolsAllow).toEqual([
+      "memory_store",
+      "memory_recall",
+    ]);
   });
 
   it("forwards an explicit session key to the agent command", async () => {

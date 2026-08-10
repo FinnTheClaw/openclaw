@@ -308,6 +308,25 @@ describe("agentCliCommand", () => {
     });
   });
 
+  it("passes a narrowing runtime tool allow-list through the gateway request", async () => {
+    await withTempStore(async () => {
+      mockGatewaySuccessReply();
+
+      await agentCliCommand(
+        {
+          message: "store the fixture",
+          sessionKey: "agent:main:tools-allow-test",
+          toolsAllow: ["memory_store"],
+        },
+        runtime,
+      );
+
+      const request = requireRecord(requireFirstCallArg(callGateway, "gateway"), "gateway request");
+      const params = requireRecord(request.params, "gateway request params");
+      expect(params.toolsAllow).toEqual(["memory_store"]);
+    });
+  });
+
   it("reads a UTF-8 message file for gateway dispatch", async () => {
     await withTempStore(async ({ dir }) => {
       const messageFile = path.join(dir, "task.md");

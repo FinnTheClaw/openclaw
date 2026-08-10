@@ -26,6 +26,17 @@ async function loadSetVerbose(): Promise<GlobalStateModule["setVerbose"]> {
   return (await import("../../global-state.js")).setVerbose;
 }
 
+function parseAgentToolsAllow(value: unknown): string[] | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const tools = value
+    .split(/[,\s]+/u)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return tools.length > 0 ? [...new Set(tools)] : undefined;
+}
+
 /** Register `openclaw agent` for one Gateway-backed agent turn. */
 export function registerAgentTurnCommand(
   program: Command,
@@ -53,6 +64,7 @@ export function registerAgentTurnCommand(
     .option("--reply-to <target>", "Delivery target override (separate from session routing)")
     .option("--reply-channel <channel>", "Delivery channel override (separate from routing)")
     .option("--reply-account <id>", "Delivery account id override")
+    .option("--tools <list>", "Restrict this run to a comma- or space-separated tool allow-list")
     .option(
       "--local",
       "Run the embedded agent locally (requires model provider API keys in your shell)",
@@ -106,7 +118,14 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/agent", "docs.openclaw.ai/cli/age
         ]);
       await runCommandWithRuntime(defaultRuntime, async () => {
         setVerbose(verboseLevel === "on");
-        await agentCliCommand(opts, defaultRuntime);
+        const toolsAllow = parseAgentToolsAllow(opts.tools);
+        await agentCliCommand(
+          {
+            ...opts,
+            ...(toolsAllow ? { toolsAllow } : {}),
+          },
+          defaultRuntime,
+        );
       });
     });
 }
