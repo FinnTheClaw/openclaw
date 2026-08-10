@@ -80,7 +80,7 @@ function canonicalizeForDigest(value: unknown, depth = 0, seen = new WeakSet<obj
     return value.slice(0, 256).map((entry) => canonicalizeForDigest(entry, depth + 1, seen));
   }
   if (typeof value !== "object") {
-    return String(value);
+    return value === undefined ? "[undefined]" : "[unsupported]";
   }
   if (seen.has(value)) {
     return "[cycle]";
@@ -88,7 +88,7 @@ function canonicalizeForDigest(value: unknown, depth = 0, seen = new WeakSet<obj
   seen.add(value);
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([key]) => !isVolatileEvidenceKey(key))
-    .sort(([left], [right]) => left.localeCompare(right))
+    .toSorted(([left], [right]) => left.localeCompare(right))
     .slice(0, 256);
   return Object.fromEntries(
     entries.map(([key, entry]) => [key, canonicalizeForDigest(entry, depth + 1, seen)]),

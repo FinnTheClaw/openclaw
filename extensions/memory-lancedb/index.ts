@@ -2267,7 +2267,7 @@ export default definePluginEntry({
                 agentId: scope.storageAgentId,
               }));
               const normalizedTarget = targetText.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
-              let semanticAbsent = false;
+              let semanticAbsent: boolean;
               try {
                 const normalizedQuery = normalizeRecallQuery(targetText, currentCfg.recallMaxChars);
                 const vector = await embeddings.embed(normalizedQuery, {
@@ -2705,13 +2705,13 @@ export default definePluginEntry({
             const facts = parsePositiveIntegerOption(resolvedOptions.facts, "--facts") ?? 25_000;
             const queries = parsePositiveIntegerOption(resolvedOptions.queries, "--queries") ?? 200;
             const directory = resolvedOptions.directory
-              ? resolveMemoryCliPath(String(resolvedOptions.directory))
+              ? resolveMemoryCliPath(resolvedOptions.directory)
               : undefined;
             const report = await runMemoryScaleCertification({
               facts,
               queries,
               directory,
-              keep: Boolean(resolvedOptions.keep),
+              keep: resolvedOptions.keep,
             });
             console.log(JSON.stringify(report, null, 2));
             if (report.status !== "PASS") {
