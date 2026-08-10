@@ -4021,6 +4021,7 @@ describe("memory plugin e2e", () => {
           expect.stringContaining("workspace Markdown reconciliation tracked 1 sources"),
         );
 
+        const familySession = "agent:jake:signal:main:direct:family";
         const receive = hookHandler(on, "message_received");
         receive?.(
           {
@@ -4028,7 +4029,7 @@ describe("memory plugin e2e", () => {
             timestamp: 1_000,
             messageId: "message-1",
           },
-          { sessionKey: "agent:jake:signal:family", channelId: "signal" },
+          { sessionKey: familySession, channelId: "signal" },
         );
         const beforeCompaction = hookHandler(on, "before_compaction");
         await beforeCompaction?.(
@@ -4036,13 +4037,19 @@ describe("memory plugin e2e", () => {
             messages: [
               {
                 id: "message-2",
-                role: "assistant",
-                content: "I verified Juniper is online.",
+                role: "user",
+                content: "Juniper is online.",
                 timestamp: 2_000,
               },
             ],
           },
-          { agentId: "jake", sessionKey: "agent:jake:signal:family", channel: "signal" },
+          {
+            agentId: "jake",
+            workspaceDir,
+            sessionKey: familySession,
+            channel: "signal",
+            chatId: "family",
+          },
         );
         const gatewayStop = hookHandler(on, "gateway_stop");
         await gatewayStop?.({ reason: "gateway restarting" }, {});
