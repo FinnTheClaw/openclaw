@@ -1300,7 +1300,13 @@ export class TemporalMemoryLedger {
         return { fact: rowToFact(currentRow), inserted: false };
       }
 
-      const supersedesRevisionId = currentRow ? String(currentRow.revision_id) : undefined;
+      const incomingIsOlder =
+        currentRow !== undefined &&
+        (validFrom < Number(currentRow.valid_from) ||
+          (validFrom === Number(currentRow.valid_from) &&
+            observedAt < Number(currentRow.observed_at)));
+      const supersedesRevisionId =
+        currentRow && !incomingIsOlder ? String(currentRow.revision_id) : undefined;
       if (supersedesRevisionId) {
         this.db
           .prepare(`
@@ -1321,7 +1327,7 @@ export class TemporalMemoryLedger {
             text, category, confidence, authority, valid_from, valid_to, observed_at,
             system_from, system_to, status, supersedes_revision_id, source_event_id,
             metadata_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           revisionId,
@@ -1339,6 +1345,8 @@ export class TemporalMemoryLedger {
           input.validTo === undefined ? null : finiteTimestamp(input.validTo, observedAt),
           observedAt,
           now,
+          incomingIsOlder ? now : null,
+          incomingIsOlder ? "superseded" : "active",
           supersedesRevisionId ?? null,
           sourceEventId,
           metadataJson,

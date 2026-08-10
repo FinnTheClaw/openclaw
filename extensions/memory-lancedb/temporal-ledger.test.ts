@@ -266,6 +266,62 @@ describe("TemporalMemoryLedger", () => {
     expect(db.getStats()).toMatchObject({ factRevisions: 2, activeFacts: 1 });
   });
 
+  it("does not let a late worker make older evidence current", () => {
+    const db = open();
+    const currentEvidence = db.appendEvent({
+      agentId: "finn",
+      role: "user",
+      content: "Contact 7255 is isolated.",
+      sourceKind: "structured_identity_inventory",
+      externalId: "access-current",
+      observedAt: 30_000,
+    }).event;
+    const current = db.appendFactRevision({
+      factKey: "contact-7255:access-role",
+      agentId: "finn",
+      subject: "contact-7255",
+      predicate: "access_role",
+      object: "isolated",
+      text: "Contact 7255 is isolated.",
+      sourceEventId: currentEvidence.eventId,
+      observedAt: 30_000,
+    });
+    const staleEvidence = db.appendEvent({
+      agentId: "finn",
+      role: "user",
+      content: "Contact 7255 is an administrator.",
+      sourceKind: "structured_identity_inventory",
+      externalId: "access-stale",
+      observedAt: 20_000,
+    }).event;
+    const stale = db.appendFactRevision({
+      factKey: current.fact.factKey,
+      agentId: "finn",
+      subject: "contact-7255",
+      predicate: "access_role",
+      object: "administrator",
+      text: "Contact 7255 is an administrator.",
+      sourceEventId: staleEvidence.eventId,
+      observedAt: 20_000,
+    });
+
+    expect(stale.fact).toMatchObject({ status: "superseded", supersedesRevisionId: undefined });
+    expect(
+      db.findCurrentFacts({
+        agentId: "finn",
+        subject: "contact-7255",
+        predicate: "access_role",
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        revisionId: current.fact.revisionId,
+        object: "isolated",
+        status: "active",
+      }),
+    ]);
+    expect(db.getStats()).toMatchObject({ factRevisions: 2, activeFacts: 1 });
+  });
+
   it("cryptographically-neutralizes explicit deletions and blocks transcript resurrection", () => {
     const db = open();
     const original = db.appendEvent({
