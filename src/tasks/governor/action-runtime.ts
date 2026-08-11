@@ -12,7 +12,6 @@ import {
 } from "./capability-registry.js";
 import { createGovernorEventRecord } from "./events.js";
 import {
-  admitGovernorEvidence,
   createGovernorEvidenceCandidate,
   type GovernorEvidenceRecord,
   type GovernorEvidenceSourceKind,
@@ -69,6 +68,8 @@ export type GovernorRecordAdmittedToolOutcomeParams = {
   claimEpoch: number;
   outcome: GovernorToolOutcome;
   evidenceSourceKind?: GovernorEvidenceSourceKind;
+  /** Opaque receipt emitted by the host tool/channel integration. */
+  evidenceReceiptId?: string;
   now: number;
 };
 
@@ -79,6 +80,8 @@ export type GovernorRecordToolOutcomeParams = {
   progressVector: GovernorJsonValue;
   outcome: GovernorToolOutcome;
   evidenceSourceKind?: GovernorEvidenceSourceKind;
+  /** Opaque receipt emitted by the host tool/channel integration. */
+  evidenceReceiptId?: string;
   now: number;
 };
 
@@ -285,12 +288,15 @@ export class GovernorActionRuntime {
     });
     effect.progressVectorHash = intent.progressVectorHash;
     let evidence: GovernorEvidenceRecord | undefined;
+    let evidenceAdmission: ReturnType<GovernorSqliteStore["admitEvidenceCandidate"]> | undefined;
     if (
       intent.proposal.criterionId &&
       params.outcome.transport === "completed" &&
       params.outcome.semantic === "success" &&
       (!intent.proposal.mutating || params.outcome.verification === "verified") &&
-      params.outcome.evidence !== undefined
+      params.outcome.evidence !== undefined &&
+      params.evidenceSourceKind !== "assistant_text" &&
+      params.evidenceSourceKind !== "hidden_reasoning"
     ) {
       const candidate = createGovernorEvidenceCandidate({
         evidenceId: `evidence_${task.taskId}_${intent.effectId}`,
@@ -305,10 +311,13 @@ export class GovernorActionRuntime {
         observedAt: params.now,
         payload: params.outcome.evidence,
       });
-      const admission = admitGovernorEvidence({ task, candidate, now: params.now });
-      if (admission.admitted) {
-        evidence = admission.evidence;
-      }
+      evidenceAdmission = this.store.admitEvidenceCandidate({
+        task,
+        candidate,
+        receiptId: params.evidenceReceiptId,
+        now: params.now,
+      });
+      evidence = evidenceAdmission.evidence;
     }
     const claims = evidence
       ? [
@@ -358,7 +367,7 @@ export class GovernorActionRuntime {
         event,
         effects: [effect],
         actionIntentUpdates: [{ current: intent, next: completedIntent }],
-        ...(evidence ? { evidence: [evidence] } : {}),
+        ...(evidenceAdmission ? { evidenceAdmission } : {}),
       }),
     );
     return { accepted: true, task: committed, effect, ...(evidence ? { evidence } : {}) };
@@ -389,6 +398,7 @@ export class GovernorActionRuntime {
         claimEpoch: admission.intent.claimEpoch,
         outcome: params.outcome,
         evidenceSourceKind: params.evidenceSourceKind,
+        evidenceReceiptId: params.evidenceReceiptId,
         now: params.now,
       });
     }
@@ -402,6 +412,7 @@ export class GovernorActionRuntime {
       claimEpoch: claim.intent.claimEpoch,
       outcome: params.outcome,
       evidenceSourceKind: params.evidenceSourceKind,
+      evidenceReceiptId: params.evidenceReceiptId,
       now: params.now,
     });
   }

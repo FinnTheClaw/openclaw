@@ -19,6 +19,10 @@ export type HostGovernorReceiptId = string & { readonly [hostReceiptIdBrand]: tr
 type HostReceipt = Readonly<{
   id: HostGovernorReceiptId;
   scopeKey: string;
+  taskId: string;
+  taskVersion: number;
+  objectiveRevision: number;
+  planVersion: number;
   sourceKind: "tool" | "structured_external" | "authenticated_user";
   sourceIdentity: string;
   payload: GovernorJsonValue;
@@ -46,6 +50,10 @@ function opaqueId(key: string, value: unknown): HostGovernorReceiptId {
 export type HostGovernorCapabilities = {
   readonly submitObservedReceipt: (input: {
     scopeKey: string;
+    taskId: string;
+    taskVersion: number;
+    objectiveRevision: number;
+    planVersion: number;
     sourceKind: HostReceipt["sourceKind"];
     sourceIdentity: string;
     payload: GovernorJsonValue;
@@ -86,6 +94,10 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     }
     const body = {
       scopeKey: input.scopeKey,
+      taskId: input.taskId,
+      taskVersion: input.taskVersion,
+      objectiveRevision: input.objectiveRevision,
+      planVersion: input.planVersion,
       sourceKind: input.sourceKind,
       sourceIdentity: input.sourceIdentity,
       payloadDigest: governorDigest(input.payload),
@@ -106,6 +118,10 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
       if (!receipt || receipt.scopeKey !== scopeKey) return null;
       const body = {
         scopeKey: receipt.scopeKey,
+        taskId: receipt.taskId,
+        taskVersion: receipt.taskVersion,
+        objectiveRevision: receipt.objectiveRevision,
+        planVersion: receipt.planVersion,
         sourceKind: receipt.sourceKind,
         sourceIdentity: receipt.sourceIdentity,
         payloadDigest: governorDigest(receipt.payload),

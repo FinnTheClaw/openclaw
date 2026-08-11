@@ -372,6 +372,7 @@ export class GovernorController {
     resolution: GovernorMutationResolution;
     evidence: GovernorJsonValue;
     sourceIdentity: string;
+    evidenceReceiptId?: string;
     now: number;
   }): GovernorToolRecordResult {
     return resolveGovernorMutation({ store: this.store, ...params });

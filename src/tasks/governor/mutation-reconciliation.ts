@@ -1,11 +1,7 @@
 // Reconciles uncertain mutations into a durable effect update and admissible verification evidence.
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { createGovernorEventRecord } from "./events.js";
-import {
-  admitGovernorEvidence,
-  createGovernorEvidenceCandidate,
-  type GovernorEvidenceRecord,
-} from "./evidence.js";
+import { createGovernorEvidenceCandidate, type GovernorEvidenceRecord } from "./evidence.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorSqliteStore } from "./store.js";
 import type { GovernorEffectRecord, GovernorToolOutcome } from "./tool-outcome.js";
@@ -34,6 +30,7 @@ export function resolveGovernorMutation(params: {
   resolution: GovernorMutationResolution;
   evidence: GovernorJsonValue;
   sourceIdentity: string;
+  evidenceReceiptId?: string;
   now: number;
 }): GovernorMutationResolutionResult {
   const task = params.store.loadTask(params.taskId);
@@ -89,12 +86,14 @@ export function resolveGovernorMutation(params: {
     updatedAt: params.now,
   };
   let evidence: GovernorEvidenceRecord | undefined;
+  let evidenceAdmission: ReturnType<GovernorSqliteStore["admitEvidenceCandidate"]> | undefined;
   if (params.resolution === "applied_verified" && effect.criterionId) {
     const candidate = createGovernorEvidenceCandidate({
       evidenceId: `verification_${task.taskId}_${effect.effectId}`,
       taskId: task.taskId,
       criterionId: effect.criterionId,
       sourceKind: "structured_external",
+      // The asserted source is checked against the host receipt before it can persist.
       sourceIdentity: params.sourceIdentity,
       taskVersion: task.taskVersion,
       objectiveRevision: task.objectiveRevision,
@@ -103,11 +102,13 @@ export function resolveGovernorMutation(params: {
       observedAt: params.now,
       payload: safeEvidence,
     });
-    const admission = admitGovernorEvidence({ task, candidate, now: params.now });
-    if (!admission.admitted) {
-      throw new Error(`Governor mutation verification evidence rejected: ${admission.reason}`);
-    }
-    evidence = admission.evidence;
+    evidenceAdmission = params.store.admitEvidenceCandidate({
+      task,
+      candidate,
+      receiptId: params.evidenceReceiptId,
+      now: params.now,
+    });
+    evidence = evidenceAdmission.evidence;
   }
   const next: GovernorTaskProjection = {
     ...task,
@@ -142,7 +143,7 @@ export function resolveGovernorMutation(params: {
     next,
     event,
     effectUpdates: [{ current: effect, next: updatedEffect }],
-    ...(evidence ? { evidence: [evidence] } : {}),
+    ...(evidenceAdmission ? { evidenceAdmission } : {}),
   });
   if (!committed.applied) {
     throw new Error(`Governor commit failed: ${committed.reason}`);

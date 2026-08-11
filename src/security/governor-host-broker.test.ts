@@ -9,6 +9,10 @@ describe("governor host broker", () => {
     const broker = createHostGovernorBroker({ receiptSigningKey: "synthetic-test-key" });
     const receiptId = broker.capabilities.submitObservedReceipt({
       scopeKey: "scope-a",
+      taskId: "task-a",
+      taskVersion: 1,
+      objectiveRevision: 1,
+      planVersion: 1,
       sourceKind: "tool",
       sourceIdentity: "synthetic-tool",
       payload: { result: "ok" },

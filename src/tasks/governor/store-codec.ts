@@ -6,7 +6,7 @@ import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorEventRecord } from "./events.js";
-import { GovernorEvidenceAdmissionAuthority, type GovernorEvidenceRecord } from "./evidence.js";
+import type { GovernorEvidenceRecord } from "./evidence.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import type { GovernorEventId, GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
@@ -146,9 +146,9 @@ export function parseEffectRow(row: GovernorEffectRow): GovernorEffectRecord {
 
 export function bindEvidence(
   evidence: GovernorEvidenceRecord,
-  authority = GovernorEvidenceAdmissionAuthority.fromEnvironment(),
+  assertVerified: (evidence: GovernorEvidenceRecord) => void,
 ): Insertable<GovernorEvidenceRow> {
-  authority.assertVerified(evidence);
+  assertVerified(evidence);
   if (governorDigest(evidence.payload) !== evidence.evidenceDigest) {
     throw new Error("Governor evidence payload digest mismatch");
   }
@@ -185,7 +185,7 @@ export function bindEvidence(
 
 export function parseEvidenceRow(
   row: GovernorEvidenceRow,
-  authority: GovernorEvidenceAdmissionAuthority,
+  assertVerified: (evidence: GovernorEvidenceRecord) => void,
 ): GovernorEvidenceRecord {
   const value = parseJson(row.claim_value_json, "evidence claim value") as GovernorJsonValue;
   const evidence: GovernorEvidenceRecord = {
@@ -226,7 +226,7 @@ export function parseEvidenceRow(
       `Persisted governor evidence payload digest mismatch for ${evidence.evidenceId}`,
     );
   }
-  authority.assertVerified(evidence);
+  assertVerified(evidence);
   return evidence;
 }
 
