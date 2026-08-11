@@ -13,6 +13,12 @@ import {
 
 export type GovernorActionIntentState = "admitted" | "running" | "completed" | "cancelled";
 
+export type GovernorActionTerminationOutcome =
+  | "cancelled_before_effect"
+  | "unknown"
+  | "confirmed_not_applied"
+  | "confirmed_applied";
+
 export type GovernorActionIntent = {
   taskId: GovernorTaskId;
   effectId: string;
@@ -28,6 +34,11 @@ export type GovernorActionIntent = {
   claimEpoch: number;
   claimedBy?: string;
   leaseExpiresAt?: number;
+  effectStartedAt?: number;
+  cancellationRequestedAt?: number;
+  terminationOutcome?: GovernorActionTerminationOutcome;
+  terminationEvidenceDigest?: string;
+  terminationAcknowledgedAt?: number;
   proposal: GovernorActionProposal;
   proposalDigest: string;
   actionFingerprint: string;

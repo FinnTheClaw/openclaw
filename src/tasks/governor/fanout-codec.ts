@@ -27,11 +27,20 @@ export type GovernorFanoutJob = {
   fanoutGroup: string;
   state: GovernorFanoutJobState;
   taskVersion: number;
+  objectiveRevision: number;
   leaseEpoch: number;
   executionGeneration: number;
   claimEpoch: number;
   workerId?: string;
   leaseExpiresAt?: number;
+  physicalSlot?: number;
+  physicalGeneration?: number;
+  physicalBindingDigest?: string;
+  cancellationDisposition?: "cancel" | "requeue";
+  cancellationRequestedAt?: number;
+  terminationOutcome?: "completed" | "crashed" | "terminated";
+  terminationEvidenceDigest?: string;
+  terminationAcknowledgedAt?: number;
   expectedOutputTokens?: number;
   expectedDurationMs?: number;
   payload: GovernorJsonValue;
@@ -95,6 +104,7 @@ export function parseJob(row: FanoutJobRow): GovernorFanoutJob {
     fanoutGroup: row.fanout_group,
     state: row.state as GovernorFanoutJobState,
     taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
+    objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? -1,
     leaseEpoch: normalizeSqliteNumber(row.lease_epoch) ?? 0,
     executionGeneration: normalizeSqliteNumber(row.execution_generation) ?? 0,
     claimEpoch: normalizeSqliteNumber(row.claim_epoch) ?? 0,
@@ -102,6 +112,34 @@ export function parseJob(row: FanoutJobRow): GovernorFanoutJob {
     ...(row.lease_expires_at == null
       ? {}
       : { leaseExpiresAt: normalizeSqliteNumber(row.lease_expires_at) ?? 0 }),
+    ...(row.physical_slot == null
+      ? {}
+      : { physicalSlot: normalizeSqliteNumber(row.physical_slot) ?? 0 }),
+    ...(row.physical_generation == null
+      ? {}
+      : { physicalGeneration: normalizeSqliteNumber(row.physical_generation) ?? 0 }),
+    ...(row.physical_binding_digest == null
+      ? {}
+      : { physicalBindingDigest: row.physical_binding_digest }),
+    ...(row.cancellation_disposition == null
+      ? {}
+      : { cancellationDisposition: row.cancellation_disposition as "cancel" | "requeue" }),
+    ...(row.cancellation_requested_at == null
+      ? {}
+      : { cancellationRequestedAt: normalizeSqliteNumber(row.cancellation_requested_at) ?? 0 }),
+    ...(row.termination_outcome == null
+      ? {}
+      : {
+          terminationOutcome: row.termination_outcome as "completed" | "crashed" | "terminated",
+        }),
+    ...(row.termination_evidence_digest == null
+      ? {}
+      : { terminationEvidenceDigest: row.termination_evidence_digest }),
+    ...(row.termination_acknowledged_at == null
+      ? {}
+      : {
+          terminationAcknowledgedAt: normalizeSqliteNumber(row.termination_acknowledged_at) ?? 0,
+        }),
     ...(row.expected_output_tokens == null
       ? {}
       : { expectedOutputTokens: normalizeSqliteNumber(row.expected_output_tokens) ?? 0 }),
@@ -132,11 +170,20 @@ export function bindJob(job: GovernorFanoutJob): Insertable<FanoutJobRow> {
     fanout_group: job.fanoutGroup,
     state: job.state,
     task_version: job.taskVersion,
+    objective_revision: job.objectiveRevision,
     lease_epoch: job.leaseEpoch,
     execution_generation: job.executionGeneration,
     claim_epoch: job.claimEpoch,
     worker_id: job.workerId ?? null,
     lease_expires_at: job.leaseExpiresAt ?? null,
+    physical_slot: job.physicalSlot ?? null,
+    physical_generation: job.physicalGeneration ?? null,
+    physical_binding_digest: job.physicalBindingDigest ?? null,
+    cancellation_disposition: job.cancellationDisposition ?? null,
+    cancellation_requested_at: job.cancellationRequestedAt ?? null,
+    termination_outcome: job.terminationOutcome ?? null,
+    termination_evidence_digest: job.terminationEvidenceDigest ?? null,
+    termination_acknowledged_at: job.terminationAcknowledgedAt ?? null,
     expected_output_tokens: job.expectedOutputTokens ?? null,
     expected_duration_ms: job.expectedDurationMs ?? null,
     payload_json: JSON.stringify(job.payload),

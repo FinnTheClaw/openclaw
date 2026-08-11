@@ -88,10 +88,11 @@ isolated SQLite state.
     trusted, newer same-fact evidence may atomically supersede it; the old revision remains
     auditable, while normal retrieval returns the verified replacement. Equal-authority ambiguity
     creates one unresolved review without choosing a winner. Canonical-source remediation is
-    deduplicated by opaque source, fact, scope, and contradiction class, uses the existing governed
-    action path, and closes only after fresh exact-source verification. Repeated reads reuse the
-    resolution; only material new evidence, replacement expiry, a different scope, or an explicit
-    operator request qualifies for reinvestigation.
+    deduplicated by the stale canonical memory source, fact, scope, and contradiction class, not by
+    whichever observer supplied the correcting evidence. It uses the existing governed action path
+    and closes only after fresh exact-source verification. Repeated reads reuse the resolution; only
+    material new evidence, replacement expiry, a different scope, or an explicit operator request
+    qualifies for reinvestigation.
 23. V12 resolves delivery only through three compiled host implementations: the fixed disposable
     canary sink and Signal/iMessage through OpenClaw's compiled core outbound service. Strict
     configuration binds adapter generation, deployment, channel, account, normalized target,
@@ -129,9 +130,11 @@ isolated SQLite state.
 28. A privileged action binds a digest of the immutable configured capability policy at admission.
     Persistence and the SQLite execution-claim transaction independently recompute that policy and
     reject caller-stated approval flags, legacy unverifiable policy rows, or configuration drift.
-    The claim also revalidates the exact signed grant and host revocation epoch. A revocation that
-    commits first makes the queued action unclaimable. A claim that commits first is reported as in
-    flight, so revocation cannot report success and then permit a later effect start.
+    A worker claim alone never authorizes an external mutation. A separate transactional effect-start
+    fence revalidates the unexpired lease, current task/execution identity, capability policy, grant,
+    and revocation epoch immediately before work begins. Revocation that wins first cancels even an
+    unexpired bare claim; an effect-start that wins first remains explicitly in flight until a
+    host-authenticated termination outcome is durable. Expired and late results are audit-only.
 29. Public memory writes create untrusted candidates only. Verified memory fields are derived from
     current-plan, exact-scope, admitted evidence; caller-supplied status, source, confidence, and
     provenance fields are rejected. Current objective, plan, scope, and evidence signatures are
@@ -144,12 +147,19 @@ isolated SQLite state.
     The build-owned manifest covers the governor delivery implementation, plugin SDK closure,
     Signal/iMessage runtime roots and package metadata, and the pinned dependency lockfile.
 31. An `effect_started` delivery may reconstruct only the same byte-identical certified adapter for
-    authoritative reconciliation or one durable manual-review outcome. Reconstruction never resets
-    the effect or permits a blind resend, and unrelated certified deliveries remain available.
+    authoritative reconciliation or one durable host-owned manual-review outcome (`confirmed_sent`,
+    `confirmed_not_sent`, or `retired_unknown`). Reconstruction never resets the effect or permits a
+    blind resend. A terminal review permits safe adapter revocation/rotation, while unrelated
+    certified deliveries remain available throughout.
 32. Host journal serialization uses SQLite's OS-backed cross-process write lock rather than a PID
     lock file. The coordination database carries no authority and may be recreated; process death
     releases the lock, while the signed journal and head remain the anti-rollback truth. This still
     does not protect against replaying a full host snapshot without hardware monotonic storage.
+33. Fan-out has unlimited logical queue depth but exactly three host-owned physical execution slots.
+    Lease expiry requests cancellation without freeing a slot. Only a durable completed result or an
+    authenticated supervisor termination/crash receipt releases physical capacity; late results are
+    rejected. Host-ledger slots survive primary-database replay, and orphan recovery is explicit and
+    audited rather than inferred from elapsed time.
 
 ## Consequences
 

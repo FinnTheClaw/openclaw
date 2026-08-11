@@ -218,10 +218,26 @@ export function ingestGovernorTask(params: {
       db,
       dbx
         .updateTable("governor_action_intents")
-        .set({ state: "cancelled", cancelled_at: input.now, updated_at: input.now })
+        .set({
+          state: "cancelled",
+          cancelled_at: input.now,
+          lease_expires_at: null,
+          updated_at: input.now,
+        })
         .where("task_id", "=", current.taskId)
         .where("execution_generation", "!=", corrected.executionGeneration)
-        .where("state", "in", ["admitted", "running"]),
+        .where("state", "in", ["admitted", "running"])
+        .where("effect_started_at", "is", null),
+    );
+    executeSqliteQuerySync(
+      db,
+      dbx
+        .updateTable("governor_action_intents")
+        .set({ cancellation_requested_at: input.now, updated_at: input.now })
+        .where("task_id", "=", current.taskId)
+        .where("execution_generation", "!=", corrected.executionGeneration)
+        .where("state", "=", "running")
+        .where("effect_started_at", "is not", null),
     );
     executeSqliteQuerySync(
       db,
@@ -230,13 +246,24 @@ export function ingestGovernorTask(params: {
         .set({
           state: "cancelled",
           cancelled_at: input.now,
-          worker_id: null,
-          lease_expires_at: null,
           updated_at: input.now,
         })
         .where("task_id", "=", current.taskId)
         .where("execution_generation", "!=", corrected.executionGeneration)
-        .where("state", "in", ["queued", "running"]),
+        .where("state", "=", "queued"),
+    );
+    executeSqliteQuerySync(
+      db,
+      dbx
+        .updateTable("governor_fanout_jobs")
+        .set({
+          cancellation_disposition: "cancel",
+          cancellation_requested_at: input.now,
+          updated_at: input.now,
+        })
+        .where("task_id", "=", current.taskId)
+        .where("execution_generation", "!=", corrected.executionGeneration)
+        .where("state", "=", "running"),
     );
     const event = createGovernorEventRecord({
       task: corrected,

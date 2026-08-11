@@ -19,6 +19,7 @@ import {
   createMandatoryEvalMutationProposal,
   ObservedMutationAdapter,
 } from "./mandatory-eval-adapters.js";
+import { reconcileMandatoryUnknownMutation } from "./mandatory-eval-crash-helpers.js";
 import {
   createMandatoryEvalRegistry,
   mandatoryEvalContract,
@@ -27,11 +28,7 @@ import {
 } from "./mandatory-eval-fixtures.js";
 import { GovernorRuntimeAdapter } from "./runtime-adapter.js";
 import { GovernorSqliteStore } from "./store.js";
-import {
-  createGovernorTestStore,
-  recordGovernorTestAdmittedToolOutcome,
-  recordGovernorTestToolOutcome,
-} from "./test-broker.js";
+import { createGovernorTestStore, recordGovernorTestToolOutcome } from "./test-broker.js";
 import { createGovernorEffectId } from "./types.js";
 
 function registerMandatorySyntheticDelivery(
@@ -241,7 +238,16 @@ describe("behavior governor mandatory synthetic evals", () => {
             if (oldClaim.kind !== "claimed") {
               throw new Error("missing old action claim");
             }
-            mutationAdapter.apply(oldClaim.intent.idempotencyKey);
+            const oldStarted = controller.beginActionEffect({
+              intent: oldClaim.intent,
+              workerId: `old-action-${index}`,
+              claimEpoch: oldClaim.intent.claimEpoch,
+              now: base + 130,
+            });
+            if (oldStarted.kind !== "started") {
+              throw new Error("missing old action effect fence");
+            }
+            mutationAdapter.apply(oldStarted.intent.idempotencyKey);
             reopen("after_mutation_provider_accept");
 
             const newClaim = controller.claimActionIntent({
@@ -250,16 +256,15 @@ describe("behavior governor mandatory synthetic evals", () => {
               leaseDurationMs: 10,
               now: base + 141,
             });
-            if (newClaim.kind !== "claimed") {
-              throw new Error("missing reclaimed action");
+            if (newClaim.kind !== "reconcile_required") {
+              throw new Error("started action was incorrectly reclaimable");
             }
-            mutationAdapter.apply(newClaim.intent.idempotencyKey);
             expect(
               controller.recordAdmittedToolOutcome({
                 taskId,
-                intent: oldClaim.intent,
+                intent: oldStarted.intent,
                 workerId: `old-action-${index}`,
-                claimEpoch: oldClaim.intent.claimEpoch,
+                claimEpoch: oldStarted.intent.claimEpoch,
                 outcome: {
                   transport: "completed",
                   semantic: "success",
@@ -270,20 +275,17 @@ describe("behavior governor mandatory synthetic evals", () => {
                 now: base + 142,
               }),
             ).toMatchObject({ accepted: false, reason: "stale_execution" });
-            recordGovernorTestAdmittedToolOutcome(controller, testHost.broker, {
+            const task = store.loadTask(taskId);
+            if (!task) {
+              throw new Error("missing task during action reconciliation");
+            }
+            reconcileMandatoryUnknownMutation({
+              controller,
+              capabilities: testHost.broker.capabilities,
+              scopeKey: task.scopeKey,
               taskId,
               intent: newClaim.intent,
-              workerId: `new-action-${index}`,
-              claimEpoch: newClaim.intent.claimEpoch,
-              outcome: {
-                transport: "completed",
-                semantic: "success",
-                sideEffect: "applied",
-                verification: "verified",
-                summaryCode: "verified",
-                evidence: { exactState: true },
-              },
-              now: base + 143,
+              observedAt: base + 143,
             });
             reopen("after_mutation_outcome");
 
@@ -347,7 +349,7 @@ describe("behavior governor mandatory synthetic evals", () => {
             );
             samples.push({
               success:
-                store.listEffects(taskId).length === 4 &&
+                store.listEffects(taskId).length === 3 &&
                 store.outbox.list(taskId)[0]?.state === "sent",
               prematureCompletion: false,
               resumedAfterCrash: true,
@@ -361,7 +363,7 @@ describe("behavior governor mandatory synthetic evals", () => {
               meaningfulCalls: mutationAttempts.length + deliveryAttempts.length,
               usefulCalls: 2,
             });
-            expect(mutationAttempts).toHaveLength(2);
+            expect(mutationAttempts).toHaveLength(1);
             expect(deliveryAttempts).toHaveLength(1);
             expect(
               countGovernorObservedKey(

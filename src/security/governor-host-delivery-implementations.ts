@@ -80,11 +80,19 @@ const syntheticImplementation: CompiledImplementation = Object.freeze({
       normalizedTarget: "synthetic",
       mode: "active" as const,
       send: async ({ deliveryKey, payload }) => {
-        if (
+        const throwDeliveryKey =
           !Array.isArray(config) &&
           config !== null &&
           typeof config === "object" &&
-          config.throwBeforeSend === true
+          typeof config.throwDeliveryKey === "string"
+            ? config.throwDeliveryKey
+            : undefined;
+        if (
+          throwDeliveryKey === deliveryKey ||
+          (!Array.isArray(config) &&
+            config !== null &&
+            typeof config === "object" &&
+            config.throwBeforeSend === true)
         ) {
           throw new Error("Synthetic governor delivery interrupted before observable send");
         }

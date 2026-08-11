@@ -598,12 +598,14 @@ export interface GovernorActionIntents {
   action_fingerprint: string;
   approval_policy_digest: Generated<string>;
   approval_required: Generated<number>;
+  cancellation_requested_at: number | null;
   cancelled_at: number | null;
   claim_epoch: Generated<number>;
   claimed_by: string | null;
   completed_at: number | null;
   created_at: number;
   effect_id: string;
+  effect_started_at: number | null;
   execution_generation: number;
   force_replan_after_outcome: number;
   idempotency_key: string;
@@ -617,6 +619,9 @@ export interface GovernorActionIntents {
   state: string;
   task_id: string;
   task_version: number;
+  termination_acknowledged_at: number | null;
+  termination_evidence_digest: string | null;
+  termination_outcome: string | null;
   updated_at: number;
 }
 
@@ -687,6 +692,12 @@ export interface GovernorDeliveryDispatchClaims {
   identity_key: string;
   implementation_digest: string;
   payload_digest: string;
+  review_key_id: string | null;
+  review_key_version: number | null;
+  review_reason_digest: string | null;
+  review_resolution_signature: string | null;
+  review_state: string | null;
+  review_updated_at: number | null;
   state: string;
 }
 
@@ -780,6 +791,8 @@ export interface GovernorFaninReducers {
 }
 
 export interface GovernorFanoutJobs {
+  cancellation_disposition: string | null;
+  cancellation_requested_at: number | null;
   cancelled_at: number | null;
   claim_epoch: Generated<number>;
   completed_at: number | null;
@@ -791,7 +804,11 @@ export interface GovernorFanoutJobs {
   job_id: string;
   lease_epoch: number;
   lease_expires_at: number | null;
+  objective_revision: number;
   payload_json: string;
+  physical_binding_digest: string | null;
+  physical_generation: number | null;
+  physical_slot: number | null;
   plan_version: number;
   priority: number;
   queue_sequence: number;
@@ -800,6 +817,9 @@ export interface GovernorFanoutJobs {
   state: string;
   task_id: string;
   task_version: number;
+  termination_acknowledged_at: number | null;
+  termination_evidence_digest: string | null;
+  termination_outcome: string | null;
   updated_at: number;
   worker_id: string | null;
 }

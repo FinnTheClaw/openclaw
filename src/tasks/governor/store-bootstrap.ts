@@ -4,6 +4,7 @@ import {
   isTrustedGovernorReceiptResolver,
   type GovernorTrustedApprovalResolver,
   type GovernorTrustedDeliveryResolver,
+  type GovernorTrustedPhysicalExecutionCoordinator,
   type GovernorTrustedReceiptResolver,
 } from "../../security/governor-host-readonly.js";
 import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
@@ -12,6 +13,7 @@ import { GovernorApprovalGrantStore } from "./approval-store.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorCheckpointStore } from "./checkpoint-store.js";
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
+import { GovernorFanoutStore } from "./fanout.js";
 import { GovernorMemorySubsystem } from "./memory-subsystem.js";
 import { GovernorOutboxStore } from "./outbox-store.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
@@ -30,6 +32,7 @@ export type GovernorSqliteStoreParams = {
   receiptResolver?: GovernorTrustedReceiptResolver;
   approvalResolver?: GovernorTrustedApprovalResolver;
   deliveryResolver?: GovernorTrustedDeliveryResolver;
+  physicalExecutionCoordinator?: GovernorTrustedPhysicalExecutionCoordinator;
   secrets?: GovernorStoreSecrets;
   stateEnv?: NodeJS.ProcessEnv;
   capabilities?: GovernorCapabilityRegistry;
@@ -40,17 +43,20 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
     !params.receiptResolver ||
     !params.approvalResolver ||
     !params.deliveryResolver ||
+    !params.physicalExecutionCoordinator ||
     !params.secrets
       ? createGovernorTestHostBindings({ stateDir: params.stateDir })
       : undefined;
   const receiptResolver = params.receiptResolver ?? testBroker?.resolver;
   const approvalResolver = params.approvalResolver ?? testBroker?.approvalResolver;
   const deliveryResolver = params.deliveryResolver ?? testBroker?.deliveryResolver;
+  const physicalExecutionCoordinator =
+    params.physicalExecutionCoordinator ?? testBroker?.physicalExecutionCoordinator;
   const secrets = params.secrets ?? testBroker?.secrets;
   if (!receiptResolver || !isTrustedGovernorReceiptResolver(receiptResolver)) {
     throw new Error("Governor store requires a trusted host receipt resolver");
   }
-  if (!approvalResolver || !deliveryResolver || !secrets) {
+  if (!approvalResolver || !deliveryResolver || !physicalExecutionCoordinator || !secrets) {
     throw new Error("Governor store requires explicit host bindings and secrets");
   }
   const options: OpenClawStateDatabaseOptions = {
@@ -88,6 +94,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
       approvals,
       capabilities,
       identity: secrets.identity,
+      receiptResolver,
     }),
     approvals,
     deliveryCertifications: new GovernorDeliveryCertificationStore({
@@ -96,5 +103,10 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
     }),
     checkpoints: new GovernorCheckpointStore({ options }),
     outbox: new GovernorOutboxStore({ options }),
+    fanout: new GovernorFanoutStore({
+      options,
+      physicalExecutionCoordinator,
+      receiptResolver,
+    }),
   };
 }

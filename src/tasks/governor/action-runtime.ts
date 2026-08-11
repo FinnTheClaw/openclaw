@@ -1,9 +1,11 @@
+import type { HostGovernorReceiptId } from "../../security/governor-host-readonly.js";
 // Reserves, fences, executes, and records semantic tool actions for governed tasks.
 import {
   createGovernorActionIntent,
   isSameGovernorActionIntent,
   toPersistentGovernorActionProposal,
   type GovernorActionIntent,
+  type GovernorActionTerminationOutcome,
 } from "./action-intent.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
 import {
@@ -61,6 +63,21 @@ export type GovernorClaimActionIntentParams = {
   now: number;
 };
 
+export type GovernorBeginActionEffectParams = {
+  intent: GovernorActionIntent;
+  workerId: string;
+  claimEpoch: number;
+  now: number;
+};
+
+export type GovernorAcknowledgeActionTerminationParams = {
+  taskId: GovernorTaskId;
+  effectId: string;
+  receiptId: HostGovernorReceiptId;
+  outcome: GovernorActionTerminationOutcome;
+  now: number;
+};
+
 export type GovernorRecordAdmittedToolOutcomeParams = {
   taskId: GovernorTaskId;
   intent: GovernorActionIntent;
@@ -94,6 +111,26 @@ function assertApplied(result: GovernorCommitResult): GovernorTaskProjection {
 
 function nextTaskVersion(task: GovernorTaskProjection, now: number): GovernorTaskProjection {
   return { ...task, taskVersion: task.taskVersion + 1, updatedAt: now };
+}
+
+function rejectLateResult(params: {
+  store: GovernorSqliteStore;
+  task: GovernorTaskProjection;
+  effectId: string;
+  executionGeneration: number;
+  now: number;
+}): GovernorToolRecordResult {
+  const event = createGovernorEventRecord({
+    task: params.task,
+    eventType: "late_tool_result_ignored",
+    payload: {
+      effectId: params.effectId,
+      executionGeneration: params.executionGeneration,
+    },
+    now: params.now,
+  });
+  params.store.appendAuditEvent({ task: params.task, event });
+  return { accepted: false, reason: "stale_execution", task: params.task };
 }
 
 export class GovernorActionRuntime {
@@ -243,53 +280,72 @@ export class GovernorActionRuntime {
     });
   }
 
+  beginEffect(params: GovernorBeginActionEffectParams) {
+    return this.store.actionIntents.beginEffect({
+      taskId: params.intent.taskId,
+      effectId: params.intent.effectId,
+      workerId: params.workerId,
+      claimEpoch: params.claimEpoch,
+      objectiveRevision: params.intent.objectiveRevision,
+      planVersion: params.intent.planVersion,
+      leaseEpoch: params.intent.leaseEpoch,
+      executionGeneration: params.intent.executionGeneration,
+      now: params.now,
+    });
+  }
+
+  acknowledgeTermination(params: GovernorAcknowledgeActionTerminationParams) {
+    return this.store.actionIntents.acknowledgeTermination(params);
+  }
+
   record(params: GovernorRecordAdmittedToolOutcomeParams): GovernorToolRecordResult {
-    const task = this.#task(params.taskId);
-    const intent = this.store.actionIntents.load(task.taskId, params.intent.effectId);
-    if (!intent || !isSameGovernorActionIntent(intent, params.intent.proposal)) {
+    const initialTask = this.#task(params.taskId);
+    const loadedIntent = this.store.actionIntents.load(initialTask.taskId, params.intent.effectId);
+    if (!loadedIntent || !isSameGovernorActionIntent(loadedIntent, params.intent.proposal)) {
       throw new Error(`Governor action intent not found: ${params.intent.effectId}`);
     }
-    const existingEffect = this.store.loadEffect(task.taskId, intent.effectId);
+    const existingEffect = this.store.loadEffect(initialTask.taskId, loadedIntent.effectId);
     if (existingEffect) {
       if (
-        existingEffect.objectiveRevision !== task.objectiveRevision ||
-        existingEffect.planVersion !== task.planVersion ||
-        existingEffect.leaseEpoch !== task.leaseEpoch ||
-        existingEffect.executionGeneration !== task.executionGeneration
+        existingEffect.objectiveRevision !== initialTask.objectiveRevision ||
+        existingEffect.planVersion !== initialTask.planVersion ||
+        existingEffect.leaseEpoch !== initialTask.leaseEpoch ||
+        existingEffect.executionGeneration !== initialTask.executionGeneration
       ) {
-        return { accepted: false, reason: "stale_execution", task };
+        return { accepted: false, reason: "stale_execution", task: initialTask };
       }
       const existingEvidence = this.store
-        .listEvidence(task.taskId)
-        .find((item) => item.evidenceId === `evidence_${intent.effectId}`);
+        .listEvidence(initialTask.taskId)
+        .find((item) => item.evidenceId === `evidence_${loadedIntent.effectId}`);
       return {
         accepted: true,
-        task,
+        task: initialTask,
         effect: existingEffect,
         ...(existingEvidence ? { evidence: existingEvidence } : {}),
       };
     }
-    if (
-      intent.state !== "running" ||
-      intent.claimedBy !== params.workerId ||
-      intent.claimEpoch !== params.claimEpoch ||
-      intent.objectiveRevision !== task.objectiveRevision ||
-      intent.planVersion !== task.planVersion ||
-      intent.leaseEpoch !== task.leaseEpoch ||
-      intent.executionGeneration !== task.executionGeneration
-    ) {
-      const event = createGovernorEventRecord({
-        task,
-        eventType: "late_tool_result_ignored",
-        payload: {
-          effectId: intent.effectId,
-          executionGeneration: intent.executionGeneration,
-        },
+    const validation = this.store.actionIntents.validateOutcome({
+      taskId: params.taskId,
+      effectId: params.intent.effectId,
+      workerId: params.workerId,
+      claimEpoch: params.claimEpoch,
+      objectiveRevision: params.intent.objectiveRevision,
+      planVersion: params.intent.planVersion,
+      leaseEpoch: params.intent.leaseEpoch,
+      executionGeneration: params.intent.executionGeneration,
+      now: params.now,
+    });
+    if (validation.kind !== "ready") {
+      return rejectLateResult({
+        store: this.store,
+        task: initialTask,
+        effectId: loadedIntent.effectId,
+        executionGeneration: loadedIntent.executionGeneration,
         now: params.now,
       });
-      this.store.appendAuditEvent({ task, event });
-      return { accepted: false, reason: "stale_execution", task };
     }
+    const task = validation.task;
+    const intent = validation.intent;
     if (task.state !== "EXECUTING") {
       throw new Error(`Cannot record tool outcome while task is ${task.state}`);
     }
@@ -379,33 +435,43 @@ export class GovernorActionRuntime {
       updatedAt: params.now,
     };
     delete completedIntent.leaseExpiresAt;
-    const committed = assertApplied(
-      this.store.commit({
-        current: task,
-        next,
-        event,
-        effects: [effect],
-        actionIntentUpdates: [{ current: intent, next: completedIntent }],
-        ...(evidenceAdmission ? { evidenceAdmission } : {}),
-      }),
-    );
+    let committed: GovernorTaskProjection;
+    try {
+      committed = assertApplied(
+        this.store.commit({
+          current: task,
+          next,
+          event,
+          effects: [effect],
+          actionIntentUpdates: [{ current: intent, next: completedIntent }],
+          ...(evidenceAdmission ? { evidenceAdmission } : {}),
+        }),
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("Concurrent governor action intent")) {
+        return rejectLateResult({
+          store: this.store,
+          task: this.#task(params.taskId),
+          effectId: intent.effectId,
+          executionGeneration: intent.executionGeneration,
+          now: params.now,
+        });
+      }
+      throw error;
+    }
     return { accepted: true, task: committed, effect, ...(evidence ? { evidence } : {}) };
   }
 
   recordInline(params: GovernorRecordToolOutcomeParams): GovernorToolRecordResult {
     const admission = this.admit(params);
     if (!admission.accepted) {
-      const event = createGovernorEventRecord({
+      return rejectLateResult({
+        store: this.store,
         task: admission.task,
-        eventType: "late_tool_result_ignored",
-        payload: {
-          effectId: params.proposal.effectId,
-          executionGeneration: params.executionFence.executionGeneration,
-        },
+        effectId: params.proposal.effectId,
+        executionGeneration: params.executionFence.executionGeneration,
         now: params.now,
       });
-      this.store.appendAuditEvent({ task: admission.task, event });
-      return admission;
     }
     const workerId = `inline-${admission.intent.effectId}`;
     const claim = this.claim({ intent: admission.intent, workerId, now: params.now });
@@ -424,11 +490,20 @@ export class GovernorActionRuntime {
     if (claim.kind !== "claimed") {
       throw new Error(`Governor action claim failed: ${claim.kind}`);
     }
-    return this.record({
-      taskId: params.taskId,
+    const started = this.beginEffect({
       intent: claim.intent,
       workerId,
       claimEpoch: claim.intent.claimEpoch,
+      now: params.now,
+    });
+    if (started.kind !== "started") {
+      throw new Error(`Governor action effect fence failed: ${started.kind}`);
+    }
+    return this.record({
+      taskId: params.taskId,
+      intent: started.intent,
+      workerId,
+      claimEpoch: started.intent.claimEpoch,
       outcome: params.outcome,
       evidenceSourceKind: params.evidenceSourceKind,
       evidenceReceiptId: params.evidenceReceiptId,

@@ -5,7 +5,6 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { governorDigest } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
-import { GovernorFanoutStore } from "./fanout.js";
 import { GovernorSqliteStore } from "./store.js";
 import {
   createGovernorTestStore,
@@ -287,13 +286,13 @@ describe("governor mutation reconciliation and delivery", () => {
   });
 
   it("blocks completion while a durable fanout action is queued", async () => {
-    await withGovernor(({ controller, stateDir }) => {
+    await withGovernor(({ controller }) => {
       const taskId = startTask(controller);
       const task = controller.store.loadTask(taskId);
       if (!task) {
         throw new Error("missing task");
       }
-      new GovernorFanoutStore({ stateDir }).enqueue({
+      controller.store.fanout.enqueue({
         jobId: "unfinished-worker",
         task,
         round: 1,

@@ -349,7 +349,7 @@ describe("governor approval grants", () => {
     );
   });
 
-  it("fences a queued mutation at claim and reports an already-running grant in flight", async () => {
+  it("fences a queued mutation and reports an effect-started grant in flight", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-approval-claim-fence-" },
       async (state) => {
@@ -455,13 +455,22 @@ describe("governor approval grants", () => {
         if (!running.accepted) {
           throw new Error("expected replacement mutation");
         }
+        const claim = controller.claimActionIntent({
+          intent: running.intent,
+          workerId: "first-worker",
+          now: 109,
+        });
+        if (claim.kind !== "claimed") {
+          throw new Error("expected replacement action claim");
+        }
         expect(
-          controller.claimActionIntent({
-            intent: running.intent,
+          controller.beginActionEffect({
+            intent: claim.intent,
             workerId: "first-worker",
+            claimEpoch: claim.intent.claimEpoch,
             now: 109,
           }),
-        ).toMatchObject({ kind: "claimed" });
+        ).toMatchObject({ kind: "started" });
         expect(() =>
           broker.capabilities.submitApprovalRevocation({
             grantId: replacement,

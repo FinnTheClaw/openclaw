@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { governorActionTerminationReceiptPayload } from "./action-execution-lifecycle.js";
 import { governorDigest } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
@@ -184,6 +185,15 @@ describe("governor durable action intents", () => {
       if (!claim || claim.kind !== "claimed") {
         throw new Error("expected one action execution claim");
       }
+      const started = restarted.beginActionEffect({
+        intent: claim.intent,
+        workerId: "worker-0",
+        claimEpoch: claim.intent.claimEpoch,
+        now: 181,
+      });
+      if (started.kind !== "started") {
+        throw new Error("expected one action effect fence");
+      }
 
       const observableMutations = new Map<string, { applied: true }>();
       const mutate = vi.fn((idempotencyKey: string) => {
@@ -195,13 +205,13 @@ describe("governor durable action intents", () => {
         observableMutations.set(idempotencyKey, result);
         return result;
       });
-      mutate(claim.intent.idempotencyKey);
+      mutate(started.intent.idempotencyKey);
       const records = Array.from({ length: 20 }, (_, index) =>
         recordGovernorTestAdmittedToolOutcome(restarted, broker, {
           taskId,
-          intent: claim.intent,
+          intent: started.intent,
           workerId: "worker-0",
-          claimEpoch: claim.intent.claimEpoch,
+          claimEpoch: started.intent.claimEpoch,
           outcome: {
             transport: "completed",
             semantic: "success",
@@ -266,6 +276,95 @@ describe("governor durable action intents", () => {
       ).toMatchObject({ accepted: false, reason: "stale_execution" });
       expect(store.listEffects(taskId)).toEqual([]);
       expect(store.listEvents(taskId).at(-1)?.eventType).toBe("late_tool_result_ignored");
+    });
+  });
+
+  it("keeps a corrected started effect fenced until authenticated termination", async () => {
+    await withIntentController(({ controller, broker, store }) => {
+      const taskId = start(controller);
+      const admission = controller.admitAction({
+        taskId,
+        executionFence: controller.captureExecutionFence(taskId),
+        proposal: proposal(createGovernorEffectId("corrected-in-flight")),
+        progressVector: { desired: true },
+        now: 121,
+      });
+      if (!admission.accepted) {
+        throw new Error("expected in-flight action admission");
+      }
+      const claim = controller.claimActionIntent({
+        intent: admission.intent,
+        workerId: "corrected-worker",
+        leaseDurationMs: 100,
+        now: 122,
+      });
+      if (claim.kind !== "claimed") {
+        throw new Error("expected in-flight action claim");
+      }
+      const started = controller.beginActionEffect({
+        intent: claim.intent,
+        workerId: "corrected-worker",
+        claimEpoch: claim.intent.claimEpoch,
+        now: 123,
+      });
+      if (started.kind !== "started") {
+        throw new Error("expected in-flight effect fence");
+      }
+      controller.ingest({
+        sourceMessageId: "intent-message-correction",
+        sourceSequence: 2,
+        scope,
+        mode: "FOCUSED",
+        contract: contract("Supersede a physically started action"),
+        now: 124,
+      });
+      const cancelling = store.actionIntents.load(taskId, started.intent.effectId);
+      expect(cancelling).toMatchObject({ state: "running", cancellationRequestedAt: 124 });
+      if (!cancelling) {
+        throw new Error("expected corrected in-flight intent");
+      }
+      expect(
+        controller.recordAdmittedToolOutcome({
+          taskId,
+          intent: started.intent,
+          workerId: "corrected-worker",
+          claimEpoch: started.intent.claimEpoch,
+          outcome: {
+            transport: "completed",
+            semantic: "success",
+            sideEffect: "applied",
+            verification: "verified",
+            summaryCode: "late-after-correction",
+          },
+          now: 125,
+        }),
+      ).toMatchObject({ accepted: false, reason: "stale_execution" });
+      const payload = governorActionTerminationReceiptPayload(cancelling, "unknown");
+      const receiptId = broker.capabilities.submitObservedReceipt({
+        scopeKey: store.loadTask(taskId)?.scopeKey ?? "",
+        taskId,
+        taskVersion: cancelling.taskVersion,
+        objectiveRevision: cancelling.objectiveRevision,
+        planVersion: cancelling.planVersion,
+        sourceKind: "structured_external",
+        sourceIdentity: "synthetic-corrected-worker-supervisor",
+        payload,
+        observedAt: 126,
+      });
+      expect(
+        controller.acknowledgeActionTermination({
+          taskId,
+          effectId: cancelling.effectId,
+          receiptId,
+          outcome: "unknown",
+          now: 126,
+        }),
+      ).toMatchObject({ kind: "acknowledged" });
+      expect(store.actionIntents.load(taskId, cancelling.effectId)).toMatchObject({
+        state: "cancelled",
+        terminationOutcome: "unknown",
+      });
+      expect(store.listEffects(taskId)).toEqual([]);
     });
   });
 

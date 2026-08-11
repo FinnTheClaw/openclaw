@@ -35,6 +35,7 @@ import {
   isGovernorHostPersistence,
   type GovernorHostPersistence,
 } from "./governor-host-persistence.js";
+import type { GovernorTrustedPhysicalExecutionCoordinator } from "./governor-host-physical-execution.js";
 import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
 export type {
   GovernorAuthenticatedApprovalReceipt,
@@ -105,6 +106,7 @@ export function createHostGovernorBroker(params: {
   approvalResolver: GovernorTrustedApprovalResolver;
   deliveryResolver: GovernorTrustedDeliveryResolver;
   ownerIngressResolver: GovernorTrustedOwnerIngressResolver;
+  physicalExecutionCoordinator: GovernorTrustedPhysicalExecutionCoordinator;
 } {
   if (!isGovernorSecrets(params.secrets) || !isGovernorHostPersistence(params.persistence)) {
     throw new Error("Host governor validated secrets and persistence are required");
@@ -484,6 +486,7 @@ export function createHostGovernorBroker(params: {
       submitApprovalRevocation,
       registerStaticDeliveryAdapter: deliveryBroker.register,
       revokeDeliveryAdapter: deliveryBroker.revoke,
+      resolveUnknownDelivery: deliveryBroker.resolveUnknown,
       submitAuthenticatedOwnerIngress,
       revokeOwnerIngressReceipt,
     }),
@@ -491,5 +494,6 @@ export function createHostGovernorBroker(params: {
     approvalResolver,
     deliveryResolver: deliveryBroker.resolver,
     ownerIngressResolver,
+    physicalExecutionCoordinator: params.persistence.physicalExecutions,
   };
 }

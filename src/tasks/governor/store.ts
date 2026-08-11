@@ -7,8 +7,8 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
+import { bindGovernorActionIntent } from "./action-intent-codec.js";
 import {
-  bindGovernorActionIntent,
   GovernorActionIntentStore,
   type GovernorActionIntentUpdate,
 } from "./action-intent-store.js";
@@ -20,6 +20,7 @@ import { bindGovernorCheckpoint, GovernorCheckpointStore } from "./checkpoint-st
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
 import type { GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceCandidate, GovernorEvidenceRecord } from "./evidence.js";
+import { GovernorFanoutStore } from "./fanout.js";
 import { GovernorMemorySubsystem } from "./memory-subsystem.js";
 import {
   bindGovernorOutbox,
@@ -73,6 +74,7 @@ export class GovernorSqliteStore {
   readonly #deliveryCertifications: GovernorDeliveryCertificationStore;
   readonly checkpoints: GovernorCheckpointStore;
   readonly memory: GovernorMemorySubsystem;
+  readonly fanout: GovernorFanoutStore;
   readonly outbox: GovernorOutboxStore;
   readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
   readonly #queries: GovernorStoreQueries;
@@ -89,6 +91,7 @@ export class GovernorSqliteStore {
     this.#deliveryCertifications = dependencies.deliveryCertifications;
     this.checkpoints = dependencies.checkpoints;
     this.memory = dependencies.memory;
+    this.fanout = dependencies.fanout;
     this.outbox = dependencies.outbox;
   }
 

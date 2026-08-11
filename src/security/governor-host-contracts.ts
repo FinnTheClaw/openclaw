@@ -71,6 +71,11 @@ export type HostDeliveryReconciliationResult =
   | Readonly<{ status: "not_sent" }>
   | Readonly<{ status: "unresolved" }>;
 
+export type GovernorDeliveryManualResolution =
+  | "confirmed_not_sent"
+  | "confirmed_sent"
+  | "retired_unknown";
+
 export type HostDeliveryEntry = Readonly<{
   handle: HostGovernorDeliveryHandle;
   identityKey: string;
@@ -205,6 +210,12 @@ export type HostGovernorCapabilities = {
     generation: number;
   }) => HostGovernorDeliveryHandle;
   readonly revokeDeliveryAdapter: (input: { handle: HostGovernorDeliveryHandle }) => boolean;
+  readonly resolveUnknownDelivery: (input: {
+    handle: HostGovernorDeliveryHandle;
+    deliveryKey: string;
+    payloadDigest: string;
+    resolution: GovernorDeliveryManualResolution;
+  }) => boolean;
   readonly submitAuthenticatedOwnerIngress: (input: {
     channel: "imessage" | "signal";
     accountId: string;

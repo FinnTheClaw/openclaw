@@ -3,6 +3,8 @@ import {
   GovernorActionRuntime,
   type GovernorActionAdmissionResult,
   type GovernorAdmitActionParams,
+  type GovernorAcknowledgeActionTerminationParams,
+  type GovernorBeginActionEffectParams,
   type GovernorClaimActionIntentParams,
   type GovernorExecutionFence,
   type GovernorRecordAdmittedToolOutcomeParams,
@@ -266,6 +268,14 @@ export class GovernorController {
 
   claimActionIntent(params: GovernorClaimActionIntentParams) {
     return this.actions.claim(params);
+  }
+
+  beginActionEffect(params: GovernorBeginActionEffectParams) {
+    return this.actions.beginEffect(params);
+  }
+
+  acknowledgeActionTermination(params: GovernorAcknowledgeActionTerminationParams) {
+    return this.actions.acknowledgeTermination(params);
   }
 
   recordAdmittedToolOutcome(

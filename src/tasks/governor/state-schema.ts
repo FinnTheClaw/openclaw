@@ -75,11 +75,22 @@ function migrateLegacyGovernorColumns(
     "approval_policy_digest",
     "TEXT NOT NULL DEFAULT 'legacy-unverified'",
   );
+  addIfMissing("governor_action_intents", "effect_started_at", "INTEGER");
+  addIfMissing("governor_action_intents", "cancellation_requested_at", "INTEGER");
+  addIfMissing("governor_action_intents", "termination_outcome", "TEXT");
+  addIfMissing("governor_action_intents", "termination_evidence_digest", "TEXT");
+  addIfMissing("governor_action_intents", "termination_acknowledged_at", "INTEGER");
   addIfMissing(
     "governor_delivery_certifications",
     "implementation_digest",
     "TEXT NOT NULL DEFAULT 'legacy'",
   );
+  addIfMissing("governor_delivery_dispatch_claims", "review_state", "TEXT");
+  addIfMissing("governor_delivery_dispatch_claims", "review_reason_digest", "TEXT");
+  addIfMissing("governor_delivery_dispatch_claims", "review_resolution_signature", "TEXT");
+  addIfMissing("governor_delivery_dispatch_claims", "review_key_id", "TEXT");
+  addIfMissing("governor_delivery_dispatch_claims", "review_key_version", "INTEGER");
+  addIfMissing("governor_delivery_dispatch_claims", "review_updated_at", "INTEGER");
   addIfMissing(
     "governor_delivery_certifications",
     "config_digest",
@@ -124,6 +135,15 @@ function migrateLegacyGovernorColumns(
   addIfMissing("governor_memories", "verified_evidence_id", "TEXT");
   addIfMissing("governor_memories", "verified_evidence_digest", "TEXT");
   addIfMissing("governor_memories", "verified_evidence_semantic_digest", "TEXT");
+  addIfMissing("governor_fanout_jobs", "physical_slot", "INTEGER");
+  addIfMissing("governor_fanout_jobs", "objective_revision", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing("governor_fanout_jobs", "physical_generation", "INTEGER");
+  addIfMissing("governor_fanout_jobs", "physical_binding_digest", "TEXT");
+  addIfMissing("governor_fanout_jobs", "cancellation_disposition", "TEXT");
+  addIfMissing("governor_fanout_jobs", "cancellation_requested_at", "INTEGER");
+  addIfMissing("governor_fanout_jobs", "termination_outcome", "TEXT");
+  addIfMissing("governor_fanout_jobs", "termination_evidence_digest", "TEXT");
+  addIfMissing("governor_fanout_jobs", "termination_acknowledged_at", "INTEGER");
   if (migratedEvidence) {
     db.exec("DROP INDEX IF EXISTS idx_governor_evidence_task");
   }

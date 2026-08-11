@@ -31,6 +31,7 @@ describe("governor memory contradiction retirement", () => {
         factKey: "ssh.path",
         path: "/legacy/key",
         observedAt: 100,
+        sourceKind: "structured_external",
       });
       persistMemoryEvidence({
         store,
@@ -313,6 +314,7 @@ describe("governor memory contradiction retirement", () => {
         factKey: "ssh.path",
         path: "/revision/0",
         observedAt: 100,
+        sourceKind: "structured_external",
       });
       persistMemoryEvidence({
         store,

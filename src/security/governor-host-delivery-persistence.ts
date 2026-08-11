@@ -16,6 +16,7 @@ import type {
   GovernorHostAntiRollbackLedger,
   GovernorLedgerState,
 } from "./governor-host-anti-rollback-ledger.js";
+import type { GovernorDeliveryManualResolution } from "./governor-host-contracts.js";
 
 type HostDeliveryDb = Pick<
   StateDb,
@@ -43,6 +44,13 @@ export type DeliveryEffectInput = DeliveryCertificationInput &
     payloadDigest: string;
   }>;
 
+export type DeliveryReviewInput = DeliveryEffectInput &
+  Readonly<{
+    resolution: GovernorDeliveryManualResolution;
+    reasonDigest: string;
+    resolutionSignature: string;
+  }>;
+
 type DeliveryState = Readonly<{ generation: number; status: "certified" | "revoked" }>;
 
 export type GovernorHostDeliveryPersistence = Readonly<{
@@ -59,6 +67,8 @@ export type GovernorHostDeliveryPersistence = Readonly<{
     input: DeliveryEffectInput,
   ) => "claimed" | "effect_started" | "completed" | "cancelled" | null;
   completeDeliveryEffect: (claimId: string, completedAt: number) => boolean;
+  markDeliveryEffectUnknown: (input: DeliveryEffectInput & { reasonDigest: string }) => boolean;
+  resolveDeliveryEffect: (input: DeliveryReviewInput) => boolean;
 }>;
 
 function deliveryBinding(
@@ -326,6 +336,12 @@ export function createGovernorHostDeliveryPersistence(params: {
             claimed_at: input.observedAt,
             effect_started_at: null,
             completed_at: null,
+            review_state: null,
+            review_reason_digest: null,
+            review_resolution_signature: null,
+            review_key_id: null,
+            review_key_version: null,
+            review_updated_at: null,
           }),
         );
         return insert.numAffectedRows === 1n;
@@ -382,6 +398,86 @@ export function createGovernorHostDeliveryPersistence(params: {
             .set({ state: "completed", completed_at: completedAt })
             .where("claim_id", "=", claimId)
             .where("state", "=", "effect_started"),
+        );
+        return update.numAffectedRows === 1n;
+      }, options),
+    markDeliveryEffectUnknown: (input) =>
+      runOpenClawStateWriteTransaction(({ db }) => {
+        const row = executeSqliteQueryTakeFirstSync(
+          db,
+          dbx(db)
+            .selectFrom("governor_delivery_dispatch_claims")
+            .selectAll()
+            .where("claim_id", "=", input.claimId),
+        );
+        if (!row || row.state !== "effect_started" || !claimMatches(row, input)) {
+          return false;
+        }
+        if (row.review_state === "pending") {
+          return row.review_reason_digest === input.reasonDigest;
+        }
+        const update = executeSqliteQuerySync(
+          db,
+          dbx(db)
+            .updateTable("governor_delivery_dispatch_claims")
+            .set({
+              review_state: "pending",
+              review_reason_digest: input.reasonDigest,
+              review_updated_at: input.observedAt,
+            })
+            .where("claim_id", "=", input.claimId)
+            .where("state", "=", "effect_started")
+            .where("review_state", "is", null),
+        );
+        return update.numAffectedRows === 1n;
+      }, options),
+    resolveDeliveryEffect: (input) =>
+      runOpenClawStateWriteTransaction(({ db }) => {
+        const row = executeSqliteQueryTakeFirstSync(
+          db,
+          dbx(db)
+            .selectFrom("governor_delivery_dispatch_claims")
+            .selectAll()
+            .where("claim_id", "=", input.claimId),
+        );
+        if (!row || !claimMatches(row, input)) {
+          return false;
+        }
+        if (row.review_state === input.resolution) {
+          return (
+            row.review_reason_digest === input.reasonDigest &&
+            row.review_key_id === "host-broker-v1" &&
+            normalizeSqliteNumber(row.review_key_version) === 1 &&
+            Boolean(row.review_resolution_signature)
+          );
+        }
+        const state = ledger.state("delivery", input.identityKey);
+        if (
+          row.state !== "effect_started" ||
+          row.review_state !== "pending" ||
+          state?.generation !== input.generation ||
+          state.status !== "certified" ||
+          !primaryBindingMatches(db, input, "certified")
+        ) {
+          return false;
+        }
+        const update = executeSqliteQuerySync(
+          db,
+          dbx(db)
+            .updateTable("governor_delivery_dispatch_claims")
+            .set({
+              state: input.resolution === "confirmed_sent" ? "completed" : "cancelled",
+              completed_at: input.observedAt,
+              review_state: input.resolution,
+              review_reason_digest: input.reasonDigest,
+              review_resolution_signature: input.resolutionSignature,
+              review_key_id: "host-broker-v1",
+              review_key_version: 1,
+              review_updated_at: input.observedAt,
+            })
+            .where("claim_id", "=", input.claimId)
+            .where("state", "=", "effect_started")
+            .where("review_state", "=", "pending"),
         );
         return update.numAffectedRows === 1n;
       }, options),

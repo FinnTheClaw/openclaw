@@ -7,6 +7,7 @@ import {
 } from "../tasks/governor/canonical-json.js";
 import type { GovernorHostDeliveryRuntime } from "./governor-host-channel-delivery.js";
 import type {
+  GovernorDeliveryManualResolution,
   GovernorTrustedDeliveryResolver,
   HostDeliveryEntry,
   HostDeliveryReceipt,
@@ -67,6 +68,7 @@ export function createHostGovernorDeliveryBroker(params: {
 }): {
   register: HostGovernorCapabilities["registerStaticDeliveryAdapter"];
   revoke: HostGovernorCapabilities["revokeDeliveryAdapter"];
+  resolveUnknown: HostGovernorCapabilities["resolveUnknownDelivery"];
   resolver: GovernorTrustedDeliveryResolver;
 } {
   const key = params.secrets.receiptSigningKey;
@@ -166,33 +168,50 @@ export function createHostGovernorDeliveryBroker(params: {
       };
       return Object.freeze({ ...body, signature: sign(key, body) });
     };
-    const send: HostDeliveryEntry["send"] = async (request) => {
-      const payloadDigest = governorDigest(request.payload);
+    const effectFor = (request: {
+      deliveryKey: string;
+      payloadDigest: string;
+      observedAt: number;
+    }) => {
       const claimId = opaqueId(key, {
         deliveryEffect: {
           handle,
           deliveryKey: request.deliveryKey,
-          payloadDigest,
+          payloadDigest: request.payloadDigest,
           generation: unsigned.generation,
           deploymentIdentity: unsigned.binding.deploymentIdentity,
         },
       });
-      const effect = {
+      return {
         handle,
         identityKey,
         implementationDigest,
         configDigest,
         generation: unsigned.generation,
         signature,
-        observedAt: Date.now(),
+        observedAt: request.observedAt,
         claimId,
         deploymentIdentity: unsigned.binding.deploymentIdentity,
         deliveryKey: request.deliveryKey,
-        payloadDigest,
+        payloadDigest: request.payloadDigest,
       };
+    };
+    const send: HostDeliveryEntry["send"] = async (request) => {
+      const payloadDigest = governorDigest(request.payload);
+      const effect = effectFor({
+        deliveryKey: request.deliveryKey,
+        payloadDigest,
+        observedAt: Date.now(),
+      });
       if (!params.persistence.claimDeliveryEffect(effect)) {
         const priorState = params.persistence.deliveryEffectState(effect);
         if (priorState) {
+          if (priorState === "effect_started") {
+            params.persistence.markDeliveryEffectUnknown({
+              ...effect,
+              reasonDigest: governorDigest({ reason: "delivery_effect_already_admitted" }),
+            });
+          }
           return {
             status: "unknown",
             reasonDigest: governorDigest({
@@ -223,10 +242,20 @@ export function createHostGovernorDeliveryBroker(params: {
             providerReceipt: { decision: "would_send" },
           }),
         } as const;
-        params.persistence.completeDeliveryEffect(claimId, Date.now());
+        params.persistence.completeDeliveryEffect(effect.claimId, Date.now());
         return result;
       }
-      const result = await implementation.send(request);
+      let result: Awaited<ReturnType<typeof implementation.send>>;
+      try {
+        result = await implementation.send(request);
+      } catch (error) {
+        params.persistence.markDeliveryEffectUnknown({
+          ...effect,
+          observedAt: Date.now(),
+          reasonDigest: governorDigest({ reason: "delivery_transport_interrupted" }),
+        });
+        throw error;
+      }
       if (result.status === "sent") {
         const sent = {
           status: "sent",
@@ -237,27 +266,44 @@ export function createHostGovernorDeliveryBroker(params: {
             providerReceipt: result.providerReceipt,
           }),
         } as const;
-        params.persistence.completeDeliveryEffect(claimId, Date.now());
+        params.persistence.completeDeliveryEffect(effect.claimId, Date.now());
         return sent;
       }
       if (result.status === "not_sent") {
-        params.persistence.completeDeliveryEffect(claimId, Date.now());
+        params.persistence.completeDeliveryEffect(effect.claimId, Date.now());
+      } else if (result.status === "unknown") {
+        params.persistence.markDeliveryEffectUnknown({
+          ...effect,
+          observedAt: Date.now(),
+          reasonDigest: result.reasonDigest,
+        });
       }
       return result;
     };
     const reconcile: HostDeliveryEntry["reconcile"] = async (request) => {
+      const effect = effectFor({ ...request, observedAt: Date.now() });
+      params.persistence.markDeliveryEffectUnknown({
+        ...effect,
+        reasonDigest: governorDigest({ reason: "delivery_reconciliation_pending" }),
+      });
       const result = await implementation.reconcile(request);
       if (result.status === "sent") {
-        const claimId = opaqueId(key, {
-          deliveryEffect: {
-            handle,
-            deliveryKey: request.deliveryKey,
-            payloadDigest: request.payloadDigest,
-            generation: unsigned.generation,
-            deploymentIdentity: unsigned.binding.deploymentIdentity,
-          },
+        const reasonDigest = governorDigest({ reason: "authoritative_reconciliation_sent" });
+        const body = {
+          ...effect,
+          resolution: "confirmed_sent" as const,
+          reasonDigest,
+          observedAt: Date.now(),
+          keyId: "host-broker-v1" as const,
+          keyVersion: 1 as const,
+        };
+        params.persistence.resolveDeliveryEffect({
+          ...effect,
+          observedAt: body.observedAt,
+          resolution: body.resolution,
+          reasonDigest,
+          resolutionSignature: sign(key, body),
         });
-        params.persistence.completeDeliveryEffect(claimId, Date.now());
         return {
           status: "sent",
           receipt: issueReceipt({
@@ -266,6 +312,24 @@ export function createHostGovernorDeliveryBroker(params: {
             providerReceipt: result.providerReceipt,
           }),
         };
+      }
+      if (result.status === "not_sent") {
+        const reasonDigest = governorDigest({ reason: "authoritative_reconciliation_not_sent" });
+        const body = {
+          ...effect,
+          resolution: "confirmed_not_sent" as const,
+          reasonDigest,
+          observedAt: Date.now(),
+          keyId: "host-broker-v1" as const,
+          keyVersion: 1 as const,
+        };
+        params.persistence.resolveDeliveryEffect({
+          ...effect,
+          observedAt: body.observedAt,
+          resolution: body.resolution,
+          reasonDigest,
+          resolutionSignature: sign(key, body),
+        });
       }
       return result;
     };
@@ -316,6 +380,57 @@ export function createHostGovernorDeliveryBroker(params: {
       }),
     );
     return true;
+  };
+
+  const resolveUnknown: HostGovernorCapabilities["resolveUnknownDelivery"] = (input) => {
+    if (!DELIVERY_AUTHORITIES.has(authority)) {
+      throw new Error("Governor host delivery capability is invalid");
+    }
+    const entry = params.deliveries.get(input.handle);
+    if (!entry || entry.status !== "certified") {
+      return false;
+    }
+    const observedAt = Date.now();
+    const effect = {
+      handle: entry.handle,
+      identityKey: entry.identityKey,
+      implementationDigest: entry.implementationDigest,
+      configDigest: entry.configDigest,
+      generation: entry.generation,
+      signature: entry.signature,
+      observedAt,
+      claimId: opaqueId(key, {
+        deliveryEffect: {
+          handle: entry.handle,
+          deliveryKey: input.deliveryKey,
+          payloadDigest: input.payloadDigest,
+          generation: entry.generation,
+          deploymentIdentity: entry.binding.deploymentIdentity,
+        },
+      }),
+      deploymentIdentity: entry.binding.deploymentIdentity,
+      deliveryKey: input.deliveryKey,
+      payloadDigest: input.payloadDigest,
+    };
+    const reasonDigest = governorDigest({
+      reason: "host_manual_delivery_resolution",
+      resolution: input.resolution,
+    });
+    params.persistence.markDeliveryEffectUnknown({ ...effect, reasonDigest });
+    const body = {
+      ...effect,
+      resolution: input.resolution as GovernorDeliveryManualResolution,
+      reasonDigest,
+      observedAt,
+      keyId: "host-broker-v1" as const,
+      keyVersion: 1 as const,
+    };
+    return params.persistence.resolveDeliveryEffect({
+      ...effect,
+      resolution: input.resolution,
+      reasonDigest,
+      resolutionSignature: sign(key, body),
+    });
   };
 
   const resolver: GovernorTrustedDeliveryResolver = Object.freeze({
@@ -376,5 +491,5 @@ export function createHostGovernorDeliveryBroker(params: {
     },
   });
   DELIVERY_RESOLVERS.add(resolver);
-  return { register, revoke, resolver };
+  return { register, revoke, resolveUnknown, resolver };
 }

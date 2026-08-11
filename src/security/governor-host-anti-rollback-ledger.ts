@@ -12,8 +12,17 @@ import path from "node:path";
 import { canonicalGovernorJson, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import { withGovernorHostFileLock } from "./governor-host-file-lock.js";
 
-type LedgerKind = "approval" | "delivery" | "ingress";
-type LedgerStatus = "approved" | "revoked" | "certified" | "claimed" | "consumed";
+type LedgerKind = "approval" | "delivery" | "execution" | "ingress";
+type LedgerStatus =
+  | "approved"
+  | "cancel_pending"
+  | "certified"
+  | "claimed"
+  | "completed"
+  | "consumed"
+  | "crashed"
+  | "revoked"
+  | "terminated";
 type LedgerEntry = Readonly<{
   sequence: number;
   kind: LedgerKind;

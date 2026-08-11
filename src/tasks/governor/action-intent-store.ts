@@ -1,31 +1,34 @@
 // Persists and lease-claims pre-execution action intents independently of task projection code.
-import type { DatabaseSync } from "node:sqlite";
-import type { Insertable, Selectable } from "kysely";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
-  getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
-import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
-import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
+import type {
+  GovernorTrustedReceiptResolver,
+  HostGovernorReceiptId,
+} from "../../security/governor-host-readonly.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
-import type { GovernorActionIntent } from "./action-intent.js";
+import {
+  acknowledgeGovernorActionTermination,
+  beginGovernorActionEffect,
+  type GovernorActionTerminationResult,
+  type GovernorBeginActionEffectResult,
+} from "./action-execution-lifecycle.js";
+import {
+  actionIntentDb as dbx,
+  bindGovernorActionIntent,
+  parseGovernorActionIntent,
+} from "./action-intent-codec.js";
+import type { GovernorActionIntent, GovernorActionTerminationOutcome } from "./action-intent.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
-import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import { loadGovernorTask } from "./store-queries.js";
-import type { GovernorIdentityContext, GovernorTaskId } from "./types.js";
-
-type ActionIntentDatabase = Pick<
-  OpenClawStateKyselyDatabase,
-  "governor_tasks" | "governor_action_intents"
->;
-type GovernorActionIntentRow = Selectable<OpenClawStateKyselyDatabase["governor_action_intents"]>;
+import type { GovernorIdentityContext, GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export type GovernorActionIntentUpdate = {
   current: GovernorActionIntent;
@@ -34,6 +37,7 @@ export type GovernorActionIntentUpdate = {
 
 export type GovernorActionIntentClaimResult =
   | { kind: "claimed"; intent: GovernorActionIntent }
+  | { kind: "reconcile_required"; intent: GovernorActionIntent }
   | {
       kind:
         | "busy"
@@ -45,99 +49,16 @@ export type GovernorActionIntentClaimResult =
         | "approval_revoked";
     };
 
-function dbx(db: DatabaseSync) {
-  return getNodeSqliteKysely<ActionIntentDatabase>(db);
-}
-
-function parseJson(raw: string, label: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch (error) {
-    throw new Error(`Invalid persisted governor ${label}`, { cause: error });
-  }
-}
-
-export function bindGovernorActionIntent(
-  intent: GovernorActionIntent,
-): Insertable<GovernorActionIntentRow> {
-  return {
-    task_id: intent.taskId,
-    effect_id: intent.effectId,
-    idempotency_key: intent.idempotencyKey,
-    task_version: intent.taskVersion,
-    objective_revision: intent.objectiveRevision,
-    plan_version: intent.planVersion,
-    lease_epoch: intent.leaseEpoch,
-    execution_generation: intent.executionGeneration,
-    approval_required: intent.approvalRequired ? 1 : 0,
-    approval_policy_digest: intent.approvalPolicyDigest,
-    state: intent.state,
-    claim_epoch: intent.claimEpoch,
-    claimed_by: intent.claimedBy ?? null,
-    lease_expires_at: intent.leaseExpiresAt ?? null,
-    proposal_json: JSON.stringify(intent.proposal),
-    proposal_digest: intent.proposalDigest,
-    action_fingerprint: intent.actionFingerprint,
-    progress_vector_hash: intent.progressVectorHash,
-    force_replan_after_outcome: intent.forceReplanAfterOutcome ? 1 : 0,
-    created_at: intent.createdAt,
-    completed_at: intent.completedAt ?? null,
-    cancelled_at: intent.cancelledAt ?? null,
-    updated_at: intent.updatedAt,
-  };
-}
-
-function parseActionIntent(row: GovernorActionIntentRow): GovernorActionIntent {
-  const proposal = parseJson(
-    row.proposal_json,
-    "action intent",
-  ) as GovernorActionIntent["proposal"];
-  const intent: GovernorActionIntent = {
-    taskId: row.task_id as GovernorTaskId,
-    effectId: row.effect_id,
-    idempotencyKey: row.idempotency_key,
-    taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
-    objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
-    planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
-    leaseEpoch: normalizeSqliteNumber(row.lease_epoch) ?? 0,
-    executionGeneration: normalizeSqliteNumber(row.execution_generation) ?? 0,
-    approvalRequired: row.approval_required === 1,
-    approvalPolicyDigest: row.approval_policy_digest,
-    state: row.state as GovernorActionIntent["state"],
-    claimEpoch: normalizeSqliteNumber(row.claim_epoch) ?? 0,
-    ...(row.claimed_by == null ? {} : { claimedBy: row.claimed_by }),
-    ...(row.lease_expires_at == null
-      ? {}
-      : { leaseExpiresAt: normalizeSqliteNumber(row.lease_expires_at) ?? 0 }),
-    proposal,
-    proposalDigest: row.proposal_digest,
-    actionFingerprint: row.action_fingerprint,
-    progressVectorHash: row.progress_vector_hash,
-    forceReplanAfterOutcome: row.force_replan_after_outcome === 1,
-    createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
-    ...(row.completed_at == null
-      ? {}
-      : { completedAt: normalizeSqliteNumber(row.completed_at) ?? 0 }),
-    ...(row.cancelled_at == null
-      ? {}
-      : { cancelledAt: normalizeSqliteNumber(row.cancelled_at) ?? 0 }),
-    updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
-  };
-  if (
-    governorDigest(proposal as unknown as GovernorJsonValue) !== intent.proposalDigest ||
-    proposal.taskId !== intent.taskId ||
-    proposal.effectId !== intent.effectId
-  ) {
-    throw new Error(`Persisted governor action intent mismatch for ${row.effect_id}`);
-  }
-  return intent;
-}
+export type GovernorActionOutcomeValidation =
+  | { kind: "ready"; task: GovernorTaskProjection; intent: GovernorActionIntent }
+  | { kind: "stale_worker" | "approval_required" | "approval_stale" | "approval_revoked" };
 
 export class GovernorActionIntentStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly #approvals: GovernorApprovalGrantStore;
   readonly #capabilities: GovernorCapabilityRegistry;
   readonly #identity: GovernorIdentityContext;
+  readonly #receipts: GovernorTrustedReceiptResolver;
 
   constructor(params: {
     stateDir?: string;
@@ -145,6 +66,7 @@ export class GovernorActionIntentStore {
     approvals: GovernorApprovalGrantStore;
     capabilities: GovernorCapabilityRegistry;
     identity: GovernorIdentityContext;
+    receiptResolver: GovernorTrustedReceiptResolver;
   }) {
     this.#options =
       params.options ??
@@ -152,6 +74,7 @@ export class GovernorActionIntentStore {
     this.#approvals = params.approvals;
     this.#capabilities = params.capabilities;
     this.#identity = params.identity;
+    this.#receipts = params.receiptResolver;
     initializeGovernorStateSchema(this.#options);
   }
 
@@ -165,7 +88,7 @@ export class GovernorActionIntentStore {
         .where("task_id", "=", taskId)
         .where("effect_id", "=", effectId),
     );
-    return row ? parseActionIntent(row) : null;
+    return row ? parseGovernorActionIntent(row) : null;
   }
 
   listPendingIds(taskId: GovernorTaskId, objectiveRevision: number): string[] {
@@ -177,10 +100,150 @@ export class GovernorActionIntentStore {
         .select(["effect_id"])
         .where("task_id", "=", taskId)
         .where("objective_revision", "=", objectiveRevision)
-        .where("state", "in", ["admitted", "running"])
+        .where((eb) =>
+          eb.or([
+            eb("state", "in", ["admitted", "running"]),
+            eb("termination_outcome", "=", "unknown"),
+          ]),
+        )
         .orderBy("created_at", "asc")
         .orderBy("effect_id", "asc"),
     ).rows.map((row) => row.effect_id);
+  }
+
+  beginEffect(params: {
+    taskId: GovernorTaskId;
+    effectId: string;
+    workerId: string;
+    claimEpoch: number;
+    objectiveRevision: number;
+    planVersion: number;
+    leaseEpoch: number;
+    executionGeneration: number;
+    now: number;
+  }): GovernorBeginActionEffectResult {
+    return beginGovernorActionEffect(
+      {
+        options: this.#options,
+        approvals: this.#approvals,
+        capabilities: this.#capabilities,
+        identity: this.#identity,
+        receipts: this.#receipts,
+      },
+      params,
+    );
+  }
+
+  acknowledgeTermination(params: {
+    taskId: GovernorTaskId;
+    effectId: string;
+    receiptId: HostGovernorReceiptId;
+    outcome: GovernorActionTerminationOutcome;
+    now: number;
+  }): GovernorActionTerminationResult {
+    return acknowledgeGovernorActionTermination(
+      {
+        options: this.#options,
+        approvals: this.#approvals,
+        capabilities: this.#capabilities,
+        identity: this.#identity,
+        receipts: this.#receipts,
+      },
+      params,
+    );
+  }
+
+  /**
+   * Revalidates the worker claim while holding the state write lock immediately
+   * before an outcome can be persisted. Revocation fences an expired intent by
+   * updating the same row, so a concurrent outcome commit cannot win on an old
+   * updated_at/claim_epoch pair.
+   */
+  validateOutcome(params: {
+    taskId: GovernorTaskId;
+    effectId: string;
+    workerId: string;
+    claimEpoch: number;
+    objectiveRevision: number;
+    planVersion: number;
+    leaseEpoch: number;
+    executionGeneration: number;
+    now: number;
+  }): GovernorActionOutcomeValidation {
+    return runOpenClawStateWriteTransaction(({ db }) => {
+      const task = loadGovernorTask(db, params.taskId);
+      const row = executeSqliteQueryTakeFirstSync(
+        db,
+        dbx(db)
+          .selectFrom("governor_action_intents")
+          .selectAll()
+          .where("task_id", "=", params.taskId)
+          .where("effect_id", "=", params.effectId),
+      );
+      if (!task || !row) {
+        return { kind: "stale_worker" };
+      }
+      const intent = parseGovernorActionIntent(row);
+      if (
+        task.state !== "EXECUTING" ||
+        task.objectiveRevision !== params.objectiveRevision ||
+        task.planVersion !== params.planVersion ||
+        task.leaseEpoch !== params.leaseEpoch ||
+        task.executionGeneration !== params.executionGeneration ||
+        intent.state !== "running" ||
+        intent.claimedBy !== params.workerId ||
+        intent.claimEpoch !== params.claimEpoch ||
+        intent.objectiveRevision !== params.objectiveRevision ||
+        intent.planVersion !== params.planVersion ||
+        intent.leaseEpoch !== params.leaseEpoch ||
+        intent.executionGeneration !== params.executionGeneration ||
+        intent.leaseExpiresAt === undefined ||
+        intent.leaseExpiresAt <= params.now ||
+        intent.effectStartedAt === undefined ||
+        intent.cancellationRequestedAt !== undefined ||
+        intent.terminationOutcome !== undefined
+      ) {
+        return { kind: "stale_worker" };
+      }
+      try {
+        this.#capabilities.assertPersistedIntentAuthorized(task, intent.proposal, this.#identity);
+      } catch {
+        return { kind: "stale_worker" };
+      }
+      const approvalPolicy = this.#capabilities.approvalPolicy(intent.proposal);
+      if (
+        intent.approvalRequired !== approvalPolicy.required ||
+        intent.approvalPolicyDigest !== approvalPolicy.digest
+      ) {
+        return { kind: "stale_worker" };
+      }
+      if (intent.approvalRequired) {
+        if (!intent.proposal.approvalGrantId) {
+          return { kind: "approval_required" };
+        }
+        const approval = this.#approvals.statusWithinTransaction(
+          db,
+          {
+            taskId: intent.taskId,
+            scopeKey: task.scopeKey,
+            objectiveRevision: params.objectiveRevision,
+          },
+          intent.proposal,
+          params.now,
+        );
+        if (approval !== "approved") {
+          return {
+            kind:
+              approval === "missing"
+                ? "approval_required"
+                : approval === "stale"
+                  ? "approval_stale"
+                  : "approval_revoked",
+          };
+        }
+      }
+      return { kind: "ready", task, intent };
+    }, this.#options);
   }
 
   claim(params: {
@@ -215,7 +278,7 @@ export class GovernorActionIntentStore {
       if (!task || !row) {
         return { kind: "not_found" };
       }
-      const intent = parseActionIntent(row);
+      const intent = parseGovernorActionIntent(row);
       if (intent.state === "completed") {
         return { kind: "completed" };
       }
@@ -269,6 +332,38 @@ export class GovernorActionIntentStore {
                   : "approval_revoked",
           };
         }
+      }
+      if (intent.state === "running" && intent.effectStartedAt !== undefined) {
+        if (
+          intent.leaseExpiresAt !== undefined &&
+          intent.leaseExpiresAt <= params.now &&
+          intent.cancellationRequestedAt === undefined
+        ) {
+          const cancelling = {
+            ...intent,
+            cancellationRequestedAt: params.now,
+            updatedAt: params.now,
+          };
+          const update = executeSqliteQuerySync(
+            db,
+            dbx(db)
+              .updateTable("governor_action_intents")
+              .set(bindGovernorActionIntent(cancelling))
+              .where("task_id", "=", intent.taskId)
+              .where("effect_id", "=", intent.effectId)
+              .where("claim_epoch", "=", intent.claimEpoch)
+              .where("updated_at", "=", intent.updatedAt),
+          );
+          return update.numAffectedRows === 1n
+            ? { kind: "reconcile_required", intent: cancelling }
+            : { kind: "busy" };
+        }
+        return intent.cancellationRequestedAt !== undefined || intent.claimedBy === workerId
+          ? { kind: "reconcile_required", intent }
+          : { kind: "busy" };
+      }
+      if (intent.state === "running" && intent.cancellationRequestedAt !== undefined) {
+        return { kind: "stale_worker" };
       }
       if (
         intent.state === "running" &&

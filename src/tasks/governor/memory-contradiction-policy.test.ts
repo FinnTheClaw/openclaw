@@ -30,7 +30,7 @@ function memory(overrides: Partial<GovernorMemoryRecord> = {}): GovernorMemoryRe
     confidence: 1,
     sensitivity: "normal",
     provenance: {
-      sourceRef: "memory-source-ref",
+      sourceRef: source,
       observedAt: 100,
       scopeKey: scope,
       confidence: 1,

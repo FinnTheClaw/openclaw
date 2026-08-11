@@ -6,6 +6,13 @@ import {
 } from "../../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import {
+  isTrustedGovernorPhysicalExecutionCoordinator,
+  isTrustedGovernorReceiptResolver,
+  type GovernorTrustedPhysicalExecutionCoordinator,
+  type GovernorTrustedReceiptResolver,
+  type HostGovernorReceiptId,
+} from "../../security/governor-host-readonly.js";
+import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
@@ -17,18 +24,27 @@ import {
   type GovernorCompleteReducerParams,
 } from "./fanin-reducer-store.js";
 import {
-  bindEnvelope,
   bindJob,
   fanoutDb,
-  parseEnvelope,
   parseJob,
   parseTaskProjection,
-  type GovernorFaninEnvelope,
   type GovernorFanoutClaim,
   type GovernorFanoutCompletion,
   type GovernorFanoutJob,
   type GovernorReducerClaim,
 } from "./fanout-codec.js";
+import { completeFanoutJob } from "./fanout-completion.js";
+import {
+  acknowledgeFanoutTermination,
+  acknowledgeOrphanedFanoutTermination,
+  cancelFanoutJob,
+  heartbeatFanoutJob,
+} from "./fanout-lifecycle.js";
+import {
+  fanoutPhysicalBinding,
+  reconcileFanoutPhysicalState,
+  requestFanoutCancellation,
+} from "./fanout-physical.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
@@ -46,14 +62,29 @@ export const MAX_GOVERNOR_PHYSICAL_EXECUTIONS = 3;
 
 export class GovernorFanoutStore {
   readonly #options: OpenClawStateDatabaseOptions;
+  readonly #physical: GovernorTrustedPhysicalExecutionCoordinator;
+  readonly #receipts: GovernorTrustedReceiptResolver;
   readonly reducers: GovernorFaninReducerStore;
 
-  constructor(params: { stateDir?: string; options?: OpenClawStateDatabaseOptions } = {}) {
+  constructor(params: {
+    stateDir?: string;
+    options?: OpenClawStateDatabaseOptions;
+    physicalExecutionCoordinator: GovernorTrustedPhysicalExecutionCoordinator;
+    receiptResolver: GovernorTrustedReceiptResolver;
+  }) {
+    if (
+      !isTrustedGovernorPhysicalExecutionCoordinator(params.physicalExecutionCoordinator) ||
+      !isTrustedGovernorReceiptResolver(params.receiptResolver)
+    ) {
+      throw new Error("Governor fanout requires trusted host physical execution bindings");
+    }
     this.#options =
       params.options ??
       (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
     initializeGovernorStateSchema(this.#options);
     this.reducers = new GovernorFaninReducerStore({ options: this.#options });
+    this.#physical = params.physicalExecutionCoordinator;
+    this.#receipts = params.receiptResolver;
   }
 
   #task(db: DatabaseSync, taskId: GovernorTaskId): GovernorTaskProjection | null {
@@ -96,6 +127,7 @@ export class GovernorFanoutStore {
           job.priority === params.priority &&
           job.fanoutGroup === params.fanoutGroup &&
           job.taskVersion === params.task.taskVersion &&
+          job.objectiveRevision === params.task.objectiveRevision &&
           job.leaseEpoch === params.task.leaseEpoch &&
           job.executionGeneration === params.task.executionGeneration &&
           job.expectedOutputTokens === params.expectedOutputTokens &&
@@ -133,6 +165,7 @@ export class GovernorFanoutStore {
         fanoutGroup: params.fanoutGroup,
         state: "queued",
         taskVersion: params.task.taskVersion,
+        objectiveRevision: params.task.objectiveRevision,
         leaseEpoch: params.task.leaseEpoch,
         executionGeneration: params.task.executionGeneration,
         claimEpoch: 0,
@@ -168,27 +201,12 @@ export class GovernorFanoutStore {
       throw new Error("Governor fanout leaseDurationMs must be a positive safe integer");
     }
     return runOpenClawStateWriteTransaction(({ db }) => {
-      executeSqliteQuerySync(
+      const reconciliation = reconcileFanoutPhysicalState({
         db,
-        fanoutDb(db)
-          .updateTable("governor_fanout_jobs")
-          .set({
-            state: "queued",
-            worker_id: null,
-            lease_expires_at: null,
-            updated_at: params.now,
-          })
-          .where("state", "=", "running")
-          .where("lease_expires_at", "<=", params.now),
-      );
-      const running = executeSqliteQueryTakeFirstSync(
-        db,
-        fanoutDb(db)
-          .selectFrom("governor_fanout_jobs")
-          .select((eb) => eb.fn.countAll().as("count"))
-          .where("state", "=", "running"),
-      ) as { count: number | bigint } | undefined;
-      if (Number(running?.count ?? 0) >= MAX_GOVERNOR_PHYSICAL_EXECUTIONS) {
+        coordinator: this.#physical,
+        now: params.now,
+      });
+      if (reconciliation.unprovableRunning) {
         return { kind: "saturated" };
       }
       for (;;) {
@@ -229,8 +247,19 @@ export class GovernorFanoutStore {
           );
           continue;
         }
+        const {
+          cancellationDisposition: _cancellationDisposition,
+          cancellationRequestedAt: _cancellationRequestedAt,
+          physicalBindingDigest: _physicalBindingDigest,
+          physicalGeneration: _physicalGeneration,
+          physicalSlot: _physicalSlot,
+          terminationAcknowledgedAt: _terminationAcknowledgedAt,
+          terminationEvidenceDigest: _terminationEvidenceDigest,
+          terminationOutcome: _terminationOutcome,
+          ...claimable
+        } = job;
         const claimed: GovernorFanoutJob = {
-          ...job,
+          ...claimable,
           state: "running",
           claimEpoch: job.claimEpoch + 1,
           workerId,
@@ -238,163 +267,124 @@ export class GovernorFanoutStore {
           startedAt: params.now,
           updatedAt: params.now,
         };
+        const physical = this.#physical.claim(fanoutPhysicalBinding(claimed));
+        if (physical.kind === "saturated") {
+          return { kind: "saturated" };
+        }
+        if (physical.kind === "already_active") {
+          const restored: GovernorFanoutJob = {
+            ...claimed,
+            physicalSlot: physical.lease.slot,
+            physicalGeneration: physical.lease.generation,
+            physicalBindingDigest: physical.lease.bindingDigest,
+            cancellationDisposition: "cancel",
+            cancellationRequestedAt: params.now,
+          };
+          executeSqliteQuerySync(
+            db,
+            fanoutDb(db)
+              .updateTable("governor_fanout_jobs")
+              .set(bindJob(restored))
+              .where("job_id", "=", job.jobId)
+              .where("state", "=", "queued"),
+          );
+          requestFanoutCancellation({
+            db,
+            coordinator: this.#physical,
+            job: restored,
+            disposition: "cancel",
+            now: params.now,
+          });
+          continue;
+        }
+        const physicallyClaimed: GovernorFanoutJob = {
+          ...claimed,
+          physicalSlot: physical.lease.slot,
+          physicalGeneration: physical.lease.generation,
+          physicalBindingDigest: physical.lease.bindingDigest,
+        };
         const update = executeSqliteQuerySync(
           db,
           fanoutDb(db)
             .updateTable("governor_fanout_jobs")
-            .set(bindJob(claimed))
+            .set(bindJob(physicallyClaimed))
             .where("job_id", "=", job.jobId)
             .where("state", "=", "queued"),
         );
         if (update.numAffectedRows === 1n) {
-          return { kind: "claimed", job: claimed };
+          return { kind: "claimed", job: physicallyClaimed };
         }
+        this.#physical.requestCancellation(
+          fanoutPhysicalBinding(physicallyClaimed),
+          physical.lease,
+        );
+        throw new Error(`Governor fanout physical claim lost its durable row ${job.jobId}`);
       }
     }, this.#options);
   }
 
   cancelJob(jobId: string, now: number): boolean {
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const update = executeSqliteQuerySync(
-        db,
-        fanoutDb(db)
-          .updateTable("governor_fanout_jobs")
-          .set({
-            state: "cancelled",
-            cancelled_at: now,
-            worker_id: null,
-            lease_expires_at: null,
-            updated_at: now,
-          })
-          .where("job_id", "=", jobId)
-          .where("state", "in", ["queued", "running"]),
-      );
-      return update.numAffectedRows === 1n;
-    }, this.#options);
+    return cancelFanoutJob(
+      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      { jobId, now },
+    );
   }
 
-  complete(params: {
+  requestRetirement(jobId: string, disposition: "cancel" | "requeue", now: number): boolean {
+    return cancelFanoutJob(
+      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      { jobId, disposition, now },
+    );
+  }
+
+  heartbeat(params: {
     jobId: string;
-    taskVersion: number;
-    leaseEpoch: number;
-    executionGeneration: number;
     claimEpoch: number;
     workerId: string;
-    claims: readonly GovernorJsonValue[];
-    evidence: readonly GovernorJsonValue[];
-    unresolved: readonly GovernorJsonValue[];
     now: number;
-  }): GovernorFanoutCompletion {
-    const content = assertGovernorBoundarySafe("session", {
-      claims: [...params.claims],
-      evidence: [...params.evidence],
-      unresolved: [...params.unresolved],
-    });
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const row = executeSqliteQueryTakeFirstSync(
-        db,
-        fanoutDb(db)
-          .selectFrom("governor_fanout_jobs")
-          .selectAll()
-          .where("job_id", "=", params.jobId),
-      );
-      if (!row) {
-        return { kind: "not_found" };
-      }
-      const job = parseJob(row);
-      const envelopePayload = content as {
-        claims: GovernorJsonValue[];
-        evidence: GovernorJsonValue[];
-        unresolved: GovernorJsonValue[];
-      };
-      const envelopeDigest = governorDigest({
-        jobId: job.jobId,
-        taskId: job.taskId,
-        planVersion: job.planVersion,
-        round: job.round,
-        ...envelopePayload,
-      });
-      const existing = executeSqliteQueryTakeFirstSync(
-        db,
-        fanoutDb(db)
-          .selectFrom("governor_fanin_envelopes")
-          .selectAll()
-          .where("job_id", "=", job.jobId),
-      );
-      if (existing) {
-        const envelope = parseEnvelope(existing);
-        return envelope.envelopeDigest === envelopeDigest
-          ? { kind: "duplicate", envelope }
-          : { kind: "conflict" };
-      }
-      const task = this.#task(db, job.taskId);
-      const staleTask =
-        !task ||
-        task.planVersion !== job.planVersion ||
-        task.leaseEpoch !== job.leaseEpoch ||
-        task.executionGeneration !== job.executionGeneration;
-      const staleWorker =
-        job.taskVersion !== params.taskVersion ||
-        job.leaseEpoch !== params.leaseEpoch ||
-        job.executionGeneration !== params.executionGeneration ||
-        job.claimEpoch !== params.claimEpoch ||
-        job.workerId !== params.workerId;
-      if (staleTask || staleWorker) {
-        if (staleTask && job.state !== "completed") {
-          executeSqliteQuerySync(
-            db,
-            fanoutDb(db)
-              .updateTable("governor_fanout_jobs")
-              .set({
-                state: "cancelled",
-                cancelled_at: params.now,
-                worker_id: null,
-                lease_expires_at: null,
-                updated_at: params.now,
-              })
-              .where("job_id", "=", job.jobId),
-          );
-        }
-        return { kind: "stale_worker" };
-      }
-      if (job.state !== "running") {
-        return { kind: "stale_worker" };
-      }
-      const envelope: GovernorFaninEnvelope = {
-        envelopeId: `envelope_${job.jobId}`,
-        jobId: job.jobId,
-        taskId: job.taskId,
-        planVersion: job.planVersion,
-        round: job.round,
-        taskVersion: params.taskVersion,
-        leaseEpoch: params.leaseEpoch,
-        executionGeneration: params.executionGeneration,
-        claims: envelopePayload.claims,
-        evidence: envelopePayload.evidence,
-        unresolved: envelopePayload.unresolved,
-        envelopeDigest,
-        createdAt: params.now,
-      };
-      executeSqliteQuerySync(
-        db,
-        fanoutDb(db).insertInto("governor_fanin_envelopes").values(bindEnvelope(envelope)),
-      );
-      executeSqliteQuerySync(
-        db,
-        fanoutDb(db)
-          .updateTable("governor_fanout_jobs")
-          .set({
-            state: "completed",
-            completed_at: params.now,
-            worker_id: null,
-            lease_expires_at: null,
-            updated_at: params.now,
-          })
-          .where("job_id", "=", job.jobId)
-          .where("state", "=", "running"),
-      );
-      return { kind: "completed", envelope };
-    }, this.#options);
+    leaseDurationMs?: number;
+  }): boolean {
+    return heartbeatFanoutJob(
+      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      { ...params, leaseDurationMs: params.leaseDurationMs ?? 60_000 },
+    );
+  }
+
+  acknowledgeTermination(params: {
+    jobId: string;
+    receiptId: HostGovernorReceiptId;
+    outcome: "crashed" | "terminated";
+    now: number;
+  }): boolean {
+    return acknowledgeFanoutTermination(
+      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      params,
+    );
+  }
+
+  acknowledgeOrphanedTermination(params: {
+    taskId: string;
+    scopeKey: string;
+    taskVersion: number;
+    objectiveRevision: number;
+    planVersion: number;
+    receiptId: HostGovernorReceiptId;
+    slot: number;
+    generation: number;
+    bindingDigest: string;
+    outcome: "crashed" | "terminated";
+    now: number;
+  }): boolean {
+    return acknowledgeOrphanedFanoutTermination(
+      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      params,
+    );
+  }
+
+  complete(
+    params: import("./fanout-completion.js").CompleteFanoutParams,
+  ): GovernorFanoutCompletion {
+    return completeFanoutJob({ options: this.#options, physical: this.#physical }, params);
   }
 
   listJobs(taskId: GovernorTaskId): GovernorFanoutJob[] {

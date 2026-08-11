@@ -27,6 +27,13 @@ import {
 } from "./governor-host-broker.js";
 import { createGovernorHostPersistence } from "./governor-host-persistence.js";
 import {
+  isTrustedGovernorPhysicalExecutionCoordinator,
+  type GovernorPhysicalExecutionBinding,
+  type GovernorPhysicalExecutionLease,
+  type GovernorPhysicalExecutionState,
+  type GovernorTrustedPhysicalExecutionCoordinator,
+} from "./governor-host-physical-execution.js";
+import {
   resolveGovernorSecrets,
   syntheticGovernorSecretsEnvironment,
 } from "./governor-host-secrets.js";
@@ -35,12 +42,17 @@ export {
   isTrustedGovernorApprovalResolver,
   isTrustedGovernorDeliveryResolver,
   isTrustedGovernorOwnerIngressResolver,
+  isTrustedGovernorPhysicalExecutionCoordinator,
   isTrustedGovernorReceiptResolver,
 };
 export type {
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
   GovernorTrustedOwnerIngressResolver,
+  GovernorPhysicalExecutionBinding,
+  GovernorPhysicalExecutionLease,
+  GovernorPhysicalExecutionState,
+  GovernorTrustedPhysicalExecutionCoordinator,
   GovernorTrustedReceiptResolver,
   GovernorOwnerIngressClaim,
   HostGovernorApprovalReceiptId,

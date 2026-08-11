@@ -52,6 +52,9 @@ export type GovernorHostRuntime = Readonly<{
       revokeDeliveryAdapter: ReturnType<
         typeof createHostGovernorBroker
       >["capabilities"]["revokeDeliveryAdapter"];
+      resolveUnknownDelivery: ReturnType<
+        typeof createHostGovernorBroker
+      >["capabilities"]["resolveUnknownDelivery"];
     }>;
     ownerIngress: Readonly<{
       ownerId: string;
@@ -125,6 +128,7 @@ export function createGovernorHostRuntimeBindings(params: {
       ownerId: params.integrations.deliveryOwnerId,
       registerStaticDeliveryAdapter: broker.capabilities.registerStaticDeliveryAdapter,
       revokeDeliveryAdapter: broker.capabilities.revokeDeliveryAdapter,
+      resolveUnknownDelivery: broker.capabilities.resolveUnknownDelivery,
     }),
     ownerIngress: Object.freeze({
       ownerId: params.integrations.ownerIngressOwnerId,
@@ -143,6 +147,7 @@ export function createGovernorHostRuntimeBindings(params: {
     approvalResolver: broker.approvalResolver,
     deliveryResolver: broker.deliveryResolver,
     ownerIngressResolver: broker.ownerIngressResolver,
+    physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
     secrets,
     owners,
     deliveryHandles: Object.freeze(deliveryHandles),
@@ -179,6 +184,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       approvalResolver: bindings.approvalResolver,
       deliveryResolver: bindings.deliveryResolver,
       ownerIngressResolver: bindings.ownerIngressResolver,
+      physicalExecutionCoordinator: bindings.physicalExecutionCoordinator,
       secrets: bindings.secrets,
       stateEnv: env,
     },

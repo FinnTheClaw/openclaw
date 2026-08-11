@@ -184,6 +184,9 @@ export function qualifyGovernorMemoryContradiction(params: {
   if (!isOpaqueEvidenceSourceRef(params.evidence.sourceIdentity)) {
     return reject("invalid_source_reference");
   }
+  if (!isOpaqueEvidenceSourceRef(params.memory.provenance.sourceRef)) {
+    return reject("invalid_source_reference");
+  }
   const evidenceRank = TRUSTED_EVIDENCE_RANK[params.evidence.sourceKind] ?? 0;
   if (evidenceRank === 0) {
     return reject("untrusted_source");
@@ -243,7 +246,7 @@ export function qualifyGovernorMemoryContradiction(params: {
     return reject("older_evidence");
   }
   const fingerprint = governorMemoryContradictionFingerprint({
-    sourceReference: params.evidence.sourceIdentity,
+    sourceReference: params.memory.provenance.sourceRef,
     factKey: params.predicate.factKey,
     scopeKey: params.evidence.scopeKey,
     contradictionClass,

@@ -18,6 +18,7 @@ const authorityModules = [
   "governor-host-owner-ingress",
   "governor-host-owner-ingress-persistence",
   "governor-host-persistence",
+  "governor-host-physical-execution",
   "governor-host-secrets",
 ] as const;
 const authorityImport = new RegExp(
@@ -32,6 +33,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-host-delivery-persistence.ts",
     "security/governor-host-owner-ingress-persistence.ts",
     "security/governor-host-persistence.ts",
+    "security/governor-host-physical-execution.ts",
   ],
   "governor-host-bootstrap": [],
   "governor-host-broker": [
@@ -60,6 +62,11 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-host-bootstrap.ts",
     "security/governor-host-broker.ts",
     "security/governor-host-delivery-broker.ts",
+    "security/governor-host-readonly.ts",
+  ],
+  "governor-host-physical-execution": [
+    "security/governor-host-broker.ts",
+    "security/governor-host-persistence.ts",
     "security/governor-host-readonly.ts",
   ],
   "governor-host-secrets": [
@@ -124,6 +131,7 @@ describe("governor host authority boundary", () => {
       "security/governor-host-delivery-persistence.ts",
       "security/governor-host-owner-ingress-persistence.ts",
       "security/governor-host-persistence.ts",
+      "security/governor-host-physical-execution.ts",
       "security/governor-host-secrets.ts",
       "tasks/governor/action-intent-store.ts",
       "tasks/governor/approval-store.ts",

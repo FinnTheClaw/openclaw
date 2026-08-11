@@ -28,6 +28,10 @@ import {
   createGovernorOwnerIngressPersistence,
   type GovernorOwnerIngressPersistence,
 } from "./governor-host-owner-ingress-persistence.js";
+import {
+  createGovernorPhysicalExecutionCoordinator,
+  type GovernorTrustedPhysicalExecutionCoordinator,
+} from "./governor-host-physical-execution.js";
 import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
 
 type ApprovalDb = Pick<
@@ -40,6 +44,7 @@ const approvalGrantKey = (scopeKey: string, grantId: string) =>
   governorDigest({ kind: "grant", scopeKey, grantId });
 
 export type GovernorHostPersistence = Readonly<{
+  physicalExecutions: GovernorTrustedPhysicalExecutionCoordinator;
   recordApprovalGrant: (input: {
     grantId: string;
     scopeKey: string;
@@ -96,31 +101,95 @@ function writeApprovalEpoch(
   );
 }
 
-function hasLiveApprovalExecution(db: DatabaseSync, grantId: string, now: number): boolean {
+function requestStartedApprovalCancellation(
+  db: DatabaseSync,
+  grantId: string,
+  now: number,
+): boolean {
   const rows = executeSqliteQuerySync(
     db,
     dbx(db)
       .selectFrom("governor_action_intents")
-      .select(["approval_required", "proposal_json"])
+      .selectAll()
       .where("state", "=", "running")
-      .where("lease_expires_at", ">", now),
+      .where("effect_started_at", "is not", null),
   );
-  return rows.rows.some((row) => {
+  let found = false;
+  for (const row of rows.rows) {
     try {
       const proposal = JSON.parse(row.proposal_json) as unknown;
       if (typeof proposal !== "object" || proposal === null) {
         return true;
       }
       if (!("approvalGrantId" in proposal)) {
-        return normalizeSqliteNumber(row.approval_required) === 1;
+        if (normalizeSqliteNumber(row.approval_required) === 1) {
+          return true;
+        }
+        continue;
       }
-      return proposal.approvalGrantId === grantId;
+      if (proposal.approvalGrantId !== grantId) {
+        continue;
+      }
+      found = true;
+      executeSqliteQuerySync(
+        db,
+        dbx(db)
+          .updateTable("governor_action_intents")
+          .set({ cancellation_requested_at: row.cancellation_requested_at ?? now, updated_at: now })
+          .where("task_id", "=", row.task_id)
+          .where("effect_id", "=", row.effect_id)
+          .where("state", "=", "running")
+          .where("claim_epoch", "=", row.claim_epoch),
+      );
     } catch {
-      // A malformed live intent cannot be proven unrelated to the grant. Keep
-      // revocation fail-closed until the execution lease is reconciled.
       return true;
     }
-  });
+  }
+  return found;
+}
+
+function cancelUnstartedApprovalExecutions(db: DatabaseSync, grantId: string, now: number): void {
+  const rows = executeSqliteQuerySync(
+    db,
+    dbx(db)
+      .selectFrom("governor_action_intents")
+      .selectAll()
+      .where("state", "=", "running")
+      .where("effect_started_at", "is", null),
+  );
+  for (const row of rows.rows) {
+    let proposal: unknown;
+    try {
+      proposal = JSON.parse(row.proposal_json) as unknown;
+    } catch {
+      continue;
+    }
+    if (
+      typeof proposal !== "object" ||
+      proposal === null ||
+      !("approvalGrantId" in proposal) ||
+      proposal.approvalGrantId !== grantId
+    ) {
+      continue;
+    }
+    executeSqliteQuerySync(
+      db,
+      dbx(db)
+        .updateTable("governor_action_intents")
+        .set({
+          state: "cancelled",
+          cancelled_at: now,
+          lease_expires_at: null,
+          claim_epoch: (normalizeSqliteNumber(row.claim_epoch) ?? 0) + 1,
+          updated_at: now,
+        })
+        .where("task_id", "=", row.task_id)
+        .where("effect_id", "=", row.effect_id)
+        .where("state", "=", "running")
+        .where("claim_epoch", "=", row.claim_epoch)
+        .where("updated_at", "=", row.updated_at),
+    );
+  }
 }
 
 /** Called only from trusted bootstrap; the ledger is a separate host sidecar. */
@@ -174,6 +243,7 @@ export function createGovernorHostPersistence(params: {
   };
 
   const port: GovernorHostPersistence = Object.freeze({
+    physicalExecutions: createGovernorPhysicalExecutionCoordinator(ledger),
     ...createGovernorOwnerIngressPersistence(options, ledger),
     ...createGovernorHostDeliveryPersistence({
       options,
@@ -255,12 +325,16 @@ export function createGovernorHostPersistence(params: {
         }
         let targetEpoch = Math.max(scope.generation, grant.generation);
         if (grant.status === "approved" && scope.status === "approved") {
-          // Action claim and revocation share this SQLite write lock. If claim
-          // linearized first, revocation truthfully reports that authority is
-          // still in flight instead of claiming success before an effect starts.
-          if (hasLiveApprovalExecution(db, input.grantId, input.observedAt)) {
+          // The external-effect fence, not a worker lease alone, is the
+          // execution linearization point. A started effect remains in flight
+          // until the host acknowledges its physical termination.
+          if (requestStartedApprovalCancellation(db, input.grantId, input.observedAt)) {
             return false;
           }
+          // A claim that never crossed the effect fence is safe to cancel,
+          // regardless of remaining lease time. The same SQLite write lock
+          // prevents a concurrent begin-effect operation from winning later.
+          cancelUnstartedApprovalExecutions(db, input.grantId, input.observedAt);
           targetEpoch += 1;
           ledger.append({
             kind: "approval",

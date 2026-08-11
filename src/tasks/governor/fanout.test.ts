@@ -1,11 +1,14 @@
 // Proves durable FIFO fan-out, bounded execution, worker fencing, and deterministic fan-in.
 import { afterEach, describe, expect, it } from "vitest";
+import { createGovernorTestHostBindings } from "../../security/governor-host-readonly.js";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { governorDigest } from "./canonical-json.js";
 import { GovernorController } from "./controller.js";
+import { fanoutPhysicalBinding, fanoutTerminationReceiptPayload } from "./fanout-physical.js";
 import {
-  GovernorFanoutStore,
   MAX_GOVERNOR_PHYSICAL_EXECUTIONS,
+  type GovernorFanoutStore,
   type GovernorFanoutJob,
 } from "./fanout.js";
 import { GovernorSqliteStore } from "./store.js";
@@ -59,12 +62,21 @@ async function withFanout(
     fanout: GovernorFanoutStore;
     stateDir: string;
     task: GovernorTaskProjection;
+    host: ReturnType<typeof createGovernorTestHostBindings>;
   }) => Promise<void> | void,
 ): Promise<void> {
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-fanout-" },
     async (state) => {
-      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const host = createGovernorTestHostBindings({ stateDir: state.stateDir });
+      const store = new GovernorSqliteStore({
+        stateDir: state.stateDir,
+        receiptResolver: host.resolver,
+        approvalResolver: host.approvalResolver,
+        deliveryResolver: host.deliveryResolver,
+        physicalExecutionCoordinator: host.physicalExecutionCoordinator,
+        secrets: host.secrets,
+      });
       const controller = new GovernorController(store, store.capabilities);
       const ingress = controller.ingest({
         sourceMessageId: "fanout-message-1",
@@ -79,15 +91,43 @@ async function withFanout(
       try {
         await run({
           controller,
-          fanout: new GovernorFanoutStore({ stateDir: state.stateDir }),
+          fanout: store.fanout,
           stateDir: state.stateDir,
           task,
+          host,
         });
       } finally {
         closeOpenClawStateDatabase();
       }
     },
   );
+}
+
+function acknowledgeTermination(params: {
+  fanout: GovernorFanoutStore;
+  host: ReturnType<typeof createGovernorTestHostBindings>;
+  task: GovernorTaskProjection;
+  job: GovernorFanoutJob;
+  outcome: "crashed" | "terminated";
+  now: number;
+}): boolean {
+  const receiptId = params.host.capabilities.submitObservedReceipt({
+    scopeKey: params.task.scopeKey,
+    taskId: params.job.taskId,
+    taskVersion: params.job.taskVersion,
+    objectiveRevision: params.job.objectiveRevision,
+    planVersion: params.job.planVersion,
+    sourceKind: "structured_external",
+    sourceIdentity: "synthetic-worker-supervisor",
+    payload: fanoutTerminationReceiptPayload(params.job, params.outcome),
+    observedAt: params.now,
+  });
+  return params.fanout.acknowledgeTermination({
+    jobId: params.job.jobId,
+    receiptId,
+    outcome: params.outcome,
+    now: params.now,
+  });
 }
 
 function completeJob(params: {
@@ -116,7 +156,7 @@ afterEach(() => {
 
 describe("governor durable fan-out and fan-in", () => {
   it("runs an unlimited logical FIFO queue with at most three physical workers", async () => {
-    await withFanout(({ fanout, stateDir, task }) => {
+    await withFanout(({ fanout, host, stateDir, task }) => {
       const enqueued = Array.from({ length: 10 }, (_, index) =>
         fanout.enqueue({
           jobId: `job-${String(index + 1).padStart(2, "0")}`,
@@ -182,6 +222,13 @@ describe("governor durable fan-out and fan-in", () => {
         if (!current) {
           throw new Error("expected an in-flight fanout job");
         }
+        expect(
+          host.physicalExecutionCoordinator.state(current.job.physicalSlot ?? -1),
+        ).toMatchObject({
+          status: "claimed",
+          generation: current.job.physicalGeneration,
+          bindingDigest: governorDigest(fanoutPhysicalBinding(current.job)),
+        });
         expect(completeJob({ fanout, ...current, now: clock }).kind).toBe("completed");
         const workerId = `worker-${claimedIds.length + 1}`;
         const next = fanout.claimNext({ workerId, now: clock + 1 });
@@ -244,14 +291,14 @@ describe("governor durable fan-out and fan-in", () => {
       });
 
       closeOpenClawStateDatabase();
-      const reopened = new GovernorFanoutStore({ stateDir });
+      const reopened = new GovernorSqliteStore({ stateDir }).fanout;
       expect(reopened.listJobs(task.taskId)).toHaveLength(10);
       expect(reopened.claimReducer({ task, round: 1, now: clock + 6 }).kind).toBe("completed");
     });
   });
 
   it("reclaims expired workers and fences late or cancelled results", async () => {
-    await withFanout(({ controller, fanout, task }) => {
+    await withFanout(({ controller, fanout, host, task }) => {
       for (let index = 1; index <= 2; index += 1) {
         fanout.enqueue({
           jobId: `reclaim-${index}`,
@@ -276,9 +323,43 @@ describe("governor durable fan-out and fan-in", () => {
       expect(fanout.cancelJob(second.job.jobId, 302)).toBe(true);
       expect(fanout.cancelJob(second.job.jobId, 303)).toBe(false);
 
+      expect(
+        fanout.claimNext({
+          workerId: "worker-too-early",
+          now: 311,
+          leaseDurationMs: 50,
+        }),
+      ).toEqual({ kind: "empty" });
+      const pending = fanout.listJobs(task.taskId);
+      const expired = pending.find((job) => job.jobId === first.job.jobId);
+      const cancelled = pending.find((job) => job.jobId === second.job.jobId);
+      if (!expired || !cancelled) {
+        throw new Error("expected cancellation-pending jobs");
+      }
+      expect(
+        acknowledgeTermination({
+          fanout,
+          host,
+          task,
+          job: expired,
+          outcome: "crashed",
+          now: 312,
+        }),
+      ).toBe(true);
+      expect(
+        acknowledgeTermination({
+          fanout,
+          host,
+          task,
+          job: cancelled,
+          outcome: "terminated",
+          now: 313,
+        }),
+      ).toBe(true);
+
       const reclaimed = fanout.claimNext({
         workerId: "worker-new",
-        now: 311,
+        now: 314,
         leaseDurationMs: 50,
       });
       expect(reclaimed.kind).toBe("claimed");
@@ -290,11 +371,18 @@ describe("governor durable fan-out and fan-in", () => {
         claimEpoch: first.job.claimEpoch + 1,
         workerId: "worker-new",
       });
-      expect(completeJob({ fanout, job: first.job, workerId: "worker-old", now: 312 }).kind).toBe(
+      expect(completeJob({ fanout, job: first.job, workerId: "worker-old", now: 315 }).kind).toBe(
         "stale_worker",
       );
       expect(
-        completeJob({ fanout, job: reclaimed.job, workerId: "worker-new", now: 313 }).kind,
+        host.physicalExecutionCoordinator.state(reclaimed.job.physicalSlot ?? -1),
+      ).toMatchObject({
+        status: "claimed",
+        generation: reclaimed.job.physicalGeneration,
+        bindingDigest: governorDigest(fanoutPhysicalBinding(reclaimed.job)),
+      });
+      expect(
+        completeJob({ fanout, job: reclaimed.job, workerId: "worker-new", now: 316 }).kind,
       ).toBe("completed");
 
       fanout.enqueue({
@@ -320,9 +408,13 @@ describe("governor durable fan-out and fan-in", () => {
         now: 321,
       });
       expect(fanout.claimNext({ workerId: "worker-late", now: 322 }).kind).toBe("empty");
-      expect(
-        fanout.listJobs(task.taskId).find((job) => job.jobId === "stale-after-correction"),
-      ).toMatchObject({ state: "cancelled" });
+      const stalePending = fanout
+        .listJobs(task.taskId)
+        .find((job) => job.jobId === "stale-after-correction");
+      expect(stalePending).toMatchObject({ state: "running", cancellationDisposition: "cancel" });
+      if (!stalePending) {
+        throw new Error("expected stale cancellation-pending worker");
+      }
       expect(
         completeJob({
           fanout,
@@ -331,6 +423,21 @@ describe("governor durable fan-out and fan-in", () => {
           now: 323,
         }).kind,
       ).toBe("stale_worker");
+      expect(
+        acknowledgeTermination({
+          fanout,
+          host,
+          task: controller.store.loadTask(task.taskId) ?? task,
+          job: fanout.listJobs(task.taskId).find((job) => job.jobId === stalePending.jobId)!,
+          outcome: "terminated",
+          now: 324,
+        }),
+      ).toBe(true);
+      expect(
+        fanout.listJobs(task.taskId).find((job) => job.jobId === stalePending.jobId),
+      ).toMatchObject({
+        state: "cancelled",
+      });
     });
   });
 

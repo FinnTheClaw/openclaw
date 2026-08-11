@@ -29,6 +29,7 @@ describe("governor memory remediation runtime", () => {
         factKey: "ssh.path",
         path: "/old",
         observedAt: 100,
+        sourceKind: "structured_external",
       });
       persistMemoryEvidence({
         store,
@@ -61,11 +62,20 @@ describe("governor memory remediation runtime", () => {
       if (claim.kind !== "claimed") {
         throw new Error(`expected repair claim, received ${claim.kind}`);
       }
-      controller.recordAdmittedToolOutcome({
-        taskId,
+      const started = controller.beginActionEffect({
         intent: claim.intent,
         workerId: "memory-worker",
         claimEpoch: claim.intent.claimEpoch,
+        now: 202,
+      });
+      if (started.kind !== "started") {
+        throw new Error("expected repair effect fence");
+      }
+      controller.recordAdmittedToolOutcome({
+        taskId,
+        intent: started.intent,
+        workerId: "memory-worker",
+        claimEpoch: started.intent.claimEpoch,
         outcome: {
           transport: "completed",
           semantic: "success",
@@ -216,11 +226,20 @@ describe("governor memory remediation runtime", () => {
       if (failedClaim.kind !== "claimed") {
         throw new Error(`expected failing repair claim, received ${failedClaim.kind}`);
       }
-      controller.recordAdmittedToolOutcome({
-        taskId,
+      const failedStarted = controller.beginActionEffect({
         intent: failedClaim.intent,
         workerId: "failing-memory-worker",
         claimEpoch: failedClaim.intent.claimEpoch,
+        now: 402,
+      });
+      if (failedStarted.kind !== "started") {
+        throw new Error("expected failing repair effect fence");
+      }
+      controller.recordAdmittedToolOutcome({
+        taskId,
+        intent: failedStarted.intent,
+        workerId: "failing-memory-worker",
+        claimEpoch: failedStarted.intent.claimEpoch,
         outcome: {
           transport: "completed",
           semantic: "permanent_failure",

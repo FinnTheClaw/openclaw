@@ -162,6 +162,7 @@ export function seedMemoryFact(params: {
   path: string;
   observedAt: number;
   sourceKind?: "tool" | "structured_external";
+  sourceIdentity?: string;
 }) {
   const evidenceId = `seed-evidence-${params.memoryId}`;
   persistMemoryEvidence({
@@ -174,6 +175,7 @@ export function seedMemoryFact(params: {
     value: { path: params.path },
     observedAt: params.observedAt,
     sourceKind: params.sourceKind ?? "tool",
+    ...(params.sourceIdentity ? { sourceIdentity: params.sourceIdentity } : {}),
   });
   const result = params.store.memory.promoteVerified({
     taskId: params.taskId,
