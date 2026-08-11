@@ -45,6 +45,7 @@ const rawSqliteAllowPathGroups = {
     "src/state/openclaw-state-db.ts",
     "src/state/sqlite-schema-shape.test-support.ts",
   ],
+  "lazy governor schema migration": ["src/tasks/governor/state-schema.ts"],
   "backup snapshot maintenance": ["src/commands/backup-verify.ts", "src/infra/backup-create.ts"],
   "agent auth profile read-only bootstrap": ["src/agents/auth-profiles/sqlite.ts"],
   "read-only SQLite status probes": ["src/commands/status.scan.shared.ts"],

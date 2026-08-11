@@ -1,0 +1,47 @@
+// Dispatches a claimed reply only through a host-certified delivery adapter.
+import {
+  GovernorDeliveryCertificationRegistry,
+  type GovernorDeliveryAdapter,
+} from "./delivery-certification.js";
+import type { GovernorOutboxClaimResult } from "./outbox-store.js";
+import type { GovernorSqliteStore } from "./store.js";
+import type { GovernorTaskId } from "./types.js";
+
+export type GovernorDispatchOutboxParams = {
+  taskId: GovernorTaskId;
+  effectId: string;
+  expectedLeaseEpoch: number;
+  workerId: string;
+  leaseDurationMs?: number;
+  adapter: GovernorDeliveryAdapter;
+  certifications: GovernorDeliveryCertificationRegistry;
+  now: number;
+};
+
+export async function dispatchGovernorOutbox(params: {
+  store: GovernorSqliteStore;
+  request: GovernorDispatchOutboxParams;
+}): Promise<GovernorOutboxClaimResult> {
+  const { request } = params;
+  request.certifications.assertCertified(request.adapter.identity);
+  const claim = params.store.outbox.claim(request);
+  if (claim.kind !== "claimed") {
+    return claim;
+  }
+  const delivery = await request.adapter.send({
+    deliveryKey: claim.entry.deliveryKey,
+    payload: claim.entry.payload,
+  });
+  if (delivery.deliveryKey !== claim.entry.deliveryKey) {
+    throw new Error("Governor delivery provider returned a mismatched delivery key");
+  }
+  return params.store.outbox.markSent({
+    taskId: request.taskId,
+    effectId: request.effectId,
+    expectedLeaseEpoch: request.expectedLeaseEpoch,
+    expectedDeliveryClaimEpoch: claim.entry.deliveryClaimEpoch,
+    workerId: request.workerId,
+    providerReceipt: delivery.receipt,
+    now: request.now + 1,
+  });
+}

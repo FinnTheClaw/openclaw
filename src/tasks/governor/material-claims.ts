@@ -17,7 +17,10 @@ export type GovernorResponseDraft = {
 };
 
 export function assertGovernorResponseDraft(draft: GovernorResponseDraft): GovernorResponseDraft {
-  const safe = assertGovernorBoundarySafe("session", draft) as GovernorResponseDraft;
+  const safe = assertGovernorBoundarySafe("session", {
+    framing: draft.framing,
+    materialClaimIds: [...draft.materialClaimIds],
+  }) as unknown as GovernorResponseDraft;
   if (
     (safe.framing !== "none" && safe.framing !== "result" && safe.framing !== "summary") ||
     !Array.isArray(safe.materialClaimIds) ||
@@ -49,7 +52,11 @@ export function createGovernorMaterialClaims(params: {
   const claimedIds = new Set(params.task.claims.map((claim) => claim.claimId));
   const output: GovernorTaskClaim[] = [];
   for (const input of params.claims) {
-    const safe = assertGovernorBoundarySafe("session", input) as GovernorMaterialClaimInput;
+    const safe = assertGovernorBoundarySafe("session", {
+      claimId: input.claimId,
+      text: input.text,
+      evidenceIds: [...input.evidenceIds],
+    }) as unknown as GovernorMaterialClaimInput;
     if (!safe.claimId.trim() || !safe.text.trim() || safe.evidenceIds.length === 0) {
       throw new Error("Governor material claims require an id, text, and current evidence");
     }

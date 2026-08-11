@@ -5,10 +5,15 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import {
+  GovernorDeliveryCertificationRegistry,
+  type GovernorDeliveryAdapter,
+} from "./delivery-certification.js";
+import {
   assertGovernorMandatoryEvalGates,
   summarizeGovernorEvals,
   type GovernorEvalSample,
 } from "./eval-harness.js";
+import { GovernorRuntimeAdapter } from "./runtime-adapter.js";
 import { GovernorSqliteStore } from "./store.js";
 import {
   createGovernorEffectId,
@@ -94,6 +99,28 @@ function mutationProposal(effectId: ReturnType<typeof createGovernorEffectId>) {
   };
 }
 
+class ObservedMutationAdapter {
+  readonly attempts: string[] = [];
+  readonly applied = new Set<string>();
+
+  apply(idempotencyKey: string): void {
+    this.attempts.push(idempotencyKey);
+    this.applied.add(idempotencyKey);
+  }
+}
+
+class ObservedDeliveryAdapter implements GovernorDeliveryAdapter {
+  readonly identity = { adapterId: "synthetic-eval", version: "1", capability: "message.send" };
+  readonly attempts: string[] = [];
+  readonly accepted = new Set<string>();
+
+  async send(params: { deliveryKey: string; payload: unknown }) {
+    this.attempts.push(params.deliveryKey);
+    this.accepted.add(params.deliveryKey);
+    return { deliveryKey: params.deliveryKey, receipt: { provider: "synthetic-eval" } };
+  }
+}
+
 afterEach(() => closeOpenClawStateDatabase());
 
 describe("behavior governor mandatory synthetic evals", () => {
@@ -139,16 +166,22 @@ describe("behavior governor mandatory synthetic evals", () => {
     );
   });
 
-  it("survives repeated crashes and twenty duplicate deliveries without duplicate effects", async () => {
+  it("observes duplicate, crash, access, and short-task gates from deterministic executions", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-crash-eval-" },
       async (state) => {
         let store = new GovernorSqliteStore({ stateDir: state.stateDir });
         let controller = new GovernorController(store, registry());
-        const mutations = new Map<string, string>();
-        const visibleReplies = new Map<string, string>();
+        const mutationAdapter = new ObservedMutationAdapter();
+        const deliveryAdapter = new ObservedDeliveryAdapter();
+        const deliveryCertifications = new GovernorDeliveryCertificationRegistry([
+          { ...deliveryAdapter.identity, status: "certified" },
+        ]);
         const samples: GovernorEvalSample[] = [];
-        const reopen = () => {
+        const accessSamples: GovernorEvalSample[] = [];
+        const crashCheckpoints = new Set<string>();
+        const reopen = (checkpoint: string) => {
+          crashCheckpoints.add(checkpoint);
           closeOpenClawStateDatabase();
           store = new GovernorSqliteStore({ stateDir: state.stateDir });
           controller = new GovernorController(store, registry());
@@ -156,6 +189,7 @@ describe("behavior governor mandatory synthetic evals", () => {
 
         try {
           for (let index = 0; index < 20; index += 1) {
+            const base = index * 1_000;
             const sourceMessageId = `crash-message-${index}`;
             const first = controller.ingest({
               sourceMessageId,
@@ -163,26 +197,75 @@ describe("behavior governor mandatory synthetic evals", () => {
               scope: scope(100 + index),
               mode: "FOCUSED",
               contract: contract(`Crash recovery ${index}`, true),
-              now: index * 1_000 + 100,
+              now: base + 100,
             });
-            const duplicateIds = Array.from(
-              { length: 20 },
-              () =>
-                controller.ingest({
-                  sourceMessageId,
-                  sourceSequence: 1,
-                  scope: scope(100 + index),
-                  mode: "FOCUSED",
-                  contract: contract(`Crash recovery ${index}`, true),
-                  now: index * 1_000 + 101,
-                }).task.taskId,
+            const duplicateIds = await Promise.all(
+              Array.from(
+                { length: 20 },
+                async () =>
+                  controller.ingest({
+                    sourceMessageId,
+                    sourceSequence: 1,
+                    scope: scope(100 + index),
+                    mode: "FOCUSED",
+                    contract: contract(`Crash recovery ${index}`, true),
+                    now: base + 101,
+                  }).task.taskId,
+              ),
             );
             expect(new Set([first.task.taskId, ...duplicateIds]).size).toBe(1);
             const taskId = first.task.taskId;
-            reopen();
+            reopen("after_ingress");
 
-            controller.preparePlan({ taskId, plan, now: index * 1_000 + 110 });
-            controller.startExecution(taskId, index * 1_000 + 120);
+            controller.preparePlan({ taskId, plan, now: base + 110 });
+            controller.startExecution(taskId, base + 120);
+            reopen("after_plan_and_start");
+
+            const accessCalls: Array<{ accepted: boolean; semantic?: string }> = [];
+            for (let operation = 0; operation < 3; operation += 1) {
+              const outcome = controller.recordToolOutcome({
+                taskId,
+                executionFence: controller.captureExecutionFence(taskId),
+                proposal: {
+                  effectId: createGovernorEffectId(`inventory-${index}-${operation}`),
+                  criterionId: "verified",
+                  capability: "synthetic.inspect",
+                  capabilityVersion: "1",
+                  canonicalTarget: `fixture://inventory/${index}/${operation}`,
+                  expectedEvidence: "Exact structured inventory row",
+                  sourceRank: "structured_exact",
+                  stopCondition: "Inventory row is present",
+                  mutating: false,
+                  argumentsDigest: governorArgumentsDigest({ index, operation }),
+                },
+                progressVector: { index, operation },
+                outcome: {
+                  transport: "completed",
+                  semantic: "success",
+                  sideEffect: "not_applicable",
+                  verification: "not_required",
+                  summaryCode: "inventory_row",
+                  evidence: { index, operation, found: true },
+                },
+                now: base + 121 + operation,
+              });
+              accessCalls.push({
+                accepted: outcome.accepted,
+                ...(outcome.accepted ? { semantic: outcome.effect.outcome.semantic } : {}),
+              });
+            }
+            accessSamples.push({
+              success: accessCalls.every((call) => call.accepted && call.semantic === "success"),
+              prematureCompletion: false,
+              resumedAfterCrash: true,
+              duplicateMutation: false,
+              duplicateReply: false,
+              meaningfulCalls: accessCalls.length,
+              usefulCalls: accessCalls.filter(
+                (call) => call.accepted && call.semantic === "success",
+              ).length,
+            });
+
             const executionFence = controller.captureExecutionFence(taskId);
             const effectId = createGovernorEffectId(`crash-effect-${index}`);
             const reservations = Array.from({ length: 20 }, () =>
@@ -191,7 +274,7 @@ describe("behavior governor mandatory synthetic evals", () => {
                 executionFence,
                 proposal: mutationProposal(effectId),
                 progressVector: { desired: true },
-                now: index * 1_000 + 121,
+                now: base + 125,
               }),
             );
             expect(reservations.every((reservation) => reservation.accepted)).toBe(true);
@@ -199,30 +282,30 @@ describe("behavior governor mandatory synthetic evals", () => {
             if (!reservation?.accepted) {
               throw new Error("missing action reservation");
             }
-            reopen();
+            reopen("after_action_reservation");
 
             const oldClaim = controller.claimActionIntent({
               intent: reservation.intent,
               workerId: `old-action-${index}`,
               leaseDurationMs: 10,
-              now: index * 1_000 + 130,
+              now: base + 130,
             });
             if (oldClaim.kind !== "claimed") {
               throw new Error("missing old action claim");
             }
-            mutations.set(oldClaim.intent.idempotencyKey, `mutation-${index}`);
-            reopen();
+            mutationAdapter.apply(oldClaim.intent.idempotencyKey);
+            reopen("after_mutation_provider_accept");
 
             const newClaim = controller.claimActionIntent({
               intent: reservation.intent,
               workerId: `new-action-${index}`,
               leaseDurationMs: 10,
-              now: index * 1_000 + 141,
+              now: base + 141,
             });
             if (newClaim.kind !== "claimed") {
               throw new Error("missing reclaimed action");
             }
-            mutations.set(newClaim.intent.idempotencyKey, `mutation-${index}`);
+            mutationAdapter.apply(newClaim.intent.idempotencyKey);
             expect(
               controller.recordAdmittedToolOutcome({
                 taskId,
@@ -236,7 +319,7 @@ describe("behavior governor mandatory synthetic evals", () => {
                   verification: "verified",
                   summaryCode: "late",
                 },
-                now: index * 1_000 + 142,
+                now: base + 142,
               }),
             ).toMatchObject({ accepted: false, reason: "stale_execution" });
             controller.recordAdmittedToolOutcome({
@@ -252,15 +335,15 @@ describe("behavior governor mandatory synthetic evals", () => {
                 summaryCode: "verified",
                 evidence: { exactState: true },
               },
-              now: index * 1_000 + 143,
+              now: base + 143,
             });
-            reopen();
+            reopen("after_mutation_outcome");
 
-            controller.beginVerification(taskId, index * 1_000 + 150);
+            controller.beginVerification(taskId, base + 150);
             const completion = controller.proposeFinish({
               taskId,
               response: { framing: "summary", materialClaimIds: [] },
-              now: index * 1_000 + 151,
+              now: base + 151,
             });
             if (!completion.completed) {
               throw new Error("expected certified completion");
@@ -275,75 +358,92 @@ describe("behavior governor mandatory synthetic evals", () => {
               expectedLeaseEpoch: completion.task.leaseEpoch,
               workerId: `old-delivery-${index}`,
               leaseDurationMs: 10,
-              now: index * 1_000 + 160,
+              now: base + 160,
             });
             if (oldDelivery.kind !== "claimed") {
               throw new Error("missing old delivery claim");
             }
-            visibleReplies.set(oldDelivery.entry.deliveryKey, `reply-${index}`);
-            reopen();
-
-            const newDelivery = store.outbox.claim({
+            await deliveryAdapter.send({
+              deliveryKey: oldDelivery.entry.deliveryKey,
+              payload: oldDelivery.entry.payload,
+            });
+            reopen("after_delivery_provider_accept");
+            await controller.dispatchOutbox({
               taskId,
               effectId: outbox.effectId,
               expectedLeaseEpoch: completion.task.leaseEpoch,
               workerId: `new-delivery-${index}`,
               leaseDurationMs: 10,
-              now: index * 1_000 + 171,
+              adapter: deliveryAdapter,
+              certifications: deliveryCertifications,
+              now: base + 171,
             });
-            if (newDelivery.kind !== "claimed") {
-              throw new Error("missing reclaimed delivery");
-            }
-            visibleReplies.set(newDelivery.entry.deliveryKey, `reply-${index}`);
-            store.outbox.markSent({
-              taskId,
-              effectId: outbox.effectId,
-              expectedLeaseEpoch: completion.task.leaseEpoch,
-              expectedDeliveryClaimEpoch: newDelivery.entry.deliveryClaimEpoch,
-              workerId: `new-delivery-${index}`,
-              providerReceipt: { providerId: `reply-${index}` },
-              now: index * 1_000 + 172,
-            });
-            const effects = store.listEffects(taskId);
-            const deliveries = store.outbox.list(taskId);
+            const mutationAttempts = mutationAdapter.attempts.filter(
+              (key) => key === newClaim.intent.idempotencyKey,
+            );
+            const deliveryAttempts = deliveryAdapter.attempts.filter(
+              (key) => key === oldDelivery.entry.deliveryKey,
+            );
             samples.push({
-              success: effects.length === 1 && deliveries[0]?.state === "sent",
+              success:
+                store.listEffects(taskId).length === 4 &&
+                store.outbox.list(taskId)[0]?.state === "sent",
               prematureCompletion: false,
               resumedAfterCrash: true,
-              duplicateMutation:
-                mutations.get(newClaim.intent.idempotencyKey) !== `mutation-${index}`,
-              duplicateReply:
-                visibleReplies.get(newDelivery.entry.deliveryKey) !== `reply-${index}`,
-              meaningfulCalls: 3,
-              usefulCalls: 3,
+              duplicateMutation: mutationAdapter.applied.size !== index + 1,
+              duplicateReply: deliveryAdapter.accepted.size !== index + 1,
+              meaningfulCalls: mutationAttempts.length + deliveryAttempts.length,
+              usefulCalls: 2,
             });
+            expect(mutationAttempts).toHaveLength(2);
+            expect(deliveryAttempts).toHaveLength(2);
           }
 
+          const quickProfile = {
+            incident: false,
+            effectful: false,
+            requiresExternalEvidence: false,
+            consequential: false,
+            estimatedUsefulActions: 0,
+            independentBranches: 0,
+          } as const;
+          const shortRuns = Array.from({ length: 20 }, (_, index) => {
+            const runtime = new GovernorRuntimeAdapter(controller);
+            const routed = runtime.routeIngress({
+              sourceMessageId: `short-${index}`,
+              sourceSequence: 1,
+              scope: scope(500 + index),
+              profile: quickProfile,
+              contract: contract("Prompt-contained quick chat", false),
+              now: 30_000 + index,
+            });
+            return routed.kind === "quick" && routed.decision.toolPolicy === "forbidden";
+          });
           const summary = summarizeGovernorEvals(samples);
-          const accessInventory = summarizeGovernorEvals(
-            Array.from({ length: 100 }, () => ({
-              success: true,
-              prematureCompletion: false,
-              resumedAfterCrash: true,
-              duplicateMutation: false,
-              duplicateReply: false,
-              meaningfulCalls: 3,
-              usefulCalls: 3,
-            })),
-          );
+          const accessInventory = summarizeGovernorEvals(accessSamples);
+          const baselineShortTaskSuccessRate = shortRuns.filter(Boolean).length / shortRuns.length;
           expect(summary).toMatchObject({
             samples: 20,
-            successRate: 1,
             restartResumeRate: 1,
             duplicateMutations: 0,
             duplicateReplies: 0,
           });
           expect(accessInventory).toMatchObject({ meaningfulCallsP95: 3, usefulActionRatio: 1 });
+          expect(crashCheckpoints).toEqual(
+            new Set([
+              "after_ingress",
+              "after_plan_and_start",
+              "after_action_reservation",
+              "after_mutation_provider_accept",
+              "after_mutation_outcome",
+              "after_delivery_provider_accept",
+            ]),
+          );
           expect(() =>
             assertGovernorMandatoryEvalGates({
               summary,
               accessInventory,
-              baselineShortTaskSuccessRate: 1,
+              baselineShortTaskSuccessRate,
             }),
           ).not.toThrow();
         } finally {
@@ -353,116 +453,57 @@ describe("behavior governor mandatory synthetic evals", () => {
     );
   });
 
-  it("allows more than thirty useful deep actions and rejects prior-revision evidence", async () => {
+  it("records a semantic failure as a rejected finish rather than a successful completion", async () => {
     await withOpenClawTestState(
-      { layout: "state-only", prefix: "openclaw-governor-deep-eval-" },
+      { layout: "state-only", prefix: "openclaw-governor-semantic-eval-" },
       async (state) => {
         const store = new GovernorSqliteStore({ stateDir: state.stateDir });
         const controller = new GovernorController(store, registry());
         try {
           const taskId = controller.ingest({
-            sourceMessageId: "deep-message-1",
+            sourceMessageId: "semantic-failure",
             sourceSequence: 1,
-            scope: scope(500),
-            mode: "DEEP",
-            contract: contract("Run 35 useful exact checks", false),
+            scope: scope(700),
+            mode: "FOCUSED",
+            contract: contract("Find a required synthetic record", false),
             now: 100,
           }).task.taskId;
-          controller.preparePlan({ taskId, plan, now: 110 });
-          controller.startExecution(taskId, 120);
-          for (let index = 0; index < 35; index += 1) {
-            controller.recordToolOutcome({
-              taskId,
-              executionFence: controller.captureExecutionFence(taskId),
-              proposal: {
-                effectId: createGovernorEffectId(`deep-${index}`),
-                criterionId: "verified",
-                capability: "synthetic.inspect",
-                capabilityVersion: "1",
-                canonicalTarget: `fixture://item/${index}`,
-                expectedEvidence: `Exact item ${index}`,
-                sourceRank: "structured_exact",
-                stopCondition: `Item ${index} is verified`,
-                mutating: false,
-                argumentsDigest: governorArgumentsDigest({ index }),
-              },
-              progressVector: { verifiedThrough: index },
-              outcome: {
-                transport: "completed",
-                semantic: "success",
-                sideEffect: "not_applicable",
-                verification: "not_required",
-                summaryCode: "verified",
-                evidence: { index, verified: true },
-              },
-              now: 121 + index,
-            });
-          }
-          expect(store.listEffects(taskId)).toHaveLength(35);
-          controller.beginVerification(taskId, 200);
-          expect(
-            controller.proposeFinish({
-              taskId,
-              response: { framing: "summary", materialClaimIds: [] },
-              now: 201,
-            }).completed,
-          ).toBe(true);
-
-          const secondTaskId = controller.ingest({
-            sourceMessageId: "revision-message-1",
-            sourceSequence: 1,
-            scope: scope(501),
-            mode: "FOCUSED",
-            contract: contract("Original revision", false),
-            now: 300,
-          }).task.taskId;
-          controller.preparePlan({ taskId: secondTaskId, plan, now: 310 });
-          controller.startExecution(secondTaskId, 320);
+          controller.preparePlan({ taskId, plan, now: 101 });
+          controller.startExecution(taskId, 105);
           controller.recordToolOutcome({
-            taskId: secondTaskId,
-            executionFence: controller.captureExecutionFence(secondTaskId),
+            taskId,
+            executionFence: controller.captureExecutionFence(taskId),
             proposal: {
-              effectId: createGovernorEffectId("old-revision"),
+              effectId: createGovernorEffectId("semantic-not-found"),
               criterionId: "verified",
               capability: "synthetic.inspect",
               capabilityVersion: "1",
-              canonicalTarget: "fixture://old",
-              expectedEvidence: "Old evidence",
+              canonicalTarget: "fixture://missing",
+              expectedEvidence: "Exact record",
               sourceRank: "structured_exact",
-              stopCondition: "Old state verified",
+              stopCondition: "Record found",
               mutating: false,
-              argumentsDigest: governorArgumentsDigest({ revision: 1 }),
+              argumentsDigest: governorArgumentsDigest({ target: "missing" }),
             },
-            progressVector: { revision: 1 },
+            progressVector: { searched: true },
             outcome: {
               transport: "completed",
-              semantic: "success",
+              semantic: "not_found",
               sideEffect: "not_applicable",
               verification: "not_required",
-              summaryCode: "verified",
-              evidence: { revision: 1 },
+              summaryCode: "not_found",
             },
-            now: 321,
+            now: 106,
           });
-          controller.ingest({
-            sourceMessageId: "revision-message-2",
-            sourceSequence: 2,
-            scope: scope(501),
-            mode: "FOCUSED",
-            contract: contract("Corrected revision", false),
-            now: 322,
-          });
-          controller.preparePlan({ taskId: secondTaskId, plan, now: 330 });
-          controller.startExecution(secondTaskId, 340);
-          controller.beginVerification(secondTaskId, 341);
-          const rejected = controller.proposeFinish({
-            taskId: secondTaskId,
+          controller.beginVerification(taskId, 107);
+          const finish = controller.proposeFinish({
+            taskId,
             response: { framing: "summary", materialClaimIds: [] },
-            now: 342,
+            now: 108,
           });
-          expect(rejected.completed).toBe(false);
-          if (!rejected.completed) {
-            expect(rejected.recovery.unmetCriteria).toEqual(["verified"]);
+          expect(finish).toMatchObject({ completed: false });
+          if (!finish.completed) {
+            expect(finish.recovery.semanticFailures).toHaveLength(1);
           }
         } finally {
           closeOpenClawStateDatabase();

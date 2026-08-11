@@ -16,6 +16,7 @@ import {
   type GovernorCapabilityDefinition,
 } from "./capability-registry.js";
 import { assertValidGovernorPlan } from "./contracts.js";
+import { dispatchGovernorOutbox, type GovernorDispatchOutboxParams } from "./delivery-dispatch.js";
 import { createGovernorEventRecord } from "./events.js";
 import { isBehaviorGovernorEnabled } from "./feature-flag.js";
 import {
@@ -23,9 +24,9 @@ import {
   type GovernorCompletionCertificate,
   type GovernorRecoveryDirective,
 } from "./finish-gate.js";
+import { admitGovernorMaterialClaims } from "./material-claim-admission.js";
 import {
   assertGovernorResponseDraft,
-  createGovernorMaterialClaims,
   renderGovernorResponse,
   type GovernorMaterialClaimInput,
   type GovernorResponseDraft,
@@ -34,7 +35,6 @@ import {
   resolveGovernorMutation,
   type GovernorMutationResolution,
 } from "./mutation-reconciliation.js";
-import type { GovernorOutboxClaimResult } from "./outbox-store.js";
 import {
   createGovernorCheckpoint,
   type GovernorCheckpoint,
@@ -71,13 +71,10 @@ export type {
 
 export type { GovernorMutationResolution } from "./mutation-reconciliation.js";
 
-export type GovernorDeliveryProvider = {
-  deliveryKeySupport: "certified" | "unsupported";
-  send: (params: { deliveryKey: string; payload: GovernorJsonValue }) => Promise<{
-    deliveryKey: string;
-    receipt: GovernorJsonValue;
-  }>;
-};
+export type {
+  GovernorDeliveryAdapter,
+  GovernorDeliveryAdapterIdentity,
+} from "./delivery-certification.js";
 
 function assertApplied(result: GovernorCommitResult): GovernorTaskProjection {
   if (!result.applied) {
@@ -383,20 +380,13 @@ export class GovernorController {
     if (task.state !== "VERIFYING") {
       throw new Error(`Cannot admit material claims while task is ${task.state}`);
     }
-    const claims = createGovernorMaterialClaims({
+    const admission = admitGovernorMaterialClaims({
+      store: this.store,
       task,
-      evidence: this.store.listEvidence(task.taskId),
       claims: params.claims,
       now: params.now,
     });
-    const next = { ...nextTaskVersion(task, params.now), claims: [...task.claims, ...claims] };
-    const event = createGovernorEventRecord({
-      task: next,
-      eventType: "material_claims_admitted",
-      payload: { claimIds: claims.map((claim) => claim.claimId), count: claims.length },
-      now: params.now,
-    });
-    return assertApplied(this.store.commit({ current: task, next, event }));
+    return assertApplied(this.store.commit({ current: task, ...admission }));
   }
 
   proposeFinish(params: {
@@ -482,7 +472,7 @@ export class GovernorController {
         objectiveRevision: decision.certificate.objectiveRevision,
         planVersion: decision.certificate.planVersion,
         executionGeneration: decision.certificate.executionGeneration,
-        evidenceDigests: decision.certificate.evidenceDigests,
+        evidenceDigests: [...decision.certificate.evidenceDigests],
         verifiedAt: decision.certificate.verifiedAt,
         outboxDeliveryKey: outbox.deliveryKey,
       },
@@ -494,38 +484,8 @@ export class GovernorController {
     return { completed: true, task: completed, certificate: decision.certificate };
   }
 
-  async dispatchOutbox(params: {
-    taskId: GovernorTaskId;
-    effectId: string;
-    expectedLeaseEpoch: number;
-    workerId: string;
-    leaseDurationMs?: number;
-    provider: GovernorDeliveryProvider;
-    now: number;
-  }): Promise<GovernorOutboxClaimResult> {
-    if (params.provider.deliveryKeySupport !== "certified") {
-      throw new Error("Governor delivery provider must certify stable delivery-key deduplication");
-    }
-    const claim = this.store.outbox.claim(params);
-    if (claim.kind !== "claimed") {
-      return claim;
-    }
-    const delivery = await params.provider.send({
-      deliveryKey: claim.entry.deliveryKey,
-      payload: claim.entry.payload,
-    });
-    if (delivery.deliveryKey !== claim.entry.deliveryKey) {
-      throw new Error("Governor delivery provider returned a mismatched delivery key");
-    }
-    return this.store.outbox.markSent({
-      taskId: params.taskId,
-      effectId: params.effectId,
-      expectedLeaseEpoch: params.expectedLeaseEpoch,
-      expectedDeliveryClaimEpoch: claim.entry.deliveryClaimEpoch,
-      workerId: params.workerId,
-      providerReceipt: delivery.receipt,
-      now: params.now + 1,
-    });
+  dispatchOutbox(params: GovernorDispatchOutboxParams) {
+    return dispatchGovernorOutbox({ store: this.store, request: params });
   }
 }
 

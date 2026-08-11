@@ -53,11 +53,19 @@ isolated SQLite state.
 14. Completion reads durable claims, contradictions, pending-update state, and evidence for the
     current objective and plan only. Corrections cancel old action/fan-out generations and make
     late results audit-only.
-15. A delivery provider must certify stable delivery-key deduplication before the outbox will
-    claim or send an entry. Provider receipts are secret-filtered before persistence.
+15. A host-owned certification registry, not a delivery provider's self-attestation, authorizes
+    stable delivery-key deduplication before the outbox will claim or send an entry. Provider
+    receipts are secret-filtered before persistence.
 16. The built-in memory adapter truthfully guarantees primary tombstone plus scope-epoch fencing.
     Cache/index/embedding invalidation requires a concrete adapter and must not be reported until
     such an adapter provides verified postconditions.
+17. Evidence source identities are converted to keyed opaque references before durable admission.
+    Legacy evidence rows receive an impossible plan-version sentinel and therefore cannot satisfy
+    a current plan until freshly re-admitted.
+18. A response may contain only fixed non-material framing plus durable material claims that are
+    bound to the current objective and plan and supported by admitted evidence.
+19. Mandatory governor metrics are calculated from deterministic scenario execution logs,
+    including duplicate ingress and crash-recovery paths; static samples are not evidence.
 
 ## Consequences
 
@@ -70,6 +78,6 @@ can remain unused indefinitely while the feature flag is off.
 
 The governor remains disabled by default. A future production rollout must first provide a
 host-held `OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY`, bind every selected channel adapter to the
-certified delivery-key contract, and install concrete cache/index/embedding invalidation adapters
+host-certified delivery-key registry, and install concrete cache/index/embedding invalidation adapters
 for any memory backend it governs. Until then, this is a synthetic-testable control plane rather
 than a live message-path replacement.
