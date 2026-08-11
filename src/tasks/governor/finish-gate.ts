@@ -1,6 +1,7 @@
 // Deterministically accepts or rejects model-proposed task completion.
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorEvidenceRecord } from "./evidence.js";
+import type { GovernorResponseDraft } from "./material-claims.js";
 import {
   isGovernorEffectSemanticallySuccessful,
   type GovernorEffectRecord,
@@ -15,6 +16,7 @@ export type GovernorRecoveryDirective = {
   unverifiedMutationEffectIds: readonly string[];
   runningActionIds: readonly string[];
   pendingUserUpdate: boolean;
+  unsupportedMaterialClaimIds: readonly string[];
   prohibitedFingerprints: readonly string[];
   nextUsefulCapabilities: readonly string[];
 };
@@ -52,19 +54,19 @@ export function evaluateGovernorFinish(params: {
   effects: readonly GovernorEffectRecord[];
   evidence: readonly GovernorEvidenceRecord[];
   runningActionIds?: readonly string[];
+  response: GovernorResponseDraft;
   now: number;
 }): GovernorFinishDecision {
   const evidence = currentEvidence(params);
   const supportedCriteria = new Set(evidence.map((item) => item.criterionId));
+  const currentClaims = params.task.claims.filter(
+    (claim) =>
+      claim.objectiveRevision === params.task.objectiveRevision &&
+      claim.planVersion === params.task.planVersion &&
+      claim.scopeKey === params.task.scopeKey,
+  );
   const supportedClaims = new Set(
-    params.task.claims
-      .filter(
-        (claim) =>
-          claim.objectiveRevision === params.task.objectiveRevision &&
-          claim.planVersion === params.task.planVersion &&
-          claim.scopeKey === params.task.scopeKey,
-      )
-      .map((claim) => claim.claimId),
+    currentClaims.filter((claim) => claim.kind !== "material").map((claim) => claim.claimId),
   );
   const mandatoryCriteria = params.task.contract.completionCriteria.filter(
     (criterion) => criterion.mandatory,
@@ -100,6 +102,16 @@ export function evaluateGovernorFinish(params: {
     .map((item) => item.detail);
   const runningActionIds = [...(params.runningActionIds ?? [])];
   const pendingUserUpdate = params.task.conditions.pendingUserUpdate;
+  const currentEvidenceIds = new Set(evidence.map((item) => item.evidenceId));
+  const materialClaims = new Map(
+    currentClaims
+      .filter((claim) => claim.kind === "material")
+      .map((claim) => [claim.claimId, claim]),
+  );
+  const unsupportedMaterialClaimIds = params.response.materialClaimIds.filter((claimId) => {
+    const claim = materialClaims.get(claimId);
+    return !claim || !claim.evidenceIds?.every((evidenceId) => currentEvidenceIds.has(evidenceId));
+  });
   if (
     unmetCriteria.length > 0 ||
     semanticFailures.length > 0 ||
@@ -107,7 +119,8 @@ export function evaluateGovernorFinish(params: {
     reconciliationEffectIds.length > 0 ||
     unverifiedMutationEffectIds.length > 0 ||
     runningActionIds.length > 0 ||
-    pendingUserUpdate
+    pendingUserUpdate ||
+    unsupportedMaterialClaimIds.length > 0
   ) {
     const prohibitedFingerprints = currentEffects
       .filter((effect) => !isGovernorEffectSemanticallySuccessful(effect))
@@ -123,6 +136,7 @@ export function evaluateGovernorFinish(params: {
         unverifiedMutationEffectIds,
         runningActionIds,
         pendingUserUpdate,
+        unsupportedMaterialClaimIds,
         prohibitedFingerprints,
         nextUsefulCapabilities: currentEffects
           .filter((effect) => !isGovernorEffectSemanticallySuccessful(effect))

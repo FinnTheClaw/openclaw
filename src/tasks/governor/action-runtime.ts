@@ -293,7 +293,7 @@ export class GovernorActionRuntime {
       params.outcome.evidence !== undefined
     ) {
       const candidate = createGovernorEvidenceCandidate({
-        evidenceId: `evidence_${intent.effectId}`,
+        evidenceId: `evidence_${task.taskId}_${intent.effectId}`,
         taskId: task.taskId,
         criterionId: intent.proposal.criterionId,
         sourceKind: params.evidenceSourceKind ?? "tool",

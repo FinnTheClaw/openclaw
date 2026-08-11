@@ -259,7 +259,7 @@ describe("behavior governor mandatory synthetic evals", () => {
             controller.beginVerification(taskId, index * 1_000 + 150);
             const completion = controller.proposeFinish({
               taskId,
-              responseText: `Completed ${index}`,
+              response: { framing: "summary", materialClaimIds: [] },
               now: index * 1_000 + 151,
             });
             if (!completion.completed) {
@@ -401,8 +401,11 @@ describe("behavior governor mandatory synthetic evals", () => {
           expect(store.listEffects(taskId)).toHaveLength(35);
           controller.beginVerification(taskId, 200);
           expect(
-            controller.proposeFinish({ taskId, responseText: "Deep checks complete", now: 201 })
-              .completed,
+            controller.proposeFinish({
+              taskId,
+              response: { framing: "summary", materialClaimIds: [] },
+              now: 201,
+            }).completed,
           ).toBe(true);
 
           const secondTaskId = controller.ingest({
@@ -454,7 +457,7 @@ describe("behavior governor mandatory synthetic evals", () => {
           controller.beginVerification(secondTaskId, 341);
           const rejected = controller.proposeFinish({
             taskId: secondTaskId,
-            responseText: "Old evidence must not complete this revision",
+            response: { framing: "summary", materialClaimIds: [] },
             now: 342,
           });
           expect(rejected.completed).toBe(false);

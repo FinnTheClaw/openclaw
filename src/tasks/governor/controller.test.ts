@@ -202,7 +202,7 @@ describe("durable behavior governor", () => {
       controller.beginVerification(taskId, 122);
       const rejected = controller.proposeFinish({
         taskId,
-        responseText: "Unsupported success",
+        response: { framing: "summary", materialClaimIds: [] },
         now: 123,
       });
       expect(rejected.completed).toBe(false);
@@ -258,7 +258,7 @@ describe("durable behavior governor", () => {
       controller.beginVerification(taskId, 142);
       const completed = controller.proposeFinish({
         taskId,
-        responseText: "Verified complete",
+        response: { framing: "summary", materialClaimIds: [] },
         now: 143,
       });
       expect(completed.completed).toBe(true);
@@ -373,7 +373,11 @@ describe("durable behavior governor", () => {
       }
       expect(result.evidence).toBeUndefined();
       controller.beginVerification(taskId, 122);
-      const finish = controller.proposeFinish({ taskId, responseText: "Done", now: 123 });
+      const finish = controller.proposeFinish({
+        taskId,
+        response: { framing: "summary", materialClaimIds: [] },
+        now: 123,
+      });
       expect(finish).toMatchObject({
         completed: false,
         recovery: { unmetCriteria: ["state-verified"] },

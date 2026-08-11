@@ -21,6 +21,7 @@ export type GovernorEventType =
   | "mutation_reconciled"
   | "late_tool_result_ignored"
   | "evidence_admitted"
+  | "material_claims_admitted"
   | "finish_rejected"
   | "completion_certified"
   | "lease_reclaimed"

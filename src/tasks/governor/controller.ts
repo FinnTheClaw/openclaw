@@ -24,6 +24,13 @@ import {
   type GovernorRecoveryDirective,
 } from "./finish-gate.js";
 import {
+  assertGovernorResponseDraft,
+  createGovernorMaterialClaims,
+  renderGovernorResponse,
+  type GovernorMaterialClaimInput,
+  type GovernorResponseDraft,
+} from "./material-claims.js";
+import {
   resolveGovernorMutation,
   type GovernorMutationResolution,
 } from "./mutation-reconciliation.js";
@@ -367,17 +374,38 @@ export class GovernorController {
     return resolveGovernorMutation({ store: this.store, ...params });
   }
 
+  admitMaterialClaims(params: {
+    taskId: GovernorTaskId;
+    claims: readonly GovernorMaterialClaimInput[];
+    now: number;
+  }): GovernorTaskProjection {
+    const task = this.#task(params.taskId);
+    if (task.state !== "VERIFYING") {
+      throw new Error(`Cannot admit material claims while task is ${task.state}`);
+    }
+    const claims = createGovernorMaterialClaims({
+      task,
+      evidence: this.store.listEvidence(task.taskId),
+      claims: params.claims,
+      now: params.now,
+    });
+    const next = { ...nextTaskVersion(task, params.now), claims: [...task.claims, ...claims] };
+    const event = createGovernorEventRecord({
+      task: next,
+      eventType: "material_claims_admitted",
+      payload: { claimIds: claims.map((claim) => claim.claimId), count: claims.length },
+      now: params.now,
+    });
+    return assertApplied(this.store.commit({ current: task, next, event }));
+  }
+
   proposeFinish(params: {
     taskId: GovernorTaskId;
-    responseText: string;
+    response: GovernorResponseDraft;
     now: number;
   }): GovernorFinishResult {
-    const safeFinish = assertGovernorBoundarySafe("session", {
-      responseText: params.responseText,
-    }) as {
-      responseText: string;
-    };
     let task = this.#task(params.taskId);
+    const responseDraft = assertGovernorResponseDraft(params.response);
     if (task.state !== "VERIFYING") {
       throw new Error(`Cannot propose finish while task is ${task.state}`);
     }
@@ -391,6 +419,7 @@ export class GovernorController {
       effects: this.store.listEffects(task.taskId),
       evidence: this.store.listEvidence(task.taskId),
       runningActionIds,
+      response: responseDraft,
       now: params.now + 1,
     });
     if (!decision.accepted) {
@@ -413,6 +442,7 @@ export class GovernorController {
           reconciliationEffectIds: [...decision.recovery.reconciliationEffectIds],
           runningActionIds: [...decision.recovery.runningActionIds],
           pendingUserUpdate: decision.recovery.pendingUserUpdate,
+          unsupportedMaterialClaimIds: [...decision.recovery.unsupportedMaterialClaimIds],
         },
         now: params.now + 1,
       });
@@ -421,6 +451,7 @@ export class GovernorController {
       );
       return { completed: false, task: recovered, recovery: decision.recovery };
     }
+    const response = renderGovernorResponse({ task, draft: responseDraft });
     const transition = applyGovernorTransition({
       task,
       expectedTaskVersion: task.taskVersion,
@@ -434,7 +465,7 @@ export class GovernorController {
     const effectId = `completion_${transition.task.objectiveRevision}`;
     const payload: GovernorJsonValue = {
       kind: "completion",
-      text: safeFinish.responseText,
+      text: response,
       certificateDigest: decision.certificate.certificateDigest,
     };
     const outbox = this.store.outbox.createCompletion({

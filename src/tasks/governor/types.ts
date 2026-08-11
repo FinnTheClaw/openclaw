@@ -131,6 +131,9 @@ export type GovernorTaskClaim = {
   planVersion: number;
   scopeKey: string;
   admittedAt: number;
+  kind?: "criterion" | "material";
+  evidenceIds?: readonly string[];
+  text?: string;
 };
 
 export type GovernorTaskProjection = {

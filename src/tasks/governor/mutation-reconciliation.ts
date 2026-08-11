@@ -91,7 +91,7 @@ export function resolveGovernorMutation(params: {
   let evidence: GovernorEvidenceRecord | undefined;
   if (params.resolution === "applied_verified" && effect.criterionId) {
     const candidate = createGovernorEvidenceCandidate({
-      evidenceId: `verification_${effect.effectId}`,
+      evidenceId: `verification_${task.taskId}_${effect.effectId}`,
       taskId: task.taskId,
       criterionId: effect.criterionId,
       sourceKind: "structured_external",

@@ -213,7 +213,7 @@ describe("governor mutation reconciliation and delivery", () => {
       controller.beginVerification(taskId, 125);
       const premature = controller.proposeFinish({
         taskId,
-        responseText: "Premature",
+        response: { framing: "summary", materialClaimIds: [] },
         now: 126,
       });
       expect(premature.completed).toBe(false);
@@ -270,7 +270,7 @@ describe("governor mutation reconciliation and delivery", () => {
       controller.beginVerification(taskId, 152);
       const completed = controller.proposeFinish({
         taskId,
-        responseText: "Verified complete",
+        response: { framing: "summary", materialClaimIds: [] },
         now: 153,
       });
       expect(completed.completed).toBe(true);
@@ -297,7 +297,7 @@ describe("governor mutation reconciliation and delivery", () => {
       controller.setPendingUserUpdate({ taskId, pending: true, now: 123 });
       const rejected = controller.proposeFinish({
         taskId,
-        responseText: "Too early",
+        response: { framing: "summary", materialClaimIds: [] },
         now: 124,
       });
       expect(rejected.completed).toBe(false);
@@ -375,7 +375,10 @@ describe("governor mutation reconciliation and delivery", () => {
       expect(() =>
         controller.proposeFinish({
           taskId,
-          responseText: "GOVERNOR_SECRET_CANARY_session_output",
+          response: {
+            framing: "summary",
+            materialClaimIds: ["GOVERNOR_SECRET_CANARY_session_output"],
+          },
           now: 124,
         }),
       ).toThrow(/rejected secret-like content/);
@@ -416,7 +419,7 @@ describe("governor mutation reconciliation and delivery", () => {
       controller.beginVerification(taskId, 122);
       const completed = controller.proposeFinish({
         taskId,
-        responseText: "Complete",
+        response: { framing: "summary", materialClaimIds: [] },
         now: 123,
       });
       expect(completed.completed).toBe(true);
