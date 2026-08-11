@@ -10,6 +10,7 @@ import {
   type HostPrimitiveReconciliationResult,
 } from "./governor-host-channel-delivery.js";
 import type { HostDeliveryIdentity } from "./governor-host-contracts.js";
+import { governorDeliveryBuildManifestDigest } from "./governor-host-delivery-build-manifest.js";
 
 export type HostDeliverySend = (params: {
   deliveryKey: string;
@@ -79,6 +80,14 @@ const syntheticImplementation: CompiledImplementation = Object.freeze({
       normalizedTarget: "synthetic",
       mode: "active" as const,
       send: async ({ deliveryKey, payload }) => {
+        if (
+          !Array.isArray(config) &&
+          config !== null &&
+          typeof config === "object" &&
+          config.throwBeforeSend === true
+        ) {
+          throw new Error("Synthetic governor delivery interrupted before observable send");
+        }
         const observerKey =
           !Array.isArray(config) &&
           config !== null &&
@@ -267,11 +276,12 @@ export function createHostDeliveryImplementation(params: {
     throw new Error("Governor host delivery implementation ID is not allowlisted");
   }
   const config = cloneAndFreezeJson(params.config, "config", new WeakSet());
+  const buildManifestDigest = governorDeliveryBuildManifestDigest();
   const sender = compiled.createSender(config, params.runtime);
   const implementationDigest = governorDigest({
     implementationId: compiled.implementationId,
     identity: compiled.identity,
-    factorySource: Function.prototype.toString.call(compiled.createSender),
+    buildManifestDigest,
   });
   return Object.freeze({
     implementationId: compiled.implementationId,

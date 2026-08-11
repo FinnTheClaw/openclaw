@@ -74,7 +74,7 @@ describe("governor host broker", () => {
       observedAt: 100,
       expiresAt: 200,
     });
-    const receipt = broker.ownerIngressResolver.resolve(id, 150);
+    const receipt = broker.ownerIngressResolver.claim(id, 150)?.receipt;
     expect(receipt).toMatchObject({ channel: "signal", action: "repair", sourceSequence: 7 });
     const serialized = JSON.stringify(receipt);
     for (const raw of [
@@ -87,7 +87,7 @@ describe("governor host broker", () => {
     ]) {
       expect(serialized).not.toContain(raw);
     }
-    expect(broker.ownerIngressResolver.resolve(id, 201)).toBeNull();
+    expect(broker.ownerIngressResolver.claim(id, 201)).toBeNull();
   });
 
   it("rejects arbitrary IDs, caller functions, registries, and executable config fields", () => {

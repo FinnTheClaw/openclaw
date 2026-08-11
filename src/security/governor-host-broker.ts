@@ -14,10 +14,12 @@ import {
 } from "../tasks/governor/canonical-json.js";
 import type { GovernorHostDeliveryRuntime } from "./governor-host-channel-delivery.js";
 import type {
+  GovernorAuthenticatedApprovalReceipt,
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
   GovernorTrustedOwnerIngressResolver,
   GovernorTrustedReceiptResolver,
+  GovernorOwnerIngressClaim,
   HostBrokerState,
   HostGovernorApprovalReceiptId,
   HostGovernorApprovalRevocationId,
@@ -41,11 +43,13 @@ export type {
   GovernorTrustedDeliveryResolver,
   GovernorTrustedOwnerIngressResolver,
   GovernorTrustedReceiptResolver,
+  GovernorOwnerIngressClaim,
   HostGovernorApprovalReceiptId,
   HostGovernorApprovalRevocationId,
   HostGovernorCapabilities,
   HostGovernorDeliveryHandle,
   HostGovernorOwnerIngressReceiptId,
+  HostGovernorOwnerIngressClaimToken,
   HostGovernorReceiptId,
   HostDeliveryReceipt,
 } from "./governor-host-contracts.js";
@@ -54,6 +58,8 @@ const CAPABILITIES = new WeakSet<object>();
 const RESOLVERS = new WeakSet<object>();
 const APPROVAL_RESOLVERS = new WeakSet<object>();
 const OWNER_INGRESS_RESOLVERS = new WeakSet<object>();
+const OWNER_INGRESS_CLAIMS = new WeakSet<object>();
+const OWNER_INGRESS_LEASE_MS = 30_000;
 
 function sign(key: string, value: GovernorJsonValue): string {
   return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
@@ -258,6 +264,17 @@ export function createHostGovernorBroker(params: {
           `owner-ingress-message:${input.channel}`,
           input.sourceMessageId,
         ),
+        sourceBindingIdentity: params.secrets.identity.opaqueReference(
+          `owner-ingress-source:${input.channel}`,
+          canonicalGovernorJson({
+            channel: input.channel,
+            accountId: input.accountId,
+            gatewayInstanceId: input.gatewayInstanceId,
+            ownerPrincipal: input.ownerPrincipal,
+            scopeKey: input.scopeKey,
+            deploymentIdentity: params.secrets.deploymentIdentity,
+          }),
+        ),
         sourceSequence: input.sourceSequence,
         action: input.action,
         scopeKey: params.secrets.identity.opaqueReference("owner-ingress-scope", input.scopeKey),
@@ -275,6 +292,31 @@ export function createHostGovernorBroker(params: {
       state.ownerIngress.set(id, receipt);
       return id;
     };
+  const revokeOwnerIngressReceipt: HostGovernorCapabilities["revokeOwnerIngressReceipt"] = (
+    input,
+  ) => {
+    if (!CAPABILITIES.has(capability)) {
+      throw new Error("Governor host owner-ingress capability is invalid");
+    }
+    const receipt =
+      state.ownerIngress.get(input.receiptId) ??
+      params.persistence.loadOwnerIngress(input.receiptId);
+    if (!receipt) {
+      return false;
+    }
+    const { signature, consumedAt: _consumedAt, ...body } = receipt;
+    if (sign(state.key, body) !== signature) {
+      throw new Error("Governor owner-ingress receipt signature is invalid");
+    }
+    const revoked = params.persistence.revokeOwnerIngress({
+      receipt,
+      revokedAt: input.observedAt,
+    });
+    if (revoked) {
+      state.ownerIngress.delete(input.receiptId);
+    }
+    return revoked;
+  };
   const resolver: GovernorTrustedReceiptResolver = Object.freeze({
     resolve: (receiptId, scopeKey) => {
       const receipt = state.receipts.get(receiptId);
@@ -297,6 +339,17 @@ export function createHostGovernorBroker(params: {
     },
   });
   RESOLVERS.add(resolver);
+  const approvalReceiptCurrent = (receipt: GovernorAuthenticatedApprovalReceipt): boolean => {
+    const { signature, ...body } = receipt;
+    return (
+      sign(state.key, body) === signature &&
+      params.persistence.approvalLedgerMatches({
+        grantId: receipt.grantId,
+        scopeKey: receipt.scopeKey,
+        approvalEpoch: receipt.approvalEpoch,
+      })
+    );
+  };
   const approvalResolver: GovernorTrustedApprovalResolver = Object.freeze({
     resolveApproval: (receiptId, scopeKey) => {
       const receipt = state.approvals.get(receiptId);
@@ -304,7 +357,14 @@ export function createHostGovernorBroker(params: {
         return null;
       }
       const { signature, ...body } = receipt;
-      return sign(state.key, body) === signature ? receipt : null;
+      return sign(state.key, body) === signature &&
+        params.persistence.approvalGrantMatches({
+          grantId: receipt.grantId,
+          scopeKey: receipt.scopeKey,
+          approvalEpoch: receipt.approvalEpoch,
+        })
+        ? receipt
+        : null;
     },
     resolveRevocation: (receiptId, scopeKey) => {
       const receipt = state.revocations.get(receiptId);
@@ -314,6 +374,7 @@ export function createHostGovernorBroker(params: {
       const { signature, ...body } = receipt;
       return sign(state.key, body) === signature ? receipt : null;
     },
+    verifyApprovalReceiptCurrent: approvalReceiptCurrent,
     verifyApprovalGrant: (grant, canonicalTarget) => {
       if (grant.authorityKeyId !== "host-broker-v1" || grant.authorityVersion !== 1) {
         return false;
@@ -346,7 +407,7 @@ export function createHostGovernorBroker(params: {
   });
   APPROVAL_RESOLVERS.add(approvalResolver);
   const ownerIngressResolver: GovernorTrustedOwnerIngressResolver = Object.freeze({
-    resolve: (receiptId, now) => {
+    claim: (receiptId, now) => {
       const receipt =
         state.ownerIngress.get(receiptId) ?? params.persistence.loadOwnerIngress(receiptId);
       if (
@@ -361,14 +422,51 @@ export function createHostGovernorBroker(params: {
       if (sign(state.key, body) !== signature) {
         return null;
       }
+      const claimToken = opaqueId(state.key, {
+        ownerIngressClaim: receipt.id,
+        nonce: crypto.randomUUID(),
+      }) as import("./governor-host-contracts.js").HostGovernorOwnerIngressClaimToken;
+      const claimAttemptIdentity = opaqueId(state.key, {
+        ownerIngressAttempt: receipt.id,
+        claimToken,
+      });
+      const leaseExpiresAt = Math.min(receipt.expiresAt, now + OWNER_INGRESS_LEASE_MS);
+      if (
+        !params.persistence.claimOwnerIngress({
+          receipt,
+          claimToken,
+          claimAttemptIdentity,
+          now,
+          leaseExpiresAt,
+        })
+      ) {
+        return null;
+      }
       state.ownerIngress.set(receiptId, receipt);
-      return receipt;
+      const claim: GovernorOwnerIngressClaim = Object.freeze({
+        receipt,
+        claimToken,
+        claimAttemptIdentity,
+        leaseExpiresAt,
+      });
+      OWNER_INGRESS_CLAIMS.add(claim);
+      return claim;
     },
-    markConsumed: (receiptId, now) => {
-      const consumed = params.persistence.markOwnerIngressConsumed(receiptId, now);
-      const receipt = state.ownerIngress.get(receiptId);
-      if (consumed && receipt) {
-        state.ownerIngress.set(receiptId, Object.freeze({ ...receipt, consumedAt: now }));
+    finalize: (claim, taskId, now) => {
+      if (!OWNER_INGRESS_CLAIMS.has(claim) || !taskId.trim()) {
+        return false;
+      }
+      const consumed = params.persistence.finalizeOwnerIngress({
+        receipt: claim.receipt,
+        claimToken: claim.claimToken,
+        taskId,
+        consumedAt: now,
+      });
+      if (consumed) {
+        state.ownerIngress.set(
+          claim.receipt.id,
+          Object.freeze({ ...claim.receipt, consumedAt: now }),
+        );
       }
       return consumed;
     },
@@ -382,6 +480,7 @@ export function createHostGovernorBroker(params: {
       registerStaticDeliveryAdapter: deliveryBroker.register,
       revokeDeliveryAdapter: deliveryBroker.revoke,
       submitAuthenticatedOwnerIngress,
+      revokeOwnerIngressReceipt,
     }),
     resolver,
     approvalResolver,

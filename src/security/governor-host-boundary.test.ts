@@ -9,19 +9,30 @@ const authorityModules = [
   "governor-host-broker",
   "governor-host-canary-sink",
   "governor-host-channel-delivery",
+  "governor-host-delivery-build-manifest",
+  "governor-host-delivery-build-manifest.generated",
   "governor-host-delivery-broker",
   "governor-host-delivery-implementations",
+  "governor-host-delivery-persistence",
+  "governor-host-file-lock",
   "governor-host-owner-ingress",
   "governor-host-owner-ingress-persistence",
   "governor-host-persistence",
   "governor-host-secrets",
 ] as const;
-const authorityImport = new RegExp(`security/(?:${authorityModules.join("|")})(?:\\.js)?["']`, "u");
+const authorityImport = new RegExp(
+  `security/(?:${authorityModules.map((name) => name.replaceAll(".", "\\.")).join("|")})(?:\\.js)?["']`,
+  "u",
+);
 const forbiddenAuthority =
-  /\b(?:createCompiledOwnerIngress|createGovernorHostDeliveryRuntime|createGovernorHostPersistence|createGovernorHostRuntimeBindings|createGovernorHostRuntimeIfEnabled|createHostDeliveryImplementation|createHostGovernorBroker|GovernorHostPersistence|GovernorHostRuntime|GovernorSecrets|HostGovernorCapabilities|registerStaticDeliveryAdapter|resolveGovernorSecrets|revokeDeliveryAdapter|signApprovalGrant|submitAuthenticatedOwnerIngress)\b/u;
+  /\b(?:createCompiledOwnerIngress|createGovernorHostDeliveryRuntime|createGovernorHostPersistence|createGovernorHostRuntimeBindings|createGovernorHostRuntimeIfEnabled|createHostDeliveryImplementation|createHostGovernorBroker|GovernorHostPersistence|GovernorHostRuntime|GovernorSecrets|HostGovernorCapabilities|registerStaticDeliveryAdapter|resolveGovernorSecrets|revokeDeliveryAdapter|revokeOwnerIngressReceipt|signApprovalGrant|submitAuthenticatedOwnerIngress)\b/u;
 
 const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
-  "governor-host-anti-rollback-ledger": ["security/governor-host-persistence.ts"],
+  "governor-host-anti-rollback-ledger": [
+    "security/governor-host-delivery-persistence.ts",
+    "security/governor-host-owner-ingress-persistence.ts",
+    "security/governor-host-persistence.ts",
+  ],
   "governor-host-bootstrap": [],
   "governor-host-broker": [
     "security/governor-host-bootstrap.ts",
@@ -35,8 +46,14 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-host-delivery-broker.ts",
     "security/governor-host-delivery-implementations.ts",
   ],
+  "governor-host-delivery-build-manifest": ["security/governor-host-delivery-implementations.ts"],
+  "governor-host-delivery-build-manifest.generated": [
+    "security/governor-host-delivery-build-manifest.ts",
+  ],
   "governor-host-delivery-broker": ["security/governor-host-broker.ts"],
   "governor-host-delivery-implementations": ["security/governor-host-delivery-broker.ts"],
+  "governor-host-delivery-persistence": ["security/governor-host-persistence.ts"],
+  "governor-host-file-lock": ["security/governor-host-anti-rollback-ledger.ts"],
   "governor-host-owner-ingress": ["security/governor-host-bootstrap.ts"],
   "governor-host-owner-ingress-persistence": ["security/governor-host-persistence.ts"],
   "governor-host-persistence": [
@@ -100,8 +117,11 @@ describe("governor host authority boundary", () => {
   it("keeps ambient process secrets out of the broker, persistence, and governor stores", () => {
     const ambientFree = [
       "security/governor-host-broker.ts",
+      "security/governor-host-anti-rollback-ledger.ts",
+      "security/governor-host-delivery-build-manifest.ts",
       "security/governor-host-delivery-broker.ts",
       "security/governor-host-delivery-implementations.ts",
+      "security/governor-host-delivery-persistence.ts",
       "security/governor-host-owner-ingress-persistence.ts",
       "security/governor-host-persistence.ts",
       "security/governor-host-secrets.ts",

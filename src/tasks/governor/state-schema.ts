@@ -74,6 +74,17 @@ function migrateLegacyGovernorColumns(
   );
   addIfMissing("governor_outbox", "plan_version", "INTEGER NOT NULL DEFAULT -1");
   addIfMissing("governor_outbox", "execution_generation", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing(
+    "governor_owner_ingress_receipts",
+    "source_binding_ref",
+    "TEXT NOT NULL DEFAULT 'legacy-unverified'",
+  );
+  addIfMissing("governor_owner_ingress_receipts", "claim_token_ref", "TEXT");
+  addIfMissing("governor_owner_ingress_receipts", "claim_attempt_ref", "TEXT");
+  addIfMissing("governor_owner_ingress_receipts", "claimed_at", "INTEGER");
+  addIfMissing("governor_owner_ingress_receipts", "claim_expires_at", "INTEGER");
+  addIfMissing("governor_owner_ingress_receipts", "ingested_task_id", "TEXT");
+  addIfMissing("governor_owner_ingress_receipts", "revoked_at", "INTEGER");
   addIfMissing("governor_memories", "fact_key", "TEXT NOT NULL DEFAULT 'legacy-unknown'");
   addIfMissing("governor_memories", "superseded_at", "INTEGER");
   addIfMissing("governor_memories", "superseded_evidence_id", "TEXT");

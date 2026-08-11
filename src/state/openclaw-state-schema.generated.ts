@@ -1559,11 +1559,29 @@ CREATE TABLE IF NOT EXISTS governor_owner_ingress_receipts (
   expires_at INTEGER NOT NULL,
   deployment_ref TEXT NOT NULL,
   signature TEXT NOT NULL,
+  source_binding_ref TEXT NOT NULL,
+  claim_token_ref TEXT,
+  claim_attempt_ref TEXT,
+  claimed_at INTEGER,
+  claim_expires_at INTEGER,
+  ingested_task_id TEXT,
+  revoked_at INTEGER,
   consumed_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_governor_owner_ingress_scope
   ON governor_owner_ingress_receipts(scope_key, source_sequence, receipt_id);
+
+CREATE INDEX IF NOT EXISTS idx_governor_owner_ingress_binding
+  ON governor_owner_ingress_receipts(source_binding_ref, source_sequence, receipt_id);
+
+CREATE TABLE IF NOT EXISTS governor_ingress_source_highwater (
+  source_binding_ref TEXT NOT NULL PRIMARY KEY,
+  source_sequence INTEGER NOT NULL,
+  source_message_ref TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS governor_scope_epochs (
   scope_key TEXT NOT NULL PRIMARY KEY,
@@ -1746,4 +1764,23 @@ CREATE TABLE IF NOT EXISTS governor_delivery_certification_epochs (
   identity_key TEXT NOT NULL PRIMARY KEY,
   generation INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
-);\n`;
+);
+
+CREATE TABLE IF NOT EXISTS governor_delivery_dispatch_claims (
+  claim_id TEXT NOT NULL PRIMARY KEY,
+  identity_key TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  implementation_digest TEXT NOT NULL,
+  config_digest TEXT NOT NULL,
+  certification_generation INTEGER NOT NULL,
+  deployment_ref TEXT NOT NULL,
+  delivery_key TEXT NOT NULL UNIQUE,
+  payload_digest TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('claimed', 'effect_started', 'completed', 'cancelled')),
+  claimed_at INTEGER NOT NULL,
+  effect_started_at INTEGER,
+  completed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_delivery_dispatch_active
+  ON governor_delivery_dispatch_claims(identity_key, certification_generation, state);\n`;

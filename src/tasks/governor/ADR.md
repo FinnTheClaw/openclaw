@@ -102,6 +102,30 @@ isolated SQLite state.
     enter only through a private compiled ingress capability whose authenticated envelope exactly
     matches a host-configured channel, account, gateway, principal, action, and scope. Durable
     receipts contain keyed opaque identities and are single-use.
+24. V14 revalidates a delivery's durable implementation, generation, revocation, deployment,
+    delivery key, and payload at a transactional effect-start boundary immediately before the
+    compiled sender is invoked. Revocation that wins that boundary produces no external effect;
+    revocation cannot claim success after an effect has started until its authoritative outcome is
+    completed or reconciled.
+25. Authenticated owner ingress uses a durable leased claim followed by idempotent task ingestion
+    and a bound finalization. Receipt, deployment, source binding, action/scope, claimant attempt,
+    and task identity remain opaque. Concurrent processes can claim once; a crash after ingestion
+    replays the same task event, while a consumed or revoked receipt remains closed after restart
+    and primary-database replay. The broker-derived source identity is folded into the task scope;
+    callers cannot supply a separate high-water key. A per-source sequence high-water has no task
+    deletion cascade, survives terminal cleanup, and does not merge independently authenticated
+    sources.
+26. Approval admission revalidates the signed receipt against the host anti-rollback ledger while
+    holding the task database write lock. This orders admission against revocation, including the
+    ledger-first crash window, so a revoked grant cannot arrive later through task-side admission.
+27. Delivery certification uses a generated deterministic source manifest. Its TypeScript parser
+    follows the full static and literal-dynamic relative-import closure from the governor delivery
+    entry points, includes every runtime file under the Signal and iMessage plugin roots, and binds
+    package.json plus the pinned dependency lockfile. The architecture check verifies that generated
+    manifest before certification; a covered source or dependency-lock change requires a new digest
+    and certification generation. This detects mismatch inside that source/build trust root. It does
+    not attest installed package bytes, post-build binary tampering, a fully compromised process or
+    filesystem, or full-host snapshot rollback.
 
 ## Consequences
 
@@ -133,6 +157,7 @@ system or process that can read memory or host secrets.
 
 `src/security/governor-host-bootstrap.ts`, `governor-host-broker.ts`,
 `governor-host-delivery-broker.ts`, `governor-host-delivery-implementations.ts`,
+`governor-host-delivery-persistence.ts`, the generated delivery build manifest,
 `governor-host-channel-delivery.ts`, `governor-host-owner-ingress.ts`,
 `governor-host-persistence.ts`, `governor-host-owner-ingress-persistence.ts`,
 `governor-host-secrets.ts`, and the anti-rollback ledger form the private host boundary. They are

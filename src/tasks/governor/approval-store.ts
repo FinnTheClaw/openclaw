@@ -140,6 +140,11 @@ export class GovernorApprovalGrantStore {
       throw new Error("Governor approval receipt is stale for this task revision");
     }
     return runOpenClawStateWriteTransaction(({ db }) => {
+      // The write lock orders this recheck against host revocation. A
+      // ledger-first revocation crash must not leave a task-side stale grant.
+      if (!this.#resolver.verifyApprovalReceiptCurrent(receipt)) {
+        throw new Error("Governor approval receipt was revoked before admission");
+      }
       const current = executeSqliteQueryTakeFirstSync(
         db,
         dbx(db)

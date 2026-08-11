@@ -22,6 +22,11 @@ export type HostGovernorOwnerIngressReceiptId = string & {
   readonly [hostOwnerIngressReceiptBrand]: true;
 };
 
+declare const hostOwnerIngressClaimBrand: unique symbol;
+export type HostGovernorOwnerIngressClaimToken = string & {
+  readonly [hostOwnerIngressClaimBrand]: true;
+};
+
 export type GovernorOwnerAction = "approve" | "enable" | "reinvestigate" | "repair" | "revoke";
 
 export type HostDeliveryIdentity = Readonly<{
@@ -94,6 +99,7 @@ export type GovernorOwnerIngressReceipt = Readonly<{
   gatewayIdentity: string;
   ownerPrincipalIdentity: string;
   sourceMessageIdentity: string;
+  sourceBindingIdentity: string;
   sourceSequence: number;
   action: GovernorOwnerAction;
   scopeKey: string;
@@ -103,6 +109,13 @@ export type GovernorOwnerIngressReceipt = Readonly<{
   deploymentIdentity: string;
   consumedAt?: number;
   signature: string;
+}>;
+
+export type GovernorOwnerIngressClaim = Readonly<{
+  receipt: GovernorOwnerIngressReceipt;
+  claimToken: HostGovernorOwnerIngressClaimToken;
+  claimAttemptIdentity: string;
+  leaseExpiresAt: number;
 }>;
 
 export type HostReceipt = Readonly<{
@@ -205,6 +218,10 @@ export type HostGovernorCapabilities = {
     observedAt: number;
     expiresAt: number;
   }) => HostGovernorOwnerIngressReceiptId;
+  readonly revokeOwnerIngressReceipt: (input: {
+    receiptId: HostGovernorOwnerIngressReceiptId;
+    observedAt: number;
+  }) => boolean;
 };
 
 export type GovernorTrustedReceiptResolver = {
@@ -220,6 +237,7 @@ export type GovernorTrustedApprovalResolver = {
     receiptId: HostGovernorApprovalRevocationId,
     scopeKey: string,
   ) => GovernorAuthenticatedApprovalRevocation | null;
+  readonly verifyApprovalReceiptCurrent: (receipt: GovernorAuthenticatedApprovalReceipt) => boolean;
   readonly verifyApprovalGrant: (
     grant: {
       grantId: string;
@@ -246,9 +264,9 @@ export type GovernorTrustedDeliveryResolver = {
 };
 
 export type GovernorTrustedOwnerIngressResolver = {
-  readonly resolve: (
+  readonly claim: (
     receiptId: HostGovernorOwnerIngressReceiptId,
     now: number,
-  ) => GovernorOwnerIngressReceipt | null;
-  readonly markConsumed: (receiptId: HostGovernorOwnerIngressReceiptId, now: number) => boolean;
+  ) => GovernorOwnerIngressClaim | null;
+  readonly finalize: (claim: GovernorOwnerIngressClaim, taskId: string, now: number) => boolean;
 };

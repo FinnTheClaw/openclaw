@@ -10,9 +10,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { canonicalGovernorJson, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
+import { withGovernorHostFileLock } from "./governor-host-file-lock.js";
 
-type LedgerKind = "approval" | "delivery";
-type LedgerStatus = "approved" | "revoked" | "certified";
+type LedgerKind = "approval" | "delivery" | "ingress";
+type LedgerStatus = "approved" | "revoked" | "certified" | "claimed" | "consumed";
 type LedgerEntry = Readonly<{
   sequence: number;
   kind: LedgerKind;
@@ -56,7 +57,6 @@ const EMPTY_DIGEST = crypto
   .createHash("sha256")
   .update("governor-host-ledger-v9:genesis")
   .digest("hex");
-
 function sha256(value: GovernorJsonValue): string {
   return crypto.createHash("sha256").update(canonicalGovernorJson(value)).digest("hex");
 }
@@ -326,88 +326,99 @@ export function createGovernorHostAntiRollbackLedger(params: {
   privateMode(directory, 0o700);
   const journalPath = path.join(directory, "anti-rollback-v1.journal");
   const headPath = path.join(directory, "anti-rollback-v1.head");
-  const journalExists = fs.existsSync(journalPath);
-  const headExists = fs.existsSync(headPath);
-  if (!journalExists && !headExists) {
-    writeInitialFiles(journalPath, headPath, directory, params.signingKey);
-  }
-  if (!fs.existsSync(journalPath) || !fs.existsSync(headPath)) {
-    throw new Error("Governor anti-rollback ledger is incomplete");
-  }
-  privateMode(journalPath, 0o600);
-  privateMode(headPath, 0o600);
-  let entries = loadEntries(journalPath, headPath, directory, params.signingKey);
+  const lockPath = path.join(directory, "anti-rollback-v1.lock");
+  let entries = withGovernorHostFileLock(lockPath, () => {
+    const journalExists = fs.existsSync(journalPath);
+    const headExists = fs.existsSync(headPath);
+    if (!journalExists && !headExists) {
+      writeInitialFiles(journalPath, headPath, directory, params.signingKey);
+    }
+    if (!fs.existsSync(journalPath) || !fs.existsSync(headPath)) {
+      throw new Error("Governor anti-rollback ledger is incomplete");
+    }
+    privateMode(journalPath, 0o600);
+    privateMode(headPath, 0o600);
+    return loadEntries(journalPath, headPath, directory, params.signingKey);
+  });
   const ledger: GovernorHostAntiRollbackLedger = Object.freeze({
-    append: (input) => {
-      if (
-        !input.key ||
-        !input.bindingDigest ||
-        !Number.isSafeInteger(input.generation) ||
-        input.generation < 0
-      ) {
-        throw new Error("Governor anti-rollback ledger input is invalid");
-      }
-      entries = loadEntries(journalPath, headPath, directory, params.signingKey);
-      const current = statesFor(entries).get(`${input.kind}:${input.key}`);
-      if (current) {
-        if (input.generation < current.generation) {
-          throw new Error("Governor anti-rollback ledger generation regressed");
+    append: (input) =>
+      withGovernorHostFileLock(lockPath, () => {
+        if (
+          !input.key ||
+          !input.bindingDigest ||
+          !Number.isSafeInteger(input.generation) ||
+          input.generation < 0
+        ) {
+          throw new Error("Governor anti-rollback ledger input is invalid");
         }
-        if (input.generation === current.generation) {
-          if (input.status !== current.status || input.bindingDigest !== current.bindingDigest) {
-            throw new Error("Governor anti-rollback ledger binding conflicts at generation");
+        entries = loadEntries(journalPath, headPath, directory, params.signingKey);
+        const current = statesFor(entries).get(`${input.kind}:${input.key}`);
+        if (current) {
+          if (input.generation < current.generation) {
+            throw new Error("Governor anti-rollback ledger generation regressed");
           }
-          return current;
+          if (input.generation === current.generation) {
+            if (input.status === current.status && input.bindingDigest === current.bindingDigest) {
+              return current;
+            }
+            const validIngressTransition =
+              input.kind === "ingress" &&
+              current.status === "claimed" &&
+              (input.status === "consumed" || input.status === "revoked");
+            if (!validIngressTransition) {
+              throw new Error("Governor anti-rollback ledger binding conflicts at generation");
+            }
+          }
         }
-      }
-      const unsigned = {
-        sequence: entries.length + 1,
-        ...input,
-        keyId: keyId(params.signingKey),
-        keyVersion: 1 as const,
-        priorDigest: entries.at(-1)?.digest ?? EMPTY_DIGEST,
-      };
-      const entry: LedgerEntry = {
-        ...unsigned,
-        digest: sha256(unsigned),
-        signature: hmac(params.signingKey, { ...unsigned, digest: sha256(unsigned) }),
-      };
-      const fd = fs.openSync(journalPath, "a", 0o600);
-      try {
-        fs.writeFileSync(fd, `${JSON.stringify(entry)}\n`);
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      privateMode(journalPath, 0o600);
-      const nextEntries = [...entries, entry];
-      const nextHead: LedgerHead = {
-        sequence: nextEntries.length,
-        digest: entry.digest,
-        highWaterDigest: highWaterDigest(nextEntries),
-        keyId: keyId(params.signingKey),
-        keyVersion: 1,
-        signature: hmac(params.signingKey, {
+        const unsigned = {
+          sequence: entries.length + 1,
+          ...input,
+          keyId: keyId(params.signingKey),
+          keyVersion: 1 as const,
+          priorDigest: entries.at(-1)?.digest ?? EMPTY_DIGEST,
+        };
+        const entry: LedgerEntry = {
+          ...unsigned,
+          digest: sha256(unsigned),
+          signature: hmac(params.signingKey, { ...unsigned, digest: sha256(unsigned) }),
+        };
+        const fd = fs.openSync(journalPath, "a", 0o600);
+        try {
+          fs.writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+        privateMode(journalPath, 0o600);
+        const nextEntries = [...entries, entry];
+        const nextHead: LedgerHead = {
           sequence: nextEntries.length,
           digest: entry.digest,
           highWaterDigest: highWaterDigest(nextEntries),
           keyId: keyId(params.signingKey),
           keyVersion: 1,
-        }),
-      };
-      replaceHead(headPath, directory, nextHead);
-      entries = nextEntries;
-      return {
-        generation: entry.generation,
-        status: entry.status,
-        digest: entry.digest,
-        bindingDigest: entry.bindingDigest,
-      };
-    },
-    state: (kind, key) => {
-      entries = loadEntries(journalPath, headPath, directory, params.signingKey);
-      return statesFor(entries).get(`${kind}:${key}`) ?? null;
-    },
+          signature: hmac(params.signingKey, {
+            sequence: nextEntries.length,
+            digest: entry.digest,
+            highWaterDigest: highWaterDigest(nextEntries),
+            keyId: keyId(params.signingKey),
+            keyVersion: 1,
+          }),
+        };
+        replaceHead(headPath, directory, nextHead);
+        entries = nextEntries;
+        return {
+          generation: entry.generation,
+          status: entry.status,
+          digest: entry.digest,
+          bindingDigest: entry.bindingDigest,
+        };
+      }),
+    state: (kind, key) =>
+      withGovernorHostFileLock(lockPath, () => {
+        entries = loadEntries(journalPath, headPath, directory, params.signingKey);
+        return statesFor(entries).get(`${kind}:${key}`) ?? null;
+      }),
   });
   LEDGERS.add(ledger);
   return ledger;

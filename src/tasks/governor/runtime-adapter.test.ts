@@ -368,10 +368,12 @@ describe("governor runtime adapter", () => {
           receiptId: revisionTwo,
           now: 150,
         });
-        const stale = runtime.adapter.routeAuthenticatedOwnerIngress({
-          receiptId: revisionOne,
-          now: 151,
-        });
+        expect(() =>
+          runtime.adapter.routeAuthenticatedOwnerIngress({
+            receiptId: revisionOne,
+            now: 151,
+          }),
+        ).toThrow(/invalid, expired, or mismatched/u);
         expect(() =>
           runtime.adapter.routeAuthenticatedOwnerIngress({
             receiptId: revisionTwo,
@@ -379,13 +381,11 @@ describe("governor runtime adapter", () => {
           }),
         ).toThrow(/invalid, expired, or mismatched/u);
         expect(newest.kind).toBe("governed");
-        expect(stale.kind).toBe("governed");
-        if (newest.kind !== "governed" || stale.kind !== "governed") {
+        if (newest.kind !== "governed") {
           throw new Error("expected governed owner ingress");
         }
-        expect(stale.task.taskId).toBe(newest.task.taskId);
-        expect(stale.task.authenticatedSourceSequence).toBe(2);
-        expect(stale.task.contract.objective).toContain("reinvestigate");
+        expect(newest.task.authenticatedSourceSequence).toBe(2);
+        expect(newest.task.contract.objective).toContain("reinvestigate");
 
         const db = openOpenClawStateDatabase({
           env: { OPENCLAW_STATE_DIR: state.stateDir },

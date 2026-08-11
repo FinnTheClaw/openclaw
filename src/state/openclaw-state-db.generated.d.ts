@@ -672,6 +672,22 @@ export interface GovernorDeliveryCertifications {
   status: string;
 }
 
+export interface GovernorDeliveryDispatchClaims {
+  certification_generation: number;
+  claim_id: string;
+  claimed_at: number;
+  completed_at: number | null;
+  config_digest: string;
+  delivery_key: string;
+  deployment_ref: string;
+  effect_started_at: number | null;
+  handle: string;
+  identity_key: string;
+  implementation_digest: string;
+  payload_digest: string;
+  state: string;
+}
+
 export interface GovernorEffects {
   action_fingerprint: string;
   canonical_target: string;
@@ -786,6 +802,14 @@ export interface GovernorFanoutJobs {
   worker_id: string | null;
 }
 
+export interface GovernorIngressSourceHighwater {
+  source_binding_ref: string;
+  source_message_ref: string;
+  source_sequence: number;
+  task_id: string;
+  updated_at: number;
+}
+
 export interface GovernorMemories {
   confidence: number;
   content_digest: string;
@@ -862,16 +886,23 @@ export interface GovernorOwnerIngressReceipts {
   account_ref: string;
   action: string;
   channel_ref: string;
+  claim_attempt_ref: string | null;
+  claim_expires_at: number | null;
+  claim_token_ref: string | null;
+  claimed_at: number | null;
   consumed_at: number | null;
   deployment_ref: string;
   expires_at: number;
   gateway_ref: string;
+  ingested_task_id: string | null;
   nonce_ref: string;
   observed_at: number;
   owner_principal_ref: string;
   receipt_id: string;
+  revoked_at: number | null;
   scope_key: string;
   signature: string;
+  source_binding_ref: string;
   source_message_ref: string;
   source_sequence: number;
 }
@@ -1405,12 +1436,14 @@ export interface DB {
   governor_checkpoints: GovernorCheckpoints;
   governor_delivery_certification_epochs: GovernorDeliveryCertificationEpochs;
   governor_delivery_certifications: GovernorDeliveryCertifications;
+  governor_delivery_dispatch_claims: GovernorDeliveryDispatchClaims;
   governor_effects: GovernorEffects;
   governor_events: GovernorEvents;
   governor_evidence: GovernorEvidence;
   governor_fanin_envelopes: GovernorFaninEnvelopes;
   governor_fanin_reducers: GovernorFaninReducers;
   governor_fanout_jobs: GovernorFanoutJobs;
+  governor_ingress_source_highwater: GovernorIngressSourceHighwater;
   governor_memories: GovernorMemories;
   governor_memory_remediations: GovernorMemoryRemediations;
   governor_outbox: GovernorOutbox;

@@ -61,10 +61,11 @@ export class GovernorRuntimeAdapter {
     if (!resolver) {
       throw new Error("Governor owner-ingress resolver is unavailable");
     }
-    const receipt = resolver.resolve(params.receiptId, params.now);
-    if (!receipt) {
+    const claim = resolver.claim(params.receiptId, params.now);
+    if (!claim) {
       throw new Error("Governor owner-ingress receipt is invalid, expired, or mismatched");
     }
+    const receipt = claim.receipt;
     const actionLabel = receipt.action.replaceAll("_", " ");
     const ingress = this.controller.ingest({
       sourceMessageId: receipt.sourceMessageIdentity,
@@ -74,7 +75,7 @@ export class GovernorRuntimeAdapter {
         channel: receipt.channel,
         accountId: receipt.accountIdentity,
         conversationId: receipt.scopeKey,
-        sessionId: receipt.scopeKey,
+        sessionId: receipt.sourceBindingIdentity,
         agentId: "governor-owner-ingress",
         workspaceId: receipt.deploymentIdentity,
       },
@@ -102,7 +103,7 @@ export class GovernorRuntimeAdapter {
       },
       now: params.now,
     });
-    if (!resolver.markConsumed(params.receiptId, params.now)) {
+    if (!resolver.finalize(claim, ingress.task.taskId, params.now)) {
       throw new Error("Governor owner-ingress receipt could not be durably consumed");
     }
     return {

@@ -57,6 +57,9 @@ export type GovernorHostRuntime = Readonly<{
       ownerId: string;
       submitSignal: ReturnType<typeof createCompiledOwnerIngress>["submitSignal"];
       submitIMessage: ReturnType<typeof createCompiledOwnerIngress>["submitIMessage"];
+      revokeReceipt: ReturnType<
+        typeof createHostGovernorBroker
+      >["capabilities"]["revokeOwnerIngressReceipt"];
     }>;
   }>;
   deliveryHandles: readonly ReturnType<
@@ -129,6 +132,7 @@ export function createGovernorHostRuntimeBindings(params: {
         broker.capabilities.submitAuthenticatedOwnerIngress,
         params.integrations.ownerIngressBindings,
       ),
+      revokeReceipt: broker.capabilities.revokeOwnerIngressReceipt,
     }),
   });
   const deliveryHandles = params.integrations.deliveries.map((registration) =>

@@ -168,8 +168,53 @@ export function createHostGovernorDeliveryBroker(params: {
     };
     const send: HostDeliveryEntry["send"] = async (request) => {
       const payloadDigest = governorDigest(request.payload);
-      if (implementation.mode === "shadow") {
+      const claimId = opaqueId(key, {
+        deliveryEffect: {
+          handle,
+          deliveryKey: request.deliveryKey,
+          payloadDigest,
+          generation: unsigned.generation,
+          deploymentIdentity: unsigned.binding.deploymentIdentity,
+        },
+      });
+      const effect = {
+        handle,
+        identityKey,
+        implementationDigest,
+        configDigest,
+        generation: unsigned.generation,
+        signature,
+        observedAt: Date.now(),
+        claimId,
+        deploymentIdentity: unsigned.binding.deploymentIdentity,
+        deliveryKey: request.deliveryKey,
+        payloadDigest,
+      };
+      if (!params.persistence.claimDeliveryEffect(effect)) {
+        const priorState = params.persistence.deliveryEffectState(effect);
+        if (priorState) {
+          return {
+            status: "unknown",
+            reasonDigest: governorDigest({
+              reason: "delivery_effect_already_admitted",
+              priorState,
+            }),
+            reconcileSupported: true,
+          };
+        }
         return {
+          status: "not_sent",
+          reasonDigest: governorDigest({ reason: "delivery_effect_claim_rejected" }),
+        };
+      }
+      if (!params.persistence.startDeliveryEffect({ ...effect, observedAt: Date.now() })) {
+        return {
+          status: "not_sent",
+          reasonDigest: governorDigest({ reason: "delivery_effect_start_rejected" }),
+        };
+      }
+      if (implementation.mode === "shadow") {
+        const result = {
           status: "would_send",
           receipt: issueReceipt({
             deliveryKey: request.deliveryKey,
@@ -177,33 +222,52 @@ export function createHostGovernorDeliveryBroker(params: {
             outcome: "would_send",
             providerReceipt: { decision: "would_send" },
           }),
-        };
+        } as const;
+        params.persistence.completeDeliveryEffect(claimId, Date.now());
+        return result;
       }
       const result = await implementation.send(request);
-      return result.status === "sent"
-        ? {
-            status: "sent",
-            receipt: issueReceipt({
-              deliveryKey: request.deliveryKey,
-              payloadDigest,
-              outcome: "sent",
-              providerReceipt: result.providerReceipt,
-            }),
-          }
-        : result;
+      if (result.status === "sent") {
+        const sent = {
+          status: "sent",
+          receipt: issueReceipt({
+            deliveryKey: request.deliveryKey,
+            payloadDigest,
+            outcome: "sent",
+            providerReceipt: result.providerReceipt,
+          }),
+        } as const;
+        params.persistence.completeDeliveryEffect(claimId, Date.now());
+        return sent;
+      }
+      if (result.status === "not_sent") {
+        params.persistence.completeDeliveryEffect(claimId, Date.now());
+      }
+      return result;
     };
     const reconcile: HostDeliveryEntry["reconcile"] = async (request) => {
       const result = await implementation.reconcile(request);
-      return result.status === "sent"
-        ? {
-            status: "sent",
-            receipt: issueReceipt({
-              ...request,
-              outcome: "sent",
-              providerReceipt: result.providerReceipt,
-            }),
-          }
-        : result;
+      if (result.status === "sent") {
+        const claimId = opaqueId(key, {
+          deliveryEffect: {
+            handle,
+            deliveryKey: request.deliveryKey,
+            payloadDigest: request.payloadDigest,
+            generation: unsigned.generation,
+            deploymentIdentity: unsigned.binding.deploymentIdentity,
+          },
+        });
+        params.persistence.completeDeliveryEffect(claimId, Date.now());
+        return {
+          status: "sent",
+          receipt: issueReceipt({
+            ...request,
+            outcome: "sent",
+            providerReceipt: result.providerReceipt,
+          }),
+        };
+      }
+      return result;
     };
     params.deliveries.set(handle, Object.freeze({ ...unsigned, send, reconcile, signature }));
     return handle;

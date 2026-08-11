@@ -42,12 +42,16 @@ describe("compiled governor owner ingress", () => {
         });
         closeOpenClawStateDatabase();
         const restarted = createGovernorTestHostBindings({ stateDir: state.stateDir });
-        expect(restarted.ownerIngressResolver.resolve(receiptId, 200)).toMatchObject({
+        const claim = restarted.ownerIngressResolver.claim(receiptId, 200);
+        expect(claim?.receipt).toMatchObject({
           action: "approve",
           sourceSequence: 9,
         });
-        expect(restarted.ownerIngressResolver.markConsumed(receiptId, 201)).toBe(true);
-        expect(restarted.ownerIngressResolver.resolve(receiptId, 202)).toBeNull();
+        if (!claim) {
+          throw new Error("expected owner-ingress claim");
+        }
+        expect(restarted.ownerIngressResolver.finalize(claim, "task-fixture", 201)).toBe(true);
+        expect(restarted.ownerIngressResolver.claim(receiptId, 202)).toBeNull();
         closeOpenClawStateDatabase();
         const raw = JSON.stringify(
           openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: state.stateDir } })
@@ -107,7 +111,7 @@ describe("compiled governor owner ingress", () => {
           expiresAt: 200,
         };
         const receiptId = ingress.submitSignal(envelope);
-        expect(broker.ownerIngressResolver.resolve(receiptId, 200)).toBeNull();
+        expect(broker.ownerIngressResolver.claim(receiptId, 200)).toBeNull();
         expect(() =>
           ingress.submitSignal({ ...envelope, transportEventId: "different-event" }),
         ).toThrow(/nonce was replayed/u);

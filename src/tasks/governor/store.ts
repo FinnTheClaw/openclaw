@@ -1,8 +1,5 @@
 // Persists governed task projections, immutable events, effects, evidence, and outbox intents.
-import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-} from "../../infra/kysely-sync.js";
+import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import type { HostGovernorDeliveryHandle } from "../../security/governor-host-readonly.js";
 import type { HostDeliveryReceipt } from "../../security/governor-host-readonly.js";
 import {
@@ -17,11 +14,10 @@ import {
 } from "./action-intent-store.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
-import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { governorDigest } from "./canonical-json.js";
 import { bindGovernorCheckpoint, GovernorCheckpointStore } from "./checkpoint-store.js";
-import { assertValidGovernorContract } from "./contracts.js";
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
-import { createGovernorEventRecord, type GovernorEventRecord } from "./events.js";
+import type { GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceCandidate, GovernorEvidenceRecord } from "./evidence.js";
 import { GovernorMemorySubsystem } from "./memory-subsystem.js";
 import {
@@ -30,28 +26,20 @@ import {
   type GovernorOutboxRecord,
 } from "./outbox-store.js";
 import type { GovernorCheckpoint } from "./planning-policy.js";
-import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { appendGovernorAuditEvent } from "./store-audit.js";
 import {
   createGovernorStoreDependencies,
   type GovernorSqliteStoreParams,
 } from "./store-bootstrap.js";
-import {
-  bindEffect,
-  bindEvent,
-  bindEvidence,
-  bindTask,
-  governorDb,
-  parseTaskRow,
-} from "./store-codec.js";
+import { bindEffect, bindEvent, bindEvidence, bindTask, governorDb } from "./store-codec.js";
 import {
   GovernorEvidenceAdmissionStore,
   type GovernorPendingEvidence,
 } from "./store-evidence-admission.js";
+import { ingestGovernorTask, type GovernorIngressResult } from "./store-ingress.js";
 import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
-  createGovernorTaskProjection,
   opaqueGovernorReference,
   type GovernorEventId,
   type GovernorIdentityContext,
@@ -64,10 +52,7 @@ import {
 
 export type { GovernorStoreSecrets } from "./store-bootstrap.js";
 
-export type GovernorIngressResult = {
-  kind: "created" | "corrected" | "duplicate" | "stale";
-  task: GovernorTaskProjection;
-};
+export type { GovernorIngressResult } from "./store-ingress.js";
 
 // oxfmt-ignore
 export type GovernorCommitResult = { applied: true; task: GovernorTaskProjection } | { applied: false; reason: "not_found" | "task_version_conflict" | "lease_epoch_conflict"; current?: GovernorTaskProjection };
@@ -168,151 +153,7 @@ export class GovernorSqliteStore {
     flowId?: string;
     now: number;
   }): GovernorIngressResult {
-    const contract = assertGovernorBoundarySafe(
-      "session",
-      params.contract as unknown as GovernorJsonValue,
-    ) as unknown as GovernorTaskContract;
-    assertValidGovernorContract(contract);
-    if (!params.sourceMessageId.trim()) {
-      throw new Error("sourceMessageId must not be empty");
-    }
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const dbx = governorDb(db);
-      const incoming = createGovernorTaskProjection({
-        scope: params.scope,
-        mode: params.mode,
-        contract,
-        authenticatedSourceSequence: params.sourceSequence,
-        flowId: params.flowId,
-        now: params.now,
-        identity: this.identity,
-      });
-      const sourceMessageId = opaqueGovernorReference(
-        `source-message:${incoming.scopeKey}`,
-        params.sourceMessageId,
-        this.identity,
-      );
-      const duplicate = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx
-          .selectFrom("governor_events")
-          .select(["task_id"])
-          .where("scope_key", "=", incoming.scopeKey)
-          .where("source_message_id", "=", sourceMessageId),
-      );
-      if (duplicate) {
-        const task = loadGovernorTask(db, duplicate.task_id as GovernorTaskId);
-        if (!task) {
-          throw new Error(`Governor ingress event references missing task ${duplicate.task_id}`);
-        }
-        return { kind: "duplicate", task };
-      }
-      const activeRow = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx
-          .selectFrom("governor_tasks")
-          .selectAll()
-          .where("scope_key", "=", incoming.scopeKey)
-          .where("terminal_at", "is", null)
-          .orderBy("updated_at", "desc")
-          .orderBy("task_id", "asc")
-          .limit(1),
-      );
-      if (!activeRow) {
-        executeSqliteQuerySync(db, dbx.insertInto("governor_tasks").values(bindTask(incoming)));
-        const event = createGovernorEventRecord({
-          task: incoming,
-          eventId: params.eventId,
-          eventType: "task_received",
-          sourceMessageId,
-          sourceSequence: params.sourceSequence,
-          payload: { mode: params.mode },
-          now: params.now,
-        });
-        executeSqliteQuerySync(db, dbx.insertInto("governor_events").values(bindEvent(event)));
-        return { kind: "created", task: incoming };
-      }
-      const current = parseTaskRow(activeRow);
-      if (params.sourceSequence <= current.authenticatedSourceSequence) {
-        const event = createGovernorEventRecord({
-          task: current,
-          eventId: params.eventId,
-          eventType: "stale_ingress_ignored",
-          sourceMessageId,
-          sourceSequence: params.sourceSequence,
-          payload: { authoritativeSequence: current.authenticatedSourceSequence },
-          now: params.now,
-        });
-        executeSqliteQuerySync(db, dbx.insertInto("governor_events").values(bindEvent(event)));
-        return { kind: "stale", task: current };
-      }
-      const corrected: GovernorTaskProjection = {
-        ...current,
-        mode: params.mode,
-        contract,
-        plan: undefined,
-        conditions: { contradictions: [], pendingUserUpdate: false },
-        claims: [],
-        state:
-          current.state === "RECEIVED" || current.state === "CONTRACTING"
-            ? "CONTRACTING"
-            : "REPLAN_REQUIRED",
-        taskVersion: current.taskVersion + 1,
-        objectiveRevision: current.objectiveRevision + 1,
-        planVersion: current.planVersion + 1,
-        executionGeneration: current.executionGeneration + 1,
-        authenticatedSourceSequence: params.sourceSequence,
-        updatedAt: params.now,
-      };
-      const update = executeSqliteQuerySync(
-        db,
-        dbx
-          .updateTable("governor_tasks")
-          .set(bindTask(corrected))
-          .where("task_id", "=", current.taskId)
-          .where("task_version", "=", current.taskVersion)
-          .where("lease_epoch", "=", current.leaseEpoch),
-      );
-      if (update.numAffectedRows !== 1n) {
-        throw new Error(`Concurrent governor correction for ${current.taskId}`);
-      }
-      // A correction invalidates all old workers before the new revision can plan or finish.
-      executeSqliteQuerySync(
-        db,
-        dbx
-          .updateTable("governor_action_intents")
-          .set({ state: "cancelled", cancelled_at: params.now, updated_at: params.now })
-          .where("task_id", "=", current.taskId)
-          .where("execution_generation", "!=", corrected.executionGeneration)
-          .where("state", "in", ["admitted", "running"]),
-      );
-      executeSqliteQuerySync(
-        db,
-        dbx
-          .updateTable("governor_fanout_jobs")
-          .set({
-            state: "cancelled",
-            cancelled_at: params.now,
-            worker_id: null,
-            lease_expires_at: null,
-            updated_at: params.now,
-          })
-          .where("task_id", "=", current.taskId)
-          .where("execution_generation", "!=", corrected.executionGeneration)
-          .where("state", "in", ["queued", "running"]),
-      );
-      const event = createGovernorEventRecord({
-        task: corrected,
-        eventId: params.eventId,
-        eventType: "task_corrected",
-        sourceMessageId,
-        sourceSequence: params.sourceSequence,
-        payload: { previousObjectiveRevision: current.objectiveRevision },
-        now: params.now,
-      });
-      executeSqliteQuerySync(db, dbx.insertInto("governor_events").values(bindEvent(event)));
-      return { kind: "corrected", task: corrected };
-    }, this.#options);
+    return ingestGovernorTask({ options: this.#options, identity: this.identity, ingress: params });
   }
 
   commit(params: {
