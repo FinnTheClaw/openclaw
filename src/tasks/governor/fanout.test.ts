@@ -2,7 +2,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
 import {
   GovernorFanoutStore,
@@ -65,10 +64,8 @@ async function withFanout(
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-fanout-" },
     async (state) => {
-      const controller = new GovernorController(
-        new GovernorSqliteStore({ stateDir: state.stateDir }),
-        new GovernorCapabilityRegistry([]),
-      );
+      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const controller = new GovernorController(store, store.capabilities);
       const ingress = controller.ingest({
         sourceMessageId: "fanout-message-1",
         sourceSequence: 1,

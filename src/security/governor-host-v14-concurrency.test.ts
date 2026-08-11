@@ -195,10 +195,28 @@ describe("governor V14 host concurrency fences", () => {
         }
         const request = { deliveryKey: "effect-crash-key", payload: { text: "fixture" } };
         await expect(entry.send(request)).rejects.toThrow(/interrupted before observable send/u);
-        await expect(entry.send(request)).resolves.toMatchObject({
+        closeOpenClawStateDatabase();
+        const restarted = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const restartedHandle = restarted.capabilities.registerStaticDeliveryAdapter({
+          implementationId: "synthetic",
+          config: { observerKey: "effect-crash", throwBeforeSend: true },
+          generation: 0,
+        });
+        expect(restartedHandle).toBe(handle);
+        const recovered = restarted.deliveryResolver.resolve(restartedHandle);
+        if (!recovered) {
+          throw new Error("expected exact adapter reconstruction for reconciliation");
+        }
+        await expect(recovered.send(request)).resolves.toMatchObject({
           status: "unknown",
           reconcileSupported: true,
         });
+        await expect(
+          recovered.reconcile({
+            deliveryKey: request.deliveryKey,
+            payloadDigest: governorDigest(request.payload),
+          }),
+        ).resolves.toEqual({ status: "unresolved" });
         expect(getSyntheticHostObservableSends("test", "effect-crash")).toEqual([]);
       },
     );

@@ -26,14 +26,15 @@ export function appendGovernorAuditEvent(params: {
     );
     if (
       !row ||
-      Number(row.task_version) !== params.task.taskVersion ||
-      Number(row.lease_epoch) !== params.task.leaseEpoch ||
+      row.task_version !== params.task.taskVersion ||
+      row.lease_epoch !== params.task.leaseEpoch ||
       params.event.taskId !== params.task.taskId ||
       params.event.taskVersion !== params.task.taskVersion ||
       params.event.objectiveRevision !== params.task.objectiveRevision ||
       params.event.payloadDigest !== governorDigest(params.event.payload)
-    )
+    ) {
       return false;
+    }
     executeSqliteQuerySync(
       db,
       governorDb(db).insertInto("governor_events").values(bindEvent(params.event)),

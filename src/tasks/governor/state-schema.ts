@@ -9,6 +9,19 @@ export function initializeGovernorStateSchema(options: OpenClawStateDatabaseOpti
   const { db } = openOpenClawStateDatabase(options);
   migrateLegacyGovernorColumns(db);
   db.exec(GOVERNOR_STATE_SCHEMA_SQL);
+  quarantineUnverifiableLegacyMemories(db);
+}
+
+function quarantineUnverifiableLegacyMemories(
+  db: ReturnType<typeof openOpenClawStateDatabase>["db"],
+): void {
+  db.exec(`UPDATE governor_memories
+              SET status = 'quarantined'
+            WHERE status = 'verified'
+              AND (verified_evidence_task_id IS NULL
+                OR verified_evidence_id IS NULL
+                OR verified_evidence_digest IS NULL
+                OR verified_evidence_semantic_digest IS NULL)`);
 }
 
 function migrateLegacyGovernorColumns(
@@ -47,6 +60,21 @@ function migrateLegacyGovernorColumns(
   addIfMissing("governor_approval_grants", "authority_key_id", "TEXT NOT NULL DEFAULT 'legacy'");
   addIfMissing("governor_approval_grants", "authority_version", "INTEGER NOT NULL DEFAULT 0");
   addIfMissing("governor_approval_grants", "authority_signature", "TEXT NOT NULL DEFAULT ''");
+  if (addIfMissing("governor_action_intents", "approval_required", "INTEGER NOT NULL DEFAULT 0")) {
+    // The governor was not production-enabled before this migration. Fail
+    // closed for any historical mutating intent whose capability policy can no
+    // longer be reconstructed from the persisted row alone.
+    db.exec(
+      `UPDATE governor_action_intents
+          SET approval_required = 1
+        WHERE json_extract(proposal_json, '$.mutating') = 1`,
+    );
+  }
+  addIfMissing(
+    "governor_action_intents",
+    "approval_policy_digest",
+    "TEXT NOT NULL DEFAULT 'legacy-unverified'",
+  );
   addIfMissing(
     "governor_delivery_certifications",
     "implementation_digest",
@@ -92,6 +120,10 @@ function migrateLegacyGovernorColumns(
   addIfMissing("governor_memories", "superseded_reason", "TEXT");
   addIfMissing("governor_memories", "contradiction_fingerprint", "TEXT");
   addIfMissing("governor_memories", "replacement_memory_id", "TEXT");
+  addIfMissing("governor_memories", "verified_evidence_task_id", "TEXT");
+  addIfMissing("governor_memories", "verified_evidence_id", "TEXT");
+  addIfMissing("governor_memories", "verified_evidence_digest", "TEXT");
+  addIfMissing("governor_memories", "verified_evidence_semantic_digest", "TEXT");
   if (migratedEvidence) {
     db.exec("DROP INDEX IF EXISTS idx_governor_evidence_task");
   }

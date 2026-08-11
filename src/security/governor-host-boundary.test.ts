@@ -146,6 +146,20 @@ describe("governor host authority boundary", () => {
     }
   });
 
+  it("keeps caller-authoritative verified memory objects out of task-facing stores", () => {
+    const guarded = [
+      "tasks/governor/memory-integrity.ts",
+      "tasks/governor/memory-contradiction-store.ts",
+      "tasks/governor/store-evidence-admission.ts",
+    ];
+    for (const relative of guarded) {
+      const source = fs.readFileSync(path.join(root, relative), "utf8");
+      expect(source, relative).not.toContain("storeVerifiedEvidence");
+      expect(source, relative).not.toContain("GovernorVerifiedEvidence");
+      expect(source, relative).not.toContain("verifyForUse");
+    }
+  });
+
   it("keeps compiled delivery factories free of runtime code injection", () => {
     const filesToCheck = [
       "security/governor-host-canary-sink.ts",

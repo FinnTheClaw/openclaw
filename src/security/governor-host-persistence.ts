@@ -30,7 +30,10 @@ import {
 } from "./governor-host-owner-ingress-persistence.js";
 import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
 
-type ApprovalDb = Pick<StateDb, "governor_approval_epochs" | "governor_approval_grants">;
+type ApprovalDb = Pick<
+  StateDb,
+  "governor_action_intents" | "governor_approval_epochs" | "governor_approval_grants"
+>;
 const dbx = (db: DatabaseSync) => getNodeSqliteKysely<ApprovalDb>(db);
 const approvalScopeKey = (scopeKey: string) => governorDigest({ kind: "scope", scopeKey });
 const approvalGrantKey = (scopeKey: string, grantId: string) =>
@@ -91,6 +94,33 @@ function writeApprovalEpoch(
         conflict.column("scope_key").doUpdateSet({ epoch, updated_at: observedAt }),
       ),
   );
+}
+
+function hasLiveApprovalExecution(db: DatabaseSync, grantId: string, now: number): boolean {
+  const rows = executeSqliteQuerySync(
+    db,
+    dbx(db)
+      .selectFrom("governor_action_intents")
+      .select(["approval_required", "proposal_json"])
+      .where("state", "=", "running")
+      .where("lease_expires_at", ">", now),
+  );
+  return rows.rows.some((row) => {
+    try {
+      const proposal = JSON.parse(row.proposal_json) as unknown;
+      if (typeof proposal !== "object" || proposal === null) {
+        return true;
+      }
+      if (!("approvalGrantId" in proposal)) {
+        return normalizeSqliteNumber(row.approval_required) === 1;
+      }
+      return proposal.approvalGrantId === grantId;
+    } catch {
+      // A malformed live intent cannot be proven unrelated to the grant. Keep
+      // revocation fail-closed until the execution lease is reconciled.
+      return true;
+    }
+  });
 }
 
 /** Called only from trusted bootstrap; the ledger is a separate host sidecar. */
@@ -225,6 +255,12 @@ export function createGovernorHostPersistence(params: {
         }
         let targetEpoch = Math.max(scope.generation, grant.generation);
         if (grant.status === "approved" && scope.status === "approved") {
+          // Action claim and revocation share this SQLite write lock. If claim
+          // linearized first, revocation truthfully reports that authority is
+          // still in flight instead of claiming success before an effect starts.
+          if (hasLiveApprovalExecution(db, input.grantId, input.observedAt)) {
+            return false;
+          }
           targetEpoch += 1;
           ledger.append({
             kind: "approval",

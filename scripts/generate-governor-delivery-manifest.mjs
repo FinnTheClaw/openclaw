@@ -18,9 +18,21 @@ const entrypoints = [
   "src/tasks/governor/delivery-certification-store.ts",
   "src/tasks/governor/delivery-dispatch.ts",
   "src/tasks/governor/outbox-store.ts",
+  "extensions/imessage/index.ts",
+  "extensions/imessage/setup-entry.ts",
+  "extensions/signal/index.ts",
+  "extensions/signal/setup-entry.ts",
 ];
 const dynamicRoots = ["extensions/imessage/src", "extensions/signal/src"];
-const dependencyArtifacts = ["package.json", "pnpm-lock.yaml"];
+const dependencyArtifacts = [
+  "package.json",
+  "pnpm-lock.yaml",
+  "extensions/imessage/openclaw.plugin.json",
+  "extensions/imessage/package.json",
+  "extensions/signal/npm-shrinkwrap.json",
+  "extensions/signal/openclaw.plugin.json",
+  "extensions/signal/package.json",
+];
 const selfFiles = new Set([
   "src/security/governor-host-delivery-build-manifest.generated.ts",
   "src/security/governor-host-delivery-build-manifest.ts",
@@ -42,6 +54,9 @@ function listFiles(relativeDirectory) {
   const files = [];
   for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {
     const relative = path.posix.join(relativeDirectory, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Delivery manifest refuses symlinked runtime content: ${relative}`);
+    }
     if (entry.isDirectory()) {
       files.push(...listFiles(relative));
     } else if (entry.isFile() && isRuntimeSource(relative)) {
@@ -70,10 +85,19 @@ function normalizeJson(value) {
 }
 
 function canonicalSource(relativePath) {
-  return fs.readFileSync(path.join(root, relativePath), "utf8").replaceAll("\r\n", "\n");
+  const absolute = path.resolve(root, relativePath);
+  const relative = path.relative(root, absolute);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Delivery manifest source escapes repository root: ${relativePath}`);
+  }
+  const stat = fs.lstatSync(absolute);
+  if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync.native(absolute) !== absolute) {
+    throw new Error(`Delivery manifest source must be a real repository file: ${relativePath}`);
+  }
+  return fs.readFileSync(absolute, "utf8").replaceAll("\r\n", "\n");
 }
 
-function relativeModuleSpecifiers(relativePath) {
+function runtimeModuleSpecifiers(relativePath) {
   if (!/\.[cm]?[jt]sx?$/u.test(relativePath)) {
     return [];
   }
@@ -109,7 +133,7 @@ function relativeModuleSpecifiers(relativePath) {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return specifiers.filter((specifier) => specifier.startsWith("."));
+  return specifiers;
 }
 
 function resolveRelativeImport(importer, specifier) {
@@ -134,15 +158,36 @@ function resolveRelativeImport(importer, specifier) {
         `${unresolved}/index.tsx`,
         `${unresolved}/index.js`,
       ];
-  const resolved = candidates.find(
+  const resolved = candidates.filter(
     (candidate) =>
       fs.existsSync(path.join(root, candidate)) &&
       (selfFiles.has(candidate) || isRuntimeSource(candidate)),
   );
-  if (!resolved) {
+  if (resolved.length !== 1) {
     throw new Error(`Delivery manifest import is unresolved: ${importer} -> ${specifier}`);
   }
-  return resolved;
+  return resolved[0];
+}
+
+function resolvePluginSdkImport(importer, specifier) {
+  const prefix = "openclaw/plugin-sdk";
+  if (specifier !== prefix && !specifier.startsWith(`${prefix}/`)) {
+    return null;
+  }
+  const subpath = specifier === prefix ? "index" : specifier.slice(prefix.length + 1);
+  if (!/^[a-z0-9][a-z0-9._/-]*$/u.test(subpath) || subpath.includes("..")) {
+    throw new Error(`Delivery manifest plugin SDK import is invalid: ${importer} -> ${specifier}`);
+  }
+  const unresolved = `src/plugin-sdk/${subpath}`;
+  const candidates = [`${unresolved}.ts`, `${unresolved}.tsx`, `${unresolved}/index.ts`].filter(
+    (candidate) => fs.existsSync(path.join(root, candidate)) && isRuntimeSource(candidate),
+  );
+  if (candidates.length !== 1) {
+    throw new Error(
+      `Delivery manifest plugin SDK import is unresolved: ${importer} -> ${specifier}`,
+    );
+  }
+  return candidates[0];
 }
 
 function collectRuntimeClosure() {
@@ -157,8 +202,15 @@ function collectRuntimeClosure() {
       throw new Error(`Delivery manifest source is missing or unsupported: ${relativePath}`);
     }
     visited.add(relativePath);
-    for (const specifier of relativeModuleSpecifiers(relativePath)) {
-      queued.push(resolveRelativeImport(relativePath, specifier));
+    for (const specifier of runtimeModuleSpecifiers(relativePath)) {
+      if (specifier.startsWith(".")) {
+        queued.push(resolveRelativeImport(relativePath, specifier));
+        continue;
+      }
+      const pluginSdk = resolvePluginSdkImport(relativePath, specifier);
+      if (pluginSdk) {
+        queued.push(pluginSdk);
+      }
     }
   }
   return [...visited].toSorted((left, right) => left.localeCompare(right));
@@ -169,7 +221,7 @@ const artifacts = paths.map((relativePath) => ({
   path: relativePath,
   sha256: sha256(canonicalSource(relativePath)),
 }));
-const manifest = { version: 2, entrypoints, dynamicRoots, artifacts };
+const manifest = { version: 3, entrypoints, dynamicRoots, artifacts };
 const manifestPayload = JSON.stringify(normalizeJson(manifest));
 const manifestDigest = sha256(manifestPayload);
 const artifactSource = artifacts
@@ -183,7 +235,7 @@ const arraySource = (values) => values.map((value) => `    ${JSON.stringify(valu
 const generated =
   `// Generated by scripts/generate-governor-delivery-manifest.mjs. Do not edit.\n` +
   `export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {\n` +
-  `  version: 2,\n` +
+  `  version: 3,\n` +
   `  entrypoints: [\n${arraySource(entrypoints)}\n  ],\n` +
   `  dynamicRoots: [${dynamicRoots.map((value) => JSON.stringify(value)).join(", ")}],\n` +
   `  artifacts: [\n${artifactSource}\n  ],\n} as const;\n` +

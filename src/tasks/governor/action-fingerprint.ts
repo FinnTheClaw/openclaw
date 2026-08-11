@@ -1,6 +1,6 @@
+import type { GovernorActionProposal } from "./action-contracts.js";
 // Derives stable action identity independently of attempt and transport metadata.
 import { governorDigest } from "./canonical-json.js";
-import type { GovernorActionProposal } from "./tool-outcome.js";
 import { opaqueGovernorReference, type GovernorIdentityContext } from "./types.js";
 
 function targetFingerprint(target: string, identity: GovernorIdentityContext): string {

@@ -24,6 +24,8 @@ describe("governor memory contradiction retirement", () => {
       const taskId = startMemoryTestTask(controller, memoryScopeA);
       seedMemoryFact({
         store,
+        broker,
+        taskId,
         scope: memoryScopeA,
         memoryId: "memory-ssh-old",
         factKey: "ssh.path",
@@ -146,8 +148,12 @@ describe("governor memory contradiction retirement", () => {
       ).toEqual({ reopen: true, reason: "materially_new_evidence" });
 
       closeOpenClawStateDatabase();
-      const restarted = createGovernorTestStore({ stateDir });
-      const restartedController = new GovernorController(restarted.store, memoryTestRegistry());
+      const restartedCapabilities = memoryTestRegistry();
+      const restarted = createGovernorTestStore({
+        stateDir,
+        capabilities: restartedCapabilities,
+      });
+      const restartedController = new GovernorController(restarted.store, restartedCapabilities);
       expect(
         restarted.store.memory.activeReplacement({
           scope: memoryScopeA,
@@ -178,6 +184,8 @@ describe("governor memory contradiction retirement", () => {
       const taskB = startMemoryTestTask(controller, memoryScopeB, 2);
       seedMemoryFact({
         store,
+        broker,
+        taskId: taskA,
         scope: memoryScopeA,
         memoryId: "memory-a-old",
         factKey: "ssh.path",
@@ -259,6 +267,8 @@ describe("governor memory contradiction retirement", () => {
       const taskId = startMemoryTestTask(controller, memoryScopeA);
       seedMemoryFact({
         store,
+        broker,
+        taskId,
         scope: memoryScopeA,
         memoryId: "memory-stale-objective",
         factKey: "ssh.path",
@@ -296,6 +306,8 @@ describe("governor memory contradiction retirement", () => {
       const taskId = startMemoryTestTask(controller, memoryScopeA);
       seedMemoryFact({
         store,
+        broker,
+        taskId,
         scope: memoryScopeA,
         memoryId: "memory-revision-0",
         factKey: "ssh.path",
@@ -373,6 +385,8 @@ describe("governor memory contradiction retirement", () => {
       const taskId = startMemoryTestTask(controller, memoryScopeA);
       seedMemoryFact({
         store,
+        broker,
+        taskId,
         scope: memoryScopeA,
         memoryId: "memory-ambiguous",
         factKey: "ssh.path",

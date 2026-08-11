@@ -163,7 +163,10 @@ export function createHostGovernorBroker(params: {
       nonce: crypto.randomUUID(),
     }) as HostGovernorApprovalReceiptId;
     const grantId = `ggrant_${crypto.randomUUID()}`;
-    const canonicalTargetOpaque = opaqueId(state.key, { target: input.canonicalTarget });
+    const canonicalTargetOpaque = params.secrets.identity.opaqueReference(
+      "action-target",
+      input.canonicalTarget,
+    );
     const grantPayload = {
       grantId,
       taskId: input.taskId,
@@ -379,7 +382,9 @@ export function createHostGovernorBroker(params: {
       if (grant.authorityKeyId !== "host-broker-v1" || grant.authorityVersion !== 1) {
         return false;
       }
-      const canonicalTargetOpaque = opaqueId(state.key, { target: canonicalTarget });
+      const canonicalTargetOpaque = /^[a-f0-9]{64}$/u.test(canonicalTarget)
+        ? canonicalTarget
+        : params.secrets.identity.opaqueReference("action-target", canonicalTarget);
       if (canonicalTargetOpaque !== grant.canonicalTarget) {
         return false;
       }
@@ -397,7 +402,7 @@ export function createHostGovernorBroker(params: {
       };
       return (
         sign(state.key, payload) === grant.authoritySignature &&
-        params.persistence.approvalGrantMatches({
+        params.persistence.approvalLedgerMatches({
           grantId: grant.grantId,
           scopeKey: grant.scopeKey,
           approvalEpoch: grant.approvalEpoch,

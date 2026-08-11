@@ -85,13 +85,15 @@ describe("governor approval grants", () => {
       { layout: "state-only", prefix: "governor-approval-" },
       async (state) => {
         const broker = createGovernorTestBroker({ stateDir: state.stateDir });
+        const capabilities = registry();
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
+          capabilities,
         });
-        const controller = new GovernorController(store, registry());
+        const controller = new GovernorController(store, capabilities);
         try {
           const taskId = controller.ingest({
             sourceMessageId: "message-1",
@@ -188,6 +190,7 @@ describe("governor approval grants", () => {
             testMode: true,
           }),
         });
+        const capabilities = registry();
         const makeStore = () =>
           new GovernorSqliteStore({
             stateDir: state.stateDir,
@@ -195,9 +198,10 @@ describe("governor approval grants", () => {
             approvalResolver: broker.approvalResolver,
             deliveryResolver: broker.deliveryResolver,
             secrets: hostSecrets,
+            capabilities,
           });
         const store = makeStore();
-        const controller = new GovernorController(store, registry());
+        const controller = new GovernorController(store, capabilities);
         const taskId = controller.ingest({
           sourceMessageId: "message-1",
           sourceSequence: 1,
@@ -301,6 +305,7 @@ describe("governor approval grants", () => {
           receiptResolver: restartedBroker.resolver,
           approvalResolver: restartedBroker.approvalResolver,
           deliveryResolver: restartedBroker.deliveryResolver,
+          capabilities,
         });
         expect(
           restarted.approvalStatus(
@@ -340,6 +345,130 @@ describe("governor approval grants", () => {
             108,
           ),
         ).toBe("revoked");
+      },
+    );
+  });
+
+  it("fences a queued mutation at claim and reports an already-running grant in flight", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-approval-claim-fence-" },
+      async (state) => {
+        const hostEnv = syntheticGovernorSecretsEnvironment(state.stateDir);
+        const hostSecrets = resolveGovernorSecrets(hostEnv);
+        const broker = createHostGovernorBroker({
+          secrets: hostSecrets,
+          persistence: createGovernorHostPersistence({
+            env: hostEnv,
+            stateDir: state.stateDir,
+            secrets: hostSecrets,
+            testMode: true,
+          }),
+        });
+        const capabilities = registry();
+        const store = new GovernorSqliteStore({
+          stateDir: state.stateDir,
+          receiptResolver: broker.resolver,
+          approvalResolver: broker.approvalResolver,
+          deliveryResolver: broker.deliveryResolver,
+          secrets: hostSecrets,
+          capabilities,
+        });
+        const controller = new GovernorController(store, capabilities);
+        const taskId = controller.ingest({
+          sourceMessageId: "claim-fence-message",
+          sourceSequence: 1,
+          scope,
+          mode: "FOCUSED",
+          contract,
+          now: 100,
+        }).task.taskId;
+        controller.preparePlan({ taskId, plan, now: 101 });
+        controller.startExecution(taskId, 102);
+        const task = store.loadTask(taskId);
+        if (!task) {
+          throw new Error("expected task");
+        }
+        const grantReceipt = broker.capabilities.submitAuthenticatedApproval({
+          scopeKey: task.scopeKey,
+          taskId,
+          objectiveRevision: task.objectiveRevision,
+          capability: "fixture.mutate",
+          capabilityVersion: "1",
+          canonicalTarget: "fixture://target",
+          approverIdentity: "synthetic-host",
+          approvalEpoch: 0,
+          expiresAt: 500,
+          observedAt: 103,
+        });
+        const grantId = store.admitAuthenticatedApproval({
+          task,
+          receiptId: grantReceipt,
+          now: 103,
+        });
+        const queued = controller.admitAction({
+          taskId,
+          executionFence: controller.captureExecutionFence(taskId),
+          proposal: proposal(taskId, createGovernorEffectId("revoked-before-claim"), grantId),
+          progressVector: { phase: "queued" },
+          now: 104,
+        });
+        if (!queued.accepted) {
+          throw new Error("expected queued mutation");
+        }
+        broker.capabilities.submitApprovalRevocation({
+          grantId,
+          scopeKey: task.scopeKey,
+          observedAt: 105,
+        });
+        expect(
+          controller.claimActionIntent({
+            intent: queued.intent,
+            workerId: "late-worker",
+            now: 106,
+          }),
+        ).toEqual({ kind: "approval_revoked" });
+
+        const replacementReceipt = broker.capabilities.submitAuthenticatedApproval({
+          scopeKey: task.scopeKey,
+          taskId,
+          objectiveRevision: task.objectiveRevision,
+          capability: "fixture.mutate",
+          capabilityVersion: "1",
+          canonicalTarget: "fixture://target",
+          approverIdentity: "synthetic-host",
+          approvalEpoch: 2,
+          expiresAt: 500,
+          observedAt: 107,
+        });
+        const replacement = store.admitAuthenticatedApproval({
+          task,
+          receiptId: replacementReceipt,
+          now: 107,
+        });
+        const running = controller.admitAction({
+          taskId,
+          executionFence: controller.captureExecutionFence(taskId),
+          proposal: proposal(taskId, createGovernorEffectId("claim-before-revoke"), replacement),
+          progressVector: { phase: "running" },
+          now: 108,
+        });
+        if (!running.accepted) {
+          throw new Error("expected replacement mutation");
+        }
+        expect(
+          controller.claimActionIntent({
+            intent: running.intent,
+            workerId: "first-worker",
+            now: 109,
+          }),
+        ).toMatchObject({ kind: "claimed" });
+        expect(() =>
+          broker.capabilities.submitApprovalRevocation({
+            grantId: replacement,
+            scopeKey: task.scopeKey,
+            observedAt: 110,
+          }),
+        ).toThrow(/not durably applied/);
       },
     );
   });

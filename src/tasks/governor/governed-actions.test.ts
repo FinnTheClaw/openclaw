@@ -181,8 +181,12 @@ describe("governed actions", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-late-result-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, registry());
+        const capabilities = registry();
+        const store = new GovernorSqliteStore({
+          stateDir: state.stateDir,
+          capabilities,
+        });
+        const controller = new GovernorController(store, capabilities);
         try {
           const taskId = controller.ingest({
             sourceMessageId: "message-1",
@@ -237,8 +241,12 @@ describe("governed actions", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-no-progress-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, registry());
+        const capabilities = registry();
+        const store = new GovernorSqliteStore({
+          stateDir: state.stateDir,
+          capabilities,
+        });
+        const controller = new GovernorController(store, capabilities);
         try {
           const taskId = controller.ingest({
             sourceMessageId: "message-no-progress",

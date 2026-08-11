@@ -103,9 +103,9 @@ describe("governor schema migration", () => {
         expect(outbox).toEqual({ plan_version: -1, execution_generation: -1 });
         expect(
           db
-            .prepare("SELECT fact_key FROM governor_memories WHERE memory_id = ?")
+            .prepare("SELECT fact_key, status FROM governor_memories WHERE memory_id = ?")
             .get("legacy-memory"),
-        ).toEqual({ fact_key: "legacy-unknown" });
+        ).toEqual({ fact_key: "legacy-unknown", status: "quarantined" });
         const indexColumns = db
           .prepare("PRAGMA index_info(idx_governor_evidence_task)")
           .all() as Array<{ name: string }>;

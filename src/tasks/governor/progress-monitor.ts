@@ -1,7 +1,7 @@
+import type { GovernorActionProposal, GovernorEffectRecord } from "./action-contracts.js";
 import { createGovernorActionFingerprint } from "./action-fingerprint.js";
 // Detects semantic no-progress while ignoring volatile request and timestamp metadata.
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
-import type { GovernorActionProposal, GovernorEffectRecord } from "./tool-outcome.js";
 import type { GovernorIdentityContext } from "./types.js";
 
 const VOLATILE_KEY = /^(?:attemptId|createdAt|eventId|requestId|timestamp|traceId|updatedAt)$/u;

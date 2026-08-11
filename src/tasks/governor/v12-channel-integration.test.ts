@@ -20,11 +20,10 @@ import type { GovernorOutboxDeliveryBinding } from "./outbox-store.js";
 import type { GovernorSqliteStore } from "./store.js";
 
 const mocks = vi.hoisted(() => ({
-  sendMessage: vi.fn(),
+  sendText: vi.fn(),
   resolveOutboundTarget: vi.fn(),
   resolveOutboundChannelPlugin: vi.fn(),
 }));
-vi.mock("../../infra/outbound/message.js", () => ({ sendMessage: mocks.sendMessage }));
 vi.mock("../../infra/outbound/targets.js", () => ({
   resolveOutboundTarget: mocks.resolveOutboundTarget,
 }));
@@ -138,6 +137,7 @@ beforeEach(() => {
     }),
   );
   mocks.resolveOutboundChannelPlugin.mockReturnValue({
+    outbound: { deliveryMode: "direct", sendText: mocks.sendText },
     config: {
       listAccountIds: () => ["default"],
       resolveAccount: () => ({}),
@@ -148,7 +148,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  mocks.sendMessage.mockReset();
+  mocks.sendText.mockReset();
   mocks.resolveOutboundTarget.mockReset();
   mocks.resolveOutboundChannelPlugin.mockReset();
   closeOpenClawStateDatabase();
@@ -290,7 +290,7 @@ describe("V12 compiled governor integrations", () => {
       await withOpenClawTestState(
         { layout: "state-only", prefix: "openclaw-governor-v12-unknown-" },
         async (state) => {
-          mocks.sendMessage.mockRejectedValue(new Error("synthetic timeout"));
+          mocks.sendText.mockRejectedValue(new Error("synthetic timeout"));
           const runtime = createGovernorHostRuntimeIfEnabled({
             env: env(state.stateDir),
             stateDir: state.stateDir,
@@ -313,7 +313,7 @@ describe("V12 compiled governor integrations", () => {
           expect(
             (await runtime.adapter.controller.dispatchOutbox({ ...request, now: 20 })).kind,
           ).toBe("manual_review");
-          expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+          expect(mocks.sendText).toHaveBeenCalledTimes(1);
         },
       );
     },
@@ -323,12 +323,9 @@ describe("V12 compiled governor integrations", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-v12-receipt-binding-" },
       async (state) => {
-        mocks.sendMessage.mockResolvedValue({
+        mocks.sendText.mockResolvedValue({
           channel: "signal",
-          to: "fixture-target",
-          via: "direct",
-          mediaUrl: null,
-          result: { channel: "signal", messageId: "stable-binding-fixture" },
+          messageId: "stable-binding-fixture",
         });
         const runtime = createGovernorHostRuntimeIfEnabled({
           env: env(state.stateDir),
@@ -411,16 +408,10 @@ describe("V12 compiled governor integrations", () => {
       await withOpenClawTestState(
         { layout: "state-only", prefix: "openclaw-governor-v12-concurrent-" },
         async (state) => {
-          mocks.sendMessage.mockResolvedValue({
+          mocks.sendText.mockResolvedValue({
             channel: label === "Signal" ? "signal" : "imessage",
-            to: "fixture-target",
-            via: "direct",
-            mediaUrl: null,
-            result: {
-              channel: label === "Signal" ? "signal" : "imessage",
-              messageId: "stable-message-fixture",
-              timestamp: 1_700_000_000_000,
-            },
+            messageId: "stable-message-fixture",
+            timestamp: 1_700_000_000_000,
           });
           const runtime = createGovernorHostRuntimeIfEnabled({
             env: env(state.stateDir),
@@ -447,7 +438,7 @@ describe("V12 compiled governor integrations", () => {
           expect(runtime.adapter.controller.store.outbox.list(completion.taskId)[0]?.state).toBe(
             "sent",
           );
-          expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+          expect(mocks.sendText).toHaveBeenCalledTimes(1);
         },
       );
     },

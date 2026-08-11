@@ -163,11 +163,14 @@ export class GovernorActionRuntime {
     if (!admission.admitted) {
       throw new Error(`Governor action rejected: ${admission.reason}`);
     }
+    const approvalPolicy = this.capabilities.approvalPolicy(proposal);
     const intent = createGovernorActionIntent({
       task,
       proposal,
       progressVector: params.progressVector,
       forceReplanAfterOutcome: admission.forceReplanAfterOutcome,
+      approvalRequired: approvalPolicy.required,
+      approvalPolicyDigest: approvalPolicy.digest,
       now: params.now,
       identity: this.store.identity,
     });
@@ -207,6 +210,19 @@ export class GovernorActionRuntime {
     }
     try {
       this.capabilities.assertPersistedIntentAuthorized(task, stored.proposal, this.store.identity);
+      const approvalPolicy = this.capabilities.approvalPolicy(stored.proposal);
+      if (
+        stored.approvalRequired !== approvalPolicy.required ||
+        stored.approvalPolicyDigest !== approvalPolicy.digest
+      ) {
+        return false;
+      }
+      if (
+        stored.approvalRequired &&
+        this.store.approvalStatus(task, stored.proposal, Date.now()) !== "approved"
+      ) {
+        return false;
+      }
       return true;
     } catch {
       return false;

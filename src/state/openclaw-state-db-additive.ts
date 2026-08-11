@@ -1,0 +1,204 @@
+import type { DatabaseSync } from "node:sqlite";
+import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import {
+  backfillCronJobsFromJobJson,
+  backfillCronRunLogEntryJson,
+  backfillDeliveryQueueEntriesFromEntryJson,
+  migrateLegacyCronDeliveryThreadIds,
+} from "./openclaw-state-db-backfills.js";
+import {
+  ensureStateColumn,
+  repairLegacyTaskAgentAttribution,
+  repairLegacyTaskDeliveryStatuses,
+} from "./openclaw-state-db-schema-utils.js";
+
+export function ensureAdditiveStateColumns(db: DatabaseSync): void {
+  const add = (table: string, column: string) => ensureStateColumn(db, table, column);
+  add("node_pairing_pending", "client_id TEXT");
+  add("node_pairing_pending", "client_mode TEXT");
+  add("node_pairing_paired", "client_id TEXT");
+  add("node_pairing_paired", "client_mode TEXT");
+  for (const column of [
+    "status TEXT",
+    "error TEXT",
+    "summary TEXT",
+    "diagnostics_summary TEXT",
+    "delivery_status TEXT",
+    "delivery_error TEXT",
+    "delivered INTEGER",
+    "session_id TEXT",
+    "session_key TEXT",
+    "run_id TEXT",
+    "run_at_ms INTEGER",
+    "duration_ms INTEGER",
+    "next_run_at_ms INTEGER",
+    "model TEXT",
+    "provider TEXT",
+    "total_tokens INTEGER",
+    "entry_json TEXT NOT NULL DEFAULT '{}'",
+    "created_at INTEGER NOT NULL DEFAULT 0",
+  ]) {
+    add("cron_run_logs", column);
+  }
+  backfillCronRunLogEntryJson(db);
+  for (const column of [
+    "description TEXT",
+    "declaration_key TEXT",
+    "display_name TEXT",
+    "owner_agent_id TEXT",
+    "owner_session_key TEXT",
+    "name TEXT NOT NULL DEFAULT ''",
+    "enabled INTEGER NOT NULL DEFAULT 1",
+    "delete_after_run INTEGER",
+    "created_at_ms INTEGER NOT NULL DEFAULT 0",
+    "agent_id TEXT",
+    "session_key TEXT",
+    "schedule_kind TEXT NOT NULL DEFAULT 'manual'",
+    "schedule_expr TEXT",
+    "schedule_tz TEXT",
+    "every_ms INTEGER",
+    "anchor_ms INTEGER",
+    "at TEXT",
+    "stagger_ms INTEGER",
+    "session_target TEXT NOT NULL DEFAULT 'main'",
+    "wake_mode TEXT NOT NULL DEFAULT 'auto'",
+    "trigger_script TEXT",
+    "trigger_once INTEGER",
+    "payload_kind TEXT NOT NULL DEFAULT 'message'",
+    "payload_message TEXT",
+    "payload_model TEXT",
+    "payload_fallbacks_json TEXT",
+    "payload_thinking TEXT",
+    "payload_timeout_seconds INTEGER",
+    "payload_allow_unsafe_external_content INTEGER",
+    "payload_external_content_source_json TEXT",
+    "payload_light_context INTEGER",
+    "payload_tools_allow_json TEXT",
+    "payload_tools_allow_is_default INTEGER",
+    "delivery_mode TEXT",
+    "delivery_channel TEXT",
+    "delivery_to TEXT",
+    "delivery_thread_id TEXT",
+    "delivery_account_id TEXT",
+    "delivery_best_effort INTEGER",
+    "delivery_completion_mode TEXT",
+    "delivery_completion_to TEXT",
+    "failure_delivery_mode TEXT",
+    "failure_delivery_channel TEXT",
+    "failure_delivery_to TEXT",
+    "failure_delivery_account_id TEXT",
+    "failure_alert_disabled INTEGER",
+    "failure_alert_after INTEGER",
+    "failure_alert_channel TEXT",
+    "failure_alert_to TEXT",
+    "failure_alert_cooldown_ms INTEGER",
+    "failure_alert_include_skipped INTEGER",
+    "failure_alert_mode TEXT",
+    "failure_alert_account_id TEXT",
+    "next_run_at_ms INTEGER",
+    "running_at_ms INTEGER",
+    "last_run_at_ms INTEGER",
+    "last_run_status TEXT",
+    "last_error TEXT",
+    "last_duration_ms INTEGER",
+    "consecutive_errors INTEGER",
+    "consecutive_skipped INTEGER",
+    "schedule_error_count INTEGER",
+    "last_delivery_status TEXT",
+    "last_delivery_error TEXT",
+    "last_delivered INTEGER",
+    "last_failure_alert_at_ms INTEGER",
+    "state_json TEXT NOT NULL DEFAULT '{}'",
+    "runtime_updated_at_ms INTEGER",
+    "schedule_identity TEXT",
+    "sort_order INTEGER NOT NULL DEFAULT 0",
+  ]) {
+    add("cron_jobs", column);
+  }
+  backfillCronJobsFromJobJson(db);
+  runSqliteImmediateTransactionSync(db, () => {
+    if (add("cron_jobs", "delivery_thread_id_type TEXT")) {
+      migrateLegacyCronDeliveryThreadIds(db);
+    }
+  });
+  for (const column of [
+    "session_key TEXT",
+    "backend_id TEXT",
+    "runtime_label TEXT",
+    "image TEXT",
+    "created_at_ms INTEGER",
+    "last_used_at_ms INTEGER",
+    "config_label_kind TEXT",
+    "config_hash TEXT",
+    "cdp_port INTEGER",
+    "no_vnc_port INTEGER",
+  ]) {
+    add("sandbox_registry_entries", column);
+  }
+  for (const column of [
+    "entry_kind TEXT",
+    "session_key TEXT",
+    "channel TEXT",
+    "target TEXT",
+    "account_id TEXT",
+    "retry_count INTEGER NOT NULL DEFAULT 0",
+    "last_attempt_at INTEGER",
+    "last_error TEXT",
+    "recovery_state TEXT",
+    "platform_send_started_at INTEGER",
+  ]) {
+    add("delivery_queue_entries", column);
+  }
+  backfillDeliveryQueueEntriesFromEntryJson(db);
+  for (const column of [
+    "account_id TEXT",
+    "recipient_id TEXT",
+    "thread_id TEXT",
+    "sender_id TEXT",
+    "kind TEXT NOT NULL DEFAULT 'followup'",
+    "sensitivity TEXT NOT NULL DEFAULT 'normal'",
+    "source TEXT NOT NULL DEFAULT 'unknown'",
+    "reason TEXT NOT NULL DEFAULT ''",
+    "suggested_text TEXT NOT NULL DEFAULT ''",
+    "dedupe_key TEXT NOT NULL DEFAULT ''",
+    "confidence REAL NOT NULL DEFAULT 0",
+    "due_timezone TEXT NOT NULL DEFAULT 'UTC'",
+    "source_message_id TEXT",
+    "source_run_id TEXT",
+    "created_at_ms INTEGER NOT NULL DEFAULT 0",
+    "attempts INTEGER NOT NULL DEFAULT 0",
+    "last_attempt_at_ms INTEGER",
+    "sent_at_ms INTEGER",
+    "dismissed_at_ms INTEGER",
+    "snoozed_until_ms INTEGER",
+    "expired_at_ms INTEGER",
+  ]) {
+    add("commitments", column);
+  }
+  add("current_conversation_bindings", "target_agent_id TEXT NOT NULL DEFAULT 'main'");
+  add("current_conversation_bindings", "target_session_id TEXT");
+  add("current_conversation_bindings", "conversation_kind TEXT NOT NULL DEFAULT 'channel'");
+  add("device_bootstrap_tokens", "pending_profile_json TEXT");
+  add("gateway_restart_handoff", "restart_trace_started_at INTEGER");
+  add("gateway_restart_handoff", "restart_trace_last_at INTEGER");
+  add("gateway_restart_intent", "reason TEXT");
+  for (const column of [
+    "delivery_channel TEXT",
+    "delivery_to TEXT",
+    "delivery_account_id TEXT",
+    "message TEXT",
+    "continuation_json TEXT",
+    "doctor_hint TEXT",
+    "stats_json TEXT",
+  ]) {
+    add("gateway_restart_sentinel", column);
+  }
+  add("gateway_boot_lifecycle", "startup_reason TEXT");
+  runSqliteImmediateTransactionSync(db, () => {
+    if (add("task_runs", "requester_agent_id TEXT")) {
+      repairLegacyTaskAgentAttribution(db);
+    }
+    repairLegacyTaskDeliveryStatuses(db);
+  });
+  add("subagent_runs", "task_name TEXT");
+}

@@ -1,6 +1,7 @@
 // SQLite schema test support reads schema files for shape assertions.
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.generated.js";
 
 /**
  * Test helpers for comparing SQLite schema shape.
@@ -46,9 +47,14 @@ type SqliteMasterRow = {
 
 /** Execute schema SQL in memory and return its comparable shape. */
 export function createSqliteSchemaShapeFromSql(schemaUrl: URL): SqliteSchemaShape {
+  // The governor schema shares this committed source but is feature-gated.
+  // Compare ordinary state open against the generator's exact base partition.
+  const schemaSql = schemaUrl.pathname.endsWith("/openclaw-state-schema.sql")
+    ? OPENCLAW_STATE_SCHEMA_SQL
+    : readFileSync(schemaUrl, "utf8");
   const db = new DatabaseSync(":memory:");
   try {
-    db.exec(readFileSync(schemaUrl, "utf8"));
+    db.exec(schemaSql);
     return collectSqliteSchemaShape(db);
   } finally {
     db.close();

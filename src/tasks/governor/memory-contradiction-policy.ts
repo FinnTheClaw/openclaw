@@ -5,7 +5,9 @@ import {
   type GovernorEvidenceRecord,
   type GovernorEvidenceSourceKind,
 } from "./evidence.js";
-import type { GovernorMemoryRecord } from "./memory-integrity.js";
+import { normalizeGovernorFactKey, type GovernorMemoryRecord } from "./memory-types.js";
+
+export { normalizeGovernorFactKey } from "./memory-types.js";
 
 const TRUSTED_EVIDENCE_RANK: Partial<Record<GovernorEvidenceSourceKind, number>> = {
   structured_external: 600,
@@ -61,23 +63,6 @@ export type GovernorMemoryContradictionResult =
     };
 
 /** Canonicalizes a fact key without changing its meaning or permitting emptiness. */
-export function normalizeGovernorFactKey(value: string): string {
-  if (typeof value !== "string") {
-    throw new Error("Governor fact key must be a string");
-  }
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[\s/]+/gu, ".")
-    .replace(/[^a-z0-9._:-]+/gu, "-")
-    .replace(/[.:-]{2,}/gu, (run) => run[0] ?? "")
-    .replace(/^[.:-]+|[.:-]+$/gu, "");
-  if (!normalized) {
-    throw new Error("Governor fact key must not be empty");
-  }
-  return normalized;
-}
-
 /** Canonical predicate for one memory fact; callers cannot choose its meaning. */
 export function governorMemoryFactPredicate(factKey: string): string {
   return `memory.fact:${normalizeGovernorFactKey(factKey)}`;

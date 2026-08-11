@@ -28,6 +28,11 @@ type ApprovalDatabase = Pick<
 >;
 type ApprovalRow = Selectable<OpenClawStateKyselyDatabase["governor_approval_grants"]>;
 
+type GovernorApprovalTaskFence = Pick<
+  GovernorTaskProjection,
+  "taskId" | "scopeKey" | "objectiveRevision"
+>;
+
 type GovernorApprovalGrant = {
   grantId: string;
   taskId: string;
@@ -50,6 +55,17 @@ export type GovernorApprovalStatus = "approved" | "missing" | "stale" | "revoked
 
 function dbx(db: DatabaseSync) {
   return getNodeSqliteKysely<ApprovalDatabase>(db);
+}
+
+function primaryEpoch(db: DatabaseSync, scopeKey: string): number {
+  const row = executeSqliteQueryTakeFirstSync(
+    db,
+    dbx(db)
+      .selectFrom("governor_approval_epochs")
+      .select("epoch")
+      .where("scope_key", "=", scopeKey),
+  );
+  return normalizeSqliteNumber(row?.epoch ?? null) ?? 0;
 }
 
 function parseGrant(row: ApprovalRow): GovernorApprovalGrant {
@@ -117,11 +133,7 @@ export class GovernorApprovalGrantStore {
 
   currentEpoch(scopeKey: string): number {
     const { db } = openOpenClawStateDatabase(this.#options);
-    const row = executeSqliteQueryTakeFirstSync(
-      db,
-      dbx(db).selectFrom("governor_approval_epochs").selectAll().where("scope_key", "=", scopeKey),
-    );
-    return normalizeSqliteNumber(row?.epoch ?? null) ?? 0;
+    return primaryEpoch(db, scopeKey);
   }
 
   admitAuthenticatedApproval(params: {
@@ -184,10 +196,24 @@ export class GovernorApprovalGrantStore {
     proposal: GovernorActionProposal,
     now: number,
   ): GovernorApprovalStatus {
+    const { db } = openOpenClawStateDatabase(this.#options);
+    return this.statusWithinTransaction(db, task, proposal, now);
+  }
+
+  /**
+   * Revalidates an approval while the caller owns the shared state write lock.
+   * The host ledger is consulted by the resolver; task-side epoch and grant
+   * state are read from the same SQLite transaction that claims the action.
+   */
+  statusWithinTransaction(
+    db: DatabaseSync,
+    task: GovernorApprovalTaskFence,
+    proposal: GovernorActionProposal,
+    now: number,
+  ): GovernorApprovalStatus {
     if (!proposal.approvalGrantId) {
       return "missing";
     }
-    const { db } = openOpenClawStateDatabase(this.#options);
     const row = executeSqliteQueryTakeFirstSync(
       db,
       dbx(db)
@@ -205,7 +231,7 @@ export class GovernorApprovalGrantStore {
     if (
       grant.revokedAt !== undefined ||
       grant.expiresAt <= now ||
-      this.currentEpoch(grant.scopeKey) !== grant.approvalEpoch
+      primaryEpoch(db, grant.scopeKey) !== grant.approvalEpoch
     ) {
       return "revoked";
     }

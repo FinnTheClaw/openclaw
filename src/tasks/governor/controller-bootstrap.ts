@@ -35,12 +35,14 @@ export function createGovernorControllerIfEnabled(params: {
       "Governor host runtime bindings are required when the behavior governor is enabled",
     );
   }
+  const capabilities = new GovernorCapabilityRegistry(params.capabilities);
   return new GovernorController(
     new GovernorSqliteStore({
       stateDir: params.stateDir,
       ...params.hostBindings,
       stateEnv: env,
+      capabilities,
     }),
-    new GovernorCapabilityRegistry(params.capabilities),
+    capabilities,
   );
 }

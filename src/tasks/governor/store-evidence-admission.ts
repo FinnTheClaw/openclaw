@@ -19,7 +19,6 @@ import {
 import type { GovernorIdentityContext, GovernorTaskProjection } from "./types.js";
 
 declare const governorPendingEvidenceBrand: unique symbol;
-declare const governorVerifiedEvidenceBrand: unique symbol;
 const ADMISSION_STORES = new WeakSet<object>();
 
 /** Opaque, store-bound admission. It cannot be manufactured from data. */
@@ -28,19 +27,12 @@ export type GovernorPendingEvidence = {
   readonly [governorPendingEvidenceBrand]: object;
 };
 
-/** Store-verified persisted evidence, branded by the active admission authority. */
-export type GovernorVerifiedEvidence = {
-  readonly evidence: GovernorEvidenceRecord;
-  readonly [governorVerifiedEvidenceBrand]: object;
-};
-
 export class GovernorEvidenceAdmissionStore {
   readonly #resolver: GovernorTrustedReceiptResolver;
   readonly #identity: GovernorIdentityContext;
   readonly #key: string;
   readonly #keyId: string;
   readonly #pending = new WeakSet<object>();
-  readonly #verified = new WeakSet<object>();
 
   constructor(params: {
     receiptResolver: GovernorTrustedReceiptResolver;
@@ -155,17 +147,6 @@ export class GovernorEvidenceAdmissionStore {
 
   owns(pending: GovernorPendingEvidence): boolean {
     return this.#pending.has(pending);
-  }
-
-  verifyForUse(evidence: GovernorEvidenceRecord): GovernorVerifiedEvidence {
-    this.verify(evidence);
-    const verified = Object.freeze({ evidence }) as GovernorVerifiedEvidence;
-    this.#verified.add(verified);
-    return verified;
-  }
-
-  ownsVerified(verified: GovernorVerifiedEvidence): boolean {
-    return this.#verified.has(verified);
   }
 }
 

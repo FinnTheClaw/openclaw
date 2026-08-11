@@ -43,7 +43,12 @@ const rawSqliteAllowPathGroups = {
     "src/infra/sqlite-wal.ts",
     "src/state/openclaw-agent-db.ts",
     "src/state/openclaw-state-db.ts",
+    "src/state/openclaw-state-db-backfills.ts",
+    "src/state/openclaw-state-db-schema-utils.ts",
     "src/state/sqlite-schema-shape.test-support.ts",
+  ],
+  "OS-backed governor host mutex using BEGIN IMMEDIATE": [
+    "src/security/governor-host-file-lock.ts",
   ],
   "lazy governor schema migration": ["src/tasks/governor/state-schema.ts"],
   "backup snapshot maintenance": ["src/commands/backup-verify.ts", "src/infra/backup-create.ts"],

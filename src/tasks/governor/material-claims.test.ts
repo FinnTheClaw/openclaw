@@ -4,7 +4,6 @@ import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
-import { GovernorSqliteStore } from "./store.js";
 import { createGovernorTestStore, recordGovernorTestToolOutcome } from "./test-broker.js";
 import { createGovernorEffectId, type GovernorPlan, type GovernorTaskScope } from "./types.js";
 
@@ -25,20 +24,17 @@ const plan: GovernorPlan = {
   steps: [{ stepId: "verify", description: "Verify", criterionIds: ["verified"], dependsOn: [] }],
 };
 
-function controller(store: GovernorSqliteStore): GovernorController {
-  return new GovernorController(
-    store,
-    new GovernorCapabilityRegistry([
-      {
-        capability: "synthetic.inspect",
-        version: "1",
-        sourceRank: "structured_exact",
-        mutating: false,
-        canonicalTargetPrefixes: ["fixture://"],
-        requiresApproval: false,
-      },
-    ]),
-  );
+function materialCapabilities(): GovernorCapabilityRegistry {
+  return new GovernorCapabilityRegistry([
+    {
+      capability: "synthetic.inspect",
+      version: "1",
+      sourceRank: "structured_exact",
+      mutating: false,
+      canonicalTargetPrefixes: ["fixture://"],
+      requiresApproval: false,
+    },
+  ]);
 }
 
 function verifiedTask(
@@ -105,8 +101,12 @@ describe("governor material response claims", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-material-" },
       async (state) => {
-        const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
-        const governed = controller(store);
+        const capabilities = materialCapabilities();
+        const { store, broker } = createGovernorTestStore({
+          stateDir: state.stateDir,
+          capabilities,
+        });
+        const governed = new GovernorController(store, capabilities);
         try {
           const { taskId, evidenceId, scope: firstScope, base } = verifiedTask(governed, broker, 1);
           expect(() =>
@@ -204,8 +204,12 @@ describe("governor material response claims", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-material-negative-" },
       async (state) => {
-        const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
-        const governed = controller(store);
+        const capabilities = materialCapabilities();
+        const { store, broker } = createGovernorTestStore({
+          stateDir: state.stateDir,
+          capabilities,
+        });
+        const governed = new GovernorController(store, capabilities);
         try {
           const verified = verifiedTask(governed, broker, 9);
           for (const claim of [

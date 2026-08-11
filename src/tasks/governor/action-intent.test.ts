@@ -93,10 +93,14 @@ async function withIntentController(
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-intent-" },
     async (state) => {
-      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
+      const capabilities = registry();
+      const { store, broker } = createGovernorTestStore({
+        stateDir: state.stateDir,
+        capabilities,
+      });
       try {
         await run({
-          controller: new GovernorController(store, registry()),
+          controller: new GovernorController(store, capabilities),
           broker,
           store,
           stateDir: state.stateDir,
@@ -157,13 +161,15 @@ describe("governor durable action intents", () => {
       ).toHaveLength(1);
 
       closeOpenClawStateDatabase();
+      const capabilities = registry();
       const restartedStore = new GovernorSqliteStore({
         stateDir,
         receiptResolver: broker.resolver,
         approvalResolver: broker.approvalResolver,
         deliveryResolver: broker.deliveryResolver,
+        capabilities,
       });
-      const restarted = new GovernorController(restartedStore, registry());
+      const restarted = new GovernorController(restartedStore, capabilities);
       expect(restarted.isActionIntentExecutable(admitted.intent)).toBe(true);
       const claims = Array.from({ length: 20 }, (_, index) =>
         restarted.claimActionIntent({

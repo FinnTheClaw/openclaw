@@ -26,8 +26,12 @@ async function removeTestStateRoot(root: string): Promise<void> {
     } catch (error) {
       const transient =
         error instanceof Error && /^(?:EBUSY|EPERM):/u.test(error.message) && attempt < 3;
-      if (!transient) throw error;
-      await new Promise<void>((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+      if (!transient) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 25 * (attempt + 1));
+      });
     }
   }
 }

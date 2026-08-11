@@ -88,13 +88,14 @@ async function withGovernor(
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-mutation-" },
     async (state) => {
-      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
+      const registry = capabilities();
+      const { store, broker } = createGovernorTestStore({ ...state, capabilities: registry });
       try {
         await run({
-          controller: new GovernorController(store, capabilities()),
+          controller: new GovernorController(store, registry),
           broker,
           store,
-          stateDir: state.stateDir,
+          ...state,
         });
       } finally {
         closeOpenClawStateDatabase();

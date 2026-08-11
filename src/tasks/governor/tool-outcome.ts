@@ -1,60 +1,22 @@
+import type {
+  GovernorActionProposal,
+  GovernorEffectRecord,
+  GovernorToolOutcome,
+} from "./action-contracts.js";
 import { createGovernorActionFingerprint } from "./action-fingerprint.js";
 // Separates tool transport, semantic, side-effect, and verification outcomes.
 import type { GovernorJsonValue } from "./canonical-json.js";
 import { governorDigest } from "./canonical-json.js";
 import { governorProgressVectorHash } from "./progress-monitor.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
-import type { GovernorEffectId, GovernorIdentityContext, GovernorTaskId } from "./types.js";
+import type { GovernorIdentityContext } from "./types.js";
 
-export type GovernorSemanticOutcome =
-  | "success"
-  | "not_found"
-  | "ambiguous"
-  | "partial"
-  | "denied"
-  | "transient_failure"
-  | "permanent_failure"
-  | "cancelled";
-
-export type GovernorToolOutcome = {
-  transport: "completed" | "failed" | "unknown";
-  semantic: GovernorSemanticOutcome;
-  sideEffect: "not_applicable" | "none" | "applied" | "unknown";
-  verification: "not_required" | "required" | "verified" | "failed";
-  summaryCode: string;
-  evidence?: GovernorJsonValue;
-};
-
-export type GovernorActionProposal = {
-  taskId: GovernorTaskId;
-  effectId: GovernorEffectId;
-  criterionId?: string;
-  capability: string;
-  capabilityVersion: string;
-  canonicalTarget: string;
-  expectedEvidence: string;
-  sourceRank: "structured_exact" | "scoped_index" | "targeted_search" | "broad_scan";
-  stopCondition: string;
-  mutating: boolean;
-  argumentsDigest: string;
-  approvalGrantId?: string;
-};
-
-export type GovernorEffectRecord = GovernorActionProposal & {
-  idempotencyKey: string;
-  taskVersion: number;
-  objectiveRevision: number;
-  planVersion: number;
-  leaseEpoch: number;
-  executionGeneration: number;
-  actionFingerprint: string;
-  progressVectorHash: string;
-  outcome: GovernorToolOutcome;
-  verificationState: GovernorToolOutcome["verification"];
-  reconcileRequired: boolean;
-  createdAt: number;
-  updatedAt: number;
-};
+export type {
+  GovernorActionProposal,
+  GovernorEffectRecord,
+  GovernorSemanticOutcome,
+  GovernorToolOutcome,
+} from "./action-contracts.js";
 
 export { createGovernorActionFingerprint } from "./action-fingerprint.js";
 

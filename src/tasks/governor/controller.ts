@@ -86,6 +86,9 @@ export class GovernorController {
     readonly store: GovernorSqliteStore,
     readonly capabilities: GovernorCapabilityRegistry,
   ) {
+    if (store.capabilities !== capabilities) {
+      throw new Error("Governor controller and store must share one capability registry");
+    }
     this.actions = new GovernorActionRuntime(store, capabilities);
     this.memoryRemediation = new GovernorMemoryRemediationRuntime(store, this.actions);
   }

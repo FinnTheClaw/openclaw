@@ -12,6 +12,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { loadCurrentGovernorEvidenceInTransaction } from "./current-evidence.js";
 import {
   createGovernorMemoryEvidencePredicate,
   governorMemoryRepairPredicate,
@@ -26,12 +27,8 @@ import {
   governorMemoryRepairEffectId,
   governorMemoryReplacementId,
 } from "./memory-contradiction-records.js";
-import {
-  bindGovernorMemory,
-  parseGovernorMemory,
-  type GovernorMemoryRecord,
-  type GovernorMemorySourceKind,
-} from "./memory-integrity.js";
+import type { GovernorMemoryRecord, GovernorMemorySourceKind } from "./memory-integrity.js";
+import { bindGovernorMemory, parseGovernorMemory } from "./memory-record-codec.js";
 import {
   bindGovernorMemoryRemediation,
   parseGovernorMemoryRemediation,
@@ -41,8 +38,8 @@ import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import {
   isGovernorEvidenceAdmissionStore,
   type GovernorEvidenceAdmissionStore,
-  type GovernorVerifiedEvidence,
 } from "./store-evidence-admission.js";
+import type { GovernorTaskId } from "./types.js";
 
 type ContradictionDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -81,12 +78,13 @@ export class GovernorMemoryContradictionStore {
     this.#admissions = params.evidenceAdmissions;
   }
 
-  #evidence(verified: GovernorVerifiedEvidence) {
-    if (!this.#admissions.ownsVerified(verified)) {
-      throw new Error("Governor memory contradiction evidence is not store-verified");
-    }
-    this.#admissions.verify(verified.evidence);
-    return verified.evidence;
+  #evidence(db: DatabaseSync, taskId: GovernorTaskId, evidenceId: string) {
+    return loadCurrentGovernorEvidenceInTransaction({
+      db,
+      admissions: this.#admissions,
+      taskId,
+      evidenceId,
+    });
   }
 
   #remediation(db: DatabaseSync, fingerprint: string): GovernorMemoryRemediation | null {
@@ -101,14 +99,15 @@ export class GovernorMemoryContradictionStore {
   }
 
   resolve(params: {
+    taskId: GovernorTaskId;
+    evidenceId: string;
     staleMemoryId: string;
     contradictionClass: string;
-    verifiedEvidence: GovernorVerifiedEvidence;
     freshnessExpiresAt?: number;
     now: number;
   }): GovernorMemoryContradictionResolution {
-    const evidence = this.#evidence(params.verifiedEvidence);
     return runOpenClawStateWriteTransaction(({ db }) => {
+      const evidence = this.#evidence(db, params.taskId, params.evidenceId);
       const staleRow = executeSqliteQueryTakeFirstSync(
         db,
         dbx(db)
@@ -274,6 +273,10 @@ export class GovernorMemoryContradictionStore {
         },
         content: safeContent,
         contentDigest: governorDigest(safeContent),
+        verifiedEvidenceTaskId: evidence.taskId,
+        verifiedEvidenceId: evidence.evidenceId,
+        verifiedEvidenceDigest: evidence.evidenceDigest,
+        verifiedEvidenceSemanticDigest: evidence.semanticDigest,
         supersedesId: stale.memoryId,
         createdAt: params.now,
         updatedAt: params.now,
@@ -418,12 +421,13 @@ export class GovernorMemoryContradictionStore {
   }
 
   verifyRepair(params: {
+    taskId: GovernorTaskId;
+    evidenceId: string;
     fingerprint: string;
-    verifiedEvidence: GovernorVerifiedEvidence;
     now: number;
   }): GovernorMemoryRemediation | null {
-    const evidence = this.#evidence(params.verifiedEvidence);
     return runOpenClawStateWriteTransaction(({ db }) => {
+      const evidence = this.#evidence(db, params.taskId, params.evidenceId);
       const current = this.#remediation(db, params.fingerprint);
       if (!current || !current.replacementMemoryId) {
         return null;

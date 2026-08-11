@@ -11,7 +11,6 @@ import {
   withOpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { governorDigest } from "./canonical-json.js";
-import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
 import { createGovernorTestStore } from "./test-broker.js";
 import type { GovernorPlan, GovernorTaskScope } from "./types.js";
@@ -27,7 +26,7 @@ const scope: GovernorTaskScope = {
   workspaceId: "workspace",
 };
 const controller = (store: import("./store.js").GovernorSqliteStore) =>
-  new GovernorController(store, new GovernorCapabilityRegistry([]));
+  new GovernorController(store, store.capabilities);
 async function closeDatabaseForCleanup(): Promise<void> {
   closeOpenClawStateDatabase();
 }

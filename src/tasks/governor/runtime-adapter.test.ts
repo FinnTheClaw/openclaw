@@ -10,7 +10,6 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
 import type { GovernorTaskContract, GovernorTaskScope } from "./types.js";
@@ -114,7 +113,7 @@ describe("governor runtime adapter", () => {
       { layout: "state-only", prefix: "openclaw-governor-opaque-identities-" },
       async (state) => {
         const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, new GovernorCapabilityRegistry([]));
+        const controller = new GovernorController(store, store.capabilities);
         try {
           const privateScope = {
             ...scope,

@@ -1,6 +1,6 @@
 // Enforces exact-scope memory ACLs, provenance, epochs, quarantine, and transactional tombstones.
 import type { DatabaseSync } from "node:sqlite";
-import type { Insertable, Selectable } from "kysely";
+import type { Selectable } from "kysely";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -14,13 +14,29 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
-import { normalizeGovernorFactKey } from "./memory-contradiction-policy.js";
+import { loadCurrentGovernorEvidenceInTransaction } from "./current-evidence.js";
+import { governorMemoryFactPredicate } from "./memory-contradiction-policy.js";
+import { bindGovernorMemory, parseGovernorMemory } from "./memory-record-codec.js";
+import {
+  GOVERNOR_MEMORY_SOURCE_RANK,
+  normalizeGovernorFactKey,
+  type GovernorForgetResult,
+  type GovernorMemoryRecord,
+  type GovernorMemorySourceKind,
+  type GovernorMemoryWriteResult,
+} from "./memory-types.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
+import {
+  isGovernorEvidenceAdmissionStore,
+  type GovernorEvidenceAdmissionStore,
+} from "./store-evidence-admission.js";
+import type { GovernorStoreQueries } from "./store-queries.js";
 import {
   canonicalGovernorScopeKey,
   opaqueGovernorReference,
   type GovernorIdentityContext,
+  type GovernorTaskId,
   type GovernorTaskScope,
 } from "./types.js";
 
@@ -28,193 +44,56 @@ type GovernorMemoryDatabase = Pick<
   OpenClawStateKyselyDatabase,
   "governor_memories" | "governor_scope_epochs"
 >;
-type GovernorMemoryRow = Selectable<OpenClawStateKyselyDatabase["governor_memories"]>;
 type GovernorScopeEpochRow = Selectable<OpenClawStateKyselyDatabase["governor_scope_epochs"]>;
 
-export type GovernorMemoryStatus =
-  | "candidate"
-  | "verified"
-  | "quarantined"
-  | "superseded"
-  | "tombstoned";
-export type GovernorMemorySourceKind =
-  | "structured_external"
-  | "authenticated_user"
-  | "tool"
-  | "historical_memory"
-  | "assistant_text"
-  | "hidden_reasoning";
-
-export type GovernorMemoryProvenance = {
-  sourceRef: string;
-  observedAt: number;
-  scopeKey: string;
-  confidence: number;
-  sensitivity: "normal" | "sensitive";
-};
-
-export type GovernorMemoryRecord = {
-  memoryId: string;
-  scopeKey: string;
-  scopeEpoch: number;
-  factKey: string;
-  status: GovernorMemoryStatus;
-  sourceKind: GovernorMemorySourceKind;
-  sourceIdentity: string;
-  sourceRank: number;
-  observedAt: number;
-  freshnessExpiresAt?: number;
-  confidence: number;
-  sensitivity: "normal" | "sensitive";
-  provenance: GovernorMemoryProvenance;
-  content: GovernorJsonValue;
-  contentDigest: string;
-  supersedesId?: string;
-  supersededAt?: number;
-  supersededEvidenceId?: string;
-  supersededEvidenceDigest?: string;
-  supersededReason?: string;
-  contradictionFingerprint?: string;
-  replacementMemoryId?: string;
-  createdAt: number;
-  updatedAt: number;
-  tombstonedAt?: number;
-};
-
-export type GovernorMemoryWriteResult =
-  | { stored: true; memory: GovernorMemoryRecord }
-  | {
-      stored: false;
-      reason: "scope_epoch_conflict" | "provenance_rejected" | "fact_version_conflict";
-      currentEpoch: number;
-    };
-
-export type GovernorForgetResult =
-  | {
-      status: "deleted";
-      memoryId: string;
-      scopeEpoch: number;
-      invalidated: readonly ["primary", "scope_epoch"];
-    }
-  | { status: "not_found"; memoryId: string; scopeEpoch: number }
-  | { status: "partial_failure"; memoryId: string; scopeEpoch: number; failed: readonly string[] };
-
-export const GOVERNOR_MEMORY_SOURCE_RANK: Readonly<Record<GovernorMemorySourceKind, number>> = {
-  structured_external: 600,
-  authenticated_user: 500,
-  tool: 400,
-  historical_memory: 200,
-  assistant_text: 0,
-  hidden_reasoning: 0,
-};
+export {
+  GOVERNOR_MEMORY_SOURCE_RANK,
+  type GovernorForgetResult,
+  type GovernorMemoryProvenance,
+  type GovernorMemoryRecord,
+  type GovernorMemorySourceKind,
+  type GovernorMemoryStatus,
+  type GovernorMemoryWriteResult,
+} from "./memory-types.js";
 
 function dbx(db: DatabaseSync) {
   return getNodeSqliteKysely<GovernorMemoryDatabase>(db);
 }
 
-function parseJson(raw: string, label: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch (error) {
-    throw new Error(`Invalid governor memory ${label}`, { cause: error });
+function assertExactMemoryInput(value: object, allowed: readonly string[]): void {
+  const allowedKeys = new Set(allowed);
+  const unexpected = Object.keys(value).find((key) => !allowedKeys.has(key));
+  if (unexpected) {
+    throw new Error(`Governor memory input contains unknown field: ${unexpected}`);
   }
-}
-
-export function parseGovernorMemory(row: GovernorMemoryRow): GovernorMemoryRecord {
-  return {
-    memoryId: row.memory_id,
-    scopeKey: row.scope_key,
-    scopeEpoch: normalizeSqliteNumber(row.scope_epoch) ?? 0,
-    factKey: row.fact_key,
-    status: row.status as GovernorMemoryStatus,
-    sourceKind: row.source_kind as GovernorMemorySourceKind,
-    sourceIdentity: row.source_identity,
-    sourceRank: normalizeSqliteNumber(row.source_rank) ?? 0,
-    observedAt: normalizeSqliteNumber(row.observed_at) ?? 0,
-    ...(row.freshness_expires_at == null
-      ? {}
-      : { freshnessExpiresAt: normalizeSqliteNumber(row.freshness_expires_at) ?? 0 }),
-    confidence: row.confidence,
-    sensitivity: row.sensitivity as GovernorMemoryRecord["sensitivity"],
-    provenance: parseJson(row.provenance_json, "provenance") as GovernorMemoryProvenance,
-    content: parseJson(row.content_json, "content") as GovernorJsonValue,
-    contentDigest: row.content_digest,
-    ...(row.supersedes_id ? { supersedesId: row.supersedes_id } : {}),
-    ...(row.superseded_at == null
-      ? {}
-      : { supersededAt: normalizeSqliteNumber(row.superseded_at) ?? 0 }),
-    ...(row.superseded_evidence_id ? { supersededEvidenceId: row.superseded_evidence_id } : {}),
-    ...(row.superseded_evidence_digest
-      ? { supersededEvidenceDigest: row.superseded_evidence_digest }
-      : {}),
-    ...(row.superseded_reason ? { supersededReason: row.superseded_reason } : {}),
-    ...(row.contradiction_fingerprint
-      ? { contradictionFingerprint: row.contradiction_fingerprint }
-      : {}),
-    ...(row.replacement_memory_id ? { replacementMemoryId: row.replacement_memory_id } : {}),
-    createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
-    updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
-    ...(row.tombstoned_at == null
-      ? {}
-      : { tombstonedAt: normalizeSqliteNumber(row.tombstoned_at) ?? 0 }),
-  };
-}
-
-export function bindGovernorMemory(memory: GovernorMemoryRecord): Insertable<GovernorMemoryRow> {
-  return {
-    memory_id: memory.memoryId,
-    scope_key: memory.scopeKey,
-    scope_epoch: memory.scopeEpoch,
-    fact_key: memory.factKey,
-    status: memory.status,
-    source_kind: memory.sourceKind,
-    source_identity: memory.sourceIdentity,
-    source_rank: memory.sourceRank,
-    observed_at: memory.observedAt,
-    freshness_expires_at: memory.freshnessExpiresAt ?? null,
-    confidence: memory.confidence,
-    sensitivity: memory.sensitivity,
-    provenance_json: JSON.stringify(memory.provenance),
-    content_json: JSON.stringify(memory.content),
-    content_digest: memory.contentDigest,
-    supersedes_id: memory.supersedesId ?? null,
-    superseded_at: memory.supersededAt ?? null,
-    superseded_evidence_id: memory.supersededEvidenceId ?? null,
-    superseded_evidence_digest: memory.supersededEvidenceDigest ?? null,
-    superseded_reason: memory.supersededReason ?? null,
-    contradiction_fingerprint: memory.contradictionFingerprint ?? null,
-    replacement_memory_id: memory.replacementMemoryId ?? null,
-    created_at: memory.createdAt,
-    updated_at: memory.updatedAt,
-    tombstoned_at: memory.tombstonedAt ?? null,
-  };
 }
 
 function parseEpoch(row: GovernorScopeEpochRow | undefined): number {
   return row ? (normalizeSqliteNumber(row.epoch) ?? 0) : 0;
 }
 
-function isAdmissiblePromotion(sourceKind: GovernorMemorySourceKind, sourceRef: string): boolean {
-  return (
-    GOVERNOR_MEMORY_SOURCE_RANK[sourceKind] > 0 &&
-    sourceKind !== "historical_memory" &&
-    Boolean(sourceRef.trim())
-  );
-}
-
 export class GovernorMemoryStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly #identity: GovernorIdentityContext;
+  readonly #admissions: GovernorEvidenceAdmissionStore;
+  readonly #queries: GovernorStoreQueries;
 
   constructor(params: {
     stateDir?: string;
     options?: OpenClawStateDatabaseOptions;
     identity: GovernorIdentityContext;
+    evidenceAdmissions: GovernorEvidenceAdmissionStore;
+    queries: GovernorStoreQueries;
   }) {
     this.#options =
       params.options ??
       (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
     this.#identity = params.identity;
+    if (!isGovernorEvidenceAdmissionStore(params.evidenceAdmissions)) {
+      throw new Error("Governor memory store requires its evidence admission owner");
+    }
+    this.#admissions = params.evidenceAdmissions;
+    this.#queries = params.queries;
     initializeGovernorStateSchema(this.#options);
   }
 
@@ -235,23 +114,22 @@ export class GovernorMemoryStore {
     return this.#epoch(this.#database().db, canonicalGovernorScopeKey(scope, this.#identity));
   }
 
-  store(params: {
+  storeCandidate(params: {
     memoryId: string;
     factKey: string;
     scope: GovernorTaskScope;
     expectedScopeEpoch: number;
-    requestedStatus: Extract<GovernorMemoryStatus, "candidate" | "verified">;
-    sourceKind: GovernorMemorySourceKind;
-    sourceIdentity: string;
-    observedAt: number;
-    freshnessExpiresAt?: number;
-    confidence: number;
-    sensitivity: GovernorMemoryRecord["sensitivity"];
-    sourceRef: string;
     content: GovernorJsonValue;
-    supersedesId?: string;
     now: number;
   }): GovernorMemoryWriteResult {
+    assertExactMemoryInput(params, [
+      "memoryId",
+      "factKey",
+      "scope",
+      "expectedScopeEpoch",
+      "content",
+      "now",
+    ]);
     const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
     const factKey = normalizeGovernorFactKey(params.factKey);
     const content = assertGovernorBoundarySafe("memory", params.content);
@@ -260,56 +138,35 @@ export class GovernorMemoryStore {
       if (currentEpoch !== params.expectedScopeEpoch) {
         return { stored: false, reason: "scope_epoch_conflict", currentEpoch };
       }
-      if (
-        params.requestedStatus === "verified" &&
-        !isAdmissiblePromotion(params.sourceKind, params.sourceRef)
-      ) {
-        return { stored: false, reason: "provenance_rejected", currentEpoch };
-      }
-      if (params.requestedStatus === "verified") {
-        const activeFact = executeSqliteQueryTakeFirstSync(
-          db,
-          dbx(db)
-            .selectFrom("governor_memories")
-            .select(["memory_id"])
-            .where("scope_key", "=", scopeKey)
-            .where("fact_key", "=", factKey)
-            .where("status", "=", "verified"),
-        );
-        if (activeFact && activeFact.memory_id !== params.memoryId) {
-          return { stored: false, reason: "fact_version_conflict", currentEpoch };
-        }
-      }
-      const status = params.requestedStatus === "verified" ? "verified" : ("candidate" as const);
       const memory: GovernorMemoryRecord = {
         memoryId: params.memoryId,
         scopeKey,
         scopeEpoch: currentEpoch,
         factKey,
-        status,
-        sourceKind: params.sourceKind,
+        status: "candidate",
+        sourceKind: "untrusted_candidate",
         sourceIdentity: opaqueGovernorReference(
-          "memory-source",
-          params.sourceIdentity,
+          "memory-candidate",
+          params.memoryId,
           this.#identity,
         ),
-        sourceRank: GOVERNOR_MEMORY_SOURCE_RANK[params.sourceKind],
-        observedAt: params.observedAt,
-        ...(params.freshnessExpiresAt !== undefined
-          ? { freshnessExpiresAt: params.freshnessExpiresAt }
-          : {}),
-        confidence: params.confidence,
-        sensitivity: params.sensitivity,
+        sourceRank: GOVERNOR_MEMORY_SOURCE_RANK.untrusted_candidate,
+        observedAt: params.now,
+        confidence: 0,
+        sensitivity: "normal",
         provenance: {
-          sourceRef: opaqueGovernorReference("memory-source-ref", params.sourceRef, this.#identity),
-          observedAt: params.observedAt,
+          sourceRef: opaqueGovernorReference(
+            "memory-candidate-ref",
+            params.memoryId,
+            this.#identity,
+          ),
+          observedAt: params.now,
           scopeKey,
-          confidence: params.confidence,
-          sensitivity: params.sensitivity,
+          confidence: 0,
+          sensitivity: "normal",
         },
         content,
         contentDigest: governorDigest(content),
-        ...(params.supersedesId ? { supersedesId: params.supersedesId } : {}),
         createdAt: params.now,
         updatedAt: params.now,
       };
@@ -319,6 +176,143 @@ export class GovernorMemoryStore {
       );
       return { stored: true, memory };
     }, this.#options);
+  }
+
+  promoteVerified(params: {
+    taskId: GovernorTaskId;
+    evidenceId: string;
+    memoryId: string;
+    factKey: string;
+    scope: GovernorTaskScope;
+    expectedScopeEpoch: number;
+    freshnessExpiresAt?: number;
+    now: number;
+  }): GovernorMemoryWriteResult {
+    assertExactMemoryInput(params, [
+      "taskId",
+      "evidenceId",
+      "memoryId",
+      "factKey",
+      "scope",
+      "expectedScopeEpoch",
+      "freshnessExpiresAt",
+      "now",
+    ]);
+    const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
+    const factKey = normalizeGovernorFactKey(params.factKey);
+    return runOpenClawStateWriteTransaction(({ db }) => {
+      const evidence = loadCurrentGovernorEvidenceInTransaction({
+        db,
+        admissions: this.#admissions,
+        taskId: params.taskId,
+        evidenceId: params.evidenceId,
+      });
+      if (
+        evidence.scopeKey !== scopeKey ||
+        evidence.predicate !== governorMemoryFactPredicate(factKey) ||
+        governorDigest({ predicate: evidence.predicate, value: evidence.value }) !==
+          evidence.semanticDigest ||
+        governorDigest(evidence.payload) !== evidence.evidenceDigest ||
+        governorDigest(evidence.payload) !== governorDigest(evidence.value) ||
+        evidence.invalidatedAt !== undefined
+      ) {
+        throw new Error("Governor verified memory evidence does not match the fact and scope");
+      }
+      const sourceKind = evidence.sourceKind as GovernorMemorySourceKind;
+      const sourceRank = GOVERNOR_MEMORY_SOURCE_RANK[sourceKind] ?? 0;
+      if (sourceRank <= 0 || sourceKind === "historical_memory") {
+        throw new Error("Governor verified memory evidence source is not authoritative");
+      }
+      const content = assertGovernorBoundarySafe("memory", evidence.value);
+      const confidence =
+        sourceKind === "structured_external" ? 1 : sourceKind === "authenticated_user" ? 0.95 : 0.9;
+      const currentEpoch = this.#epoch(db, scopeKey);
+      if (currentEpoch !== params.expectedScopeEpoch) {
+        return { stored: false, reason: "scope_epoch_conflict", currentEpoch };
+      }
+      const activeFact = executeSqliteQueryTakeFirstSync(
+        db,
+        dbx(db)
+          .selectFrom("governor_memories")
+          .select(["memory_id"])
+          .where("scope_key", "=", scopeKey)
+          .where("fact_key", "=", factKey)
+          .where("status", "=", "verified"),
+      );
+      if (activeFact && activeFact.memory_id !== params.memoryId) {
+        return { stored: false, reason: "fact_version_conflict", currentEpoch };
+      }
+      const memory: GovernorMemoryRecord = {
+        memoryId: params.memoryId,
+        scopeKey,
+        scopeEpoch: currentEpoch,
+        factKey,
+        status: "verified",
+        sourceKind,
+        sourceIdentity: evidence.sourceIdentity,
+        sourceRank,
+        observedAt: evidence.observedAt,
+        ...(params.freshnessExpiresAt === undefined
+          ? {}
+          : { freshnessExpiresAt: params.freshnessExpiresAt }),
+        confidence,
+        sensitivity: "normal",
+        provenance: {
+          sourceRef: evidence.sourceIdentity,
+          observedAt: evidence.observedAt,
+          scopeKey,
+          confidence,
+          sensitivity: "normal",
+        },
+        content,
+        contentDigest: governorDigest(content),
+        verifiedEvidenceTaskId: evidence.taskId,
+        verifiedEvidenceId: evidence.evidenceId,
+        verifiedEvidenceDigest: evidence.evidenceDigest,
+        verifiedEvidenceSemanticDigest: evidence.semanticDigest,
+        createdAt: params.now,
+        updatedAt: params.now,
+      };
+      executeSqliteQuerySync(
+        db,
+        dbx(db).insertInto("governor_memories").values(bindGovernorMemory(memory)),
+      );
+      return { stored: true, memory };
+    }, this.#options);
+  }
+
+  #verifyRecalledMemory(memory: GovernorMemoryRecord): GovernorMemoryRecord {
+    if (memory.status !== "verified") {
+      return memory;
+    }
+    if (
+      !memory.verifiedEvidenceTaskId ||
+      !memory.verifiedEvidenceId ||
+      !memory.verifiedEvidenceDigest ||
+      !memory.verifiedEvidenceSemanticDigest
+    ) {
+      throw new Error(`Governor verified memory ${memory.memoryId} lacks admitted evidence`);
+    }
+    const evidence = this.#queries.loadEvidence(
+      memory.verifiedEvidenceTaskId as import("./types.js").GovernorTaskId,
+      memory.verifiedEvidenceId,
+    );
+    if (!evidence) {
+      throw new Error(`Governor verified memory ${memory.memoryId} evidence is unavailable`);
+    }
+    this.#admissions.verify(evidence);
+    if (
+      evidence.invalidatedAt !== undefined ||
+      evidence.scopeKey !== memory.scopeKey ||
+      evidence.evidenceDigest !== memory.verifiedEvidenceDigest ||
+      evidence.semanticDigest !== memory.verifiedEvidenceSemanticDigest ||
+      evidence.sourceIdentity !== memory.sourceIdentity ||
+      evidence.predicate !== governorMemoryFactPredicate(memory.factKey) ||
+      governorDigest(evidence.value) !== memory.contentDigest
+    ) {
+      throw new Error(`Governor verified memory ${memory.memoryId} evidence binding is invalid`);
+    }
+    return memory;
   }
 
   retrieve(params: { scope: GovernorTaskScope; now: number }): GovernorMemoryRecord[] {
@@ -340,7 +334,9 @@ export class GovernorMemoryStore {
         .orderBy("source_rank", "desc")
         .orderBy("observed_at", "desc")
         .orderBy("memory_id", "asc"),
-    ).rows.map(parseGovernorMemory);
+    )
+      .rows.map(parseGovernorMemory)
+      .map((memory) => this.#verifyRecalledMemory(memory));
   }
 
   retrieveAudit(params: { scope: GovernorTaskScope }): GovernorMemoryRecord[] {

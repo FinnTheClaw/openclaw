@@ -5,6 +5,7 @@ import type {
   GovernorRecordToolOutcomeParams,
 } from "./action-runtime.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
+import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import type { GovernorController } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
 
@@ -12,7 +13,9 @@ export function createGovernorTestBroker(params: { stateDir?: string } = {}) {
   return createGovernorTestHostBindings(params);
 }
 
-export function createGovernorTestStore(params: { stateDir?: string } = {}) {
+export function createGovernorTestStore(
+  params: { stateDir?: string; capabilities?: GovernorCapabilityRegistry } = {},
+) {
   const broker = createGovernorTestBroker(params);
   return {
     broker,
@@ -22,6 +25,7 @@ export function createGovernorTestStore(params: { stateDir?: string } = {}) {
       approvalResolver: broker.approvalResolver,
       deliveryResolver: broker.deliveryResolver,
       secrets: broker.secrets,
+      capabilities: params.capabilities,
     }),
   };
 }

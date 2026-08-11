@@ -55,8 +55,12 @@ describe("behavior governor mandatory synthetic evals", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-four-message-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, createMandatoryEvalRegistry());
+        const capabilities = createMandatoryEvalRegistry();
+        const store = new GovernorSqliteStore({
+          stateDir: state.stateDir,
+          capabilities,
+        });
+        const controller = new GovernorController(store, capabilities);
         try {
           const arrivals = [
             { id: "message-1", sequence: 1, objective: "Initial" },
@@ -97,9 +101,13 @@ describe("behavior governor mandatory synthetic evals", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-crash-eval-" },
       async (state) => {
-        let testHost = createGovernorTestStore({ stateDir: state.stateDir });
+        let capabilities = createMandatoryEvalRegistry();
+        let testHost = createGovernorTestStore({
+          stateDir: state.stateDir,
+          capabilities,
+        });
         let store = testHost.store;
-        let controller = new GovernorController(store, createMandatoryEvalRegistry());
+        let controller = new GovernorController(store, capabilities);
         const mutationAdapter = new ObservedMutationAdapter();
         const deliveryObserverKey = "mandatory-eval";
         resetSyntheticHostDeliveryAttempts("test", deliveryObserverKey);
@@ -113,9 +121,13 @@ describe("behavior governor mandatory synthetic evals", () => {
         const reopen = (checkpoint: string) => {
           crashCheckpoints.add(checkpoint);
           closeOpenClawStateDatabase();
-          testHost = createGovernorTestStore({ stateDir: state.stateDir });
+          capabilities = createMandatoryEvalRegistry();
+          testHost = createGovernorTestStore({
+            stateDir: state.stateDir,
+            capabilities,
+          });
           store = testHost.store;
-          controller = new GovernorController(store, createMandatoryEvalRegistry());
+          controller = new GovernorController(store, capabilities);
           deliveryHandle = registerMandatorySyntheticDelivery(
             testHost.broker.capabilities,
             deliveryObserverKey,
@@ -420,8 +432,12 @@ describe("behavior governor mandatory synthetic evals", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-semantic-eval-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, createMandatoryEvalRegistry());
+        const capabilities = createMandatoryEvalRegistry();
+        const store = new GovernorSqliteStore({
+          stateDir: state.stateDir,
+          capabilities,
+        });
+        const controller = new GovernorController(store, capabilities);
         try {
           const taskId = controller.ingest({
             sourceMessageId: "semantic-failure",

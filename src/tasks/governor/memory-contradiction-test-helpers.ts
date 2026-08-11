@@ -1,10 +1,12 @@
 // Synthetic host/task helpers for memory contradiction and remediation tests.
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import type { GovernorJsonValue } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { createGovernorEventRecord } from "./events.js";
 import { createGovernorEvidenceCandidate, type GovernorEvidenceSourceKind } from "./evidence.js";
+import { governorMemoryFactPredicate } from "./memory-contradiction-policy.js";
 import type { GovernorMemoryRepairAction } from "./memory-remediation-runtime.js";
 import { GovernorSqliteStore } from "./store.js";
 import { createGovernorTestStore } from "./test-broker.js";
@@ -99,11 +101,15 @@ export async function withMemoryTestHarness(
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-memory-contradiction-" },
     async (state) => {
-      const testStore = createGovernorTestStore({ stateDir: state.stateDir });
+      const capabilities = memoryTestRegistry();
+      const testStore = createGovernorTestStore({
+        stateDir: state.stateDir,
+        capabilities,
+      });
       try {
         await run({
           ...testStore,
-          controller: new GovernorController(testStore.store, memoryTestRegistry()),
+          controller: new GovernorController(testStore.store, capabilities),
           stateDir: state.stateDir,
         });
       } finally {
@@ -148,6 +154,8 @@ export function correctMemoryTestTask(
 
 export function seedMemoryFact(params: {
   store: GovernorSqliteStore;
+  broker: ReturnType<typeof createGovernorTestStore>["broker"];
+  taskId: GovernorTaskId;
   scope: GovernorTaskScope;
   memoryId: string;
   factKey: string;
@@ -155,19 +163,25 @@ export function seedMemoryFact(params: {
   observedAt: number;
   sourceKind?: "tool" | "structured_external";
 }) {
-  const result = params.store.memory.store({
+  const evidenceId = `seed-evidence-${params.memoryId}`;
+  persistMemoryEvidence({
+    store: params.store,
+    broker: params.broker,
+    taskId: params.taskId,
+    evidenceId,
+    criterionId: "memory-observed",
+    predicate: governorMemoryFactPredicate(params.factKey),
+    value: { path: params.path },
+    observedAt: params.observedAt,
+    sourceKind: params.sourceKind ?? "tool",
+  });
+  const result = params.store.memory.promoteVerified({
+    taskId: params.taskId,
+    evidenceId,
     memoryId: params.memoryId,
     factKey: params.factKey,
     scope: params.scope,
     expectedScopeEpoch: 0,
-    requestedStatus: "verified",
-    sourceKind: params.sourceKind ?? "tool",
-    sourceIdentity: "synthetic-canonical-source",
-    observedAt: params.observedAt,
-    confidence: 0.8,
-    sensitivity: "normal",
-    sourceRef: "fixture://canonical-memory-source",
-    content: { path: params.path },
     now: params.observedAt,
   });
   if (!result.stored) {
@@ -183,9 +197,12 @@ export function persistMemoryEvidence(params: {
   evidenceId: string;
   criterionId: "memory-observed" | "repair-verified";
   predicate: string;
-  value: { path: string };
+  value: GovernorJsonValue;
   observedAt: number;
-  sourceKind?: Extract<GovernorEvidenceSourceKind, "tool" | "structured_external">;
+  sourceKind?: Extract<
+    GovernorEvidenceSourceKind,
+    "authenticated_user" | "tool" | "structured_external"
+  >;
   sourceIdentity?: string;
 }): GovernorTaskProjection {
   const task = params.store.loadTask(params.taskId);

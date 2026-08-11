@@ -1,7 +1,7 @@
+import type { ChannelOutboundAdapter } from "../channels/plugins/outbound.types.js";
 /** Compiled Signal/iMessage delivery implementations owned by trusted host bootstrap. */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveOutboundChannelPlugin } from "../infra/outbound/channel-resolution.js";
-import { sendMessage } from "../infra/outbound/message.js";
 import { resolveOutboundTarget } from "../infra/outbound/targets.js";
 import { governorDigest, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import type { GovernorIdentityContext } from "../tasks/governor/types.js";
@@ -136,11 +136,13 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   );
 }
 
-function resolveCompiledChannelTarget(params: {
+type BoundChannelSendText = NonNullable<ChannelOutboundAdapter["sendText"]>;
+
+function resolveCompiledChannelBinding(params: {
   channel: CompiledChannel;
   config: ChannelConfig;
   runtime: GovernorHostDeliveryRuntime;
-}): string {
+}): { normalizedTarget: string; sendText: BoundChannelSendText } {
   const plugin = resolveOutboundChannelPlugin({
     channel: params.channel,
     cfg: params.runtime.cfg,
@@ -148,6 +150,10 @@ function resolveCompiledChannelTarget(params: {
   });
   if (!plugin) {
     throw new Error(`Governor ${params.channel} compiled channel is unavailable`);
+  }
+  const sendText = plugin.outbound?.sendText;
+  if (plugin.outbound?.deliveryMode !== "direct" || typeof sendText !== "function") {
+    throw new Error(`Governor ${params.channel} compiled direct sender is unavailable`);
   }
   if (!plugin.config.listAccountIds(params.runtime.cfg).includes(params.config.accountId)) {
     throw new Error(`Governor ${params.channel} account is unavailable or mismatched`);
@@ -174,7 +180,7 @@ function resolveCompiledChannelTarget(params: {
   if (!resolved.ok) {
     throw new Error(`Governor ${params.channel} target is invalid`, { cause: resolved.error });
   }
-  return resolved.to;
+  return { normalizedTarget: resolved.to, sendText };
 }
 
 function createCompiledChannelSender(params: {
@@ -183,7 +189,7 @@ function createCompiledChannelSender(params: {
   runtime: GovernorHostDeliveryRuntime;
 }): HostCompiledSender {
   const config = parseChannelConfig(params.configValue);
-  const normalizedTarget = resolveCompiledChannelTarget({
+  const { normalizedTarget, sendText } = resolveCompiledChannelBinding({
     channel: params.channel,
     config,
     runtime: params.runtime,
@@ -195,27 +201,25 @@ function createCompiledChannelSender(params: {
     mode: config.mode,
     send: async ({ deliveryKey, payload }) => {
       try {
-        const result = await sendMessage({
+        // Capture the exact plugin function at trusted bootstrap. This call
+        // never re-resolves the mutable runtime plugin registry.
+        const receipt = await sendText({
           cfg: params.runtime.cfg,
-          channel: params.channel,
           accountId: config.accountId,
           to: normalizedTarget,
-          content: parseTextPayload(payload),
-          idempotencyKey: deliveryKey,
-          bestEffort: false,
-          queuePolicy: "best_effort",
+          text: parseTextPayload(payload),
+          deliveryQueueId: deliveryKey,
         });
-        const receipt = result.result;
-        const messageId = receipt && "messageId" in receipt ? receipt.messageId : undefined;
+        const messageId = receipt.messageId;
         if (!messageId || messageId === "unknown" || messageId === "ok") {
           return unknown(`${params.channel}_receipt_missing_stable_id`);
         }
         return {
           status: "sent" as const,
           providerReceipt: {
-            channel: result.channel,
+            channel: receipt.channel,
             messageId,
-            ...(receipt && "timestamp" in receipt && typeof receipt.timestamp === "number"
+            ...("timestamp" in receipt && typeof receipt.timestamp === "number"
               ? { timestamp: receipt.timestamp }
               : {}),
           },

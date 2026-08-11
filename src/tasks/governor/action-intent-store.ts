@@ -14,9 +14,12 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import type { GovernorActionIntent } from "./action-intent.js";
+import { GovernorApprovalGrantStore } from "./approval-store.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
-import type { GovernorTaskId } from "./types.js";
+import { loadGovernorTask } from "./store-queries.js";
+import type { GovernorIdentityContext, GovernorTaskId } from "./types.js";
 
 type ActionIntentDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -31,7 +34,16 @@ export type GovernorActionIntentUpdate = {
 
 export type GovernorActionIntentClaimResult =
   | { kind: "claimed"; intent: GovernorActionIntent }
-  | { kind: "busy" | "stale_worker" | "not_found" | "completed" };
+  | {
+      kind:
+        | "busy"
+        | "stale_worker"
+        | "not_found"
+        | "completed"
+        | "approval_required"
+        | "approval_stale"
+        | "approval_revoked";
+    };
 
 function dbx(db: DatabaseSync) {
   return getNodeSqliteKysely<ActionIntentDatabase>(db);
@@ -57,6 +69,8 @@ export function bindGovernorActionIntent(
     plan_version: intent.planVersion,
     lease_epoch: intent.leaseEpoch,
     execution_generation: intent.executionGeneration,
+    approval_required: intent.approvalRequired ? 1 : 0,
+    approval_policy_digest: intent.approvalPolicyDigest,
     state: intent.state,
     claim_epoch: intent.claimEpoch,
     claimed_by: intent.claimedBy ?? null,
@@ -87,6 +101,8 @@ function parseActionIntent(row: GovernorActionIntentRow): GovernorActionIntent {
     planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
     leaseEpoch: normalizeSqliteNumber(row.lease_epoch) ?? 0,
     executionGeneration: normalizeSqliteNumber(row.execution_generation) ?? 0,
+    approvalRequired: row.approval_required === 1,
+    approvalPolicyDigest: row.approval_policy_digest,
     state: row.state as GovernorActionIntent["state"],
     claimEpoch: normalizeSqliteNumber(row.claim_epoch) ?? 0,
     ...(row.claimed_by == null ? {} : { claimedBy: row.claimed_by }),
@@ -119,11 +135,23 @@ function parseActionIntent(row: GovernorActionIntentRow): GovernorActionIntent {
 
 export class GovernorActionIntentStore {
   readonly #options: OpenClawStateDatabaseOptions;
+  readonly #approvals: GovernorApprovalGrantStore;
+  readonly #capabilities: GovernorCapabilityRegistry;
+  readonly #identity: GovernorIdentityContext;
 
-  constructor(params: { stateDir?: string; options?: OpenClawStateDatabaseOptions } = {}) {
+  constructor(params: {
+    stateDir?: string;
+    options?: OpenClawStateDatabaseOptions;
+    approvals: GovernorApprovalGrantStore;
+    capabilities: GovernorCapabilityRegistry;
+    identity: GovernorIdentityContext;
+  }) {
     this.#options =
       params.options ??
       (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
+    this.#approvals = params.approvals;
+    this.#capabilities = params.capabilities;
+    this.#identity = params.identity;
     initializeGovernorStateSchema(this.#options);
   }
 
@@ -175,19 +203,7 @@ export class GovernorActionIntentStore {
       throw new Error("Governor action leaseDurationMs must be a positive safe integer");
     }
     return runOpenClawStateWriteTransaction(({ db }) => {
-      const task = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_tasks")
-          .select([
-            "state",
-            "objective_revision",
-            "plan_version",
-            "lease_epoch",
-            "execution_generation",
-          ])
-          .where("task_id", "=", params.taskId),
-      );
+      const task = loadGovernorTask(db, params.taskId);
       const row = executeSqliteQueryTakeFirstSync(
         db,
         dbx(db)
@@ -205,10 +221,10 @@ export class GovernorActionIntentStore {
       }
       if (
         task.state !== "EXECUTING" ||
-        normalizeSqliteNumber(task.objective_revision) !== params.objectiveRevision ||
-        normalizeSqliteNumber(task.plan_version) !== params.planVersion ||
-        normalizeSqliteNumber(task.lease_epoch) !== params.leaseEpoch ||
-        normalizeSqliteNumber(task.execution_generation) !== params.executionGeneration ||
+        task.objectiveRevision !== params.objectiveRevision ||
+        task.planVersion !== params.planVersion ||
+        task.leaseEpoch !== params.leaseEpoch ||
+        task.executionGeneration !== params.executionGeneration ||
         intent.objectiveRevision !== params.objectiveRevision ||
         intent.planVersion !== params.planVersion ||
         intent.leaseEpoch !== params.leaseEpoch ||
@@ -216,6 +232,43 @@ export class GovernorActionIntentStore {
         intent.state === "cancelled"
       ) {
         return { kind: "stale_worker" };
+      }
+      try {
+        this.#capabilities.assertPersistedIntentAuthorized(task, intent.proposal, this.#identity);
+      } catch {
+        return { kind: "stale_worker" };
+      }
+      const approvalPolicy = this.#capabilities.approvalPolicy(intent.proposal);
+      if (
+        intent.approvalRequired !== approvalPolicy.required ||
+        intent.approvalPolicyDigest !== approvalPolicy.digest
+      ) {
+        return { kind: "stale_worker" };
+      }
+      if (intent.approvalRequired) {
+        if (!intent.proposal.approvalGrantId) {
+          return { kind: "approval_required" };
+        }
+        const approval = this.#approvals.statusWithinTransaction(
+          db,
+          {
+            taskId: intent.taskId,
+            scopeKey: task.scopeKey,
+            objectiveRevision: params.objectiveRevision,
+          },
+          intent.proposal,
+          params.now,
+        );
+        if (approval !== "approved") {
+          return {
+            kind:
+              approval === "missing"
+                ? "approval_required"
+                : approval === "stale"
+                  ? "approval_stale"
+                  : "approval_revoked",
+          };
+        }
       }
       if (
         intent.state === "running" &&

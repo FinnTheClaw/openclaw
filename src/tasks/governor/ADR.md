@@ -126,6 +126,30 @@ isolated SQLite state.
     and certification generation. This detects mismatch inside that source/build trust root. It does
     not attest installed package bytes, post-build binary tampering, a fully compromised process or
     filesystem, or full-host snapshot rollback.
+28. A privileged action binds a digest of the immutable configured capability policy at admission.
+    Persistence and the SQLite execution-claim transaction independently recompute that policy and
+    reject caller-stated approval flags, legacy unverifiable policy rows, or configuration drift.
+    The claim also revalidates the exact signed grant and host revocation epoch. A revocation that
+    commits first makes the queued action unclaimable. A claim that commits first is reported as in
+    flight, so revocation cannot report success and then permit a later effect start.
+29. Public memory writes create untrusted candidates only. Verified memory fields are derived from
+    current-plan, exact-scope, admitted evidence; caller-supplied status, source, confidence, and
+    provenance fields are rejected. Current objective, plan, scope, and evidence signatures are
+    revalidated while holding the same SQLite write transaction that promotes, supersedes, or
+    verifies memory. Recall re-verifies all persisted content/semantic bindings. Legacy verified
+    rows without complete admitted-evidence bindings are retained as quarantined audit history and
+    excluded from normal recall, so migration neither trusts them nor wedges the scope.
+30. A certified Signal or iMessage handle captures the exact compiled outbound function and frozen
+    configuration during trusted bootstrap. Dispatch never re-resolves the mutable plugin registry.
+    The build-owned manifest covers the governor delivery implementation, plugin SDK closure,
+    Signal/iMessage runtime roots and package metadata, and the pinned dependency lockfile.
+31. An `effect_started` delivery may reconstruct only the same byte-identical certified adapter for
+    authoritative reconciliation or one durable manual-review outcome. Reconstruction never resets
+    the effect or permits a blind resend, and unrelated certified deliveries remain available.
+32. Host journal serialization uses SQLite's OS-backed cross-process write lock rather than a PID
+    lock file. The coordination database carries no authority and may be recreated; process death
+    releases the lock, while the signed journal and head remain the anti-rollback truth. This still
+    does not protect against replaying a full host snapshot without hardware monotonic storage.
 
 ## Consequences
 

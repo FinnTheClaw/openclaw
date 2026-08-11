@@ -596,6 +596,8 @@ export interface GatewayRestartSentinel {
 
 export interface GovernorActionIntents {
   action_fingerprint: string;
+  approval_policy_digest: Generated<string>;
+  approval_required: Generated<number>;
   cancelled_at: number | null;
   claim_epoch: Generated<number>;
   claimed_by: string | null;
@@ -836,6 +838,10 @@ export interface GovernorMemories {
   supersedes_id: string | null;
   tombstoned_at: number | null;
   updated_at: number;
+  verified_evidence_digest: string | null;
+  verified_evidence_id: string | null;
+  verified_evidence_semantic_digest: string | null;
+  verified_evidence_task_id: string | null;
 }
 
 export interface GovernorMemoryRemediations {

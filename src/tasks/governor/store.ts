@@ -15,6 +15,7 @@ import {
 import type { GovernorActionIntent } from "./action-intent.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
 import { governorDigest } from "./canonical-json.js";
+import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { bindGovernorCheckpoint, GovernorCheckpointStore } from "./checkpoint-store.js";
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
 import type { GovernorEventRecord } from "./events.js";
@@ -67,6 +68,7 @@ export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly identity: GovernorIdentityContext;
   readonly actionIntents: GovernorActionIntentStore;
+  readonly capabilities: GovernorCapabilityRegistry;
   readonly #approvals: GovernorApprovalGrantStore;
   readonly #deliveryCertifications: GovernorDeliveryCertificationStore;
   readonly checkpoints: GovernorCheckpointStore;
@@ -82,6 +84,7 @@ export class GovernorSqliteStore {
     this.#evidenceAdmissions = dependencies.evidenceAdmissions;
     this.#queries = dependencies.queries;
     this.actionIntents = dependencies.actionIntents;
+    this.capabilities = dependencies.capabilities;
     this.#approvals = dependencies.approvals;
     this.#deliveryCertifications = dependencies.deliveryCertifications;
     this.checkpoints = dependencies.checkpoints;
@@ -112,6 +115,17 @@ export class GovernorSqliteStore {
 
   verifyCertifiedDeliveryReceipt(receipt: HostDeliveryReceipt) {
     return this.#deliveryCertifications.verifyReceipt(receipt);
+  }
+
+  #assertActionIntentPolicy(task: GovernorTaskProjection, intent: GovernorActionIntent): void {
+    this.capabilities.assertPersistedIntentAuthorized(task, intent.proposal, this.identity);
+    const policy = this.capabilities.approvalPolicy(intent.proposal);
+    if (
+      intent.approvalRequired !== policy.required ||
+      intent.approvalPolicyDigest !== policy.digest
+    ) {
+      throw new Error(`Governor action intent approval policy mismatch ${intent.effectId}`);
+    }
   }
 
   /** Host integrations pass only a broker-issued opaque approval receipt. */
@@ -208,6 +222,7 @@ export class GovernorSqliteStore {
       }
       executeSqliteQuerySync(db, dbx.insertInto("governor_events").values(bindEvent(params.event)));
       for (const intent of params.actionIntents ?? []) {
+        this.#assertActionIntentPolicy(params.next, intent);
         executeSqliteQuerySync(
           db,
           dbx
@@ -217,6 +232,7 @@ export class GovernorSqliteStore {
         );
       }
       for (const intentUpdate of params.actionIntentUpdates ?? []) {
+        this.#assertActionIntentPolicy(params.next, intentUpdate.next);
         if (
           intentUpdate.current.taskId !== params.current.taskId ||
           intentUpdate.next.taskId !== intentUpdate.current.taskId ||

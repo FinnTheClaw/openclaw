@@ -16,12 +16,11 @@ import {
 } from "./governor-host-secrets.js";
 
 const mocks = vi.hoisted(() => ({
-  sendMessage: vi.fn(),
+  sendText: vi.fn(),
   resolveOutboundTarget: vi.fn(),
   resolveOutboundChannelPlugin: vi.fn(),
 }));
 
-vi.mock("../infra/outbound/message.js", () => ({ sendMessage: mocks.sendMessage }));
 vi.mock("../infra/outbound/targets.js", () => ({
   resolveOutboundTarget: mocks.resolveOutboundTarget,
 }));
@@ -70,6 +69,7 @@ describe("compiled governor channel delivery", () => {
       }),
     );
     mocks.resolveOutboundChannelPlugin.mockReturnValue({
+      outbound: { deliveryMode: "direct", sendText: mocks.sendText },
       config: {
         listAccountIds: () => ["default"],
         resolveAccount: () => ({}),
@@ -83,24 +83,15 @@ describe("compiled governor channel delivery", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-channel-send-" },
       async (state) => {
-        mocks.sendMessage
+        mocks.sendText
           .mockResolvedValueOnce({
             channel: "signal",
-            to: "fixture-signal-target",
-            via: "direct",
-            mediaUrl: null,
-            result: {
-              channel: "signal",
-              messageId: "signal-message-fixture",
-              timestamp: 1700000000000,
-            },
+            messageId: "signal-message-fixture",
+            timestamp: 1700000000000,
           })
           .mockResolvedValueOnce({
             channel: "imessage",
-            to: "fixture@example.invalid",
-            via: "direct",
-            mediaUrl: null,
-            result: { channel: "imessage", messageId: "imessage-message-fixture" },
+            messageId: "imessage-message-fixture",
           });
         const { cfg, deliveryRuntime } = runtime(state.stateDir);
         const signal = createHostDeliveryImplementation({
@@ -125,24 +116,22 @@ describe("compiled governor channel delivery", () => {
         await expect(
           imessage.send({ deliveryKey: "b".repeat(64), payload: completionPayload("imessage") }),
         ).resolves.toMatchObject({ status: "sent" });
-        expect(mocks.sendMessage).toHaveBeenNthCalledWith(
+        expect(mocks.sendText).toHaveBeenNthCalledWith(
           1,
           expect.objectContaining({
-            channel: "signal",
             to: "10000000-0000-4000-8000-000000000001",
-            content: "signal",
+            text: "signal",
             accountId: "default",
-            idempotencyKey: "a".repeat(64),
+            deliveryQueueId: "a".repeat(64),
           }),
         );
-        expect(mocks.sendMessage).toHaveBeenNthCalledWith(
+        expect(mocks.sendText).toHaveBeenNthCalledWith(
           2,
           expect.objectContaining({
-            channel: "imessage",
             to: "fixture@example.invalid",
-            content: "imessage",
+            text: "imessage",
             accountId: "default",
-            idempotencyKey: "b".repeat(64),
+            deliveryQueueId: "b".repeat(64),
           }),
         );
         cfg.channels!.signal!.enabled = false;
@@ -151,17 +140,61 @@ describe("compiled governor channel delivery", () => {
     );
   });
 
+  it("keeps the certified sender bound when the runtime plugin is replaced", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-governor-channel-plugin-swap-" },
+      async (state) => {
+        const originalSend = vi.fn(async () => ({
+          channel: "signal",
+          messageId: "bound-original",
+        }));
+        const replacementSend = vi.fn(async () => ({
+          channel: "signal",
+          messageId: "mutable-replacement",
+        }));
+        const plugin = {
+          outbound: { deliveryMode: "direct" as const, sendText: originalSend },
+          config: {
+            listAccountIds: () => ["default"],
+            resolveAccount: () => ({}),
+            isEnabled: () => true,
+            isConfigured: () => true,
+          },
+        };
+        mocks.resolveOutboundChannelPlugin.mockReturnValue(plugin);
+        const { deliveryRuntime } = runtime(state.stateDir);
+        const signal = createHostDeliveryImplementation({
+          implementationId: GOVERNOR_SIGNAL_IMPLEMENTATION_ID,
+          config: {
+            accountId: "default",
+            target: "uuid:10000000-0000-4000-8000-000000000099",
+            mode: "active",
+          },
+          mode: "test",
+          runtime: deliveryRuntime,
+        });
+        plugin.outbound.sendText = replacementSend;
+        mocks.resolveOutboundChannelPlugin.mockReturnValue({
+          ...plugin,
+          outbound: { ...plugin.outbound, sendText: replacementSend },
+        });
+        await expect(
+          signal.send({ deliveryKey: "9".repeat(64), payload: completionPayload("bound") }),
+        ).resolves.toMatchObject({ status: "sent" });
+        expect(originalSend).toHaveBeenCalledOnce();
+        expect(replacementSend).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   it("classifies missing provider IDs and thrown sends as unknown without retrying", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-channel-unknown-" },
       async (state) => {
-        mocks.sendMessage
+        mocks.sendText
           .mockResolvedValueOnce({
             channel: "signal",
-            to: "fixture-signal-target",
-            via: "direct",
-            mediaUrl: null,
-            result: { channel: "signal", messageId: "unknown" },
+            messageId: "unknown",
           })
           .mockRejectedValueOnce(new Error("synthetic timeout"));
         const { deliveryRuntime } = runtime(state.stateDir);
@@ -187,7 +220,7 @@ describe("compiled governor channel delivery", () => {
         await expect(
           imessage.send({ deliveryKey: "d".repeat(64), payload: completionPayload("two") }),
         ).resolves.toMatchObject({ status: "unknown", reconcileSupported: false });
-        expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
+        expect(mocks.sendText).toHaveBeenCalledTimes(2);
       },
     );
   });
@@ -198,6 +231,7 @@ describe("compiled governor channel delivery", () => {
       async (state) => {
         const { deliveryRuntime } = runtime(state.stateDir);
         mocks.resolveOutboundChannelPlugin.mockReturnValueOnce({
+          outbound: { deliveryMode: "direct", sendText: mocks.sendText },
           config: {
             listAccountIds: () => ["different-account"],
             resolveAccount: () => ({}),
@@ -228,7 +262,7 @@ describe("compiled governor channel delivery", () => {
             runtime: deliveryRuntime,
           }),
         ).toThrow(/target is invalid/u);
-        expect(mocks.sendMessage).not.toHaveBeenCalled();
+        expect(mocks.sendText).not.toHaveBeenCalled();
       },
     );
   });

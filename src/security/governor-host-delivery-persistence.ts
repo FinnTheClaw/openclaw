@@ -199,11 +199,22 @@ export function createGovernorHostDeliveryPersistence(params: {
     deliveryHighWater: (identityKey) => ledger.state("delivery", identityKey),
     certifyDelivery: (input) =>
       runOpenClawStateWriteTransaction(({ db }) => {
-        if (hasStartedEffect(db, input.identityKey)) {
-          throw new Error("Governor delivery certification is blocked by an in-flight effect");
-        }
         const current = ledger.state("delivery", input.identityKey);
         const bindingDigest = deliveryBinding({ ...input, status: "certified" });
+        if (hasStartedEffect(db, input.identityKey)) {
+          // Restart reconstruction is allowed only for the byte-identical
+          // certified binding. It exposes reconciliation but never resets or
+          // resends an effect_started delivery.
+          if (
+            current?.generation === input.generation &&
+            current.status === "certified" &&
+            current.bindingDigest === bindingDigest &&
+            primaryBindingMatches(db, input, "certified")
+          ) {
+            return current;
+          }
+          throw new Error("Governor delivery certification is blocked by an in-flight effect");
+        }
         if (
           current &&
           (input.generation < current.generation ||

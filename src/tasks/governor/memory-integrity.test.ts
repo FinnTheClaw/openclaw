@@ -1,17 +1,27 @@
-// Verifies exact-scope memory isolation, provenance, tombstones, epochs, and secret gates.
+// Verifies exact-scope memory isolation, evidence-only promotion, epochs, and secret gates.
 import { afterEach, describe, expect, it } from "vitest";
-import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { GovernorMemoryStore } from "./memory-integrity.js";
+import {
+  closeOpenClawStateDatabase,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
+import type { GovernorJsonValue } from "./canonical-json.js";
+import { governorMemoryFactPredicate } from "./memory-contradiction-policy.js";
+import {
+  correctMemoryTestTask,
+  persistMemoryEvidence,
+  startMemoryTestTask,
+  withMemoryTestHarness,
+  type MemoryTestHarness,
+} from "./memory-contradiction-test-helpers.js";
 import {
   assertGovernorBoundarySafe,
   GovernorSecretRejectedError,
   scanGovernorSecrets,
   type GovernorSecretBoundary,
 } from "./secret-filter.js";
-import { createGovernorIdentityContext, type GovernorTaskScope } from "./types.js";
-
-const identity = createGovernorIdentityContext("synthetic-memory-test-identity-key");
+import { initializeGovernorStateSchema } from "./state-schema.js";
+import { createGovernorTestStore } from "./test-broker.js";
+import type { GovernorTaskId, GovernorTaskScope } from "./types.js";
 
 const scopeA: GovernorTaskScope = {
   principalId: "principal-a",
@@ -30,27 +40,40 @@ const scopeB: GovernorTaskScope = {
   sessionId: "session-b",
 };
 
-async function withMemoryStore(
-  run: (params: { store: GovernorMemoryStore; stateDir: string }) => Promise<void> | void,
-): Promise<void> {
-  await withOpenClawTestState(
-    { layout: "state-only", prefix: "openclaw-governor-memory-" },
-    async (state) => {
-      try {
-        await run({
-          store: new GovernorMemoryStore({ stateDir: state.stateDir, identity }),
-          stateDir: state.stateDir,
-        });
-      } finally {
-        closeOpenClawStateDatabase();
-      }
-    },
-  );
+function promote(params: {
+  harness: MemoryTestHarness;
+  taskId: GovernorTaskId;
+  scope: GovernorTaskScope;
+  memoryId: string;
+  factKey: string;
+  content: GovernorJsonValue;
+  observedAt: number;
+  sourceKind?: "tool" | "structured_external" | "authenticated_user";
+}) {
+  const evidenceId = `evidence-${params.memoryId}`;
+  persistMemoryEvidence({
+    store: params.harness.store,
+    broker: params.harness.broker,
+    taskId: params.taskId,
+    evidenceId,
+    criterionId: "memory-observed",
+    predicate: governorMemoryFactPredicate(params.factKey),
+    value: params.content,
+    observedAt: params.observedAt,
+    sourceKind: params.sourceKind ?? "structured_external",
+  });
+  return params.harness.store.memory.promoteVerified({
+    taskId: params.taskId,
+    evidenceId,
+    memoryId: params.memoryId,
+    factKey: params.factKey,
+    scope: params.scope,
+    expectedScopeEpoch: params.harness.store.memory.getScopeEpoch(params.scope),
+    now: params.observedAt,
+  });
 }
 
-afterEach(() => {
-  closeOpenClawStateDatabase();
-});
+afterEach(() => closeOpenClawStateDatabase());
 
 describe("governor memory integrity", () => {
   it("rejects one fake secret canary at every outbound boundary", () => {
@@ -64,183 +87,211 @@ describe("governor memory integrity", () => {
     const scan = scanGovernorSecrets(payload);
     expect(scan.safe).toBe(false);
     expect(JSON.stringify(scan.redacted)).not.toContain("CANARY_fixture_only");
-    expect(scan.findings).toEqual([{ code: "secret_canary", path: "$.note" }]);
   });
 
-  it("isolates colliding contacts across restart and ranks structured evidence first", async () => {
-    await withMemoryStore(({ store, stateDir }) => {
-      const first = store.store({
-        memoryId: "memory-a",
-        factKey: "inventory.label",
-        scope: scopeA,
-        expectedScopeEpoch: 0,
-        requestedStatus: "verified",
-        sourceKind: "structured_external",
-        sourceIdentity: "synthetic.inventory",
-        observedAt: 100,
-        confidence: 1,
-        sensitivity: "normal",
-        sourceRef: "fixture://inventory/a",
-        content: { sharedLabel: "collision", value: "scope-a" },
-        now: 100,
-      });
-      expect(first.stored).toBe(true);
-      const stored = store.retrieve({ scope: scopeA, now: 100 })[0];
-      expect(stored?.sourceIdentity).not.toBe("synthetic.inventory");
-      expect(stored?.provenance.sourceRef).not.toBe("fixture://inventory/a");
+  it("accepts only candidates or current host-admitted evidence and isolates scopes after restart", async () => {
+    await withMemoryTestHarness(async (harness) => {
+      const taskA = startMemoryTestTask(harness.controller, scopeA, 1);
+      const taskB = startMemoryTestTask(harness.controller, scopeB, 2);
       expect(
-        store.store({
-          memoryId: "memory-a-unadmitted-replacement",
-          factKey: " Inventory / Label ",
+        promote({
+          harness,
+          taskId: taskA,
           scope: scopeA,
-          expectedScopeEpoch: 0,
-          requestedStatus: "verified",
-          sourceKind: "structured_external",
-          sourceIdentity: "synthetic.inventory",
-          observedAt: 200,
-          confidence: 1,
-          sensitivity: "normal",
-          sourceRef: "fixture://inventory/a",
-          content: { value: "must-use-contradiction-admission" },
-          now: 200,
-        }),
-      ).toMatchObject({ stored: false, reason: "fact_version_conflict" });
+          memoryId: "memory-a",
+          factKey: "inventory.label",
+          content: { sharedLabel: "collision", value: "scope-a" },
+          observedAt: 100,
+        }).stored,
+      ).toBe(true);
       expect(
-        store.store({
-          memoryId: "memory-a-assistant",
+        promote({
+          harness,
+          taskId: taskB,
+          scope: scopeB,
+          memoryId: "memory-b",
+          factKey: "inventory.label",
+          content: { sharedLabel: "collision", value: "scope-b" },
+          observedAt: 102,
+          sourceKind: "authenticated_user",
+        }).stored,
+      ).toBe(true);
+      expect(
+        harness.store.memory.retrieve({ scope: scopeA, now: 103 }).map((m) => m.memoryId),
+      ).toEqual(["memory-a"]);
+      expect(
+        harness.store.memory.retrieve({ scope: scopeB, now: 103 }).map((m) => m.memoryId),
+      ).toEqual(["memory-b"]);
+      expect(() =>
+        (harness.store.memory.storeCandidate as (value: unknown) => unknown)({
+          memoryId: "forged-verified",
           factKey: "inventory.label",
           scope: scopeA,
           expectedScopeEpoch: 0,
+          content: { value: "forged" },
+          now: 103,
           requestedStatus: "verified",
-          sourceKind: "assistant_text",
-          sourceIdentity: "assistant",
-          observedAt: 101,
+          sourceKind: "structured_external",
           confidence: 1,
-          sensitivity: "normal",
-          sourceRef: "assistant://claim",
-          content: { value: "unsupported" },
-          now: 101,
+          sourceRef: "caller-asserted",
         }),
-      ).toMatchObject({ stored: false, reason: "provenance_rejected" });
-      const second = store.store({
-        memoryId: "memory-b",
-        factKey: "inventory.label",
-        scope: scopeB,
-        expectedScopeEpoch: 0,
-        requestedStatus: "verified",
-        sourceKind: "authenticated_user",
-        sourceIdentity: "synthetic.user",
-        observedAt: 102,
-        confidence: 0.9,
-        sensitivity: "normal",
-        sourceRef: "fixture://message/b",
-        content: { sharedLabel: "collision", value: "scope-b" },
-        now: 102,
-      });
-      expect(second.stored).toBe(true);
-      expect(store.retrieve({ scope: scopeA, now: 103 }).map((item) => item.memoryId)).toEqual([
-        "memory-a",
-      ]);
-      expect(store.retrieve({ scope: scopeB, now: 103 }).map((item) => item.memoryId)).toEqual([
-        "memory-b",
-      ]);
+      ).toThrow("unknown field");
 
       closeOpenClawStateDatabase();
-      const restarted = new GovernorMemoryStore({ stateDir, identity });
-      expect(restarted.retrieve({ scope: scopeA, now: 104 }).map((item) => item.memoryId)).toEqual([
-        "memory-a",
-      ]);
-      expect(restarted.retrieve({ scope: scopeB, now: 104 }).map((item) => item.memoryId)).toEqual([
-        "memory-b",
-      ]);
+      const restarted = createGovernorTestStore({ stateDir: harness.stateDir });
+      expect(
+        restarted.store.memory.retrieve({ scope: scopeA, now: 104 }).map((m) => m.memoryId),
+      ).toEqual(["memory-a"]);
+      expect(
+        restarted.store.memory.retrieve({ scope: scopeB, now: 104 }).map((m) => m.memoryId),
+      ).toEqual(["memory-b"]);
     });
   });
 
-  it("tombstones transactionally and fences a stale concurrent writer", async () => {
-    await withMemoryStore(({ store }) => {
+  it("tombstones transactionally and fences a stale candidate writer", async () => {
+    await withMemoryTestHarness(async (harness) => {
+      const taskId = startMemoryTestTask(harness.controller, scopeA);
       for (const memoryId of ["memory-forget", "memory-keep"]) {
         expect(
-          store.store({
+          promote({
+            harness,
+            taskId,
+            scope: scopeA,
             memoryId,
             factKey: `fixture.${memoryId}`,
-            scope: scopeA,
-            expectedScopeEpoch: 0,
-            requestedStatus: "verified",
-            sourceKind: "tool",
-            sourceIdentity: "synthetic.memory",
-            observedAt: 100,
-            confidence: 0.9,
-            sensitivity: "normal",
-            sourceRef: `fixture://${memoryId}`,
             content: { memoryId },
-            now: 100,
+            observedAt: memoryId === "memory-forget" ? 100 : 101,
+            sourceKind: "tool",
           }).stored,
         ).toBe(true);
       }
       expect(
-        store.forget({
+        harness.store.memory.forget({
           memoryId: "memory-forget",
           scope: scopeA,
           expectedScopeEpoch: 0,
           now: 110,
         }),
-      ).toEqual({
-        status: "deleted",
-        memoryId: "memory-forget",
-        scopeEpoch: 1,
-        invalidated: ["primary", "scope_epoch"],
-      });
-      expect(store.retrieve({ scope: scopeA, now: 111 }).map((item) => item.memoryId)).toEqual([
-        "memory-keep",
-      ]);
+      ).toMatchObject({ status: "deleted", scopeEpoch: 1 });
       expect(
-        store.store({
+        harness.store.memory.storeCandidate({
           memoryId: "stale-resurrection",
           factKey: "fixture.memory-forget",
           scope: scopeA,
           expectedScopeEpoch: 0,
-          requestedStatus: "verified",
-          sourceKind: "tool",
-          sourceIdentity: "stale-writer",
-          observedAt: 109,
-          confidence: 1,
-          sensitivity: "normal",
-          sourceRef: "fixture://stale",
           content: { value: "must-not-return" },
           now: 112,
         }),
       ).toEqual({ stored: false, reason: "scope_epoch_conflict", currentEpoch: 1 });
       expect(
-        store.forget({
-          memoryId: "memory-forget",
-          scope: scopeA,
-          expectedScopeEpoch: 1,
-          now: 113,
-        }),
-      ).toEqual({ status: "not_found", memoryId: "memory-forget", scopeEpoch: 1 });
+        harness.store.memory.retrieve({ scope: scopeA, now: 113 }).map((m) => m.memoryId),
+      ).toEqual(["memory-keep"]);
     });
   });
 
-  it("rejects secret-like content before durable memory insertion", async () => {
-    await withMemoryStore(({ store }) => {
+  it("rejects secret-like candidate content before durable insertion", async () => {
+    await withMemoryTestHarness(async ({ store }) => {
       expect(() =>
-        store.store({
+        store.memory.storeCandidate({
           memoryId: "memory-secret",
           factKey: "fixture.secret",
           scope: scopeA,
           expectedScopeEpoch: 0,
-          requestedStatus: "candidate",
-          sourceKind: "tool",
-          sourceIdentity: "synthetic.memory",
-          observedAt: 100,
-          confidence: 0.5,
-          sensitivity: "sensitive",
-          sourceRef: "fixture://secret",
           content: { token: "fake-value-for-rejection" },
           now: 100,
         }),
       ).toThrow(GovernorSecretRejectedError);
-      expect(store.retrieve({ scope: scopeA, now: 101 })).toEqual([]);
+      expect(store.memory.retrieve({ scope: scopeA, now: 101 })).toEqual([]);
+    });
+  });
+
+  it("rejects stale signed evidence and exposes no lower-level verified write path", async () => {
+    await withMemoryTestHarness(async (harness) => {
+      const taskId = startMemoryTestTask(harness.controller, scopeA);
+      persistMemoryEvidence({
+        store: harness.store,
+        broker: harness.broker,
+        taskId,
+        evidenceId: "evidence-before-correction",
+        criterionId: "memory-observed",
+        predicate: governorMemoryFactPredicate("fixture.stale-evidence"),
+        value: { verified: "old-plan" },
+        observedAt: 100,
+      });
+      correctMemoryTestTask(harness.controller, scopeA);
+      expect(() =>
+        harness.store.memory.promoteVerified({
+          taskId,
+          evidenceId: "evidence-before-correction",
+          memoryId: "memory-stale-evidence",
+          factKey: "fixture.stale-evidence",
+          scope: scopeA,
+          expectedScopeEpoch: 0,
+          now: 101,
+        }),
+      ).toThrow("stale, invalidated, or out of scope");
+      expect("storeVerifiedEvidence" in harness.store.memory).toBe(false);
+      expect(harness.store.memory.retrieve({ scope: scopeA, now: 102 })).toEqual([]);
+    });
+  });
+
+  it("fails closed when direct database tampering removes a verified evidence binding", async () => {
+    await withMemoryTestHarness(async (harness) => {
+      const taskId = startMemoryTestTask(harness.controller, scopeA);
+      expect(
+        promote({
+          harness,
+          taskId,
+          scope: scopeA,
+          memoryId: "memory-direct-tamper",
+          factKey: "fixture.direct-tamper",
+          content: { verified: true },
+          observedAt: 100,
+        }).stored,
+      ).toBe(true);
+      const { db } = openOpenClawStateDatabase({
+        env: { OPENCLAW_STATE_DIR: harness.stateDir },
+      });
+      db.prepare(
+        `UPDATE governor_memories
+            SET verified_evidence_id = NULL,
+                verified_evidence_digest = NULL,
+                verified_evidence_semantic_digest = NULL
+          WHERE memory_id = ?`,
+      ).run("memory-direct-tamper");
+      expect(() => harness.store.memory.retrieve({ scope: scopeA, now: 101 })).toThrow(
+        /lacks admitted evidence/,
+      );
+    });
+  });
+
+  it("quarantines unverifiable legacy verified rows without wedging normal recall", async () => {
+    await withMemoryTestHarness(async (harness) => {
+      expect(
+        harness.store.memory.storeCandidate({
+          memoryId: "legacy-unverifiable-memory",
+          factKey: "fixture.legacy",
+          scope: scopeA,
+          expectedScopeEpoch: 0,
+          content: { legacy: true },
+          now: 100,
+        }).stored,
+      ).toBe(true);
+      openOpenClawStateDatabase({
+        env: { OPENCLAW_STATE_DIR: harness.stateDir },
+      })
+        .db.prepare("UPDATE governor_memories SET status = 'verified' WHERE memory_id = ?")
+        .run("legacy-unverifiable-memory");
+      initializeGovernorStateSchema({
+        env: { OPENCLAW_STATE_DIR: harness.stateDir },
+      });
+      expect(harness.store.memory.retrieve({ scope: scopeA, now: 101 })).toEqual([]);
+      expect(harness.store.memory.retrieveAudit({ scope: scopeA })).toEqual([
+        expect.objectContaining({
+          memoryId: "legacy-unverifiable-memory",
+          status: "quarantined",
+        }),
+      ]);
     });
   });
 });

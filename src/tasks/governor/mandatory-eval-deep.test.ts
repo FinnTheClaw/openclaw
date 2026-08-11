@@ -4,7 +4,6 @@ import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
-import { GovernorSqliteStore } from "./store.js";
 import { createGovernorTestStore, recordGovernorTestToolOutcome } from "./test-broker.js";
 import { createGovernorEffectId, type GovernorPlan, type GovernorTaskScope } from "./types.js";
 
@@ -36,20 +35,17 @@ function contract(objective: string) {
   };
 }
 
-function controller(store: GovernorSqliteStore): GovernorController {
-  return new GovernorController(
-    store,
-    new GovernorCapabilityRegistry([
-      {
-        capability: "synthetic.inspect",
-        version: "1",
-        sourceRank: "structured_exact",
-        mutating: false,
-        canonicalTargetPrefixes: ["fixture://"],
-        requiresApproval: false,
-      },
-    ]),
-  );
+function deepCapabilities(): GovernorCapabilityRegistry {
+  return new GovernorCapabilityRegistry([
+    {
+      capability: "synthetic.inspect",
+      version: "1",
+      sourceRank: "structured_exact",
+      mutating: false,
+      canonicalTargetPrefixes: ["fixture://"],
+      requiresApproval: false,
+    },
+  ]);
 }
 
 function recordEvidence(
@@ -94,8 +90,12 @@ describe("governor deep mandatory replay", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-deep-eval-" },
       async (state) => {
-        const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
-        const governed = controller(store);
+        const capabilities = deepCapabilities();
+        const { store, broker } = createGovernorTestStore({
+          stateDir: state.stateDir,
+          capabilities,
+        });
+        const governed = new GovernorController(store, capabilities);
         try {
           const taskId = governed.ingest({
             sourceMessageId: "deep-message-1",

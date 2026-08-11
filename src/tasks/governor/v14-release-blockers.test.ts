@@ -10,7 +10,6 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
 import { GovernorRuntimeAdapter } from "./runtime-adapter.js";
 import { GovernorSqliteStore } from "./store.js";
@@ -60,7 +59,7 @@ describe("governor V14 release blockers", () => {
       { layout: "state-only", prefix: "governor-v14-terminal-order-" },
       async (state) => {
         const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, new GovernorCapabilityRegistry([]));
+        const controller = new GovernorController(store, store.capabilities);
         const newest = controller.ingest({
           sourceMessageId: "sequence-ten-message",
           sourceSequence: 10,
@@ -105,7 +104,7 @@ describe("governor V14 release blockers", () => {
       { layout: "state-only", prefix: "governor-v14-independent-order-" },
       async (state) => {
         const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, new GovernorCapabilityRegistry([]));
+        const controller = new GovernorController(store, store.capabilities);
         const first = controller.ingest({
           sourceMessageId: "source-alpha-message-ten",
           sourceSequence: 10,
@@ -140,7 +139,7 @@ describe("governor V14 release blockers", () => {
       { layout: "state-only", prefix: "governor-v14-deleted-task-order-" },
       async (state) => {
         const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, new GovernorCapabilityRegistry([]));
+        const controller = new GovernorController(store, store.capabilities);
         const accepted = controller.ingest({
           sourceMessageId: "deleted-task-sequence-ten",
           sourceSequence: 10,
@@ -179,10 +178,7 @@ describe("governor V14 release blockers", () => {
       { layout: "state-only", prefix: "governor-v14-owner-ingest-crash-" },
       async (state) => {
         const first = createGovernorTestStore({ stateDir: state.stateDir });
-        const firstController = new GovernorController(
-          first.store,
-          new GovernorCapabilityRegistry([]),
-        );
+        const firstController = new GovernorController(first.store, first.store.capabilities);
         const receiptId = first.broker.capabilities.submitAuthenticatedOwnerIngress({
           channel: "signal",
           accountId: "crash-account-fixture",
@@ -222,7 +218,7 @@ describe("governor V14 release blockers", () => {
         const restarted = createGovernorTestStore({ stateDir: state.stateDir });
         const restartedController = new GovernorController(
           restarted.store,
-          new GovernorCapabilityRegistry([]),
+          restarted.store.capabilities,
         );
         const adapter = new GovernorRuntimeAdapter(
           restartedController,
@@ -259,7 +255,7 @@ describe("governor V14 release blockers", () => {
       { layout: "state-only", prefix: "governor-v14-pre-admission-revoke-" },
       async (state) => {
         const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, new GovernorCapabilityRegistry([]));
+        const controller = new GovernorController(store, store.capabilities);
         const task = controller.ingest({
           sourceMessageId: "approval-task-message",
           sourceSequence: 1,
@@ -332,7 +328,7 @@ describe("governor V14 release blockers", () => {
           deliveryResolver: broker.deliveryResolver,
           secrets,
         });
-        const controller = new GovernorController(store, new GovernorCapabilityRegistry([]));
+        const controller = new GovernorController(store, store.capabilities);
         const task = controller.ingest({
           sourceMessageId: "approval-crash-task-message",
           sourceSequence: 1,

@@ -22,6 +22,8 @@ describe("governor memory remediation runtime", () => {
       const taskId = startMemoryTestTask(controller, memoryScopeA);
       seedMemoryFact({
         store,
+        broker,
+        taskId,
         scope: memoryScopeA,
         memoryId: "memory-repair-old",
         factKey: "ssh.path",
@@ -110,6 +112,8 @@ describe("governor memory remediation runtime", () => {
       const taskId = startMemoryTestTask(controller, memoryScopeA);
       seedMemoryFact({
         store,
+        broker,
+        taskId,
         scope: memoryScopeA,
         memoryId: "memory-blocked-old",
         factKey: "ssh.path",
@@ -166,6 +170,8 @@ describe("governor memory remediation runtime", () => {
 
       seedMemoryFact({
         store,
+        broker,
+        taskId,
         scope: memoryScopeA,
         memoryId: "memory-failed-old",
         factKey: "api.endpoint",

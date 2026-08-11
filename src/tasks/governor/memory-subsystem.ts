@@ -1,5 +1,6 @@
 // Joins scoped memory records to store-verified contradiction and repair evidence.
 import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
+import { loadCurrentGovernorEvidence } from "./current-evidence.js";
 import { normalizeGovernorFactKey } from "./memory-contradiction-policy.js";
 import { GovernorMemoryContradictionStore } from "./memory-contradiction-store.js";
 import { GovernorMemoryStore, type GovernorMemoryRecord } from "./memory-integrity.js";
@@ -26,7 +27,12 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     evidenceAdmissions: GovernorEvidenceAdmissionStore;
     queries: GovernorStoreQueries;
   }) {
-    super({ options: params.options, identity: params.identity });
+    super({
+      options: params.options,
+      identity: params.identity,
+      evidenceAdmissions: params.evidenceAdmissions,
+      queries: params.queries,
+    });
     this.#identity = params.identity;
     this.#evidenceAdmissions = params.evidenceAdmissions;
     this.#queries = params.queries;
@@ -37,22 +43,12 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
   }
 
   #verifiedEvidence(taskId: GovernorTaskId, evidenceId: string) {
-    const evidence = this.#queries.loadEvidence(taskId, evidenceId);
-    if (!evidence) {
-      throw new Error(`Governor memory evidence not found: ${evidenceId}`);
-    }
-    const task = this.#queries.loadTask(taskId);
-    if (
-      !task ||
-      evidence.invalidatedAt !== undefined ||
-      evidence.scopeKey !== task.scopeKey ||
-      evidence.objectiveRevision !== task.objectiveRevision ||
-      evidence.planVersion !== task.planVersion ||
-      evidence.taskVersion > task.taskVersion
-    ) {
-      throw new Error("Governor memory evidence is stale, invalidated, or out of scope");
-    }
-    return this.#evidenceAdmissions.verifyForUse(evidence);
+    return loadCurrentGovernorEvidence({
+      admissions: this.#evidenceAdmissions,
+      queries: this.#queries,
+      taskId,
+      evidenceId,
+    });
   }
 
   resolveContradiction(params: {
@@ -64,9 +60,10 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     now: number;
   }) {
     return this.#contradictions.resolve({
+      taskId: params.taskId,
+      evidenceId: params.evidenceId,
       staleMemoryId: params.staleMemoryId,
       contradictionClass: params.contradictionClass,
-      verifiedEvidence: this.#verifiedEvidence(params.taskId, params.evidenceId),
       ...(params.freshnessExpiresAt === undefined
         ? {}
         : { freshnessExpiresAt: params.freshnessExpiresAt }),
@@ -110,7 +107,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       requestedScopeKey,
       ...(params.taskId && params.evidenceId
         ? {
-            evidence: this.#verifiedEvidence(params.taskId, params.evidenceId).evidence,
+            evidence: this.#verifiedEvidence(params.taskId, params.evidenceId),
           }
         : {}),
       ...(params.operatorRequested === undefined
@@ -140,8 +137,9 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     now: number;
   }): GovernorMemoryRemediation | null {
     return this.#contradictions.verifyRepair({
+      taskId: params.taskId,
+      evidenceId: params.evidenceId,
       fingerprint: params.fingerprint,
-      verifiedEvidence: this.#verifiedEvidence(params.taskId, params.evidenceId),
       now: params.now,
     });
   }

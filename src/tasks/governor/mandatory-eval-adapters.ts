@@ -7,8 +7,9 @@ export class ObservedMutationAdapter {
   readonly observableEffects: string[] = [];
   apply(idempotencyKey: string): void {
     this.attempts.push(idempotencyKey);
-    if (!this.observableEffects.includes(idempotencyKey))
+    if (!this.observableEffects.includes(idempotencyKey)) {
       this.observableEffects.push(idempotencyKey);
+    }
   }
 }
 
@@ -18,8 +19,9 @@ export class ObservedDeliveryAdapter implements GovernorDeliveryAdapter {
   readonly observableSends: string[] = [];
   async send(params: { deliveryKey: string; payload: unknown }) {
     this.attempts.push(params.deliveryKey);
-    if (!this.observableSends.includes(params.deliveryKey))
+    if (!this.observableSends.includes(params.deliveryKey)) {
       this.observableSends.push(params.deliveryKey);
+    }
     return { deliveryKey: params.deliveryKey, receipt: { provider: "synthetic-eval" } };
   }
 }

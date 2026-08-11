@@ -84,10 +84,14 @@ async function withGovernor(
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-" },
     async (state) => {
-      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
+      const registry = capabilities();
+      const { store, broker } = createGovernorTestStore({
+        stateDir: state.stateDir,
+        capabilities: registry,
+      });
       try {
         await run({
-          controller: new GovernorController(store, capabilities()),
+          controller: new GovernorController(store, registry),
           broker,
           store,
           stateDir: state.stateDir,
@@ -277,10 +281,12 @@ describe("durable behavior governor", () => {
       });
 
       closeOpenClawStateDatabase();
+      const registry = capabilities();
       const { store: restartedStore, broker: restartedBroker } = createGovernorTestStore({
         stateDir,
+        capabilities: registry,
       });
-      const restarted = new GovernorController(restartedStore, capabilities());
+      const restarted = new GovernorController(restartedStore, registry);
       expect(restartedStore.loadTask(taskId)).toMatchObject({ state: "COMPLETED" });
       expect(restartedStore.outbox.list(taskId)).toHaveLength(1);
 

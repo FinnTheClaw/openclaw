@@ -31,6 +31,23 @@ export function loadGovernorTask(
   return row ? parseTaskRow(row) : null;
 }
 
+export function loadGovernorEvidence(
+  db: DatabaseSync,
+  taskId: GovernorTaskId,
+  evidenceId: string,
+  verifyEvidence: (evidence: GovernorEvidenceRecord) => void,
+): GovernorEvidenceRecord | null {
+  const row = executeSqliteQueryTakeFirstSync(
+    db,
+    governorDb(db)
+      .selectFrom("governor_evidence")
+      .selectAll()
+      .where("task_id", "=", taskId)
+      .where("evidence_id", "=", evidenceId),
+  );
+  return row ? parseEvidenceRow(row, verifyEvidence) : null;
+}
+
 export class GovernorStoreQueries {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly #verifyEvidence: (evidence: GovernorEvidenceRecord) => void;
@@ -100,16 +117,12 @@ export class GovernorStoreQueries {
   }
 
   loadEvidence(taskId: GovernorTaskId, evidenceId: string): GovernorEvidenceRecord | null {
-    const { db } = openOpenClawStateDatabase(this.#options);
-    const row = executeSqliteQueryTakeFirstSync(
-      db,
-      governorDb(db)
-        .selectFrom("governor_evidence")
-        .selectAll()
-        .where("task_id", "=", taskId)
-        .where("evidence_id", "=", evidenceId),
+    return loadGovernorEvidence(
+      openOpenClawStateDatabase(this.#options).db,
+      taskId,
+      evidenceId,
+      this.#verifyEvidence,
     );
-    return row ? parseEvidenceRow(row, this.#verifyEvidence) : null;
   }
 
   listUnfinishedFanoutJobIds(task: GovernorTaskProjection): string[] {

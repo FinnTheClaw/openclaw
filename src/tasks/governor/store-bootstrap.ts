@@ -9,6 +9,7 @@ import {
 import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
 import { GovernorActionIntentStore } from "./action-intent-store.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
+import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorCheckpointStore } from "./checkpoint-store.js";
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
 import { GovernorMemorySubsystem } from "./memory-subsystem.js";
@@ -31,6 +32,7 @@ export type GovernorSqliteStoreParams = {
   deliveryResolver?: GovernorTrustedDeliveryResolver;
   secrets?: GovernorStoreSecrets;
   stateEnv?: NodeJS.ProcessEnv;
+  capabilities?: GovernorCapabilityRegistry;
 };
 
 export function createGovernorStoreDependencies(params: GovernorSqliteStoreParams) {
@@ -57,6 +59,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
       ...(params.stateDir ? { OPENCLAW_STATE_DIR: params.stateDir } : {}),
     },
   };
+  const capabilities = params.capabilities ?? new GovernorCapabilityRegistry([]);
   initializeGovernorStateSchema(options);
   const evidenceAdmissions = new GovernorEvidenceAdmissionStore({
     receiptResolver,
@@ -67,6 +70,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
   const queries = new GovernorStoreQueries(options, (evidence) =>
     evidenceAdmissions.verify(evidence),
   );
+  const approvals = new GovernorApprovalGrantStore({ options, approvalResolver });
   return {
     options,
     identity: secrets.identity,
@@ -78,8 +82,14 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
       evidenceAdmissions,
       queries,
     }),
-    actionIntents: new GovernorActionIntentStore({ options }),
-    approvals: new GovernorApprovalGrantStore({ options, approvalResolver }),
+    capabilities,
+    actionIntents: new GovernorActionIntentStore({
+      options,
+      approvals,
+      capabilities,
+      identity: secrets.identity,
+    }),
+    approvals,
     deliveryCertifications: new GovernorDeliveryCertificationStore({
       options,
       deliveryResolver,

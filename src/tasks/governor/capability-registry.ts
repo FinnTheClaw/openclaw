@@ -1,3 +1,4 @@
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 // Authorizes versioned capabilities and binds privileged actions to current approvals.
 import type { GovernorActionProposal } from "./tool-outcome.js";
 import {
@@ -45,7 +46,13 @@ export class GovernorCapabilityRegistry {
   readonly #definitions: ReadonlyMap<string, GovernorCapabilityDefinition>;
 
   constructor(definitions: readonly GovernorCapabilityDefinition[]) {
-    const entries = definitions.map((definition) => [definition.capability, definition] as const);
+    const entries = definitions.map((definition) => {
+      const snapshot = Object.freeze({
+        ...definition,
+        canonicalTargetPrefixes: Object.freeze([...definition.canonicalTargetPrefixes]),
+      });
+      return [snapshot.capability, snapshot] as const;
+    });
     if (new Set(entries.map(([capability]) => capability)).size !== entries.length) {
       throw new Error("Governor capability registry contains duplicate capability IDs");
     }
@@ -73,6 +80,27 @@ export class GovernorCapabilityRegistry {
 
   requiresApproval(capability: string): boolean {
     return this.#definitions.get(capability)?.requiresApproval === true;
+  }
+
+  approvalPolicy(proposal: GovernorActionProposal): {
+    required: boolean;
+    digest: string;
+  } {
+    const definition = this.#definitions.get(proposal.capability);
+    if (!definition) {
+      throw new GovernorActionRejectedError("unknown_capability");
+    }
+    return {
+      required: definition.mutating && definition.requiresApproval,
+      digest: governorDigest({
+        capability: definition.capability,
+        version: definition.version,
+        sourceRank: definition.sourceRank,
+        mutating: definition.mutating,
+        canonicalTargetPrefixes: definition.canonicalTargetPrefixes,
+        requiresApproval: definition.requiresApproval,
+      } as unknown as GovernorJsonValue),
+    };
   }
 
   assertAuthorized(task: GovernorTaskProjection, proposal: GovernorActionProposal): void {
@@ -150,6 +178,9 @@ export class GovernorCapabilityRegistry {
       )
     ) {
       throw new GovernorActionRejectedError("mutation_target_denied");
+    }
+    if (definition.requiresApproval && !proposal.approvalGrantId) {
+      throw new GovernorActionRejectedError("approval_required");
     }
   }
 }

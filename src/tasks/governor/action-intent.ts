@@ -22,6 +22,8 @@ export type GovernorActionIntent = {
   planVersion: number;
   leaseEpoch: number;
   executionGeneration: number;
+  approvalRequired: boolean;
+  approvalPolicyDigest: string;
   state: GovernorActionIntentState;
   claimEpoch: number;
   claimedBy?: string;
@@ -54,6 +56,8 @@ export function createGovernorActionIntent(params: {
   proposal: GovernorActionProposal;
   progressVector: GovernorJsonValue;
   forceReplanAfterOutcome: boolean;
+  approvalRequired: boolean;
+  approvalPolicyDigest: string;
   now: number;
   identity: GovernorIdentityContext;
 }): GovernorActionIntent {
@@ -77,6 +81,8 @@ export function createGovernorActionIntent(params: {
     planVersion: params.task.planVersion,
     leaseEpoch: params.task.leaseEpoch,
     executionGeneration: params.task.executionGeneration,
+    approvalRequired: params.approvalRequired,
+    approvalPolicyDigest: params.approvalPolicyDigest,
     state: "admitted",
     claimEpoch: 0,
     proposal,
