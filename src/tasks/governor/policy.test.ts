@@ -111,6 +111,9 @@ describe("governor policy and proportional planning", () => {
   it("keeps the exact thin policy safe and rejects dangerous absolutes", () => {
     expect(GOVERNOR_SOUL_POLICY).toContain("Handle simple work simply.");
     expect(GOVERNOR_POLICY_INTERPRETATION).toContain("Tool counts are never targets.");
+    expect(GOVERNOR_AGENT_RULES).toContainEqual(
+      expect.stringContaining("Retire a memory only through trusted newer same-fact evidence"),
+    );
     expect(() =>
       assertSafeGovernorPolicy([
         GOVERNOR_SOUL_POLICY,

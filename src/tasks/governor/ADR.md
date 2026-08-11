@@ -84,6 +84,14 @@ isolated SQLite state.
     layers never consult ambient process globals. Delivery registration accepts only an allowlisted
     compiled implementation ID, a validated deeply frozen JSON configuration, and a generation;
     callers cannot supply executable code, adapter objects, factories, or registries.
+22. V11 permits one active verified memory per canonical fact and exact scope. Only admitted,
+    trusted, newer same-fact evidence may atomically supersede it; the old revision remains
+    auditable, while normal retrieval returns the verified replacement. Equal-authority ambiguity
+    creates one unresolved review without choosing a winner. Canonical-source remediation is
+    deduplicated by opaque source, fact, scope, and contradiction class, uses the existing governed
+    action path, and closes only after fresh exact-source verification. Repeated reads reuse the
+    resolution; only material new evidence, replacement expiry, a different scope, or an explicit
+    operator request qualifies for reinvestigation.
 
 ## Consequences
 

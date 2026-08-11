@@ -790,11 +790,14 @@ export interface GovernorMemories {
   confidence: number;
   content_digest: string;
   content_json: string;
+  contradiction_fingerprint: string | null;
   created_at: number;
+  fact_key: string;
   freshness_expires_at: number | null;
   memory_id: string;
   observed_at: number;
   provenance_json: string;
+  replacement_memory_id: string | null;
   scope_epoch: number;
   scope_key: string;
   sensitivity: string;
@@ -802,9 +805,36 @@ export interface GovernorMemories {
   source_kind: string;
   source_rank: number;
   status: string;
+  superseded_at: number | null;
+  superseded_evidence_digest: string | null;
+  superseded_evidence_id: string | null;
+  superseded_reason: string | null;
   supersedes_id: string | null;
   tombstoned_at: number | null;
   updated_at: number;
+}
+
+export interface GovernorMemoryRemediations {
+  blocked_reason: string | null;
+  canonical_source_ref: string;
+  closed_at: number | null;
+  contradiction_class: string;
+  contradiction_fingerprint: string;
+  created_at: number;
+  evidence_digest: string;
+  evidence_id: string;
+  evidence_observed_at: number;
+  fact_key: string;
+  investigation_count: number;
+  repair_effect_id: string | null;
+  replacement_memory_id: string | null;
+  scope_key: string;
+  stale_memory_id: string;
+  status: string;
+  task_id: string;
+  updated_at: number;
+  verification_evidence_digest: string | null;
+  verification_evidence_id: string | null;
 }
 
 export interface GovernorOutbox {
@@ -1364,6 +1394,7 @@ export interface DB {
   governor_fanin_reducers: GovernorFaninReducers;
   governor_fanout_jobs: GovernorFanoutJobs;
   governor_memories: GovernorMemories;
+  governor_memory_remediations: GovernorMemoryRemediations;
   governor_outbox: GovernorOutbox;
   governor_scope_epochs: GovernorScopeEpochs;
   governor_tasks: GovernorTasks;

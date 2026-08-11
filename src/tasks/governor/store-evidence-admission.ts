@@ -1,8 +1,9 @@
 // Admits and verifies evidence using only a broker-issued read-only receipt resolver.
 import crypto from "node:crypto";
-import type {
-  GovernorTrustedReceiptResolver,
-  HostGovernorReceiptId,
+import {
+  isTrustedGovernorReceiptResolver,
+  type GovernorTrustedReceiptResolver,
+  type HostGovernorReceiptId,
 } from "../../security/governor-host-readonly.js";
 import { canonicalGovernorJson, governorDigest } from "./canonical-json.js";
 import {
@@ -18,11 +19,19 @@ import {
 import type { GovernorIdentityContext, GovernorTaskProjection } from "./types.js";
 
 declare const governorPendingEvidenceBrand: unique symbol;
+declare const governorVerifiedEvidenceBrand: unique symbol;
+const ADMISSION_STORES = new WeakSet<object>();
 
 /** Opaque, store-bound admission. It cannot be manufactured from data. */
 export type GovernorPendingEvidence = {
   readonly evidence: GovernorEvidenceRecord;
   readonly [governorPendingEvidenceBrand]: object;
+};
+
+/** Store-verified persisted evidence, branded by the active admission authority. */
+export type GovernorVerifiedEvidence = {
+  readonly evidence: GovernorEvidenceRecord;
+  readonly [governorVerifiedEvidenceBrand]: object;
 };
 
 export class GovernorEvidenceAdmissionStore {
@@ -31,6 +40,7 @@ export class GovernorEvidenceAdmissionStore {
   readonly #key: string;
   readonly #keyId: string;
   readonly #pending = new WeakSet<object>();
+  readonly #verified = new WeakSet<object>();
 
   constructor(params: {
     receiptResolver: GovernorTrustedReceiptResolver;
@@ -38,6 +48,9 @@ export class GovernorEvidenceAdmissionStore {
     evidenceAdmissionKey: string;
     evidenceAdmissionKeyId: string;
   }) {
+    if (!isTrustedGovernorReceiptResolver(params.receiptResolver)) {
+      throw new Error("Governor evidence admission requires a trusted host receipt resolver");
+    }
     this.#resolver = params.receiptResolver;
     this.#identity = params.identity;
     this.#key = params.evidenceAdmissionKey.trim();
@@ -45,6 +58,7 @@ export class GovernorEvidenceAdmissionStore {
     if (!this.#key || !this.#keyId) {
       throw new Error("Governor evidence admission key and key ID are required");
     }
+    ADMISSION_STORES.add(this);
   }
 
   #sign(evidence: Omit<GovernorEvidenceRecord, "admissionSignature">): string {
@@ -142,4 +156,19 @@ export class GovernorEvidenceAdmissionStore {
   owns(pending: GovernorPendingEvidence): boolean {
     return this.#pending.has(pending);
   }
+
+  verifyForUse(evidence: GovernorEvidenceRecord): GovernorVerifiedEvidence {
+    this.verify(evidence);
+    const verified = Object.freeze({ evidence }) as GovernorVerifiedEvidence;
+    this.#verified.add(verified);
+    return verified;
+  }
+
+  ownsVerified(verified: GovernorVerifiedEvidence): boolean {
+    return this.#verified.has(verified);
+  }
+}
+
+export function isGovernorEvidenceAdmissionStore(value: GovernorEvidenceAdmissionStore): boolean {
+  return ADMISSION_STORES.has(value);
 }

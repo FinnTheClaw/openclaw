@@ -74,6 +74,13 @@ function migrateLegacyGovernorColumns(
   );
   addIfMissing("governor_outbox", "plan_version", "INTEGER NOT NULL DEFAULT -1");
   addIfMissing("governor_outbox", "execution_generation", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing("governor_memories", "fact_key", "TEXT NOT NULL DEFAULT 'legacy-unknown'");
+  addIfMissing("governor_memories", "superseded_at", "INTEGER");
+  addIfMissing("governor_memories", "superseded_evidence_id", "TEXT");
+  addIfMissing("governor_memories", "superseded_evidence_digest", "TEXT");
+  addIfMissing("governor_memories", "superseded_reason", "TEXT");
+  addIfMissing("governor_memories", "contradiction_fingerprint", "TEXT");
+  addIfMissing("governor_memories", "replacement_memory_id", "TEXT");
   if (migratedEvidence) {
     db.exec("DROP INDEX IF EXISTS idx_governor_evidence_task");
   }

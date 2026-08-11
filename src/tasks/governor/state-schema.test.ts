@@ -39,11 +39,22 @@ describe("governor schema migration", () => {
             delivery_claim_epoch INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, payload_json TEXT NOT NULL,
             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (task_id, effect_id)
           );
+          CREATE TABLE governor_memories (
+            memory_id TEXT NOT NULL PRIMARY KEY, scope_key TEXT NOT NULL, scope_epoch INTEGER NOT NULL,
+            status TEXT NOT NULL, source_kind TEXT NOT NULL, source_identity TEXT NOT NULL,
+            source_rank INTEGER NOT NULL, observed_at INTEGER NOT NULL, freshness_expires_at INTEGER,
+            confidence REAL NOT NULL, sensitivity TEXT NOT NULL, provenance_json TEXT NOT NULL,
+            content_json TEXT NOT NULL, content_digest TEXT NOT NULL, supersedes_id TEXT,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, tombstoned_at INTEGER
+          );
           INSERT INTO governor_evidence VALUES
             ('legacy-evidence', 'legacy-task', 'verified', 'tool', 'legacy-source', 0, 1,
              'legacy-scope', 1, 'legacy-digest', '{}', 'admitted', NULL, 1);
           INSERT INTO governor_outbox VALUES
             ('legacy-task', 'legacy-effect', 'legacy-delivery', 0, 1, 0, 0, 'pending', '{}', 1, 1);
+          INSERT INTO governor_memories VALUES
+            ('legacy-memory', 'legacy-scope', 0, 'verified', 'historical_memory', 'legacy-source',
+             200, 1, NULL, 0.5, 'normal', '{}', '{}', 'legacy-digest', NULL, 1, 1, NULL);
         `);
         initializeGovernorStateSchema(options);
         initializeGovernorStateSchema(options);
@@ -58,6 +69,26 @@ describe("governor schema migration", () => {
         expect(columns(db, "governor_outbox")).toEqual(
           expect.arrayContaining(["plan_version", "execution_generation"]),
         );
+        expect(columns(db, "governor_memories")).toEqual(
+          expect.arrayContaining([
+            "fact_key",
+            "superseded_at",
+            "superseded_evidence_id",
+            "superseded_evidence_digest",
+            "superseded_reason",
+            "contradiction_fingerprint",
+            "replacement_memory_id",
+          ]),
+        );
+        expect(columns(db, "governor_memory_remediations")).toEqual(
+          expect.arrayContaining([
+            "contradiction_fingerprint",
+            "canonical_source_ref",
+            "replacement_memory_id",
+            "investigation_count",
+            "verification_evidence_digest",
+          ]),
+        );
         const evidence = db
           .prepare(
             "SELECT plan_version, semantic_digest FROM governor_evidence WHERE evidence_id = ?",
@@ -70,6 +101,11 @@ describe("governor schema migration", () => {
           .get("legacy-effect") as { plan_version: number; execution_generation: number };
         expect(evidence).toEqual({ plan_version: -1, semantic_digest: "legacy-unverified" });
         expect(outbox).toEqual({ plan_version: -1, execution_generation: -1 });
+        expect(
+          db
+            .prepare("SELECT fact_key FROM governor_memories WHERE memory_id = ?")
+            .get("legacy-memory"),
+        ).toEqual({ fact_key: "legacy-unknown" });
         const indexColumns = db
           .prepare("PRAGMA index_info(idx_governor_evidence_task)")
           .all() as Array<{ name: string }>;

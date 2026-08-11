@@ -1,0 +1,161 @@
+// Joins scoped memory records to store-verified contradiction and repair evidence.
+import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
+import { normalizeGovernorFactKey } from "./memory-contradiction-policy.js";
+import { GovernorMemoryContradictionStore } from "./memory-contradiction-store.js";
+import { GovernorMemoryStore, type GovernorMemoryRecord } from "./memory-integrity.js";
+import { evaluateGovernorMemoryReinvestigation } from "./memory-reinvestigation.js";
+import type { GovernorMemoryRemediation } from "./memory-remediation.js";
+import type { GovernorEvidenceAdmissionStore } from "./store-evidence-admission.js";
+import type { GovernorStoreQueries } from "./store-queries.js";
+import {
+  canonicalGovernorScopeKey,
+  type GovernorIdentityContext,
+  type GovernorTaskId,
+  type GovernorTaskScope,
+} from "./types.js";
+
+export class GovernorMemorySubsystem extends GovernorMemoryStore {
+  readonly #contradictions: GovernorMemoryContradictionStore;
+  readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
+  readonly #queries: GovernorStoreQueries;
+  readonly #identity: GovernorIdentityContext;
+
+  constructor(params: {
+    options: OpenClawStateDatabaseOptions;
+    identity: GovernorIdentityContext;
+    evidenceAdmissions: GovernorEvidenceAdmissionStore;
+    queries: GovernorStoreQueries;
+  }) {
+    super({ options: params.options, identity: params.identity });
+    this.#identity = params.identity;
+    this.#evidenceAdmissions = params.evidenceAdmissions;
+    this.#queries = params.queries;
+    this.#contradictions = new GovernorMemoryContradictionStore({
+      options: params.options,
+      evidenceAdmissions: params.evidenceAdmissions,
+    });
+  }
+
+  #verifiedEvidence(taskId: GovernorTaskId, evidenceId: string) {
+    const evidence = this.#queries.loadEvidence(taskId, evidenceId);
+    if (!evidence) {
+      throw new Error(`Governor memory evidence not found: ${evidenceId}`);
+    }
+    const task = this.#queries.loadTask(taskId);
+    if (
+      !task ||
+      evidence.invalidatedAt !== undefined ||
+      evidence.scopeKey !== task.scopeKey ||
+      evidence.objectiveRevision !== task.objectiveRevision ||
+      evidence.planVersion !== task.planVersion ||
+      evidence.taskVersion > task.taskVersion
+    ) {
+      throw new Error("Governor memory evidence is stale, invalidated, or out of scope");
+    }
+    return this.#evidenceAdmissions.verifyForUse(evidence);
+  }
+
+  resolveContradiction(params: {
+    taskId: GovernorTaskId;
+    evidenceId: string;
+    staleMemoryId: string;
+    contradictionClass: string;
+    freshnessExpiresAt?: number;
+    now: number;
+  }) {
+    return this.#contradictions.resolve({
+      staleMemoryId: params.staleMemoryId,
+      contradictionClass: params.contradictionClass,
+      verifiedEvidence: this.#verifiedEvidence(params.taskId, params.evidenceId),
+      ...(params.freshnessExpiresAt === undefined
+        ? {}
+        : { freshnessExpiresAt: params.freshnessExpiresAt }),
+      now: params.now,
+    });
+  }
+
+  loadRemediation(fingerprint: string): GovernorMemoryRemediation | null {
+    return this.#contradictions.load(fingerprint);
+  }
+
+  listRemediations(scope: GovernorTaskScope): GovernorMemoryRemediation[] {
+    return this.#contradictions.list(canonicalGovernorScopeKey(scope, this.#identity));
+  }
+
+  reinvestigationDecision(params: {
+    fingerprint: string;
+    scope: GovernorTaskScope;
+    taskId?: GovernorTaskId;
+    evidenceId?: string;
+    operatorRequested?: boolean;
+    now: number;
+  }) {
+    if (Boolean(params.taskId) !== Boolean(params.evidenceId)) {
+      throw new Error("Governor reinvestigation evidence requires both task and evidence IDs");
+    }
+    const remediation = this.#contradictions.load(params.fingerprint);
+    if (!remediation) {
+      throw new Error("Governor memory remediation not found");
+    }
+    const requestedScopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
+    const replacement =
+      remediation.replacementMemoryId && requestedScopeKey === remediation.scopeKey
+        ? (this.retrieveAudit({ scope: params.scope }).find(
+            (memory) => memory.memoryId === remediation.replacementMemoryId,
+          ) ?? null)
+        : null;
+    return evaluateGovernorMemoryReinvestigation({
+      remediation,
+      replacement,
+      requestedScopeKey,
+      ...(params.taskId && params.evidenceId
+        ? {
+            evidence: this.#verifiedEvidence(params.taskId, params.evidenceId).evidence,
+          }
+        : {}),
+      ...(params.operatorRequested === undefined
+        ? {}
+        : { operatorRequested: params.operatorRequested }),
+      now: params.now,
+    });
+  }
+
+  updateRepairState(params: {
+    fingerprint: string;
+    status: "repairing" | "blocked";
+    blockedReason?: string;
+    now: number;
+  }): GovernorMemoryRemediation | null {
+    return this.#contradictions.updateRepairState(params);
+  }
+
+  requeueRepair(params: { fingerprint: string; taskId: GovernorTaskId; now: number }) {
+    return this.#contradictions.requeueRepair(params);
+  }
+
+  verifyRepair(params: {
+    taskId: GovernorTaskId;
+    evidenceId: string;
+    fingerprint: string;
+    now: number;
+  }): GovernorMemoryRemediation | null {
+    return this.#contradictions.verifyRepair({
+      fingerprint: params.fingerprint,
+      verifiedEvidence: this.#verifiedEvidence(params.taskId, params.evidenceId),
+      now: params.now,
+    });
+  }
+
+  activeReplacement(params: {
+    scope: GovernorTaskScope;
+    factKey: string;
+    now: number;
+  }): GovernorMemoryRecord | null {
+    const factKey = normalizeGovernorFactKey(params.factKey);
+    return (
+      this.retrieve({ scope: params.scope, now: params.now }).find(
+        (memory) => memory.factKey === factKey && memory.status === "verified",
+      ) ?? null
+    );
+  }
+}

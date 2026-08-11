@@ -1484,6 +1484,7 @@ CREATE TABLE IF NOT EXISTS governor_memories (
   memory_id TEXT NOT NULL PRIMARY KEY,
   scope_key TEXT NOT NULL,
   scope_epoch INTEGER NOT NULL,
+  fact_key TEXT NOT NULL,
   status TEXT NOT NULL,
   source_kind TEXT NOT NULL,
   source_identity TEXT NOT NULL,
@@ -1496,6 +1497,12 @@ CREATE TABLE IF NOT EXISTS governor_memories (
   content_json TEXT NOT NULL,
   content_digest TEXT NOT NULL,
   supersedes_id TEXT,
+  superseded_at INTEGER,
+  superseded_evidence_id TEXT,
+  superseded_evidence_digest TEXT,
+  superseded_reason TEXT,
+  contradiction_fingerprint TEXT,
+  replacement_memory_id TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   tombstoned_at INTEGER
@@ -1506,6 +1513,35 @@ CREATE INDEX IF NOT EXISTS idx_governor_memories_scope
 
 CREATE INDEX IF NOT EXISTS idx_governor_memories_digest
   ON governor_memories(scope_key, content_digest, status);
+
+CREATE INDEX IF NOT EXISTS idx_governor_memories_fact
+  ON governor_memories(scope_key, fact_key, status, observed_at DESC, memory_id);
+
+CREATE TABLE IF NOT EXISTS governor_memory_remediations (
+  contradiction_fingerprint TEXT NOT NULL PRIMARY KEY,
+  scope_key TEXT NOT NULL,
+  fact_key TEXT NOT NULL,
+  contradiction_class TEXT NOT NULL,
+  canonical_source_ref TEXT NOT NULL,
+  stale_memory_id TEXT NOT NULL,
+  replacement_memory_id TEXT,
+  evidence_id TEXT NOT NULL,
+  evidence_digest TEXT NOT NULL,
+  evidence_observed_at INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  repair_effect_id TEXT,
+  blocked_reason TEXT,
+  investigation_count INTEGER NOT NULL,
+  verification_evidence_id TEXT,
+  verification_evidence_digest TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  closed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_memory_remediations_scope
+  ON governor_memory_remediations(scope_key, status, updated_at, contradiction_fingerprint);
 
 CREATE TABLE IF NOT EXISTS governor_fanout_jobs (
   job_id TEXT NOT NULL PRIMARY KEY,

@@ -11,6 +11,7 @@ import { GovernorActionIntentStore } from "./action-intent-store.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
 import { GovernorCheckpointStore } from "./checkpoint-store.js";
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
+import { GovernorMemorySubsystem } from "./memory-subsystem.js";
 import { GovernorOutboxStore } from "./outbox-store.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import { GovernorEvidenceAdmissionStore } from "./store-evidence-admission.js";
@@ -63,11 +64,20 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
     evidenceAdmissionKey: secrets.evidenceAdmissionKey,
     evidenceAdmissionKeyId: secrets.evidenceAdmissionKeyId,
   });
+  const queries = new GovernorStoreQueries(options, (evidence) =>
+    evidenceAdmissions.verify(evidence),
+  );
   return {
     options,
     identity: secrets.identity,
     evidenceAdmissions,
-    queries: new GovernorStoreQueries(options, (evidence) => evidenceAdmissions.verify(evidence)),
+    queries,
+    memory: new GovernorMemorySubsystem({
+      options,
+      identity: secrets.identity,
+      evidenceAdmissions,
+      queries,
+    }),
     actionIntents: new GovernorActionIntentStore({ options }),
     approvals: new GovernorApprovalGrantStore({ options, approvalResolver }),
     deliveryCertifications: new GovernorDeliveryCertificationStore({

@@ -71,6 +71,7 @@ describe("governor memory integrity", () => {
     await withMemoryStore(({ store, stateDir }) => {
       const first = store.store({
         memoryId: "memory-a",
+        factKey: "inventory.label",
         scope: scopeA,
         expectedScopeEpoch: 0,
         requestedStatus: "verified",
@@ -89,7 +90,25 @@ describe("governor memory integrity", () => {
       expect(stored?.provenance.sourceRef).not.toBe("fixture://inventory/a");
       expect(
         store.store({
+          memoryId: "memory-a-unadmitted-replacement",
+          factKey: " Inventory / Label ",
+          scope: scopeA,
+          expectedScopeEpoch: 0,
+          requestedStatus: "verified",
+          sourceKind: "structured_external",
+          sourceIdentity: "synthetic.inventory",
+          observedAt: 200,
+          confidence: 1,
+          sensitivity: "normal",
+          sourceRef: "fixture://inventory/a",
+          content: { value: "must-use-contradiction-admission" },
+          now: 200,
+        }),
+      ).toMatchObject({ stored: false, reason: "fact_version_conflict" });
+      expect(
+        store.store({
           memoryId: "memory-a-assistant",
+          factKey: "inventory.label",
           scope: scopeA,
           expectedScopeEpoch: 0,
           requestedStatus: "verified",
@@ -105,6 +124,7 @@ describe("governor memory integrity", () => {
       ).toMatchObject({ stored: false, reason: "provenance_rejected" });
       const second = store.store({
         memoryId: "memory-b",
+        factKey: "inventory.label",
         scope: scopeB,
         expectedScopeEpoch: 0,
         requestedStatus: "verified",
@@ -142,6 +162,7 @@ describe("governor memory integrity", () => {
         expect(
           store.store({
             memoryId,
+            factKey: `fixture.${memoryId}`,
             scope: scopeA,
             expectedScopeEpoch: 0,
             requestedStatus: "verified",
@@ -175,6 +196,7 @@ describe("governor memory integrity", () => {
       expect(
         store.store({
           memoryId: "stale-resurrection",
+          factKey: "fixture.memory-forget",
           scope: scopeA,
           expectedScopeEpoch: 0,
           requestedStatus: "verified",
@@ -204,6 +226,7 @@ describe("governor memory integrity", () => {
       expect(() =>
         store.store({
           memoryId: "memory-secret",
+          factKey: "fixture.secret",
           scope: scopeA,
           expectedScopeEpoch: 0,
           requestedStatus: "candidate",

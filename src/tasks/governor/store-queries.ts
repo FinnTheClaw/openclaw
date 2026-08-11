@@ -43,6 +43,10 @@ export class GovernorStoreQueries {
     this.#verifyEvidence = verifyEvidence;
   }
 
+  loadTask(taskId: GovernorTaskId): GovernorTaskProjection | null {
+    return loadGovernorTask(openOpenClawStateDatabase(this.#options).db, taskId);
+  }
+
   listEvents(taskId: GovernorTaskId): GovernorEventRecord[] {
     const { db } = openOpenClawStateDatabase(this.#options);
     return executeSqliteQuerySync(
@@ -93,6 +97,19 @@ export class GovernorStoreQueries {
         .orderBy("created_at", "asc")
         .orderBy("evidence_id", "asc"),
     ).rows.map((row) => parseEvidenceRow(row, this.#verifyEvidence));
+  }
+
+  loadEvidence(taskId: GovernorTaskId, evidenceId: string): GovernorEvidenceRecord | null {
+    const { db } = openOpenClawStateDatabase(this.#options);
+    const row = executeSqliteQueryTakeFirstSync(
+      db,
+      governorDb(db)
+        .selectFrom("governor_evidence")
+        .selectAll()
+        .where("task_id", "=", taskId)
+        .where("evidence_id", "=", evidenceId),
+    );
+    return row ? parseEvidenceRow(row, this.#verifyEvidence) : null;
   }
 
   listUnfinishedFanoutJobIds(task: GovernorTaskProjection): string[] {

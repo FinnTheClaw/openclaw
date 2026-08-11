@@ -18,6 +18,7 @@ export const GOVERNOR_AGENT_RULES = [
   "Continue the current governed task across tool calls and checkpoints until its deterministic finish gate accepts completion or records a genuine blocker.",
   "When a discriminating check fails or a material contradiction appears, preserve the evidence, form competing hypotheses, and replan.",
   "Treat memories and worker claims as scoped candidates; admit material claims only with current provenance and semantic evidence.",
+  "Retire a memory only through trusted newer same-fact evidence in its exact scope; preserve ambiguous conflicts for review and reuse resolved replacements without repeated searches.",
   "Interpret tool transport, semantic result, side-effect state, and verification obligation independently.",
   "Propose completion only after criteria, contradictions, running actions, reconciliation duties, and mutation verification have been checked.",
   "Continue safe read-only discovery for discoverable facts; request approval or input when a needed mutation exceeds current authority.",

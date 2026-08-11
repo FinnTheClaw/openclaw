@@ -27,6 +27,7 @@ import {
   type GovernorMaterialClaimInput,
   type GovernorResponseDraft,
 } from "./material-claims.js";
+import { GovernorMemoryRemediationRuntime } from "./memory-remediation-runtime.js";
 import {
   resolveGovernorMutation,
   type GovernorMutationResolution,
@@ -79,12 +80,14 @@ function nextTaskVersion(task: GovernorTaskProjection, now: number): GovernorTas
 
 export class GovernorController {
   readonly actions: GovernorActionRuntime;
+  readonly memoryRemediation: GovernorMemoryRemediationRuntime;
 
   constructor(
     readonly store: GovernorSqliteStore,
     readonly capabilities: GovernorCapabilityRegistry,
   ) {
     this.actions = new GovernorActionRuntime(store, capabilities);
+    this.memoryRemediation = new GovernorMemoryRemediationRuntime(store, this.actions);
   }
 
   ingest(params: {

@@ -22,6 +22,7 @@ import { assertValidGovernorContract } from "./contracts.js";
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
 import { createGovernorEventRecord, type GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceCandidate, GovernorEvidenceRecord } from "./evidence.js";
+import { GovernorMemorySubsystem } from "./memory-subsystem.js";
 import {
   bindGovernorOutbox,
   GovernorOutboxStore,
@@ -83,6 +84,7 @@ export class GovernorSqliteStore {
   readonly #approvals: GovernorApprovalGrantStore;
   readonly #deliveryCertifications: GovernorDeliveryCertificationStore;
   readonly checkpoints: GovernorCheckpointStore;
+  readonly memory: GovernorMemorySubsystem;
   readonly outbox: GovernorOutboxStore;
   readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
   readonly #queries: GovernorStoreQueries;
@@ -97,6 +99,7 @@ export class GovernorSqliteStore {
     this.#approvals = dependencies.approvals;
     this.#deliveryCertifications = dependencies.deliveryCertifications;
     this.checkpoints = dependencies.checkpoints;
+    this.memory = dependencies.memory;
     this.outbox = dependencies.outbox;
   }
 
