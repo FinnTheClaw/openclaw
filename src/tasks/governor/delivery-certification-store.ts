@@ -30,13 +30,17 @@ export class GovernorDeliveryCertificationStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly #resolver: GovernorTrustedDeliveryResolver;
 
-  constructor(params: { stateDir?: string; deliveryResolver: GovernorTrustedDeliveryResolver }) {
+  constructor(params: {
+    stateDir?: string;
+    options?: OpenClawStateDatabaseOptions;
+    deliveryResolver: GovernorTrustedDeliveryResolver;
+  }) {
     if (!isTrustedGovernorDeliveryResolver(params.deliveryResolver)) {
       throw new Error("Governor delivery store requires a trusted host delivery resolver");
     }
-    this.#options = params.stateDir
-      ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
-      : {};
+    this.#options =
+      params.options ??
+      (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
     initializeGovernorStateSchema(this.#options);
     this.#resolver = params.deliveryResolver;
   }

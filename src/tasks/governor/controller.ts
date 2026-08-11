@@ -43,7 +43,6 @@ import {
   type GovernorCommitResult,
   type GovernorIngressResult,
 } from "./store.js";
-import { opaqueGovernorReference } from "./types.js";
 import type {
   GovernorMode,
   GovernorPlan,
@@ -308,7 +307,7 @@ export class GovernorController {
     ) as GovernorTaskContradiction;
     const contradiction: GovernorTaskContradiction = {
       ...safe,
-      sourceRef: opaqueGovernorReference("contradiction-source", safe.sourceRef),
+      sourceRef: this.store.opaqueReference("contradiction-source", safe.sourceRef),
     };
     const next = {
       ...nextTaskVersion(task, params.now),

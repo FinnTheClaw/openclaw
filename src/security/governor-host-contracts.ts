@@ -27,6 +27,7 @@ export type HostDeliveryEntry = Readonly<{
   handle: HostGovernorDeliveryHandle;
   identityKey: string;
   identity: HostDeliveryIdentity;
+  implementationId: string;
   implementationDigest: string;
   configDigest: string;
   generation: number;
@@ -119,14 +120,9 @@ export type HostGovernorCapabilities = {
     observedAt: number;
   }) => HostGovernorApprovalRevocationId;
   readonly registerStaticDeliveryAdapter: (input: {
-    identity: HostDeliveryIdentity;
+    implementationId: string;
     config: GovernorJsonValue;
     generation: number;
-    send: (params: {
-      config: GovernorJsonValue;
-      deliveryKey: string;
-      payload: GovernorJsonValue;
-    }) => Promise<{ deliveryKey: string; receipt: GovernorJsonValue }>;
   }) => HostGovernorDeliveryHandle;
   readonly revokeDeliveryAdapter: (input: { handle: HostGovernorDeliveryHandle }) => boolean;
 };

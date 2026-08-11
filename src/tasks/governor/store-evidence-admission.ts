@@ -15,7 +15,7 @@ import {
   type GovernorEvidenceCandidate,
   type GovernorEvidenceRecord,
 } from "./evidence.js";
-import type { GovernorTaskProjection } from "./types.js";
+import type { GovernorIdentityContext, GovernorTaskProjection } from "./types.js";
 
 declare const governorPendingEvidenceBrand: unique symbol;
 
@@ -25,31 +25,26 @@ export type GovernorPendingEvidence = {
   readonly [governorPendingEvidenceBrand]: object;
 };
 
-function admissionKey(env: NodeJS.ProcessEnv): string {
-  const configured = env.OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY?.trim();
-  if (configured) {
-    return configured;
-  }
-  if (env.NODE_ENV === "test") {
-    return "governor-test-evidence-admission-key";
-  }
-  throw new Error("OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY is required for enabled evidence");
-}
-
 export class GovernorEvidenceAdmissionStore {
   readonly #resolver: GovernorTrustedReceiptResolver;
+  readonly #identity: GovernorIdentityContext;
   readonly #key: string;
   readonly #keyId: string;
   readonly #pending = new WeakSet<object>();
 
   constructor(params: {
     receiptResolver: GovernorTrustedReceiptResolver;
-    env?: NodeJS.ProcessEnv;
+    identity: GovernorIdentityContext;
+    evidenceAdmissionKey: string;
+    evidenceAdmissionKeyId: string;
   }) {
     this.#resolver = params.receiptResolver;
-    const env = params.env ?? process.env;
-    this.#key = admissionKey(env);
-    this.#keyId = env.OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY_ID?.trim() || "v1";
+    this.#identity = params.identity;
+    this.#key = params.evidenceAdmissionKey.trim();
+    this.#keyId = params.evidenceAdmissionKeyId.trim();
+    if (!this.#key || !this.#keyId) {
+      throw new Error("Governor evidence admission key and key ID are required");
+    }
   }
 
   #sign(evidence: Omit<GovernorEvidenceRecord, "admissionSignature">): string {
@@ -91,7 +86,7 @@ export class GovernorEvidenceAdmissionStore {
   }): GovernorPendingEvidence {
     const candidate = createGovernorEvidenceCandidate(params.candidate);
     const validation = validateGovernorEvidenceCandidate({ task: params.task, candidate });
-    if ("admitted" in validation && validation.admitted === false) {
+    if ("admitted" in validation && !validation.admitted) {
       throw new Error(`Governor evidence candidate rejected: ${validation.reason}`);
     }
     if (!params.receiptId) {
@@ -127,7 +122,11 @@ export class GovernorEvidenceAdmissionStore {
       ...candidate,
       payload: receipt.payload,
       evidenceDigest: governorDigest(receipt.payload),
-      sourceIdentity: opaqueEvidenceSourceRef(receipt.sourceKind, receipt.sourceIdentity),
+      sourceIdentity: opaqueEvidenceSourceRef(
+        receipt.sourceKind,
+        receipt.sourceIdentity,
+        this.#identity,
+      ),
       ...semantic,
       admissibility: "admitted",
       createdAt: params.now,

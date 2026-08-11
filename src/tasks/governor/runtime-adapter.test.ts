@@ -1,7 +1,10 @@
 // Proves the integration seam is inert while disabled and proportional when explicitly enabled.
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { createGovernorHostRuntimeAdapterIfEnabled } from "../../security/governor-host-bootstrap.js";
+import {
+  createGovernorHostRuntimeAdapterIfEnabled,
+  createGovernorHostRuntimeIfEnabled,
+} from "../../security/governor-host-bootstrap.js";
 import {
   closeOpenClawStateDatabase,
   openOpenClawStateDatabase,
@@ -32,6 +35,25 @@ const contract: GovernorTaskContract = {
   ],
   authority: { allowReadOnlyDiscovery: true, mutationCapabilities: [], canonicalTargets: [] },
 };
+
+const integrations = {
+  evidenceOwnerId: "synthetic-evidence-owner",
+  approvalOwnerId: "synthetic-approval-owner",
+  deliveryOwnerId: "synthetic-delivery-owner",
+  deliveries: [{ implementationId: "synthetic", config: { channel: "fixture" }, generation: 0 }],
+} as const;
+
+function enabledEnvironment(): NodeJS.ProcessEnv {
+  return {
+    OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
+    NODE_ENV: "test",
+    OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY: "synthetic-host-identity-key",
+    OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY: "synthetic-host-evidence-key",
+    OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY_ID: "synthetic-v1",
+    OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: "synthetic-host-receipt-key",
+    OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY: "synthetic-host-ledger-key",
+  };
+}
 
 afterEach(() => closeOpenClawStateDatabase());
 
@@ -132,13 +154,10 @@ describe("governor runtime adapter", () => {
       async (state) => {
         try {
           const adapter = createGovernorHostRuntimeAdapterIfEnabled({
-            env: {
-              OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
-              OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: "synthetic-host-receipt-key",
-              OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY: "synthetic-host-ledger-key",
-            },
+            env: enabledEnvironment(),
             stateDir: state.stateDir,
             capabilities: [],
+            integrations,
           });
           if (!adapter) {
             throw new Error("expected enabled governor adapter");
@@ -195,11 +214,11 @@ describe("governor runtime adapter", () => {
     expect(() =>
       createGovernorHostRuntimeAdapterIfEnabled({
         env: {
-          OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
-          NODE_ENV: "production",
+          ...enabledEnvironment(),
           OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY: "",
         },
         capabilities: [],
+        integrations,
       }),
     ).toThrow(/IDENTITY_HMAC_KEY is required/u);
   });
@@ -208,12 +227,89 @@ describe("governor runtime adapter", () => {
     expect(() =>
       createGovernorHostRuntimeAdapterIfEnabled({
         env: {
-          OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
-          NODE_ENV: "production",
-          OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY: "synthetic-identity-key",
+          ...enabledEnvironment(),
+          OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: "",
         },
         capabilities: [],
+        integrations,
       }),
     ).toThrow(/HOST_RECEIPT_HMAC_KEY is required/u);
+  });
+
+  it("fails enabled initialization without integration owners or a delivery", () => {
+    expect(() =>
+      createGovernorHostRuntimeAdapterIfEnabled({
+        env: enabledEnvironment(),
+        capabilities: [],
+      }),
+    ).toThrow(/integration owners are required/u);
+    expect(() =>
+      createGovernorHostRuntimeAdapterIfEnabled({
+        env: enabledEnvironment(),
+        capabilities: [],
+        integrations: { ...integrations, deliveries: [] },
+      }),
+    ).toThrow(/At least one certified governor delivery integration/u);
+    expect(() =>
+      createGovernorHostRuntimeAdapterIfEnabled({
+        env: enabledEnvironment(),
+        capabilities: [],
+        integrations: { ...integrations, approvalOwnerId: "" },
+      }),
+    ).toThrow(/approval integration owner is required/u);
+  });
+
+  it("uses only supplied secrets and returns separated host integration owners", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-governor-explicit-secrets-" },
+      async (state) => {
+        const names = [
+          "NODE_ENV",
+          "OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY",
+          "OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY",
+          "OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY",
+          "OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY",
+        ] as const;
+        const prior = new Map(names.map((name) => [name, process.env[name]]));
+        for (const name of names) {
+          delete process.env[name];
+        }
+        try {
+          const runtime = createGovernorHostRuntimeIfEnabled({
+            env: enabledEnvironment(),
+            stateDir: state.stateDir,
+            capabilities: [],
+            integrations,
+          });
+          expect(runtime?.deliveryHandles).toHaveLength(1);
+          expect(runtime?.owners).toMatchObject({
+            evidence: { ownerId: integrations.evidenceOwnerId },
+            approval: { ownerId: integrations.approvalOwnerId },
+            delivery: { ownerId: integrations.deliveryOwnerId },
+          });
+          expect(runtime?.adapter).toBeInstanceOf(Object);
+        } finally {
+          for (const [name, value] of prior) {
+            if (value === undefined) {
+              delete process.env[name];
+            } else {
+              process.env[name] = value;
+            }
+          }
+        }
+      },
+    );
+  });
+
+  it("rejects reused bootstrap keys instead of constructing mismatched lower layers", () => {
+    const env = enabledEnvironment();
+    env.OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY = env.OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY;
+    expect(() =>
+      createGovernorHostRuntimeAdapterIfEnabled({
+        env,
+        capabilities: [],
+        integrations,
+      }),
+    ).toThrow(/independently provisioned/u);
   });
 });

@@ -21,6 +21,7 @@ import {
   type GovernorHostAntiRollbackLedger,
   type GovernorLedgerState,
 } from "./governor-host-anti-rollback-ledger.js";
+import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
 
 type HostDb = Pick<
   StateDb,
@@ -90,29 +91,35 @@ export function isGovernorHostPersistence(value: GovernorHostPersistence): boole
 }
 
 /** Called only from trusted bootstrap; the ledger is a separate host sidecar. */
-export function createGovernorHostPersistence(
-  params: {
-    stateDir?: string;
-    ledgerKey?: string;
-    ledger?: GovernorHostAntiRollbackLedger;
-    /** Test-only crash point for the ledger-first reconciliation contract. */
-    testAfterLedgerAppend?: () => void;
-  } = {},
-): GovernorHostPersistence {
-  if (params.testAfterLedgerAppend && process.env.NODE_ENV !== "test") {
+export function createGovernorHostPersistence(params: {
+  env: NodeJS.ProcessEnv;
+  stateDir?: string;
+  secrets?: GovernorSecrets;
+  ledger?: GovernorHostAntiRollbackLedger;
+  /** Test-only crash point for the ledger-first reconciliation contract. */
+  testAfterLedgerAppend?: () => void;
+  testMode?: boolean;
+}): GovernorHostPersistence {
+  if (params.testAfterLedgerAppend && params.testMode !== true) {
     throw new Error("Governor host persistence test hooks are unavailable outside tests");
   }
-  const options: OpenClawStateDatabaseOptions = params.stateDir
-    ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
-    : {};
-  const ledgerKey = params.ledgerKey ?? process.env.OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY;
+  if (params.secrets && !isGovernorSecrets(params.secrets)) {
+    throw new Error("Governor host persistence requires validated governor secrets");
+  }
+  const options: OpenClawStateDatabaseOptions = {
+    env: {
+      ...params.env,
+      ...(params.stateDir ? { OPENCLAW_STATE_DIR: params.stateDir } : {}),
+    },
+  };
+  const ledgerKey = params.secrets?.ledgerSigningKey;
   if (!params.ledger && !ledgerKey?.trim()) {
     throw new Error("Governor host anti-rollback ledger signing key is required");
   }
   const ledger =
     params.ledger ??
     createGovernorHostAntiRollbackLedger({
-      stateDir: resolveOpenClawStateSqliteDir(options.env ?? process.env),
+      stateDir: resolveOpenClawStateSqliteDir(options.env),
       signingKey: ledgerKey as string,
     });
   if (!isGovernorHostAntiRollbackLedger(ledger)) {

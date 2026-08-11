@@ -38,42 +38,46 @@ export type GovernorTaskScope = {
   workspaceId: string;
 };
 
-function governorIdentityHmacKey(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY?.trim();
-  if (configured) {
-    return configured;
-  }
-  // Synthetic tests use a stable fixture key; a live enabled governor must be
-  // explicitly provisioned with a host-held key before it can persist routing IDs.
-  if (env.NODE_ENV === "test") {
-    return "governor-test-identity-hmac-key";
-  }
-  throw new Error(
-    "OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY is required when behavior governor persistence is enabled",
-  );
+export type GovernorIdentityContext = Readonly<{
+  opaqueReference: (kind: string, value: string) => string;
+}>;
+
+/**
+ * Creates the non-authoritative identity codec used by a trusted governor
+ * runtime. The host bootstrap validates and owns the key; lower layers receive
+ * only this closure and never consult ambient process state.
+ */
+export function createGovernorIdentityContext(identityHmacKey: string): GovernorIdentityContext {
+  const key = assertNonEmpty(identityHmacKey, "governor identity HMAC key");
+  return Object.freeze({
+    opaqueReference: (kind: string, value: string) =>
+      crypto
+        .createHmac("sha256", key)
+        .update(JSON.stringify([kind, assertNonEmpty(value, `${kind} reference`)]))
+        .digest("hex"),
+  });
 }
 
-/** Fails enabled persistence before it can create durable state without a host key. */
-export function assertGovernorIdentityHmacKeyAvailable(env: NodeJS.ProcessEnv = process.env): void {
-  governorIdentityHmacKey(env);
+export function opaqueGovernorReference(
+  kind: string,
+  value: string,
+  identity: GovernorIdentityContext,
+): string {
+  return identity.opaqueReference(kind, value);
 }
 
-export function opaqueGovernorReference(kind: string, value: string): string {
-  return crypto
-    .createHmac("sha256", governorIdentityHmacKey())
-    .update(JSON.stringify([kind, assertNonEmpty(value, `${kind} reference`)]))
-    .digest("hex");
-}
-
-export function opaqueGovernorScope(scope: GovernorTaskScope): GovernorTaskScope {
+export function opaqueGovernorScope(
+  scope: GovernorTaskScope,
+  identity: GovernorIdentityContext,
+): GovernorTaskScope {
   return {
-    principalId: opaqueGovernorReference("principal", scope.principalId),
-    channel: opaqueGovernorReference("channel", scope.channel),
-    accountId: opaqueGovernorReference("account", scope.accountId),
-    conversationId: opaqueGovernorReference("conversation", scope.conversationId),
-    sessionId: opaqueGovernorReference("session", scope.sessionId),
-    agentId: opaqueGovernorReference("agent", scope.agentId),
-    workspaceId: opaqueGovernorReference("workspace", scope.workspaceId),
+    principalId: opaqueGovernorReference("principal", scope.principalId, identity),
+    channel: opaqueGovernorReference("channel", scope.channel, identity),
+    accountId: opaqueGovernorReference("account", scope.accountId, identity),
+    conversationId: opaqueGovernorReference("conversation", scope.conversationId, identity),
+    sessionId: opaqueGovernorReference("session", scope.sessionId, identity),
+    agentId: opaqueGovernorReference("agent", scope.agentId, identity),
+    workspaceId: opaqueGovernorReference("workspace", scope.workspaceId, identity),
   };
 }
 
@@ -192,7 +196,10 @@ export function createGovernorEffectId(value?: string): GovernorEffectId {
   return brandedId("geffect", value) as GovernorEffectId;
 }
 
-export function canonicalGovernorScopeKey(scope: GovernorTaskScope): string {
+export function canonicalGovernorScopeKey(
+  scope: GovernorTaskScope,
+  identity: GovernorIdentityContext,
+): string {
   const canonical = [
     scope.principalId,
     scope.channel,
@@ -202,7 +209,7 @@ export function canonicalGovernorScopeKey(scope: GovernorTaskScope): string {
     scope.agentId,
     scope.workspaceId,
   ].map((value, index) => assertNonEmpty(value, `scope field ${index + 1}`));
-  return opaqueGovernorReference("scope", JSON.stringify(canonical));
+  return opaqueGovernorReference("scope", JSON.stringify(canonical), identity);
 }
 
 export function createGovernorTaskProjection(params: {
@@ -213,6 +220,7 @@ export function createGovernorTaskProjection(params: {
   contract: GovernorTaskContract;
   authenticatedSourceSequence: number;
   now: number;
+  identity: GovernorIdentityContext;
 }): GovernorTaskProjection {
   if (!Number.isSafeInteger(params.authenticatedSourceSequence)) {
     throw new Error("authenticatedSourceSequence must be a safe integer");
@@ -220,8 +228,8 @@ export function createGovernorTaskProjection(params: {
   return {
     taskId: params.taskId ?? createGovernorTaskId(),
     ...(params.flowId ? { flowId: assertNonEmpty(params.flowId, "flowId") } : {}),
-    scope: opaqueGovernorScope(params.scope),
-    scopeKey: canonicalGovernorScopeKey(params.scope),
+    scope: opaqueGovernorScope(params.scope, params.identity),
+    scopeKey: canonicalGovernorScopeKey(params.scope, params.identity),
     mode: params.mode,
     state: "RECEIVED",
     contract: structuredClone(params.contract),

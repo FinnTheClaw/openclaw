@@ -9,7 +9,13 @@ import {
   GOVERNOR_POLICY_INTERPRETATION,
   GOVERNOR_SOUL_POLICY,
 } from "./policy.js";
-import { createGovernorTaskProjection, type GovernorTaskContract } from "./types.js";
+import {
+  createGovernorIdentityContext,
+  createGovernorTaskProjection,
+  type GovernorTaskContract,
+} from "./types.js";
+
+const identity = createGovernorIdentityContext("synthetic-policy-test-key");
 
 const contract: GovernorTaskContract = {
   objective: "Test a synthetic checkpoint",
@@ -144,6 +150,7 @@ describe("governor policy and proportional planning", () => {
       contract,
       authenticatedSourceSequence: 1,
       now: 100,
+      identity,
     });
     const checkpoint = createGovernorCheckpoint({
       checkpointId: "checkpoint-1",

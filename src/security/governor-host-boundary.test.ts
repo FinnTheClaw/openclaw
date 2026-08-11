@@ -3,10 +3,38 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "..");
-const authorityImport =
-  /security\/governor-host-(?:anti-rollback-ledger|broker|persistence)(?:\.js)?["']/u;
+const authorityModules = [
+  "governor-host-anti-rollback-ledger",
+  "governor-host-bootstrap",
+  "governor-host-broker",
+  "governor-host-delivery-implementations",
+  "governor-host-persistence",
+  "governor-host-secrets",
+] as const;
+const authorityImport = new RegExp(`security/(?:${authorityModules.join("|")})(?:\\.js)?["']`, "u");
 const forbiddenAuthority =
-  /\b(?:createHostGovernorBroker|createGovernorHostPersistence|GovernorHostPersistence|HostGovernorCapabilities|signApprovalGrant|registerStaticDeliveryAdapter|revokeDeliveryAdapter)\b/u;
+  /\b(?:createGovernorHostPersistence|createGovernorHostRuntimeBindings|createGovernorHostRuntimeIfEnabled|createHostDeliveryImplementation|createHostGovernorBroker|GovernorHostPersistence|GovernorHostRuntime|GovernorSecrets|HostGovernorCapabilities|registerStaticDeliveryAdapter|resolveGovernorSecrets|revokeDeliveryAdapter|signApprovalGrant)\b/u;
+
+const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
+  "governor-host-anti-rollback-ledger": ["security/governor-host-persistence.ts"],
+  "governor-host-bootstrap": [],
+  "governor-host-broker": [
+    "security/governor-host-bootstrap.ts",
+    "security/governor-host-readonly.ts",
+  ],
+  "governor-host-delivery-implementations": ["security/governor-host-broker.ts"],
+  "governor-host-persistence": [
+    "security/governor-host-bootstrap.ts",
+    "security/governor-host-broker.ts",
+    "security/governor-host-readonly.ts",
+  ],
+  "governor-host-secrets": [
+    "security/governor-host-bootstrap.ts",
+    "security/governor-host-broker.ts",
+    "security/governor-host-persistence.ts",
+    "security/governor-host-readonly.ts",
+  ],
+};
 
 function files(directory: string): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -34,9 +62,47 @@ describe("governor host authority boundary", () => {
 
   it("keeps host authority and test-only bridge out of package exports", () => {
     const manifest = fs.readFileSync(path.join(root, "..", "package.json"), "utf8");
-    expect(manifest).not.toContain("governor-host-broker");
-    expect(manifest).not.toContain("governor-host-persistence");
-    expect(manifest).not.toContain("governor-host-anti-rollback-ledger");
+    for (const moduleName of authorityModules) {
+      expect(manifest).not.toContain(moduleName);
+    }
     expect(manifest).not.toContain("governor-host-readonly");
+  });
+
+  it("allows authority modules only through the explicit whole-source dependency map", () => {
+    const productionFiles = files(root);
+    for (const moduleName of authorityModules) {
+      const importers = productionFiles
+        .filter((file) => fs.readFileSync(file, "utf8").includes(`/${moduleName}.js`))
+        .map((file) => path.relative(root, file).replaceAll("\\", "/"))
+        .toSorted();
+      expect(importers, moduleName).toEqual([...allowedAuthorityImporters[moduleName]].toSorted());
+    }
+  });
+
+  it("keeps ambient process secrets out of the broker, persistence, and governor stores", () => {
+    const ambientFree = [
+      "security/governor-host-broker.ts",
+      "security/governor-host-delivery-implementations.ts",
+      "security/governor-host-persistence.ts",
+      "security/governor-host-secrets.ts",
+      "tasks/governor/action-intent-store.ts",
+      "tasks/governor/approval-store.ts",
+      "tasks/governor/checkpoint-store.ts",
+      "tasks/governor/controller-bootstrap.ts",
+      "tasks/governor/delivery-certification-store.ts",
+      "tasks/governor/fanin-reducer-store.ts",
+      "tasks/governor/fanout.ts",
+      "tasks/governor/memory-integrity.ts",
+      "tasks/governor/outbox-store.ts",
+      "tasks/governor/store-bootstrap.ts",
+      "tasks/governor/store-evidence-admission.ts",
+      "tasks/governor/store.ts",
+      "tasks/governor/types.ts",
+    ];
+    for (const relative of ambientFree) {
+      expect(fs.readFileSync(path.join(root, relative), "utf8"), relative).not.toContain(
+        "process.env",
+      );
+    }
   });
 });

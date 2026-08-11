@@ -48,12 +48,12 @@ export class GovernorFanoutStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly reducers: GovernorFaninReducerStore;
 
-  constructor(params: { stateDir?: string } = {}) {
-    this.#options = params.stateDir
-      ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
-      : {};
+  constructor(params: { stateDir?: string; options?: OpenClawStateDatabaseOptions } = {}) {
+    this.#options =
+      params.options ??
+      (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
     initializeGovernorStateSchema(this.#options);
-    this.reducers = new GovernorFaninReducerStore(params);
+    this.reducers = new GovernorFaninReducerStore({ options: this.#options });
   }
 
   #task(db: DatabaseSync, taskId: GovernorTaskId): GovernorTaskProjection | null {

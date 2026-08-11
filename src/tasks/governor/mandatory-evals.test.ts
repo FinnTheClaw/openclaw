@@ -1,8 +1,13 @@
 // Runs the mandatory synthetic replay, crash, idempotency, efficiency, and deep-work gates.
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  getSyntheticHostDeliveryAttempts,
+  getSyntheticHostObservableSends,
+  recordSyntheticAcceptedSend,
+  resetSyntheticHostDeliveryAttempts,
+} from "../../security/governor-host-delivery-implementations.js";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import {
   assertGovernorMandatoryEvalGates,
@@ -12,9 +17,14 @@ import {
 import {
   countGovernorObservedKey,
   createMandatoryEvalMutationProposal,
-  ObservedDeliveryAdapter,
   ObservedMutationAdapter,
 } from "./mandatory-eval-adapters.js";
+import {
+  createMandatoryEvalRegistry,
+  mandatoryEvalContract,
+  mandatoryEvalPlan,
+  mandatoryEvalScope,
+} from "./mandatory-eval-fixtures.js";
 import { GovernorRuntimeAdapter } from "./runtime-adapter.js";
 import { GovernorSqliteStore } from "./store.js";
 import {
@@ -22,76 +32,23 @@ import {
   recordGovernorTestAdmittedToolOutcome,
   recordGovernorTestToolOutcome,
 } from "./test-broker.js";
-import {
-  createGovernorEffectId,
-  type GovernorPlan,
-  type GovernorTaskContract,
-  type GovernorTaskScope,
-} from "./types.js";
+import { createGovernorEffectId } from "./types.js";
 
-function scope(index: number): GovernorTaskScope {
-  return {
-    principalId: `principal-${index}`,
-    channel: "synthetic",
-    accountId: `account-${index}`,
-    conversationId: `conversation-${index}`,
-    sessionId: `session-${index}`,
-    agentId: "agent-eval",
-    workspaceId: `workspace-${index}`,
-  };
+function registerMandatorySyntheticDelivery(
+  capabilities: ReturnType<typeof createGovernorTestStore>["broker"]["capabilities"],
+  observerKey: string,
+) {
+  return capabilities.registerStaticDeliveryAdapter({
+    implementationId: "synthetic",
+    config: { fixture: "mandatory-eval", observerKey },
+    generation: 0,
+  });
 }
 
-function contract(objective: string, mutating: boolean): GovernorTaskContract {
-  return {
-    objective,
-    constraints: ["Use synthetic fixtures"],
-    knownFacts: [],
-    unknowns: ["final state"],
-    completionCriteria: [
-      { criterionId: "verified", description: "Final state is verified", mandatory: true },
-    ],
-    authority: {
-      allowReadOnlyDiscovery: true,
-      mutationCapabilities: mutating ? ["synthetic.mutate"] : [],
-      canonicalTargets: mutating ? ["fixture://target"] : [],
-    },
-  };
-}
-
-const plan: GovernorPlan = {
-  kind: "ordered",
-  steps: [
-    {
-      stepId: "verify",
-      description: "Produce exact synthetic evidence",
-      criterionIds: ["verified"],
-      dependsOn: [],
-    },
-  ],
-};
-
-function registry(): GovernorCapabilityRegistry {
-  return new GovernorCapabilityRegistry([
-    {
-      capability: "synthetic.mutate",
-      version: "1",
-      sourceRank: "structured_exact",
-      mutating: true,
-      canonicalTargetPrefixes: ["fixture://"],
-      requiresApproval: false,
-    },
-    {
-      capability: "synthetic.inspect",
-      version: "1",
-      sourceRank: "structured_exact",
-      mutating: false,
-      canonicalTargetPrefixes: ["fixture://"],
-      requiresApproval: false,
-    },
-  ]);
-}
-
-afterEach(() => closeOpenClawStateDatabase());
+afterEach(() => {
+  closeOpenClawStateDatabase();
+  resetSyntheticHostDeliveryAttempts("test");
+});
 
 describe("behavior governor mandatory synthetic evals", () => {
   it("keeps a four-message correction episode on one task with source sequence authority", async () => {
@@ -99,7 +56,7 @@ describe("behavior governor mandatory synthetic evals", () => {
       { layout: "state-only", prefix: "openclaw-governor-four-message-" },
       async (state) => {
         const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, registry());
+        const controller = new GovernorController(store, createMandatoryEvalRegistry());
         try {
           const arrivals = [
             { id: "message-1", sequence: 1, objective: "Initial" },
@@ -111,9 +68,9 @@ describe("behavior governor mandatory synthetic evals", () => {
             controller.ingest({
               sourceMessageId: arrival.id,
               sourceSequence: arrival.sequence,
-              scope: scope(1),
+              scope: mandatoryEvalScope(1),
               mode: "DEEP",
-              contract: contract(arrival.objective, false),
+              contract: mandatoryEvalContract(arrival.objective, false),
               now: 100 + index,
             }),
           );
@@ -142,15 +99,14 @@ describe("behavior governor mandatory synthetic evals", () => {
       async (state) => {
         let testHost = createGovernorTestStore({ stateDir: state.stateDir });
         let store = testHost.store;
-        let controller = new GovernorController(store, registry());
+        let controller = new GovernorController(store, createMandatoryEvalRegistry());
         const mutationAdapter = new ObservedMutationAdapter();
-        const deliveryAdapter = new ObservedDeliveryAdapter();
-        let deliveryHandle = testHost.broker.capabilities.registerStaticDeliveryAdapter({
-          identity: deliveryAdapter.identity,
-          config: { fixture: "mandatory-eval" },
-          generation: 0,
-          send: ({ deliveryKey, payload }) => deliveryAdapter.send({ deliveryKey, payload }),
-        });
+        const deliveryObserverKey = "mandatory-eval";
+        resetSyntheticHostDeliveryAttempts("test", deliveryObserverKey);
+        let deliveryHandle = registerMandatorySyntheticDelivery(
+          testHost.broker.capabilities,
+          deliveryObserverKey,
+        );
         const samples: GovernorEvalSample[] = [];
         const accessSamples: GovernorEvalSample[] = [];
         const crashCheckpoints = new Set<string>();
@@ -159,13 +115,11 @@ describe("behavior governor mandatory synthetic evals", () => {
           closeOpenClawStateDatabase();
           testHost = createGovernorTestStore({ stateDir: state.stateDir });
           store = testHost.store;
-          controller = new GovernorController(store, registry());
-          deliveryHandle = testHost.broker.capabilities.registerStaticDeliveryAdapter({
-            identity: deliveryAdapter.identity,
-            config: { fixture: "mandatory-eval" },
-            generation: 0,
-            send: ({ deliveryKey, payload }) => deliveryAdapter.send({ deliveryKey, payload }),
-          });
+          controller = new GovernorController(store, createMandatoryEvalRegistry());
+          deliveryHandle = registerMandatorySyntheticDelivery(
+            testHost.broker.capabilities,
+            deliveryObserverKey,
+          );
         };
 
         try {
@@ -175,9 +129,9 @@ describe("behavior governor mandatory synthetic evals", () => {
             const first = controller.ingest({
               sourceMessageId,
               sourceSequence: 1,
-              scope: scope(100 + index),
+              scope: mandatoryEvalScope(100 + index),
               mode: "FOCUSED",
-              contract: contract(`Crash recovery ${index}`, true),
+              contract: mandatoryEvalContract(`Crash recovery ${index}`, true),
               now: base + 100,
             });
             const duplicateIds = await Promise.all(
@@ -187,9 +141,9 @@ describe("behavior governor mandatory synthetic evals", () => {
                   controller.ingest({
                     sourceMessageId,
                     sourceSequence: 1,
-                    scope: scope(100 + index),
+                    scope: mandatoryEvalScope(100 + index),
                     mode: "FOCUSED",
-                    contract: contract(`Crash recovery ${index}`, true),
+                    contract: mandatoryEvalContract(`Crash recovery ${index}`, true),
                     now: base + 101,
                   }).task.taskId,
               ),
@@ -198,7 +152,7 @@ describe("behavior governor mandatory synthetic evals", () => {
             const taskId = first.task.taskId;
             reopen("after_ingress");
 
-            controller.preparePlan({ taskId, plan, now: base + 110 });
+            controller.preparePlan({ taskId, plan: mandatoryEvalPlan, now: base + 110 });
             controller.startExecution(taskId, base + 120);
             reopen("after_plan_and_start");
 
@@ -345,10 +299,7 @@ describe("behavior governor mandatory synthetic evals", () => {
             if (oldDelivery.kind !== "claimed") {
               throw new Error("missing old delivery claim");
             }
-            await deliveryAdapter.send({
-              deliveryKey: oldDelivery.entry.deliveryKey,
-              payload: oldDelivery.entry.payload,
-            });
+            recordSyntheticAcceptedSend("test", deliveryObserverKey, oldDelivery.entry.deliveryKey);
             reopen("after_delivery_provider_accept");
             await controller.dispatchOutbox({
               taskId,
@@ -362,8 +313,13 @@ describe("behavior governor mandatory synthetic evals", () => {
             const mutationAttempts = mutationAdapter.attempts.filter(
               (key) => key === newClaim.intent.idempotencyKey,
             );
-            const deliveryAttempts = deliveryAdapter.attempts.filter(
-              (key) => key === oldDelivery.entry.deliveryKey,
+            const deliveryAttempts = getSyntheticHostDeliveryAttempts(
+              "test",
+              deliveryObserverKey,
+            ).filter((key) => key === oldDelivery.entry.deliveryKey);
+            const observableDeliveries = getSyntheticHostObservableSends(
+              "test",
+              deliveryObserverKey,
             );
             samples.push({
               success:
@@ -377,10 +333,7 @@ describe("behavior governor mandatory synthetic evals", () => {
                   newClaim.intent.idempotencyKey,
                 ) > 1,
               duplicateReply:
-                countGovernorObservedKey(
-                  deliveryAdapter.observableSends,
-                  oldDelivery.entry.deliveryKey,
-                ) > 1,
+                countGovernorObservedKey(observableDeliveries, oldDelivery.entry.deliveryKey) > 1,
               meaningfulCalls: mutationAttempts.length + deliveryAttempts.length,
               usefulCalls: 2,
             });
@@ -393,10 +346,7 @@ describe("behavior governor mandatory synthetic evals", () => {
               ),
             ).toBe(1);
             expect(
-              countGovernorObservedKey(
-                deliveryAdapter.observableSends,
-                oldDelivery.entry.deliveryKey,
-              ),
+              countGovernorObservedKey(observableDeliveries, oldDelivery.entry.deliveryKey),
             ).toBe(1);
           }
 
@@ -413,9 +363,9 @@ describe("behavior governor mandatory synthetic evals", () => {
             const routed = runtime.routeIngress({
               sourceMessageId: `short-${index}`,
               sourceSequence: 1,
-              scope: scope(500 + index),
+              scope: mandatoryEvalScope(500 + index),
               profile: quickProfile,
-              contract: contract("Prompt-contained quick chat", false),
+              contract: mandatoryEvalContract("Prompt-contained quick chat", false),
               now: 30_000 + index,
             });
             return routed.kind === "quick" && routed.decision.toolPolicy === "forbidden";
@@ -459,17 +409,17 @@ describe("behavior governor mandatory synthetic evals", () => {
       { layout: "state-only", prefix: "openclaw-governor-semantic-eval-" },
       async (state) => {
         const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const controller = new GovernorController(store, registry());
+        const controller = new GovernorController(store, createMandatoryEvalRegistry());
         try {
           const taskId = controller.ingest({
             sourceMessageId: "semantic-failure",
             sourceSequence: 1,
-            scope: scope(700),
+            scope: mandatoryEvalScope(700),
             mode: "FOCUSED",
-            contract: contract("Find a required synthetic record", false),
+            contract: mandatoryEvalContract("Find a required synthetic record", false),
             now: 100,
           }).task.taskId;
-          controller.preparePlan({ taskId, plan, now: 101 });
+          controller.preparePlan({ taskId, plan: mandatoryEvalPlan, now: 101 });
           controller.startExecution(taskId, 105);
           controller.recordToolOutcome({
             taskId,

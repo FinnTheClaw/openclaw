@@ -3,14 +3,7 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
-import {
-  createGovernorTestHostBindings,
-  isTrustedGovernorReceiptResolver,
-  type GovernorTrustedReceiptResolver,
-  type GovernorTrustedApprovalResolver,
-  type GovernorTrustedDeliveryResolver,
-  type HostGovernorDeliveryHandle,
-} from "../../security/governor-host-readonly.js";
+import type { HostGovernorDeliveryHandle } from "../../security/governor-host-readonly.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -36,8 +29,11 @@ import {
 } from "./outbox-store.js";
 import type { GovernorCheckpoint } from "./planning-policy.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
-import { initializeGovernorStateSchema } from "./state-schema.js";
 import { appendGovernorAuditEvent } from "./store-audit.js";
+import {
+  createGovernorStoreDependencies,
+  type GovernorSqliteStoreParams,
+} from "./store-bootstrap.js";
 import {
   bindEffect,
   bindEvent,
@@ -53,16 +49,18 @@ import {
 import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
-  assertGovernorIdentityHmacKeyAvailable,
   createGovernorTaskProjection,
   opaqueGovernorReference,
   type GovernorEventId,
+  type GovernorIdentityContext,
   type GovernorMode,
   type GovernorTaskContract,
   type GovernorTaskId,
   type GovernorTaskProjection,
   type GovernorTaskScope,
 } from "./types.js";
+
+export type { GovernorStoreSecrets } from "./store-bootstrap.js";
 
 export type GovernorIngressResult = {
   kind: "created" | "corrected" | "duplicate" | "stale";
@@ -80,6 +78,7 @@ export type { GovernorPendingEvidence } from "./store-evidence-admission.js";
 
 export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
+  readonly identity: GovernorIdentityContext;
   readonly actionIntents: GovernorActionIntentStore;
   readonly #approvals: GovernorApprovalGrantStore;
   readonly #deliveryCertifications: GovernorDeliveryCertificationStore;
@@ -88,53 +87,21 @@ export class GovernorSqliteStore {
   readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
   readonly #queries: GovernorStoreQueries;
 
-  constructor(
-    params: {
-      stateDir?: string;
-      receiptResolver?: GovernorTrustedReceiptResolver;
-      approvalResolver?: GovernorTrustedApprovalResolver;
-      deliveryResolver?: GovernorTrustedDeliveryResolver;
-    } = {},
-  ) {
-    const testBroker =
-      process.env.NODE_ENV === "test" &&
-      (!params.receiptResolver || !params.approvalResolver || !params.deliveryResolver)
-        ? createGovernorTestHostBindings({ stateDir: params.stateDir })
-        : undefined;
-    const receiptResolver = params.receiptResolver ?? testBroker?.resolver;
-    const approvalResolver = params.approvalResolver ?? testBroker?.approvalResolver;
-    const deliveryResolver = params.deliveryResolver ?? testBroker?.deliveryResolver;
-    if (!receiptResolver || !isTrustedGovernorReceiptResolver(receiptResolver)) {
-      throw new Error("Governor store requires a trusted host receipt resolver");
-    }
-    assertGovernorIdentityHmacKeyAvailable();
-    this.#options = params.stateDir
-      ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
-      : {};
-    initializeGovernorStateSchema(this.#options);
-    this.#evidenceAdmissions = new GovernorEvidenceAdmissionStore({
-      receiptResolver,
-    });
-    this.#queries = new GovernorStoreQueries(this.#options, (evidence) =>
-      this.#evidenceAdmissions.verify(evidence),
-    );
-    this.actionIntents = new GovernorActionIntentStore(params);
-    if (!approvalResolver) {
-      throw new Error("Governor store requires a trusted host approval resolver");
-    }
-    this.#approvals = new GovernorApprovalGrantStore({
-      stateDir: params.stateDir,
-      approvalResolver,
-    });
-    if (!deliveryResolver) {
-      throw new Error("Governor store requires a trusted host delivery resolver");
-    }
-    this.#deliveryCertifications = new GovernorDeliveryCertificationStore({
-      stateDir: params.stateDir,
-      deliveryResolver,
-    });
-    this.checkpoints = new GovernorCheckpointStore(params);
-    this.outbox = new GovernorOutboxStore(params);
+  constructor(params: GovernorSqliteStoreParams = {}) {
+    const dependencies = createGovernorStoreDependencies(params);
+    this.#options = dependencies.options;
+    this.identity = dependencies.identity;
+    this.#evidenceAdmissions = dependencies.evidenceAdmissions;
+    this.#queries = dependencies.queries;
+    this.actionIntents = dependencies.actionIntents;
+    this.#approvals = dependencies.approvals;
+    this.#deliveryCertifications = dependencies.deliveryCertifications;
+    this.checkpoints = dependencies.checkpoints;
+    this.outbox = dependencies.outbox;
+  }
+
+  opaqueReference(kind: string, value: string): string {
+    return opaqueGovernorReference(kind, value, this.identity);
   }
 
   #database() {
@@ -210,10 +177,12 @@ export class GovernorSqliteStore {
         authenticatedSourceSequence: params.sourceSequence,
         flowId: params.flowId,
         now: params.now,
+        identity: this.identity,
       });
       const sourceMessageId = opaqueGovernorReference(
         `source-message:${incoming.scopeKey}`,
         params.sourceMessageId,
+        this.identity,
       );
       const duplicate = executeSqliteQueryTakeFirstSync(
         db,

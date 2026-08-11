@@ -6,6 +6,7 @@ import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorActionProposal } from "./tool-outcome.js";
 import {
   opaqueGovernorReference,
+  type GovernorIdentityContext,
   type GovernorTaskId,
   type GovernorTaskProjection,
 } from "./types.js";
@@ -38,12 +39,13 @@ export type GovernorActionIntent = {
 
 export function toPersistentGovernorActionProposal(
   proposal: GovernorActionProposal,
+  identity: GovernorIdentityContext,
 ): GovernorActionProposal {
   return {
     ...proposal,
     canonicalTarget: /^[a-f0-9]{64}$/u.test(proposal.canonicalTarget)
       ? proposal.canonicalTarget
-      : opaqueGovernorReference("action-target", proposal.canonicalTarget),
+      : opaqueGovernorReference("action-target", proposal.canonicalTarget, identity),
   };
 }
 
@@ -53,12 +55,13 @@ export function createGovernorActionIntent(params: {
   progressVector: GovernorJsonValue;
   forceReplanAfterOutcome: boolean;
   now: number;
+  identity: GovernorIdentityContext;
 }): GovernorActionIntent {
   const rawProposal = assertGovernorBoundarySafe(
     "log",
     params.proposal as unknown as GovernorJsonValue,
   ) as unknown as GovernorActionProposal;
-  const proposal = toPersistentGovernorActionProposal(rawProposal);
+  const proposal = toPersistentGovernorActionProposal(rawProposal, params.identity);
   return {
     taskId: params.task.taskId,
     effectId: proposal.effectId,
@@ -78,7 +81,7 @@ export function createGovernorActionIntent(params: {
     claimEpoch: 0,
     proposal,
     proposalDigest: governorDigest(proposal as unknown as GovernorJsonValue),
-    actionFingerprint: createGovernorActionFingerprint(proposal),
+    actionFingerprint: createGovernorActionFingerprint(proposal, params.identity),
     progressVectorHash: governorProgressVectorHash(params.progressVector),
     forceReplanAfterOutcome: params.forceReplanAfterOutcome,
     createdAt: params.now,

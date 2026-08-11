@@ -113,7 +113,7 @@ export class GovernorActionRuntime {
   admit(params: GovernorAdmitActionParams): GovernorActionAdmissionResult {
     const task = this.#task(params.taskId);
     const proposal = { ...params.proposal, taskId: task.taskId };
-    const persistedProposal = toPersistentGovernorActionProposal(proposal);
+    const persistedProposal = toPersistentGovernorActionProposal(proposal, this.store.identity);
     const existing = this.store.actionIntents.load(task.taskId, proposal.effectId);
     if (existing) {
       const stale =
@@ -158,6 +158,7 @@ export class GovernorActionRuntime {
       progressVector: params.progressVector,
       priorEffects: this.store.listEffects(task.taskId),
       objectiveRevision: task.objectiveRevision,
+      identity: this.store.identity,
     });
     if (!admission.admitted) {
       throw new Error(`Governor action rejected: ${admission.reason}`);
@@ -168,6 +169,7 @@ export class GovernorActionRuntime {
       progressVector: params.progressVector,
       forceReplanAfterOutcome: admission.forceReplanAfterOutcome,
       now: params.now,
+      identity: this.store.identity,
     });
     const next = nextTaskVersion(task, params.now);
     const event = createGovernorEventRecord({
@@ -204,7 +206,7 @@ export class GovernorActionRuntime {
       return false;
     }
     try {
-      this.capabilities.assertPersistedIntentAuthorized(task, stored.proposal);
+      this.capabilities.assertPersistedIntentAuthorized(task, stored.proposal, this.store.identity);
       return true;
     } catch {
       return false;
@@ -285,6 +287,7 @@ export class GovernorActionRuntime {
       progressVector: { persistedProgressHash: intent.progressVectorHash },
       outcome: params.outcome,
       now: params.now,
+      identity: this.store.identity,
     });
     effect.progressVectorHash = intent.progressVectorHash;
     let evidence: GovernorEvidenceRecord | undefined;

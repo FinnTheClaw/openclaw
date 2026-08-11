@@ -10,10 +10,8 @@ import {
   type OpenClawTestState,
   withOpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
-import type { GovernorJsonValue } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
-import type { GovernorDeliveryAdapter } from "./delivery-certification.js";
 import { createGovernorTestStore } from "./test-broker.js";
 import type { GovernorPlan, GovernorTaskScope } from "./types.js";
 
@@ -27,14 +25,6 @@ const scope: GovernorTaskScope = {
   agentId: "agent",
   workspaceId: "workspace",
 };
-const identity = { adapterId: "synthetic", version: "1", capability: "message.send" };
-class Adapter implements GovernorDeliveryAdapter {
-  readonly attempts: string[] = [];
-  async send(params: { deliveryKey: string; payload: unknown }) {
-    this.attempts.push(params.deliveryKey);
-    return { deliveryKey: params.deliveryKey, receipt: { synthetic: true } };
-  }
-}
 const controller = (store: import("./store.js").GovernorSqliteStore) =>
   new GovernorController(store, new GovernorCapabilityRegistry([]));
 async function closeDatabaseForCleanup(): Promise<void> {
@@ -78,14 +68,12 @@ function completion(governor: GovernorController) {
 }
 function register(
   broker: ReturnType<typeof createGovernorTestStore>["broker"],
-  adapter: Adapter,
   generation: number,
 ) {
   return broker.capabilities.registerStaticDeliveryAdapter({
-    identity,
+    implementationId: "synthetic",
     config: { fixture: "synthetic" },
     generation,
-    send: ({ deliveryKey, payload }) => adapter.send({ deliveryKey, payload }),
   });
 }
 afterEach(() => closeOpenClawStateDatabase());
@@ -96,7 +84,6 @@ describe("governor delivery certification", () => {
       const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       const governed = controller(store);
       const entry = completion(governed);
-      const adapter = new Adapter();
       await expect(
         governed.dispatchOutbox({
           ...entry,
@@ -105,10 +92,10 @@ describe("governor delivery certification", () => {
           now: 6,
         }),
       ).rejects.toThrow(/host-registered/);
-      const handle = register(broker, adapter, 0);
+      const handle = register(broker, 0);
       await governed.dispatchOutbox({ ...entry, workerId: "w", adapterHandle: handle, now: 8 });
       await governed.dispatchOutbox({ ...entry, workerId: "retry", adapterHandle: handle, now: 9 });
-      expect(adapter.attempts).toHaveLength(1);
+      expect(governed.store.outbox.list(entry.taskId)[0]?.state).toBe("sent");
       await closeDatabaseForCleanup();
     });
   });
@@ -118,20 +105,13 @@ describe("governor delivery certification", () => {
       const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       const governed = controller(store);
       const entry = completion(governed);
-      const adapter = new Adapter();
-      const handle = register(broker, adapter, 0);
-      const clone: GovernorDeliveryAdapter = {
-        async send(params) {
-          return { deliveryKey: params.deliveryKey, receipt: {} };
-        },
-      };
+      const handle = register(broker, 0);
       await expect(
         Promise.resolve().then(() =>
           broker.capabilities.registerStaticDeliveryAdapter({
-            identity,
+            implementationId: "synthetic",
             config: { fixture: "synthetic" },
             generation: 0,
-            send: ({ deliveryKey, payload }) => clone.send({ deliveryKey, payload }),
           }),
         ),
       ).rejects.toThrow(/already registered/);
@@ -148,8 +128,7 @@ describe("governor delivery certification", () => {
       const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       const governed = controller(store);
       const entry = completion(governed);
-      const adapter = new Adapter();
-      const handle = register(broker, adapter, 0);
+      const handle = register(broker, 0);
       const certified = governed.store.resolveCertifiedDelivery(handle);
       const { db } = openOpenClawStateDatabase({
         env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir },
@@ -169,15 +148,10 @@ describe("governor delivery certification", () => {
       const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       const governed = controller(store);
       const entry = completion(governed);
-      const attempts: string[] = [];
       const handle = broker.capabilities.registerStaticDeliveryAdapter({
-        identity,
+        implementationId: "synthetic",
         config: { fixture: "snapshot" },
         generation: 0,
-        send: async ({ deliveryKey }) => {
-          attempts.push(deliveryKey);
-          return { deliveryKey, receipt: {} };
-        },
       });
       store.resolveCertifiedDelivery(handle);
       const primaryPath = path.join(state.stateDir, "state", "openclaw.sqlite");
@@ -190,7 +164,7 @@ describe("governor delivery certification", () => {
       await expect(
         governed.dispatchOutbox({ ...entry, workerId: "replayed", adapterHandle: handle, now: 10 }),
       ).rejects.toThrow(/host-registered/);
-      expect(attempts).toHaveLength(0);
+      expect(store.outbox.list(entry.taskId)[0]?.state).toBe("pending");
     });
   });
 
@@ -199,8 +173,7 @@ describe("governor delivery certification", () => {
       const first = createGovernorTestStore({ stateDir: state.stateDir });
       const governed = controller(first.store);
       const entry = completion(governed);
-      const adapter = new Adapter();
-      const handle = register(first.broker, adapter, 0);
+      const handle = register(first.broker, 0);
       await governed.dispatchOutbox({ ...entry, workerId: "first", adapterHandle: handle, now: 8 });
       expect(first.broker.capabilities.revokeDeliveryAdapter({ handle })).toBe(true);
 
@@ -208,56 +181,28 @@ describe("governor delivery certification", () => {
       // broker has no old cache but the durable generation fence still wins.
       closeOpenClawStateDatabase();
       const restarted = createGovernorTestStore({ stateDir: state.stateDir });
-      expect(() => register(restarted.broker, new Adapter(), 0)).toThrow(/durably stale/);
-      const replacement = register(restarted.broker, new Adapter(), 2);
+      expect(() => register(restarted.broker, 0)).toThrow(/durably stale/);
+      const replacement = register(restarted.broker, 2);
       expect(restarted.store.resolveCertifiedDelivery(replacement).generation).toBe(2);
       await closeDatabaseForCleanup();
     });
   });
 
-  it("captures a bare sender and frozen config, not a mutable adapter object", async () => {
+  it("captures a deeply frozen config snapshot from the host implementation", async () => {
     await withDeliveryState(async (state) => {
       const { broker } = createGovernorTestStore({ stateDir: state.stateDir });
       const mutableConfig = { label: "before", nested: { value: "before" } };
-      const mutableSource: {
-        state: string;
-        send: (params: {
-          config: GovernorJsonValue;
-          deliveryKey: string;
-          payload: GovernorJsonValue;
-        }) => Promise<{ deliveryKey: string; receipt: GovernorJsonValue }>;
-      } = {
-        state: "before",
-        async send(params: {
-          config: GovernorJsonValue;
-          deliveryKey: string;
-          payload: GovernorJsonValue;
-        }) {
-          const config = params.config as { label: string; nested: { value: string } };
-          return {
-            deliveryKey: params.deliveryKey,
-            receipt: { label: config.label, nested: config.nested.value },
-          };
-        },
-      };
-      const originalSend = mutableSource.send;
       const handle = broker.capabilities.registerStaticDeliveryAdapter({
-        identity,
+        implementationId: "synthetic",
         config: mutableConfig,
         generation: 0,
-        send: originalSend,
       });
       mutableConfig.label = "after";
       mutableConfig.nested.value = "after";
-      mutableSource.state = "after";
-      mutableSource.send = async ({ deliveryKey }) => ({
-        deliveryKey,
-        receipt: { replacement: true },
-      });
       const resolved = broker.deliveryResolver.resolve(handle);
       expect(resolved).not.toBeNull();
       await expect(resolved?.send({ deliveryKey: "key", payload: {} })).resolves.toMatchObject({
-        receipt: { label: "before", nested: "before" },
+        receipt: { config: { label: "before", nested: { value: "before" } } },
       });
       await closeDatabaseForCleanup();
     });

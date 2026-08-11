@@ -1,6 +1,10 @@
 // Authorizes versioned capabilities and binds privileged actions to current approvals.
 import type { GovernorActionProposal } from "./tool-outcome.js";
-import { opaqueGovernorReference, type GovernorTaskProjection } from "./types.js";
+import {
+  opaqueGovernorReference,
+  type GovernorIdentityContext,
+  type GovernorTaskProjection,
+} from "./types.js";
 
 export type GovernorCapabilityDefinition = {
   capability: string;
@@ -115,6 +119,7 @@ export class GovernorCapabilityRegistry {
   assertPersistedIntentAuthorized(
     task: GovernorTaskProjection,
     proposal: GovernorActionProposal,
+    identity: GovernorIdentityContext,
   ): void {
     const definition = this.#definitions.get(proposal.capability);
     if (!definition) {
@@ -140,7 +145,8 @@ export class GovernorCapabilityRegistry {
     }
     if (
       !task.contract.authority.canonicalTargets.some(
-        (target) => opaqueGovernorReference("action-target", target) === proposal.canonicalTarget,
+        (target) =>
+          opaqueGovernorReference("action-target", target, identity) === proposal.canonicalTarget,
       )
     ) {
       throw new GovernorActionRejectedError("mutation_target_denied");

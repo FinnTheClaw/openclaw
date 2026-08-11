@@ -9,11 +9,14 @@ import { GovernorSqliteStore } from "./store.js";
 import { createGovernorEffectRecord, type GovernorActionProposal } from "./tool-outcome.js";
 import {
   createGovernorEffectId,
+  createGovernorIdentityContext,
   createGovernorTaskProjection,
   type GovernorPlan,
   type GovernorTaskContract,
   type GovernorTaskScope,
 } from "./types.js";
+
+const identity = createGovernorIdentityContext("synthetic-governed-actions-key");
 
 const scope: GovernorTaskScope = {
   principalId: "principal-actions",
@@ -83,6 +86,7 @@ function readProposal(effectId: string): GovernorActionProposal {
       contract: contract(),
       authenticatedSourceSequence: 1,
       now: 1,
+      identity,
     }).taskId,
     effectId: createGovernorEffectId(effectId),
     criterionId: "verified",
@@ -114,6 +118,7 @@ describe("governed actions", () => {
       contract: contract(true),
       authenticatedSourceSequence: 1,
       now: 100,
+      identity,
     });
     const proposal: GovernorActionProposal = {
       ...readProposal("mutation"),
@@ -148,6 +153,7 @@ describe("governed actions", () => {
         summaryCode: "missing",
       },
       now: 100,
+      identity,
     };
     const first = createGovernorEffectRecord(base);
     const secondProposal = { ...proposal, effectId: createGovernorEffectId("second") };
@@ -166,6 +172,7 @@ describe("governed actions", () => {
         progressVector: { verified: [], requestId: "request-c", timestamp: 300 },
         priorEffects: [first, second],
         objectiveRevision: 1,
+        identity,
       }),
     ).toMatchObject({ admitted: false, reason: "no_progress_limit" });
   });

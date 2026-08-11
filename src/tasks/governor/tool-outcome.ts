@@ -4,7 +4,7 @@ import type { GovernorJsonValue } from "./canonical-json.js";
 import { governorDigest } from "./canonical-json.js";
 import { governorProgressVectorHash } from "./progress-monitor.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
-import type { GovernorEffectId, GovernorTaskId } from "./types.js";
+import type { GovernorEffectId, GovernorIdentityContext, GovernorTaskId } from "./types.js";
 
 export type GovernorSemanticOutcome =
   | "success"
@@ -68,6 +68,7 @@ export function createGovernorEffectRecord(params: {
   progressVector: GovernorJsonValue;
   outcome: GovernorToolOutcome;
   now: number;
+  identity: GovernorIdentityContext;
 }): GovernorEffectRecord {
   const safeProposal = assertGovernorBoundarySafe(
     "log",
@@ -99,7 +100,7 @@ export function createGovernorEffectRecord(params: {
     planVersion: params.planVersion,
     leaseEpoch: params.leaseEpoch,
     executionGeneration: params.executionGeneration,
-    actionFingerprint: createGovernorActionFingerprint(safeProposal),
+    actionFingerprint: createGovernorActionFingerprint(safeProposal, params.identity),
     progressVectorHash: governorProgressVectorHash(params.progressVector),
     outcome: safeOutcome,
     verificationState,

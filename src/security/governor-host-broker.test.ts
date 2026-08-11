@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isTrustedGovernorReceiptResolver } from "./governor-host-broker.js";
+import { createHostDeliveryImplementation } from "./governor-host-delivery-implementations.js";
 import { createGovernorTestHostBindings } from "./governor-host-readonly.js";
 
 describe("governor host broker", () => {
@@ -21,5 +22,98 @@ describe("governor host broker", () => {
     expect(broker.resolver.resolve(receiptId, "scope-b")).toBeNull();
     expect(isTrustedGovernorReceiptResolver(broker.resolver)).toBe(true);
     expect(isTrustedGovernorReceiptResolver({ resolve: () => null })).toBe(false);
+  });
+
+  it("resolves only a compiled implementation and snapshots caller-owned config", async () => {
+    const broker = createGovernorTestHostBindings();
+    const originalConfig = { label: "before", nested: { value: "before" } };
+    const registration = {
+      implementationId: "synthetic",
+      config: originalConfig,
+      generation: 0,
+    };
+    const handle = broker.capabilities.registerStaticDeliveryAdapter(registration);
+    registration.config = { label: "caller-replaced", nested: { value: "caller-replaced" } };
+    originalConfig.label = "after";
+    originalConfig.nested.value = "after";
+
+    const resolved = broker.deliveryResolver.resolve(handle);
+    expect(resolved).not.toBeNull();
+    const result = await resolved!.send({ deliveryKey: "key", payload: {} });
+    expect(result.receipt).toMatchObject({
+      config: { label: "before", nested: { value: "before" } },
+    });
+    const config = (result.receipt as { config: { nested: object } }).config;
+    expect(Object.isFrozen(config)).toBe(true);
+    expect(Object.isFrozen(config.nested)).toBe(true);
+  });
+
+  it("rejects arbitrary IDs, caller functions, registries, and executable config fields", () => {
+    const broker = createGovernorTestHostBindings();
+    expect(() =>
+      broker.capabilities.registerStaticDeliveryAdapter({
+        implementationId: "caller-owned",
+        config: {},
+        generation: 0,
+      }),
+    ).toThrow(/not allowlisted/);
+
+    let closureState = "before";
+    let functionVariable = () => closureState;
+    expect(() =>
+      broker.capabilities.registerStaticDeliveryAdapter({
+        implementationId: "synthetic",
+        config: { send: functionVariable } as never,
+        generation: 0,
+      }),
+    ).toThrow(/executable|non-JSON/);
+    functionVariable = () => "after";
+    closureState = "after";
+
+    expect(() =>
+      broker.capabilities.registerStaticDeliveryAdapter({
+        implementationId: "synthetic",
+        config: { nested: { factory: "caller-owned" } } as never,
+        generation: 0,
+      }),
+    ).toThrow(/executable/);
+    expect(() =>
+      broker.capabilities.registerStaticDeliveryAdapter({
+        implementationId: "synthetic",
+        config: {},
+        generation: 0,
+        send: functionVariable,
+      } as never),
+    ).toThrow(/only implementationId, config, and generation/);
+  });
+
+  it("rejects the synthetic implementation without the trusted test mode", () => {
+    expect(() =>
+      createHostDeliveryImplementation({
+        implementationId: "synthetic",
+        config: {},
+        mode: "production",
+      }),
+    ).toThrow(/test-only/);
+  });
+
+  it("uses explicit test mode without reading ambient process environment", () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    try {
+      expect(
+        createHostDeliveryImplementation({
+          implementationId: "synthetic",
+          config: {},
+          mode: "test",
+        }).identity,
+      ).toEqual({ adapterId: "synthetic", version: "1", capability: "message.send" });
+    } finally {
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousNodeEnv;
+      }
+    }
   });
 });

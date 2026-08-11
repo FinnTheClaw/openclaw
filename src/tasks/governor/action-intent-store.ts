@@ -120,10 +120,10 @@ function parseActionIntent(row: GovernorActionIntentRow): GovernorActionIntent {
 export class GovernorActionIntentStore {
   readonly #options: OpenClawStateDatabaseOptions;
 
-  constructor(params: { stateDir?: string } = {}) {
-    this.#options = params.stateDir
-      ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
-      : {};
+  constructor(params: { stateDir?: string; options?: OpenClawStateDatabaseOptions } = {}) {
+    this.#options =
+      params.options ??
+      (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
     initializeGovernorStateSchema(this.#options);
   }
 

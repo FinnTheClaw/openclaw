@@ -48,9 +48,10 @@ isolated SQLite state.
     conversation, session, source-message, provenance, and approval-issuer identifiers are
     represented by keyed opaque references in durable governor records.
 13. A mutating capability that requires approval accepts only a host-issued opaque grant ID.
-    Grant issuance reads a host-owned approver allowlist and signs task scope, objective revision,
-    capability/version, canonical target, expiry, key version, and a monotonic approval epoch.
-    A model proposal or caller-provided callback cannot mint, extend, or replay a revoked grant.
+    Grant issuance accepts only an authenticated host-integration receipt and signs task scope,
+    objective revision, capability/version, canonical target, expiry, key version, and a monotonic
+    approval epoch. A model proposal or caller-provided callback cannot mint, extend, or replay a
+    revoked grant.
     Host revocation commits its grant tombstone and scope epoch in one durable transaction before
     reporting success; resolver caches are never authoritative.
 14. Completion reads durable claims, contradictions, pending-update state, and evidence for the
@@ -78,6 +79,11 @@ isolated SQLite state.
     SQLite tables: an HMAC/hash-chained journal and an independently signed current-head/high-water
     anchor are both required. Missing, lower, mismatched, tampered, truncated, or key-mismatched
     state fails closed; ledger-first writes may be retried to reconcile primary SQLite state.
+21. V10 resolves one explicit `GovernorSecrets` context at trusted bootstrap and passes it to the
+    broker, anti-rollback persistence, evidence signer, identity codec, and state store. Those lower
+    layers never consult ambient process globals. Delivery registration accepts only an allowlisted
+    compiled implementation ID, a validated deeply frozen JSON configuration, and a generation;
+    callers cannot supply executable code, adapter objects, factories, or registries.
 
 ## Consequences
 
@@ -90,9 +96,10 @@ can remain unused indefinitely while the feature flag is off.
 
 The governor remains disabled by default. A future production rollout must first provide host-held
 `OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY`, `OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY`,
-`OPENCLAW_GOVERNOR_APPROVAL_KEY`, `OPENCLAW_GOVERNOR_DELIVERY_CERTIFICATION_KEY`, and
-`OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY`, configure
-the host approver allowlist, register/certify each selected channel adapter, and install concrete
+`OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY`, and
+`OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY` as four independently provisioned keys, configure
+authenticated evidence, approval, and delivery integration owners, register/certify at least one
+compiled host-owned channel implementation, and install concrete
 cache/index/embedding invalidation adapters for every governed memory backend. Until then, this is
 a synthetic-testable control plane rather than a live message-path replacement.
 
@@ -105,9 +112,11 @@ adapter, replace a sender, or obtain a secret. This is an object-capability boun
 OpenClaw process; it deliberately does **not** claim to protect against a compromised operating
 system or process that can read memory or host secrets.
 
-`src/security/governor-host-broker.ts` is a private capability kernel. It is not in the package
-export map. The only permitted dependency path is trusted application bootstrap/integration -> host
-broker -> read-only resolver bridge -> governor store. Governor, task, model, and plugin code may
+`src/security/governor-host-bootstrap.ts`, `governor-host-broker.ts`,
+`governor-host-delivery-implementations.ts`, `governor-host-persistence.ts`,
+`governor-host-secrets.ts`, and the anti-rollback ledger form the private host boundary. They are
+not in the package export map. A whole-source allowlist permits only the explicit trusted bootstrap
+and host-internal dependency edges. Governor, task, model, and plugin code may
 consume read-only resolvers from `governor-host-readonly.ts`, but must not import the broker or a
 capability constructor. The static boundary test enforces that edge. Test-only synthetic bindings
 are rejected unless `NODE_ENV=test`; they are never a production fallback.
@@ -117,19 +126,22 @@ signatures. The journal and signed head are separate from replayable governor SQ
 full host/OS snapshot that replays both sidecars together remains outside Slice 1; hardware or
 remote monotonic storage is required for that stronger rollback guarantee.
 
-At a future live rollout, authenticated terminal, UI, and channel integrations must hold the host
-capabilities. They submit observed tool/channel receipts, approval/revocation receipts, and static
-delivery callables. The broker retains signing keys in the runtime secret provider only; SQLite
+At a future live rollout, authenticated terminal, UI, and channel integrations must hold separate
+narrow evidence, approval/revocation, and delivery capabilities returned only by trusted bootstrap.
+The task-facing controller receives read-only resolvers. Bootstrap fails closed without all three
+integration owners and at least one certified delivery implementation. The broker retains signing
+keys in the runtime secret provider only; SQLite
 stores opaque IDs, key IDs/versions, signatures, payload/semantic digests, grants, and monotonic
 epoch/generation high-water marks. Rotation creates a new key/version and accepts only explicitly
 configured active verification versions. Restart reconstructs state from durable signed records;
 revocation high-water marks fence old grants and delivery generations.
 
-Delivery registration captures a bare callable with a deep-cloned, deep-frozen non-secret
-configuration snapshot; it never binds or retains a caller-owned adapter object. A later mutation
-of the source object, replacement function, or descriptor/config object cannot change dispatch.
-Trusted callable closures are still code running inside the trusted host boundary and may have their
-own side effects; that is outside the task/model API threat model. If no authenticated host integration exists, startup must
-remain fail-closed and the feature must remain disabled. `emitTrustedDiagnosticEvent` is explicitly
+Delivery registration resolves a compiled host-owned implementation by allowlisted ID and binds a
+deep-cloned, deep-frozen non-secret configuration snapshot. It never accepts or retains a
+caller-owned function, closure, object, factory, or registry. A later mutation of the caller's
+descriptor or nested configuration cannot change dispatch. Production currently has no certified
+channel implementation, so live enablement remains intentionally fail-closed until that concrete
+integration is added and reviewed. If no authenticated host integration exists, startup must remain
+fail-closed and the feature must remain disabled. `emitTrustedDiagnosticEvent` is explicitly
 inadmissible: it is a diagnostic API rather than an authenticated authority boundary and must never
 issue a governor receipt, approval, or adapter certification.

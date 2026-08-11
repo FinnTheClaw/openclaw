@@ -2,7 +2,13 @@
 import { describe, expect, it } from "vitest";
 import { isBehaviorGovernorEnabled } from "./feature-flag.js";
 import { applyGovernorTransition, reclaimGovernorLease } from "./state-machine.js";
-import { createGovernorTaskProjection, type GovernorTaskScope } from "./types.js";
+import {
+  createGovernorIdentityContext,
+  createGovernorTaskProjection,
+  type GovernorTaskScope,
+} from "./types.js";
+
+const identity = createGovernorIdentityContext("synthetic-state-machine-key");
 
 const scope: GovernorTaskScope = {
   principalId: "principal-a",
@@ -20,6 +26,7 @@ function task() {
     mode: "DEEP",
     authenticatedSourceSequence: 1,
     now: 100,
+    identity,
     contract: {
       objective: "Prove a synthetic workflow",
       constraints: [],

@@ -9,7 +9,9 @@ import {
   scanGovernorSecrets,
   type GovernorSecretBoundary,
 } from "./secret-filter.js";
-import type { GovernorTaskScope } from "./types.js";
+import { createGovernorIdentityContext, type GovernorTaskScope } from "./types.js";
+
+const identity = createGovernorIdentityContext("synthetic-memory-test-identity-key");
 
 const scopeA: GovernorTaskScope = {
   principalId: "principal-a",
@@ -36,7 +38,7 @@ async function withMemoryStore(
     async (state) => {
       try {
         await run({
-          store: new GovernorMemoryStore({ stateDir: state.stateDir }),
+          store: new GovernorMemoryStore({ stateDir: state.stateDir, identity }),
           stateDir: state.stateDir,
         });
       } finally {
@@ -124,7 +126,7 @@ describe("governor memory integrity", () => {
       ]);
 
       closeOpenClawStateDatabase();
-      const restarted = new GovernorMemoryStore({ stateDir });
+      const restarted = new GovernorMemoryStore({ stateDir, identity });
       expect(restarted.retrieve({ scope: scopeA, now: 104 }).map((item) => item.memoryId)).toEqual([
         "memory-a",
       ]);

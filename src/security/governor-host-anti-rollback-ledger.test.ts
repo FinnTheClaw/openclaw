@@ -10,10 +10,13 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGovernorHostAntiRollbackLedger } from "./governor-host-anti-rollback-ledger.js";
 import { createHostGovernorBroker } from "./governor-host-broker.js";
 import { createGovernorHostPersistence } from "./governor-host-persistence.js";
+import {
+  resolveGovernorSecrets,
+  syntheticGovernorSecretsEnvironment,
+} from "./governor-host-secrets.js";
 
 const ledgerKey = "synthetic-v9-ledger-key";
 const receiptKey = "synthetic-v9-receipt-key";
-const identity = { adapterId: "synthetic", version: "1", capability: "message.send" };
 
 function ledgerPaths(stateDir: string): { journal: string; head: string } {
   const directory = path.join(stateDir, "state", "host-governor");
@@ -25,10 +28,9 @@ function ledgerPaths(stateDir: string): { journal: string; head: string } {
 
 function register(broker: ReturnType<typeof createHostGovernorBroker>, generation = 0) {
   return broker.capabilities.registerStaticDeliveryAdapter({
-    identity,
+    implementationId: "synthetic",
     config: { fixture: "v9" },
     generation,
-    send: async ({ deliveryKey }) => ({ deliveryKey, receipt: { sent: true } }),
   });
 }
 
@@ -131,9 +133,17 @@ describe("governor V9 host anti-rollback ledger", () => {
       { layout: "state-only", prefix: "governor-v9-crash-" },
       async (state) => {
         let crash = true;
+        const hostEnv = {
+          ...syntheticGovernorSecretsEnvironment(state.stateDir),
+          OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY: ledgerKey,
+          OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: receiptKey,
+        };
+        const secrets = resolveGovernorSecrets(hostEnv);
         const persistence = createGovernorHostPersistence({
+          env: hostEnv,
           stateDir: state.stateDir,
-          ledgerKey,
+          secrets,
+          testMode: true,
           testAfterLedgerAppend: () => {
             if (crash) {
               crash = false;
@@ -141,7 +151,10 @@ describe("governor V9 host anti-rollback ledger", () => {
             }
           },
         });
-        const broker = createHostGovernorBroker({ receiptSigningKey: receiptKey, persistence });
+        const broker = createHostGovernorBroker({
+          secrets,
+          persistence,
+        });
         const handle = register(broker);
         expect(() => broker.capabilities.revokeDeliveryAdapter({ handle })).toThrow(
           /synthetic crash/,

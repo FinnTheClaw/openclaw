@@ -17,7 +17,6 @@ import type {
   GovernorTrustedDeliveryResolver,
   GovernorTrustedReceiptResolver,
   HostBrokerState,
-  HostDeliveryEntry,
   HostGovernorApprovalReceiptId,
   HostGovernorApprovalRevocationId,
   HostGovernorCapabilities,
@@ -25,9 +24,14 @@ import type {
   HostGovernorReceiptId,
 } from "./governor-host-contracts.js";
 import {
+  createHostDeliveryImplementation,
+  type HostDeliveryImplementationMode,
+} from "./governor-host-delivery-implementations.js";
+import {
   isGovernorHostPersistence,
   type GovernorHostPersistence,
 } from "./governor-host-persistence.js";
+import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
 export type {
   GovernorAuthenticatedApprovalReceipt,
   GovernorAuthenticatedApprovalRevocation,
@@ -45,17 +49,6 @@ const CAPABILITIES = new WeakSet<object>();
 const RESOLVERS = new WeakSet<object>();
 const APPROVAL_RESOLVERS = new WeakSet<object>();
 const DELIVERY_RESOLVERS = new WeakSet<object>();
-
-function deepFreeze<T>(value: T): T {
-  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  Object.freeze(value);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return value;
-}
 
 function sign(key: string, value: GovernorJsonValue): string {
   return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
@@ -90,7 +83,7 @@ export function isTrustedGovernorDeliveryResolver(
  * task-facing code.  The returned capabilities are object-capability scoped.
  */
 export function createHostGovernorBroker(params: {
-  receiptSigningKey: string;
+  secrets: GovernorSecrets;
   persistence: GovernorHostPersistence;
 }): {
   capabilities: HostGovernorCapabilities;
@@ -98,16 +91,17 @@ export function createHostGovernorBroker(params: {
   approvalResolver: GovernorTrustedApprovalResolver;
   deliveryResolver: GovernorTrustedDeliveryResolver;
 } {
-  if (!params.receiptSigningKey.trim() || !isGovernorHostPersistence(params.persistence)) {
-    throw new Error("Host governor receipt signing key is required");
+  if (!isGovernorSecrets(params.secrets) || !isGovernorHostPersistence(params.persistence)) {
+    throw new Error("Host governor validated secrets and persistence are required");
   }
   const state: HostBrokerState = {
-    key: params.receiptSigningKey,
+    key: params.secrets.receiptSigningKey,
     receipts: new Map(),
     approvals: new Map(),
     revocations: new Map(),
     deliveries: new Map(),
   };
+  const deliveryImplementationMode: HostDeliveryImplementationMode = params.secrets.runtimeMode;
   const capability = {};
   CAPABILITIES.add(capability);
   const submitObservedReceipt: HostGovernorCapabilities["submitObservedReceipt"] = (input) => {
@@ -205,6 +199,26 @@ export function createHostGovernorBroker(params: {
   const registerStaticDeliveryAdapter: HostGovernorCapabilities["registerStaticDeliveryAdapter"] = (
     input,
   ) => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new Error(
+        "Governor host delivery registration accepts only implementationId, config, and generation",
+      );
+    }
+    const inputKeys = Reflect.ownKeys(input);
+    const inputDescriptors = Object.getOwnPropertyDescriptors(input);
+    if (
+      inputKeys.length !== 3 ||
+      inputKeys.some(
+        (key) =>
+          typeof key === "symbol" ||
+          (key !== "implementationId" && key !== "config" && key !== "generation") ||
+          !("value" in inputDescriptors[key]),
+      )
+    ) {
+      throw new Error(
+        "Governor host delivery registration accepts only implementationId, config, and generation",
+      );
+    }
     if (
       !CAPABILITIES.has(capability) ||
       !Number.isSafeInteger(input.generation) ||
@@ -212,16 +226,12 @@ export function createHostGovernorBroker(params: {
     ) {
       throw new Error("Governor host delivery capability is invalid");
     }
-    if (typeof input.send !== "function") {
-      throw new Error("Governor host delivery capability requires a sender");
-    }
-    const identity = Object.freeze(structuredClone(input.identity));
-    const config = deepFreeze(structuredClone(input.config));
-    // Capture the bare callable and a frozen value snapshot. This never retains
-    // a caller-owned adapter object or invokes a method through mutable `this`.
-    const implementation = input.send;
-    const send: HostDeliveryEntry["send"] = ({ deliveryKey, payload }) =>
-      implementation({ config, deliveryKey, payload });
+    const implementation = createHostDeliveryImplementation({
+      implementationId: input.implementationId,
+      config: input.config,
+      mode: deliveryImplementationMode,
+    });
+    const { identity, send } = implementation;
     const priorIdentity = Array.from(state.deliveries.values()).find(
       (entry) =>
         entry.identity.adapterId === identity.adapterId &&
@@ -232,8 +242,8 @@ export function createHostGovernorBroker(params: {
       throw new Error("Governor delivery identity generation is already registered");
     }
     const identityKey = opaqueId(state.key, { deliveryIdentity: identity });
-    const configDigest = governorDigest(config);
-    const implementationDigest = governorDigest({ source: String(implementation) });
+    const configDigest = governorDigest(implementation.config);
+    const implementationDigest = implementation.implementationDigest;
     const handle = opaqueId(state.key, {
       delivery: { identity, configDigest, implementationDigest, generation: input.generation },
     }) as HostGovernorDeliveryHandle;
@@ -245,6 +255,7 @@ export function createHostGovernorBroker(params: {
       handle,
       identityKey,
       identity,
+      implementationId: implementation.implementationId,
       implementationDigest,
       configDigest,
       generation: input.generation,
@@ -276,6 +287,7 @@ export function createHostGovernorBroker(params: {
       handle: prior.handle,
       identityKey: prior.identityKey,
       identity: prior.identity,
+      implementationId: prior.implementationId,
       implementationDigest: prior.implementationDigest,
       configDigest: prior.configDigest,
       generation: prior.generation + 1,

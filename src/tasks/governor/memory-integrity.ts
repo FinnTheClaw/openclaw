@@ -19,6 +19,7 @@ import { initializeGovernorStateSchema } from "./state-schema.js";
 import {
   canonicalGovernorScopeKey,
   opaqueGovernorReference,
+  type GovernorIdentityContext,
   type GovernorTaskScope,
 } from "./types.js";
 
@@ -164,11 +165,17 @@ function isAdmissiblePromotion(sourceKind: GovernorMemorySourceKind, sourceRef: 
 
 export class GovernorMemoryStore {
   readonly #options: OpenClawStateDatabaseOptions;
+  readonly #identity: GovernorIdentityContext;
 
-  constructor(params: { stateDir?: string } = {}) {
-    this.#options = params.stateDir
-      ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
-      : {};
+  constructor(params: {
+    stateDir?: string;
+    options?: OpenClawStateDatabaseOptions;
+    identity: GovernorIdentityContext;
+  }) {
+    this.#options =
+      params.options ??
+      (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
+    this.#identity = params.identity;
     initializeGovernorStateSchema(this.#options);
   }
 
@@ -186,7 +193,7 @@ export class GovernorMemoryStore {
   }
 
   getScopeEpoch(scope: GovernorTaskScope): number {
-    return this.#epoch(this.#database().db, canonicalGovernorScopeKey(scope));
+    return this.#epoch(this.#database().db, canonicalGovernorScopeKey(scope, this.#identity));
   }
 
   store(params: {
@@ -205,7 +212,7 @@ export class GovernorMemoryStore {
     supersedesId?: string;
     now: number;
   }): GovernorMemoryWriteResult {
-    const scopeKey = canonicalGovernorScopeKey(params.scope);
+    const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
     const content = assertGovernorBoundarySafe("memory", params.content);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const currentEpoch = this.#epoch(db, scopeKey);
@@ -225,7 +232,11 @@ export class GovernorMemoryStore {
         scopeEpoch: currentEpoch,
         status,
         sourceKind: params.sourceKind,
-        sourceIdentity: opaqueGovernorReference("memory-source", params.sourceIdentity),
+        sourceIdentity: opaqueGovernorReference(
+          "memory-source",
+          params.sourceIdentity,
+          this.#identity,
+        ),
         sourceRank: SOURCE_RANK[params.sourceKind],
         observedAt: params.observedAt,
         ...(params.freshnessExpiresAt !== undefined
@@ -234,7 +245,7 @@ export class GovernorMemoryStore {
         confidence: params.confidence,
         sensitivity: params.sensitivity,
         provenance: {
-          sourceRef: opaqueGovernorReference("memory-source-ref", params.sourceRef),
+          sourceRef: opaqueGovernorReference("memory-source-ref", params.sourceRef, this.#identity),
           observedAt: params.observedAt,
           scopeKey,
           confidence: params.confidence,
@@ -255,7 +266,7 @@ export class GovernorMemoryStore {
   }
 
   retrieve(params: { scope: GovernorTaskScope; now: number }): GovernorMemoryRecord[] {
-    const scopeKey = canonicalGovernorScopeKey(params.scope);
+    const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
     const { db } = this.#database();
     return executeSqliteQuerySync(
       db,
@@ -281,7 +292,7 @@ export class GovernorMemoryStore {
     scope: GovernorTaskScope;
     now: number;
   }): GovernorMemoryRecord | null {
-    const scopeKey = canonicalGovernorScopeKey(params.scope);
+    const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const row = executeSqliteQueryTakeFirstSync(
         db,
@@ -313,7 +324,7 @@ export class GovernorMemoryStore {
     expectedScopeEpoch: number;
     now: number;
   }): GovernorForgetResult {
-    const scopeKey = canonicalGovernorScopeKey(params.scope);
+    const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const currentEpoch = this.#epoch(db, scopeKey);
       if (currentEpoch !== params.expectedScopeEpoch) {

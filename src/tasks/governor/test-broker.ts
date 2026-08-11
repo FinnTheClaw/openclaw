@@ -21,6 +21,7 @@ export function createGovernorTestStore(params: { stateDir?: string } = {}) {
       receiptResolver: broker.resolver,
       approvalResolver: broker.approvalResolver,
       deliveryResolver: broker.deliveryResolver,
+      secrets: broker.secrets,
     }),
   };
 }

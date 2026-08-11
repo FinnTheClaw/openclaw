@@ -4,6 +4,7 @@ import { governorDigest } from "./canonical-json.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import {
   opaqueGovernorReference,
+  type GovernorIdentityContext,
   type GovernorTaskId,
   type GovernorTaskProjection,
 } from "./types.js";
@@ -72,8 +73,13 @@ export function assertOpaqueEvidenceSourceRef(value: string): OpaqueEvidenceSour
 export function opaqueEvidenceSourceRef(
   sourceKind: GovernorEvidenceSourceKind,
   sourceIdentity: string,
+  identity: GovernorIdentityContext,
 ): OpaqueEvidenceSourceRef {
-  return `oesr_${opaqueGovernorReference(`evidence-source:${sourceKind}`, sourceIdentity)}` as OpaqueEvidenceSourceRef;
+  return `oesr_${opaqueGovernorReference(
+    `evidence-source:${sourceKind}`,
+    sourceIdentity,
+    identity,
+  )}` as OpaqueEvidenceSourceRef;
 }
 
 export function deriveGovernorEvidenceSemantics(params: {

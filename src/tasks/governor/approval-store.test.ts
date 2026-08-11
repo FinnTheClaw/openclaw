@@ -3,6 +3,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostGovernorBroker } from "../../security/governor-host-broker.js";
 import { createGovernorHostPersistence } from "../../security/governor-host-persistence.js";
+import {
+  resolveGovernorSecrets,
+  syntheticGovernorSecretsEnvironment,
+} from "../../security/governor-host-secrets.js";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
@@ -167,17 +171,21 @@ describe("governor approval grants", () => {
       { layout: "state-only", prefix: "governor-approval-adversarial-" },
       async (state) => {
         let crashAfterLedgerAppend = false;
+        const hostEnv = syntheticGovernorSecretsEnvironment(state.stateDir);
+        const hostSecrets = resolveGovernorSecrets(hostEnv);
         const broker = createHostGovernorBroker({
-          receiptSigningKey: "synthetic-governor-test-receipt-key",
+          secrets: hostSecrets,
           persistence: createGovernorHostPersistence({
+            env: hostEnv,
             stateDir: state.stateDir,
-            ledgerKey: "synthetic-governor-test-ledger-key",
+            secrets: hostSecrets,
             testAfterLedgerAppend: () => {
               if (crashAfterLedgerAppend) {
                 crashAfterLedgerAppend = false;
                 throw new Error("synthetic approval crash after ledger append");
               }
             },
+            testMode: true,
           }),
         });
         const makeStore = () =>
@@ -186,6 +194,7 @@ describe("governor approval grants", () => {
             receiptResolver: broker.resolver,
             approvalResolver: broker.approvalResolver,
             deliveryResolver: broker.deliveryResolver,
+            secrets: hostSecrets,
           });
         const store = makeStore();
         const controller = new GovernorController(store, registry());

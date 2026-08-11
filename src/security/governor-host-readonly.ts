@@ -20,6 +20,10 @@ import {
   type HostGovernorReceiptId,
 } from "./governor-host-broker.js";
 import { createGovernorHostPersistence } from "./governor-host-persistence.js";
+import {
+  resolveGovernorSecrets,
+  syntheticGovernorSecretsEnvironment,
+} from "./governor-host-secrets.js";
 
 export {
   isTrustedGovernorApprovalResolver,
@@ -41,11 +45,16 @@ export function createGovernorTestHostBindings(params: { stateDir?: string } = {
   if (process.env.NODE_ENV !== "test") {
     throw new Error("Governor test host bindings are unavailable outside tests");
   }
-  return createHostGovernorBroker({
-    receiptSigningKey: "synthetic-governor-test-receipt-key",
+  const env = syntheticGovernorSecretsEnvironment(params.stateDir);
+  const secrets = resolveGovernorSecrets(env);
+  const broker = createHostGovernorBroker({
+    secrets,
     persistence: createGovernorHostPersistence({
+      env,
       ...params,
-      ledgerKey: "synthetic-governor-test-ledger-key",
+      secrets,
+      testMode: true,
     }),
   });
+  return { ...broker, secrets };
 }

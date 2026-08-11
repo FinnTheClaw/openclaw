@@ -2,6 +2,7 @@ import { createGovernorActionFingerprint } from "./action-fingerprint.js";
 // Detects semantic no-progress while ignoring volatile request and timestamp metadata.
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorActionProposal, GovernorEffectRecord } from "./tool-outcome.js";
+import type { GovernorIdentityContext } from "./types.js";
 
 const VOLATILE_KEY = /^(?:attemptId|createdAt|eventId|requestId|timestamp|traceId|updatedAt)$/u;
 
@@ -36,8 +37,9 @@ export function evaluateGovernorActionAdmission(params: {
   progressVector: GovernorJsonValue;
   priorEffects: readonly GovernorEffectRecord[];
   objectiveRevision: number;
+  identity: GovernorIdentityContext;
 }): GovernorActionAdmission {
-  const fingerprint = createGovernorActionFingerprint(params.proposal);
+  const fingerprint = createGovernorActionFingerprint(params.proposal, params.identity);
   const progressVectorHash = governorProgressVectorHash(params.progressVector);
   if (
     params.priorEffects.some(

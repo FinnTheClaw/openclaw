@@ -1,5 +1,5 @@
 // Proves the first durable governor slice from ingress through exactly-once delivery.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
@@ -284,26 +284,10 @@ describe("durable behavior governor", () => {
       expect(restartedStore.loadTask(taskId)).toMatchObject({ state: "COMPLETED" });
       expect(restartedStore.outbox.list(taskId)).toHaveLength(1);
 
-      const providerAttempts: string[] = [];
-      const observableDeliveries: string[] = [];
-      const send = vi.fn(async ({ deliveryKey }: { deliveryKey: string }) => {
-        providerAttempts.push(deliveryKey);
-        if (!observableDeliveries.includes(deliveryKey)) {
-          observableDeliveries.push(deliveryKey);
-        }
-        return {
-          deliveryKey,
-          receipt: { providerId: "delivery-1" },
-        };
-      });
       const effectId = restartedStore.outbox.list(taskId)[0]?.effectId;
       if (!effectId) {
         throw new Error("missing completion effect");
       }
-      const unsupportedSend = vi.fn();
-      const adapter = {
-        send,
-      };
       await expect(
         restarted.dispatchOutbox({
           taskId,
@@ -314,13 +298,11 @@ describe("durable behavior governor", () => {
           now: 149,
         }),
       ).rejects.toThrow(/host-registered/);
-      expect(unsupportedSend).not.toHaveBeenCalled();
       expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "pending" });
       const adapterHandle = restartedBroker.capabilities.registerStaticDeliveryAdapter({
-        identity: { adapterId: "synthetic", version: "1", capability: "message.send" },
+        implementationId: "synthetic",
         config: { fixture: "controller" },
         generation: 0,
-        send: ({ deliveryKey }) => adapter.send({ deliveryKey }),
       });
       await restarted.dispatchOutbox({
         taskId,
@@ -339,9 +321,7 @@ describe("durable behavior governor", () => {
         now: 151,
       });
       expect(replay.kind).toBe("already_sent");
-      expect(send).toHaveBeenCalledTimes(1);
-      expect(providerAttempts).toHaveLength(1);
-      expect(observableDeliveries).toHaveLength(1);
+      expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "sent" });
     });
   });
 

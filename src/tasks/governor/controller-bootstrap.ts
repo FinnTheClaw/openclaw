@@ -10,8 +10,7 @@ import {
 import { GovernorController } from "./controller.js";
 // Feature-gated host construction stays separate from task-loop operations.
 import { isBehaviorGovernorEnabled } from "./feature-flag.js";
-import { GovernorSqliteStore } from "./store.js";
-import { assertGovernorIdentityHmacKeyAvailable } from "./types.js";
+import { GovernorSqliteStore, type GovernorStoreSecrets } from "./store.js";
 
 export function createGovernorControllerIfEnabled(params: {
   env?: NodeJS.ProcessEnv;
@@ -21,20 +20,25 @@ export function createGovernorControllerIfEnabled(params: {
     receiptResolver: GovernorTrustedReceiptResolver;
     approvalResolver: GovernorTrustedApprovalResolver;
     deliveryResolver: GovernorTrustedDeliveryResolver;
+    secrets: GovernorStoreSecrets;
+    stateEnv: NodeJS.ProcessEnv;
   };
 }): GovernorController | null {
-  if (!isBehaviorGovernorEnabled(params.env)) {
+  const env = params.env ?? {};
+  if (!isBehaviorGovernorEnabled(env)) {
     return null;
   }
-  const env = { ...process.env, ...params.env };
-  assertGovernorIdentityHmacKeyAvailable(env);
   if (!params.hostBindings) {
     throw new Error(
       "Governor host runtime bindings are required when the behavior governor is enabled",
     );
   }
   return new GovernorController(
-    new GovernorSqliteStore({ stateDir: params.stateDir, ...params.hostBindings }),
+    new GovernorSqliteStore({
+      stateDir: params.stateDir,
+      ...params.hostBindings,
+      stateEnv: env,
+    }),
     new GovernorCapabilityRegistry(params.capabilities),
   );
 }

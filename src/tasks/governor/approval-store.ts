@@ -101,13 +101,17 @@ export class GovernorApprovalGrantStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly #resolver: GovernorTrustedApprovalResolver;
 
-  constructor(params: { stateDir?: string; approvalResolver: GovernorTrustedApprovalResolver }) {
+  constructor(params: {
+    stateDir?: string;
+    options?: OpenClawStateDatabaseOptions;
+    approvalResolver: GovernorTrustedApprovalResolver;
+  }) {
     if (!isTrustedGovernorApprovalResolver(params.approvalResolver)) {
       throw new Error("Governor approval store requires a trusted host approval resolver");
     }
-    this.#options = params.stateDir
-      ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
-      : {};
+    this.#options =
+      params.options ??
+      (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
     this.#resolver = params.approvalResolver;
   }
 
