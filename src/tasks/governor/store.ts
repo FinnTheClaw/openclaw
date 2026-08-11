@@ -19,6 +19,7 @@ import { GovernorApprovalGrantStore } from "./approval-store.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { bindGovernorCheckpoint, GovernorCheckpointStore } from "./checkpoint-store.js";
 import { assertValidGovernorContract } from "./contracts.js";
+import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
 import { createGovernorEventRecord, type GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceRecord } from "./evidence.js";
 import {
@@ -42,6 +43,7 @@ import {
 } from "./store-codec.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
+  assertGovernorIdentityHmacKeyAvailable,
   createGovernorTaskProjection,
   opaqueGovernorReference,
   type GovernorEventId,
@@ -74,16 +76,19 @@ export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly actionIntents: GovernorActionIntentStore;
   readonly approvals: GovernorApprovalGrantStore;
+  readonly deliveryCertifications: GovernorDeliveryCertificationStore;
   readonly checkpoints: GovernorCheckpointStore;
   readonly outbox: GovernorOutboxStore;
 
   constructor(params: { stateDir?: string } = {}) {
+    assertGovernorIdentityHmacKeyAvailable();
     this.#options = params.stateDir
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
     initializeGovernorStateSchema(this.#options);
     this.actionIntents = new GovernorActionIntentStore(params);
     this.approvals = new GovernorApprovalGrantStore(params);
+    this.deliveryCertifications = new GovernorDeliveryCertificationStore(params);
     this.checkpoints = new GovernorCheckpointStore(params);
     this.outbox = new GovernorOutboxStore(params);
   }

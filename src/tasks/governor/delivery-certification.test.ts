@@ -1,11 +1,15 @@
 // Exercises the host-owned delivery certification boundary and crash-safe adapter contract.
 import { afterEach, describe, expect, it } from "vitest";
-import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabase,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
 import {
-  GovernorDeliveryCertificationRegistry,
+  GovernorHostDeliveryCertificationAuthority,
+  governorDeliveryIdentityKey,
   type GovernorDeliveryAdapter,
 } from "./delivery-certification.js";
 import { GovernorSqliteStore } from "./store.js";
@@ -29,8 +33,8 @@ function controller(store: GovernorSqliteStore): GovernorController {
   return new GovernorController(store, new GovernorCapabilityRegistry([]));
 }
 
-function completion(controller: GovernorController, index: number) {
-  const taskId = controller.ingest({
+function completion(governor: GovernorController, index: number) {
+  const taskId = governor.ingest({
     sourceMessageId: `delivery-message-${index}`,
     sourceSequence: 1,
     scope: scope(index),
@@ -45,10 +49,10 @@ function completion(controller: GovernorController, index: number) {
     },
     now: index * 100,
   }).task.taskId;
-  controller.preparePlan({ taskId, plan: emptyPlan, now: index * 100 + 1 });
-  controller.startExecution(taskId, index * 100 + 5);
-  controller.beginVerification(taskId, index * 100 + 6);
-  const finished = controller.proposeFinish({
+  governor.preparePlan({ taskId, plan: emptyPlan, now: index * 100 + 1 });
+  governor.startExecution(taskId, index * 100 + 5);
+  governor.beginVerification(taskId, index * 100 + 6);
+  const finished = governor.proposeFinish({
     taskId,
     response: { framing: "summary", materialClaimIds: [] },
     now: index * 100 + 7,
@@ -66,7 +70,7 @@ function completion(controller: GovernorController, index: number) {
 class RecordingDeliveryAdapter implements GovernorDeliveryAdapter {
   readonly identity = { adapterId: "synthetic-delivery", version: "1", capability: "message.send" };
   readonly attempts: string[] = [];
-  readonly accepted = new Set<string>();
+  readonly observedSends: string[] = [];
   rejectNext = false;
 
   async send(params: { deliveryKey: string; payload: unknown }) {
@@ -75,13 +79,15 @@ class RecordingDeliveryAdapter implements GovernorDeliveryAdapter {
       this.rejectNext = false;
       throw new Error("synthetic provider rejection");
     }
-    this.accepted.add(params.deliveryKey);
+    if (!this.observedSends.includes(params.deliveryKey)) {
+      this.observedSends.push(params.deliveryKey);
+    }
     return { deliveryKey: params.deliveryKey, receipt: { provider: "synthetic" } };
   }
 }
 
-function certifications(adapter: RecordingDeliveryAdapter, status: "certified" | "revoked") {
-  return new GovernorDeliveryCertificationRegistry([{ ...adapter.identity, status }]);
+function hostAuthority() {
+  return GovernorHostDeliveryCertificationAuthority.fromEnvironment();
 }
 
 afterEach(() => closeOpenClawStateDatabase());
@@ -91,8 +97,8 @@ describe("governor delivery adapter certification", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-delivery-cert-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const governed = controller(store);
+        let store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        let governed = controller(store);
         const entry = completion(governed, 1);
         const adapter = new RecordingDeliveryAdapter();
         try {
@@ -101,19 +107,38 @@ describe("governor delivery adapter certification", () => {
               ...entry,
               workerId: "uncertified",
               adapter,
-              certifications: new GovernorDeliveryCertificationRegistry([]),
               now: 110,
-            }),
+              certifications: { assertCertified: () => undefined },
+            } as never),
           ).rejects.toThrow(/uncertified/);
+          store.deliveryCertifications.hostCertify({
+            authority: hostAuthority(),
+            identity: adapter.identity,
+            now: 111,
+          });
+          store.deliveryCertifications.hostRevoke({
+            authority: hostAuthority(),
+            identity: adapter.identity,
+            now: 112,
+          });
+          closeOpenClawStateDatabase();
+          store = new GovernorSqliteStore({ stateDir: state.stateDir });
+          governed = controller(store);
           await expect(
             governed.dispatchOutbox({
               ...entry,
               workerId: "revoked",
               adapter,
-              certifications: certifications(adapter, "revoked"),
-              now: 111,
+              now: 113,
             }),
           ).rejects.toThrow(/revoked/);
+          expect(() =>
+            store.deliveryCertifications.hostCertify({
+              authority: hostAuthority(),
+              identity: adapter.identity,
+              now: 114,
+            }),
+          ).toThrow(/revocation is final/u);
           expect(adapter.attempts).toEqual([]);
           expect(store.outbox.list(entry.taskId)[0]).toMatchObject({ state: "pending" });
         } finally {
@@ -123,6 +148,48 @@ describe("governor delivery adapter certification", () => {
     );
   });
 
+  it("rejects caller-injected and unsigned durable certification records", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-governor-delivery-tamper-" },
+      async (state) => {
+        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const governed = controller(store);
+        const entry = completion(governed, 3);
+        const adapter = new RecordingDeliveryAdapter();
+        try {
+          const { db } = openOpenClawStateDatabase({
+            env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir },
+          });
+          db.prepare(
+            `INSERT INTO governor_delivery_certifications
+              (identity_key, status, certification_signature, created_at, revoked_at)
+              VALUES (?, 'certified', 'forged', 1, NULL)`,
+          ).run(governorDeliveryIdentityKey(adapter.identity));
+          await expect(
+            governed.dispatchOutbox({
+              ...entry,
+              workerId: "forged-certification",
+              adapter,
+              now: 110,
+            }),
+          ).rejects.toThrow(/signature is invalid/u);
+          expect(adapter.attempts).toEqual([]);
+        } finally {
+          closeOpenClawStateDatabase();
+        }
+      },
+    );
+  });
+
+  it("requires the host delivery-certification key outside test mode", () => {
+    expect(() =>
+      GovernorHostDeliveryCertificationAuthority.fromEnvironment({
+        NODE_ENV: "production",
+        OPENCLAW_GOVERNOR_DELIVERY_CERTIFICATION_KEY: "",
+      }),
+    ).toThrow(/DELIVERY_CERTIFICATION_KEY is required/u);
+  });
+
   it("preserves a stable delivery key through accepted-send crash recovery and provider rejection", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-delivery-crash-" },
@@ -130,7 +197,11 @@ describe("governor delivery adapter certification", () => {
         let store = new GovernorSqliteStore({ stateDir: state.stateDir });
         let governed = controller(store);
         const adapter = new RecordingDeliveryAdapter();
-        const registry = certifications(adapter, "certified");
+        store.deliveryCertifications.hostCertify({
+          authority: hostAuthority(),
+          identity: adapter.identity,
+          now: 100,
+        });
         try {
           const first = completion(governed, 1);
           const claimed = store.outbox.claim({
@@ -153,19 +224,17 @@ describe("governor delivery adapter certification", () => {
             ...first,
             workerId: "recovered-after-accept",
             adapter,
-            certifications: registry,
             now: 116,
           });
           const replay = await governed.dispatchOutbox({
             ...first,
             workerId: "duplicate-retry",
             adapter,
-            certifications: registry,
             now: 117,
           });
           expect(replay.kind).toBe("already_sent");
           expect(adapter.attempts).toHaveLength(2);
-          expect(adapter.accepted).toHaveLength(1);
+          expect(adapter.observedSends).toHaveLength(1);
 
           const rejected = completion(governed, 2);
           adapter.rejectNext = true;
@@ -174,7 +243,6 @@ describe("governor delivery adapter certification", () => {
               ...rejected,
               workerId: "provider-reject",
               adapter,
-              certifications: registry,
               now: 210,
             }),
           ).rejects.toThrow(/provider rejection/);
@@ -183,10 +251,9 @@ describe("governor delivery adapter certification", () => {
             ...rejected,
             workerId: "provider-retry",
             adapter,
-            certifications: registry,
             now: 60_211,
           });
-          expect(adapter.accepted).toHaveLength(2);
+          expect(adapter.observedSends).toHaveLength(2);
         } finally {
           closeOpenClawStateDatabase();
         }

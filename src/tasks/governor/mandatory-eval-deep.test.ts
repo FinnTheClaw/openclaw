@@ -52,14 +52,14 @@ function controller(store: GovernorSqliteStore): GovernorController {
 }
 
 function recordEvidence(
-  controller: GovernorController,
+  governor: GovernorController,
   taskId: ReturnType<GovernorController["ingest"]>["task"]["taskId"],
   suffix: string,
   now: number,
 ) {
-  controller.recordToolOutcome({
+  governor.recordToolOutcome({
     taskId,
-    executionFence: controller.captureExecutionFence(taskId),
+    executionFence: governor.captureExecutionFence(taskId),
     proposal: {
       effectId: createGovernorEffectId(suffix),
       criterionId: "verified",

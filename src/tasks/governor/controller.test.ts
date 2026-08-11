@@ -4,7 +4,7 @@ import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
-import { GovernorDeliveryCertificationRegistry } from "./delivery-certification.js";
+import { GovernorHostDeliveryCertificationAuthority } from "./delivery-certification.js";
 import { GovernorSqliteStore } from "./store.js";
 import {
   createGovernorEffectId,
@@ -280,14 +280,16 @@ describe("durable behavior governor", () => {
       expect(restartedStore.loadTask(taskId)).toMatchObject({ state: "COMPLETED" });
       expect(restartedStore.outbox.list(taskId)).toHaveLength(1);
 
-      const observableDeliveries = new Map<string, unknown>();
+      const providerAttempts: string[] = [];
+      const observableDeliveries: string[] = [];
       const send = vi.fn(async ({ deliveryKey }: { deliveryKey: string }) => {
-        if (!observableDeliveries.has(deliveryKey)) {
-          observableDeliveries.set(deliveryKey, { providerId: "delivery-1" });
+        providerAttempts.push(deliveryKey);
+        if (!observableDeliveries.includes(deliveryKey)) {
+          observableDeliveries.push(deliveryKey);
         }
         return {
           deliveryKey,
-          receipt: observableDeliveries.get(deliveryKey) as { providerId: string },
+          receipt: { providerId: "delivery-1" },
         };
       });
       const effectId = restartedStore.outbox.list(taskId)[0]?.effectId;
@@ -306,21 +308,22 @@ describe("durable behavior governor", () => {
           expectedLeaseEpoch: completed.task.leaseEpoch,
           workerId: "unsupported-delivery-worker",
           adapter: { ...adapter, send: unsupportedSend },
-          certifications: new GovernorDeliveryCertificationRegistry([]),
           now: 149,
         }),
       ).rejects.toThrow(/uncertified/);
       expect(unsupportedSend).not.toHaveBeenCalled();
       expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "pending" });
+      restartedStore.deliveryCertifications.hostCertify({
+        authority: GovernorHostDeliveryCertificationAuthority.fromEnvironment(),
+        identity: adapter.identity,
+        now: 150,
+      });
       await restarted.dispatchOutbox({
         taskId,
         effectId,
         expectedLeaseEpoch: completed.task.leaseEpoch,
         workerId: "delivery-worker-1",
         adapter,
-        certifications: new GovernorDeliveryCertificationRegistry([
-          { ...adapter.identity, status: "certified" },
-        ]),
         now: 150,
       });
       const replay = await restarted.dispatchOutbox({
@@ -329,14 +332,12 @@ describe("durable behavior governor", () => {
         expectedLeaseEpoch: completed.task.leaseEpoch,
         workerId: "delivery-worker-2",
         adapter,
-        certifications: new GovernorDeliveryCertificationRegistry([
-          { ...adapter.identity, status: "certified" },
-        ]),
         now: 151,
       });
       expect(replay.kind).toBe("already_sent");
       expect(send).toHaveBeenCalledTimes(1);
-      expect(observableDeliveries.size).toBe(1);
+      expect(providerAttempts).toHaveLength(1);
+      expect(observableDeliveries).toHaveLength(1);
     });
   });
 

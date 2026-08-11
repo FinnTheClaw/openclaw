@@ -5,7 +5,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import {
-  GovernorDeliveryCertificationRegistry,
+  GovernorHostDeliveryCertificationAuthority,
   type GovernorDeliveryAdapter,
 } from "./delivery-certification.js";
 import {
@@ -101,24 +101,47 @@ function mutationProposal(effectId: ReturnType<typeof createGovernorEffectId>) {
 
 class ObservedMutationAdapter {
   readonly attempts: string[] = [];
-  readonly applied = new Set<string>();
+  readonly observableEffects: string[] = [];
 
   apply(idempotencyKey: string): void {
     this.attempts.push(idempotencyKey);
-    this.applied.add(idempotencyKey);
+    if (!this.observableEffects.includes(idempotencyKey)) {
+      this.observableEffects.push(idempotencyKey);
+    }
   }
 }
 
 class ObservedDeliveryAdapter implements GovernorDeliveryAdapter {
   readonly identity = { adapterId: "synthetic-eval", version: "1", capability: "message.send" };
   readonly attempts: string[] = [];
-  readonly accepted = new Set<string>();
+  readonly observableSends: string[] = [];
 
   async send(params: { deliveryKey: string; payload: unknown }) {
     this.attempts.push(params.deliveryKey);
-    this.accepted.add(params.deliveryKey);
+    if (!this.observableSends.includes(params.deliveryKey)) {
+      this.observableSends.push(params.deliveryKey);
+    }
     return { deliveryKey: params.deliveryKey, receipt: { provider: "synthetic-eval" } };
   }
+}
+
+class BrokenMutationAdapter extends ObservedMutationAdapter {
+  override apply(idempotencyKey: string): void {
+    this.attempts.push(idempotencyKey);
+    this.observableEffects.push(idempotencyKey);
+  }
+}
+
+class BrokenDeliveryAdapter extends ObservedDeliveryAdapter {
+  override async send(params: { deliveryKey: string; payload: unknown }) {
+    this.attempts.push(params.deliveryKey);
+    this.observableSends.push(params.deliveryKey);
+    return { deliveryKey: params.deliveryKey, receipt: { provider: "broken-synthetic-eval" } };
+  }
+}
+
+function countForKey(entries: readonly string[], key: string): number {
+  return entries.filter((entry) => entry === key).length;
 }
 
 afterEach(() => closeOpenClawStateDatabase());
@@ -174,9 +197,11 @@ describe("behavior governor mandatory synthetic evals", () => {
         let controller = new GovernorController(store, registry());
         const mutationAdapter = new ObservedMutationAdapter();
         const deliveryAdapter = new ObservedDeliveryAdapter();
-        const deliveryCertifications = new GovernorDeliveryCertificationRegistry([
-          { ...deliveryAdapter.identity, status: "certified" },
-        ]);
+        store.deliveryCertifications.hostCertify({
+          authority: GovernorHostDeliveryCertificationAuthority.fromEnvironment(),
+          identity: deliveryAdapter.identity,
+          now: 1,
+        });
         const samples: GovernorEvalSample[] = [];
         const accessSamples: GovernorEvalSample[] = [];
         const crashCheckpoints = new Set<string>();
@@ -375,7 +400,6 @@ describe("behavior governor mandatory synthetic evals", () => {
               workerId: `new-delivery-${index}`,
               leaseDurationMs: 10,
               adapter: deliveryAdapter,
-              certifications: deliveryCertifications,
               now: base + 171,
             });
             const mutationAttempts = mutationAdapter.attempts.filter(
@@ -390,13 +414,21 @@ describe("behavior governor mandatory synthetic evals", () => {
                 store.outbox.list(taskId)[0]?.state === "sent",
               prematureCompletion: false,
               resumedAfterCrash: true,
-              duplicateMutation: mutationAdapter.applied.size !== index + 1,
-              duplicateReply: deliveryAdapter.accepted.size !== index + 1,
+              duplicateMutation:
+                countForKey(mutationAdapter.observableEffects, newClaim.intent.idempotencyKey) > 1,
+              duplicateReply:
+                countForKey(deliveryAdapter.observableSends, oldDelivery.entry.deliveryKey) > 1,
               meaningfulCalls: mutationAttempts.length + deliveryAttempts.length,
               usefulCalls: 2,
             });
             expect(mutationAttempts).toHaveLength(2);
             expect(deliveryAttempts).toHaveLength(2);
+            expect(
+              countForKey(mutationAdapter.observableEffects, newClaim.intent.idempotencyKey),
+            ).toBe(1);
+            expect(
+              countForKey(deliveryAdapter.observableSends, oldDelivery.entry.deliveryKey),
+            ).toBe(1);
           }
 
           const quickProfile = {
@@ -451,6 +483,43 @@ describe("behavior governor mandatory synthetic evals", () => {
         }
       },
     );
+  });
+
+  it("fails the mandatory gate when a broken adapter produces duplicate observable effects", () => {
+    const mutation = new BrokenMutationAdapter();
+    const delivery = new BrokenDeliveryAdapter();
+    mutation.apply("stable-mutation-key");
+    mutation.apply("stable-mutation-key");
+    void delivery.send({ deliveryKey: "stable-delivery-key", payload: {} });
+    void delivery.send({ deliveryKey: "stable-delivery-key", payload: {} });
+    const summary = summarizeGovernorEvals([
+      {
+        success: true,
+        prematureCompletion: false,
+        resumedAfterCrash: true,
+        duplicateMutation: countForKey(mutation.observableEffects, "stable-mutation-key") > 1,
+        duplicateReply: countForKey(delivery.observableSends, "stable-delivery-key") > 1,
+        meaningfulCalls: mutation.attempts.length + delivery.attempts.length,
+        usefulCalls: 2,
+      },
+    ]);
+    expect(() =>
+      assertGovernorMandatoryEvalGates({
+        summary,
+        accessInventory: summarizeGovernorEvals([
+          {
+            success: true,
+            prematureCompletion: false,
+            resumedAfterCrash: true,
+            duplicateMutation: false,
+            duplicateReply: false,
+            meaningfulCalls: 1,
+            usefulCalls: 1,
+          },
+        ]),
+        baselineShortTaskSuccessRate: 1,
+      }),
+    ).toThrow(/duplicate_mutation.*duplicate_reply/u);
   });
 
   it("records a semantic failure as a rejected finish rather than a successful completion", async () => {

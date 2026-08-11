@@ -1,8 +1,5 @@
 // Dispatches a claimed reply only through a host-certified delivery adapter.
-import {
-  GovernorDeliveryCertificationRegistry,
-  type GovernorDeliveryAdapter,
-} from "./delivery-certification.js";
+import type { GovernorDeliveryAdapter } from "./delivery-certification.js";
 import type { GovernorOutboxClaimResult } from "./outbox-store.js";
 import type { GovernorSqliteStore } from "./store.js";
 import type { GovernorTaskId } from "./types.js";
@@ -14,7 +11,6 @@ export type GovernorDispatchOutboxParams = {
   workerId: string;
   leaseDurationMs?: number;
   adapter: GovernorDeliveryAdapter;
-  certifications: GovernorDeliveryCertificationRegistry;
   now: number;
 };
 
@@ -23,7 +19,7 @@ export async function dispatchGovernorOutbox(params: {
   request: GovernorDispatchOutboxParams;
 }): Promise<GovernorOutboxClaimResult> {
   const { request } = params;
-  request.certifications.assertCertified(request.adapter.identity);
+  params.store.deliveryCertifications.assertCertified(request.adapter.identity);
   const claim = params.store.outbox.claim(request);
   if (claim.kind !== "claimed") {
     return claim;
