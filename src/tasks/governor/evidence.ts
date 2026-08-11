@@ -2,7 +2,11 @@
 import type { GovernorJsonValue } from "./canonical-json.js";
 import { governorDigest } from "./canonical-json.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
-import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
+import {
+  opaqueGovernorReference,
+  type GovernorTaskId,
+  type GovernorTaskProjection,
+} from "./types.js";
 
 export type GovernorEvidenceSourceKind =
   | "tool"
@@ -55,6 +59,10 @@ export function createGovernorEvidenceCandidate(
   ) as unknown as Omit<GovernorEvidenceCandidate, "evidenceDigest">;
   return {
     ...safe,
+    sourceIdentity: opaqueGovernorReference(
+      `evidence-source:${safe.sourceKind}`,
+      safe.sourceIdentity,
+    ),
     evidenceDigest: governorDigest(safe.payload),
   };
 }

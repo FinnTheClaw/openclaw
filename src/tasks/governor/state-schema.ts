@@ -7,19 +7,38 @@ import { GOVERNOR_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.gen
 
 export function initializeGovernorStateSchema(options: OpenClawStateDatabaseOptions = {}): void {
   const { db } = openOpenClawStateDatabase(options);
+  migrateLegacyGovernorColumns(db);
   db.exec(GOVERNOR_STATE_SCHEMA_SQL);
-  const columns = db.prepare("PRAGMA table_info(governor_outbox)").all() as Array<{
-    name?: unknown;
-  }>;
-  const names = new Set(
-    columns.map((column) => column.name).filter((name): name is string => typeof name === "string"),
-  );
-  if (!names.has("plan_version")) {
-    db.exec("ALTER TABLE governor_outbox ADD COLUMN plan_version INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!names.has("execution_generation")) {
-    db.exec(
-      "ALTER TABLE governor_outbox ADD COLUMN execution_generation INTEGER NOT NULL DEFAULT 0",
+}
+
+function migrateLegacyGovernorColumns(
+  db: ReturnType<typeof openOpenClawStateDatabase>["db"],
+): void {
+  const columnsFor = (table: string): Set<string> => {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+    return new Set(
+      rows.map((row) => row.name).filter((name): name is string => typeof name === "string"),
     );
+  };
+  const addIfMissing = (table: string, column: string, definition: string): boolean => {
+    const columns = columnsFor(table);
+    if (columns.size === 0 || columns.has(column)) {
+      return false;
+    }
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    return true;
+  };
+
+  // Historical governor rows lack current-plan/execution fences. The -1
+  // sentinel deliberately cannot satisfy a non-negative current plan or run.
+  const migratedEvidence = addIfMissing(
+    "governor_evidence",
+    "plan_version",
+    "INTEGER NOT NULL DEFAULT -1",
+  );
+  addIfMissing("governor_outbox", "plan_version", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing("governor_outbox", "execution_generation", "INTEGER NOT NULL DEFAULT -1");
+  if (migratedEvidence) {
+    db.exec("DROP INDEX IF EXISTS idx_governor_evidence_task");
   }
 }
