@@ -75,6 +75,8 @@ describe("governor evidence host receipt boundary", () => {
         let store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          approvalResolver: broker.approvalResolver,
+          deliveryResolver: broker.deliveryResolver,
         });
         const task = store.ingest({
           sourceMessageId: "evidence-message-1",
@@ -109,6 +111,8 @@ describe("governor evidence host receipt boundary", () => {
         store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          approvalResolver: broker.approvalResolver,
+          deliveryResolver: broker.deliveryResolver,
         });
         const persisted = store.listEvidence(task.taskId);
         expect(persisted).toHaveLength(1);
@@ -127,6 +131,8 @@ describe("governor evidence host receipt boundary", () => {
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          approvalResolver: broker.approvalResolver,
+          deliveryResolver: broker.deliveryResolver,
         });
         const task = store.ingest({
           sourceMessageId: "evidence-message-2",

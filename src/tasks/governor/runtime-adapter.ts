@@ -1,6 +1,7 @@
 import type { GovernorCapabilityDefinition } from "./capability-registry.js";
+import { createGovernorControllerIfEnabled } from "./controller-bootstrap.js";
 // Provides the feature-off ingress seam without changing existing channel or task-flow behavior.
-import { createGovernorControllerIfEnabled, type GovernorController } from "./controller.js";
+import type { GovernorController } from "./controller.js";
 import {
   classifyGovernorWork,
   type GovernorWorkDecision,

@@ -88,3 +88,34 @@ The governor remains disabled by default. A future production rollout must first
 the host approver allowlist, register/certify each selected channel adapter, and install concrete
 cache/index/embedding invalidation adapters for every governed memory backend. Until then, this is
 a synthetic-testable control plane rather than a live message-path replacement.
+
+## Host-authority boundary
+
+The governor treats model, tool, task, plugin, and ordinary controller callers as untrusted. They
+may propose a candidate, request approval, reference an opaque grant or delivery handle, and read a
+result. They may not mint receipts, sign evidence or grants, advance revocation epochs, register an
+adapter, replace a sender, or obtain a secret. This is an object-capability boundary within one
+OpenClaw process; it deliberately does **not** claim to protect against a compromised operating
+system or process that can read memory or host secrets.
+
+`src/security/governor-host-broker.ts` is a private capability kernel. It is not in the package
+export map. The only permitted dependency path is trusted application bootstrap/integration -> host
+broker -> read-only resolver bridge -> governor store. Governor, task, model, and plugin code may
+consume read-only resolvers from `governor-host-readonly.ts`, but must not import the broker or a
+capability constructor. The static boundary test enforces that edge. Test-only synthetic bindings
+are rejected unless `NODE_ENV=test`; they are never a production fallback.
+
+At a future live rollout, authenticated terminal, UI, and channel integrations must hold the host
+capabilities. They submit observed tool/channel receipts, approval/revocation receipts, and static
+delivery factories. The broker retains signing keys in the runtime secret provider only; SQLite
+stores opaque IDs, key IDs/versions, signatures, payload/semantic digests, grants, and monotonic
+epoch/generation high-water marks. Rotation creates a new key/version and accepts only explicitly
+configured active verification versions. Restart reconstructs state from durable signed records;
+revocation high-water marks fence old grants and delivery generations.
+
+Delivery factories are invoked at bootstrap and their sender closures, non-secret configuration
+digest, implementation digest, handle, and generation are snapshotted. A later mutation of the
+source object cannot change dispatch. If no authenticated host integration exists, startup must
+remain fail-closed and the feature must remain disabled. `emitTrustedDiagnosticEvent` is explicitly
+inadmissible: it is a diagnostic API rather than an authenticated authority boundary and must never
+issue a governor receipt, approval, or adapter certification.

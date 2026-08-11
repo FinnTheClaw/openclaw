@@ -1,5 +1,4 @@
 // Verifies host-broker-signed grants. Task-facing code can only reference opaque IDs.
-import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Insertable, Selectable } from "kysely";
 import {
@@ -13,7 +12,7 @@ import {
   type GovernorTrustedApprovalResolver,
   type HostGovernorApprovalReceiptId,
   type HostGovernorApprovalRevocationId,
-} from "../../security/governor-host-broker.js";
+} from "../../security/governor-host-readonly.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -21,7 +20,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import type { GovernorActionProposal } from "./tool-outcome.js";
-import { opaqueGovernorReference, type GovernorTaskProjection } from "./types.js";
+import type { GovernorTaskProjection } from "./types.js";
 
 type ApprovalDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -93,13 +92,6 @@ function bindGrant(grant: GovernorApprovalGrant): Insertable<ApprovalRow> {
   };
 }
 
-function unsignedGrant(
-  grant: GovernorApprovalGrant,
-): Omit<GovernorApprovalGrant, "authoritySignature"> {
-  const { authoritySignature: _ignored, ...unsigned } = grant;
-  return unsigned;
-}
-
 /**
  * This store deliberately has no issue/revoke methods. The host broker owns
  * mutation capabilities; this task-side object only admits its opaque receipts
@@ -154,29 +146,21 @@ export class GovernorApprovalGrantStore {
       if ((normalizeSqliteNumber(current?.epoch) ?? 0) !== receipt.approvalEpoch) {
         throw new Error("Governor approval receipt epoch is stale");
       }
-      const unsigned: Omit<GovernorApprovalGrant, "authoritySignature"> = {
-        grantId: `ggrant_${crypto.randomUUID()}`,
+      const grant: GovernorApprovalGrant = {
+        grantId: receipt.grantId,
         taskId: params.task.taskId,
         scopeKey: params.task.scopeKey,
         objectiveRevision: params.task.objectiveRevision,
         capability: receipt.capability,
         capabilityVersion: receipt.capabilityVersion,
-        canonicalTarget: opaqueGovernorReference("approval-target", receipt.canonicalTarget),
-        issuerId: opaqueGovernorReference(
-          "approval-receipt",
-          `${receipt.id}:${receipt.approverIdentity}`,
-        ),
+        canonicalTarget: receipt.canonicalTargetOpaque,
+        issuerId: receipt.id,
         expiresAt: receipt.expiresAt,
         approvalEpoch: receipt.approvalEpoch,
-        authorityKeyId: "host-broker-v1",
+        authorityKeyId: receipt.grantKeyId,
         authorityVersion: 1,
+        authoritySignature: receipt.grantSignature,
         createdAt: params.now,
-      };
-      const signed = this.#resolver.signApprovalGrant(unsigned);
-      const grant = {
-        ...unsigned,
-        authorityKeyId: signed.keyId,
-        authoritySignature: signed.signature,
       };
       executeSqliteQuerySync(
         db,
@@ -202,14 +186,7 @@ export class GovernorApprovalGrantStore {
     );
     if (!row) return "missing";
     const grant = parseGrant(row);
-    if (
-      grant.authorityVersion !== 1 ||
-      !this.#resolver.verifyApprovalGrant(
-        unsignedGrant(grant),
-        grant.authorityKeyId,
-        grant.authoritySignature,
-      )
-    ) {
+    if (!this.#resolver.verifyApprovalGrant(grant, proposal.canonicalTarget)) {
       return "revoked";
     }
     if (
@@ -223,8 +200,7 @@ export class GovernorApprovalGrantStore {
       grant.scopeKey === task.scopeKey &&
       grant.objectiveRevision === task.objectiveRevision &&
       grant.capability === proposal.capability &&
-      grant.capabilityVersion === proposal.capabilityVersion &&
-      grant.canonicalTarget === opaqueGovernorReference("approval-target", proposal.canonicalTarget)
+      grant.capabilityVersion === proposal.capabilityVersion
       ? "approved"
       : "stale";
   }

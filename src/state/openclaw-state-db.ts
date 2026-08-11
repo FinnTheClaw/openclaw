@@ -1039,6 +1039,13 @@ export function runOpenClawStateWriteTransaction<T>(
 /** Close all cached shared state database handles. */
 export function closeOpenClawStateDatabase(): void {
   for (const database of cachedDatabases.values()) {
+    // We own this cached connection. Flush its WAL before closing so Windows
+    // can promptly release the -wal/-shm files used by isolated test roots.
+    // Do not suppress checkpoint/close errors: callers need lifecycle faults
+    // to remain visible rather than silently leaking a state handle.
+    if (database.db.isOpen) {
+      database.walMaintenance.checkpoint();
+    }
     database.walMaintenance.close();
     clearNodeSqliteKyselyCacheForDatabase(database.db);
     if (database.db.isOpen) {

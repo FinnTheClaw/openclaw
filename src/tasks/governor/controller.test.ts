@@ -5,7 +5,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestStore } from "./test-broker.js";
+import { createGovernorTestStore, recordGovernorTestToolOutcome } from "./test-broker.js";
 import {
   createGovernorEffectId,
   type GovernorPlan,
@@ -76,6 +76,7 @@ function capabilities(): GovernorCapabilityRegistry {
 async function withGovernor(
   run: (params: {
     controller: GovernorController;
+    broker: ReturnType<typeof createGovernorTestStore>["broker"];
     store: GovernorSqliteStore;
     stateDir: string;
   }) => Promise<void> | void,
@@ -83,10 +84,11 @@ async function withGovernor(
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-" },
     async (state) => {
-      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       try {
         await run({
           controller: new GovernorController(store, capabilities()),
+          broker,
           store,
           stateDir: state.stateDir,
         });
@@ -163,7 +165,7 @@ describe("durable behavior governor", () => {
   });
 
   it("rejects semantic failure, recovers with new evidence, and emits one completion", async () => {
-    await withGovernor(async ({ controller, store, stateDir }) => {
+    await withGovernor(async ({ controller, store, stateDir, broker }) => {
       const ingress = controller.ingest({
         sourceMessageId: "message-1",
         sourceSequence: 1,
@@ -243,13 +245,13 @@ describe("durable behavior governor", () => {
         },
         now: 141,
       };
-      const firstSuccess = controller.recordToolOutcome(successfulOutcome);
+      const firstSuccess = recordGovernorTestToolOutcome(controller, broker, successfulOutcome);
       expect(firstSuccess.accepted).toBe(true);
       if (!firstSuccess.accepted) {
         throw new Error(firstSuccess.reason);
       }
       const versionAfterSuccess = firstSuccess.task.taskVersion;
-      const duplicateSuccess = controller.recordToolOutcome(successfulOutcome);
+      const duplicateSuccess = recordGovernorTestToolOutcome(controller, broker, successfulOutcome);
       expect(duplicateSuccess.accepted).toBe(true);
       if (!duplicateSuccess.accepted) {
         throw new Error(duplicateSuccess.reason);
@@ -275,7 +277,9 @@ describe("durable behavior governor", () => {
       });
 
       closeOpenClawStateDatabase();
-      const { store: restartedStore, broker } = createGovernorTestStore({ stateDir });
+      const { store: restartedStore, broker: restartedBroker } = createGovernorTestStore({
+        stateDir,
+      });
       const restarted = new GovernorController(restartedStore, capabilities());
       expect(restartedStore.loadTask(taskId)).toMatchObject({ state: "COMPLETED" });
       expect(restartedStore.outbox.list(taskId)).toHaveLength(1);
@@ -312,7 +316,7 @@ describe("durable behavior governor", () => {
       ).rejects.toThrow(/host-registered/);
       expect(unsupportedSend).not.toHaveBeenCalled();
       expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "pending" });
-      const adapterHandle = broker.capabilities.registerStaticDeliveryAdapter({
+      const adapterHandle = restartedBroker.capabilities.registerStaticDeliveryAdapter({
         identity: { adapterId: "synthetic", version: "1", capability: "message.send" },
         config: { fixture: "controller" },
         generation: 0,

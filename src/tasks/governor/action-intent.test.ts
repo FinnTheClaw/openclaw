@@ -6,6 +6,7 @@ import { governorDigest } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore, recordGovernorTestAdmittedToolOutcome } from "./test-broker.js";
 import {
   createGovernorEffectId,
   type GovernorPlan,
@@ -84,6 +85,7 @@ function proposal(effectId: ReturnType<typeof createGovernorEffectId>) {
 async function withIntentController(
   run: (params: {
     controller: GovernorController;
+    broker: ReturnType<typeof createGovernorTestStore>["broker"];
     store: GovernorSqliteStore;
     stateDir: string;
   }) => Promise<void> | void,
@@ -91,10 +93,11 @@ async function withIntentController(
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-intent-" },
     async (state) => {
-      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       try {
         await run({
           controller: new GovernorController(store, registry()),
+          broker,
           store,
           stateDir: state.stateDir,
         });
@@ -123,7 +126,7 @@ afterEach(() => closeOpenClawStateDatabase());
 
 describe("governor durable action intents", () => {
   it("deduplicates twenty reservations and crash recovery into one mutation and one effect", async () => {
-    await withIntentController(({ controller, store, stateDir }) => {
+    await withIntentController(({ controller, store, stateDir, broker }) => {
       const taskId = start(controller);
       const executionFence = controller.captureExecutionFence(taskId);
       const effectId = createGovernorEffectId("stable-mutation");
@@ -154,7 +157,12 @@ describe("governor durable action intents", () => {
       ).toHaveLength(1);
 
       closeOpenClawStateDatabase();
-      const restartedStore = new GovernorSqliteStore({ stateDir });
+      const restartedStore = new GovernorSqliteStore({
+        stateDir,
+        receiptResolver: broker.resolver,
+        approvalResolver: broker.approvalResolver,
+        deliveryResolver: broker.deliveryResolver,
+      });
       const restarted = new GovernorController(restartedStore, registry());
       expect(restarted.isActionIntentExecutable(admitted.intent)).toBe(true);
       const claims = Array.from({ length: 20 }, (_, index) =>
@@ -183,7 +191,7 @@ describe("governor durable action intents", () => {
       });
       mutate(claim.intent.idempotencyKey);
       const records = Array.from({ length: 20 }, (_, index) =>
-        restarted.recordAdmittedToolOutcome({
+        recordGovernorTestAdmittedToolOutcome(restarted, broker, {
           taskId,
           intent: claim.intent,
           workerId: "worker-0",

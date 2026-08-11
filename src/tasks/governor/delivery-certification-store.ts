@@ -11,7 +11,7 @@ import {
   isTrustedGovernorDeliveryResolver,
   type GovernorTrustedDeliveryResolver,
   type HostGovernorDeliveryHandle,
-} from "../../security/governor-host-broker.js";
+} from "../../security/governor-host-readonly.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -57,6 +57,25 @@ export class GovernorDeliveryCertificationStore {
       const currentGeneration = normalizeSqliteNumber(current?.generation) ?? -1;
       if (adapter.generation < currentGeneration) {
         throw new Error("Governor delivery adapter certification is stale");
+      }
+      const persisted = executeSqliteQueryTakeFirstSync(
+        db,
+        dbx(db)
+          .selectFrom("governor_delivery_certifications")
+          .selectAll()
+          .where("identity_key", "=", registrationKey),
+      );
+      if (persisted && adapter.generation === currentGeneration) {
+        const valid =
+          persisted.status === adapter.status &&
+          persisted.implementation_digest === adapter.implementationDigest &&
+          persisted.config_digest === adapter.configDigest &&
+          (normalizeSqliteNumber(persisted.certification_generation) ?? -1) ===
+            adapter.generation &&
+          persisted.authority_key_id === "host-broker-v1" &&
+          (normalizeSqliteNumber(persisted.authority_version) ?? -1) === 1 &&
+          persisted.certification_signature === adapter.signature;
+        if (!valid) throw new Error("Governor delivery certification signature is invalid");
       }
       if (adapter.status === "certified" && adapter.generation === currentGeneration) return;
       const row: Insertable<CertificationTable> = {

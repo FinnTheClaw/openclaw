@@ -4,15 +4,24 @@ import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
-import type { GovernorDeliveryAdapter } from "./delivery-certification.js";
 import {
   assertGovernorMandatoryEvalGates,
   summarizeGovernorEvals,
   type GovernorEvalSample,
 } from "./eval-harness.js";
+import {
+  countGovernorObservedKey,
+  createMandatoryEvalMutationProposal,
+  ObservedDeliveryAdapter,
+  ObservedMutationAdapter,
+} from "./mandatory-eval-adapters.js";
 import { GovernorRuntimeAdapter } from "./runtime-adapter.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestStore } from "./test-broker.js";
+import {
+  createGovernorTestStore,
+  recordGovernorTestAdmittedToolOutcome,
+  recordGovernorTestToolOutcome,
+} from "./test-broker.js";
 import {
   createGovernorEffectId,
   type GovernorPlan,
@@ -80,66 +89,6 @@ function registry(): GovernorCapabilityRegistry {
       requiresApproval: false,
     },
   ]);
-}
-
-function mutationProposal(effectId: ReturnType<typeof createGovernorEffectId>) {
-  return {
-    effectId,
-    criterionId: "verified",
-    capability: "synthetic.mutate",
-    capabilityVersion: "1",
-    canonicalTarget: "fixture://target",
-    expectedEvidence: "Exact post-mutation fixture",
-    sourceRank: "structured_exact" as const,
-    stopCondition: "Fixture is verified",
-    mutating: true,
-    argumentsDigest: governorArgumentsDigest({ target: "fixture://target", value: true }),
-  };
-}
-
-class ObservedMutationAdapter {
-  readonly attempts: string[] = [];
-  readonly observableEffects: string[] = [];
-
-  apply(idempotencyKey: string): void {
-    this.attempts.push(idempotencyKey);
-    if (!this.observableEffects.includes(idempotencyKey)) {
-      this.observableEffects.push(idempotencyKey);
-    }
-  }
-}
-
-class ObservedDeliveryAdapter implements GovernorDeliveryAdapter {
-  readonly identity = { adapterId: "synthetic-eval", version: "1", capability: "message.send" };
-  readonly attempts: string[] = [];
-  readonly observableSends: string[] = [];
-
-  async send(params: { deliveryKey: string; payload: unknown }) {
-    this.attempts.push(params.deliveryKey);
-    if (!this.observableSends.includes(params.deliveryKey)) {
-      this.observableSends.push(params.deliveryKey);
-    }
-    return { deliveryKey: params.deliveryKey, receipt: { provider: "synthetic-eval" } };
-  }
-}
-
-class BrokenMutationAdapter extends ObservedMutationAdapter {
-  override apply(idempotencyKey: string): void {
-    this.attempts.push(idempotencyKey);
-    this.observableEffects.push(idempotencyKey);
-  }
-}
-
-class BrokenDeliveryAdapter extends ObservedDeliveryAdapter {
-  override async send(params: { deliveryKey: string; payload: unknown }) {
-    this.attempts.push(params.deliveryKey);
-    this.observableSends.push(params.deliveryKey);
-    return { deliveryKey: params.deliveryKey, receipt: { provider: "broken-synthetic-eval" } };
-  }
-}
-
-function countForKey(entries: readonly string[], key: string): number {
-  return entries.filter((entry) => entry === key).length;
 }
 
 afterEach(() => closeOpenClawStateDatabase());
@@ -256,7 +205,7 @@ describe("behavior governor mandatory synthetic evals", () => {
             const accessCalls: Array<{ accepted: boolean; semantic?: string }> = [];
             for (let operation = 0; operation < 3; operation += 1) {
               const evidence = { index, operation, found: true };
-              const outcome = controller.recordToolOutcome({
+              const outcome = recordGovernorTestToolOutcome(controller, testHost.broker, {
                 taskId,
                 executionFence: controller.captureExecutionFence(taskId),
                 proposal: {
@@ -305,7 +254,7 @@ describe("behavior governor mandatory synthetic evals", () => {
               controller.admitAction({
                 taskId,
                 executionFence,
-                proposal: mutationProposal(effectId),
+                proposal: createMandatoryEvalMutationProposal(effectId),
                 progressVector: { desired: true },
                 now: base + 125,
               }),
@@ -355,7 +304,7 @@ describe("behavior governor mandatory synthetic evals", () => {
                 now: base + 142,
               }),
             ).toMatchObject({ accepted: false, reason: "stale_execution" });
-            controller.recordAdmittedToolOutcome({
+            recordGovernorTestAdmittedToolOutcome(controller, testHost.broker, {
               taskId,
               intent: newClaim.intent,
               workerId: `new-action-${index}`,
@@ -423,19 +372,31 @@ describe("behavior governor mandatory synthetic evals", () => {
               prematureCompletion: false,
               resumedAfterCrash: true,
               duplicateMutation:
-                countForKey(mutationAdapter.observableEffects, newClaim.intent.idempotencyKey) > 1,
+                countGovernorObservedKey(
+                  mutationAdapter.observableEffects,
+                  newClaim.intent.idempotencyKey,
+                ) > 1,
               duplicateReply:
-                countForKey(deliveryAdapter.observableSends, oldDelivery.entry.deliveryKey) > 1,
+                countGovernorObservedKey(
+                  deliveryAdapter.observableSends,
+                  oldDelivery.entry.deliveryKey,
+                ) > 1,
               meaningfulCalls: mutationAttempts.length + deliveryAttempts.length,
               usefulCalls: 2,
             });
             expect(mutationAttempts).toHaveLength(2);
             expect(deliveryAttempts).toHaveLength(2);
             expect(
-              countForKey(mutationAdapter.observableEffects, newClaim.intent.idempotencyKey),
+              countGovernorObservedKey(
+                mutationAdapter.observableEffects,
+                newClaim.intent.idempotencyKey,
+              ),
             ).toBe(1);
             expect(
-              countForKey(deliveryAdapter.observableSends, oldDelivery.entry.deliveryKey),
+              countGovernorObservedKey(
+                deliveryAdapter.observableSends,
+                oldDelivery.entry.deliveryKey,
+              ),
             ).toBe(1);
           }
 
@@ -491,43 +452,6 @@ describe("behavior governor mandatory synthetic evals", () => {
         }
       },
     );
-  });
-
-  it("fails the mandatory gate when a broken adapter produces duplicate observable effects", () => {
-    const mutation = new BrokenMutationAdapter();
-    const delivery = new BrokenDeliveryAdapter();
-    mutation.apply("stable-mutation-key");
-    mutation.apply("stable-mutation-key");
-    void delivery.send({ deliveryKey: "stable-delivery-key", payload: {} });
-    void delivery.send({ deliveryKey: "stable-delivery-key", payload: {} });
-    const summary = summarizeGovernorEvals([
-      {
-        success: true,
-        prematureCompletion: false,
-        resumedAfterCrash: true,
-        duplicateMutation: countForKey(mutation.observableEffects, "stable-mutation-key") > 1,
-        duplicateReply: countForKey(delivery.observableSends, "stable-delivery-key") > 1,
-        meaningfulCalls: mutation.attempts.length + delivery.attempts.length,
-        usefulCalls: 2,
-      },
-    ]);
-    expect(() =>
-      assertGovernorMandatoryEvalGates({
-        summary,
-        accessInventory: summarizeGovernorEvals([
-          {
-            success: true,
-            prematureCompletion: false,
-            resumedAfterCrash: true,
-            duplicateMutation: false,
-            duplicateReply: false,
-            meaningfulCalls: 1,
-            usefulCalls: 1,
-          },
-        ]),
-        baselineShortTaskSuccessRate: 1,
-      }),
-    ).toThrow(/duplicate_mutation.*duplicate_reply/u);
   });
 
   it("records a semantic failure as a rejected finish rather than a successful completion", async () => {

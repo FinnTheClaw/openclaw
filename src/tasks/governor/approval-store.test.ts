@@ -76,6 +76,7 @@ describe("governor approval grants", () => {
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
           approvalResolver: broker.approvalResolver,
+          deliveryResolver: broker.deliveryResolver,
         });
         const controller = new GovernorController(store, registry());
         try {
@@ -162,6 +163,7 @@ describe("governor approval grants", () => {
             stateDir: state.stateDir,
             receiptResolver: broker.resolver,
             approvalResolver: broker.approvalResolver,
+            deliveryResolver: broker.deliveryResolver,
           });
         const store = makeStore();
         const controller = new GovernorController(store, registry());

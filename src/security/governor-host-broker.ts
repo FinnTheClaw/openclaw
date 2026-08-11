@@ -65,16 +65,19 @@ type HostReceipt = Readonly<{
 
 export type GovernorAuthenticatedApprovalReceipt = Readonly<{
   id: HostGovernorApprovalReceiptId;
+  grantId: string;
   scopeKey: string;
   taskId: string;
   objectiveRevision: number;
   capability: string;
   capabilityVersion: string;
-  canonicalTarget: string;
+  canonicalTargetOpaque: string;
   approverIdentity: string;
   approvalEpoch: number;
   expiresAt: number;
   observedAt: number;
+  grantKeyId: string;
+  grantSignature: string;
   signature: string;
 }>;
 
@@ -166,8 +169,24 @@ export type GovernorTrustedApprovalResolver = {
     receiptId: HostGovernorApprovalRevocationId,
     scopeKey: string,
   ) => GovernorAuthenticatedApprovalRevocation | null;
-  readonly signApprovalGrant: (grant: unknown) => { keyId: string; signature: string };
-  readonly verifyApprovalGrant: (grant: unknown, keyId: string, signature: string) => boolean;
+  readonly verifyApprovalGrant: (
+    grant: {
+      grantId: string;
+      taskId: string;
+      scopeKey: string;
+      objectiveRevision: number;
+      capability: string;
+      capabilityVersion: string;
+      canonicalTarget: string;
+      issuerId: string;
+      approvalEpoch: number;
+      expiresAt: number;
+      authorityKeyId: string;
+      authorityVersion: number;
+      authoritySignature: string;
+    },
+    canonicalTarget: string,
+  ) => boolean;
 };
 
 /** Read-only delivery resolution. It cannot register, rebind, or revoke adapters. */
@@ -254,7 +273,28 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
       approval: input,
       nonce: crypto.randomUUID(),
     }) as HostGovernorApprovalReceiptId;
-    const body = { id, ...input };
+    const grantId = `ggrant_${crypto.randomUUID()}`;
+    const canonicalTargetOpaque = opaqueId(state.key, { target: input.canonicalTarget });
+    const grantPayload = {
+      grantId,
+      taskId: input.taskId,
+      scopeKey: input.scopeKey,
+      objectiveRevision: input.objectiveRevision,
+      capability: input.capability,
+      capabilityVersion: input.capabilityVersion,
+      canonicalTargetOpaque,
+      approvalReceiptId: id,
+      approvalEpoch: input.approvalEpoch,
+      expiresAt: input.expiresAt,
+    };
+    const body = {
+      id,
+      grantId,
+      canonicalTargetOpaque,
+      grantKeyId: "host-broker-v1",
+      grantSignature: sign(state.key, grantPayload),
+      ...input,
+    };
     state.approvals.set(id, Object.freeze({ ...body, signature: sign(state.key, body) }));
     return id;
   };
@@ -289,6 +329,15 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     // Bind the callable now. Later mutation of the source object cannot alter dispatch.
     const send = implementation.send.bind(implementation);
     const identity = Object.freeze(structuredClone(input.identity));
+    const priorIdentity = Array.from(state.deliveries.values()).find(
+      (entry) =>
+        entry.identity.adapterId === identity.adapterId &&
+        entry.identity.version === identity.version &&
+        entry.identity.capability === identity.capability,
+    );
+    if (priorIdentity && input.generation <= priorIdentity.generation) {
+      throw new Error("Governor delivery identity generation is already registered");
+    }
     const configDigest = governorDigest(input.config);
     const implementationDigest = governorDigest({ source: String(implementation.send) });
     const handle = opaqueId(state.key, {
@@ -364,9 +413,26 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
       const { signature, ...body } = receipt;
       return sign(state.key, body) === signature ? receipt : null;
     },
-    signApprovalGrant: (grant) => ({ keyId: "host-broker-v1", signature: sign(state.key, grant) }),
-    verifyApprovalGrant: (grant, keyId, signature) =>
-      keyId === "host-broker-v1" && sign(state.key, grant) === signature,
+    verifyApprovalGrant: (grant, canonicalTarget) => {
+      if (grant.authorityKeyId !== "host-broker-v1" || grant.authorityVersion !== 1) {
+        return false;
+      }
+      const canonicalTargetOpaque = opaqueId(state.key, { target: canonicalTarget });
+      if (canonicalTargetOpaque !== grant.canonicalTarget) return false;
+      const payload = {
+        grantId: grant.grantId,
+        taskId: grant.taskId,
+        scopeKey: grant.scopeKey,
+        objectiveRevision: grant.objectiveRevision,
+        capability: grant.capability,
+        capabilityVersion: grant.capabilityVersion,
+        canonicalTargetOpaque: grant.canonicalTarget,
+        approvalReceiptId: grant.issuerId,
+        approvalEpoch: grant.approvalEpoch,
+        expiresAt: grant.expiresAt,
+      };
+      return sign(state.key, payload) === grant.authoritySignature;
+    },
   });
   APPROVAL_RESOLVERS.add(approvalResolver);
   const deliveryResolver: GovernorTrustedDeliveryResolver = Object.freeze({

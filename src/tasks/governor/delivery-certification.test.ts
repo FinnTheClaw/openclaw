@@ -36,21 +36,9 @@ const controller = (store: import("./store.js").GovernorSqliteStore) =>
   new GovernorController(store, new GovernorCapabilityRegistry([]));
 async function closeDatabaseForCleanup(): Promise<void> {
   closeOpenClawStateDatabase();
-  // node:sqlite WAL finalization is asynchronous on Windows.
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, 25);
-  });
 }
 async function withDeliveryState(run: (state: OpenClawTestState) => Promise<void>): Promise<void> {
-  try {
-    await withOpenClawTestState({ layout: "state-only", prefix: "governor-delivery-" }, run);
-  } catch (error) {
-    // node:sqlite can retain a WAL unlink handle on Windows after all assertions
-    // complete. This is a test-fixture cleanup failure, not an authorization pass.
-    if (!(error instanceof Error) || !/EBUSY: resource busy or locked/u.test(error.message)) {
-      throw error;
-    }
-  }
+  await withOpenClawTestState({ layout: "state-only", prefix: "governor-delivery-" }, run);
 }
 function completion(governor: GovernorController) {
   const taskId = governor.ingest({
@@ -79,7 +67,9 @@ function completion(governor: GovernorController) {
   if (!result.completed) {
     throw new Error("expected completion");
   }
-  return { taskId, effectId: "completion_0", expectedLeaseEpoch: result.task.leaseEpoch };
+  const effectId = governor.store.outbox.list(taskId)[0]?.effectId;
+  if (!effectId) throw new Error("expected completion outbox entry");
+  return { taskId, effectId, expectedLeaseEpoch: result.task.leaseEpoch };
 }
 function register(
   broker: ReturnType<typeof createGovernorTestStore>["broker"],
@@ -125,20 +115,16 @@ describe("governor delivery certification", () => {
           return { deliveryKey: params.deliveryKey, receipt: {} };
         },
       };
-      const cloneHandle = broker.capabilities.registerStaticDeliveryAdapter({
-        identity,
-        config: { fixture: "synthetic" },
-        generation: 0,
-        factory: () => clone,
-      });
       await expect(
-        governed.dispatchOutbox({
-          ...entry,
-          workerId: "clone",
-          adapterHandle: cloneHandle,
-          now: 9,
-        }),
-      ).rejects.toThrow(/uncertified/);
+        Promise.resolve().then(() =>
+          broker.capabilities.registerStaticDeliveryAdapter({
+            identity,
+            config: { fixture: "synthetic" },
+            generation: 0,
+            factory: () => clone,
+          }),
+        ),
+      ).rejects.toThrow(/already registered/);
       broker.capabilities.revokeDeliveryAdapter({ handle });
       await expect(
         governed.dispatchOutbox({ ...entry, workerId: "revoked", adapterHandle: handle, now: 11 }),
@@ -154,6 +140,7 @@ describe("governor delivery certification", () => {
       const entry = completion(governed);
       const adapter = new Adapter();
       const handle = register(broker, adapter, 0);
+      governed.store.resolveCertifiedDelivery(handle);
       const { db } = openOpenClawStateDatabase({
         env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir },
       });

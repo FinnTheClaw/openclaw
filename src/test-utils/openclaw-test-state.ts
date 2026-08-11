@@ -7,12 +7,30 @@ import { resolveAuthProfileDatabasePath } from "../agents/auth-profiles/sqlite.j
 import { saveAuthProfileStore } from "../agents/auth-profiles/store.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import * as configRuntime from "../config/config.js";
+import { closeOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { captureEnv } from "./env.js";
 import { cleanupSessionStateForTest } from "./session-state-cleanup.js";
 
 type ConfigRuntimeResettable = typeof configRuntime & {
   resetConfigRuntimeState?: () => void;
 };
+
+async function removeTestStateRoot(root: string): Promise<void> {
+  // node:sqlite can release a WAL/shared-memory handle a tick after its
+  // registry closes on Windows. Retry only the documented transient errors;
+  // every other cleanup failure remains visible to the test.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const transient =
+        error instanceof Error && /^(?:EBUSY|EPERM):/u.test(error.message) && attempt < 3;
+      if (!transient) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
+}
 
 type OpenClawTestStateLayout = "home" | "state-only" | "split";
 
@@ -357,8 +375,13 @@ export async function createOpenClawTestState(
       }
       cleaned = true;
       await cleanupSessionStateForTest().catch(() => undefined);
+      // State fixtures own their temporary directory. Close the shared SQLite
+      // cache before deleting it; Vitest's afterEach hooks run after this
+      // callback returns and would otherwise release the Windows file handles
+      // too late for fs.rm.
+      closeOpenClawStateDatabase();
       state.restoreEnv();
-      await fs.rm(root, { recursive: true, force: true });
+      await removeTestStateRoot(root);
     },
   };
 

@@ -5,6 +5,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore, recordGovernorTestToolOutcome } from "./test-broker.js";
 import { createGovernorEffectId, type GovernorPlan, type GovernorTaskScope } from "./types.js";
 
 function scope(index: number): GovernorTaskScope {
@@ -40,7 +41,11 @@ function controller(store: GovernorSqliteStore): GovernorController {
   );
 }
 
-function verifiedTask(governor: GovernorController, index: number) {
+function verifiedTask(
+  governor: GovernorController,
+  broker: ReturnType<typeof createGovernorTestStore>["broker"],
+  index: number,
+) {
   const taskScope = scope(index);
   const base = 100 + index * 100;
   const taskId = governor.ingest({
@@ -60,7 +65,7 @@ function verifiedTask(governor: GovernorController, index: number) {
   }).task.taskId;
   governor.preparePlan({ taskId, plan, now: base + 1 });
   governor.startExecution(taskId, base + 5);
-  const outcome = governor.recordToolOutcome({
+  const outcome = recordGovernorTestToolOutcome(governor, broker, {
     taskId,
     executionFence: governor.captureExecutionFence(taskId),
     proposal: {
@@ -100,10 +105,10 @@ describe("governor material response claims", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-material-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
         const governed = controller(store);
         try {
-          const { taskId, evidenceId, scope: firstScope, base } = verifiedTask(governed, 1);
+          const { taskId, evidenceId, scope: firstScope, base } = verifiedTask(governed, broker, 1);
           expect(() =>
             governed.admitMaterialClaims({
               taskId,
@@ -164,7 +169,7 @@ describe("governor material response claims", () => {
             recovery: { unsupportedMaterialClaimIds: ["old-material"] },
           });
 
-          const fresh = verifiedTask(governed, 2);
+          const fresh = verifiedTask(governed, broker, 2);
           governed.admitMaterialClaims({
             taskId: fresh.taskId,
             claims: [
@@ -199,10 +204,10 @@ describe("governor material response claims", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-material-negative-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
         const governed = controller(store);
         try {
-          const verified = verifiedTask(governed, 9);
+          const verified = verifiedTask(governed, broker, 9);
           for (const claim of [
             {
               claimId: "wrong-value",

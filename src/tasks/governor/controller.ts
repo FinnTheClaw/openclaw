@@ -11,14 +11,10 @@ import {
 } from "./action-runtime.js";
 // Orchestrates the feature-flagged governed task loop over durable state.
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
-import {
-  GovernorCapabilityRegistry,
-  type GovernorCapabilityDefinition,
-} from "./capability-registry.js";
+import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { assertValidGovernorPlan } from "./contracts.js";
 import { dispatchGovernorOutbox, type GovernorDispatchOutboxParams } from "./delivery-dispatch.js";
 import { createGovernorEventRecord } from "./events.js";
-import { isBehaviorGovernorEnabled } from "./feature-flag.js";
 import {
   evaluateGovernorFinish,
   type GovernorCompletionCertificate,
@@ -47,7 +43,7 @@ import {
   type GovernorCommitResult,
   type GovernorIngressResult,
 } from "./store.js";
-import { assertGovernorIdentityHmacKeyAvailable, opaqueGovernorReference } from "./types.js";
+import { opaqueGovernorReference } from "./types.js";
 import type {
   GovernorMode,
   GovernorPlan,
@@ -489,20 +485,7 @@ export class GovernorController {
   }
 }
 
-export function createGovernorControllerIfEnabled(params: {
-  env?: NodeJS.ProcessEnv;
-  stateDir?: string;
-  capabilities: readonly GovernorCapabilityDefinition[];
-}): GovernorController | null {
-  if (!isBehaviorGovernorEnabled(params.env)) {
-    return null;
-  }
-  assertGovernorIdentityHmacKeyAvailable({ ...process.env, ...params.env });
-  return new GovernorController(
-    new GovernorSqliteStore({ stateDir: params.stateDir }),
-    new GovernorCapabilityRegistry(params.capabilities),
-  );
-}
+export { createGovernorControllerIfEnabled } from "./controller-bootstrap.js";
 
 export function governorArgumentsDigest(value: GovernorJsonValue): string {
   return governorDigest(value);

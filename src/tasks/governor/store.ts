@@ -1,20 +1,16 @@
 // Persists governed task projections, immutable events, effects, evidence, and outbox intents.
-import crypto from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import {
-  createHostGovernorBroker,
+  createGovernorTestHostBindings,
   isTrustedGovernorReceiptResolver,
-  type HostGovernorCapabilities,
   type GovernorTrustedReceiptResolver,
   type GovernorTrustedApprovalResolver,
   type GovernorTrustedDeliveryResolver,
-  type HostGovernorReceiptId,
   type HostGovernorDeliveryHandle,
-} from "../../security/governor-host-broker.js";
+} from "../../security/governor-host-readonly.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -27,21 +23,12 @@ import {
 } from "./action-intent-store.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
-import { canonicalGovernorJson, governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { bindGovernorCheckpoint, GovernorCheckpointStore } from "./checkpoint-store.js";
 import { assertValidGovernorContract } from "./contracts.js";
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
 import { createGovernorEventRecord, type GovernorEventRecord } from "./events.js";
-import {
-  assertOpaqueEvidenceSourceRef,
-  createGovernorEvidenceCandidate,
-  deriveGovernorEvidenceSemantics,
-  governorEvidenceAdmissionPayload,
-  opaqueEvidenceSourceRef,
-  validateGovernorEvidenceCandidate,
-  type GovernorEvidenceCandidate,
-  type GovernorEvidenceRecord,
-} from "./evidence.js";
+import type { GovernorEvidenceCandidate, GovernorEvidenceRecord } from "./evidence.js";
 import {
   bindGovernorOutbox,
   GovernorOutboxStore,
@@ -50,17 +37,20 @@ import {
 import type { GovernorCheckpoint } from "./planning-policy.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
+import { appendGovernorAuditEvent } from "./store-audit.js";
 import {
   bindEffect,
   bindEvent,
   bindEvidence,
   bindTask,
   governorDb,
-  parseEffectRow,
-  parseEventRow,
-  parseEvidenceRow,
   parseTaskRow,
 } from "./store-codec.js";
+import {
+  GovernorEvidenceAdmissionStore,
+  type GovernorPendingEvidence,
+} from "./store-evidence-admission.js";
+import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
   assertGovernorIdentityHmacKeyAvailable,
@@ -79,33 +69,14 @@ export type GovernorIngressResult = {
   task: GovernorTaskProjection;
 };
 
-export type GovernorCommitResult =
-  | { applied: true; task: GovernorTaskProjection }
-  | {
-      applied: false;
-      reason: "not_found" | "task_version_conflict" | "lease_epoch_conflict";
-      current?: GovernorTaskProjection;
-    };
+// oxfmt-ignore
+export type GovernorCommitResult = { applied: true; task: GovernorTaskProjection } | { applied: false; reason: "not_found" | "task_version_conflict" | "lease_epoch_conflict"; current?: GovernorTaskProjection };
 
 export type GovernorEffectUpdate = {
   current: GovernorEffectRecord;
   next: GovernorEffectRecord;
 };
-
-declare const governorPendingEvidenceBrand: unique symbol;
-
-/** Opaque, store-bound admission.  It cannot be manufactured from data. */
-export type GovernorPendingEvidence = {
-  readonly evidence: GovernorEvidenceRecord;
-  readonly [governorPendingEvidenceBrand]: object;
-};
-
-function governorEvidenceAdmissionKey(env: NodeJS.ProcessEnv): string {
-  const configured = env.OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY?.trim();
-  if (configured) return configured;
-  if (env.NODE_ENV === "test") return "governor-test-evidence-admission-key";
-  throw new Error("OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY is required for enabled evidence");
-}
+export type { GovernorPendingEvidence } from "./store-evidence-admission.js";
 
 export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
@@ -114,11 +85,8 @@ export class GovernorSqliteStore {
   readonly #deliveryCertifications: GovernorDeliveryCertificationStore;
   readonly checkpoints: GovernorCheckpointStore;
   readonly outbox: GovernorOutboxStore;
-  readonly #receiptResolver: GovernorTrustedReceiptResolver;
-  readonly #testReceiptCapabilities?: HostGovernorCapabilities;
-  readonly #evidenceAdmissionKey: string;
-  readonly #evidenceAdmissionKeyId: string;
-  readonly #pendingEvidence = new WeakSet<object>();
+  readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
+  readonly #queries: GovernorStoreQueries;
 
   constructor(
     params: {
@@ -126,14 +94,10 @@ export class GovernorSqliteStore {
       receiptResolver?: GovernorTrustedReceiptResolver;
       approvalResolver?: GovernorTrustedApprovalResolver;
       deliveryResolver?: GovernorTrustedDeliveryResolver;
-      /** Test-only synthetic host capability; rejected outside the test runtime. */
-      testReceiptCapabilities?: HostGovernorCapabilities;
     } = {},
   ) {
     const testBroker =
-      !params.receiptResolver && process.env.NODE_ENV === "test"
-        ? createHostGovernorBroker({ receiptSigningKey: "synthetic-store-test-receipt-key" })
-        : undefined;
+      process.env.NODE_ENV === "test" ? createGovernorTestHostBindings() : undefined;
     const receiptResolver = params.receiptResolver ?? testBroker?.resolver;
     const approvalResolver = params.approvalResolver ?? testBroker?.approvalResolver;
     const deliveryResolver = params.deliveryResolver ?? testBroker?.deliveryResolver;
@@ -145,14 +109,12 @@ export class GovernorSqliteStore {
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
     initializeGovernorStateSchema(this.#options);
-    this.#receiptResolver = receiptResolver;
-    if (params.testReceiptCapabilities && process.env.NODE_ENV !== "test") {
-      throw new Error("Governor test receipt capability is unavailable outside tests");
-    }
-    this.#testReceiptCapabilities = params.testReceiptCapabilities ?? testBroker?.capabilities;
-    this.#evidenceAdmissionKey = governorEvidenceAdmissionKey(process.env);
-    this.#evidenceAdmissionKeyId =
-      process.env.OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY_ID?.trim() || "v1";
+    this.#evidenceAdmissions = new GovernorEvidenceAdmissionStore({
+      receiptResolver,
+    });
+    this.#queries = new GovernorStoreQueries(this.#options, (evidence) =>
+      this.#evidenceAdmissions.verify(evidence),
+    );
     this.actionIntents = new GovernorActionIntentStore(params);
     if (!approvalResolver) {
       throw new Error("Governor store requires a trusted host approval resolver");
@@ -192,7 +154,7 @@ export class GovernorSqliteStore {
   /** Host integrations pass only a broker-issued opaque approval receipt. */
   admitAuthenticatedApproval(params: {
     task: GovernorTaskProjection;
-    receiptId: import("../../security/governor-host-broker.js").HostGovernorApprovalReceiptId;
+    receiptId: import("../../security/governor-host-readonly.js").HostGovernorApprovalReceiptId;
     now: number;
   }): string {
     return this.#approvals.admitAuthenticatedApproval(params);
@@ -201,133 +163,22 @@ export class GovernorSqliteStore {
   /** Host integrations pass only a broker-issued opaque revocation receipt. */
   applyAuthenticatedApprovalRevocation(params: {
     grantId: string;
-    receiptId: import("../../security/governor-host-broker.js").HostGovernorApprovalRevocationId;
+    receiptId: import("../../security/governor-host-readonly.js").HostGovernorApprovalRevocationId;
   }): boolean {
     return this.#approvals.applyAuthenticatedRevocation(params);
   }
 
-  #signEvidence(evidence: Omit<GovernorEvidenceRecord, "admissionSignature">): string {
-    return crypto
-      .createHmac("sha256", this.#evidenceAdmissionKey)
-      .update(canonicalGovernorJson(governorEvidenceAdmissionPayload(evidence)))
-      .digest("hex");
-  }
-
-  #assertVerifiedEvidence(evidence: GovernorEvidenceRecord): void {
-    assertOpaqueEvidenceSourceRef(evidence.sourceIdentity);
-    if (governorDigest(evidence.payload) !== evidence.evidenceDigest) {
-      throw new Error("Governor evidence payload digest mismatch");
-    }
-    if (
-      governorDigest({ predicate: evidence.predicate, value: evidence.value }) !==
-      evidence.semanticDigest
-    ) {
-      throw new Error("Governor evidence semantic digest mismatch");
-    }
-    if (
-      evidence.admissionVersion !== 1 ||
-      evidence.admissionKeyId !== this.#evidenceAdmissionKeyId
-    ) {
-      throw new Error("Governor evidence admission key/version is not accepted");
-    }
-    const { admissionSignature, ...unsigned } = evidence;
-    const expected = this.#signEvidence(unsigned);
-    if (
-      admissionSignature.length !== expected.length ||
-      !crypto.timingSafeEqual(Buffer.from(admissionSignature), Buffer.from(expected))
-    ) {
-      throw new Error("Governor evidence admission signature is invalid");
-    }
-  }
-
-  /**
-   * Resolves a host-observed receipt and creates a store-bound admission.
-   * The caller never receives a signer or a persistable record capability.
-   */
   admitEvidenceCandidate(params: {
     task: GovernorTaskProjection;
     candidate: GovernorEvidenceCandidate;
     receiptId?: string;
     now: number;
   }): GovernorPendingEvidence {
-    const candidate = createGovernorEvidenceCandidate(params.candidate);
-    const validation = validateGovernorEvidenceCandidate({ task: params.task, candidate });
-    if (!validation.valid) {
-      throw new Error(`Governor evidence candidate rejected: ${validation.reason}`);
-    }
-    const receiptId =
-      params.receiptId ??
-      this.#testReceiptCapabilities?.submitObservedReceipt({
-        scopeKey: params.task.scopeKey,
-        taskId: params.task.taskId,
-        taskVersion: params.task.taskVersion,
-        objectiveRevision: params.task.objectiveRevision,
-        planVersion: params.task.planVersion,
-        sourceKind: candidate.sourceKind as "tool" | "structured_external" | "authenticated_user",
-        sourceIdentity: candidate.sourceIdentity,
-        payload: candidate.payload,
-        observedAt: candidate.observedAt,
-      });
-    if (!receiptId) {
-      throw new Error("Governor evidence requires a trusted host receipt");
-    }
-    const receipt = this.#receiptResolver.resolve(
-      receiptId as HostGovernorReceiptId,
-      params.task.scopeKey,
-    );
-    if (!receipt) {
-      throw new Error("Governor evidence receipt is unknown, invalid, or out of scope");
-    }
-    if (
-      receipt.sourceKind !== candidate.sourceKind ||
-      receipt.sourceIdentity !== candidate.sourceIdentity ||
-      receipt.taskId !== candidate.taskId ||
-      receipt.taskVersion !== candidate.taskVersion ||
-      receipt.objectiveRevision !== candidate.objectiveRevision ||
-      receipt.planVersion !== candidate.planVersion ||
-      receipt.observedAt !== candidate.observedAt ||
-      governorDigest(receipt.payload) !== candidate.evidenceDigest ||
-      governorDigest(receipt.payload) !== governorDigest(candidate.payload)
-    ) {
-      throw new Error("Governor evidence candidate does not match its trusted receipt");
-    }
-    const semantic = deriveGovernorEvidenceSemantics({
-      criterionId: candidate.criterionId,
-      predicate: candidate.predicate,
-      value: candidate.value,
-      payload: receipt.payload,
-    });
-    const unsigned: Omit<GovernorEvidenceRecord, "admissionSignature"> = {
-      ...candidate,
-      payload: receipt.payload,
-      evidenceDigest: governorDigest(receipt.payload),
-      sourceIdentity: opaqueEvidenceSourceRef(receipt.sourceKind, receipt.sourceIdentity),
-      ...semantic,
-      admissibility: "admitted",
-      createdAt: params.now,
-      admissionKeyId: this.#evidenceAdmissionKeyId,
-      admissionVersion: 1,
-    };
-    const evidence = Object.freeze({
-      ...unsigned,
-      admissionSignature: this.#signEvidence(unsigned),
-    });
-    const pending = Object.freeze({ evidence }) as GovernorPendingEvidence;
-    this.#pendingEvidence.add(pending);
-    return pending;
+    return this.#evidenceAdmissions.admit(params);
   }
 
-  #loadTaskFromDatabase(db: DatabaseSync, taskId: GovernorTaskId): GovernorTaskProjection | null {
-    const row = executeSqliteQueryTakeFirstSync(
-      db,
-      governorDb(db).selectFrom("governor_tasks").selectAll().where("task_id", "=", taskId),
-    );
-    return row ? parseTaskRow(row) : null;
-  }
-
-  loadTask(taskId: GovernorTaskId): GovernorTaskProjection | null {
-    return this.#loadTaskFromDatabase(this.#database().db, taskId);
-  }
+  // oxfmt-ignore
+  loadTask(taskId: GovernorTaskId): GovernorTaskProjection | null { return loadGovernorTask(this.#database().db, taskId); }
 
   ingest(params: {
     eventId?: GovernorEventId;
@@ -370,7 +221,7 @@ export class GovernorSqliteStore {
           .where("source_message_id", "=", sourceMessageId),
       );
       if (duplicate) {
-        const task = this.#loadTaskFromDatabase(db, duplicate.task_id as GovernorTaskId);
+        const task = loadGovernorTask(db, duplicate.task_id as GovernorTaskId);
         if (!task) {
           throw new Error(`Governor ingress event references missing task ${duplicate.task_id}`);
         }
@@ -510,7 +361,7 @@ export class GovernorSqliteStore {
       throw new Error(`Invalid governor commit envelope for ${params.current.taskId}`);
     }
     return runOpenClawStateWriteTransaction(({ db }) => {
-      const stored = this.#loadTaskFromDatabase(db, params.current.taskId);
+      const stored = loadGovernorTask(db, params.current.taskId);
       if (!stored) {
         return { applied: false, reason: "not_found" };
       }
@@ -531,7 +382,7 @@ export class GovernorSqliteStore {
           .where("lease_epoch", "=", params.current.leaseEpoch),
       );
       if (update.numAffectedRows !== 1n) {
-        const current = this.#loadTaskFromDatabase(db, params.current.taskId) ?? undefined;
+        const current = loadGovernorTask(db, params.current.taskId) ?? undefined;
         return { applied: false, reason: "task_version_conflict", current };
       }
       executeSqliteQuerySync(db, dbx.insertInto("governor_events").values(bindEvent(params.event)));
@@ -611,7 +462,7 @@ export class GovernorSqliteStore {
         }
       }
       if (params.evidenceAdmission) {
-        if (!this.#pendingEvidence.has(params.evidenceAdmission)) {
+        if (!this.#evidenceAdmissions.owns(params.evidenceAdmission)) {
           throw new Error("Governor evidence admission was not created by this store");
         }
         const evidence = params.evidenceAdmission.evidence;
@@ -624,12 +475,12 @@ export class GovernorSqliteStore {
         ) {
           throw new Error("Governor evidence admission is stale or task-bound incorrectly");
         }
-        this.#assertVerifiedEvidence(evidence);
+        this.#evidenceAdmissions.verify(evidence);
         executeSqliteQuerySync(
           db,
           dbx
             .insertInto("governor_evidence")
-            .values(bindEvidence(evidence, (item) => this.#assertVerifiedEvidence(item)))
+            .values(bindEvidence(evidence, (item) => this.#evidenceAdmissions.verify(item)))
             .onConflict((conflict) => conflict.column("evidence_id").doNothing()),
         );
       }
@@ -647,92 +498,26 @@ export class GovernorSqliteStore {
   }
 
   appendAuditEvent(params: { task: GovernorTaskProjection; event: GovernorEventRecord }): boolean {
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const current = this.#loadTaskFromDatabase(db, params.task.taskId);
-      if (
-        !current ||
-        current.taskVersion !== params.task.taskVersion ||
-        current.leaseEpoch !== params.task.leaseEpoch ||
-        params.event.taskId !== current.taskId ||
-        params.event.taskVersion !== current.taskVersion ||
-        params.event.objectiveRevision !== current.objectiveRevision ||
-        params.event.payloadDigest !== governorDigest(params.event.payload)
-      ) {
-        return false;
-      }
-      executeSqliteQuerySync(
-        db,
-        governorDb(db).insertInto("governor_events").values(bindEvent(params.event)),
-      );
-      return true;
-    }, this.#options);
+    return appendGovernorAuditEvent({ options: this.#options, ...params });
   }
 
   listEvents(taskId: GovernorTaskId): GovernorEventRecord[] {
-    const { db } = this.#database();
-    return executeSqliteQuerySync(
-      db,
-      governorDb(db)
-        .selectFrom("governor_events")
-        .selectAll()
-        .where("task_id", "=", taskId)
-        .orderBy("created_at", "asc")
-        .orderBy("event_id", "asc"),
-    ).rows.map(parseEventRow);
+    return this.#queries.listEvents(taskId);
   }
 
   listEffects(taskId: GovernorTaskId): GovernorEffectRecord[] {
-    const { db } = this.#database();
-    return executeSqliteQuerySync(
-      db,
-      governorDb(db)
-        .selectFrom("governor_effects")
-        .selectAll()
-        .where("task_id", "=", taskId)
-        .orderBy("created_at", "asc")
-        .orderBy("effect_id", "asc"),
-    ).rows.map(parseEffectRow);
+    return this.#queries.listEffects(taskId);
   }
 
   loadEffect(taskId: GovernorTaskId, effectId: string): GovernorEffectRecord | null {
-    const { db } = this.#database();
-    const row = executeSqliteQueryTakeFirstSync(
-      db,
-      governorDb(db)
-        .selectFrom("governor_effects")
-        .selectAll()
-        .where("task_id", "=", taskId)
-        .where("effect_id", "=", effectId),
-    );
-    return row ? parseEffectRow(row) : null;
+    return this.#queries.loadEffect(taskId, effectId);
   }
 
   listEvidence(taskId: GovernorTaskId): GovernorEvidenceRecord[] {
-    const { db } = this.#database();
-    return executeSqliteQuerySync(
-      db,
-      governorDb(db)
-        .selectFrom("governor_evidence")
-        .selectAll()
-        .where("task_id", "=", taskId)
-        .orderBy("created_at", "asc")
-        .orderBy("evidence_id", "asc"),
-    ).rows.map((row) => parseEvidenceRow(row, (item) => this.#assertVerifiedEvidence(item)));
+    return this.#queries.listEvidence(taskId);
   }
 
   listUnfinishedFanoutJobIds(task: GovernorTaskProjection): string[] {
-    const { db } = this.#database();
-    return executeSqliteQuerySync(
-      db,
-      governorDb(db)
-        .selectFrom("governor_fanout_jobs")
-        .select(["job_id"])
-        .where("task_id", "=", task.taskId)
-        .where("plan_version", "=", task.planVersion)
-        .where("execution_generation", "=", task.executionGeneration)
-        .where("state", "in", ["queued", "running"])
-        .orderBy("queue_sequence", "asc")
-        .orderBy("job_id", "asc"),
-    ).rows.map((row) => row.job_id);
+    return this.#queries.listUnfinishedFanoutJobIds(task);
   }
 }

@@ -1,5 +1,5 @@
 // Dispatches a claimed reply only through a host-certified delivery adapter.
-import type { HostGovernorDeliveryHandle } from "../../security/governor-host-broker.js";
+import type { HostGovernorDeliveryHandle } from "../../security/governor-host-readonly.js";
 import type { GovernorOutboxClaimResult } from "./outbox-store.js";
 import type { GovernorSqliteStore } from "./store.js";
 import type { GovernorTaskId } from "./types.js";

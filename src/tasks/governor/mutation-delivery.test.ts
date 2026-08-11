@@ -7,6 +7,11 @@ import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorFanoutStore } from "./fanout.js";
 import { GovernorSqliteStore } from "./store.js";
 import {
+  createGovernorTestStore,
+  recordGovernorTestToolOutcome,
+  resolveGovernorTestMutation,
+} from "./test-broker.js";
+import {
   createGovernorEffectId,
   type GovernorPlan,
   type GovernorTaskContract,
@@ -74,6 +79,7 @@ function capabilities(): GovernorCapabilityRegistry {
 async function withGovernor(
   run: (params: {
     controller: GovernorController;
+    broker: ReturnType<typeof createGovernorTestStore>["broker"];
     store: GovernorSqliteStore;
     stateDir: string;
   }) => Promise<void> | void,
@@ -81,10 +87,11 @@ async function withGovernor(
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-mutation-" },
     async (state) => {
-      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       try {
         await run({
           controller: new GovernorController(store, capabilities()),
+          broker,
           store,
           stateDir: state.stateDir,
         });
@@ -130,7 +137,7 @@ afterEach(() => {
 
 describe("governor mutation reconciliation and delivery", () => {
   it("requires reconciliation before retry and post-mutation evidence before completion", async () => {
-    await withGovernor(({ controller, store }) => {
+    await withGovernor(({ controller, store, broker }) => {
       const taskId = startTask(controller);
       const firstFence = controller.captureExecutionFence(taskId);
       const first = controller.recordToolOutcome({
@@ -170,7 +177,7 @@ describe("governor mutation reconciliation and delivery", () => {
       ).toThrow(/reconcile_before_retry/);
 
       const reconciliationFence = controller.captureExecutionFence(taskId);
-      const reconciled = controller.resolveMutation({
+      const reconciled = resolveGovernorTestMutation(controller, broker, {
         taskId,
         executionFence: reconciliationFence,
         effectId: first.effect.effectId,
@@ -222,7 +229,7 @@ describe("governor mutation reconciliation and delivery", () => {
       }
       expect(premature.recovery.unverifiedMutationEffectIds).toEqual([applied.effect.effectId]);
 
-      const verified = controller.resolveMutation({
+      const verified = resolveGovernorTestMutation(controller, broker, {
         taskId,
         executionFence: {
           objectiveRevision: secondFence.objectiveRevision,
@@ -241,7 +248,7 @@ describe("governor mutation reconciliation and delivery", () => {
       // under the new plan before proposing completion.
       controller.preparePlan({ taskId, plan, now: 140 });
       controller.startExecution(taskId, 150);
-      controller.recordToolOutcome({
+      recordGovernorTestToolOutcome(controller, broker, {
         taskId,
         executionFence: controller.captureExecutionFence(taskId),
         proposal: {
@@ -312,10 +319,10 @@ describe("governor mutation reconciliation and delivery", () => {
   });
 
   it("rejects a secret canary before tool evidence, logs, session output, or outbox state", async () => {
-    await withGovernor(({ controller, store }) => {
+    await withGovernor(({ controller, store, broker }) => {
       const taskId = startTask(controller);
       expect(() =>
-        controller.recordToolOutcome({
+        recordGovernorTestToolOutcome(controller, broker, {
           taskId,
           executionFence: controller.captureExecutionFence(taskId),
           proposal: {
@@ -345,7 +352,7 @@ describe("governor mutation reconciliation and delivery", () => {
       expect(store.listEffects(taskId)).toEqual([]);
       expect(JSON.stringify(store.listEvents(taskId))).not.toContain("CANARY_tool_output");
 
-      controller.recordToolOutcome({
+      recordGovernorTestToolOutcome(controller, broker, {
         taskId,
         executionFence: controller.captureExecutionFence(taskId),
         proposal: {
@@ -388,9 +395,9 @@ describe("governor mutation reconciliation and delivery", () => {
   });
 
   it("reclaims a crashed delivery lease without an observable duplicate", async () => {
-    await withGovernor(({ controller, store, stateDir }) => {
+    await withGovernor(({ controller, store, stateDir, broker }) => {
       const taskId = startTask(controller);
-      controller.recordToolOutcome({
+      recordGovernorTestToolOutcome(controller, broker, {
         taskId,
         executionFence: controller.captureExecutionFence(taskId),
         proposal: {

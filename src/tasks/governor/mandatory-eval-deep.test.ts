@@ -5,6 +5,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore, recordGovernorTestToolOutcome } from "./test-broker.js";
 import { createGovernorEffectId, type GovernorPlan, type GovernorTaskScope } from "./types.js";
 
 const plan: GovernorPlan = {
@@ -53,11 +54,12 @@ function controller(store: GovernorSqliteStore): GovernorController {
 
 function recordEvidence(
   governor: GovernorController,
+  broker: ReturnType<typeof createGovernorTestStore>["broker"],
   taskId: ReturnType<GovernorController["ingest"]>["task"]["taskId"],
   suffix: string,
   now: number,
 ) {
-  governor.recordToolOutcome({
+  recordGovernorTestToolOutcome(governor, broker, {
     taskId,
     executionFence: governor.captureExecutionFence(taskId),
     proposal: {
@@ -92,7 +94,7 @@ describe("governor deep mandatory replay", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-deep-eval-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
         const governed = controller(store);
         try {
           const taskId = governed.ingest({
@@ -106,7 +108,7 @@ describe("governor deep mandatory replay", () => {
           governed.preparePlan({ taskId, plan, now: 110 });
           governed.startExecution(taskId, 120);
           for (let index = 0; index < 35; index += 1) {
-            recordEvidence(governed, taskId, `deep-${index}`, 121 + index);
+            recordEvidence(governed, broker, taskId, `deep-${index}`, 121 + index);
           }
           expect(store.listEffects(taskId)).toHaveLength(35);
           governed.beginVerification(taskId, 200);
@@ -128,7 +130,7 @@ describe("governor deep mandatory replay", () => {
           }).task.taskId;
           governed.preparePlan({ taskId: correctedTaskId, plan, now: 310 });
           governed.startExecution(correctedTaskId, 320);
-          recordEvidence(governed, correctedTaskId, "old-revision", 321);
+          recordEvidence(governed, broker, correctedTaskId, "old-revision", 321);
           governed.ingest({
             sourceMessageId: "revision-message-2",
             sourceSequence: 2,
