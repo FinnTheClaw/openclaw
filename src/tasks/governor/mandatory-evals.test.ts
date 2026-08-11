@@ -288,6 +288,7 @@ describe("behavior governor mandatory synthetic evals", () => {
             if (!outbox) {
               throw new Error("missing completion outbox");
             }
+            const certifiedDelivery = store.resolveCertifiedDelivery(deliveryHandle);
             const oldDelivery = store.outbox.claim({
               taskId,
               effectId: outbox.effectId,
@@ -295,6 +296,17 @@ describe("behavior governor mandatory synthetic evals", () => {
               workerId: `old-delivery-${index}`,
               leaseDurationMs: 10,
               now: base + 160,
+              deliveryBinding: {
+                adapterHandle: certifiedDelivery.handle,
+                identityKey: certifiedDelivery.identityKey,
+                implementationDigest: certifiedDelivery.implementationDigest,
+                configDigest: certifiedDelivery.configDigest,
+                generation: certifiedDelivery.generation,
+                channel: certifiedDelivery.binding.channel,
+                accountIdentity: certifiedDelivery.binding.accountIdentity,
+                targetIdentity: certifiedDelivery.binding.targetIdentity,
+                deploymentIdentity: certifiedDelivery.binding.deploymentIdentity,
+              },
             });
             if (oldDelivery.kind !== "claimed") {
               throw new Error("missing old delivery claim");
@@ -338,7 +350,7 @@ describe("behavior governor mandatory synthetic evals", () => {
               usefulCalls: 2,
             });
             expect(mutationAttempts).toHaveLength(2);
-            expect(deliveryAttempts).toHaveLength(2);
+            expect(deliveryAttempts).toHaveLength(1);
             expect(
               countGovernorObservedKey(
                 mutationAdapter.observableEffects,

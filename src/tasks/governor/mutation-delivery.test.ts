@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { governorDigest } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorFanoutStore } from "./fanout.js";
@@ -448,6 +449,17 @@ describe("governor mutation reconciliation and delivery", () => {
         delivered.set(deliveryKey, receipt);
         return receipt;
       });
+      const deliveryBinding = {
+        adapterHandle: "opaque-adapter-handle",
+        identityKey: "opaque-identity-key",
+        implementationDigest: "a".repeat(64),
+        configDigest: "b".repeat(64),
+        generation: 1,
+        channel: "synthetic",
+        accountIdentity: "opaque-account",
+        targetIdentity: "opaque-target",
+        deploymentIdentity: "opaque-deployment",
+      } as const;
       const oldClaim = store.outbox.claim({
         taskId,
         effectId,
@@ -455,6 +467,7 @@ describe("governor mutation reconciliation and delivery", () => {
         workerId: "old-worker",
         leaseDurationMs: 10,
         now: 130,
+        deliveryBinding,
       });
       expect(oldClaim.kind).toBe("claimed");
       if (oldClaim.kind !== "claimed") {
@@ -471,37 +484,35 @@ describe("governor mutation reconciliation and delivery", () => {
         workerId: "new-worker",
         leaseDurationMs: 10,
         now: 141,
+        deliveryBinding,
       });
-      expect(newClaim.kind).toBe("claimed");
-      if (newClaim.kind !== "claimed") {
-        throw new Error("expected reclaimed delivery");
+      expect(newClaim.kind).toBe("reconcile_required");
+      if (newClaim.kind !== "reconcile_required") {
+        throw new Error("expected reconciliation fence after an ambiguous crash");
       }
-      expect(
-        restartedStore.outbox.markSent({
-          taskId,
-          effectId,
-          expectedLeaseEpoch: completed.task.leaseEpoch,
-          expectedDeliveryClaimEpoch: oldClaim.entry.deliveryClaimEpoch,
-          workerId: "old-worker",
-          providerReceipt: { providerId: "stale" },
-          now: 142,
-        }).kind,
-      ).toBe("stale_worker");
-      const receipt = providerSend(newClaim.entry.deliveryKey);
-      expect(
-        restartedStore.outbox.markSent({
+      expect(() =>
+        restartedStore.outbox.markManualReview({
           taskId,
           effectId,
           expectedLeaseEpoch: completed.task.leaseEpoch,
           expectedDeliveryClaimEpoch: newClaim.entry.deliveryClaimEpoch,
-          workerId: "new-worker",
-          providerReceipt: receipt,
-          now: 143,
+          reasonDigest: "authoritative-status-unavailable",
+          now: 142,
+        }),
+      ).toThrow(/must be a SHA-256 digest/u);
+      expect(
+        restartedStore.outbox.markManualReview({
+          taskId,
+          effectId,
+          expectedLeaseEpoch: completed.task.leaseEpoch,
+          expectedDeliveryClaimEpoch: newClaim.entry.deliveryClaimEpoch,
+          reasonDigest: governorDigest({ reason: "authoritative-status-unavailable" }),
+          now: 142,
         }).kind,
-      ).toBe("claimed");
-      expect(providerSend).toHaveBeenCalledTimes(2);
+      ).toBe("manual_review");
+      expect(providerSend).toHaveBeenCalledTimes(1);
       expect(delivered.size).toBe(1);
-      expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "sent" });
+      expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "manual_review" });
     });
   });
 });

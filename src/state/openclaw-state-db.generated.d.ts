@@ -858,6 +858,24 @@ export interface GovernorOutbox {
   updated_at: number;
 }
 
+export interface GovernorOwnerIngressReceipts {
+  account_ref: string;
+  action: string;
+  channel_ref: string;
+  consumed_at: number | null;
+  deployment_ref: string;
+  expires_at: number;
+  gateway_ref: string;
+  nonce_ref: string;
+  observed_at: number;
+  owner_principal_ref: string;
+  receipt_id: string;
+  scope_key: string;
+  signature: string;
+  source_message_ref: string;
+  source_sequence: number;
+}
+
 export interface GovernorScopeEpochs {
   epoch: number;
   scope_key: string;
@@ -1396,6 +1414,7 @@ export interface DB {
   governor_memories: GovernorMemories;
   governor_memory_remediations: GovernorMemoryRemediations;
   governor_outbox: GovernorOutbox;
+  governor_owner_ingress_receipts: GovernorOwnerIngressReceipts;
   governor_scope_epochs: GovernorScopeEpochs;
   governor_tasks: GovernorTasks;
   installed_plugin_index: InstalledPluginIndex;

@@ -40,6 +40,17 @@ const integrations = {
   evidenceOwnerId: "synthetic-evidence-owner",
   approvalOwnerId: "synthetic-approval-owner",
   deliveryOwnerId: "synthetic-delivery-owner",
+  ownerIngressOwnerId: "synthetic-owner-ingress",
+  ownerIngressBindings: [
+    {
+      channel: "signal",
+      accountId: "owner-account-fixture",
+      gatewayInstanceId: "owner-gateway-fixture",
+      ownerPrincipal: "owner-principal-fixture",
+      actions: ["reinvestigate", "repair"],
+      scopeKeys: ["owner-scope-fixture"],
+    },
+  ],
   deliveries: [{ implementationId: "synthetic", config: { channel: "fixture" }, generation: 0 }],
 } as const;
 
@@ -52,6 +63,7 @@ function enabledEnvironment(): NodeJS.ProcessEnv {
     OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY_ID: "synthetic-v1",
     OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: "synthetic-host-receipt-key",
     OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY: "synthetic-host-ledger-key",
+    OPENCLAW_GOVERNOR_DEPLOYMENT_ID: "synthetic-host-deployment",
   };
 }
 
@@ -257,6 +269,20 @@ describe("governor runtime adapter", () => {
         integrations: { ...integrations, approvalOwnerId: "" },
       }),
     ).toThrow(/approval integration owner is required/u);
+    expect(() =>
+      createGovernorHostRuntimeAdapterIfEnabled({
+        env: enabledEnvironment(),
+        capabilities: [],
+        integrations: { ...integrations, ownerIngressOwnerId: "" },
+      }),
+    ).toThrow(/owner ingress integration owner is required/u);
+    expect(() =>
+      createGovernorHostRuntimeAdapterIfEnabled({
+        env: enabledEnvironment(),
+        capabilities: [],
+        integrations: { ...integrations, ownerIngressBindings: [] },
+      }),
+    ).toThrow(/authenticated governor owner binding is required/u);
   });
 
   it("uses only supplied secrets and returns separated host integration owners", async () => {
@@ -269,6 +295,7 @@ describe("governor runtime adapter", () => {
           "OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY",
           "OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY",
           "OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY",
+          "OPENCLAW_GOVERNOR_DEPLOYMENT_ID",
         ] as const;
         const prior = new Map(names.map((name) => [name, process.env[name]]));
         for (const name of names) {
@@ -286,6 +313,7 @@ describe("governor runtime adapter", () => {
             evidence: { ownerId: integrations.evidenceOwnerId },
             approval: { ownerId: integrations.approvalOwnerId },
             delivery: { ownerId: integrations.deliveryOwnerId },
+            ownerIngress: { ownerId: integrations.ownerIngressOwnerId },
           });
           expect(runtime?.adapter).toBeInstanceOf(Object);
         } finally {
@@ -297,6 +325,101 @@ describe("governor runtime adapter", () => {
             }
           }
         }
+      },
+    );
+  });
+
+  it("orders authenticated owner envelopes by provider sequence without trusting prose", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-governor-owner-ingress-" },
+      async (state) => {
+        const runtime = createGovernorHostRuntimeIfEnabled({
+          env: enabledEnvironment(),
+          stateDir: state.stateDir,
+          capabilities: [],
+          integrations,
+        });
+        if (!runtime) {
+          throw new Error("expected enabled governor runtime");
+        }
+        const common = {
+          accountId: "owner-account-fixture",
+          gatewayInstanceId: "owner-gateway-fixture",
+          ownerPrincipal: "owner-principal-fixture",
+          scopeKey: "owner-scope-fixture",
+          observedAt: 100,
+          expiresAt: 300,
+        } as const;
+        const revisionTwo = runtime.owners.ownerIngress.submitSignal({
+          ...common,
+          transportEventId: "owner-event-two",
+          sourceSequence: 2,
+          action: "reinvestigate",
+          nonce: "owner-nonce-two",
+        });
+        const revisionOne = runtime.owners.ownerIngress.submitSignal({
+          ...common,
+          transportEventId: "owner-event-one",
+          sourceSequence: 1,
+          action: "repair",
+          nonce: "owner-nonce-one",
+        });
+        const newest = runtime.adapter.routeAuthenticatedOwnerIngress({
+          receiptId: revisionTwo,
+          now: 150,
+        });
+        const stale = runtime.adapter.routeAuthenticatedOwnerIngress({
+          receiptId: revisionOne,
+          now: 151,
+        });
+        expect(() =>
+          runtime.adapter.routeAuthenticatedOwnerIngress({
+            receiptId: revisionTwo,
+            now: 152,
+          }),
+        ).toThrow(/invalid, expired, or mismatched/u);
+        expect(newest.kind).toBe("governed");
+        expect(stale.kind).toBe("governed");
+        if (newest.kind !== "governed" || stale.kind !== "governed") {
+          throw new Error("expected governed owner ingress");
+        }
+        expect(stale.task.taskId).toBe(newest.task.taskId);
+        expect(stale.task.authenticatedSourceSequence).toBe(2);
+        expect(stale.task.contract.objective).toContain("reinvestigate");
+
+        const db = openOpenClawStateDatabase({
+          env: { OPENCLAW_STATE_DIR: state.stateDir },
+        }).db;
+        expect(db.prepare("SELECT COUNT(*) AS count FROM governor_tasks").get()).toEqual({
+          count: 1,
+        });
+        const durable = JSON.stringify(
+          db.prepare("SELECT * FROM governor_owner_ingress_receipts").all(),
+        );
+        for (const raw of [
+          "owner-account-fixture",
+          "owner-gateway-fixture",
+          "owner-principal-fixture",
+          "owner-event-one",
+          "owner-event-two",
+          "owner-scope-fixture",
+        ]) {
+          expect(durable).not.toContain(raw);
+        }
+
+        closeOpenClawStateDatabase();
+        const restarted = createGovernorHostRuntimeIfEnabled({
+          env: enabledEnvironment(),
+          stateDir: state.stateDir,
+          capabilities: [],
+          integrations,
+        });
+        expect(() =>
+          restarted?.adapter.routeAuthenticatedOwnerIngress({
+            receiptId: revisionTwo,
+            now: 153,
+          }),
+        ).toThrow(/invalid, expired, or mismatched/u);
       },
     );
   });

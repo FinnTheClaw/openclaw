@@ -1,11 +1,20 @@
 /** Private, compiled delivery implementations owned by the host boundary. */
 import { governorDigest, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
+import { createCanaryHostSender } from "./governor-host-canary-sink.js";
+import {
+  createIMessageHostSender,
+  createSignalHostSender,
+  type GovernorHostDeliveryRuntime,
+  type HostCompiledSender,
+  type HostPrimitiveDeliveryResult,
+  type HostPrimitiveReconciliationResult,
+} from "./governor-host-channel-delivery.js";
 import type { HostDeliveryIdentity } from "./governor-host-contracts.js";
 
 export type HostDeliverySend = (params: {
   deliveryKey: string;
   payload: GovernorJsonValue;
-}) => Promise<{ deliveryKey: string; receipt: GovernorJsonValue }>;
+}) => Promise<HostPrimitiveDeliveryResult>;
 
 export type HostDeliveryImplementationMode = "production" | "test";
 
@@ -14,16 +23,30 @@ export type HostDeliveryImplementation = Readonly<{
   implementationDigest: string;
   identity: HostDeliveryIdentity;
   config: GovernorJsonValue;
+  channel: HostCompiledSender["channel"];
+  accountId: string;
+  normalizedTarget: string;
+  mode: HostCompiledSender["mode"];
   send: HostDeliverySend;
+  reconcile: (params: {
+    deliveryKey: string;
+    payloadDigest: string;
+  }) => Promise<HostPrimitiveReconciliationResult>;
 }>;
 
 type CompiledImplementation = Readonly<{
   implementationId: string;
   identity: HostDeliveryIdentity;
-  createSender: (config: GovernorJsonValue) => HostDeliverySend;
+  createSender: (
+    config: GovernorJsonValue,
+    runtime?: GovernorHostDeliveryRuntime,
+  ) => HostCompiledSender;
 }>;
 
 const SYNTHETIC_IMPLEMENTATION_ID = "synthetic";
+export const GOVERNOR_CANARY_IMPLEMENTATION_ID = "openclaw.canary.disposable.v1";
+export const GOVERNOR_SIGNAL_IMPLEMENTATION_ID = "openclaw.channel.signal.v1";
+export const GOVERNOR_IMESSAGE_IMPLEMENTATION_ID = "openclaw.channel.imessage.v1";
 const syntheticAttempts = new Map<string, string[]>();
 const syntheticObservableSends = new Map<string, string[]>();
 const EXECUTABLE_CONFIG_KEYS = new Set([
@@ -49,37 +72,98 @@ const syntheticImplementation: CompiledImplementation = Object.freeze({
     version: "1",
     capability: "message.send",
   }),
-  createSender:
-    (config) =>
-    async ({ deliveryKey, payload }) => {
-      const observerKey =
-        !Array.isArray(config) &&
-        config !== null &&
-        typeof config === "object" &&
-        typeof config.observerKey === "string"
-          ? config.observerKey
-          : undefined;
-      if (observerKey) {
-        recordSyntheticAcceptedSend("test", observerKey, deliveryKey);
-      }
-      return {
-        deliveryKey,
-        receipt: {
-          implementationId: SYNTHETIC_IMPLEMENTATION_ID,
-          config,
-          payload,
-        },
-      };
-    },
+  createSender: (config) =>
+    Object.freeze({
+      channel: "canary" as const,
+      accountId: "synthetic",
+      normalizedTarget: "synthetic",
+      mode: "active" as const,
+      send: async ({ deliveryKey, payload }) => {
+        const observerKey =
+          !Array.isArray(config) &&
+          config !== null &&
+          typeof config === "object" &&
+          typeof config.observerKey === "string"
+            ? config.observerKey
+            : undefined;
+        if (observerKey) {
+          recordSyntheticAcceptedSend("test", observerKey, deliveryKey);
+        }
+        return {
+          status: "sent" as const,
+          providerReceipt: {
+            implementationId: SYNTHETIC_IMPLEMENTATION_ID,
+            config,
+            payload,
+          },
+        };
+      },
+      reconcile: async ({ deliveryKey }) => {
+        const observerKey =
+          !Array.isArray(config) &&
+          config !== null &&
+          typeof config === "object" &&
+          typeof config.observerKey === "string"
+            ? config.observerKey
+            : undefined;
+        if (
+          observerKey &&
+          (syntheticObservableSends.get(observerKey) ?? []).includes(deliveryKey)
+        ) {
+          return {
+            status: "sent" as const,
+            providerReceipt: { implementationId: SYNTHETIC_IMPLEMENTATION_ID, deliveryKey },
+          };
+        }
+        return { status: "unresolved" as const };
+      },
+    }),
+});
+
+const canaryImplementation: CompiledImplementation = Object.freeze({
+  implementationId: GOVERNOR_CANARY_IMPLEMENTATION_ID,
+  identity: Object.freeze({ adapterId: "canary", version: "1", capability: "message.send" }),
+  createSender: (config, runtime) => {
+    if (!runtime) {
+      throw new Error("Governor canary delivery runtime is required");
+    }
+    return createCanaryHostSender(config, runtime.stateDir);
+  },
+});
+
+const signalImplementation: CompiledImplementation = Object.freeze({
+  implementationId: GOVERNOR_SIGNAL_IMPLEMENTATION_ID,
+  identity: Object.freeze({ adapterId: "signal", version: "1", capability: "message.send" }),
+  createSender: (config, runtime) => {
+    if (!runtime) {
+      throw new Error("Governor Signal delivery runtime is required");
+    }
+    return createSignalHostSender(config, runtime);
+  },
+});
+
+const imessageImplementation: CompiledImplementation = Object.freeze({
+  implementationId: GOVERNOR_IMESSAGE_IMPLEMENTATION_ID,
+  identity: Object.freeze({ adapterId: "imessage", version: "1", capability: "message.send" }),
+  createSender: (config, runtime) => {
+    if (!runtime) {
+      throw new Error("Governor iMessage delivery runtime is required");
+    }
+    return createIMessageHostSender(config, runtime);
+  },
 });
 
 function compiledImplementations(
   mode: HostDeliveryImplementationMode,
 ): ReadonlyMap<string, CompiledImplementation> {
   // The synthetic sender is a test fixture, never a production registration path.
-  return mode === "test"
-    ? new Map([[SYNTHETIC_IMPLEMENTATION_ID, syntheticImplementation]])
-    : new Map();
+  const production = [canaryImplementation, signalImplementation, imessageImplementation] as const;
+  return new Map(
+    (mode === "test" ? [...production, syntheticImplementation] : production).map((item) => [
+      item.implementationId,
+      item,
+    ]),
+  );
 }
 
 function isExecutableConfigKey(key: string): boolean {
@@ -166,6 +250,7 @@ export function createHostDeliveryImplementation(params: {
   implementationId: string;
   config: unknown;
   mode?: HostDeliveryImplementationMode;
+  runtime?: GovernorHostDeliveryRuntime;
 }): HostDeliveryImplementation {
   if (typeof params.implementationId !== "string" || !params.implementationId.trim()) {
     throw new Error("Governor host delivery implementation ID is required");
@@ -182,6 +267,7 @@ export function createHostDeliveryImplementation(params: {
     throw new Error("Governor host delivery implementation ID is not allowlisted");
   }
   const config = cloneAndFreezeJson(params.config, "config", new WeakSet());
+  const sender = compiled.createSender(config, params.runtime);
   const implementationDigest = governorDigest({
     implementationId: compiled.implementationId,
     identity: compiled.identity,
@@ -192,7 +278,12 @@ export function createHostDeliveryImplementation(params: {
     implementationDigest,
     identity: compiled.identity,
     config,
-    send: compiled.createSender(config),
+    channel: sender.channel,
+    accountId: sender.accountId,
+    normalizedTarget: sender.normalizedTarget,
+    mode: sender.mode,
+    send: sender.send,
+    reconcile: sender.reconcile,
   });
 }
 

@@ -1544,6 +1544,27 @@ CREATE TABLE IF NOT EXISTS governor_outbox (
 CREATE INDEX IF NOT EXISTS idx_governor_outbox_pending
   ON governor_outbox(state, created_at, task_id, effect_id);
 
+CREATE TABLE IF NOT EXISTS governor_owner_ingress_receipts (
+  receipt_id TEXT NOT NULL PRIMARY KEY,
+  channel_ref TEXT NOT NULL,
+  account_ref TEXT NOT NULL,
+  gateway_ref TEXT NOT NULL,
+  owner_principal_ref TEXT NOT NULL,
+  source_message_ref TEXT NOT NULL,
+  source_sequence INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  nonce_ref TEXT NOT NULL UNIQUE,
+  observed_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  deployment_ref TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  consumed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_owner_ingress_scope
+  ON governor_owner_ingress_receipts(scope_key, source_sequence, receipt_id);
+
 CREATE TABLE IF NOT EXISTS governor_scope_epochs (
   scope_key TEXT NOT NULL PRIMARY KEY,
   epoch INTEGER NOT NULL,

@@ -10,6 +10,7 @@ import {
   type OpenClawTestState,
   withOpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import { governorDigest } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
 import { createGovernorTestStore } from "./test-broker.js";
@@ -201,8 +202,11 @@ describe("governor delivery certification", () => {
       mutableConfig.nested.value = "after";
       const resolved = broker.deliveryResolver.resolve(handle);
       expect(resolved).not.toBeNull();
+      expect(resolved?.configDigest).toBe(
+        governorDigest({ label: "before", nested: { value: "before" } }),
+      );
       await expect(resolved?.send({ deliveryKey: "key", payload: {} })).resolves.toMatchObject({
-        receipt: { config: { label: "before", nested: { value: "before" } } },
+        status: "sent",
       });
       await closeDatabaseForCleanup();
     });

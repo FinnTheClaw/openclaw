@@ -4,6 +4,7 @@ import {
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import type { HostGovernorDeliveryHandle } from "../../security/governor-host-readonly.js";
+import type { HostDeliveryReceipt } from "../../security/governor-host-readonly.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -122,6 +123,10 @@ export class GovernorSqliteStore {
   /** Delivery work resolves only through the host-broker-bound handle registry. */
   resolveCertifiedDelivery(handle: HostGovernorDeliveryHandle) {
     return this.#deliveryCertifications.resolveCertified(handle);
+  }
+
+  verifyCertifiedDeliveryReceipt(receipt: HostDeliveryReceipt) {
+    return this.#deliveryCertifications.verifyReceipt(receipt);
   }
 
   /** Host integrations pass only a broker-issued opaque approval receipt. */

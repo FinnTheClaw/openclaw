@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { governorDigest } from "../tasks/governor/canonical-json.js";
 import { isTrustedGovernorReceiptResolver } from "./governor-host-broker.js";
 import { createHostDeliveryImplementation } from "./governor-host-delivery-implementations.js";
 import { createGovernorTestHostBindings } from "./governor-host-readonly.js";
@@ -40,12 +41,53 @@ describe("governor host broker", () => {
     const resolved = broker.deliveryResolver.resolve(handle);
     expect(resolved).not.toBeNull();
     const result = await resolved!.send({ deliveryKey: "key", payload: {} });
-    expect(result.receipt).toMatchObject({
-      config: { label: "before", nested: { value: "before" } },
+    expect(result.status).toBe("sent");
+    expect(resolved!.configDigest).toBe(
+      governorDigest({ label: "before", nested: { value: "before" } }),
+    );
+    if (result.status !== "sent") {
+      throw new Error("expected signed host delivery receipt");
+    }
+    expect(broker.deliveryResolver.verifyReceipt(result.receipt)).toBe(true);
+    expect(result.receipt.providerReceiptDigest).toMatch(/^[a-f0-9]{64}$/u);
+    for (const tampered of [
+      { ...result.receipt, deliveryKey: "different-key" },
+      { ...result.receipt, payloadDigest: "0".repeat(64) },
+      { ...result.receipt, outcome: "would_send" as const },
+    ]) {
+      expect(broker.deliveryResolver.verifyReceipt(tampered)).toBe(false);
+    }
+  });
+
+  it("persists authenticated owner ingress without raw channel identities", () => {
+    const broker = createGovernorTestHostBindings();
+    const id = broker.capabilities.submitAuthenticatedOwnerIngress({
+      channel: "signal",
+      accountId: "private-account-fixture",
+      gatewayInstanceId: "private-gateway-fixture",
+      ownerPrincipal: "private-owner-fixture",
+      sourceMessageId: "private-message-fixture",
+      sourceSequence: 7,
+      action: "repair",
+      scopeKey: "private-scope-fixture",
+      nonce: "private-nonce-fixture",
+      observedAt: 100,
+      expiresAt: 200,
     });
-    const config = (result.receipt as { config: { nested: object } }).config;
-    expect(Object.isFrozen(config)).toBe(true);
-    expect(Object.isFrozen(config.nested)).toBe(true);
+    const receipt = broker.ownerIngressResolver.resolve(id, 150);
+    expect(receipt).toMatchObject({ channel: "signal", action: "repair", sourceSequence: 7 });
+    const serialized = JSON.stringify(receipt);
+    for (const raw of [
+      "private-account-fixture",
+      "private-gateway-fixture",
+      "private-owner-fixture",
+      "private-message-fixture",
+      "private-scope-fixture",
+      "private-nonce-fixture",
+    ]) {
+      expect(serialized).not.toContain(raw);
+    }
+    expect(broker.ownerIngressResolver.resolve(id, 201)).toBeNull();
   });
 
   it("rejects arbitrary IDs, caller functions, registries, and executable config fields", () => {

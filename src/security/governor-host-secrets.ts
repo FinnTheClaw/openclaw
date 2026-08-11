@@ -18,6 +18,7 @@ export type GovernorSecrets = Readonly<{
   evidenceAdmissionKeyId: string;
   receiptSigningKey: string;
   ledgerSigningKey: string;
+  deploymentIdentity: string;
   runtimeMode: "production" | "test";
 }>;
 
@@ -40,18 +41,21 @@ export function resolveGovernorSecrets(env: NodeJS.ProcessEnv): GovernorSecrets 
   const evidenceAdmissionKey = required(env, REQUIRED_KEYS.evidenceAdmissionKey);
   const receiptSigningKey = required(env, REQUIRED_KEYS.receiptSigningKey);
   const ledgerSigningKey = required(env, REQUIRED_KEYS.ledgerSigningKey);
+  const deploymentId = required(env, "OPENCLAW_GOVERNOR_DEPLOYMENT_ID");
   if (
     new Set([identityHmacKey, evidenceAdmissionKey, receiptSigningKey, ledgerSigningKey]).size < 4
   ) {
     throw new Error("Governor HMAC keys must be independently provisioned");
   }
+  const identity = createGovernorIdentityContext(identityHmacKey);
   const context = Object.freeze({
     identityHmacKey,
-    identity: createGovernorIdentityContext(identityHmacKey),
+    identity,
     evidenceAdmissionKey,
     evidenceAdmissionKeyId: env.OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY_ID?.trim() || "v1",
     receiptSigningKey,
     ledgerSigningKey,
+    deploymentIdentity: identity.opaqueReference("governor-deployment", deploymentId),
     runtimeMode: env.NODE_ENV === "test" ? "test" : "production",
   });
   CONTEXTS.add(context);
@@ -71,5 +75,6 @@ export function syntheticGovernorSecretsEnvironment(stateDir?: string): NodeJS.P
     OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY_ID: "synthetic-v1",
     OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: "synthetic-governor-receipt-key",
     OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY: "synthetic-governor-ledger-key",
+    OPENCLAW_GOVERNOR_DEPLOYMENT_ID: "synthetic-governor-deployment",
   };
 }

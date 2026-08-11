@@ -7,13 +7,18 @@ const authorityModules = [
   "governor-host-anti-rollback-ledger",
   "governor-host-bootstrap",
   "governor-host-broker",
+  "governor-host-canary-sink",
+  "governor-host-channel-delivery",
+  "governor-host-delivery-broker",
   "governor-host-delivery-implementations",
+  "governor-host-owner-ingress",
+  "governor-host-owner-ingress-persistence",
   "governor-host-persistence",
   "governor-host-secrets",
 ] as const;
 const authorityImport = new RegExp(`security/(?:${authorityModules.join("|")})(?:\\.js)?["']`, "u");
 const forbiddenAuthority =
-  /\b(?:createGovernorHostPersistence|createGovernorHostRuntimeBindings|createGovernorHostRuntimeIfEnabled|createHostDeliveryImplementation|createHostGovernorBroker|GovernorHostPersistence|GovernorHostRuntime|GovernorSecrets|HostGovernorCapabilities|registerStaticDeliveryAdapter|resolveGovernorSecrets|revokeDeliveryAdapter|signApprovalGrant)\b/u;
+  /\b(?:createCompiledOwnerIngress|createGovernorHostDeliveryRuntime|createGovernorHostPersistence|createGovernorHostRuntimeBindings|createGovernorHostRuntimeIfEnabled|createHostDeliveryImplementation|createHostGovernorBroker|GovernorHostPersistence|GovernorHostRuntime|GovernorSecrets|HostGovernorCapabilities|registerStaticDeliveryAdapter|resolveGovernorSecrets|revokeDeliveryAdapter|signApprovalGrant|submitAuthenticatedOwnerIngress)\b/u;
 
 const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
   "governor-host-anti-rollback-ledger": ["security/governor-host-persistence.ts"],
@@ -22,15 +27,28 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-host-bootstrap.ts",
     "security/governor-host-readonly.ts",
   ],
-  "governor-host-delivery-implementations": ["security/governor-host-broker.ts"],
+  "governor-host-canary-sink": ["security/governor-host-delivery-implementations.ts"],
+  "governor-host-channel-delivery": [
+    "security/governor-host-bootstrap.ts",
+    "security/governor-host-broker.ts",
+    "security/governor-host-canary-sink.ts",
+    "security/governor-host-delivery-broker.ts",
+    "security/governor-host-delivery-implementations.ts",
+  ],
+  "governor-host-delivery-broker": ["security/governor-host-broker.ts"],
+  "governor-host-delivery-implementations": ["security/governor-host-delivery-broker.ts"],
+  "governor-host-owner-ingress": ["security/governor-host-bootstrap.ts"],
+  "governor-host-owner-ingress-persistence": ["security/governor-host-persistence.ts"],
   "governor-host-persistence": [
     "security/governor-host-bootstrap.ts",
     "security/governor-host-broker.ts",
+    "security/governor-host-delivery-broker.ts",
     "security/governor-host-readonly.ts",
   ],
   "governor-host-secrets": [
     "security/governor-host-bootstrap.ts",
     "security/governor-host-broker.ts",
+    "security/governor-host-delivery-broker.ts",
     "security/governor-host-persistence.ts",
     "security/governor-host-readonly.ts",
   ],
@@ -82,7 +100,9 @@ describe("governor host authority boundary", () => {
   it("keeps ambient process secrets out of the broker, persistence, and governor stores", () => {
     const ambientFree = [
       "security/governor-host-broker.ts",
+      "security/governor-host-delivery-broker.ts",
       "security/governor-host-delivery-implementations.ts",
+      "security/governor-host-owner-ingress-persistence.ts",
       "security/governor-host-persistence.ts",
       "security/governor-host-secrets.ts",
       "tasks/governor/action-intent-store.ts",
@@ -103,6 +123,22 @@ describe("governor host authority boundary", () => {
       expect(fs.readFileSync(path.join(root, relative), "utf8"), relative).not.toContain(
         "process.env",
       );
+    }
+  });
+
+  it("keeps compiled delivery factories free of runtime code injection", () => {
+    const filesToCheck = [
+      "security/governor-host-canary-sink.ts",
+      "security/governor-host-channel-delivery.ts",
+      "security/governor-host-delivery-broker.ts",
+      "security/governor-host-delivery-implementations.ts",
+      "security/governor-host-owner-ingress.ts",
+    ];
+    const executableLoader =
+      /\b(?:eval|Function|child_process|spawn|execFile|execSync|import)\s*\(/u;
+    for (const relative of filesToCheck) {
+      const source = fs.readFileSync(path.join(root, relative), "utf8");
+      expect(source, relative).not.toMatch(executableLoader);
     }
   });
 });

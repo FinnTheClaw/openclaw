@@ -21,6 +21,10 @@ import {
   type GovernorHostAntiRollbackLedger,
   type GovernorLedgerState,
 } from "./governor-host-anti-rollback-ledger.js";
+import {
+  createGovernorOwnerIngressPersistence,
+  type GovernorOwnerIngressPersistence,
+} from "./governor-host-owner-ingress-persistence.js";
 import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
 
 type HostDb = Pick<
@@ -41,7 +45,7 @@ type DeliveryInput = Readonly<{
 }>;
 type DeliveryState = Readonly<{ generation: number; status: "certified" | "revoked" }>;
 
-export type GovernorHostPersistence = {
+export type GovernorHostPersistence = Readonly<{
   readonly recordApprovalGrant: (input: {
     grantId: string;
     scopeKey: string;
@@ -66,7 +70,8 @@ export type GovernorHostPersistence = {
   ) => boolean;
   readonly revokeDelivery: (input: DeliveryInput) => boolean;
   readonly deliveryState: (identityKey: string) => DeliveryState | null;
-};
+}> &
+  GovernorOwnerIngressPersistence;
 
 const PORTS = new WeakSet<object>();
 const dbx = (db: DatabaseSync) => getNodeSqliteKysely<HostDb>(db);
@@ -140,6 +145,7 @@ export function createGovernorHostPersistence(params: {
   };
 
   const port: GovernorHostPersistence = Object.freeze({
+    ...createGovernorOwnerIngressPersistence(options),
     recordApprovalGrant: (input) => {
       if (!Number.isSafeInteger(input.approvalEpoch) || input.approvalEpoch < 0) {
         throw new Error("Governor approval ledger epoch is invalid");

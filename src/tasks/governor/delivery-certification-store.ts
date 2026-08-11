@@ -12,6 +12,7 @@ import {
   type GovernorTrustedDeliveryResolver,
   type HostGovernorDeliveryHandle,
 } from "../../security/governor-host-readonly.js";
+import type { HostDeliveryReceipt } from "../../security/governor-host-readonly.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   runOpenClawStateWriteTransaction,
@@ -25,6 +26,15 @@ type CertificationDatabase = Pick<
 >;
 type CertificationTable = OpenClawStateKyselyDatabase["governor_delivery_certifications"];
 const dbx = (db: DatabaseSync) => getNodeSqliteKysely<CertificationDatabase>(db);
+const VERIFIED_RECEIPTS = new WeakSet<object>();
+
+export type GovernorVerifiedDeliveryReceipt = Readonly<{
+  receipt: HostDeliveryReceipt;
+}>;
+
+export function isGovernorVerifiedDeliveryReceipt(value: GovernorVerifiedDeliveryReceipt): boolean {
+  return VERIFIED_RECEIPTS.has(value);
+}
 
 export class GovernorDeliveryCertificationStore {
   readonly #options: OpenClawStateDatabaseOptions;
@@ -128,5 +138,14 @@ export class GovernorDeliveryCertificationStore {
       throw new Error("Governor delivery adapter is revoked");
     }
     return adapter;
+  }
+
+  verifyReceipt(receipt: HostDeliveryReceipt): GovernorVerifiedDeliveryReceipt | null {
+    if (!this.#resolver.verifyReceipt(receipt)) {
+      return null;
+    }
+    const verified = Object.freeze({ receipt });
+    VERIFIED_RECEIPTS.add(verified);
+    return verified;
   }
 }

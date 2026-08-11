@@ -92,6 +92,16 @@ isolated SQLite state.
     action path, and closes only after fresh exact-source verification. Repeated reads reuse the
     resolution; only material new evidence, replacement expiry, a different scope, or an explicit
     operator request qualifies for reinvestigation.
+23. V12 resolves delivery only through three compiled host implementations: the fixed disposable
+    canary sink and Signal/iMessage through OpenClaw's compiled core outbound service. Strict
+    configuration binds adapter generation, deployment, channel, account, normalized target,
+    implementation, and payload digests. Shadow mode performs all checks but no send or canary
+    append. A missing stable
+    provider receipt is an unknown outcome: the outbox never retries blindly and records one durable
+    manual-review state unless authoritative reconciliation proves the original send. Owner actions
+    enter only through a private compiled ingress capability whose authenticated envelope exactly
+    matches a host-configured channel, account, gateway, principal, action, and scope. Durable
+    receipts contain keyed opaque identities and are single-use.
 
 ## Consequences
 
@@ -105,9 +115,10 @@ can remain unused indefinitely while the feature flag is off.
 The governor remains disabled by default. A future production rollout must first provide host-held
 `OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY`, `OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY`,
 `OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY`, and
-`OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY` as four independently provisioned keys, configure
-authenticated evidence, approval, and delivery integration owners, register/certify at least one
-compiled host-owned channel implementation, and install concrete
+`OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY` as four independently provisioned keys, set a stable
+`OPENCLAW_GOVERNOR_DEPLOYMENT_ID`, configure authenticated evidence, approval, delivery, and owner
+ingress integration owners, bind each owner channel/account/gateway/principal/action/scope tuple,
+register/certify at least one compiled host-owned channel implementation, and install concrete
 cache/index/embedding invalidation adapters for every governed memory backend. Until then, this is
 a synthetic-testable control plane rather than a live message-path replacement.
 
@@ -121,7 +132,9 @@ OpenClaw process; it deliberately does **not** claim to protect against a compro
 system or process that can read memory or host secrets.
 
 `src/security/governor-host-bootstrap.ts`, `governor-host-broker.ts`,
-`governor-host-delivery-implementations.ts`, `governor-host-persistence.ts`,
+`governor-host-delivery-broker.ts`, `governor-host-delivery-implementations.ts`,
+`governor-host-channel-delivery.ts`, `governor-host-owner-ingress.ts`,
+`governor-host-persistence.ts`, `governor-host-owner-ingress-persistence.ts`,
 `governor-host-secrets.ts`, and the anti-rollback ledger form the private host boundary. They are
 not in the package export map. A whole-source allowlist permits only the explicit trusted bootstrap
 and host-internal dependency edges. Governor, task, model, and plugin code may
@@ -135,9 +148,10 @@ full host/OS snapshot that replays both sidecars together remains outside Slice 
 remote monotonic storage is required for that stronger rollback guarantee.
 
 At a future live rollout, authenticated terminal, UI, and channel integrations must hold separate
-narrow evidence, approval/revocation, and delivery capabilities returned only by trusted bootstrap.
-The task-facing controller receives read-only resolvers. Bootstrap fails closed without all three
-integration owners and at least one certified delivery implementation. The broker retains signing
+narrow evidence, approval/revocation, delivery, and owner-ingress capabilities returned only by
+trusted bootstrap. The task-facing controller receives read-only resolvers. Bootstrap fails closed
+without all four integration owners, an owner binding, and at least one certified delivery
+implementation. The broker retains signing
 keys in the runtime secret provider only; SQLite
 stores opaque IDs, key IDs/versions, signatures, payload/semantic digests, grants, and monotonic
 epoch/generation high-water marks. Rotation creates a new key/version and accepts only explicitly
@@ -148,8 +162,9 @@ Delivery registration resolves a compiled host-owned implementation by allowlist
 deep-cloned, deep-frozen non-secret configuration snapshot. It never accepts or retains a
 caller-owned function, closure, object, factory, or registry. A later mutation of the caller's
 descriptor or nested configuration cannot change dispatch. Production currently has no certified
-channel implementation, so live enablement remains intentionally fail-closed until that concrete
-integration is added and reviewed. If no authenticated host integration exists, startup must remain
+channel integration: compiled Signal, iMessage, and disposable-canary implementations exist, but no
+live host configuration, owner binding, certification, or routing activation is part of this branch.
+If no authenticated host integration exists, startup must remain
 fail-closed and the feature must remain disabled. `emitTrustedDiagnosticEvent` is explicitly
 inadmissible: it is a diagnostic API rather than an authenticated authority boundary and must never
 issue a governor receipt, approval, or adapter certification.

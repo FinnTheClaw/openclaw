@@ -12,21 +12,23 @@ import {
   governorDigest,
   type GovernorJsonValue,
 } from "../tasks/governor/canonical-json.js";
+import type { GovernorHostDeliveryRuntime } from "./governor-host-channel-delivery.js";
 import type {
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
+  GovernorTrustedOwnerIngressResolver,
   GovernorTrustedReceiptResolver,
   HostBrokerState,
   HostGovernorApprovalReceiptId,
   HostGovernorApprovalRevocationId,
   HostGovernorCapabilities,
-  HostGovernorDeliveryHandle,
+  HostGovernorOwnerIngressReceiptId,
   HostGovernorReceiptId,
 } from "./governor-host-contracts.js";
 import {
-  createHostDeliveryImplementation,
-  type HostDeliveryImplementationMode,
-} from "./governor-host-delivery-implementations.js";
+  createHostGovernorDeliveryBroker,
+  isTrustedGovernorDeliveryResolver,
+} from "./governor-host-delivery-broker.js";
 import {
   isGovernorHostPersistence,
   type GovernorHostPersistence,
@@ -37,18 +39,21 @@ export type {
   GovernorAuthenticatedApprovalRevocation,
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
+  GovernorTrustedOwnerIngressResolver,
   GovernorTrustedReceiptResolver,
   HostGovernorApprovalReceiptId,
   HostGovernorApprovalRevocationId,
   HostGovernorCapabilities,
   HostGovernorDeliveryHandle,
+  HostGovernorOwnerIngressReceiptId,
   HostGovernorReceiptId,
+  HostDeliveryReceipt,
 } from "./governor-host-contracts.js";
 
 const CAPABILITIES = new WeakSet<object>();
 const RESOLVERS = new WeakSet<object>();
 const APPROVAL_RESOLVERS = new WeakSet<object>();
-const DELIVERY_RESOLVERS = new WeakSet<object>();
+const OWNER_INGRESS_RESOLVERS = new WeakSet<object>();
 
 function sign(key: string, value: GovernorJsonValue): string {
   return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
@@ -71,10 +76,12 @@ export function isTrustedGovernorApprovalResolver(
   return APPROVAL_RESOLVERS.has(resolver);
 }
 
-export function isTrustedGovernorDeliveryResolver(
-  resolver: GovernorTrustedDeliveryResolver,
+export { isTrustedGovernorDeliveryResolver };
+
+export function isTrustedGovernorOwnerIngressResolver(
+  resolver: GovernorTrustedOwnerIngressResolver,
 ): boolean {
-  return DELIVERY_RESOLVERS.has(resolver);
+  return OWNER_INGRESS_RESOLVERS.has(resolver);
 }
 
 /**
@@ -85,11 +92,13 @@ export function isTrustedGovernorDeliveryResolver(
 export function createHostGovernorBroker(params: {
   secrets: GovernorSecrets;
   persistence: GovernorHostPersistence;
+  deliveryRuntime?: GovernorHostDeliveryRuntime;
 }): {
   capabilities: HostGovernorCapabilities;
   resolver: GovernorTrustedReceiptResolver;
   approvalResolver: GovernorTrustedApprovalResolver;
   deliveryResolver: GovernorTrustedDeliveryResolver;
+  ownerIngressResolver: GovernorTrustedOwnerIngressResolver;
 } {
   if (!isGovernorSecrets(params.secrets) || !isGovernorHostPersistence(params.persistence)) {
     throw new Error("Host governor validated secrets and persistence are required");
@@ -100,8 +109,14 @@ export function createHostGovernorBroker(params: {
     approvals: new Map(),
     revocations: new Map(),
     deliveries: new Map(),
+    ownerIngress: new Map(),
   };
-  const deliveryImplementationMode: HostDeliveryImplementationMode = params.secrets.runtimeMode;
+  const deliveryBroker = createHostGovernorDeliveryBroker({
+    secrets: params.secrets,
+    persistence: params.persistence,
+    deliveries: state.deliveries,
+    deliveryRuntime: params.deliveryRuntime,
+  });
   const capability = {};
   CAPABILITIES.add(capability);
   const submitObservedReceipt: HostGovernorCapabilities["submitObservedReceipt"] = (input) => {
@@ -196,121 +211,70 @@ export function createHostGovernorBroker(params: {
     state.revocations.set(id, Object.freeze({ ...body, signature: sign(state.key, body) }));
     return id;
   };
-  const registerStaticDeliveryAdapter: HostGovernorCapabilities["registerStaticDeliveryAdapter"] = (
-    input,
-  ) => {
-    if (!input || typeof input !== "object" || Array.isArray(input)) {
-      throw new Error(
-        "Governor host delivery registration accepts only implementationId, config, and generation",
-      );
-    }
-    const inputKeys = Reflect.ownKeys(input);
-    const inputDescriptors = Object.getOwnPropertyDescriptors(input);
-    if (
-      inputKeys.length !== 3 ||
-      inputKeys.some(
-        (key) =>
-          typeof key === "symbol" ||
-          (key !== "implementationId" && key !== "config" && key !== "generation") ||
-          !("value" in inputDescriptors[key]),
-      )
-    ) {
-      throw new Error(
-        "Governor host delivery registration accepts only implementationId, config, and generation",
-      );
-    }
-    if (
-      !CAPABILITIES.has(capability) ||
-      !Number.isSafeInteger(input.generation) ||
-      input.generation < 0
-    ) {
-      throw new Error("Governor host delivery capability is invalid");
-    }
-    const implementation = createHostDeliveryImplementation({
-      implementationId: input.implementationId,
-      config: input.config,
-      mode: deliveryImplementationMode,
-    });
-    const { identity, send } = implementation;
-    const priorIdentity = Array.from(state.deliveries.values()).find(
-      (entry) =>
-        entry.identity.adapterId === identity.adapterId &&
-        entry.identity.version === identity.version &&
-        entry.identity.capability === identity.capability,
-    );
-    if (priorIdentity && input.generation <= priorIdentity.generation) {
-      throw new Error("Governor delivery identity generation is already registered");
-    }
-    const identityKey = opaqueId(state.key, { deliveryIdentity: identity });
-    const configDigest = governorDigest(implementation.config);
-    const implementationDigest = implementation.implementationDigest;
-    const handle = opaqueId(state.key, {
-      delivery: { identity, configDigest, implementationDigest, generation: input.generation },
-    }) as HostGovernorDeliveryHandle;
-    const prior = state.deliveries.get(handle);
-    if (prior && prior.status !== "revoked") {
-      throw new Error("Governor delivery handle is already registered");
-    }
-    const unsigned = {
-      handle,
-      identityKey,
-      identity,
-      implementationId: implementation.implementationId,
-      implementationDigest,
-      configDigest,
-      generation: input.generation,
-      status: "certified" as const,
+  const submitAuthenticatedOwnerIngress: HostGovernorCapabilities["submitAuthenticatedOwnerIngress"] =
+    (input) => {
+      if (!CAPABILITIES.has(capability)) {
+        throw new Error("Governor host owner-ingress capability is invalid");
+      }
+      if (
+        (input.channel !== "signal" && input.channel !== "imessage") ||
+        !["approve", "enable", "reinvestigate", "repair", "revoke"].includes(input.action) ||
+        !Number.isSafeInteger(input.sourceSequence) ||
+        input.sourceSequence < 0 ||
+        !Number.isSafeInteger(input.observedAt) ||
+        !Number.isSafeInteger(input.expiresAt) ||
+        input.expiresAt <= input.observedAt ||
+        input.expiresAt - input.observedAt > 5 * 60_000
+      ) {
+        throw new Error("Governor owner-ingress envelope is invalid");
+      }
+      for (const value of [
+        input.accountId,
+        input.gatewayInstanceId,
+        input.ownerPrincipal,
+        input.sourceMessageId,
+        input.scopeKey,
+        input.nonce,
+      ]) {
+        if (!value.trim()) {
+          throw new Error("Governor owner-ingress identity field is required");
+        }
+      }
+      const body = {
+        channel: input.channel,
+        accountIdentity: params.secrets.identity.opaqueReference(
+          `owner-ingress-account:${input.channel}`,
+          input.accountId,
+        ),
+        gatewayIdentity: params.secrets.identity.opaqueReference(
+          `owner-ingress-gateway:${input.channel}`,
+          input.gatewayInstanceId,
+        ),
+        ownerPrincipalIdentity: params.secrets.identity.opaqueReference(
+          `owner-ingress-principal:${input.channel}`,
+          input.ownerPrincipal,
+        ),
+        sourceMessageIdentity: params.secrets.identity.opaqueReference(
+          `owner-ingress-message:${input.channel}`,
+          input.sourceMessageId,
+        ),
+        sourceSequence: input.sourceSequence,
+        action: input.action,
+        scopeKey: params.secrets.identity.opaqueReference("owner-ingress-scope", input.scopeKey),
+        nonceIdentity: params.secrets.identity.opaqueReference(
+          `owner-ingress-nonce:${input.channel}`,
+          input.nonce,
+        ),
+        observedAt: input.observedAt,
+        expiresAt: input.expiresAt,
+        deploymentIdentity: params.secrets.deploymentIdentity,
+      };
+      const id = opaqueId(state.key, { ownerIngress: body }) as HostGovernorOwnerIngressReceiptId;
+      const receipt = Object.freeze({ id, ...body, signature: sign(state.key, { id, ...body }) });
+      params.persistence.storeOwnerIngress(receipt);
+      state.ownerIngress.set(id, receipt);
+      return id;
     };
-    const signature = sign(state.key, unsigned);
-    // Journal certification before any replayable primary row is reconciled.
-    params.persistence.certifyDelivery({
-      handle,
-      identityKey,
-      implementationDigest,
-      configDigest,
-      generation: input.generation,
-      signature,
-      observedAt: Date.now(),
-    });
-    state.deliveries.set(handle, Object.freeze({ ...unsigned, send, signature }));
-    return handle;
-  };
-  const revokeDeliveryAdapter: HostGovernorCapabilities["revokeDeliveryAdapter"] = ({ handle }) => {
-    if (!CAPABILITIES.has(capability)) {
-      throw new Error("Governor host delivery capability is invalid");
-    }
-    const prior = state.deliveries.get(handle);
-    if (!prior || prior.status === "revoked") {
-      return false;
-    }
-    const unsigned = {
-      handle: prior.handle,
-      identityKey: prior.identityKey,
-      identity: prior.identity,
-      implementationId: prior.implementationId,
-      implementationDigest: prior.implementationDigest,
-      configDigest: prior.configDigest,
-      generation: prior.generation + 1,
-      status: "revoked" as const,
-    };
-    const signature = sign(state.key, unsigned);
-    // This is the transaction boundary. A cache update only follows a commit.
-    if (
-      !params.persistence.revokeDelivery({
-        handle: prior.handle,
-        identityKey: prior.identityKey,
-        implementationDigest: prior.implementationDigest,
-        configDigest: prior.configDigest,
-        generation: unsigned.generation,
-        signature,
-        observedAt: Date.now(),
-      })
-    ) {
-      throw new Error("Governor delivery revocation was not durably applied");
-    }
-    state.deliveries.set(handle, Object.freeze({ ...unsigned, send: prior.send, signature }));
-    return true;
-  };
   const resolver: GovernorTrustedReceiptResolver = Object.freeze({
     resolve: (receiptId, scopeKey) => {
       const receipt = state.receipts.get(receiptId);
@@ -381,45 +345,47 @@ export function createHostGovernorBroker(params: {
     },
   });
   APPROVAL_RESOLVERS.add(approvalResolver);
-  const deliveryResolver: GovernorTrustedDeliveryResolver = Object.freeze({
-    resolve: (handle) => {
-      const entry = state.deliveries.get(handle);
-      if (!entry) {
-        return null;
-      }
-      const durableState = params.persistence.deliveryState(entry.identityKey);
+  const ownerIngressResolver: GovernorTrustedOwnerIngressResolver = Object.freeze({
+    resolve: (receiptId, now) => {
+      const receipt =
+        state.ownerIngress.get(receiptId) ?? params.persistence.loadOwnerIngress(receiptId);
       if (
-        !durableState ||
-        durableState.generation !== entry.generation ||
-        durableState.status !== "certified" ||
-        !params.persistence.deliveryBindingMatches({
-          handle: entry.handle,
-          identityKey: entry.identityKey,
-          implementationDigest: entry.implementationDigest,
-          configDigest: entry.configDigest,
-          generation: entry.generation,
-          signature: entry.signature,
-          observedAt: 0,
-          status: entry.status,
-        })
+        !receipt ||
+        receipt.consumedAt !== undefined ||
+        receipt.expiresAt <= now ||
+        receipt.deploymentIdentity !== params.secrets.deploymentIdentity
       ) {
         return null;
       }
-      const { send: _send, signature, ...unsigned } = entry;
-      return sign(state.key, unsigned) === signature ? entry : null;
+      const { signature, consumedAt: _consumedAt, ...body } = receipt;
+      if (sign(state.key, body) !== signature) {
+        return null;
+      }
+      state.ownerIngress.set(receiptId, receipt);
+      return receipt;
+    },
+    markConsumed: (receiptId, now) => {
+      const consumed = params.persistence.markOwnerIngressConsumed(receiptId, now);
+      const receipt = state.ownerIngress.get(receiptId);
+      if (consumed && receipt) {
+        state.ownerIngress.set(receiptId, Object.freeze({ ...receipt, consumedAt: now }));
+      }
+      return consumed;
     },
   });
-  DELIVERY_RESOLVERS.add(deliveryResolver);
+  OWNER_INGRESS_RESOLVERS.add(ownerIngressResolver);
   return {
     capabilities: Object.freeze({
       submitObservedReceipt,
       submitAuthenticatedApproval,
       submitApprovalRevocation,
-      registerStaticDeliveryAdapter,
-      revokeDeliveryAdapter,
+      registerStaticDeliveryAdapter: deliveryBroker.register,
+      revokeDeliveryAdapter: deliveryBroker.revoke,
+      submitAuthenticatedOwnerIngress,
     }),
     resolver,
     approvalResolver,
-    deliveryResolver,
+    deliveryResolver: deliveryBroker.resolver,
+    ownerIngressResolver,
   };
 }

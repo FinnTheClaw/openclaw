@@ -9,15 +9,19 @@ import {
   createHostGovernorBroker,
   isTrustedGovernorApprovalResolver,
   isTrustedGovernorDeliveryResolver,
+  isTrustedGovernorOwnerIngressResolver,
   isTrustedGovernorReceiptResolver,
   type GovernorTrustedApprovalResolver,
   type GovernorTrustedDeliveryResolver,
+  type GovernorTrustedOwnerIngressResolver,
   type GovernorTrustedReceiptResolver,
   type HostGovernorApprovalReceiptId,
   type HostGovernorApprovalRevocationId,
   type HostGovernorCapabilities,
   type HostGovernorDeliveryHandle,
+  type HostGovernorOwnerIngressReceiptId,
   type HostGovernorReceiptId,
+  type HostDeliveryReceipt,
 } from "./governor-host-broker.js";
 import { createGovernorHostPersistence } from "./governor-host-persistence.js";
 import {
@@ -28,17 +32,21 @@ import {
 export {
   isTrustedGovernorApprovalResolver,
   isTrustedGovernorDeliveryResolver,
+  isTrustedGovernorOwnerIngressResolver,
   isTrustedGovernorReceiptResolver,
 };
 export type {
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
+  GovernorTrustedOwnerIngressResolver,
   GovernorTrustedReceiptResolver,
   HostGovernorApprovalReceiptId,
   HostGovernorApprovalRevocationId,
   HostGovernorCapabilities,
   HostGovernorDeliveryHandle,
+  HostGovernorOwnerIngressReceiptId,
   HostGovernorReceiptId,
+  HostDeliveryReceipt,
 };
 
 export function createGovernorTestHostBindings(params: { stateDir?: string } = {}) {

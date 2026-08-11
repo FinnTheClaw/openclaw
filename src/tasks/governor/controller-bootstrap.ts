@@ -1,6 +1,7 @@
 import type {
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
+  GovernorTrustedOwnerIngressResolver,
   GovernorTrustedReceiptResolver,
 } from "../../security/governor-host-readonly.js";
 import {
@@ -20,6 +21,7 @@ export function createGovernorControllerIfEnabled(params: {
     receiptResolver: GovernorTrustedReceiptResolver;
     approvalResolver: GovernorTrustedApprovalResolver;
     deliveryResolver: GovernorTrustedDeliveryResolver;
+    ownerIngressResolver: GovernorTrustedOwnerIngressResolver;
     secrets: GovernorStoreSecrets;
     stateEnv: NodeJS.ProcessEnv;
   };
