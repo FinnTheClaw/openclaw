@@ -594,6 +594,30 @@ export interface GatewayRestartSentinel {
   version: number;
 }
 
+export interface GovernorActionIntents {
+  action_fingerprint: string;
+  cancelled_at: number | null;
+  claim_epoch: Generated<number>;
+  claimed_by: string | null;
+  completed_at: number | null;
+  created_at: number;
+  effect_id: string;
+  execution_generation: number;
+  force_replan_after_outcome: number;
+  idempotency_key: string;
+  lease_epoch: number;
+  lease_expires_at: number | null;
+  objective_revision: number;
+  plan_version: number;
+  progress_vector_hash: string;
+  proposal_digest: string;
+  proposal_json: string;
+  state: string;
+  task_id: string;
+  task_version: number;
+  updated_at: number;
+}
+
 export interface GovernorEffects {
   action_fingerprint: string;
   canonical_target: string;
@@ -1264,6 +1288,7 @@ export interface DB {
   gateway_restart_handoff: GatewayRestartHandoff;
   gateway_restart_intent: GatewayRestartIntent;
   gateway_restart_sentinel: GatewayRestartSentinel;
+  governor_action_intents: GovernorActionIntents;
   governor_effects: GovernorEffects;
   governor_events: GovernorEvents;
   governor_evidence: GovernorEvidence;

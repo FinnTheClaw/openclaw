@@ -1,0 +1,142 @@
+// Reconciles uncertain mutations into a durable effect update and admissible verification evidence.
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { createGovernorEventRecord } from "./events.js";
+import {
+  admitGovernorEvidence,
+  createGovernorEvidenceCandidate,
+  type GovernorEvidenceRecord,
+} from "./evidence.js";
+import { assertGovernorBoundarySafe } from "./secret-filter.js";
+import type { GovernorSqliteStore } from "./store.js";
+import type { GovernorEffectRecord, GovernorToolOutcome } from "./tool-outcome.js";
+import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
+
+export type GovernorMutationResolution = "applied_verified" | "not_applied_verified" | "failed";
+
+export type GovernorMutationResolutionResult =
+  | {
+      accepted: true;
+      task: GovernorTaskProjection;
+      effect: GovernorEffectRecord;
+      evidence?: GovernorEvidenceRecord;
+    }
+  | { accepted: false; reason: "stale_execution"; task: GovernorTaskProjection };
+
+export function resolveGovernorMutation(params: {
+  store: GovernorSqliteStore;
+  taskId: GovernorTaskId;
+  executionFence: {
+    objectiveRevision: number;
+    planVersion: number;
+    executionGeneration: number;
+  };
+  effectId: string;
+  resolution: GovernorMutationResolution;
+  evidence: GovernorJsonValue;
+  sourceIdentity: string;
+  now: number;
+}): GovernorMutationResolutionResult {
+  const task = params.store.loadTask(params.taskId);
+  if (!task) {
+    throw new Error(`Governor task not found: ${params.taskId}`);
+  }
+  const safeEvidence = assertGovernorBoundarySafe("model", params.evidence);
+  const effect = params.store.loadEffect(task.taskId, params.effectId);
+  if (!effect || !effect.mutating) {
+    throw new Error(`Governor mutation effect not found: ${params.effectId}`);
+  }
+  if (
+    params.executionFence.objectiveRevision !== task.objectiveRevision ||
+    params.executionFence.planVersion !== task.planVersion ||
+    params.executionFence.executionGeneration !== task.executionGeneration ||
+    effect.objectiveRevision !== task.objectiveRevision ||
+    effect.executionGeneration !== task.executionGeneration
+  ) {
+    return { accepted: false, reason: "stale_execution", task };
+  }
+  const outcome: GovernorToolOutcome =
+    params.resolution === "applied_verified"
+      ? {
+          transport: "completed",
+          semantic: "success",
+          sideEffect: "applied",
+          verification: "verified",
+          summaryCode: "mutation_applied_verified",
+          evidence: safeEvidence,
+        }
+      : params.resolution === "not_applied_verified"
+        ? {
+            transport: "completed",
+            semantic: "transient_failure",
+            sideEffect: "none",
+            verification: "verified",
+            summaryCode: "mutation_not_applied_verified",
+            evidence: safeEvidence,
+          }
+        : {
+            transport: "completed",
+            semantic: "partial",
+            sideEffect: "unknown",
+            verification: "failed",
+            summaryCode: "mutation_reconciliation_failed",
+            evidence: safeEvidence,
+          };
+  const updatedEffect: GovernorEffectRecord = {
+    ...effect,
+    outcome,
+    verificationState: outcome.verification,
+    reconcileRequired: params.resolution === "failed",
+    updatedAt: params.now,
+  };
+  let evidence: GovernorEvidenceRecord | undefined;
+  if (params.resolution === "applied_verified" && effect.criterionId) {
+    const candidate = createGovernorEvidenceCandidate({
+      evidenceId: `verification_${effect.effectId}`,
+      taskId: task.taskId,
+      criterionId: effect.criterionId,
+      sourceKind: "structured_external",
+      sourceIdentity: params.sourceIdentity,
+      taskVersion: task.taskVersion,
+      objectiveRevision: task.objectiveRevision,
+      scopeKey: task.scopeKey,
+      observedAt: params.now,
+      payload: safeEvidence,
+    });
+    const admission = admitGovernorEvidence({ task, candidate, now: params.now });
+    if (!admission.admitted) {
+      throw new Error(`Governor mutation verification evidence rejected: ${admission.reason}`);
+    }
+    evidence = admission.evidence;
+  }
+  const next: GovernorTaskProjection = {
+    ...task,
+    taskVersion: task.taskVersion + 1,
+    updatedAt: params.now,
+  };
+  const event = createGovernorEventRecord({
+    task: next,
+    eventType: "mutation_reconciled",
+    payload: {
+      effectId: effect.effectId,
+      resolution: params.resolution,
+      evidenceDigest: governorDigest(safeEvidence),
+    },
+    now: params.now,
+  });
+  const committed = params.store.commit({
+    current: task,
+    next,
+    event,
+    effectUpdates: [{ current: effect, next: updatedEffect }],
+    ...(evidence ? { evidence: [evidence] } : {}),
+  });
+  if (!committed.applied) {
+    throw new Error(`Governor commit failed: ${committed.reason}`);
+  }
+  return {
+    accepted: true,
+    task: committed.task,
+    effect: updatedEffect,
+    ...(evidence ? { evidence } : {}),
+  };
+}

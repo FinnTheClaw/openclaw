@@ -13,10 +13,21 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
+import {
+  bindGovernorActionIntent,
+  GovernorActionIntentStore,
+  type GovernorActionIntentUpdate,
+} from "./action-intent-store.js";
+import type { GovernorActionIntent } from "./action-intent.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { assertValidGovernorContract } from "./contracts.js";
 import { createGovernorEventRecord, type GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceRecord } from "./evidence.js";
+import {
+  bindGovernorOutbox,
+  GovernorOutboxStore,
+  type GovernorOutboxRecord,
+} from "./outbox-store.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
@@ -33,6 +44,7 @@ type GovernorDatabase = Pick<
   OpenClawStateKyselyDatabase,
   | "governor_tasks"
   | "governor_events"
+  | "governor_action_intents"
   | "governor_effects"
   | "governor_evidence"
   | "governor_outbox"
@@ -44,28 +56,6 @@ type GovernorTaskRow = Selectable<OpenClawStateKyselyDatabase["governor_tasks"]>
 type GovernorEventRow = Selectable<OpenClawStateKyselyDatabase["governor_events"]>;
 type GovernorEffectRow = Selectable<OpenClawStateKyselyDatabase["governor_effects"]>;
 type GovernorEvidenceRow = Selectable<OpenClawStateKyselyDatabase["governor_evidence"]>;
-type GovernorOutboxRow = Selectable<OpenClawStateKyselyDatabase["governor_outbox"]>;
-
-export type GovernorOutboxState = "pending" | "claimed" | "sent";
-
-export type GovernorOutboxRecord = {
-  taskId: GovernorTaskId;
-  effectId: string;
-  deliveryKey: string;
-  taskVersion: number;
-  objectiveRevision: number;
-  leaseEpoch: number;
-  deliveryClaimEpoch: number;
-  claimedBy?: string;
-  leaseExpiresAt?: number;
-  state: GovernorOutboxState;
-  payload: GovernorJsonValue;
-  providerReceipt?: GovernorJsonValue;
-  claimedAt?: number;
-  sentAt?: number;
-  createdAt: number;
-  updatedAt: number;
-};
 
 export type GovernorIngressResult = {
   kind: "created" | "corrected" | "duplicate" | "stale";
@@ -79,11 +69,6 @@ export type GovernorCommitResult =
       reason: "not_found" | "task_version_conflict" | "lease_epoch_conflict";
       current?: GovernorTaskProjection;
     };
-
-export type GovernorOutboxClaimResult =
-  | { kind: "claimed"; entry: GovernorOutboxRecord }
-  | { kind: "not_found" | "stale_worker" | "obsolete" | "busy" }
-  | { kind: "already_sent"; entry: GovernorOutboxRecord };
 
 export type GovernorEffectUpdate = {
   current: GovernorEffectRecord;
@@ -244,68 +229,21 @@ function parseEvidenceRow(row: GovernorEvidenceRow): GovernorEvidenceRecord {
   };
 }
 
-function bindOutbox(entry: GovernorOutboxRecord): Insertable<GovernorOutboxRow> {
-  return {
-    task_id: entry.taskId,
-    effect_id: entry.effectId,
-    delivery_key: entry.deliveryKey,
-    task_version: entry.taskVersion,
-    objective_revision: entry.objectiveRevision,
-    lease_epoch: entry.leaseEpoch,
-    delivery_claim_epoch: entry.deliveryClaimEpoch,
-    claimed_by: entry.claimedBy ?? null,
-    lease_expires_at: entry.leaseExpiresAt ?? null,
-    state: entry.state,
-    payload_json: JSON.stringify(entry.payload),
-    provider_receipt_json: entry.providerReceipt ? JSON.stringify(entry.providerReceipt) : null,
-    claimed_at: entry.claimedAt ?? null,
-    sent_at: entry.sentAt ?? null,
-    created_at: entry.createdAt,
-    updated_at: entry.updatedAt,
-  };
-}
-
-function parseOutboxRow(row: GovernorOutboxRow): GovernorOutboxRecord {
-  return {
-    taskId: row.task_id as GovernorTaskId,
-    effectId: row.effect_id,
-    deliveryKey: row.delivery_key,
-    taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
-    objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
-    leaseEpoch: normalizeSqliteNumber(row.lease_epoch) ?? 0,
-    deliveryClaimEpoch: normalizeSqliteNumber(row.delivery_claim_epoch) ?? 0,
-    ...(row.claimed_by == null ? {} : { claimedBy: row.claimed_by }),
-    ...(row.lease_expires_at == null
-      ? {}
-      : { leaseExpiresAt: normalizeSqliteNumber(row.lease_expires_at) ?? 0 }),
-    state: row.state as GovernorOutboxState,
-    payload: parseJson<GovernorJsonValue>(row.payload_json, "outbox payload"),
-    ...(row.provider_receipt_json
-      ? {
-          providerReceipt: parseJson<GovernorJsonValue>(
-            row.provider_receipt_json,
-            "provider receipt",
-          ),
-        }
-      : {}),
-    ...(row.claimed_at == null ? {} : { claimedAt: normalizeSqliteNumber(row.claimed_at) ?? 0 }),
-    ...(row.sent_at == null ? {} : { sentAt: normalizeSqliteNumber(row.sent_at) ?? 0 }),
-    createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
-    updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
-  };
-}
-
 function governorDb(db: DatabaseSync) {
   return getNodeSqliteKysely<GovernorDatabase>(db);
 }
 
 export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
+  readonly actionIntents: GovernorActionIntentStore;
+  readonly outbox: GovernorOutboxStore;
 
   constructor(params: { stateDir?: string } = {}) {
     this.#options = params.stateDir
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
+    this.actionIntents = new GovernorActionIntentStore(params);
+    this.outbox = new GovernorOutboxStore(params);
   }
 
   #database() {
@@ -454,6 +392,8 @@ export class GovernorSqliteStore {
     event: GovernorEventRecord;
     effects?: readonly GovernorEffectRecord[];
     effectUpdates?: readonly GovernorEffectUpdate[];
+    actionIntents?: readonly GovernorActionIntent[];
+    actionIntentUpdates?: readonly GovernorActionIntentUpdate[];
     evidence?: readonly GovernorEvidenceRecord[];
     outbox?: readonly GovernorOutboxRecord[];
   }): GovernorCommitResult {
@@ -496,6 +436,40 @@ export class GovernorSqliteStore {
         return { applied: false, reason: "task_version_conflict", current };
       }
       executeSqliteQuerySync(db, dbx.insertInto("governor_events").values(bindEvent(params.event)));
+      for (const intent of params.actionIntents ?? []) {
+        executeSqliteQuerySync(
+          db,
+          dbx
+            .insertInto("governor_action_intents")
+            .values(bindGovernorActionIntent(intent))
+            .onConflict((conflict) => conflict.columns(["task_id", "effect_id"]).doNothing()),
+        );
+      }
+      for (const intentUpdate of params.actionIntentUpdates ?? []) {
+        if (
+          intentUpdate.current.taskId !== params.current.taskId ||
+          intentUpdate.next.taskId !== intentUpdate.current.taskId ||
+          intentUpdate.next.effectId !== intentUpdate.current.effectId ||
+          intentUpdate.next.objectiveRevision !== params.next.objectiveRevision ||
+          intentUpdate.next.updatedAt < intentUpdate.current.updatedAt
+        ) {
+          throw new Error(`Invalid governor action intent update ${intentUpdate.current.effectId}`);
+        }
+        const actionUpdate = executeSqliteQuerySync(
+          db,
+          dbx
+            .updateTable("governor_action_intents")
+            .set(bindGovernorActionIntent(intentUpdate.next))
+            .where("task_id", "=", intentUpdate.current.taskId)
+            .where("effect_id", "=", intentUpdate.current.effectId)
+            .where("updated_at", "=", intentUpdate.current.updatedAt),
+        );
+        if (actionUpdate.numAffectedRows !== 1n) {
+          throw new Error(
+            `Concurrent governor action intent update ${intentUpdate.current.effectId}`,
+          );
+        }
+      }
       for (const effect of params.effects ?? []) {
         executeSqliteQuerySync(
           db,
@@ -542,7 +516,7 @@ export class GovernorSqliteStore {
           db,
           dbx
             .insertInto("governor_outbox")
-            .values(bindOutbox(outbox))
+            .values(bindGovernorOutbox(outbox))
             .onConflict((conflict) => conflict.columns(["task_id", "effect_id"]).doNothing()),
         );
       }
@@ -624,19 +598,6 @@ export class GovernorSqliteStore {
     ).rows.map(parseEvidenceRow);
   }
 
-  listOutbox(taskId: GovernorTaskId): GovernorOutboxRecord[] {
-    const { db } = this.#database();
-    return executeSqliteQuerySync(
-      db,
-      governorDb(db)
-        .selectFrom("governor_outbox")
-        .selectAll()
-        .where("task_id", "=", taskId)
-        .orderBy("created_at", "asc")
-        .orderBy("effect_id", "asc"),
-    ).rows.map(parseOutboxRow);
-  }
-
   listUnfinishedFanoutJobIds(taskId: GovernorTaskId): string[] {
     const { db } = this.#database();
     return executeSqliteQuerySync(
@@ -649,164 +610,5 @@ export class GovernorSqliteStore {
         .orderBy("queue_sequence", "asc")
         .orderBy("job_id", "asc"),
     ).rows.map((row) => row.job_id);
-  }
-
-  claimOutbox(params: {
-    taskId: GovernorTaskId;
-    effectId: string;
-    expectedLeaseEpoch: number;
-    workerId: string;
-    now: number;
-    leaseDurationMs?: number;
-  }): GovernorOutboxClaimResult {
-    const workerId = params.workerId.trim();
-    if (!workerId) {
-      throw new Error("Governor outbox workerId must not be empty");
-    }
-    const leaseDurationMs = params.leaseDurationMs ?? 60_000;
-    if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs <= 0) {
-      throw new Error("Governor outbox leaseDurationMs must be a positive safe integer");
-    }
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const task = this.#loadTaskFromDatabase(db, params.taskId);
-      if (!task) {
-        return { kind: "not_found" };
-      }
-      if (task.leaseEpoch !== params.expectedLeaseEpoch) {
-        return { kind: "stale_worker" };
-      }
-      const dbx = governorDb(db);
-      const row = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx
-          .selectFrom("governor_outbox")
-          .selectAll()
-          .where("task_id", "=", params.taskId)
-          .where("effect_id", "=", params.effectId),
-      );
-      if (!row) {
-        return { kind: "not_found" };
-      }
-      const entry = parseOutboxRow(row);
-      if (entry.objectiveRevision !== task.objectiveRevision) {
-        return { kind: "obsolete" };
-      }
-      if (entry.state === "sent") {
-        return { kind: "already_sent", entry };
-      }
-      if (
-        entry.state === "claimed" &&
-        entry.leaseExpiresAt !== undefined &&
-        entry.leaseExpiresAt > params.now
-      ) {
-        return { kind: "busy" };
-      }
-      const claimed: GovernorOutboxRecord = {
-        ...entry,
-        leaseEpoch: task.leaseEpoch,
-        deliveryClaimEpoch: entry.deliveryClaimEpoch + 1,
-        claimedBy: workerId,
-        leaseExpiresAt: params.now + leaseDurationMs,
-        state: "claimed",
-        claimedAt: params.now,
-        updatedAt: params.now,
-      };
-      executeSqliteQuerySync(
-        db,
-        dbx
-          .updateTable("governor_outbox")
-          .set(bindOutbox(claimed))
-          .where("task_id", "=", params.taskId)
-          .where("effect_id", "=", params.effectId)
-          .where("state", "!=", "sent"),
-      );
-      return { kind: "claimed", entry: claimed };
-    }, this.#options);
-  }
-
-  markOutboxSent(params: {
-    taskId: GovernorTaskId;
-    effectId: string;
-    expectedLeaseEpoch: number;
-    expectedDeliveryClaimEpoch: number;
-    workerId: string;
-    providerReceipt: GovernorJsonValue;
-    now: number;
-  }): GovernorOutboxClaimResult {
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const task = this.#loadTaskFromDatabase(db, params.taskId);
-      if (!task) {
-        return { kind: "not_found" };
-      }
-      if (task.leaseEpoch !== params.expectedLeaseEpoch) {
-        return { kind: "stale_worker" };
-      }
-      const dbx = governorDb(db);
-      const row = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx
-          .selectFrom("governor_outbox")
-          .selectAll()
-          .where("task_id", "=", params.taskId)
-          .where("effect_id", "=", params.effectId),
-      );
-      if (!row) {
-        return { kind: "not_found" };
-      }
-      const entry = parseOutboxRow(row);
-      if (entry.state === "sent") {
-        return { kind: "already_sent", entry };
-      }
-      if (entry.objectiveRevision !== task.objectiveRevision) {
-        return { kind: "obsolete" };
-      }
-      if (
-        entry.state !== "claimed" ||
-        entry.deliveryClaimEpoch !== params.expectedDeliveryClaimEpoch ||
-        entry.claimedBy !== params.workerId
-      ) {
-        return { kind: "stale_worker" };
-      }
-      const { leaseExpiresAt: _leaseExpiresAt, ...entryWithoutLease } = entry;
-      const sent: GovernorOutboxRecord = {
-        ...entryWithoutLease,
-        state: "sent",
-        providerReceipt: structuredClone(params.providerReceipt),
-        sentAt: params.now,
-        updatedAt: params.now,
-      };
-      executeSqliteQuerySync(
-        db,
-        dbx
-          .updateTable("governor_outbox")
-          .set(bindOutbox(sent))
-          .where("task_id", "=", params.taskId)
-          .where("effect_id", "=", params.effectId)
-          .where("state", "!=", "sent"),
-      );
-      return { kind: "claimed", entry: sent };
-    }, this.#options);
-  }
-
-  createCompletionOutbox(params: {
-    task: GovernorTaskProjection;
-    effectId: string;
-    payload: GovernorJsonValue;
-    now: number;
-  }): GovernorOutboxRecord {
-    const payload = assertGovernorBoundarySafe("session", params.payload);
-    return {
-      taskId: params.task.taskId,
-      effectId: params.effectId,
-      deliveryKey: governorDigest({ taskId: params.task.taskId, effectId: params.effectId }),
-      taskVersion: params.task.taskVersion,
-      objectiveRevision: params.task.objectiveRevision,
-      leaseEpoch: params.task.leaseEpoch,
-      deliveryClaimEpoch: 0,
-      state: "pending",
-      payload,
-      createdAt: params.now,
-      updatedAt: params.now,
-    };
   }
 }

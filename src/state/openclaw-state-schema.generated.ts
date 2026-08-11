@@ -1348,6 +1348,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_governor_events_ingress_dedupe
 CREATE INDEX IF NOT EXISTS idx_governor_events_task
   ON governor_events(task_id, created_at, event_id);
 
+CREATE TABLE IF NOT EXISTS governor_action_intents (
+  task_id TEXT NOT NULL,
+  effect_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  task_version INTEGER NOT NULL,
+  objective_revision INTEGER NOT NULL,
+  plan_version INTEGER NOT NULL,
+  lease_epoch INTEGER NOT NULL,
+  execution_generation INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  claim_epoch INTEGER NOT NULL DEFAULT 0,
+  claimed_by TEXT,
+  lease_expires_at INTEGER,
+  proposal_json TEXT NOT NULL,
+  proposal_digest TEXT NOT NULL,
+  action_fingerprint TEXT NOT NULL,
+  progress_vector_hash TEXT NOT NULL,
+  force_replan_after_outcome INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  cancelled_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, effect_id),
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_action_intents_pending
+  ON governor_action_intents(task_id, objective_revision, state, created_at, effect_id);
+
 CREATE TABLE IF NOT EXISTS governor_effects (
   task_id TEXT NOT NULL,
   effect_id TEXT NOT NULL,

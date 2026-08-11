@@ -265,13 +265,13 @@ describe("durable behavior governor", () => {
       if (!completed.completed) {
         throw new Error("expected completed finish");
       }
-      expect(store.listOutbox(taskId)).toHaveLength(1);
+      expect(store.outbox.list(taskId)).toHaveLength(1);
 
       closeOpenClawStateDatabase();
       const restartedStore = new GovernorSqliteStore({ stateDir });
       const restarted = new GovernorController(restartedStore, capabilities());
       expect(restartedStore.loadTask(taskId)).toMatchObject({ state: "COMPLETED" });
-      expect(restartedStore.listOutbox(taskId)).toHaveLength(1);
+      expect(restartedStore.outbox.list(taskId)).toHaveLength(1);
 
       const observableDeliveries = new Map<string, unknown>();
       const send = vi.fn(async ({ deliveryKey }: { deliveryKey: string }) => {
@@ -280,7 +280,7 @@ describe("durable behavior governor", () => {
         }
         return observableDeliveries.get(deliveryKey) as { providerId: string };
       });
-      const effectId = restartedStore.listOutbox(taskId)[0]?.effectId;
+      const effectId = restartedStore.outbox.list(taskId)[0]?.effectId;
       if (!effectId) {
         throw new Error("missing completion effect");
       }

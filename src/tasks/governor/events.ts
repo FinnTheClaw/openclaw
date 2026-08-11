@@ -14,6 +14,7 @@ export type GovernorEventType =
   | "stale_ingress_ignored"
   | "state_transitioned"
   | "plan_replaced"
+  | "action_admitted"
   | "tool_outcome_recorded"
   | "mutation_reconciled"
   | "late_tool_result_ignored"

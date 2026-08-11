@@ -352,7 +352,7 @@ describe("governor mutation reconciliation and delivery", () => {
         }),
       ).toThrow(/rejected secret-like content/);
       expect(store.loadTask(taskId)?.state).toBe("VERIFYING");
-      expect(store.listOutbox(taskId)).toEqual([]);
+      expect(store.outbox.list(taskId)).toEqual([]);
     });
   });
 
@@ -395,7 +395,7 @@ describe("governor mutation reconciliation and delivery", () => {
       if (!completed.completed) {
         throw new Error("expected completed task");
       }
-      const effectId = store.listOutbox(taskId)[0]?.effectId;
+      const effectId = store.outbox.list(taskId)[0]?.effectId;
       if (!effectId) {
         throw new Error("missing completion outbox entry");
       }
@@ -410,7 +410,7 @@ describe("governor mutation reconciliation and delivery", () => {
         delivered.set(deliveryKey, receipt);
         return receipt;
       });
-      const oldClaim = store.claimOutbox({
+      const oldClaim = store.outbox.claim({
         taskId,
         effectId,
         expectedLeaseEpoch: completed.task.leaseEpoch,
@@ -426,7 +426,7 @@ describe("governor mutation reconciliation and delivery", () => {
 
       closeOpenClawStateDatabase();
       const restartedStore = new GovernorSqliteStore({ stateDir });
-      const newClaim = restartedStore.claimOutbox({
+      const newClaim = restartedStore.outbox.claim({
         taskId,
         effectId,
         expectedLeaseEpoch: completed.task.leaseEpoch,
@@ -439,7 +439,7 @@ describe("governor mutation reconciliation and delivery", () => {
         throw new Error("expected reclaimed delivery");
       }
       expect(
-        restartedStore.markOutboxSent({
+        restartedStore.outbox.markSent({
           taskId,
           effectId,
           expectedLeaseEpoch: completed.task.leaseEpoch,
@@ -451,7 +451,7 @@ describe("governor mutation reconciliation and delivery", () => {
       ).toBe("stale_worker");
       const receipt = providerSend(newClaim.entry.deliveryKey);
       expect(
-        restartedStore.markOutboxSent({
+        restartedStore.outbox.markSent({
           taskId,
           effectId,
           expectedLeaseEpoch: completed.task.leaseEpoch,
@@ -463,7 +463,7 @@ describe("governor mutation reconciliation and delivery", () => {
       ).toBe("claimed");
       expect(providerSend).toHaveBeenCalledTimes(2);
       expect(delivered.size).toBe(1);
-      expect(restartedStore.listOutbox(taskId)[0]).toMatchObject({ state: "sent" });
+      expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "sent" });
     });
   });
 });
