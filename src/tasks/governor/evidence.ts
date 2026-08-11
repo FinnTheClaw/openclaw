@@ -174,6 +174,19 @@ export class GovernorEvidenceAdmissionAuthority {
 
   assertVerified(evidence: GovernorEvidenceRecord): void {
     assertOpaqueEvidenceSourceRef(evidence.sourceIdentity);
+    // The signature covers the canonical envelope, but keep the content
+    // digests independently checked as well.  This makes a raw SQLite edit
+    // fail closed even when a legacy/incorrect codec accidentally presents a
+    // syntactically valid envelope to this verifier.
+    if (governorDigest(evidence.payload) !== evidence.evidenceDigest) {
+      throw new Error("Governor evidence payload digest mismatch");
+    }
+    if (
+      governorDigest({ predicate: evidence.predicate, value: evidence.value }) !==
+      evidence.semanticDigest
+    ) {
+      throw new Error("Governor evidence semantic digest mismatch");
+    }
     if (evidence.admissionVersion !== 1 || evidence.admissionKeyId !== this.#keyId) {
       throw new Error("Governor evidence admission key/version is not accepted");
     }

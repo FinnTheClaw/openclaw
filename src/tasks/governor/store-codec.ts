@@ -149,6 +149,9 @@ export function bindEvidence(
   authority = GovernorEvidenceAdmissionAuthority.fromEnvironment(),
 ): Insertable<GovernorEvidenceRow> {
   authority.assertVerified(evidence);
+  if (governorDigest(evidence.payload) !== evidence.evidenceDigest) {
+    throw new Error("Governor evidence payload digest mismatch");
+  }
   if (
     governorDigest({ predicate: evidence.predicate, value: evidence.value }) !==
     evidence.semanticDigest
@@ -216,6 +219,11 @@ export function parseEvidenceRow(
   ) {
     throw new Error(
       `Persisted governor evidence semantic digest mismatch for ${evidence.evidenceId}`,
+    );
+  }
+  if (governorDigest(evidence.payload) !== evidence.evidenceDigest) {
+    throw new Error(
+      `Persisted governor evidence payload digest mismatch for ${evidence.evidenceId}`,
     );
   }
   authority.assertVerified(evidence);
