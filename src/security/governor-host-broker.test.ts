@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createHostGovernorBroker } from "./governor-host-broker.js";
+import {
+  createHostGovernorBroker,
+  isTrustedGovernorReceiptResolver,
+} from "./governor-host-broker.js";
 
 describe("governor host broker", () => {
   it("keeps receipt creation capability separate from a scope-bound resolver", () => {
@@ -14,5 +17,7 @@ describe("governor host broker", () => {
 
     expect(broker.resolver.resolve(receiptId, "scope-a")?.payload).toEqual({ result: "ok" });
     expect(broker.resolver.resolve(receiptId, "scope-b")).toBeNull();
+    expect(isTrustedGovernorReceiptResolver(broker.resolver)).toBe(true);
+    expect(isTrustedGovernorReceiptResolver({ resolve: () => null })).toBe(false);
   });
 });

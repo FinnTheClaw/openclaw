@@ -32,6 +32,7 @@ type HostBrokerState = {
 };
 
 const CAPABILITIES = new WeakSet<object>();
+const RESOLVERS = new WeakSet<object>();
 
 function sign(key: string, value: unknown): string {
   return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
@@ -56,6 +57,13 @@ export type HostGovernorCapabilities = {
 export type GovernorTrustedReceiptResolver = {
   readonly resolve: (receiptId: HostGovernorReceiptId, scopeKey: string) => HostReceipt | null;
 };
+
+/** Internal construction check; a caller-created lookalike resolver is rejected. */
+export function isTrustedGovernorReceiptResolver(
+  resolver: GovernorTrustedReceiptResolver,
+): boolean {
+  return RESOLVERS.has(resolver);
+}
 
 /**
  * Called only by application bootstrap after it has resolved host secrets.
@@ -92,22 +100,24 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     state.receipts.set(id, receipt);
     return id;
   };
+  const resolver: GovernorTrustedReceiptResolver = Object.freeze({
+    resolve: (receiptId, scopeKey) => {
+      const receipt = state.receipts.get(receiptId);
+      if (!receipt || receipt.scopeKey !== scopeKey) return null;
+      const body = {
+        scopeKey: receipt.scopeKey,
+        sourceKind: receipt.sourceKind,
+        sourceIdentity: receipt.sourceIdentity,
+        payloadDigest: governorDigest(receipt.payload),
+        observedAt: receipt.observedAt,
+      };
+      const expected = sign(state.key, { id: receipt.id, ...body });
+      return expected === receipt.signature ? receipt : null;
+    },
+  });
+  RESOLVERS.add(resolver);
   return {
     capabilities: Object.freeze({ submitObservedReceipt }),
-    resolver: Object.freeze({
-      resolve: (receiptId, scopeKey) => {
-        const receipt = state.receipts.get(receiptId);
-        if (!receipt || receipt.scopeKey !== scopeKey) return null;
-        const body = {
-          scopeKey: receipt.scopeKey,
-          sourceKind: receipt.sourceKind,
-          sourceIdentity: receipt.sourceIdentity,
-          payloadDigest: governorDigest(receipt.payload),
-          observedAt: receipt.observedAt,
-        };
-        const expected = sign(state.key, { id: receipt.id, ...body });
-        return expected === receipt.signature ? receipt : null;
-      },
-    }),
+    resolver,
   };
 }
