@@ -7,8 +7,15 @@ import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-sta
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceRecord } from "./evidence.js";
+import { isOpaqueEvidenceSourceRef } from "./evidence.js";
+import { assertGovernorPersistedJson, assertOpaqueGovernorScope } from "./persistence-guard.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
-import type { GovernorEventId, GovernorTaskId, GovernorTaskProjection } from "./types.js";
+import {
+  isOpaqueGovernorReference,
+  type GovernorEventId,
+  type GovernorTaskId,
+  type GovernorTaskProjection,
+} from "./types.js";
 
 export type GovernorDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -33,8 +40,8 @@ type GovernorEvidenceRow = Selectable<OpenClawStateKyselyDatabase["governor_evid
 function parseJson(raw: string, label: string): unknown {
   try {
     return JSON.parse(raw) as unknown;
-  } catch (error) {
-    throw new Error(`Invalid persisted governor ${label}`, { cause: error });
+  } catch {
+    throw new Error(`Invalid persisted governor ${label}`);
   }
 }
 
@@ -43,7 +50,7 @@ export function parseTaskRow(row: GovernorTaskRow): GovernorTaskProjection {
   if (projection.taskId !== row.task_id || projection.scopeKey !== row.scope_key) {
     throw new Error(`Persisted governor task projection identity mismatch for ${row.task_id}`);
   }
-  return {
+  const task: GovernorTaskProjection = {
     ...projection,
     conditions: projection.conditions ?? { contradictions: [], pendingUserUpdate: false },
     claims: projection.claims ?? [],
@@ -57,9 +64,14 @@ export function parseTaskRow(row: GovernorTaskRow): GovernorTaskProjection {
     updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
     ...(row.terminal_at == null ? {} : { terminalAt: normalizeSqliteNumber(row.terminal_at) ?? 0 }),
   };
+  assertGovernorPersistedJson("log", task);
+  assertOpaqueGovernorScope(task.scope, task.scopeKey);
+  return task;
 }
 
 export function bindTask(task: GovernorTaskProjection): Insertable<GovernorTaskRow> {
+  assertGovernorPersistedJson("log", task);
+  assertOpaqueGovernorScope(task.scope, task.scopeKey);
   return {
     task_id: task.taskId,
     flow_id: task.flowId ?? null,
@@ -80,6 +92,13 @@ export function bindTask(task: GovernorTaskProjection): Insertable<GovernorTaskR
 }
 
 export function bindEvent(event: GovernorEventRecord): Insertable<GovernorEventRow> {
+  assertGovernorPersistedJson("log", event);
+  if (
+    !isOpaqueGovernorReference(event.scopeKey) ||
+    (event.sourceMessageId !== undefined && !isOpaqueGovernorReference(event.sourceMessageId))
+  ) {
+    throw new Error("Governor event durable identity is not host-opaque");
+  }
   return {
     event_id: event.eventId,
     task_id: event.taskId,
@@ -96,7 +115,7 @@ export function bindEvent(event: GovernorEventRecord): Insertable<GovernorEventR
 }
 
 export function parseEventRow(row: GovernorEventRow): GovernorEventRecord {
-  return {
+  const event: GovernorEventRecord = {
     eventId: row.event_id as GovernorEventId,
     taskId: row.task_id as GovernorTaskId,
     scopeKey: row.scope_key,
@@ -111,9 +130,21 @@ export function parseEventRow(row: GovernorEventRow): GovernorEventRecord {
     payloadDigest: row.payload_digest,
     createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
   };
+  assertGovernorPersistedJson("log", event);
+  if (
+    !isOpaqueGovernorReference(event.scopeKey) ||
+    (event.sourceMessageId !== undefined && !isOpaqueGovernorReference(event.sourceMessageId))
+  ) {
+    throw new Error("Persisted governor event identity is not host-opaque");
+  }
+  return event;
 }
 
 export function bindEffect(effect: GovernorEffectRecord): Insertable<GovernorEffectRow> {
+  assertGovernorPersistedJson("log", effect);
+  if (!isOpaqueGovernorReference(effect.canonicalTarget)) {
+    throw new Error("Governor effect target is not host-opaque");
+  }
   return {
     task_id: effect.taskId,
     effect_id: effect.effectId,
@@ -143,6 +174,10 @@ export function parseEffectRow(row: GovernorEffectRow): GovernorEffectRecord {
   if (effect.taskId !== row.task_id || effect.effectId !== row.effect_id) {
     throw new Error(`Persisted governor effect identity mismatch for ${row.effect_id}`);
   }
+  assertGovernorPersistedJson("log", effect);
+  if (!isOpaqueGovernorReference(effect.canonicalTarget)) {
+    throw new Error("Persisted governor effect target is not host-opaque");
+  }
   return effect;
 }
 
@@ -150,6 +185,10 @@ export function bindEvidence(
   evidence: GovernorEvidenceRecord,
   assertVerified: (evidence: GovernorEvidenceRecord) => void,
 ): Insertable<GovernorEvidenceRow> {
+  assertGovernorPersistedJson("log", evidence);
+  if (!isOpaqueEvidenceSourceRef(evidence.sourceIdentity)) {
+    throw new Error("Governor evidence source is not host-opaque");
+  }
   assertVerified(evidence);
   if (governorDigest(evidence.payload) !== evidence.evidenceDigest) {
     throw new Error("Governor evidence payload digest mismatch");
@@ -229,6 +268,10 @@ export function parseEvidenceRow(
     );
   }
   assertVerified(evidence);
+  assertGovernorPersistedJson("log", evidence);
+  if (!isOpaqueEvidenceSourceRef(evidence.sourceIdentity)) {
+    throw new Error("Persisted governor evidence source is not host-opaque");
+  }
   return evidence;
 }
 

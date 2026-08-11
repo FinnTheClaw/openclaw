@@ -35,7 +35,7 @@ import {
   parseGovernorMemoryRemediation,
   type GovernorMemoryRemediation,
 } from "./memory-remediation.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import {
   isGovernorEvidenceAdmissionStore,
@@ -114,7 +114,7 @@ export class GovernorMemoryContradictionStore {
     freshnessExpiresAt?: number;
     now: number;
   }): GovernorMemoryContradictionResolution {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("memory", params);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const evidence = this.#evidence(db, params.taskId, params.evidenceId);
       const staleRow = executeSqliteQueryTakeFirstSync(
@@ -258,7 +258,7 @@ export class GovernorMemoryContradictionStore {
         semanticDigest: evidence.semanticDigest,
       });
       const confidence = governorMemoryConfidence(sourceKind);
-      const replacement = this.#authority.protect({
+      const protectedReplacement = this.#authority.protect({
         memoryId: replacementMemoryId,
         scopeKey: stale.scopeKey,
         scopeEpoch: stale.scopeEpoch,
@@ -276,9 +276,14 @@ export class GovernorMemoryContradictionStore {
         provenance: {
           sourceRef: evidence.sourceIdentity,
           observedAt: evidence.observedAt,
+          recordedAt: params.now,
           scopeKey: stale.scopeKey,
           confidence,
           sensitivity: stale.sensitivity,
+          evidenceTaskId: evidence.taskId,
+          evidenceTaskVersion: evidence.taskVersion,
+          objectiveRevision: evidence.objectiveRevision,
+          planVersion: evidence.planVersion,
         },
         content: safeContent,
         contentDigest: governorDigest(safeContent),
@@ -290,6 +295,10 @@ export class GovernorMemoryContradictionStore {
         createdAt: params.now,
         updatedAt: params.now,
       });
+      if (!protectedReplacement.accepted) {
+        return { kind: "rejected", reason: "replayed_evidence" };
+      }
+      const replacement = protectedReplacement.memory;
       const remediation: GovernorMemoryRemediation = {
         contradictionFingerprint: qualified.fingerprint,
         scopeKey: stale.scopeKey,
@@ -378,6 +387,7 @@ export class GovernorMemoryContradictionStore {
     blockedReason?: string;
     now: number;
   }): GovernorMemoryRemediation | null {
+    assertGovernorPersistedJson("log", params);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const current = this.#remediation(db, params.fingerprint);
       if (!current || current.status === "verified") {
@@ -407,6 +417,7 @@ export class GovernorMemoryContradictionStore {
     taskId: GovernorMemoryRemediation["taskId"];
     now: number;
   }): GovernorMemoryRemediation | null {
+    assertGovernorPersistedJson("log", params);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const current = this.#remediation(db, params.fingerprint);
       if (!current || current.status !== "blocked" || current.taskId !== params.taskId) {
@@ -436,6 +447,7 @@ export class GovernorMemoryContradictionStore {
     fingerprint: string;
     now: number;
   }): GovernorMemoryRemediation | null {
+    assertGovernorPersistedJson("log", params);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const evidence = this.#evidence(db, params.taskId, params.evidenceId);
       const current = this.#remediation(db, params.fingerprint);

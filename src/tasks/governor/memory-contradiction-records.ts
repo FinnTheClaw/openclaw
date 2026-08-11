@@ -6,11 +6,11 @@ import type { GovernorMemoryRemediation } from "./memory-remediation.js";
 export function governorMemoryConfidence(sourceKind: GovernorMemorySourceKind): number {
   switch (sourceKind) {
     case "structured_external":
-      return 0.95;
+      return 1;
     case "authenticated_user":
-      return 0.9;
+      return 0.95;
     case "tool":
-      return 0.85;
+      return 0.9;
     default:
       return 0;
   }

@@ -167,25 +167,34 @@ isolated SQLite state.
     termination evidence arrives.
 35. Verified memory supersession has its own host-ledger generation and binding digest. Restoring
     older governor SQLite state cannot reactivate a disproven fact: a mismatched row is quarantined
-    or tombstoned and one deduplicated re-observation requirement is recorded. The ledger contains
-    only opaque fact keys and digests, not memory values. An unadmitted broker receipt is ephemeral
-    and requires re-observation after restart. Once admission commits, the durable signed evidence
-    may survive ordinary restart only while its task, objective, plan, scope, freshness, and fence
+    or tombstoned and one deduplicated re-observation requirement is recorded. The signed host
+    high-water also records monotonic observation/recording time, source rank, confidence, scope
+    epoch, and task/objective/plan fence. Older, weaker, retired, or prior-plan bindings cannot
+    advance it, satisfy re-observation, or retire a newer current binding. The ledger contains only
+    opaque fact keys and digests, not memory values. An unadmitted broker receipt is ephemeral and
+    requires re-observation after restart. Once admission commits, durable signed evidence may
+    survive ordinary restart only while its task, objective, plan, scope, freshness, and fence
     remain current; primary-state rollback requires fresh observation unless the protected current
     row can still be verified. Full host-snapshot rollback remains outside this software-only
     boundary.
-36. Every public persistence ingress is bounded before serialization or recursive inspection.
+36. Every public persistence ingress and each lower durable binder is bounded before serialization
+    or recursive inspection.
     Governor JSON rejects excessive bytes, strings, depth, nodes, properties, arrays, and
     collections, as well as cycles, accessors, unsupported prototypes/types, invalid Unicode,
     non-finite numbers, and prototype-pollution keys. Credential field names are classified after
-    case/separator canonicalization, and caller flow identities are persisted only as stable keyed
-    opaque references.
+    case/separator canonicalization; findings expose only hashed field tokens. Durable task scope is
+    revalidated against the stored host-derived opaque scope inside the write transaction, and
+    caller flow identities are persisted only as stable keyed opaque references. A static inventory
+    test covers transactional writers and JSON codecs so a newly added path cannot silently omit
+    the guard.
 37. Ordinary governed OpenClaw child runs use the existing durable fan-out, three-slot physical
     authority, and reducer. Registration, terminal result, and termination require exact
     host-issued lifecycle receipts; caller-reported status is inadmissible. Parent completion stays
     blocked while a child is queued, physically unresolved, unknown, or completed but unaggregated.
-    The child integration owner can issue only child lifecycle observations, and feature-off creates
-    no child state or capability.
+    Durable child identity derives from the parent/task fence plus canonical external-child
+    identity, not receipt identity; multiple authenticated retry receipts therefore converge on one
+    job and fan-in result while distinct children remain distinct. The child integration owner can
+    issue only child lifecycle observations, and feature-off creates no child state or capability.
 
 ## Consequences
 

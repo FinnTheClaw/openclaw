@@ -13,6 +13,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqliteDir } from "../state/openclaw-state-db.paths.js";
 import { governorDigest } from "../tasks/governor/canonical-json.js";
+import { assertGovernorPersistedJson } from "../tasks/governor/persistence-guard.js";
 import { initializeGovernorStateSchema } from "../tasks/governor/state-schema.js";
 import {
   createGovernorHostAntiRollbackLedger,
@@ -258,8 +259,9 @@ export function createGovernorHostPersistence(params: {
         ? { testAfterLedgerAppend: params.testAfterLedgerAppend }
         : {}),
     }),
-    recordApprovalGrant: (input) =>
-      runOpenClawStateWriteTransaction(({ db }) => {
+    recordApprovalGrant: (input) => {
+      assertGovernorPersistedJson("log", input);
+      return runOpenClawStateWriteTransaction(({ db }) => {
         if (!Number.isSafeInteger(input.approvalEpoch) || input.approvalEpoch < 0) {
           throw new Error("Governor approval ledger epoch is invalid");
         }
@@ -308,17 +310,20 @@ export function createGovernorHostPersistence(params: {
         });
         writeApprovalEpoch(db, input.scopeKey, input.approvalEpoch, input.observedAt);
         return grant;
-      }, options),
+      }, options);
+    },
     approvalLedgerMatches,
     approvalGrantMatches: (input) => {
+      assertGovernorPersistedJson("log", input);
       const primaryMatches = runOpenClawStateWriteTransaction(
         ({ db }) => primaryApprovalEpoch(db, input.scopeKey) === input.approvalEpoch,
         options,
       );
       return primaryMatches && approvalLedgerMatches(input);
     },
-    revokeApproval: (input) =>
-      runOpenClawStateWriteTransaction(({ db }) => {
+    revokeApproval: (input) => {
+      assertGovernorPersistedJson("log", input);
+      return runOpenClawStateWriteTransaction(({ db }) => {
         const scopeKey = approvalScopeKey(input.scopeKey);
         const scope = ledger.state("approval", scopeKey);
         const grantKey = approvalGrantKey(input.scopeKey, input.grantId);
@@ -373,9 +378,12 @@ export function createGovernorHostPersistence(params: {
             .where("grant_id", "=", input.grantId),
         );
         return true;
-      }, options),
-    approvalEpoch: (scopeKey) =>
-      ledger.state("approval", approvalScopeKey(scopeKey))?.generation ?? 0,
+      }, options);
+    },
+    approvalEpoch: (scopeKey) => {
+      assertGovernorPersistedJson("log", { scopeKey });
+      return ledger.state("approval", approvalScopeKey(scopeKey))?.generation ?? 0;
+    },
   });
   PORTS.add(port);
   return port;

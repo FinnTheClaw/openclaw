@@ -12,6 +12,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
 import { governorDigest } from "../tasks/governor/canonical-json.js";
+import { assertGovernorPersistedJson } from "../tasks/governor/persistence-guard.js";
 import type { GovernorHostAntiRollbackLedger } from "./governor-host-anti-rollback-ledger.js";
 import type {
   GovernorOwnerIngressReceipt,
@@ -21,6 +22,13 @@ import type {
 
 type OwnerIngressDb = Pick<StateDb, "governor_owner_ingress_receipts">;
 const dbx = (db: DatabaseSync) => getNodeSqliteKysely<OwnerIngressDb>(db);
+const OPAQUE_HOST_REFERENCE = /^ghr_[a-f0-9]{64}$/u;
+
+function assertOpaqueHostReference(value: string): void {
+  if (!OPAQUE_HOST_REFERENCE.test(value)) {
+    throw new Error("Governor owner ingress reference is invalid");
+  }
+}
 
 function claimedBinding(receipt: GovernorOwnerIngressReceipt): string {
   return governorDigest({
@@ -98,6 +106,7 @@ export function createGovernorOwnerIngressPersistence(
 ): GovernorOwnerIngressPersistence {
   return Object.freeze({
     storeOwnerIngress: (receipt) => {
+      assertGovernorPersistedJson("log", receipt);
       runOpenClawStateWriteTransaction(({ db }) => {
         const existing = executeSqliteQueryTakeFirstSync(
           db,
@@ -142,6 +151,7 @@ export function createGovernorOwnerIngressPersistence(
       }, options);
     },
     loadOwnerIngress: (receiptId) => {
+      assertGovernorPersistedJson("log", { receiptId });
       const row = runOpenClawStateWriteTransaction(
         ({ db }) =>
           executeSqliteQueryTakeFirstSync(
@@ -155,8 +165,16 @@ export function createGovernorOwnerIngressPersistence(
       );
       return row ? parseReceipt(row) : null;
     },
-    claimOwnerIngress: (input) =>
-      runOpenClawStateWriteTransaction(({ db }) => {
+    claimOwnerIngress: (input) => {
+      assertOpaqueHostReference(input.claimToken);
+      assertGovernorPersistedJson("log", {
+        receipt: input.receipt,
+        opaqueClaimReference: input.claimToken,
+        claimAttemptIdentity: input.claimAttemptIdentity,
+        now: input.now,
+        leaseExpiresAt: input.leaseExpiresAt,
+      });
+      return runOpenClawStateWriteTransaction(({ db }) => {
         const row = executeSqliteQueryTakeFirstSync(
           db,
           dbx(db)
@@ -224,8 +242,16 @@ export function createGovernorOwnerIngressPersistence(
             .where("revoked_at", "is", null),
         );
         return update.numAffectedRows === 1n;
-      }, options),
+      }, options);
+    },
     finalizeOwnerIngress: (input) => {
+      assertOpaqueHostReference(input.claimToken);
+      assertGovernorPersistedJson("log", {
+        receipt: input.receipt,
+        opaqueClaimReference: input.claimToken,
+        taskId: input.taskId,
+        consumedAt: input.consumedAt,
+      });
       const prepared = runOpenClawStateWriteTransaction(({ db }) => {
         const row = executeSqliteQueryTakeFirstSync(
           db,
@@ -311,8 +337,9 @@ export function createGovernorOwnerIngressPersistence(
         return update.numAffectedRows === 1n;
       }, options);
     },
-    revokeOwnerIngress: (input) =>
-      runOpenClawStateWriteTransaction(({ db }) => {
+    revokeOwnerIngress: (input) => {
+      assertGovernorPersistedJson("log", input);
+      return runOpenClawStateWriteTransaction(({ db }) => {
         const row = executeSqliteQueryTakeFirstSync(
           db,
           dbx(db)
@@ -357,6 +384,7 @@ export function createGovernorOwnerIngressPersistence(
             .where("consumed_at", "is", null),
         );
         return update.numAffectedRows === 1n;
-      }, options),
+      }, options);
+    },
   });
 }

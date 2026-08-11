@@ -11,6 +11,7 @@ import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorController } from "./controller.js";
+import { governorMemoryAuthorityBinding } from "./memory-authority.js";
 import { governorMemoryFactPredicate } from "./memory-contradiction-policy.js";
 import {
   memoryScopeA,
@@ -67,6 +68,17 @@ describe("governor memory anti-rollback authority", () => {
       expect(
         store.memory.activeReplacement({ scope: memoryScopeA, factKey: "ssh.path", now: 202 }),
       ).toMatchObject({ content: { path: "/current/path" } });
+      const retiredAudit = store.memory
+        .retrieveAudit({ scope: memoryScopeA })
+        .find((memory) => memory.memoryId === "memory-stale-path");
+      if (!retiredAudit) {
+        throw new Error("missing retired memory audit record");
+      }
+      expect(() =>
+        broker.memoryAuthority.retire(
+          governorMemoryAuthorityBinding({ ...retiredAudit, status: "verified" }),
+        ),
+      ).toThrow(/does not match current host authority/u);
 
       closeOpenClawStateDatabase();
       fs.copyFileSync(snapshotPath, databasePath);
@@ -81,6 +93,27 @@ describe("governor memory anti-rollback authority", () => {
           restarted.store.memory.retrieve({ scope: memoryScopeA, now: 301 }),
         ).every((items) => items.length === 0),
       ).toBe(true);
+      expect(restarted.store.memory.listReobservationRequirements(memoryScopeA)).toMatchObject([
+        { status: "required", staleMemoryId: "memory-stale-path" },
+      ]);
+
+      const replayed = restarted.store.memory.promoteVerified({
+        taskId,
+        evidenceId: "seed-evidence-memory-stale-path",
+        memoryId: "memory-replayed-stale-path",
+        factKey: "ssh.path",
+        scope: memoryScopeA,
+        expectedScopeEpoch: 0,
+        now: 301,
+      });
+      expect(replayed).toMatchObject({ stored: false, reason: "provenance_rejected" });
+      expect(
+        restarted.store.memory.activeReplacement({
+          scope: memoryScopeA,
+          factKey: "ssh.path",
+          now: 301,
+        }),
+      ).toBeNull();
       expect(restarted.store.memory.listReobservationRequirements(memoryScopeA)).toMatchObject([
         { status: "required", staleMemoryId: "memory-stale-path" },
       ]);

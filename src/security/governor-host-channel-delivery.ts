@@ -178,7 +178,7 @@ function resolveCompiledChannelBinding(params: {
     mode: "explicit",
   });
   if (!resolved.ok) {
-    throw new Error(`Governor ${params.channel} target is invalid`, { cause: resolved.error });
+    throw new Error(`Governor ${params.channel} target is invalid`);
   }
   return { normalizedTarget: resolved.to, sendText };
 }

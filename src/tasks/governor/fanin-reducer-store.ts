@@ -20,7 +20,7 @@ import {
   type FaninReducerRow,
   type GovernorReducerClaim,
 } from "./fanout-codec.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
@@ -67,7 +67,7 @@ export class GovernorFaninReducerStore {
   }
 
   claim(params: GovernorClaimReducerParams): GovernorReducerClaim {
-    assertGovernorJsonResources({
+    assertGovernorPersistedJson("log", {
       task: params.task,
       round: params.round,
       now: params.now,
@@ -170,7 +170,7 @@ export class GovernorFaninReducerStore {
   }
 
   complete(params: GovernorCompleteReducerParams): boolean {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     const result = assertGovernorBoundarySafe("session", params.result);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const task = this.#task(db, params.taskId);

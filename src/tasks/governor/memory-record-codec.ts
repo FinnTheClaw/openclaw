@@ -2,25 +2,27 @@ import type { Insertable, Selectable } from "kysely";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
+import { isOpaqueEvidenceSourceRef } from "./evidence.js";
 import type {
   GovernorMemoryProvenance,
   GovernorMemoryRecord,
   GovernorMemorySourceKind,
   GovernorMemoryStatus,
 } from "./memory-types.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 
 export type GovernorMemoryRow = Selectable<OpenClawStateKyselyDatabase["governor_memories"]>;
 
 function parseJson(raw: string, label: string): unknown {
   try {
     return JSON.parse(raw) as unknown;
-  } catch (error) {
-    throw new Error(`Invalid governor memory ${label}`, { cause: error });
+  } catch {
+    throw new Error(`Invalid governor memory ${label}`);
   }
 }
 
 export function parseGovernorMemory(row: GovernorMemoryRow): GovernorMemoryRecord {
-  return {
+  const memory: GovernorMemoryRecord = {
     memoryId: row.memory_id,
     scopeKey: row.scope_key,
     scopeEpoch: normalizeSqliteNumber(row.scope_epoch) ?? 0,
@@ -73,9 +75,19 @@ export function parseGovernorMemory(row: GovernorMemoryRow): GovernorMemoryRecor
       ? {}
       : { tombstonedAt: normalizeSqliteNumber(row.tombstoned_at) ?? 0 }),
   };
+  assertGovernorPersistedJson("memory", memory);
+  return memory;
 }
 
 export function bindGovernorMemory(memory: GovernorMemoryRecord): Insertable<GovernorMemoryRow> {
+  assertGovernorPersistedJson("memory", memory);
+  if (
+    memory.status === "verified" &&
+    (!isOpaqueEvidenceSourceRef(memory.sourceIdentity) ||
+      !isOpaqueEvidenceSourceRef(memory.provenance.sourceRef))
+  ) {
+    throw new Error("Governor verified memory source identity is not opaque");
+  }
   return {
     memory_id: memory.memoryId,
     scope_key: memory.scopeKey,

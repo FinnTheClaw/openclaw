@@ -10,6 +10,7 @@ import {
   parseGovernorActionIntent,
 } from "./action-intent-codec.js";
 import type { GovernorActionIntent } from "./action-intent.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 
 /**
  * A revoked action that never crossed the effect fence is terminally cancelled.
@@ -20,6 +21,7 @@ export function reconcileRevokedGovernorActionIntent(
   intent: GovernorActionIntent,
   now: number,
 ): GovernorActionIntent {
+  assertGovernorPersistedJson("log", { intent, now });
   if (intent.state === "completed" || intent.state === "cancelled") {
     return intent;
   }

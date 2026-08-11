@@ -1,5 +1,5 @@
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorTaskProjection } from "./types.js";
 
@@ -9,7 +9,7 @@ export function createGovernorOutboxCompletion(params: {
   payload: GovernorJsonValue;
   now: number;
 }) {
-  assertGovernorJsonResources(params);
+  assertGovernorPersistedJson("log", params);
   const payload = assertGovernorBoundarySafe("session", params.payload);
   return {
     taskId: params.task.taskId,

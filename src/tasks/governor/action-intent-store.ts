@@ -27,7 +27,7 @@ import {
 import type { GovernorActionIntent, GovernorActionTerminationOutcome } from "./action-intent.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import { loadGovernorTask } from "./store-queries.js";
 import type { GovernorIdentityContext, GovernorTaskId, GovernorTaskProjection } from "./types.js";
@@ -143,7 +143,7 @@ export class GovernorActionIntentStore {
     executionGeneration: number;
     now: number;
   }): GovernorBeginActionEffectResult {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     return beginGovernorActionEffect(
       {
         options: this.#options,
@@ -163,7 +163,7 @@ export class GovernorActionIntentStore {
     outcome: GovernorActionTerminationOutcome;
     now: number;
   }): GovernorActionTerminationResult {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     return acknowledgeGovernorActionTermination(
       {
         options: this.#options,
@@ -193,7 +193,7 @@ export class GovernorActionIntentStore {
     executionGeneration: number;
     now: number;
   }): GovernorActionOutcomeValidation {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const task = loadGovernorTask(db, params.taskId);
       const row = executeSqliteQueryTakeFirstSync(
@@ -284,7 +284,7 @@ export class GovernorActionIntentStore {
     leaseDurationMs?: number;
     now: number;
   }): GovernorActionIntentClaimResult {
-    assertGovernorJsonResources({
+    assertGovernorPersistedJson("log", {
       taskId: params.taskId,
       effectId: params.effectId,
       objectiveRevision: params.objectiveRevision,

@@ -26,7 +26,7 @@ import {
   type GovernorMemorySourceKind,
   type GovernorMemoryWriteResult,
 } from "./memory-types.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import {
@@ -78,7 +78,6 @@ export class GovernorMemoryStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly #identity: GovernorIdentityContext;
   readonly #admissions: GovernorEvidenceAdmissionStore;
-  readonly #queries: GovernorStoreQueries;
   readonly #authority: GovernorMemoryAuthorityStore;
 
   constructor(params: {
@@ -97,7 +96,6 @@ export class GovernorMemoryStore {
       throw new Error("Governor memory store requires its evidence admission owner");
     }
     this.#admissions = params.evidenceAdmissions;
-    this.#queries = params.queries;
     this.#authority = new GovernorMemoryAuthorityStore({
       authority: params.memoryAuthority,
       options: this.#options,
@@ -130,7 +128,7 @@ export class GovernorMemoryStore {
     content: GovernorJsonValue;
     now: number;
   }): GovernorMemoryWriteResult {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("memory", params);
     assertExactMemoryInput(params, [
       "memoryId",
       "factKey",
@@ -170,6 +168,7 @@ export class GovernorMemoryStore {
             this.#identity,
           ),
           observedAt: params.now,
+          recordedAt: params.now,
           scopeKey,
           confidence: 0,
           sensitivity: "normal",
@@ -197,7 +196,7 @@ export class GovernorMemoryStore {
     freshnessExpiresAt?: number;
     now: number;
   }): GovernorMemoryWriteResult {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("memory", params);
     assertExactMemoryInput(params, [
       "taskId",
       "evidenceId",
@@ -252,7 +251,7 @@ export class GovernorMemoryStore {
       if (activeFact && activeFact.memory_id !== params.memoryId) {
         return { stored: false, reason: "fact_version_conflict", currentEpoch };
       }
-      const memory = this.#authority.protect({
+      const protectedMemory = this.#authority.protect({
         memoryId: params.memoryId,
         scopeKey,
         scopeEpoch: currentEpoch,
@@ -270,9 +269,14 @@ export class GovernorMemoryStore {
         provenance: {
           sourceRef: evidence.sourceIdentity,
           observedAt: evidence.observedAt,
+          recordedAt: params.now,
           scopeKey,
           confidence,
           sensitivity: "normal",
+          evidenceTaskId: evidence.taskId,
+          evidenceTaskVersion: evidence.taskVersion,
+          objectiveRevision: evidence.objectiveRevision,
+          planVersion: evidence.planVersion,
         },
         content,
         contentDigest: governorDigest(content),
@@ -283,6 +287,10 @@ export class GovernorMemoryStore {
         createdAt: params.now,
         updatedAt: params.now,
       });
+      if (!protectedMemory.accepted) {
+        return { stored: false, reason: "provenance_rejected", currentEpoch };
+      }
+      const memory = protectedMemory.memory;
       executeSqliteQuerySync(
         db,
         dbx(db).insertInto("governor_memories").values(bindGovernorMemory(memory)),
@@ -292,7 +300,7 @@ export class GovernorMemoryStore {
     }, this.#options);
   }
 
-  #verifyRecalledMemory(memory: GovernorMemoryRecord): GovernorMemoryRecord {
+  #verifyRecalledMemory(db: DatabaseSync, memory: GovernorMemoryRecord): GovernorMemoryRecord {
     if (memory.status !== "verified") {
       return memory;
     }
@@ -300,24 +308,32 @@ export class GovernorMemoryStore {
       !memory.verifiedEvidenceTaskId ||
       !memory.verifiedEvidenceId ||
       !memory.verifiedEvidenceDigest ||
-      !memory.verifiedEvidenceSemanticDigest
+      !memory.verifiedEvidenceSemanticDigest ||
+      memory.provenance.evidenceTaskId !== memory.verifiedEvidenceTaskId ||
+      memory.provenance.evidenceTaskVersion === undefined ||
+      memory.provenance.objectiveRevision === undefined ||
+      memory.provenance.planVersion === undefined ||
+      memory.provenance.recordedAt === undefined
     ) {
       throw new Error(`Governor verified memory ${memory.memoryId} lacks admitted evidence`);
     }
-    const evidence = this.#queries.loadEvidence(
-      memory.verifiedEvidenceTaskId as import("./types.js").GovernorTaskId,
-      memory.verifiedEvidenceId,
-    );
-    if (!evidence) {
-      throw new Error(`Governor verified memory ${memory.memoryId} evidence is unavailable`);
-    }
-    this.#admissions.verify(evidence);
+    const evidence = loadCurrentGovernorEvidenceInTransaction({
+      db,
+      admissions: this.#admissions,
+      taskId: memory.verifiedEvidenceTaskId as import("./types.js").GovernorTaskId,
+      evidenceId: memory.verifiedEvidenceId,
+    });
     if (
       evidence.invalidatedAt !== undefined ||
       evidence.scopeKey !== memory.scopeKey ||
       evidence.evidenceDigest !== memory.verifiedEvidenceDigest ||
       evidence.semanticDigest !== memory.verifiedEvidenceSemanticDigest ||
       evidence.sourceIdentity !== memory.sourceIdentity ||
+      evidence.sourceIdentity !== memory.provenance.sourceRef ||
+      evidence.taskId !== memory.provenance.evidenceTaskId ||
+      evidence.taskVersion !== memory.provenance.evidenceTaskVersion ||
+      evidence.objectiveRevision !== memory.provenance.objectiveRevision ||
+      evidence.planVersion !== memory.provenance.planVersion ||
       evidence.predicate !== governorMemoryFactPredicate(memory.factKey) ||
       governorDigest(evidence.value) !== memory.contentDigest
     ) {
@@ -327,31 +343,28 @@ export class GovernorMemoryStore {
   }
 
   retrieve(params: { scope: GovernorTaskScope; now: number }): GovernorMemoryRecord[] {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("memory", params);
     const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
-    runOpenClawStateWriteTransaction(({ db }) => {
-      this.#authority.reconcile(db, (memory) => this.#verifyRecalledMemory(memory), params.now);
+    return runOpenClawStateWriteTransaction(({ db }) => {
+      this.#authority.reconcile(db, (memory) => this.#verifyRecalledMemory(db, memory), params.now);
+      return executeSqliteQuerySync(
+        db,
+        dbx(db)
+          .selectFrom("governor_memories")
+          .selectAll()
+          .where("scope_key", "=", scopeKey)
+          .where("status", "in", ["candidate", "verified"])
+          .where((eb) =>
+            eb.or([
+              eb("freshness_expires_at", "is", null),
+              eb("freshness_expires_at", ">", params.now),
+            ]),
+          )
+          .orderBy("source_rank", "desc")
+          .orderBy("observed_at", "desc")
+          .orderBy("memory_id", "asc"),
+      ).rows.map(parseGovernorMemory);
     }, this.#options);
-    const { db } = this.#database();
-    return executeSqliteQuerySync(
-      db,
-      dbx(db)
-        .selectFrom("governor_memories")
-        .selectAll()
-        .where("scope_key", "=", scopeKey)
-        .where("status", "in", ["candidate", "verified"])
-        .where((eb) =>
-          eb.or([
-            eb("freshness_expires_at", "is", null),
-            eb("freshness_expires_at", ">", params.now),
-          ]),
-        )
-        .orderBy("source_rank", "desc")
-        .orderBy("observed_at", "desc")
-        .orderBy("memory_id", "asc"),
-    )
-      .rows.map(parseGovernorMemory)
-      .map((memory) => this.#verifyRecalledMemory(memory));
   }
 
   retrieveAudit(params: { scope: GovernorTaskScope }): GovernorMemoryRecord[] {
@@ -373,7 +386,7 @@ export class GovernorMemoryStore {
     scope: GovernorTaskScope;
     now: number;
   }): GovernorMemoryRecord | null {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("memory", params);
     const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const row = executeSqliteQueryTakeFirstSync(
@@ -410,7 +423,7 @@ export class GovernorMemoryStore {
     expectedScopeEpoch: number;
     now: number;
   }): GovernorForgetResult {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("memory", params);
     const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const currentEpoch = this.#epoch(db, scopeKey);
@@ -437,7 +450,10 @@ export class GovernorMemoryStore {
       const nextEpoch = currentEpoch + 1;
       const currentMemory = parseGovernorMemory(row);
       if (currentMemory.status === "verified") {
-        this.#authority.retire(currentMemory);
+        const authorityState = this.#authority.state(currentMemory);
+        if (authorityState === "current" || authorityState === "legacy") {
+          this.#authority.retire(currentMemory);
+        }
       }
       const memory: GovernorMemoryRecord = {
         ...currentMemory,

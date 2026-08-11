@@ -2,6 +2,7 @@
 import type { Insertable, Selectable } from "kysely";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import type { GovernorTaskId } from "./types.js";
 
 type GovernorMemoryRemediationRow = Selectable<
@@ -41,7 +42,7 @@ export type GovernorMemoryRemediation = {
 export function parseGovernorMemoryRemediation(
   row: GovernorMemoryRemediationRow,
 ): GovernorMemoryRemediation {
-  return {
+  const remediation: GovernorMemoryRemediation = {
     contradictionFingerprint: row.contradiction_fingerprint,
     scopeKey: row.scope_key,
     factKey: row.fact_key,
@@ -67,11 +68,14 @@ export function parseGovernorMemoryRemediation(
     updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
     ...(row.closed_at == null ? {} : { closedAt: normalizeSqliteNumber(row.closed_at) ?? 0 }),
   };
+  assertGovernorPersistedJson("log", remediation);
+  return remediation;
 }
 
 export function bindGovernorMemoryRemediation(
   remediation: GovernorMemoryRemediation,
 ): Insertable<GovernorMemoryRemediationRow> {
+  assertGovernorPersistedJson("log", remediation);
   return {
     contradiction_fingerprint: remediation.contradictionFingerprint,
     scope_key: remediation.scopeKey,

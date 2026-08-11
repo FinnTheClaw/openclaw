@@ -22,6 +22,7 @@ import {
   reconcileFanoutPhysicalState,
   requestFanoutCancellation,
 } from "./fanout-physical.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 
 type LifecycleDependencies = Readonly<{
   options: OpenClawStateDatabaseOptions;
@@ -41,6 +42,7 @@ export function cancelFanoutJob(
   dependencies: LifecycleDependencies,
   params: { jobId: string; disposition?: "cancel" | "requeue"; now: number },
 ): boolean {
+  assertGovernorPersistedJson("log", params);
   return runOpenClawStateWriteTransaction(({ db }) => {
     reconcileFanoutPhysicalState({ db, coordinator: dependencies.physical, now: params.now });
     const job = loadJob(db, params.jobId);
@@ -81,6 +83,7 @@ export function heartbeatFanoutJob(
     leaseDurationMs: number;
   },
 ): boolean {
+  assertGovernorPersistedJson("log", params);
   return runOpenClawStateWriteTransaction(({ db }) => {
     reconcileFanoutPhysicalState({ db, coordinator: dependencies.physical, now: params.now });
     const job = loadJob(db, params.jobId);
@@ -135,6 +138,7 @@ export function acknowledgeFanoutTermination(
     now: number;
   },
 ): boolean {
+  assertGovernorPersistedJson("log", params);
   return runOpenClawStateWriteTransaction(({ db }) => {
     reconcileFanoutPhysicalState({ db, coordinator: dependencies.physical, now: params.now });
     let job = loadJob(db, params.jobId);
@@ -234,6 +238,7 @@ export function acknowledgeOrphanedFanoutTermination(
     now: number;
   },
 ): boolean {
+  assertGovernorPersistedJson("log", params);
   const receipt = dependencies.receipts.resolve(params.receiptId, params.scopeKey);
   const expectedPayload = {
     kind: "governor_orphaned_physical_execution_termination",

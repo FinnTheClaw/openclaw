@@ -8,7 +8,7 @@ import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorFanoutCompletion, GovernorFanoutJob } from "./fanout-codec.js";
 import type { CompleteFanoutParams } from "./fanout-completion.js";
 import { GovernorFanoutStore } from "./fanout.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorTaskProjection } from "./types.js";
 
@@ -21,7 +21,7 @@ type ChildRegistration = Readonly<{
 }>;
 
 function registration(value: GovernorJsonValue): ChildRegistration {
-  assertGovernorJsonResources(value);
+  assertGovernorPersistedJson("session", value);
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Governor child registration receipt is invalid");
   }
@@ -74,11 +74,16 @@ export class GovernorExternalChildRunStore {
     }
     const input = registration(receipt.payload);
     const request = assertGovernorBoundarySafe("session", input.request);
+    const childIdentityDigest = governorDigest({
+      sourceIdentity: receipt.sourceIdentity,
+      childRunId: input.childRunId,
+    });
     const jobId = `gchild_${governorDigest({
-      receiptId: params.receiptId,
       taskId: params.task.taskId,
       objectiveRevision: params.task.objectiveRevision,
       planVersion: params.task.planVersion,
+      executionGeneration: params.task.executionGeneration,
+      childIdentityDigest,
     }).slice(0, 40)}`;
     return this.#fanout.enqueue({
       jobId,
@@ -88,7 +93,7 @@ export class GovernorExternalChildRunStore {
       fanoutGroup: "external-child",
       payload: {
         kind: "governor_external_child",
-        childRunDigest: governorDigest({ childRunId: input.childRunId }),
+        childRunDigest: childIdentityDigest,
         registrationDigest: governorDigest(receipt.payload),
         request,
       },

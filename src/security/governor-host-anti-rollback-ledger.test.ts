@@ -128,6 +128,53 @@ describe("governor V9 host anti-rollback ledger", () => {
     }
   });
 
+  it("signs memory ordering high-water and rejects ordering tamper", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "governor-v22-memory-ordering-"));
+    try {
+      const ordering = {
+        scopeEpoch: 0,
+        observedAt: 10,
+        recordedAt: 11,
+        sourceRank: 600,
+        confidenceMillionths: 1_000_000,
+        taskVersion: 2,
+        objectiveRevision: 1,
+        planVersion: 1,
+        taskDigest: "a".repeat(64),
+      };
+      const ledger = createGovernorHostAntiRollbackLedger({
+        stateDir: root,
+        signingKey: ledgerKey,
+      });
+      ledger.append({
+        kind: "memory",
+        key: "opaque-memory-fact",
+        generation: 1,
+        status: "memory_current",
+        bindingDigest: "b".repeat(64),
+        ordering,
+      });
+      expect(
+        createGovernorHostAntiRollbackLedger({ stateDir: root, signingKey: ledgerKey }).state(
+          "memory",
+          "opaque-memory-fact",
+        ),
+      ).toMatchObject({ ordering });
+
+      const journal = path.join(root, "host-governor", "anti-rollback-v1.journal");
+      const entry = JSON.parse(fs.readFileSync(journal, "utf8").trim()) as {
+        ordering: { observedAt: number };
+      };
+      entry.ordering.observedAt += 1;
+      fs.writeFileSync(journal, `${JSON.stringify(entry)}\n`);
+      expect(() =>
+        createGovernorHostAntiRollbackLedger({ stateDir: root, signingKey: ledgerKey }),
+      ).toThrow(/integrity/u);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("reconciles primary delivery state after a crash between ledger and SQLite", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v9-crash-" },

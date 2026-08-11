@@ -19,9 +19,9 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import type { GovernorActionProposal } from "./tool-outcome.js";
-import type { GovernorTaskProjection } from "./types.js";
+import { isOpaqueGovernorReference, type GovernorTaskProjection } from "./types.js";
 
 type ApprovalDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -70,7 +70,7 @@ function primaryEpoch(db: DatabaseSync, scopeKey: string): number {
 }
 
 function parseGrant(row: ApprovalRow): GovernorApprovalGrant {
-  return {
+  const grant: GovernorApprovalGrant = {
     grantId: row.grant_id,
     taskId: row.task_id,
     scopeKey: row.scope_key,
@@ -87,9 +87,24 @@ function parseGrant(row: ApprovalRow): GovernorApprovalGrant {
     ...(row.revoked_at == null ? {} : { revokedAt: normalizeSqliteNumber(row.revoked_at) ?? 0 }),
     createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
   };
+  assertGovernorPersistedJson("log", grant);
+  if (
+    !isOpaqueGovernorReference(grant.scopeKey) ||
+    !isOpaqueGovernorReference(grant.canonicalTarget)
+  ) {
+    throw new Error("Persisted governor approval identity is not host-opaque");
+  }
+  return grant;
 }
 
 function bindGrant(grant: GovernorApprovalGrant): Insertable<ApprovalRow> {
+  assertGovernorPersistedJson("log", grant);
+  if (
+    !isOpaqueGovernorReference(grant.scopeKey) ||
+    !isOpaqueGovernorReference(grant.canonicalTarget)
+  ) {
+    throw new Error("Governor approval identity is not host-opaque");
+  }
   return {
     grant_id: grant.grantId,
     task_id: grant.taskId,
@@ -142,7 +157,7 @@ export class GovernorApprovalGrantStore {
     receiptId: HostGovernorApprovalReceiptId;
     now: number;
   }): string {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     const receipt = this.#resolver.resolveApproval(params.receiptId, params.task.scopeKey);
     if (!receipt || receipt.expiresAt <= params.now || receipt.approvalEpoch < 0) {
       throw new Error("Governor approval receipt is invalid or expired");
@@ -250,7 +265,7 @@ export class GovernorApprovalGrantStore {
     grantId: string;
     receiptId: HostGovernorApprovalRevocationId;
   }): boolean {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     const { db } = openOpenClawStateDatabase(this.#options);
     const row = executeSqliteQueryTakeFirstSync(
       db,

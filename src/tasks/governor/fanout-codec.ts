@@ -5,6 +5,7 @@ import { getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export type FanoutDatabase = Pick<
@@ -88,13 +89,13 @@ export type GovernorReducerClaim =
 function parseJson(raw: string, label: string): unknown {
   try {
     return JSON.parse(raw) as unknown;
-  } catch (error) {
-    throw new Error(`Invalid governor fanout ${label}`, { cause: error });
+  } catch {
+    throw new Error(`Invalid governor fanout ${label}`);
   }
 }
 
 export function parseJob(row: FanoutJobRow): GovernorFanoutJob {
-  return {
+  const job: GovernorFanoutJob = {
     jobId: row.job_id,
     taskId: row.task_id as GovernorTaskId,
     planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
@@ -157,9 +158,12 @@ export function parseJob(row: FanoutJobRow): GovernorFanoutJob {
       : { cancelledAt: normalizeSqliteNumber(row.cancelled_at) ?? 0 }),
     updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
   };
+  assertGovernorPersistedJson("log", job);
+  return job;
 }
 
 export function bindJob(job: GovernorFanoutJob): Insertable<FanoutJobRow> {
+  assertGovernorPersistedJson("log", job);
   return {
     job_id: job.jobId,
     task_id: job.taskId,
@@ -200,10 +204,12 @@ export function parseEnvelope(row: FaninEnvelopeRow): GovernorFaninEnvelope {
   if (envelope.envelopeDigest !== row.envelope_digest || envelope.jobId !== row.job_id) {
     throw new Error(`Governor fan-in envelope mismatch for ${row.job_id}`);
   }
+  assertGovernorPersistedJson("log", envelope);
   return envelope;
 }
 
 export function bindEnvelope(envelope: GovernorFaninEnvelope): Insertable<FaninEnvelopeRow> {
+  assertGovernorPersistedJson("log", envelope);
   return {
     envelope_id: envelope.envelopeId,
     job_id: envelope.jobId,
@@ -220,7 +226,9 @@ export function bindEnvelope(envelope: GovernorFaninEnvelope): Insertable<FaninE
 }
 
 export function parseTaskProjection(raw: string): GovernorTaskProjection {
-  return parseJson(raw, "task projection") as GovernorTaskProjection;
+  const task = parseJson(raw, "task projection") as GovernorTaskProjection;
+  assertGovernorPersistedJson("log", task);
+  return task;
 }
 
 export function parseReducerResult(raw: string): GovernorJsonValue {

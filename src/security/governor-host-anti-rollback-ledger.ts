@@ -10,6 +10,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { canonicalGovernorJson, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
+import { assertGovernorJsonResources } from "../tasks/governor/resource-guard.js";
+import { assertGovernorBoundarySafe } from "../tasks/governor/secret-filter.js";
 import { withGovernorHostFileLock } from "./governor-host-file-lock.js";
 
 type LedgerKind = "approval" | "delivery" | "execution" | "ingress" | "memory";
@@ -25,6 +27,17 @@ type LedgerStatus =
   | "memory_retired"
   | "revoked"
   | "terminated";
+export type GovernorLedgerOrdering = Readonly<{
+  scopeEpoch: number;
+  observedAt: number;
+  recordedAt: number;
+  sourceRank: number;
+  confidenceMillionths: number;
+  taskVersion: number;
+  objectiveRevision: number;
+  planVersion: number;
+  taskDigest: string;
+}>;
 type LedgerEntry = Readonly<{
   sequence: number;
   kind: LedgerKind;
@@ -32,6 +45,7 @@ type LedgerEntry = Readonly<{
   generation: number;
   status: LedgerStatus;
   bindingDigest: string;
+  ordering?: GovernorLedgerOrdering;
   keyId: string;
   keyVersion: 1;
   priorDigest: string;
@@ -51,6 +65,7 @@ export type GovernorLedgerState = Readonly<{
   status: LedgerStatus;
   digest: string;
   bindingDigest: string;
+  ordering?: GovernorLedgerOrdering;
 }>;
 export type GovernorHostAntiRollbackLedger = {
   readonly append: (input: {
@@ -59,6 +74,7 @@ export type GovernorHostAntiRollbackLedger = {
     generation: number;
     status: LedgerStatus;
     bindingDigest: string;
+    ordering?: GovernorLedgerOrdering;
   }) => GovernorLedgerState;
   readonly state: (kind: LedgerKind, key: string) => GovernorLedgerState | null;
 };
@@ -154,22 +170,41 @@ function statesFor(entries: readonly LedgerEntry[]): Map<string, GovernorLedgerS
       status: entry.status,
       digest: entry.digest,
       bindingDigest: entry.bindingDigest,
+      ...(entry.ordering ? { ordering: entry.ordering } : {}),
     });
   }
   return states;
+}
+
+function highWaterStateJson(key: string, state: GovernorLedgerState): GovernorJsonValue {
+  const value: Record<string, GovernorJsonValue> = {
+    key,
+    generation: state.generation,
+    status: state.status,
+    digest: state.digest,
+    bindingDigest: state.bindingDigest,
+  };
+  if (state.ordering) {
+    value.ordering = {
+      scopeEpoch: state.ordering.scopeEpoch,
+      observedAt: state.ordering.observedAt,
+      recordedAt: state.ordering.recordedAt,
+      sourceRank: state.ordering.sourceRank,
+      confidenceMillionths: state.ordering.confidenceMillionths,
+      taskVersion: state.ordering.taskVersion,
+      objectiveRevision: state.ordering.objectiveRevision,
+      planVersion: state.ordering.planVersion,
+      taskDigest: state.ordering.taskDigest,
+    };
+  }
+  return value;
 }
 
 function highWaterDigest(entries: readonly LedgerEntry[]): string {
   return sha256(
     [...statesFor(entries)]
       .toSorted(([left], [right]) => left.localeCompare(right))
-      .map(([key, state]) => ({
-        key,
-        generation: state.generation,
-        status: state.status,
-        digest: state.digest,
-        bindingDigest: state.bindingDigest,
-      })),
+      .map(([key, state]) => highWaterStateJson(key, state)),
   );
 }
 
@@ -186,6 +221,7 @@ function assertEntry(
     generation: entry.generation,
     status: entry.status,
     bindingDigest: entry.bindingDigest,
+    ...(entry.ordering ? { ordering: entry.ordering } : {}),
     keyId: entry.keyId,
     keyVersion: entry.keyVersion,
     priorDigest: entry.priorDigest,
@@ -194,6 +230,7 @@ function assertEntry(
     entry.sequence !== index + 1 ||
     !Number.isSafeInteger(entry.generation) ||
     entry.generation < 0 ||
+    (entry.ordering !== undefined && !isValidOrdering(entry.ordering)) ||
     entry.priorDigest !== priorDigest ||
     entry.keyId !== keyId(signingKey) ||
     entry.keyVersion !== 1 ||
@@ -202,6 +239,29 @@ function assertEntry(
   ) {
     throw new Error("Governor anti-rollback ledger integrity check failed");
   }
+}
+
+function isValidOrdering(ordering: GovernorLedgerOrdering): boolean {
+  return (
+    Number.isSafeInteger(ordering.scopeEpoch) &&
+    ordering.scopeEpoch >= 0 &&
+    Number.isSafeInteger(ordering.observedAt) &&
+    ordering.observedAt >= 0 &&
+    Number.isSafeInteger(ordering.recordedAt) &&
+    ordering.recordedAt >= ordering.observedAt &&
+    Number.isSafeInteger(ordering.sourceRank) &&
+    ordering.sourceRank >= 0 &&
+    Number.isSafeInteger(ordering.confidenceMillionths) &&
+    ordering.confidenceMillionths >= 0 &&
+    ordering.confidenceMillionths <= 1_000_000 &&
+    Number.isSafeInteger(ordering.taskVersion) &&
+    ordering.taskVersion >= 0 &&
+    Number.isSafeInteger(ordering.objectiveRevision) &&
+    ordering.objectiveRevision >= 0 &&
+    Number.isSafeInteger(ordering.planVersion) &&
+    ordering.planVersion >= 0 &&
+    /^[a-f0-9]{64}$/u.test(ordering.taskDigest)
+  );
 }
 
 function parseJournal(journalPath: string, signingKey: string): LedgerEntry[] {
@@ -219,8 +279,8 @@ function parseJournal(journalPath: string, signingKey: string): LedgerEntry[] {
     let entry: LedgerEntry;
     try {
       entry = JSON.parse(line) as LedgerEntry;
-    } catch (error) {
-      throw new Error("Governor anti-rollback ledger integrity check failed", { cause: error });
+    } catch {
+      throw new Error("Governor anti-rollback ledger integrity check failed");
     }
     assertEntry(entry, index, priorDigest, signingKey);
     entries.push(entry);
@@ -233,8 +293,8 @@ function parseHead(headPath: string, signingKey: string): LedgerHead {
   let head: LedgerHead;
   try {
     head = JSON.parse(fs.readFileSync(headPath, "utf8")) as LedgerHead;
-  } catch (error) {
-    throw new Error("Governor anti-rollback ledger head is invalid", { cause: error });
+  } catch {
+    throw new Error("Governor anti-rollback ledger head is invalid");
   }
   const unsigned = {
     sequence: head.sequence,
@@ -354,11 +414,13 @@ export function createGovernorHostAntiRollbackLedger(params: {
   const ledger: GovernorHostAntiRollbackLedger = Object.freeze({
     append: (input) =>
       withGovernorHostFileLock(lockPath, () => {
+        assertGovernorBoundarySafe("log", assertGovernorJsonResources(input));
         if (
           !input.key ||
           !input.bindingDigest ||
           !Number.isSafeInteger(input.generation) ||
-          input.generation < 0
+          input.generation < 0 ||
+          (input.ordering !== undefined && !isValidOrdering(input.ordering))
         ) {
           throw new Error("Governor anti-rollback ledger input is invalid");
         }
@@ -370,6 +432,14 @@ export function createGovernorHostAntiRollbackLedger(params: {
           }
           if (input.generation === current.generation) {
             if (input.status === current.status && input.bindingDigest === current.bindingDigest) {
+              if (
+                (input.ordering === undefined) !== (current.ordering === undefined) ||
+                (input.ordering &&
+                  current.ordering &&
+                  canonicalGovernorJson(input.ordering) !== canonicalGovernorJson(current.ordering))
+              ) {
+                throw new Error("Governor anti-rollback ledger ordering conflicts at generation");
+              }
               return current;
             }
             const validIngressTransition =
@@ -423,6 +493,7 @@ export function createGovernorHostAntiRollbackLedger(params: {
           status: entry.status,
           digest: entry.digest,
           bindingDigest: entry.bindingDigest,
+          ...(entry.ordering ? { ordering: entry.ordering } : {}),
         };
       }),
     state: (kind, key) =>

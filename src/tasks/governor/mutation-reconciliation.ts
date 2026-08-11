@@ -2,7 +2,7 @@
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { createGovernorEventRecord } from "./events.js";
 import { createGovernorEvidenceCandidate, type GovernorEvidenceRecord } from "./evidence.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorSqliteStore } from "./store.js";
 import type { GovernorEffectRecord, GovernorToolOutcome } from "./tool-outcome.js";
@@ -34,7 +34,7 @@ export function resolveGovernorMutation(params: {
   evidenceReceiptId?: string;
   now: number;
 }): GovernorMutationResolutionResult {
-  assertGovernorJsonResources({
+  assertGovernorPersistedJson("log", {
     taskId: params.taskId,
     executionFence: params.executionFence,
     effectId: params.effectId,

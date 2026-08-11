@@ -45,7 +45,7 @@ import {
   reconcileFanoutPhysicalState,
   requestFanoutCancellation,
 } from "./fanout-physical.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
@@ -110,7 +110,7 @@ export class GovernorFanoutStore {
     payload: GovernorJsonValue;
     now: number;
   }): GovernorFanoutJob {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     const payload = assertGovernorBoundarySafe("model", params.payload);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const existing = executeSqliteQueryTakeFirstSync(
@@ -194,7 +194,7 @@ export class GovernorFanoutStore {
     now: number;
     leaseDurationMs?: number;
   }): GovernorFanoutClaim {
-    assertGovernorJsonResources({
+    assertGovernorPersistedJson("log", {
       workerId: params.workerId,
       now: params.now,
       leaseDurationMs: params.leaseDurationMs ?? null,
@@ -331,7 +331,7 @@ export class GovernorFanoutStore {
   }
 
   cancelJob(jobId: string, now: number): boolean {
-    assertGovernorJsonResources({ jobId, now });
+    assertGovernorPersistedJson("log", { jobId, now });
     return cancelFanoutJob(
       { options: this.#options, physical: this.#physical, receipts: this.#receipts },
       { jobId, now },
@@ -339,7 +339,7 @@ export class GovernorFanoutStore {
   }
 
   requestRetirement(jobId: string, disposition: "cancel" | "requeue", now: number): boolean {
-    assertGovernorJsonResources({ jobId, disposition, now });
+    assertGovernorPersistedJson("log", { jobId, disposition, now });
     return cancelFanoutJob(
       { options: this.#options, physical: this.#physical, receipts: this.#receipts },
       { jobId, disposition, now },
@@ -353,7 +353,7 @@ export class GovernorFanoutStore {
     now: number;
     leaseDurationMs?: number;
   }): boolean {
-    assertGovernorJsonResources({
+    assertGovernorPersistedJson("log", {
       jobId: params.jobId,
       claimEpoch: params.claimEpoch,
       workerId: params.workerId,
@@ -372,7 +372,7 @@ export class GovernorFanoutStore {
     outcome: "crashed" | "terminated";
     now: number;
   }): boolean {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     return acknowledgeFanoutTermination(
       { options: this.#options, physical: this.#physical, receipts: this.#receipts },
       params,
@@ -392,7 +392,7 @@ export class GovernorFanoutStore {
     outcome: "crashed" | "terminated";
     now: number;
   }): boolean {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     return acknowledgeOrphanedFanoutTermination(
       { options: this.#options, physical: this.#physical, receipts: this.#receipts },
       params,

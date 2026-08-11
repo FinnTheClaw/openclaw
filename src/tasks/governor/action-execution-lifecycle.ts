@@ -21,6 +21,7 @@ import type { GovernorActionIntent, GovernorActionTerminationOutcome } from "./a
 import type { GovernorApprovalGrantStore, GovernorApprovalStatus } from "./approval-store.js";
 import { governorDigest } from "./canonical-json.js";
 import type { GovernorCapabilityRegistry } from "./capability-registry.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { loadGovernorTask } from "./store-queries.js";
 import type { GovernorIdentityContext, GovernorTaskId } from "./types.js";
 
@@ -75,6 +76,7 @@ export function beginGovernorActionEffect(
     now: number;
   },
 ): GovernorBeginActionEffectResult {
+  assertGovernorPersistedJson("log", params);
   return runOpenClawStateWriteTransaction(({ db }) => {
     const task = loadGovernorTask(db, params.taskId);
     const row = executeSqliteQueryTakeFirstSync(
@@ -208,6 +210,7 @@ export function acknowledgeGovernorActionTermination(
     now: number;
   },
 ): GovernorActionTerminationResult {
+  assertGovernorPersistedJson("log", params);
   return runOpenClawStateWriteTransaction(({ db }) => {
     const task = loadGovernorTask(db, params.taskId);
     const row = executeSqliteQueryTakeFirstSync(

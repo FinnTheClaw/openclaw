@@ -235,7 +235,7 @@ describe("governor memory integrity", () => {
     });
   });
 
-  it("fails closed when direct database tampering removes a verified evidence binding", async () => {
+  it("quarantines direct database tampering without wedging recall", async () => {
     await withMemoryTestHarness(async (harness) => {
       const taskId = startMemoryTestTask(harness.controller, scopeA);
       expect(
@@ -259,9 +259,10 @@ describe("governor memory integrity", () => {
                 verified_evidence_semantic_digest = NULL
           WHERE memory_id = ?`,
       ).run("memory-direct-tamper");
-      expect(() => harness.store.memory.retrieve({ scope: scopeA, now: 101 })).toThrow(
-        /lacks admitted evidence/,
-      );
+      expect(harness.store.memory.retrieve({ scope: scopeA, now: 101 })).toEqual([]);
+      expect(harness.store.memory.retrieveAudit({ scope: scopeA })).toEqual([
+        expect.objectContaining({ memoryId: "memory-direct-tamper", status: "quarantined" }),
+      ]);
     });
   });
 

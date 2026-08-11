@@ -10,7 +10,7 @@ import {
 import type { GovernorJsonValue } from "./canonical-json.js";
 import { assertValidGovernorContract } from "./contracts.js";
 import { createGovernorEventRecord } from "./events.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { bindEvent, bindTask, governorDb, parseTaskRow } from "./store-codec.js";
 import { loadGovernorTask } from "./store-queries.js";
@@ -47,18 +47,7 @@ export function ingestGovernorTask(params: {
   ingress: IngressParams;
 }): GovernorIngressResult {
   const input = params.ingress;
-  assertGovernorJsonResources(input.contract);
-  assertGovernorJsonResources(input.scope);
-  assertGovernorJsonResources(input.sourceMessageId);
-  assertGovernorJsonResources(input.sourceSequence);
-  assertGovernorJsonResources(input.now);
-  assertGovernorJsonResources(input.mode);
-  if (input.eventId !== undefined) {
-    assertGovernorJsonResources(input.eventId);
-  }
-  if (input.flowId !== undefined) {
-    assertGovernorJsonResources(input.flowId);
-  }
+  assertGovernorPersistedJson("session", input);
   const contract = assertGovernorBoundarySafe(
     "session",
     input.contract as unknown as GovernorJsonValue,

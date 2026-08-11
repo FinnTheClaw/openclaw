@@ -14,7 +14,11 @@ import { createGovernorIdentityContext } from "./types.js";
 
 const identity = createGovernorIdentityContext("synthetic-v11-memory-policy-key");
 const scope = "scope:principal-a/channel-signal/account-a/conversation-a";
-const source = opaqueEvidenceSourceRef("structured_external", "inventory:narya", identity);
+const source = opaqueEvidenceSourceRef(
+  "structured_external",
+  "inventory:fixture-node-alpha",
+  identity,
+);
 
 function memory(overrides: Partial<GovernorMemoryRecord> = {}): GovernorMemoryRecord {
   return {
@@ -32,12 +36,13 @@ function memory(overrides: Partial<GovernorMemoryRecord> = {}): GovernorMemoryRe
     provenance: {
       sourceRef: source,
       observedAt: 100,
+      recordedAt: 100,
       scopeKey: scope,
       confidence: 1,
       sensitivity: "normal",
     },
-    content: { host: "narya", port: 9100 },
-    contentDigest: governorDigest({ host: "narya", port: 9100 }),
+    content: { host: "fixture-node-alpha", port: 9100 },
+    contentDigest: governorDigest({ host: "fixture-node-alpha", port: 9100 }),
     createdAt: 100,
     updatedAt: 100,
     ...overrides,
@@ -45,7 +50,7 @@ function memory(overrides: Partial<GovernorMemoryRecord> = {}): GovernorMemoryRe
 }
 
 function evidence(overrides: Partial<GovernorEvidenceRecord> = {}): GovernorEvidenceRecord {
-  const value = { host: "narya", port: 9200 };
+  const value = { host: "fixture-node-alpha", port: 9200 };
   const predicate = governorMemoryFactPredicate("network.endpoint");
   return {
     evidenceId: "evidence-new",
@@ -150,12 +155,12 @@ describe("memory contradiction policy", () => {
     });
     expect(
       policy({
-        payload: { host: "narya", port: 9100 },
-        evidenceDigest: governorDigest({ host: "narya", port: 9100 }),
-        value: { host: "narya", port: 9100 },
+        payload: { host: "fixture-node-alpha", port: 9100 },
+        evidenceDigest: governorDigest({ host: "fixture-node-alpha", port: 9100 }),
+        value: { host: "fixture-node-alpha", port: 9100 },
         semanticDigest: governorDigest({
           predicate: governorMemoryFactPredicate("network.endpoint"),
-          value: { host: "narya", port: 9100 },
+          value: { host: "fixture-node-alpha", port: 9100 },
         }),
       }),
     ).toMatchObject({ kind: "reject", reason: "same_value" });
@@ -191,7 +196,7 @@ describe("memory contradiction policy", () => {
   });
 
   it("requires the authenticated receipt payload to contain the asserted memory value", () => {
-    const payload = { host: "narya", port: 9300 };
+    const payload = { host: "fixture-node-alpha", port: 9300 };
     expect(
       policy({
         payload,

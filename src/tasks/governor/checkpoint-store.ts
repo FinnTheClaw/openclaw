@@ -7,6 +7,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import type { GovernorCheckpoint } from "./planning-policy.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId } from "./types.js";
@@ -17,6 +18,7 @@ type GovernorCheckpointRow = Selectable<OpenClawStateKyselyDatabase["governor_ch
 export function bindGovernorCheckpoint(
   checkpoint: GovernorCheckpoint,
 ): Insertable<GovernorCheckpointRow> {
+  assertGovernorPersistedJson("log", checkpoint);
   return {
     checkpoint_id: checkpoint.checkpointId,
     task_id: checkpoint.taskId,
@@ -33,8 +35,8 @@ function parseCheckpoint(row: GovernorCheckpointRow): GovernorCheckpoint {
   let checkpoint: GovernorCheckpoint;
   try {
     checkpoint = JSON.parse(row.checkpoint_json) as GovernorCheckpoint;
-  } catch (error) {
-    throw new Error(`Invalid persisted governor checkpoint ${row.checkpoint_id}`, { cause: error });
+  } catch {
+    throw new Error("Invalid persisted governor checkpoint");
   }
   if (
     checkpoint.checkpointId !== row.checkpoint_id ||
@@ -43,6 +45,7 @@ function parseCheckpoint(row: GovernorCheckpointRow): GovernorCheckpoint {
   ) {
     throw new Error(`Persisted governor checkpoint mismatch for ${row.checkpoint_id}`);
   }
+  assertGovernorPersistedJson("log", checkpoint);
   return checkpoint;
 }
 

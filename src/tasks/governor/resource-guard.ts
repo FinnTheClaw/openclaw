@@ -175,9 +175,10 @@ function addStringBytes(
  * Iteratively validates JSON-shaped input without JSON.stringify, recursion,
  * getter invocation, or trusting caller-provided prototypes.
  */
-export function assertGovernorJsonResources(
+function assertGovernorJsonResourcesInternal(
   value: unknown,
   overrides?: Partial<GovernorJsonResourceLimits>,
+  omitUndefinedObjectProperties = false,
 ): GovernorJsonValue {
   const limits = resolveLimits(overrides);
   const state = { bytes: 0, nodes: 0, properties: 0, collections: 0 };
@@ -269,6 +270,9 @@ export function assertGovernorJsonResources(
       assertPropertyKey(key);
       const descriptor = descriptors[key];
       assertDataProperty(descriptor);
+      if (omitUndefinedObjectProperties && descriptor.value === undefined) {
+        continue;
+      }
       state.properties += 1;
       if (state.properties > limits.maxProperties) {
         fail("max_properties");
@@ -282,4 +286,19 @@ export function assertGovernorJsonResources(
     }
   }
   return value as GovernorJsonValue;
+}
+
+export function assertGovernorJsonResources(
+  value: unknown,
+  overrides?: Partial<GovernorJsonResourceLimits>,
+): GovernorJsonValue {
+  return assertGovernorJsonResourcesInternal(value, overrides);
+}
+
+/** Validates the exact JSON representation while allowing omitted optional object fields. */
+export function assertGovernorPersistedJsonResources(
+  value: unknown,
+  overrides?: Partial<GovernorJsonResourceLimits>,
+): GovernorJsonValue {
+  return assertGovernorJsonResourcesInternal(value, overrides, true);
 }

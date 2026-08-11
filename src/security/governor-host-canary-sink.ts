@@ -5,6 +5,7 @@ import { Kysely } from "kysely";
 import { NodeSqliteKyselyDialect } from "../infra/kysely-node-sqlite.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { governorDigest, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
+import { assertGovernorPersistedJson } from "../tasks/governor/persistence-guard.js";
 import type {
   HostCompiledSender,
   HostPrimitiveDeliveryResult,
@@ -81,6 +82,7 @@ async function withCanaryDatabase<T>(
 }
 
 function parseConfig(value: GovernorJsonValue): "active" | "shadow" {
+  assertGovernorPersistedJson("log", value);
   if (!value || Array.isArray(value) || typeof value !== "object") {
     throw new Error("Governor canary config must be an object");
   }
@@ -107,6 +109,7 @@ export function createCanaryHostSender(
     normalizedTarget: "receipt-sink",
     mode,
     send: async ({ deliveryKey, payload }): Promise<HostPrimitiveDeliveryResult> => {
+      assertGovernorPersistedJson("log", { deliveryKey, payload });
       if (!DELIVERY_KEY.test(deliveryKey)) {
         return {
           status: "not_sent",
@@ -139,6 +142,7 @@ export function createCanaryHostSender(
       };
     },
     reconcile: async ({ deliveryKey, payloadDigest }) => {
+      assertGovernorPersistedJson("log", { deliveryKey, payloadDigest });
       if (!DELIVERY_KEY.test(deliveryKey)) {
         return { status: "unresolved" as const };
       }

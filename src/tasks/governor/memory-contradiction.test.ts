@@ -263,7 +263,7 @@ describe("governor memory contradiction retirement", () => {
     });
   });
 
-  it("does not let evidence from a superseded task objective retire current memory", async () => {
+  it("quarantines prior-plan memory after a same-task objective correction", async () => {
     await withMemoryTestHarness(({ store, broker, controller }) => {
       const taskId = startMemoryTestTask(controller, memoryScopeA);
       seedMemoryFact({
@@ -298,7 +298,10 @@ describe("governor memory contradiction retirement", () => {
       ).toThrow(/stale, invalidated, or out of scope/);
       expect(
         store.memory.activeReplacement({ scope: memoryScopeA, factKey: "ssh.path", now: 202 }),
-      ).toMatchObject({ content: { path: "/objective/original" } });
+      ).toBeNull();
+      expect(store.memory.retrieveAudit({ scope: memoryScopeA })).toEqual([
+        expect.objectContaining({ memoryId: "memory-stale-objective", status: "quarantined" }),
+      ]);
     });
   });
 

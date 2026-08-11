@@ -1,6 +1,10 @@
+import crypto from "node:crypto";
 // Redacts or rejects secret-like content before any model, memory, embedding, session, or log sink.
 import type { GovernorJsonValue } from "./canonical-json.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import {
+  assertGovernorJsonResources,
+  assertGovernorPersistedJsonResources,
+} from "./resource-guard.js";
 
 export type GovernorSecretBoundary = "model" | "memory" | "embedding" | "session" | "log";
 
@@ -24,6 +28,10 @@ const CREDENTIAL_PATTERNS = [
 const PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gu;
 const SECRET_CANARY = /GOVERNOR_SECRET_CANARY_[A-Za-z0-9_-]+/gu;
 const REDACTED = "[REDACTED]";
+
+function safeFindingPath(path: string): string {
+  return `field_${crypto.createHash("sha256").update(path).digest("hex").slice(0, 16)}`;
+}
 
 function canonicalFieldName(value: string): string {
   return value
@@ -55,17 +63,18 @@ function isSensitiveFieldName(value: string): boolean {
 }
 
 function redactString(value: string, path: string, findings: GovernorSecretFinding[]): string {
+  const safePath = safeFindingPath(path);
   let redacted = value.replace(PRIVATE_KEY, () => {
-    findings.push({ code: "private_key", path });
+    findings.push({ code: "private_key", path: safePath });
     return REDACTED;
   });
   redacted = redacted.replace(SECRET_CANARY, () => {
-    findings.push({ code: "secret_canary", path });
+    findings.push({ code: "secret_canary", path: safePath });
     return REDACTED;
   });
   for (const pattern of CREDENTIAL_PATTERNS) {
     redacted = redacted.replace(pattern, () => {
-      findings.push({ code: "credential_pattern", path });
+      findings.push({ code: "credential_pattern", path: safePath });
       return REDACTED;
     });
   }
@@ -88,7 +97,7 @@ function scanValue(
       Object.entries(value).map(([key, item]) => {
         const itemPath = `${path}.${key}`;
         if (isSensitiveFieldName(key)) {
-          findings.push({ code: "sensitive_field", path: itemPath });
+          findings.push({ code: "sensitive_field", path: safeFindingPath(itemPath) });
           return [key, REDACTED];
         }
         return [key, scanValue(item, itemPath, findings)];
@@ -100,9 +109,25 @@ function scanValue(
 
 export function scanGovernorSecrets(value: GovernorJsonValue): GovernorSecretScan {
   assertGovernorJsonResources(value);
+  return scanGovernorSecretsUnchecked(value);
+}
+
+function scanGovernorSecretsUnchecked(value: GovernorJsonValue): GovernorSecretScan {
   const findings: GovernorSecretFinding[] = [];
   const redacted = scanValue(value, "$", findings);
   return { safe: findings.length === 0, redacted, findings };
+}
+
+export function assertGovernorPersistedBoundarySafe(
+  boundary: GovernorSecretBoundary,
+  value: unknown,
+): GovernorJsonValue {
+  const checked = assertGovernorPersistedJsonResources(value);
+  const scan = scanGovernorSecretsUnchecked(checked);
+  if (!scan.safe) {
+    throw new GovernorSecretRejectedError(boundary, scan.findings);
+  }
+  return scan.redacted;
 }
 
 export class GovernorSecretRejectedError extends Error {

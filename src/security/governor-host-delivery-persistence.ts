@@ -12,6 +12,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
 import { governorDigest } from "../tasks/governor/canonical-json.js";
+import { assertGovernorPersistedJson } from "../tasks/governor/persistence-guard.js";
 import type {
   GovernorHostAntiRollbackLedger,
   GovernorLedgerState,
@@ -209,6 +210,7 @@ export function createGovernorHostDeliveryPersistence(params: {
     deliveryHighWater: (identityKey) => ledger.state("delivery", identityKey),
     certifyDelivery: (input) =>
       runOpenClawStateWriteTransaction(({ db }) => {
+        assertGovernorPersistedJson("log", input);
         const current = ledger.state("delivery", input.identityKey);
         const bindingDigest = deliveryBinding({ ...input, status: "certified" });
         if (hasStartedEffect(db, input.identityKey)) {
@@ -253,6 +255,7 @@ export function createGovernorHostDeliveryPersistence(params: {
     },
     revokeDelivery: (input) =>
       runOpenClawStateWriteTransaction(({ db }) => {
+        assertGovernorPersistedJson("log", input);
         if (hasStartedEffect(db, input.identityKey)) {
           return false;
         }
@@ -297,6 +300,7 @@ export function createGovernorHostDeliveryPersistence(params: {
     },
     claimDeliveryEffect: (input) =>
       runOpenClawStateWriteTransaction(({ db }) => {
+        assertGovernorPersistedJson("log", input);
         const state = ledger.state("delivery", input.identityKey);
         if (
           state?.generation !== input.generation ||
@@ -348,6 +352,7 @@ export function createGovernorHostDeliveryPersistence(params: {
       }, options),
     startDeliveryEffect: (input) =>
       runOpenClawStateWriteTransaction(({ db }) => {
+        assertGovernorPersistedJson("log", input);
         const row = executeSqliteQueryTakeFirstSync(
           db,
           dbx(db)
@@ -378,6 +383,7 @@ export function createGovernorHostDeliveryPersistence(params: {
       }, options),
     deliveryEffectState: (input) =>
       runOpenClawStateWriteTransaction(({ db }) => {
+        assertGovernorPersistedJson("log", input);
         const row = executeSqliteQueryTakeFirstSync(
           db,
           dbx(db)
@@ -391,6 +397,7 @@ export function createGovernorHostDeliveryPersistence(params: {
       }, options),
     completeDeliveryEffect: (claimId, completedAt) =>
       runOpenClawStateWriteTransaction(({ db }) => {
+        assertGovernorPersistedJson("log", { claimId, completedAt });
         const update = executeSqliteQuerySync(
           db,
           dbx(db)
@@ -403,6 +410,7 @@ export function createGovernorHostDeliveryPersistence(params: {
       }, options),
     markDeliveryEffectUnknown: (input) =>
       runOpenClawStateWriteTransaction(({ db }) => {
+        assertGovernorPersistedJson("log", input);
         const row = executeSqliteQueryTakeFirstSync(
           db,
           dbx(db)
@@ -433,6 +441,7 @@ export function createGovernorHostDeliveryPersistence(params: {
       }, options),
     resolveDeliveryEffect: (input) =>
       runOpenClawStateWriteTransaction(({ db }) => {
+        assertGovernorPersistedJson("log", input);
         const row = executeSqliteQueryTakeFirstSync(
           db,
           dbx(db)

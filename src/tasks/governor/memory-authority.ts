@@ -17,6 +17,7 @@ import {
 import { governorDigest } from "./canonical-json.js";
 import { bindGovernorMemory, parseGovernorMemory } from "./memory-record-codec.js";
 import type { GovernorMemoryRecord } from "./memory-types.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 
 type MemoryAuthorityDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -37,6 +38,14 @@ export type GovernorMemoryReobservation = Readonly<{
   resolvedAt?: number;
 }>;
 
+export type GovernorMemoryProtection =
+  | Readonly<{ accepted: true; memory: GovernorMemoryRecord }>
+  | Readonly<{
+      accepted: false;
+      reason: "legacy_high_water" | "retired" | "stale" | "weaker" | "fence_regression";
+      state: GovernorMemoryAuthorityState;
+    }>;
+
 const dbx = (db: DatabaseSync) => getNodeSqliteKysely<MemoryAuthorityDatabase>(db);
 
 export function governorMemoryAuthorityBinding(
@@ -45,16 +54,37 @@ export function governorMemoryAuthorityBinding(
   if (
     memory.status !== "verified" ||
     !memory.verifiedEvidenceDigest ||
-    !memory.verifiedEvidenceSemanticDigest
+    !memory.verifiedEvidenceSemanticDigest ||
+    !memory.verifiedEvidenceTaskId ||
+    memory.provenance.evidenceTaskId !== memory.verifiedEvidenceTaskId ||
+    memory.provenance.evidenceTaskVersion === undefined ||
+    memory.provenance.objectiveRevision === undefined ||
+    memory.provenance.planVersion === undefined ||
+    memory.provenance.recordedAt === undefined
   ) {
     throw new Error("Governor memory authority requires verified evidence bindings");
   }
   return {
     scopeKey: memory.scopeKey,
     factKey: memory.factKey,
+    scopeEpoch: memory.scopeEpoch,
     memoryId: memory.memoryId,
+    sourceIdentity: memory.sourceIdentity,
+    sourceReference: memory.provenance.sourceRef,
+    contentDigest: memory.contentDigest,
     evidenceDigest: memory.verifiedEvidenceDigest,
     semanticDigest: memory.verifiedEvidenceSemanticDigest,
+    ordering: {
+      scopeEpoch: memory.scopeEpoch,
+      observedAt: memory.observedAt,
+      recordedAt: memory.provenance.recordedAt,
+      sourceRank: memory.sourceRank,
+      confidenceMillionths: Math.round(memory.confidence * 1_000_000),
+      taskVersion: memory.provenance.evidenceTaskVersion,
+      objectiveRevision: memory.provenance.objectiveRevision,
+      planVersion: memory.provenance.planVersion,
+      taskDigest: governorDigest({ taskId: memory.verifiedEvidenceTaskId }),
+    },
   };
 }
 
@@ -88,20 +118,29 @@ export class GovernorMemoryAuthorityStore {
     this.#options = params.options;
   }
 
-  protect(memory: GovernorMemoryRecord): GovernorMemoryRecord {
-    const state = this.#authority.advance(governorMemoryAuthorityBinding(memory));
+  protect(memory: GovernorMemoryRecord): GovernorMemoryProtection {
+    assertGovernorPersistedJson("memory", memory);
+    const decision = this.#authority.advance(governorMemoryAuthorityBinding(memory));
+    if (!decision.accepted) {
+      return decision;
+    }
     return {
-      ...memory,
-      authorityGeneration: state.generation,
-      authorityBindingDigest: state.bindingDigest,
+      accepted: true,
+      memory: {
+        ...memory,
+        authorityGeneration: decision.state.generation,
+        authorityBindingDigest: decision.state.bindingDigest,
+      },
     };
   }
 
   retire(memory: GovernorMemoryRecord): GovernorMemoryAuthorityState {
+    assertGovernorPersistedJson("memory", memory);
     return this.#authority.retire(governorMemoryAuthorityBinding(memory));
   }
 
   state(memory: GovernorMemoryRecord): "current" | "legacy" | "stale" {
+    assertGovernorPersistedJson("memory", memory);
     const state = this.#authority.state(memory.scopeKey, memory.factKey);
     if (!state) {
       return "legacy";
@@ -127,6 +166,7 @@ export class GovernorMemoryAuthorityStore {
     state: GovernorMemoryAuthorityState,
     now: number,
   ): void {
+    assertGovernorPersistedJson("memory", { memory, state, now });
     if (state.status === "retired") {
       executeSqliteQuerySync(
         db,
@@ -173,37 +213,77 @@ export class GovernorMemoryAuthorityStore {
     );
   }
 
+  quarantineUnverifiable(db: DatabaseSync, memory: GovernorMemoryRecord, now: number): void {
+    assertGovernorPersistedJson("memory", { memory, now });
+    const state = this.#authority.state(memory.scopeKey, memory.factKey);
+    this.quarantineMismatch(
+      db,
+      memory,
+      state ?? {
+        generation: 0,
+        status: "current",
+        bindingDigest: governorDigest({
+          kind: "memory-unverifiable",
+          scopeKey: memory.scopeKey,
+          factKey: memory.factKey,
+        }),
+        ledgerDigest: governorDigest({ kind: "memory-authority-missing" }),
+      },
+      now,
+    );
+  }
+
   reconcile(
     db: DatabaseSync,
     verify: (memory: GovernorMemoryRecord) => GovernorMemoryRecord,
     now: number,
   ): void {
+    assertGovernorPersistedJson("memory", { now });
     const rows = executeSqliteQuerySync(
       db,
       dbx(db).selectFrom("governor_memories").selectAll().where("status", "=", "verified"),
     ).rows;
     for (const row of rows) {
-      const memory = verify(parseGovernorMemory(row));
+      const parsed = parseGovernorMemory(row);
+      let memory: GovernorMemoryRecord;
+      try {
+        memory = verify(parsed);
+      } catch {
+        this.quarantineUnverifiable(db, parsed, now);
+        continue;
+      }
       const authorityState = this.#authority.state(memory.scopeKey, memory.factKey);
       if (!authorityState) {
         const protectedMemory = this.protect(memory);
+        if (!protectedMemory.accepted) {
+          this.quarantineMismatch(db, memory, protectedMemory.state, now);
+          continue;
+        }
         executeSqliteQuerySync(
           db,
           dbx(db)
             .updateTable("governor_memories")
-            .set(bindGovernorMemory(protectedMemory))
+            .set(bindGovernorMemory(protectedMemory.memory))
             .where("memory_id", "=", memory.memoryId)
             .where("status", "=", "verified"),
         );
         continue;
       }
-      if (this.state(memory) === "stale") {
+      let memoryState: "current" | "legacy" | "stale";
+      try {
+        memoryState = this.state(memory);
+      } catch {
+        this.quarantineUnverifiable(db, memory, now);
+        continue;
+      }
+      if (memoryState === "stale") {
         this.quarantineMismatch(db, memory, authorityState, now);
       }
     }
   }
 
   resolveRequirements(db: DatabaseSync, memory: GovernorMemoryRecord, now: number): void {
+    assertGovernorPersistedJson("memory", { memory, now });
     executeSqliteQuerySync(
       db,
       dbx(db)
@@ -216,6 +296,7 @@ export class GovernorMemoryAuthorityStore {
   }
 
   list(scopeKey: string): GovernorMemoryReobservation[] {
+    assertGovernorPersistedJson("memory", { scopeKey });
     const { db } = openOpenClawStateDatabase(this.#options);
     return executeSqliteQuerySync(
       db,

@@ -28,8 +28,8 @@ import {
   GovernorOutboxStore,
   type GovernorOutboxRecord,
 } from "./outbox-store.js";
+import { assertGovernorPersistedJson, assertSameGovernorScope } from "./persistence-guard.js";
 import type { GovernorCheckpoint } from "./planning-policy.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
 import { appendGovernorAuditEvent } from "./store-audit.js";
 import {
   createGovernorStoreDependencies,
@@ -159,7 +159,7 @@ export class GovernorSqliteStore {
     receiptId?: string;
     now: number;
   }): GovernorPendingEvidence {
-    assertGovernorJsonResources(params.candidate);
+    assertGovernorPersistedJson("log", params.candidate);
     return this.#evidenceAdmissions.admit(params);
   }
 
@@ -191,7 +191,7 @@ export class GovernorSqliteStore {
     evidenceAdmission?: GovernorPendingEvidence;
     outbox?: readonly GovernorOutboxRecord[];
   }): GovernorCommitResult {
-    assertGovernorJsonResources({
+    assertGovernorPersistedJson("log", {
       current: params.current,
       next: params.next,
       event: params.event,
@@ -203,6 +203,8 @@ export class GovernorSqliteStore {
       evidence: params.evidenceAdmission?.evidence ?? null,
       outbox: [...(params.outbox ?? [])],
     });
+    assertSameGovernorScope(params.current, params.current);
+    assertSameGovernorScope(params.current, params.next);
     if (
       params.next.taskId !== params.current.taskId ||
       params.next.scopeKey !== params.current.scopeKey ||
@@ -210,6 +212,7 @@ export class GovernorSqliteStore {
       params.next.leaseEpoch < params.current.leaseEpoch ||
       params.next.leaseEpoch > params.current.leaseEpoch + 1 ||
       params.event.taskId !== params.next.taskId ||
+      params.event.scopeKey !== params.next.scopeKey ||
       params.event.taskVersion !== params.next.taskVersion ||
       params.event.objectiveRevision !== params.next.objectiveRevision ||
       (params.next.flowId !== undefined && !isOpaqueGovernorReference(params.next.flowId)) ||
@@ -224,6 +227,8 @@ export class GovernorSqliteStore {
       if (!stored) {
         return { applied: false, reason: "not_found" };
       }
+      assertSameGovernorScope(stored, params.current);
+      assertSameGovernorScope(stored, params.next);
       if (stored.taskVersion !== params.current.taskVersion) {
         return { applied: false, reason: "task_version_conflict", current: stored };
       }

@@ -1,13 +1,9 @@
 // Owns lease-fenced transactional reply delivery and stable provider idempotency keys.
-import type { DatabaseSync } from "node:sqlite";
-import type { Insertable, Selectable } from "kysely";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
-  getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
-import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -18,122 +14,27 @@ import {
   isGovernorVerifiedDeliveryReceipt,
   type GovernorVerifiedDeliveryReceipt,
 } from "./delivery-certification-store.js";
+import {
+  bindGovernorOutbox,
+  governorOutboxDb as dbx,
+  parseGovernorOutbox as parseOutbox,
+  type GovernorOutboxClaimResult,
+  type GovernorOutboxDeliveryBinding,
+  type GovernorOutboxRecord,
+} from "./outbox-codec.js";
 import { createGovernorOutboxCompletion } from "./outbox-completion.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
-type OutboxDatabase = Pick<OpenClawStateKyselyDatabase, "governor_tasks" | "governor_outbox">;
-type GovernorOutboxRow = Selectable<OpenClawStateKyselyDatabase["governor_outbox"]>;
-
-export type GovernorOutboxState = "pending" | "claimed" | "sent" | "would_send" | "manual_review";
-
-export type GovernorOutboxDeliveryBinding = Readonly<{
-  adapterHandle: string;
-  identityKey: string;
-  implementationDigest: string;
-  configDigest: string;
-  generation: number;
-  channel: string;
-  accountIdentity: string;
-  targetIdentity: string;
-  deploymentIdentity: string;
-}>;
-
-export type GovernorOutboxRecord = {
-  taskId: GovernorTaskId;
-  effectId: string;
-  deliveryKey: string;
-  taskVersion: number;
-  objectiveRevision: number;
-  planVersion: number;
-  leaseEpoch: number;
-  executionGeneration: number;
-  deliveryClaimEpoch: number;
-  claimedBy?: string;
-  leaseExpiresAt?: number;
-  state: GovernorOutboxState;
-  payload: GovernorJsonValue;
-  providerReceipt?: GovernorJsonValue;
-  claimedAt?: number;
-  sentAt?: number;
-  createdAt: number;
-  updatedAt: number;
-};
-
-export type GovernorOutboxClaimResult =
-  | { kind: "claimed"; entry: GovernorOutboxRecord }
-  | { kind: "not_found" | "stale_worker" | "obsolete" | "busy" }
-  | { kind: "reconcile_required" | "manual_review" | "would_send"; entry: GovernorOutboxRecord }
-  | { kind: "already_sent"; entry: GovernorOutboxRecord };
-
-function dbx(db: DatabaseSync) {
-  return getNodeSqliteKysely<OutboxDatabase>(db);
-}
-
-function parseJson(raw: string, label: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch (error) {
-    throw new Error(`Invalid persisted governor ${label}`, { cause: error });
-  }
-}
-
-export function bindGovernorOutbox(entry: GovernorOutboxRecord): Insertable<GovernorOutboxRow> {
-  return {
-    task_id: entry.taskId,
-    effect_id: entry.effectId,
-    delivery_key: entry.deliveryKey,
-    task_version: entry.taskVersion,
-    objective_revision: entry.objectiveRevision,
-    plan_version: entry.planVersion,
-    lease_epoch: entry.leaseEpoch,
-    execution_generation: entry.executionGeneration,
-    delivery_claim_epoch: entry.deliveryClaimEpoch,
-    claimed_by: entry.claimedBy ?? null,
-    lease_expires_at: entry.leaseExpiresAt ?? null,
-    state: entry.state,
-    payload_json: JSON.stringify(entry.payload),
-    provider_receipt_json: entry.providerReceipt ? JSON.stringify(entry.providerReceipt) : null,
-    claimed_at: entry.claimedAt ?? null,
-    sent_at: entry.sentAt ?? null,
-    created_at: entry.createdAt,
-    updated_at: entry.updatedAt,
-  };
-}
-
-function parseOutbox(row: GovernorOutboxRow): GovernorOutboxRecord {
-  return {
-    taskId: row.task_id as GovernorTaskId,
-    effectId: row.effect_id,
-    deliveryKey: row.delivery_key,
-    taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
-    objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
-    planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
-    leaseEpoch: normalizeSqliteNumber(row.lease_epoch) ?? 0,
-    executionGeneration: normalizeSqliteNumber(row.execution_generation) ?? 0,
-    deliveryClaimEpoch: normalizeSqliteNumber(row.delivery_claim_epoch) ?? 0,
-    ...(row.claimed_by == null ? {} : { claimedBy: row.claimed_by }),
-    ...(row.lease_expires_at == null
-      ? {}
-      : { leaseExpiresAt: normalizeSqliteNumber(row.lease_expires_at) ?? 0 }),
-    state: row.state as GovernorOutboxState,
-    payload: parseJson(row.payload_json, "outbox payload") as GovernorJsonValue,
-    ...(row.provider_receipt_json
-      ? {
-          providerReceipt: parseJson(
-            row.provider_receipt_json,
-            "provider receipt",
-          ) as GovernorJsonValue,
-        }
-      : {}),
-    ...(row.claimed_at == null ? {} : { claimedAt: normalizeSqliteNumber(row.claimed_at) ?? 0 }),
-    ...(row.sent_at == null ? {} : { sentAt: normalizeSqliteNumber(row.sent_at) ?? 0 }),
-    createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
-    updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
-  };
-}
+export { bindGovernorOutbox } from "./outbox-codec.js";
+export type {
+  GovernorOutboxClaimResult,
+  GovernorOutboxDeliveryBinding,
+  GovernorOutboxRecord,
+  GovernorOutboxState,
+} from "./outbox-codec.js";
 
 export class GovernorOutboxStore {
   readonly #options: OpenClawStateDatabaseOptions;
@@ -167,7 +68,7 @@ export class GovernorOutboxStore {
     leaseDurationMs?: number;
     deliveryBinding: GovernorOutboxDeliveryBinding;
   }): GovernorOutboxClaimResult {
-    assertGovernorJsonResources({
+    assertGovernorPersistedJson("log", {
       taskId: params.taskId,
       effectId: params.effectId,
       expectedLeaseEpoch: params.expectedLeaseEpoch,
@@ -299,7 +200,7 @@ export class GovernorOutboxStore {
     now: number;
     terminalState?: "sent" | "would_send";
   }): GovernorOutboxClaimResult {
-    assertGovernorJsonResources({
+    assertGovernorPersistedJson("log", {
       taskId: params.taskId,
       effectId: params.effectId,
       expectedLeaseEpoch: params.expectedLeaseEpoch,
@@ -417,7 +318,7 @@ export class GovernorOutboxStore {
     verifiedReceipt: GovernorVerifiedDeliveryReceipt;
     now: number;
   }): GovernorOutboxClaimResult {
-    assertGovernorJsonResources(params);
+    assertGovernorPersistedJson("log", params);
     return this.markSent({
       ...params,
       verifiedReceipt: params.verifiedReceipt,
@@ -433,6 +334,7 @@ export class GovernorOutboxStore {
     reasonDigest: string;
     now: number;
   }): GovernorOutboxClaimResult {
+    assertGovernorPersistedJson("log", params);
     if (!/^[a-f0-9]{64}$/u.test(params.reasonDigest)) {
       throw new Error("Governor manual-review reason must be a SHA-256 digest");
     }

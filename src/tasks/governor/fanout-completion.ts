@@ -27,7 +27,7 @@ import {
   fanoutPhysicalLease,
   requestFanoutCancellation,
 } from "./fanout-physical.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 
 export type CompleteFanoutParams = {
@@ -61,7 +61,7 @@ export function completeFanoutJob(
   },
   params: CompleteFanoutParams,
 ): GovernorFanoutCompletion {
-  assertGovernorJsonResources(params);
+  assertGovernorPersistedJson("log", params);
   const content = assertGovernorBoundarySafe("session", {
     claims: [...params.claims],
     evidence: [...params.evidence],

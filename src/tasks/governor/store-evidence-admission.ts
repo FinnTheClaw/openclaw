@@ -16,7 +16,7 @@ import {
   type GovernorEvidenceCandidate,
   type GovernorEvidenceRecord,
 } from "./evidence.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import type { GovernorIdentityContext, GovernorTaskProjection } from "./types.js";
 
 declare const governorPendingEvidenceBrand: unique symbol;
@@ -62,6 +62,7 @@ export class GovernorEvidenceAdmissionStore {
   }
 
   verify(evidence: GovernorEvidenceRecord): void {
+    assertGovernorPersistedJson("log", evidence);
     assertOpaqueEvidenceSourceRef(evidence.sourceIdentity);
     if (governorDigest(evidence.payload) !== evidence.evidenceDigest) {
       throw new Error("Governor evidence payload digest mismatch");
@@ -91,7 +92,7 @@ export class GovernorEvidenceAdmissionStore {
     receiptId?: string;
     now: number;
   }): GovernorPendingEvidence {
-    assertGovernorJsonResources(params.candidate);
+    assertGovernorPersistedJson("log", params.candidate);
     const candidate = createGovernorEvidenceCandidate(params.candidate);
     const validation = validateGovernorEvidenceCandidate({ task: params.task, candidate });
     if ("admitted" in validation && !validation.admitted) {

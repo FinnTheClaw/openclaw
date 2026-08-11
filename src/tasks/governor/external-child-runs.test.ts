@@ -23,7 +23,7 @@ describe("governor external child lifecycle", () => {
       expect(() =>
         store.children.register({ task, receiptId: "ghr_invented" as never, now: 40 }),
       ).toThrow(/receipt/);
-      const rawChildId = "private-child-fixture";
+      const rawChildId = "synthetic-child-fixture";
       const registrationPayload = {
         kind: "governor_external_child_registration",
         childRunId: rawChildId,
@@ -46,6 +46,21 @@ describe("governor external child lifecycle", () => {
       expect(store.children.register({ task, receiptId: registrationReceipt, now: 40 })).toEqual(
         child,
       );
+      const duplicateReceipt = broker.capabilities.submitObservedReceipt({
+        scopeKey: task.scopeKey,
+        taskId: task.taskId,
+        taskVersion: task.taskVersion,
+        objectiveRevision: task.objectiveRevision,
+        planVersion: task.planVersion,
+        sourceKind: "structured_external",
+        sourceIdentity: rawChildId,
+        payload: registrationPayload,
+        observedAt: 40,
+      });
+      expect(store.children.register({ task, receiptId: duplicateReceipt, now: 40 })).toEqual(
+        child,
+      );
+      expect(store.children.list(taskId)).toHaveLength(1);
       const claim = store.fanout.claimNext({ workerId: "child-worker", now: 41 });
       if (claim.kind !== "claimed") {
         throw new Error(`expected child claim, got ${claim.kind}`);
@@ -166,6 +181,50 @@ describe("governor external child lifecycle", () => {
         }),
       ).toBe(true);
       expect(store.listUnfinishedFanoutJobIds(task)).toEqual([]);
+    });
+  });
+
+  it("deduplicates by logical child identity without colliding distinct children", async () => {
+    await withMemoryTestHarness(async ({ store, broker, controller, stateDir }) => {
+      const taskId = startMemoryTestTask(controller, memoryScopeA, 20);
+      const task = store.loadTask(taskId)!;
+      const register = (childRunId: string, observedAt: number) => {
+        const payload = {
+          kind: "governor_external_child_registration",
+          childRunId,
+          round: 12,
+          priority: 1,
+          request: { objective: "bounded fixture" },
+        } as const;
+        const receiptId = broker.capabilities.submitObservedReceipt({
+          scopeKey: task.scopeKey,
+          taskId,
+          taskVersion: task.taskVersion,
+          objectiveRevision: task.objectiveRevision,
+          planVersion: task.planVersion,
+          sourceKind: "structured_external",
+          sourceIdentity: "synthetic-child-owner",
+          payload,
+          observedAt,
+        });
+        return store.children.register({ task, receiptId, now: observedAt });
+      };
+
+      const first = register("logical-child-alpha", 21);
+      const retried = register("logical-child-alpha", 22);
+      const distinct = register("logical-child-beta", 23);
+      expect(retried.jobId).toBe(first.jobId);
+      expect(distinct.jobId).not.toBe(first.jobId);
+      expect(store.children.list(taskId)).toHaveLength(2);
+
+      closeOpenClawStateDatabase();
+      const restarted = new (await import("./store.js")).GovernorSqliteStore({ stateDir });
+      expect(
+        restarted.children
+          .list(taskId)
+          .map((job) => job.jobId)
+          .toSorted(),
+      ).toEqual([first.jobId, distinct.jobId].toSorted());
     });
   });
 });

@@ -9,6 +9,7 @@ import type {
 import { governorDigest } from "./canonical-json.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
 import { fanoutDb, parseJob, type GovernorFanoutJob } from "./fanout-codec.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 
 export function fanoutPhysicalBinding(job: GovernorFanoutJob): GovernorPhysicalExecutionBinding {
   if (!job.workerId) {
@@ -48,6 +49,7 @@ function applyCancellationFence(params: {
   job: GovernorFanoutJob;
   now: number;
 }): boolean {
+  assertGovernorPersistedJson("log", { job: params.job, now: params.now });
   let lease: GovernorPhysicalExecutionLease;
   try {
     lease = fanoutPhysicalLease(params.job);
@@ -84,6 +86,7 @@ function reconcileReleasedJob(params: {
   job: GovernorFanoutJob;
   now: number;
 }): boolean {
+  assertGovernorPersistedJson("log", { job: params.job, now: params.now });
   if (params.job.physicalSlot === undefined || !params.job.physicalBindingDigest) {
     return false;
   }
@@ -124,6 +127,7 @@ export function reconcileFanoutPhysicalState(params: {
   coordinator: GovernorTrustedPhysicalExecutionCoordinator;
   now: number;
 }): { unprovableRunning: boolean } {
+  assertGovernorPersistedJson("log", { now: params.now });
   const rows = executeSqliteQuerySync(
     params.db,
     fanoutDb(params.db)
@@ -199,6 +203,11 @@ export function requestFanoutCancellation(params: {
   disposition: "cancel" | "requeue";
   now: number;
 }): boolean {
+  assertGovernorPersistedJson("log", {
+    job: params.job,
+    disposition: params.disposition,
+    now: params.now,
+  });
   executeSqliteQuerySync(
     params.db,
     fanoutDb(params.db)

@@ -6,6 +6,7 @@ import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import type { GovernorTaskId } from "./types.js";
 
 type ActionIntentDatabase = Pick<
@@ -21,14 +22,15 @@ export function actionIntentDb(db: DatabaseSync) {
 function parseJson(raw: string, label: string): unknown {
   try {
     return JSON.parse(raw) as unknown;
-  } catch (error) {
-    throw new Error(`Invalid persisted governor ${label}`, { cause: error });
+  } catch {
+    throw new Error(`Invalid persisted governor ${label}`);
   }
 }
 
 export function bindGovernorActionIntent(
   intent: GovernorActionIntent,
 ): Insertable<GovernorActionIntentRow> {
+  assertGovernorPersistedJson("log", intent);
   return {
     task_id: intent.taskId,
     effect_id: intent.effectId,
@@ -125,5 +127,6 @@ export function parseGovernorActionIntent(row: GovernorActionIntentRow): Governo
   ) {
     throw new Error(`Persisted governor action intent mismatch for ${row.effect_id}`);
   }
+  assertGovernorPersistedJson("log", intent);
   return intent;
 }

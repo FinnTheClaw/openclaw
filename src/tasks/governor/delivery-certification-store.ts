@@ -18,7 +18,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
-import { assertGovernorJsonResources } from "./resource-guard.js";
+import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 
 type CertificationDatabase = Pick<
@@ -57,11 +57,23 @@ export class GovernorDeliveryCertificationStore {
   }
 
   resolveCertified(handle: HostGovernorDeliveryHandle) {
-    assertGovernorJsonResources(handle);
+    assertGovernorPersistedJson("log", handle);
     const adapter = this.#resolver.resolve(handle);
     if (!adapter) {
       throw new Error("Governor delivery adapter handle is not host-registered");
     }
+    assertGovernorPersistedJson("log", {
+      handle: adapter.handle,
+      identityKey: adapter.identityKey,
+      identity: adapter.identity,
+      implementationId: adapter.implementationId,
+      implementationDigest: adapter.implementationDigest,
+      configDigest: adapter.configDigest,
+      generation: adapter.generation,
+      status: adapter.status,
+      binding: adapter.binding,
+      signature: adapter.signature,
+    });
     // Stable identity, rather than a generation-specific handle, fences a
     // restarted host bootstrap from resurrecting a revoked old generation.
     const registrationKey = adapter.identityKey;

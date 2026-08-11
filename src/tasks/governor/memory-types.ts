@@ -19,9 +19,14 @@ export type GovernorMemorySourceKind =
 export type GovernorMemoryProvenance = {
   sourceRef: string;
   observedAt: number;
+  recordedAt: number;
   scopeKey: string;
   confidence: number;
   sensitivity: "normal" | "sensitive";
+  evidenceTaskId?: string;
+  evidenceTaskVersion?: number;
+  objectiveRevision?: number;
+  planVersion?: number;
 };
 
 export type GovernorMemoryRecord = {
