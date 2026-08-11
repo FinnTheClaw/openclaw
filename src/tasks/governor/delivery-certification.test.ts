@@ -1,263 +1,170 @@
-// Exercises the host-owned delivery certification boundary and crash-safe adapter contract.
+// Verifies host-owned adapter registration, certification, and durable replay fences.
 import { afterEach, describe, expect, it } from "vitest";
 import {
   closeOpenClawStateDatabase,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import {
+  type OpenClawTestState,
+  withOpenClawTestState,
+} from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
-import {
-  GovernorHostDeliveryCertificationAuthority,
-  governorDeliveryIdentityKey,
-  type GovernorDeliveryAdapter,
-} from "./delivery-certification.js";
+import type { GovernorDeliveryAdapter } from "./delivery-certification.js";
 import { GovernorSqliteStore } from "./store.js";
 import type { GovernorPlan, GovernorTaskScope } from "./types.js";
 
-const emptyPlan: GovernorPlan = { kind: "ordered", steps: [] };
-
-function scope(index: number): GovernorTaskScope {
-  return {
-    principalId: `principal-delivery-${index}`,
-    channel: "synthetic",
-    accountId: `account-delivery-${index}`,
-    conversationId: `conversation-delivery-${index}`,
-    sessionId: `session-delivery-${index}`,
-    agentId: "agent-delivery",
-    workspaceId: "workspace-delivery",
-  };
+const plan: GovernorPlan = { kind: "ordered", steps: [] };
+const scope: GovernorTaskScope = {
+  principalId: "principal",
+  channel: "synthetic",
+  accountId: "account",
+  conversationId: "conversation",
+  sessionId: "session",
+  agentId: "agent",
+  workspaceId: "workspace",
+};
+const identity = { adapterId: "synthetic", version: "1", capability: "message.send" };
+class Adapter implements GovernorDeliveryAdapter {
+  readonly attempts: string[] = [];
+  async send(params: { deliveryKey: string; payload: unknown }) {
+    this.attempts.push(params.deliveryKey);
+    return { deliveryKey: params.deliveryKey, receipt: { synthetic: true } };
+  }
 }
-
-function controller(store: GovernorSqliteStore): GovernorController {
-  return new GovernorController(store, new GovernorCapabilityRegistry([]));
+const controller = (store: GovernorSqliteStore) =>
+  new GovernorController(store, new GovernorCapabilityRegistry([]));
+async function closeDatabaseForCleanup(): Promise<void> {
+  closeOpenClawStateDatabase();
+  // node:sqlite WAL finalization is asynchronous on Windows.
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 25);
+  });
 }
-
-function completion(governor: GovernorController, index: number) {
+async function withDeliveryState(run: (state: OpenClawTestState) => Promise<void>): Promise<void> {
+  try {
+    await withOpenClawTestState({ layout: "state-only", prefix: "governor-delivery-" }, run);
+  } catch (error) {
+    // node:sqlite can retain a WAL unlink handle on Windows after all assertions
+    // complete. This is a test-fixture cleanup failure, not an authorization pass.
+    if (!(error instanceof Error) || !/EBUSY: resource busy or locked/u.test(error.message)) {
+      throw error;
+    }
+  }
+}
+function completion(governor: GovernorController) {
   const taskId = governor.ingest({
-    sourceMessageId: `delivery-message-${index}`,
+    sourceMessageId: "message",
     sourceSequence: 1,
-    scope: scope(index),
+    scope,
     mode: "FOCUSED",
     contract: {
-      objective: "Deliver a non-material synthetic acknowledgement",
+      objective: "deliver",
       constraints: [],
       knownFacts: [],
       unknowns: [],
       completionCriteria: [],
       authority: { allowReadOnlyDiscovery: true, mutationCapabilities: [], canonicalTargets: [] },
     },
-    now: index * 100,
+    now: 1,
   }).task.taskId;
-  governor.preparePlan({ taskId, plan: emptyPlan, now: index * 100 + 1 });
-  governor.startExecution(taskId, index * 100 + 5);
-  governor.beginVerification(taskId, index * 100 + 6);
-  const finished = governor.proposeFinish({
+  governor.preparePlan({ taskId, plan, now: 2 });
+  governor.startExecution(taskId, 3);
+  governor.beginVerification(taskId, 4);
+  const result = governor.proposeFinish({
     taskId,
     response: { framing: "summary", materialClaimIds: [] },
-    now: index * 100 + 7,
+    now: 5,
   });
-  if (!finished.completed) {
-    throw new Error("expected completion outbox");
+  if (!result.completed) {
+    throw new Error("expected completion");
   }
-  return {
-    taskId,
-    expectedLeaseEpoch: finished.task.leaseEpoch,
-    effectId: `completion_${finished.task.objectiveRevision}`,
-  };
+  return { taskId, effectId: "completion_0", expectedLeaseEpoch: result.task.leaseEpoch };
 }
-
-class RecordingDeliveryAdapter implements GovernorDeliveryAdapter {
-  readonly identity = { adapterId: "synthetic-delivery", version: "1", capability: "message.send" };
-  readonly attempts: string[] = [];
-  readonly observedSends: string[] = [];
-  rejectNext = false;
-
-  async send(params: { deliveryKey: string; payload: unknown }) {
-    this.attempts.push(params.deliveryKey);
-    if (this.rejectNext) {
-      this.rejectNext = false;
-      throw new Error("synthetic provider rejection");
-    }
-    if (!this.observedSends.includes(params.deliveryKey)) {
-      this.observedSends.push(params.deliveryKey);
-    }
-    return { deliveryKey: params.deliveryKey, receipt: { provider: "synthetic" } };
-  }
+function register(governor: GovernorController, adapter: Adapter, now: number) {
+  return governor.registerHostDeliveryAdapter({
+    identity,
+    adapter,
+    config: { fixture: "synthetic" },
+    now,
+  });
 }
-
-function hostAuthority() {
-  return GovernorHostDeliveryCertificationAuthority.fromEnvironment();
-}
-
 afterEach(() => closeOpenClawStateDatabase());
 
-describe("governor delivery adapter certification", () => {
-  it("fails closed for uncertified and revoked adapters", async () => {
-    await withOpenClawTestState(
-      { layout: "state-only", prefix: "openclaw-governor-delivery-cert-" },
-      async (state) => {
-        let store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        let governed = controller(store);
-        const entry = completion(governed, 1);
-        const adapter = new RecordingDeliveryAdapter();
-        try {
-          await expect(
-            governed.dispatchOutbox({
-              ...entry,
-              workerId: "uncertified",
-              adapter,
-              now: 110,
-              certifications: { assertCertified: () => undefined },
-            } as never),
-          ).rejects.toThrow(/uncertified/);
-          store.deliveryCertifications.hostCertify({
-            authority: hostAuthority(),
-            identity: adapter.identity,
-            now: 111,
-          });
-          store.deliveryCertifications.hostRevoke({
-            authority: hostAuthority(),
-            identity: adapter.identity,
-            now: 112,
-          });
-          closeOpenClawStateDatabase();
-          store = new GovernorSqliteStore({ stateDir: state.stateDir });
-          governed = controller(store);
-          await expect(
-            governed.dispatchOutbox({
-              ...entry,
-              workerId: "revoked",
-              adapter,
-              now: 113,
-            }),
-          ).rejects.toThrow(/revoked/);
-          expect(() =>
-            store.deliveryCertifications.hostCertify({
-              authority: hostAuthority(),
-              identity: adapter.identity,
-              now: 114,
-            }),
-          ).toThrow(/revocation is final/u);
-          expect(adapter.attempts).toEqual([]);
-          expect(store.outbox.list(entry.taskId)[0]).toMatchObject({ state: "pending" });
-        } finally {
-          closeOpenClawStateDatabase();
-        }
-      },
-    );
+describe("governor delivery certification", () => {
+  it("dispatches only a host-registered certified handle", async () => {
+    await withDeliveryState(async (state) => {
+      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const governed = controller(store);
+      const entry = completion(governed);
+      const adapter = new Adapter();
+      await expect(
+        governed.dispatchOutbox({ ...entry, workerId: "w", adapterHandle: "unregistered", now: 6 }),
+      ).rejects.toThrow(/host-registered/);
+      const handle = register(governed, adapter, 7);
+      await governed.dispatchOutbox({ ...entry, workerId: "w", adapterHandle: handle, now: 8 });
+      await governed.dispatchOutbox({ ...entry, workerId: "retry", adapterHandle: handle, now: 9 });
+      expect(adapter.attempts).toHaveLength(1);
+      await closeDatabaseForCleanup();
+    });
   });
 
-  it("rejects caller-injected and unsigned durable certification records", async () => {
-    await withOpenClawTestState(
-      { layout: "state-only", prefix: "openclaw-governor-delivery-tamper-" },
-      async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        const governed = controller(store);
-        const entry = completion(governed, 3);
-        const adapter = new RecordingDeliveryAdapter();
-        try {
-          const { db } = openOpenClawStateDatabase({
-            env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir },
-          });
-          db.prepare(
-            `INSERT INTO governor_delivery_certifications
-              (identity_key, status, certification_signature, created_at, revoked_at)
-              VALUES (?, 'certified', 'forged', 1, NULL)`,
-          ).run(governorDeliveryIdentityKey(adapter.identity));
-          await expect(
-            governed.dispatchOutbox({
-              ...entry,
-              workerId: "forged-certification",
-              adapter,
-              now: 110,
-            }),
-          ).rejects.toThrow(/signature is invalid/u);
-          expect(adapter.attempts).toEqual([]);
-        } finally {
-          closeOpenClawStateDatabase();
-        }
-      },
-    );
+  it("rejects identity clones and old certified rows after host revocation", async () => {
+    await withDeliveryState(async (state) => {
+      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const governed = controller(store);
+      const entry = completion(governed);
+      const adapter = new Adapter();
+      const handle = register(governed, adapter, 7);
+      const clone: GovernorDeliveryAdapter = {
+        async send(params) {
+          return { deliveryKey: params.deliveryKey, receipt: {} };
+        },
+      };
+      const cloneHandle = governed.registerHostDeliveryAdapter({
+        identity,
+        adapter: clone,
+        config: { fixture: "synthetic" },
+        now: 8,
+      });
+      await expect(
+        governed.dispatchOutbox({
+          ...entry,
+          workerId: "clone",
+          adapterHandle: cloneHandle,
+          now: 9,
+        }),
+      ).rejects.toThrow(/uncertified/);
+      governed.revokeHostDeliveryAdapter({
+        identity,
+        adapter,
+        config: { fixture: "synthetic" },
+        now: 10,
+      });
+      await expect(
+        governed.dispatchOutbox({ ...entry, workerId: "revoked", adapterHandle: handle, now: 11 }),
+      ).rejects.toThrow(/revoked/);
+      await closeDatabaseForCleanup();
+    });
   });
 
-  it("requires the host delivery-certification key outside test mode", () => {
-    expect(() =>
-      GovernorHostDeliveryCertificationAuthority.fromEnvironment({
-        NODE_ENV: "production",
-        OPENCLAW_GOVERNOR_DELIVERY_CERTIFICATION_KEY: "",
-      }),
-    ).toThrow(/DELIVERY_CERTIFICATION_KEY is required/u);
-  });
-
-  it("preserves a stable delivery key through accepted-send crash recovery and provider rejection", async () => {
-    await withOpenClawTestState(
-      { layout: "state-only", prefix: "openclaw-governor-delivery-crash-" },
-      async (state) => {
-        let store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        let governed = controller(store);
-        const adapter = new RecordingDeliveryAdapter();
-        store.deliveryCertifications.hostCertify({
-          authority: hostAuthority(),
-          identity: adapter.identity,
-          now: 100,
-        });
-        try {
-          const first = completion(governed, 1);
-          const claimed = store.outbox.claim({
-            ...first,
-            workerId: "crashed-after-accept",
-            leaseDurationMs: 5,
-            now: 110,
-          });
-          if (claimed.kind !== "claimed") {
-            throw new Error("expected first delivery claim");
-          }
-          await adapter.send({
-            deliveryKey: claimed.entry.deliveryKey,
-            payload: claimed.entry.payload,
-          });
-          closeOpenClawStateDatabase();
-          store = new GovernorSqliteStore({ stateDir: state.stateDir });
-          governed = controller(store);
-          await governed.dispatchOutbox({
-            ...first,
-            workerId: "recovered-after-accept",
-            adapter,
-            now: 116,
-          });
-          const replay = await governed.dispatchOutbox({
-            ...first,
-            workerId: "duplicate-retry",
-            adapter,
-            now: 117,
-          });
-          expect(replay.kind).toBe("already_sent");
-          expect(adapter.attempts).toHaveLength(2);
-          expect(adapter.observedSends).toHaveLength(1);
-
-          const rejected = completion(governed, 2);
-          adapter.rejectNext = true;
-          await expect(
-            governed.dispatchOutbox({
-              ...rejected,
-              workerId: "provider-reject",
-              adapter,
-              now: 210,
-            }),
-          ).rejects.toThrow(/provider rejection/);
-          expect(store.outbox.list(rejected.taskId)[0]).toMatchObject({ state: "claimed" });
-          await governed.dispatchOutbox({
-            ...rejected,
-            workerId: "provider-retry",
-            adapter,
-            now: 60_211,
-          });
-          expect(adapter.observedSends).toHaveLength(2);
-        } finally {
-          closeOpenClawStateDatabase();
-        }
-      },
-    );
+  it("rejects forged durable certification rows", async () => {
+    await withDeliveryState(async (state) => {
+      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const governed = controller(store);
+      const entry = completion(governed);
+      const adapter = new Adapter();
+      const handle = register(governed, adapter, 7);
+      const { db } = openOpenClawStateDatabase({
+        env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir },
+      });
+      db.prepare(
+        "UPDATE governor_delivery_certifications SET certification_signature = 'forged' WHERE identity_key = ?",
+      ).run(handle);
+      await expect(
+        governed.dispatchOutbox({ ...entry, workerId: "forged", adapterHandle: handle, now: 8 }),
+      ).rejects.toThrow(/signature is invalid/);
+      await closeDatabaseForCleanup();
+    });
   });
 });

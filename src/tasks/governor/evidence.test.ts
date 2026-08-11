@@ -138,7 +138,22 @@ describe("governor evidence identity boundary", () => {
           ).toThrow(/opaque keyed reference/u);
           expect(() =>
             bindEvidence({ ...admitted.evidence, semanticDigest: "0".repeat(64) }),
-          ).toThrow(/semantic digest mismatch/u);
+          ).toThrow(/(semantic digest mismatch|admission signature is invalid)/u);
+          const next = { ...task, taskVersion: task.taskVersion + 1, updatedAt: 3 };
+          const event = createGovernorEventRecord({
+            task: next,
+            eventType: "evidence_admitted",
+            payload: { evidenceDigest: admitted.evidence.evidenceDigest },
+            now: 3,
+          });
+          expect(() =>
+            store.commit({
+              current: task,
+              next,
+              event,
+              evidence: [{ ...admitted.evidence, admissionSignature: "0".repeat(64) }],
+            }),
+          ).toThrow(/admission signature is invalid/u);
         } finally {
           closeOpenClawStateDatabase();
         }

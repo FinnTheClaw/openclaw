@@ -104,22 +104,20 @@ describe("governor approval grants", () => {
               capabilityVersion: "1",
               canonicalTarget: "fixture://target",
               expiresAt: 200,
-              authority: { verifyAuthenticatedApproval: () => false },
               now: 107,
             }),
-          ).toThrow("not authenticated");
+          ).toThrow("host-authenticated");
           const grant = store.approvals.issue({
             task,
-            issuerId: "verified-owner",
+            issuerId: "test-host-approver",
             capability: "fixture.mutate",
             capabilityVersion: "1",
             canonicalTarget: "fixture://target",
             expiresAt: 200,
-            authority: { verifyAuthenticatedApproval: () => true },
             now: 108,
           });
           expect(grant.grantId).toMatch(/^ggrant_/u);
-          expect(grant.issuerId).not.toBe("verified-owner");
+          expect(grant.issuerId).not.toBe("test-host-approver");
           expect(
             controller.admitAction({
               taskId,

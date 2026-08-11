@@ -1509,6 +1509,9 @@ CREATE TABLE IF NOT EXISTS governor_evidence (
   admissibility TEXT NOT NULL,
   invalidated_at INTEGER,
   created_at INTEGER NOT NULL,
+  admission_key_id TEXT NOT NULL,
+  admission_version INTEGER NOT NULL,
+  admission_signature TEXT NOT NULL,
   FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
 );
 
@@ -1653,6 +1656,10 @@ CREATE TABLE IF NOT EXISTS governor_approval_grants (
   expires_at INTEGER NOT NULL,
   revoked_at INTEGER,
   created_at INTEGER NOT NULL,
+  approval_epoch INTEGER NOT NULL,
+  authority_key_id TEXT NOT NULL,
+  authority_version INTEGER NOT NULL,
+  authority_signature TEXT NOT NULL,
   FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
 );
 
@@ -1662,7 +1669,24 @@ CREATE INDEX IF NOT EXISTS idx_governor_approval_grants_task
 CREATE TABLE IF NOT EXISTS governor_delivery_certifications (
   identity_key TEXT NOT NULL PRIMARY KEY,
   status TEXT NOT NULL,
+  implementation_digest TEXT NOT NULL,
+  config_digest TEXT NOT NULL,
+  certification_generation INTEGER NOT NULL,
+  authority_key_id TEXT NOT NULL,
+  authority_version INTEGER NOT NULL,
   certification_signature TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   revoked_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS governor_approval_epochs (
+  scope_key TEXT NOT NULL PRIMARY KEY,
+  epoch INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS governor_delivery_certification_epochs (
+  identity_key TEXT NOT NULL PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
 );\n`;

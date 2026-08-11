@@ -47,23 +47,26 @@ isolated SQLite state.
 12. Enabled persistence requires `OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY`; channel, account,
     conversation, session, source-message, provenance, and approval-issuer identifiers are
     represented by keyed opaque references in durable governor records.
-13. A mutating capability that requires approval accepts only a host-authenticated opaque grant ID.
-    The durable grant is bound to task scope, objective revision, capability/version, canonical
-    target, expiry, and revocation state; a model proposal cannot mint or extend it.
+13. A mutating capability that requires approval accepts only a host-issued opaque grant ID.
+    Grant issuance reads a host-owned approver allowlist and signs task scope, objective revision,
+    capability/version, canonical target, expiry, key version, and a monotonic approval epoch.
+    A model proposal or caller-provided callback cannot mint, extend, or replay a revoked grant.
 14. Completion reads durable claims, contradictions, pending-update state, and evidence for the
     current objective and plan only. Corrections cancel old action/fan-out generations and make
     late results audit-only.
-15. A host-owned, HMAC-signed certification record, not a delivery provider's self-attestation,
-    authorizes stable delivery-key deduplication before the outbox will claim or send an entry.
-    Certification binds adapter identity, version, and capability; revocation is durable and final.
-    Provider receipts are secret-filtered before persistence.
+15. A controller-owned host registry resolves delivery handles to implementations; dispatch never
+    accepts an arbitrary provider object. A host-signed certification binds adapter identity,
+    implementation digest, redacted configuration digest, key version, and a monotonic generation.
+    Revocation survives restart and fences replayed older certified rows. Provider receipts are
+    secret-filtered before persistence.
 16. The built-in memory adapter truthfully guarantees primary tombstone plus scope-epoch fencing.
     Cache/index/embedding invalidation requires a concrete adapter and must not be reported until
     such an adapter provides verified postconditions.
-17. Evidence source identities are converted at the durable admission boundary to branded keyed
-    opaque references. Admission records a canonical predicate/value digest; a material response
-    claim must exactly match that digest. Legacy evidence rows receive an impossible plan-version
-    sentinel and therefore cannot satisfy a current plan until freshly re-admitted.
+17. Evidence admission is host-signed over the complete canonical record, including task/scope,
+    objective and plan revisions, opaque source identity, timestamp, payload and semantic digests.
+    SQLite rejects unsigned, tampered, wrong-key, or legacy admission envelopes. A material response
+    claim must exactly match the admitted predicate/value digest. Legacy rows receive impossible
+    plan and signature sentinels and therefore cannot satisfy current work until freshly admitted.
 18. A response may contain only fixed non-material framing plus deterministic rendering of durable
     material claims bound to the current objective and plan and supported by admitted evidence.
 19. Mandatory governor metrics are calculated from append-only deterministic scenario execution
@@ -80,7 +83,8 @@ can remain unused indefinitely while the feature flag is off.
 ## Rollout prerequisites
 
 The governor remains disabled by default. A future production rollout must first provide host-held
-`OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY` and `OPENCLAW_GOVERNOR_DELIVERY_CERTIFICATION_KEY`,
-certify each selected channel adapter through durable host configuration, and install concrete
+`OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY`, `OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY`,
+`OPENCLAW_GOVERNOR_APPROVAL_KEY`, and `OPENCLAW_GOVERNOR_DELIVERY_CERTIFICATION_KEY`, configure
+the host approver allowlist, register/certify each selected channel adapter, and install concrete
 cache/index/embedding invalidation adapters for every governed memory backend. Until then, this is
 a synthetic-testable control plane rather than a live message-path replacement.

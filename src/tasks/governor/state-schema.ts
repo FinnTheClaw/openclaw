@@ -39,6 +39,39 @@ function migrateLegacyGovernorColumns(
   addIfMissing("governor_evidence", "claim_predicate", "TEXT NOT NULL DEFAULT ''");
   addIfMissing("governor_evidence", "claim_value_json", "TEXT NOT NULL DEFAULT 'null'");
   addIfMissing("governor_evidence", "semantic_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
+  // Legacy evidence is deliberately unsigned and must fail admission verification.
+  addIfMissing("governor_evidence", "admission_key_id", "TEXT NOT NULL DEFAULT 'legacy'");
+  addIfMissing("governor_evidence", "admission_version", "INTEGER NOT NULL DEFAULT 0");
+  addIfMissing("governor_evidence", "admission_signature", "TEXT NOT NULL DEFAULT ''");
+  addIfMissing("governor_approval_grants", "approval_epoch", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing("governor_approval_grants", "authority_key_id", "TEXT NOT NULL DEFAULT 'legacy'");
+  addIfMissing("governor_approval_grants", "authority_version", "INTEGER NOT NULL DEFAULT 0");
+  addIfMissing("governor_approval_grants", "authority_signature", "TEXT NOT NULL DEFAULT ''");
+  addIfMissing(
+    "governor_delivery_certifications",
+    "implementation_digest",
+    "TEXT NOT NULL DEFAULT 'legacy'",
+  );
+  addIfMissing(
+    "governor_delivery_certifications",
+    "config_digest",
+    "TEXT NOT NULL DEFAULT 'legacy'",
+  );
+  addIfMissing(
+    "governor_delivery_certifications",
+    "certification_generation",
+    "INTEGER NOT NULL DEFAULT -1",
+  );
+  addIfMissing(
+    "governor_delivery_certifications",
+    "authority_key_id",
+    "TEXT NOT NULL DEFAULT 'legacy'",
+  );
+  addIfMissing(
+    "governor_delivery_certifications",
+    "authority_version",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
   addIfMissing("governor_outbox", "plan_version", "INTEGER NOT NULL DEFAULT -1");
   addIfMissing("governor_outbox", "execution_generation", "INTEGER NOT NULL DEFAULT -1");
   if (migratedEvidence) {

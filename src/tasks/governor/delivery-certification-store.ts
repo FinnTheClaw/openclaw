@@ -1,11 +1,12 @@
-// Persists only host-signed delivery adapter certifications and revocations.
+// Persists host-signed registration certifications with monotonic generations.
 import type { DatabaseSync } from "node:sqlite";
-import type { Insertable, Selectable } from "kysely";
+import type { Insertable } from "kysely";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
+import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -13,106 +14,128 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import {
-  governorDeliveryIdentityKey,
+  governorDeliveryRegistrationKey,
   GovernorHostDeliveryCertificationAuthority,
-  type GovernorDeliveryAdapterIdentity,
+  type GovernorRegisteredDeliveryAdapter,
 } from "./delivery-certification.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 
-type CertificationDatabase = Pick<OpenClawStateKyselyDatabase, "governor_delivery_certifications">;
+type CertificationDatabase = Pick<
+  OpenClawStateKyselyDatabase,
+  "governor_delivery_certifications" | "governor_delivery_certification_epochs"
+>;
 type CertificationTable = OpenClawStateKyselyDatabase["governor_delivery_certifications"];
-type CertificationRow = Selectable<CertificationTable>;
-
-function dbx(db: DatabaseSync) {
-  return getNodeSqliteKysely<CertificationDatabase>(db);
-}
-
-function bind(row: CertificationRow): Insertable<CertificationTable> {
-  return { ...row };
-}
+const dbx = (db: DatabaseSync) => getNodeSqliteKysely<CertificationDatabase>(db);
 
 export class GovernorDeliveryCertificationStore {
   readonly #options: OpenClawStateDatabaseOptions;
-
+  readonly #authority: GovernorHostDeliveryCertificationAuthority;
   constructor(params: { stateDir?: string } = {}) {
     this.#options = params.stateDir
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
     initializeGovernorStateSchema(this.#options);
+    this.#authority = GovernorHostDeliveryCertificationAuthority.fromEnvironment();
   }
 
-  hostCertify(params: {
-    authority: GovernorHostDeliveryCertificationAuthority;
-    identity: GovernorDeliveryAdapterIdentity;
-    now: number;
-  }): void {
-    this.#write(params, "certified");
+  certifyHostRegistration(adapter: GovernorRegisteredDeliveryAdapter, now: number): void {
+    this.#write(adapter, "certified", now);
+  }
+  revokeHostRegistration(adapter: GovernorRegisteredDeliveryAdapter, now: number): void {
+    this.#write(adapter, "revoked", now);
   }
 
-  hostRevoke(params: {
-    authority: GovernorHostDeliveryCertificationAuthority;
-    identity: GovernorDeliveryAdapterIdentity;
-    now: number;
-  }): void {
-    this.#write(params, "revoked");
-  }
-
-  assertCertified(identity: GovernorDeliveryAdapterIdentity): void {
-    const identityKey = governorDeliveryIdentityKey(identity);
+  assertCertified(adapter: GovernorRegisteredDeliveryAdapter): void {
+    const registrationKey = governorDeliveryRegistrationKey(adapter);
     const { db } = openOpenClawStateDatabase(this.#options);
     const row = executeSqliteQueryTakeFirstSync(
       db,
       dbx(db)
         .selectFrom("governor_delivery_certifications")
         .selectAll()
-        .where("identity_key", "=", identityKey),
+        .where("identity_key", "=", registrationKey),
     );
-    if (!row) {
+    const epoch = executeSqliteQueryTakeFirstSync(
+      db,
+      dbx(db)
+        .selectFrom("governor_delivery_certification_epochs")
+        .selectAll()
+        .where("identity_key", "=", registrationKey),
+    );
+    if (!row || !epoch) {
       throw new Error("Governor delivery adapter is uncertified");
     }
-    const status = row.status === "certified" || row.status === "revoked" ? row.status : "revoked";
-    const authority = GovernorHostDeliveryCertificationAuthority.fromEnvironment();
-    if (!authority.verifies(identityKey, status, row.certification_signature)) {
+    const generation = normalizeSqliteNumber(row.certification_generation) ?? -1;
+    if ((normalizeSqliteNumber(epoch.generation) ?? -1) !== generation) {
+      throw new Error("Governor delivery certification is stale");
+    }
+    const valid = this.#authority.verifies({
+      registrationKey,
+      status: row.status === "certified" ? "certified" : "revoked",
+      generation,
+      keyId: row.authority_key_id,
+      version: normalizeSqliteNumber(row.authority_version) ?? 0,
+      signature: row.certification_signature,
+    });
+    if (!valid) {
       throw new Error("Governor delivery adapter certification signature is invalid");
     }
-    if (status !== "certified" || row.revoked_at !== null) {
+    if (
+      row.status !== "certified" ||
+      row.revoked_at !== null ||
+      row.implementation_digest !== adapter.implementationDigest ||
+      row.config_digest !== adapter.configDigest
+    ) {
       throw new Error("Governor delivery adapter is revoked");
     }
   }
 
   #write(
-    params: {
-      authority: GovernorHostDeliveryCertificationAuthority;
-      identity: GovernorDeliveryAdapterIdentity;
-      now: number;
-    },
+    adapter: GovernorRegisteredDeliveryAdapter,
     status: "certified" | "revoked",
+    now: number,
   ): void {
-    const identityKey = governorDeliveryIdentityKey(params.identity);
+    const registrationKey = governorDeliveryRegistrationKey(adapter);
     runOpenClawStateWriteTransaction(({ db }) => {
-      const existing = executeSqliteQueryTakeFirstSync(
+      const old = executeSqliteQueryTakeFirstSync(
         db,
         dbx(db)
-          .selectFrom("governor_delivery_certifications")
-          .select(["revoked_at"])
-          .where("identity_key", "=", identityKey),
+          .selectFrom("governor_delivery_certification_epochs")
+          .selectAll()
+          .where("identity_key", "=", registrationKey),
       );
-      if (status === "certified" && existing && existing.revoked_at !== null) {
-        throw new Error("Governor delivery adapter revocation is final for this identity");
-      }
-      const row: CertificationRow = {
-        identity_key: identityKey,
+      const generation = (normalizeSqliteNumber(old?.generation) ?? -1) + 1;
+      executeSqliteQuerySync(
+        db,
+        dbx(db)
+          .insertInto("governor_delivery_certification_epochs")
+          .values({ identity_key: registrationKey, generation, updated_at: now })
+          .onConflict((c) => c.column("identity_key").doUpdateSet({ generation, updated_at: now })),
+      );
+      const row: Insertable<CertificationTable> = {
+        identity_key: registrationKey,
         status,
-        certification_signature: params.authority.sign(identityKey, status),
-        created_at: params.now,
-        revoked_at: status === "revoked" ? params.now : null,
+        implementation_digest: adapter.implementationDigest,
+        config_digest: adapter.configDigest,
+        certification_generation: generation,
+        authority_key_id: this.#authority.keyId,
+        authority_version: 1,
+        certification_signature: this.#authority.sign({
+          registrationKey,
+          status,
+          generation,
+          keyId: this.#authority.keyId,
+          version: 1,
+        }),
+        created_at: now,
+        revoked_at: status === "revoked" ? now : null,
       };
       executeSqliteQuerySync(
         db,
         dbx(db)
           .insertInto("governor_delivery_certifications")
-          .values(bind(row))
-          .onConflict((conflict) => conflict.column("identity_key").doUpdateSet(bind(row))),
+          .values(row)
+          .onConflict((c) => c.column("identity_key").doUpdateSet(row)),
       );
     }, this.#options);
   }

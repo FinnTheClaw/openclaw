@@ -21,7 +21,7 @@ import { bindGovernorCheckpoint, GovernorCheckpointStore } from "./checkpoint-st
 import { assertValidGovernorContract } from "./contracts.js";
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
 import { createGovernorEventRecord, type GovernorEventRecord } from "./events.js";
-import type { GovernorEvidenceRecord } from "./evidence.js";
+import { GovernorEvidenceAdmissionAuthority, type GovernorEvidenceRecord } from "./evidence.js";
 import {
   bindGovernorOutbox,
   GovernorOutboxStore,
@@ -79,6 +79,7 @@ export class GovernorSqliteStore {
   readonly deliveryCertifications: GovernorDeliveryCertificationStore;
   readonly checkpoints: GovernorCheckpointStore;
   readonly outbox: GovernorOutboxStore;
+  readonly #evidenceAuthority: GovernorEvidenceAdmissionAuthority;
 
   constructor(params: { stateDir?: string } = {}) {
     assertGovernorIdentityHmacKeyAvailable();
@@ -86,6 +87,7 @@ export class GovernorSqliteStore {
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
     initializeGovernorStateSchema(this.#options);
+    this.#evidenceAuthority = GovernorEvidenceAdmissionAuthority.fromEnvironment();
     this.actionIntents = new GovernorActionIntentStore(params);
     this.approvals = new GovernorApprovalGrantStore(params);
     this.deliveryCertifications = new GovernorDeliveryCertificationStore(params);
@@ -395,7 +397,7 @@ export class GovernorSqliteStore {
           db,
           dbx
             .insertInto("governor_evidence")
-            .values(bindEvidence(evidence))
+            .values(bindEvidence(evidence, this.#evidenceAuthority))
             .onConflict((conflict) => conflict.column("evidence_id").doNothing()),
         );
       }
@@ -483,7 +485,7 @@ export class GovernorSqliteStore {
         .where("task_id", "=", taskId)
         .orderBy("created_at", "asc")
         .orderBy("evidence_id", "asc"),
-    ).rows.map(parseEvidenceRow);
+    ).rows.map((row) => parseEvidenceRow(row, this.#evidenceAuthority));
   }
 
   listUnfinishedFanoutJobIds(task: GovernorTaskProjection): string[] {

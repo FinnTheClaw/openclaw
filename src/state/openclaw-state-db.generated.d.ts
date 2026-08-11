@@ -618,7 +618,17 @@ export interface GovernorActionIntents {
   updated_at: number;
 }
 
+export interface GovernorApprovalEpochs {
+  epoch: number;
+  scope_key: string;
+  updated_at: number;
+}
+
 export interface GovernorApprovalGrants {
+  approval_epoch: number;
+  authority_key_id: string;
+  authority_signature: string;
+  authority_version: number;
   canonical_target: string;
   capability: string;
   capability_version: string;
@@ -643,10 +653,21 @@ export interface GovernorCheckpoints {
   task_version: number;
 }
 
+export interface GovernorDeliveryCertificationEpochs {
+  generation: number;
+  identity_key: string;
+  updated_at: number;
+}
+
 export interface GovernorDeliveryCertifications {
+  authority_key_id: string;
+  authority_version: number;
+  certification_generation: number;
   certification_signature: string;
+  config_digest: string;
   created_at: number;
   identity_key: string;
+  implementation_digest: string;
   revoked_at: number | null;
   status: string;
 }
@@ -690,6 +711,9 @@ export interface GovernorEvents {
 
 export interface GovernorEvidence {
   admissibility: string;
+  admission_key_id: string;
+  admission_signature: string;
+  admission_version: number;
   claim_predicate: string;
   claim_value_json: string;
   created_at: number;
@@ -1328,8 +1352,10 @@ export interface DB {
   gateway_restart_intent: GatewayRestartIntent;
   gateway_restart_sentinel: GatewayRestartSentinel;
   governor_action_intents: GovernorActionIntents;
+  governor_approval_epochs: GovernorApprovalEpochs;
   governor_approval_grants: GovernorApprovalGrants;
   governor_checkpoints: GovernorCheckpoints;
+  governor_delivery_certification_epochs: GovernorDeliveryCertificationEpochs;
   governor_delivery_certifications: GovernorDeliveryCertifications;
   governor_effects: GovernorEffects;
   governor_events: GovernorEvents;

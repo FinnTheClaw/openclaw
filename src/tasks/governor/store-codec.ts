@@ -6,7 +6,7 @@ import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorEventRecord } from "./events.js";
-import { assertOpaqueEvidenceSourceRef, type GovernorEvidenceRecord } from "./evidence.js";
+import { GovernorEvidenceAdmissionAuthority, type GovernorEvidenceRecord } from "./evidence.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import type { GovernorEventId, GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
@@ -144,8 +144,11 @@ export function parseEffectRow(row: GovernorEffectRow): GovernorEffectRecord {
   return effect;
 }
 
-export function bindEvidence(evidence: GovernorEvidenceRecord): Insertable<GovernorEvidenceRow> {
-  const sourceIdentity = assertOpaqueEvidenceSourceRef(evidence.sourceIdentity);
+export function bindEvidence(
+  evidence: GovernorEvidenceRecord,
+  authority = GovernorEvidenceAdmissionAuthority.fromEnvironment(),
+): Insertable<GovernorEvidenceRow> {
+  authority.assertVerified(evidence);
   if (
     governorDigest({ predicate: evidence.predicate, value: evidence.value }) !==
     evidence.semanticDigest
@@ -157,7 +160,7 @@ export function bindEvidence(evidence: GovernorEvidenceRecord): Insertable<Gover
     task_id: evidence.taskId,
     criterion_id: evidence.criterionId,
     source_kind: evidence.sourceKind,
-    source_identity: sourceIdentity,
+    source_identity: evidence.sourceIdentity,
     task_version: evidence.taskVersion,
     objective_revision: evidence.objectiveRevision,
     plan_version: evidence.planVersion,
@@ -171,17 +174,23 @@ export function bindEvidence(evidence: GovernorEvidenceRecord): Insertable<Gover
     admissibility: evidence.admissibility,
     invalidated_at: evidence.invalidatedAt ?? null,
     created_at: evidence.createdAt,
+    admission_key_id: evidence.admissionKeyId,
+    admission_version: evidence.admissionVersion,
+    admission_signature: evidence.admissionSignature,
   };
 }
 
-export function parseEvidenceRow(row: GovernorEvidenceRow): GovernorEvidenceRecord {
+export function parseEvidenceRow(
+  row: GovernorEvidenceRow,
+  authority: GovernorEvidenceAdmissionAuthority,
+): GovernorEvidenceRecord {
   const value = parseJson(row.claim_value_json, "evidence claim value") as GovernorJsonValue;
   const evidence: GovernorEvidenceRecord = {
     evidenceId: row.evidence_id,
     taskId: row.task_id as GovernorTaskId,
     criterionId: row.criterion_id,
     sourceKind: row.source_kind as GovernorEvidenceRecord["sourceKind"],
-    sourceIdentity: assertOpaqueEvidenceSourceRef(row.source_identity),
+    sourceIdentity: row.source_identity as GovernorEvidenceRecord["sourceIdentity"],
     taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
     objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
     planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
@@ -197,6 +206,9 @@ export function parseEvidenceRow(row: GovernorEvidenceRow): GovernorEvidenceReco
       ? {}
       : { invalidatedAt: normalizeSqliteNumber(row.invalidated_at) ?? 0 }),
     createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
+    admissionKeyId: row.admission_key_id,
+    admissionVersion: normalizeSqliteNumber(row.admission_version) ?? 0,
+    admissionSignature: row.admission_signature,
   };
   if (
     governorDigest({ predicate: evidence.predicate, value: evidence.value }) !==
@@ -206,6 +218,7 @@ export function parseEvidenceRow(row: GovernorEvidenceRow): GovernorEvidenceReco
       `Persisted governor evidence semantic digest mismatch for ${evidence.evidenceId}`,
     );
   }
+  authority.assertVerified(evidence);
   return evidence;
 }
 

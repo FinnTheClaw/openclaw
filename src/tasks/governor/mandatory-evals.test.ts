@@ -4,10 +4,7 @@ import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
-import {
-  GovernorHostDeliveryCertificationAuthority,
-  type GovernorDeliveryAdapter,
-} from "./delivery-certification.js";
+import type { GovernorDeliveryAdapter } from "./delivery-certification.js";
 import {
   assertGovernorMandatoryEvalGates,
   summarizeGovernorEvals,
@@ -197,9 +194,10 @@ describe("behavior governor mandatory synthetic evals", () => {
         let controller = new GovernorController(store, registry());
         const mutationAdapter = new ObservedMutationAdapter();
         const deliveryAdapter = new ObservedDeliveryAdapter();
-        store.deliveryCertifications.hostCertify({
-          authority: GovernorHostDeliveryCertificationAuthority.fromEnvironment(),
+        let deliveryHandle = controller.registerHostDeliveryAdapter({
           identity: deliveryAdapter.identity,
+          adapter: deliveryAdapter,
+          config: { fixture: "mandatory-eval" },
           now: 1,
         });
         const samples: GovernorEvalSample[] = [];
@@ -210,6 +208,12 @@ describe("behavior governor mandatory synthetic evals", () => {
           closeOpenClawStateDatabase();
           store = new GovernorSqliteStore({ stateDir: state.stateDir });
           controller = new GovernorController(store, registry());
+          deliveryHandle = controller.registerHostDeliveryAdapter({
+            identity: deliveryAdapter.identity,
+            adapter: deliveryAdapter,
+            config: { fixture: "mandatory-eval" },
+            now: 1,
+          });
         };
 
         try {
@@ -399,7 +403,7 @@ describe("behavior governor mandatory synthetic evals", () => {
               expectedLeaseEpoch: completion.task.leaseEpoch,
               workerId: `new-delivery-${index}`,
               leaseDurationMs: 10,
-              adapter: deliveryAdapter,
+              adapterHandle: deliveryHandle,
               now: base + 171,
             });
             const mutationAttempts = mutationAdapter.attempts.filter(

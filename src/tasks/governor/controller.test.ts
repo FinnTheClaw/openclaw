@@ -4,7 +4,6 @@ import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
-import { GovernorHostDeliveryCertificationAuthority } from "./delivery-certification.js";
 import { GovernorSqliteStore } from "./store.js";
 import {
   createGovernorEffectId,
@@ -298,7 +297,6 @@ describe("durable behavior governor", () => {
       }
       const unsupportedSend = vi.fn();
       const adapter = {
-        identity: { adapterId: "synthetic", version: "1", capability: "message.send" },
         send,
       };
       await expect(
@@ -307,15 +305,16 @@ describe("durable behavior governor", () => {
           effectId,
           expectedLeaseEpoch: completed.task.leaseEpoch,
           workerId: "unsupported-delivery-worker",
-          adapter: { ...adapter, send: unsupportedSend },
+          adapterHandle: "unregistered",
           now: 149,
         }),
-      ).rejects.toThrow(/uncertified/);
+      ).rejects.toThrow(/host-registered/);
       expect(unsupportedSend).not.toHaveBeenCalled();
       expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "pending" });
-      restartedStore.deliveryCertifications.hostCertify({
-        authority: GovernorHostDeliveryCertificationAuthority.fromEnvironment(),
-        identity: adapter.identity,
+      const adapterHandle = restarted.registerHostDeliveryAdapter({
+        identity: { adapterId: "synthetic", version: "1", capability: "message.send" },
+        adapter,
+        config: { fixture: "controller" },
         now: 150,
       });
       await restarted.dispatchOutbox({
@@ -323,7 +322,7 @@ describe("durable behavior governor", () => {
         effectId,
         expectedLeaseEpoch: completed.task.leaseEpoch,
         workerId: "delivery-worker-1",
-        adapter,
+        adapterHandle,
         now: 150,
       });
       const replay = await restarted.dispatchOutbox({
@@ -331,7 +330,7 @@ describe("durable behavior governor", () => {
         effectId,
         expectedLeaseEpoch: completed.task.leaseEpoch,
         workerId: "delivery-worker-2",
-        adapter,
+        adapterHandle,
         now: 151,
       });
       expect(replay.kind).toBe("already_sent");
