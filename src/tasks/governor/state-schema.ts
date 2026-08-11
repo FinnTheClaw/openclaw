@@ -36,6 +36,9 @@ function migrateLegacyGovernorColumns(
     "plan_version",
     "INTEGER NOT NULL DEFAULT -1",
   );
+  addIfMissing("governor_evidence", "claim_predicate", "TEXT NOT NULL DEFAULT ''");
+  addIfMissing("governor_evidence", "claim_value_json", "TEXT NOT NULL DEFAULT 'null'");
+  addIfMissing("governor_evidence", "semantic_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
   addIfMissing("governor_outbox", "plan_version", "INTEGER NOT NULL DEFAULT -1");
   addIfMissing("governor_outbox", "execution_generation", "INTEGER NOT NULL DEFAULT -1");
   if (migratedEvidence) {

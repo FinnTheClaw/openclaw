@@ -1,11 +1,13 @@
 // Admits evidence-linked response assertions before a governed completion can use them.
+import { canonicalGovernorJson, governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorEvidenceRecord } from "./evidence.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorTaskClaim, GovernorTaskProjection } from "./types.js";
 
 export type GovernorMaterialClaimInput = {
   claimId: string;
-  text: string;
+  predicate: string;
+  value: GovernorJsonValue;
   evidenceIds: readonly string[];
 };
 
@@ -50,15 +52,21 @@ export function createGovernorMaterialClaims(params: {
       .map((item) => [item.evidenceId, item]),
   );
   const claimedIds = new Set(params.task.claims.map((claim) => claim.claimId));
+  if (params.task.conditions.contradictions.some((item) => item.severity === "high")) {
+    throw new Error("Governor material claims cannot bypass a current high-severity contradiction");
+  }
   const output: GovernorTaskClaim[] = [];
   for (const input of params.claims) {
     const safe = assertGovernorBoundarySafe("session", {
       claimId: input.claimId,
-      text: input.text,
+      predicate: input.predicate,
+      value: input.value,
       evidenceIds: [...input.evidenceIds],
     }) as unknown as GovernorMaterialClaimInput;
-    if (!safe.claimId.trim() || !safe.text.trim() || safe.evidenceIds.length === 0) {
-      throw new Error("Governor material claims require an id, text, and current evidence");
+    if (!safe.claimId.trim() || !safe.predicate.trim() || safe.evidenceIds.length === 0) {
+      throw new Error(
+        "Governor material claims require an id, predicate, value, and current evidence",
+      );
     }
     if (claimedIds.has(safe.claimId)) {
       throw new Error(`Governor material claim already exists: ${safe.claimId}`);
@@ -67,11 +75,20 @@ export function createGovernorMaterialClaims(params: {
     if (evidence.some((item) => !item)) {
       throw new Error(`Governor material claim has unsupported evidence: ${safe.claimId}`);
     }
+    const semanticDigest = governorDigest({ predicate: safe.predicate, value: safe.value });
+    if (evidence.some((item) => item!.semanticDigest !== semanticDigest)) {
+      throw new Error(
+        `Governor material claim has semantically unrelated evidence: ${safe.claimId}`,
+      );
+    }
     claimedIds.add(safe.claimId);
     output.push({
       claimId: safe.claimId,
       kind: "material",
-      text: safe.text,
+      predicate: safe.predicate,
+      value: safe.value,
+      semanticDigest,
+      text: `Verified ${safe.predicate}: ${canonicalGovernorJson(safe.value)}`,
       evidenceIds: [...safe.evidenceIds],
       evidenceDigest: evidence
         .map((item) => item!.evidenceDigest)
@@ -109,5 +126,15 @@ export function renderGovernorResponse(params: {
   }
   const prefix =
     safe.framing === "result" ? "Verified result:" : safe.framing === "summary" ? "Summary:" : "";
-  return [prefix, ...selected.map((claim) => claim!.text!)].filter(Boolean).join("\n");
+  return [
+    prefix,
+    ...selected.map((claim) => {
+      if (!claim!.predicate || claim!.value === undefined) {
+        throw new Error("Governor response material claim is missing structured semantics");
+      }
+      return `Verified ${claim!.predicate}: ${canonicalGovernorJson(claim!.value)}`;
+    }),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

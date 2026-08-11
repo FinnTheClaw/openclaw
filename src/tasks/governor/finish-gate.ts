@@ -110,7 +110,18 @@ export function evaluateGovernorFinish(params: {
   );
   const unsupportedMaterialClaimIds = params.response.materialClaimIds.filter((claimId) => {
     const claim = materialClaims.get(claimId);
-    return !claim || !claim.evidenceIds?.every((evidenceId) => currentEvidenceIds.has(evidenceId));
+    return (
+      !claim ||
+      !claim.predicate ||
+      claim.value === undefined ||
+      !claim.semanticDigest ||
+      !claim.evidenceIds?.every((evidenceId) => currentEvidenceIds.has(evidenceId)) ||
+      !claim.evidenceIds?.every(
+        (evidenceId) =>
+          evidence.find((item) => item.evidenceId === evidenceId)?.semanticDigest ===
+          claim.semanticDigest,
+      )
+    );
   });
   if (
     unmetCriteria.length > 0 ||

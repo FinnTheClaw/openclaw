@@ -4,9 +4,9 @@ import type { Insertable, Selectable } from "kysely";
 import { getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
-import type { GovernorJsonValue } from "./canonical-json.js";
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorEventRecord } from "./events.js";
-import type { GovernorEvidenceRecord } from "./evidence.js";
+import { assertOpaqueEvidenceSourceRef, type GovernorEvidenceRecord } from "./evidence.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import type { GovernorEventId, GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
@@ -145,18 +145,28 @@ export function parseEffectRow(row: GovernorEffectRow): GovernorEffectRecord {
 }
 
 export function bindEvidence(evidence: GovernorEvidenceRecord): Insertable<GovernorEvidenceRow> {
+  const sourceIdentity = assertOpaqueEvidenceSourceRef(evidence.sourceIdentity);
+  if (
+    governorDigest({ predicate: evidence.predicate, value: evidence.value }) !==
+    evidence.semanticDigest
+  ) {
+    throw new Error("Governor evidence semantic digest mismatch");
+  }
   return {
     evidence_id: evidence.evidenceId,
     task_id: evidence.taskId,
     criterion_id: evidence.criterionId,
     source_kind: evidence.sourceKind,
-    source_identity: evidence.sourceIdentity,
+    source_identity: sourceIdentity,
     task_version: evidence.taskVersion,
     objective_revision: evidence.objectiveRevision,
     plan_version: evidence.planVersion,
     scope_key: evidence.scopeKey,
     observed_at: evidence.observedAt,
     evidence_digest: evidence.evidenceDigest,
+    claim_predicate: evidence.predicate,
+    claim_value_json: JSON.stringify(evidence.value),
+    semantic_digest: evidence.semanticDigest,
     payload_json: JSON.stringify(evidence.payload),
     admissibility: evidence.admissibility,
     invalidated_at: evidence.invalidatedAt ?? null,
@@ -165,12 +175,13 @@ export function bindEvidence(evidence: GovernorEvidenceRecord): Insertable<Gover
 }
 
 export function parseEvidenceRow(row: GovernorEvidenceRow): GovernorEvidenceRecord {
-  return {
+  const value = parseJson(row.claim_value_json, "evidence claim value") as GovernorJsonValue;
+  const evidence: GovernorEvidenceRecord = {
     evidenceId: row.evidence_id,
     taskId: row.task_id as GovernorTaskId,
     criterionId: row.criterion_id,
     sourceKind: row.source_kind as GovernorEvidenceRecord["sourceKind"],
-    sourceIdentity: row.source_identity,
+    sourceIdentity: assertOpaqueEvidenceSourceRef(row.source_identity),
     taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
     objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
     planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
@@ -178,12 +189,24 @@ export function parseEvidenceRow(row: GovernorEvidenceRow): GovernorEvidenceReco
     observedAt: normalizeSqliteNumber(row.observed_at) ?? 0,
     payload: parseJson(row.payload_json, "evidence payload") as GovernorJsonValue,
     evidenceDigest: row.evidence_digest,
+    predicate: row.claim_predicate,
+    value,
+    semanticDigest: row.semantic_digest,
     admissibility: "admitted",
     ...(row.invalidated_at == null
       ? {}
       : { invalidatedAt: normalizeSqliteNumber(row.invalidated_at) ?? 0 }),
     createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
   };
+  if (
+    governorDigest({ predicate: evidence.predicate, value: evidence.value }) !==
+    evidence.semanticDigest
+  ) {
+    throw new Error(
+      `Persisted governor evidence semantic digest mismatch for ${evidence.evidenceId}`,
+    );
+  }
+  return evidence;
 }
 
 export function governorDb(db: DatabaseSync) {

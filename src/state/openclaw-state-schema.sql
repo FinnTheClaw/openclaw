@@ -1432,6 +1432,9 @@ CREATE TABLE IF NOT EXISTS governor_evidence (
   scope_key TEXT NOT NULL,
   observed_at INTEGER NOT NULL,
   evidence_digest TEXT NOT NULL,
+  claim_predicate TEXT NOT NULL,
+  claim_value_json TEXT NOT NULL,
+  semantic_digest TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   admissibility TEXT NOT NULL,
   invalidated_at INTEGER,
@@ -1585,6 +1588,14 @@ CREATE TABLE IF NOT EXISTS governor_approval_grants (
 
 CREATE INDEX IF NOT EXISTS idx_governor_approval_grants_task
   ON governor_approval_grants(task_id, objective_revision, grant_id);
+
+CREATE TABLE IF NOT EXISTS governor_delivery_certifications (
+  identity_key TEXT NOT NULL PRIMARY KEY,
+  status TEXT NOT NULL,
+  certification_signature TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
 
 -- GOVERNOR_SCHEMA_END
 CREATE TABLE IF NOT EXISTS migration_runs (

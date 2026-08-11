@@ -40,10 +40,10 @@ function controller(store: GovernorSqliteStore): GovernorController {
   );
 }
 
-function verifiedTask(controller: GovernorController, index: number) {
+function verifiedTask(governor: GovernorController, index: number) {
   const taskScope = scope(index);
   const base = 100 + index * 100;
-  const taskId = controller.ingest({
+  const taskId = governor.ingest({
     sourceMessageId: `material-message-${index}`,
     sourceSequence: 1,
     scope: taskScope,
@@ -58,11 +58,11 @@ function verifiedTask(controller: GovernorController, index: number) {
     },
     now: base,
   }).task.taskId;
-  controller.preparePlan({ taskId, plan, now: base + 1 });
-  controller.startExecution(taskId, base + 5);
-  const outcome = controller.recordToolOutcome({
+  governor.preparePlan({ taskId, plan, now: base + 1 });
+  governor.startExecution(taskId, base + 5);
+  const outcome = governor.recordToolOutcome({
     taskId,
-    executionFence: controller.captureExecutionFence(taskId),
+    executionFence: governor.captureExecutionFence(taskId),
     proposal: {
       effectId: createGovernorEffectId("material-evidence"),
       criterionId: "verified",
@@ -89,7 +89,7 @@ function verifiedTask(controller: GovernorController, index: number) {
   if (!outcome.accepted || !outcome.evidence) {
     throw new Error("expected current evidence");
   }
-  controller.beginVerification(taskId, base + 7);
+  governor.beginVerification(taskId, base + 7);
   return { taskId, evidenceId: outcome.evidence.evidenceId, scope: taskScope, base };
 }
 
@@ -108,7 +108,12 @@ describe("governor material response claims", () => {
             governed.admitMaterialClaims({
               taskId,
               claims: [
-                { claimId: "prose-only", text: "I think this is complete", evidenceIds: [] },
+                {
+                  claimId: "prose-only",
+                  predicate: "criterion:verified",
+                  value: { state: "verified" },
+                  evidenceIds: [],
+                },
               ],
               now: 108,
             }),
@@ -118,7 +123,8 @@ describe("governor material response claims", () => {
             claims: [
               {
                 claimId: "old-material",
-                text: "The old synthetic state is verified.",
+                predicate: "criterion:verified",
+                value: { state: "verified" },
                 evidenceIds: [evidenceId],
               },
             ],
@@ -164,7 +170,8 @@ describe("governor material response claims", () => {
             claims: [
               {
                 claimId: "verified-state",
-                text: "The synthetic state is verified.",
+                predicate: "criterion:verified",
+                value: { state: "verified" },
                 evidenceIds: [fresh.evidenceId],
               },
             ],
@@ -178,9 +185,69 @@ describe("governor material response claims", () => {
           expect(completed.completed).toBe(true);
           const payload = store.outbox.list(fresh.taskId)[0]?.payload;
           expect(payload).toMatchObject({
-            text: "Verified result:\nThe synthetic state is verified.",
+            text: 'Verified result:\nVerified criterion:verified: {"state":"verified"}',
           });
           expect(evidenceId).toMatch(/^evidence_/);
+        } finally {
+          closeOpenClawStateDatabase();
+        }
+      },
+    );
+  });
+
+  it("rejects unrelated values, predicates, and contradicted material claims", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-governor-material-negative-" },
+      async (state) => {
+        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const governed = controller(store);
+        try {
+          const verified = verifiedTask(governed, 9);
+          for (const claim of [
+            {
+              claimId: "wrong-value",
+              predicate: "criterion:verified",
+              value: { state: "different" },
+            },
+            {
+              claimId: "wrong-predicate",
+              predicate: "criterion:unrelated",
+              value: { state: "verified" },
+            },
+          ]) {
+            expect(() =>
+              governed.admitMaterialClaims({
+                taskId: verified.taskId,
+                claims: [{ ...claim, evidenceIds: [verified.evidenceId] }],
+                now: verified.base + 8,
+              }),
+            ).toThrow(/semantically unrelated/u);
+          }
+          governed.recordContradiction({
+            taskId: verified.taskId,
+            contradiction: {
+              contradictionId: "current-conflict",
+              detail: "Synthetic contradiction",
+              severity: "high",
+              sourceRef: "fixture-contradiction",
+              observedAt: verified.base + 9,
+            },
+            now: verified.base + 9,
+          });
+          expect(() =>
+            governed.admitMaterialClaims({
+              taskId: verified.taskId,
+              claims: [
+                {
+                  claimId: "blocked-by-contradiction",
+                  predicate: "criterion:verified",
+                  value: { state: "verified" },
+                  evidenceIds: [verified.evidenceId],
+                },
+              ],
+              now: verified.base + 10,
+            }),
+          ).toThrow(/high-severity contradiction/u);
         } finally {
           closeOpenClawStateDatabase();
         }

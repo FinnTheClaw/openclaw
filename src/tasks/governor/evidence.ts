@@ -8,6 +8,15 @@ import {
   type GovernorTaskProjection,
 } from "./types.js";
 
+declare const governorOpaqueEvidenceSourceRefBrand: unique symbol;
+
+/** A keyed, non-reversible reference that is safe to retain with evidence. */
+export type OpaqueEvidenceSourceRef = string & {
+  readonly [governorOpaqueEvidenceSourceRefBrand]: true;
+};
+
+const OPAQUE_EVIDENCE_SOURCE_REF = /^oesr_[a-f0-9]{64}$/u;
+
 export type GovernorEvidenceSourceKind =
   | "tool"
   | "structured_external"
@@ -29,13 +38,54 @@ export type GovernorEvidenceCandidate = {
   observedAt: number;
   payload: GovernorJsonValue;
   evidenceDigest: string;
+  predicate?: string;
+  value?: GovernorJsonValue;
 };
 
-export type GovernorEvidenceRecord = GovernorEvidenceCandidate & {
+export type GovernorEvidenceRecord = Omit<
+  GovernorEvidenceCandidate,
+  "sourceIdentity" | "predicate" | "value"
+> & {
+  sourceIdentity: OpaqueEvidenceSourceRef;
+  predicate: string;
+  value: GovernorJsonValue;
+  semanticDigest: string;
   admissibility: "admitted";
   createdAt: number;
   invalidatedAt?: number;
 };
+
+export function isOpaqueEvidenceSourceRef(value: string): value is OpaqueEvidenceSourceRef {
+  return OPAQUE_EVIDENCE_SOURCE_REF.test(value);
+}
+
+export function assertOpaqueEvidenceSourceRef(value: string): OpaqueEvidenceSourceRef {
+  if (!isOpaqueEvidenceSourceRef(value)) {
+    throw new Error("Governor evidence source identity must be an opaque keyed reference");
+  }
+  return value;
+}
+
+function opaqueEvidenceSourceRef(
+  sourceKind: GovernorEvidenceSourceKind,
+  sourceIdentity: string,
+): OpaqueEvidenceSourceRef {
+  return `oesr_${opaqueGovernorReference(`evidence-source:${sourceKind}`, sourceIdentity)}` as OpaqueEvidenceSourceRef;
+}
+
+function semanticEvidence(params: {
+  criterionId: string;
+  predicate?: string;
+  value?: GovernorJsonValue;
+  payload: GovernorJsonValue;
+}): { predicate: string; value: GovernorJsonValue; semanticDigest: string } {
+  const predicate = (params.predicate ?? `criterion:${params.criterionId}`).trim();
+  if (!predicate) {
+    throw new Error("Governor evidence predicate must not be empty");
+  }
+  const value = params.value ?? params.payload;
+  return { predicate, value, semanticDigest: governorDigest({ predicate, value }) };
+}
 
 export type GovernorEvidenceAdmission =
   | { admitted: true; evidence: GovernorEvidenceRecord }
@@ -59,10 +109,6 @@ export function createGovernorEvidenceCandidate(
   ) as unknown as Omit<GovernorEvidenceCandidate, "evidenceDigest">;
   return {
     ...safe,
-    sourceIdentity: opaqueGovernorReference(
-      `evidence-source:${safe.sourceKind}`,
-      safe.sourceIdentity,
-    ),
     evidenceDigest: governorDigest(safe.payload),
   };
 }
@@ -104,6 +150,11 @@ export function admitGovernorEvidence(params: {
     admitted: true,
     evidence: {
       ...structuredClone(params.candidate),
+      sourceIdentity: opaqueEvidenceSourceRef(
+        params.candidate.sourceKind,
+        params.candidate.sourceIdentity,
+      ),
+      ...semanticEvidence(params.candidate),
       admissibility: "admitted",
       createdAt: params.now,
     },

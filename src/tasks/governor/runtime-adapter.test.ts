@@ -64,7 +64,8 @@ describe("governor runtime adapter", () => {
           .all();
         expect(before).toEqual([]);
         closeOpenClawStateDatabase();
-        new GovernorSqliteStore({ stateDir: state.stateDir });
+        const enabledStore = new GovernorSqliteStore({ stateDir: state.stateDir });
+        expect(enabledStore).toBeInstanceOf(GovernorSqliteStore);
         const after = openOpenClawStateDatabase({ env })
           .db.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'governor_%'")
           .all();
@@ -83,12 +84,12 @@ describe("governor runtime adapter", () => {
         try {
           const privateScope = {
             ...scope,
-            principalId: "+15550009113",
-            accountId: "account-private-9113",
-            conversationId: "conversation-private-7255",
+            principalId: "principal-fixture-alpha",
+            accountId: "account-fixture-beta",
+            conversationId: "conversation-fixture-gamma",
           };
           const task = controller.ingest({
-            sourceMessageId: "message-private-9113",
+            sourceMessageId: "message-fixture-delta",
             sourceSequence: 1,
             scope: privateScope,
             mode: "FOCUSED",
@@ -101,7 +102,7 @@ describe("governor runtime adapter", () => {
               contradictionId: "private-source",
               detail: "synthetic contradiction",
               severity: "high",
-              sourceRef: "signal://private-7255",
+              sourceRef: "fixture-contradiction-epsilon",
               observedAt: 101,
             },
             now: 101,
@@ -110,7 +111,12 @@ describe("governor runtime adapter", () => {
             task: store.loadTask(task.taskId),
             events: store.listEvents(task.taskId),
           });
-          for (const privateValue of ["+15550009113", "9113", "7255", "message-private"]) {
+          for (const privateValue of [
+            "principal-fixture-alpha",
+            "account-fixture-beta",
+            "conversation-fixture-gamma",
+            "message-fixture-delta",
+          ]) {
             expect(raw).not.toContain(privateValue);
           }
         } finally {
@@ -179,5 +185,18 @@ describe("governor runtime adapter", () => {
         }
       },
     );
+  });
+
+  it("fails enabled initialization without the host identity key", () => {
+    expect(() =>
+      createGovernorRuntimeAdapterIfEnabled({
+        env: {
+          OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
+          NODE_ENV: "production",
+          OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY: "",
+        },
+        capabilities: [],
+      }),
+    ).toThrow(/IDENTITY_HMAC_KEY is required/u);
   });
 });

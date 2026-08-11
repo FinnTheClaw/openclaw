@@ -6,6 +6,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
+import { GovernorSqliteStore } from "./store.js";
 
 function columns(db: ReturnType<typeof openOpenClawStateDatabase>["db"], table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
@@ -46,24 +47,38 @@ describe("governor schema migration", () => {
         `);
         initializeGovernorStateSchema(options);
         initializeGovernorStateSchema(options);
-        expect(columns(db, "governor_evidence")).toContain("plan_version");
+        expect(columns(db, "governor_evidence")).toEqual(
+          expect.arrayContaining([
+            "plan_version",
+            "claim_predicate",
+            "claim_value_json",
+            "semantic_digest",
+          ]),
+        );
         expect(columns(db, "governor_outbox")).toEqual(
           expect.arrayContaining(["plan_version", "execution_generation"]),
         );
         const evidence = db
-          .prepare("SELECT plan_version FROM governor_evidence WHERE evidence_id = ?")
-          .get("legacy-evidence") as { plan_version: number };
+          .prepare(
+            "SELECT plan_version, semantic_digest FROM governor_evidence WHERE evidence_id = ?",
+          )
+          .get("legacy-evidence") as { plan_version: number; semantic_digest: string };
         const outbox = db
           .prepare(
             "SELECT plan_version, execution_generation FROM governor_outbox WHERE effect_id = ?",
           )
           .get("legacy-effect") as { plan_version: number; execution_generation: number };
-        expect(evidence.plan_version).toBe(-1);
+        expect(evidence).toEqual({ plan_version: -1, semantic_digest: "legacy-unverified" });
         expect(outbox).toEqual({ plan_version: -1, execution_generation: -1 });
         const indexColumns = db
           .prepare("PRAGMA index_info(idx_governor_evidence_task)")
           .all() as Array<{ name: string }>;
         expect(indexColumns.map((row) => row.name)).toContain("plan_version");
+        closeOpenClawStateDatabase();
+        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        expect(() => store.listEvidence("legacy-task" as never)).toThrow(
+          /opaque keyed reference|semantic digest mismatch/u,
+        );
         closeOpenClawStateDatabase();
       },
     );

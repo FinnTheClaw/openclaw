@@ -47,7 +47,7 @@ import {
   type GovernorCommitResult,
   type GovernorIngressResult,
 } from "./store.js";
-import { opaqueGovernorReference } from "./types.js";
+import { assertGovernorIdentityHmacKeyAvailable, opaqueGovernorReference } from "./types.js";
 import type {
   GovernorMode,
   GovernorPlan,
@@ -497,6 +497,7 @@ export function createGovernorControllerIfEnabled(params: {
   if (!isBehaviorGovernorEnabled(params.env)) {
     return null;
   }
+  assertGovernorIdentityHmacKeyAvailable({ ...process.env, ...params.env });
   return new GovernorController(
     new GovernorSqliteStore({ stateDir: params.stateDir }),
     new GovernorCapabilityRegistry(params.capabilities),

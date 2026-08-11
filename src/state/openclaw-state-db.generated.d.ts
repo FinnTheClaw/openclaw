@@ -643,6 +643,14 @@ export interface GovernorCheckpoints {
   task_version: number;
 }
 
+export interface GovernorDeliveryCertifications {
+  certification_signature: string;
+  created_at: number;
+  identity_key: string;
+  revoked_at: number | null;
+  status: string;
+}
+
 export interface GovernorEffects {
   action_fingerprint: string;
   canonical_target: string;
@@ -682,6 +690,8 @@ export interface GovernorEvents {
 
 export interface GovernorEvidence {
   admissibility: string;
+  claim_predicate: string;
+  claim_value_json: string;
   created_at: number;
   criterion_id: string;
   evidence_digest: string;
@@ -692,6 +702,7 @@ export interface GovernorEvidence {
   payload_json: string;
   plan_version: number;
   scope_key: string;
+  semantic_digest: string;
   source_identity: string;
   source_kind: string;
   task_id: string;
@@ -1319,6 +1330,7 @@ export interface DB {
   governor_action_intents: GovernorActionIntents;
   governor_approval_grants: GovernorApprovalGrants;
   governor_checkpoints: GovernorCheckpoints;
+  governor_delivery_certifications: GovernorDeliveryCertifications;
   governor_effects: GovernorEffects;
   governor_events: GovernorEvents;
   governor_evidence: GovernorEvidence;

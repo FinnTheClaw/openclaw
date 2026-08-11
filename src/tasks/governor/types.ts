@@ -1,5 +1,6 @@
 // Defines behavior-governor task contracts, plans, scopes, and lifecycle state.
 import crypto from "node:crypto";
+import type { GovernorJsonValue } from "./canonical-json.js";
 
 declare const governorTaskIdBrand: unique symbol;
 declare const governorEventIdBrand: unique symbol;
@@ -37,19 +38,24 @@ export type GovernorTaskScope = {
   workspaceId: string;
 };
 
-function governorIdentityHmacKey(): string {
-  const configured = process.env.OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY?.trim();
+function governorIdentityHmacKey(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY?.trim();
   if (configured) {
     return configured;
   }
   // Synthetic tests use a stable fixture key; a live enabled governor must be
   // explicitly provisioned with a host-held key before it can persist routing IDs.
-  if (process.env.NODE_ENV === "test") {
+  if (env.NODE_ENV === "test") {
     return "governor-test-identity-hmac-key";
   }
   throw new Error(
     "OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY is required when behavior governor persistence is enabled",
   );
+}
+
+/** Fails enabled persistence before it can create durable state without a host key. */
+export function assertGovernorIdentityHmacKeyAvailable(env: NodeJS.ProcessEnv = process.env): void {
+  governorIdentityHmacKey(env);
 }
 
 export function opaqueGovernorReference(kind: string, value: string): string {
@@ -133,6 +139,9 @@ export type GovernorTaskClaim = {
   admittedAt: number;
   kind?: "criterion" | "material";
   evidenceIds?: readonly string[];
+  predicate?: string;
+  value?: GovernorJsonValue;
+  semanticDigest?: string;
   text?: string;
 };
 
