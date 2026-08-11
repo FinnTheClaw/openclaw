@@ -70,7 +70,7 @@ describe("governor evidence host receipt boundary", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-evidence-" },
       async (state) => {
-        const broker = createGovernorTestBroker();
+        const broker = createGovernorTestBroker({ stateDir: state.stateDir });
         const rawSourceIdentity = "synthetic-evidence-source-identity";
         let store = new GovernorSqliteStore({
           stateDir: state.stateDir,
@@ -127,7 +127,7 @@ describe("governor evidence host receipt boundary", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-evidence-adversarial-" },
       async (state) => {
-        const broker = createGovernorTestBroker();
+        const broker = createGovernorTestBroker({ stateDir: state.stateDir });
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,

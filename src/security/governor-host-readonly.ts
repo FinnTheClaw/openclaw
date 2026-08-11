@@ -19,6 +19,7 @@ import {
   type HostGovernorDeliveryHandle,
   type HostGovernorReceiptId,
 } from "./governor-host-broker.js";
+import { createGovernorHostPersistence } from "./governor-host-persistence.js";
 
 export {
   isTrustedGovernorApprovalResolver,
@@ -36,9 +37,12 @@ export type {
   HostGovernorReceiptId,
 };
 
-export function createGovernorTestHostBindings() {
+export function createGovernorTestHostBindings(params: { stateDir?: string } = {}) {
   if (process.env.NODE_ENV !== "test") {
     throw new Error("Governor test host bindings are unavailable outside tests");
   }
-  return createHostGovernorBroker({ receiptSigningKey: "synthetic-governor-test-receipt-key" });
+  return createHostGovernorBroker({
+    receiptSigningKey: "synthetic-governor-test-receipt-key",
+    persistence: createGovernorHostPersistence(params),
+  });
 }

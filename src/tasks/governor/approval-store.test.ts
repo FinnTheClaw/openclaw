@@ -48,8 +48,13 @@ function registry() {
   ]);
 }
 
-function proposal(effectId: ReturnType<typeof createGovernorEffectId>, approvalGrantId: string) {
+function proposal(
+  taskId: Parameters<GovernorSqliteStore["approvalStatus"]>[0]["taskId"],
+  effectId: ReturnType<typeof createGovernorEffectId>,
+  approvalGrantId: string,
+) {
   return {
+    taskId,
     effectId,
     criterionId: "changed",
     capability: "fixture.mutate",
@@ -71,7 +76,7 @@ describe("governor approval grants", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-approval-" },
       async (state) => {
-        const broker = createGovernorTestBroker();
+        const broker = createGovernorTestBroker({ stateDir: state.stateDir });
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
@@ -98,7 +103,7 @@ describe("governor approval grants", () => {
             controller.admitAction({
               taskId,
               executionFence: controller.captureExecutionFence(taskId),
-              proposal: proposal(createGovernorEffectId("forged"), "forged-grant"),
+              proposal: proposal(task.taskId, createGovernorEffectId("forged"), "forged-grant"),
               progressVector: { step: 1 },
               now: 106,
             }),
@@ -122,7 +127,7 @@ describe("governor approval grants", () => {
             controller.admitAction({
               taskId,
               executionFence: controller.captureExecutionFence(taskId),
-              proposal: proposal(createGovernorEffectId("approved"), grantId),
+              proposal: proposal(task.taskId, createGovernorEffectId("approved"), grantId),
               progressVector: { step: 1 },
               now: 109,
             }).accepted,
@@ -141,7 +146,7 @@ describe("governor approval grants", () => {
             controller.admitAction({
               taskId,
               executionFence: controller.captureExecutionFence(taskId),
-              proposal: proposal(createGovernorEffectId("stale"), grantId),
+              proposal: proposal(task.taskId, createGovernorEffectId("stale"), grantId),
               progressVector: { step: 2 },
               now: 116,
             }),
@@ -153,11 +158,11 @@ describe("governor approval grants", () => {
     );
   });
 
-  it("rejects invented, cross-bound, expired, and revoked host receipts across restart", async () => {
+  it("durably fences revocation before cache use and across restart", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-approval-adversarial-" },
       async (state) => {
-        const broker = createGovernorTestBroker();
+        const broker = createGovernorTestBroker({ stateDir: state.stateDir });
         const makeStore = () =>
           new GovernorSqliteStore({
             stateDir: state.stateDir,
@@ -178,7 +183,9 @@ describe("governor approval grants", () => {
         controller.preparePlan({ taskId, plan, now: 101 });
         controller.startExecution(taskId, 102);
         const task = store.loadTask(taskId);
-        if (!task) throw new Error("expected task");
+        if (!task) {
+          throw new Error("expected task");
+        }
         expect(() =>
           store.admitAuthenticatedApproval({
             task,
@@ -214,6 +221,25 @@ describe("governor approval grants", () => {
           observedAt: 104,
         });
         const grantId = store.admitAuthenticatedApproval({ task, receiptId: valid, now: 104 });
+        // A failed pre-commit revocation cannot be reported as success or
+        // poison the broker cache; the durable grant remains usable.
+        expect(() =>
+          broker.capabilities.submitApprovalRevocation({
+            grantId: "missing-grant",
+            scopeKey: task.scopeKey,
+            observedAt: 105,
+          }),
+        ).toThrow(/not durably applied/);
+        expect(
+          store.approvalStatus(
+            task,
+            proposal(task.taskId, createGovernorEffectId("before-commit-failure"), grantId),
+            105,
+          ),
+        ).toBe("approved");
+        // Host revocation commits its epoch and grant tombstone before it
+        // returns a receipt. A process crash immediately here must not revive
+        // the grant on a fresh broker with an empty in-memory cache.
         const revokeReceipt = broker.capabilities.submitApprovalRevocation({
           grantId,
           scopeKey: task.scopeKey,
@@ -223,11 +249,17 @@ describe("governor approval grants", () => {
           store.applyAuthenticatedApprovalRevocation({ grantId, receiptId: revokeReceipt }),
         ).toBe(true);
         closeOpenClawStateDatabase();
-        const restarted = makeStore();
+        const restartedBroker = createGovernorTestBroker({ stateDir: state.stateDir });
+        const restarted = new GovernorSqliteStore({
+          stateDir: state.stateDir,
+          receiptResolver: restartedBroker.resolver,
+          approvalResolver: restartedBroker.approvalResolver,
+          deliveryResolver: restartedBroker.deliveryResolver,
+        });
         expect(
           restarted.approvalStatus(
             task,
-            proposal(createGovernorEffectId("replayed"), grantId),
+            proposal(task.taskId, createGovernorEffectId("replayed"), grantId),
             106,
           ),
         ).toBe("revoked");

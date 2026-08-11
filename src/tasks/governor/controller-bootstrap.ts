@@ -1,3 +1,8 @@
+import type {
+  GovernorTrustedApprovalResolver,
+  GovernorTrustedDeliveryResolver,
+  GovernorTrustedReceiptResolver,
+} from "../../security/governor-host-readonly.js";
 import {
   GovernorCapabilityRegistry,
   type GovernorCapabilityDefinition,
@@ -12,11 +17,24 @@ export function createGovernorControllerIfEnabled(params: {
   env?: NodeJS.ProcessEnv;
   stateDir?: string;
   capabilities: readonly GovernorCapabilityDefinition[];
+  hostBindings?: {
+    receiptResolver: GovernorTrustedReceiptResolver;
+    approvalResolver: GovernorTrustedApprovalResolver;
+    deliveryResolver: GovernorTrustedDeliveryResolver;
+  };
 }): GovernorController | null {
-  if (!isBehaviorGovernorEnabled(params.env)) return null;
-  assertGovernorIdentityHmacKeyAvailable({ ...process.env, ...params.env });
+  if (!isBehaviorGovernorEnabled(params.env)) {
+    return null;
+  }
+  const env = { ...process.env, ...params.env };
+  assertGovernorIdentityHmacKeyAvailable(env);
+  if (!params.hostBindings) {
+    throw new Error(
+      "Governor host runtime bindings are required when the behavior governor is enabled",
+    );
+  }
   return new GovernorController(
-    new GovernorSqliteStore({ stateDir: params.stateDir }),
+    new GovernorSqliteStore({ stateDir: params.stateDir, ...params.hostBindings }),
     new GovernorCapabilityRegistry(params.capabilities),
   );
 }

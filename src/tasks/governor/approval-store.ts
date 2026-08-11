@@ -117,7 +117,7 @@ export class GovernorApprovalGrantStore {
       db,
       dbx(db).selectFrom("governor_approval_epochs").selectAll().where("scope_key", "=", scopeKey),
     );
-    return normalizeSqliteNumber(row?.epoch) ?? 0;
+    return normalizeSqliteNumber(row?.epoch ?? null) ?? 0;
   }
 
   admitAuthenticatedApproval(params: {
@@ -143,7 +143,7 @@ export class GovernorApprovalGrantStore {
           .selectAll()
           .where("scope_key", "=", params.task.scopeKey),
       );
-      if ((normalizeSqliteNumber(current?.epoch) ?? 0) !== receipt.approvalEpoch) {
+      if ((normalizeSqliteNumber(current?.epoch ?? null) ?? 0) !== receipt.approvalEpoch) {
         throw new Error("Governor approval receipt epoch is stale");
       }
       const grant: GovernorApprovalGrant = {
@@ -175,7 +175,9 @@ export class GovernorApprovalGrantStore {
     proposal: GovernorActionProposal,
     now: number,
   ): GovernorApprovalStatus {
-    if (!proposal.approvalGrantId) return "missing";
+    if (!proposal.approvalGrantId) {
+      return "missing";
+    }
     const { db } = openOpenClawStateDatabase(this.#options);
     const row = executeSqliteQueryTakeFirstSync(
       db,
@@ -184,7 +186,9 @@ export class GovernorApprovalGrantStore {
         .selectAll()
         .where("grant_id", "=", proposal.approvalGrantId),
     );
-    if (!row) return "missing";
+    if (!row) {
+      return "missing";
+    }
     const grant = parseGrant(row);
     if (!this.#resolver.verifyApprovalGrant(grant, proposal.canonicalTarget)) {
       return "revoked";
@@ -209,48 +213,23 @@ export class GovernorApprovalGrantStore {
     grantId: string;
     receiptId: HostGovernorApprovalRevocationId;
   }): boolean {
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const row = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_approval_grants")
-          .selectAll()
-          .where("grant_id", "=", params.grantId),
-      );
-      // Resolve only after the grant's scope is known; untrusted IDs cannot pick a scope.
-      if (!row) return false;
-      const grant = parseGrant(row);
-      const receipt = this.#resolver.resolveRevocation(params.receiptId, grant.scopeKey);
-      if (!receipt || receipt.grantId !== grant.grantId) return false;
-      const currentEpoch = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_approval_epochs")
-          .selectAll()
-          .where("scope_key", "=", grant.scopeKey),
-      );
-      const nextEpoch = Math.max(
-        normalizeSqliteNumber(currentEpoch?.epoch) ?? 0,
-        grant.approvalEpoch + 1,
-      );
-      executeSqliteQuerySync(
-        db,
-        dbx(db)
-          .insertInto("governor_approval_epochs")
-          .values({ scope_key: grant.scopeKey, epoch: nextEpoch, updated_at: receipt.observedAt })
-          .onConflict((c) =>
-            c.column("scope_key").doUpdateSet({ epoch: nextEpoch, updated_at: receipt.observedAt }),
-          ),
-      );
-      const update = executeSqliteQuerySync(
-        db,
-        dbx(db)
-          .updateTable("governor_approval_grants")
-          .set({ revoked_at: receipt.observedAt })
-          .where("grant_id", "=", grant.grantId)
-          .where("revoked_at", "is", null),
-      );
-      return update.numAffectedRows === 1n;
-    }, this.#options);
+    const { db } = openOpenClawStateDatabase(this.#options);
+    const row = executeSqliteQueryTakeFirstSync(
+      db,
+      dbx(db)
+        .selectFrom("governor_approval_grants")
+        .selectAll()
+        .where("grant_id", "=", params.grantId),
+    );
+    if (!row) {
+      return false;
+    }
+    const grant = parseGrant(row);
+    const receipt = this.#resolver.resolveRevocation(params.receiptId, grant.scopeKey);
+    return (
+      receipt?.grantId === grant.grantId &&
+      grant.revokedAt !== undefined &&
+      this.currentEpoch(grant.scopeKey) > grant.approvalEpoch
+    );
   }
 }

@@ -19,5 +19,4 @@ export {
 
 export type { TaskFlowSyncResult, TaskFlowUpdateResult } from "./task-flow-registry.js";
 
-export { createGovernorRuntimeAdapterIfEnabled } from "./governor/runtime-adapter.js";
 export type { GovernorIngressRoute } from "./governor/runtime-adapter.js";

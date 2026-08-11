@@ -1,8 +1,8 @@
 // Admits and verifies evidence using only a broker-issued read-only receipt resolver.
 import crypto from "node:crypto";
-import {
-  type GovernorTrustedReceiptResolver,
-  type HostGovernorReceiptId,
+import type {
+  GovernorTrustedReceiptResolver,
+  HostGovernorReceiptId,
 } from "../../security/governor-host-readonly.js";
 import { canonicalGovernorJson, governorDigest } from "./canonical-json.js";
 import {
@@ -27,8 +27,12 @@ export type GovernorPendingEvidence = {
 
 function admissionKey(env: NodeJS.ProcessEnv): string {
   const configured = env.OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY?.trim();
-  if (configured) return configured;
-  if (env.NODE_ENV === "test") return "governor-test-evidence-admission-key";
+  if (configured) {
+    return configured;
+  }
+  if (env.NODE_ENV === "test") {
+    return "governor-test-evidence-admission-key";
+  }
   throw new Error("OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY is required for enabled evidence");
 }
 
@@ -87,10 +91,12 @@ export class GovernorEvidenceAdmissionStore {
   }): GovernorPendingEvidence {
     const candidate = createGovernorEvidenceCandidate(params.candidate);
     const validation = validateGovernorEvidenceCandidate({ task: params.task, candidate });
-    if (!validation.valid) {
+    if ("admitted" in validation && validation.admitted === false) {
       throw new Error(`Governor evidence candidate rejected: ${validation.reason}`);
     }
-    if (!params.receiptId) throw new Error("Governor evidence requires a trusted host receipt");
+    if (!params.receiptId) {
+      throw new Error("Governor evidence requires a trusted host receipt");
+    }
     const receipt = this.#resolver.resolve(
       params.receiptId as HostGovernorReceiptId,
       params.task.scopeKey,

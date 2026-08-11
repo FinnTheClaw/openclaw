@@ -14,7 +14,6 @@ import {
 } from "../../security/governor-host-readonly.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
-  openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
@@ -44,8 +43,12 @@ export class GovernorDeliveryCertificationStore {
 
   resolveCertified(handle: HostGovernorDeliveryHandle) {
     const adapter = this.#resolver.resolve(handle);
-    if (!adapter) throw new Error("Governor delivery adapter handle is not host-registered");
-    const registrationKey = handle;
+    if (!adapter) {
+      throw new Error("Governor delivery adapter handle is not host-registered");
+    }
+    // Stable identity, rather than a generation-specific handle, fences a
+    // restarted host bootstrap from resurrecting a revoked old generation.
+    const registrationKey = adapter.identityKey;
     runOpenClawStateWriteTransaction(({ db }) => {
       const current = executeSqliteQueryTakeFirstSync(
         db,
@@ -54,7 +57,7 @@ export class GovernorDeliveryCertificationStore {
           .selectAll()
           .where("identity_key", "=", registrationKey),
       );
-      const currentGeneration = normalizeSqliteNumber(current?.generation) ?? -1;
+      const currentGeneration = normalizeSqliteNumber(current?.generation ?? null) ?? -1;
       if (adapter.generation < currentGeneration) {
         throw new Error("Governor delivery adapter certification is stale");
       }
@@ -75,9 +78,13 @@ export class GovernorDeliveryCertificationStore {
           persisted.authority_key_id === "host-broker-v1" &&
           (normalizeSqliteNumber(persisted.authority_version) ?? -1) === 1 &&
           persisted.certification_signature === adapter.signature;
-        if (!valid) throw new Error("Governor delivery certification signature is invalid");
+        if (!valid) {
+          throw new Error("Governor delivery certification signature is invalid");
+        }
       }
-      if (adapter.status === "certified" && adapter.generation === currentGeneration) return;
+      if (adapter.status === "certified" && adapter.generation === currentGeneration) {
+        return;
+      }
       const row: Insertable<CertificationTable> = {
         identity_key: registrationKey,
         status: adapter.status,
@@ -113,7 +120,9 @@ export class GovernorDeliveryCertificationStore {
           .onConflict((c) => c.column("identity_key").doUpdateSet(row)),
       );
     }, this.#options);
-    if (adapter.status !== "certified") throw new Error("Governor delivery adapter is revoked");
+    if (adapter.status !== "certified") {
+      throw new Error("Governor delivery adapter is revoked");
+    }
     return adapter;
   }
 }

@@ -310,7 +310,7 @@ describe("durable behavior governor", () => {
           effectId,
           expectedLeaseEpoch: completed.task.leaseEpoch,
           workerId: "unsupported-delivery-worker",
-          adapterHandle: "unregistered",
+          adapterHandle: "unregistered" as never,
           now: 149,
         }),
       ).rejects.toThrow(/host-registered/);
@@ -320,7 +320,7 @@ describe("durable behavior governor", () => {
         identity: { adapterId: "synthetic", version: "1", capability: "message.send" },
         config: { fixture: "controller" },
         generation: 0,
-        factory: () => adapter,
+        send: ({ deliveryKey }) => adapter.send({ deliveryKey }),
       });
       await restarted.dispatchOutbox({
         taskId,

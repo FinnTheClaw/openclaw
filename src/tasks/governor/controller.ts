@@ -485,8 +485,6 @@ export class GovernorController {
   }
 }
 
-export { createGovernorControllerIfEnabled } from "./controller-bootstrap.js";
-
 export function governorArgumentsDigest(value: GovernorJsonValue): string {
   return governorDigest(value);
 }

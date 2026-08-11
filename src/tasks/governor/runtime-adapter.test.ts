@@ -1,6 +1,7 @@
 // Proves the integration seam is inert while disabled and proportional when explicitly enabled.
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
+import { createGovernorHostRuntimeAdapterIfEnabled } from "../../security/governor-host-bootstrap.js";
 import {
   closeOpenClawStateDatabase,
   openOpenClawStateDatabase,
@@ -8,7 +9,6 @@ import {
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
-import { createGovernorRuntimeAdapterIfEnabled } from "./runtime-adapter.js";
 import { GovernorSqliteStore } from "./store.js";
 import type { GovernorTaskContract, GovernorTaskScope } from "./types.js";
 
@@ -42,7 +42,7 @@ describe("governor runtime adapter", () => {
       async (state) => {
         const before = fs.readdirSync(state.stateDir).toSorted();
         expect(
-          createGovernorRuntimeAdapterIfEnabled({
+          createGovernorHostRuntimeAdapterIfEnabled({
             env: { OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "0" },
             stateDir: state.stateDir,
             capabilities: [],
@@ -131,8 +131,11 @@ describe("governor runtime adapter", () => {
       { layout: "state-only", prefix: "openclaw-governor-runtime-on-" },
       async (state) => {
         try {
-          const adapter = createGovernorRuntimeAdapterIfEnabled({
-            env: { OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1" },
+          const adapter = createGovernorHostRuntimeAdapterIfEnabled({
+            env: {
+              OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
+              OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: "synthetic-host-receipt-key",
+            },
             stateDir: state.stateDir,
             capabilities: [],
           });
@@ -189,7 +192,7 @@ describe("governor runtime adapter", () => {
 
   it("fails enabled initialization without the host identity key", () => {
     expect(() =>
-      createGovernorRuntimeAdapterIfEnabled({
+      createGovernorHostRuntimeAdapterIfEnabled({
         env: {
           OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
           NODE_ENV: "production",
@@ -198,5 +201,18 @@ describe("governor runtime adapter", () => {
         capabilities: [],
       }),
     ).toThrow(/IDENTITY_HMAC_KEY is required/u);
+  });
+
+  it("fails enabled initialization without the host receipt key", () => {
+    expect(() =>
+      createGovernorHostRuntimeAdapterIfEnabled({
+        env: {
+          OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
+          NODE_ENV: "production",
+          OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY: "synthetic-identity-key",
+        },
+        capabilities: [],
+      }),
+    ).toThrow(/HOST_RECEIPT_HMAC_KEY is required/u);
   });
 });

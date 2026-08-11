@@ -8,12 +8,12 @@ import type { GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorController } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
 
-export function createGovernorTestBroker() {
-  return createGovernorTestHostBindings();
+export function createGovernorTestBroker(params: { stateDir?: string } = {}) {
+  return createGovernorTestHostBindings(params);
 }
 
 export function createGovernorTestStore(params: { stateDir?: string } = {}) {
-  const broker = createGovernorTestBroker();
+  const broker = createGovernorTestBroker(params);
   return {
     broker,
     store: new GovernorSqliteStore({
@@ -39,9 +39,17 @@ export function recordGovernorTestToolOutcome(
     params.outcome.evidence !== undefined &&
     params.evidenceSourceKind !== "assistant_text" &&
     params.evidenceSourceKind !== "hidden_reasoning";
-  if (!needsEvidence) return controller.recordToolOutcome(params);
+  if (!needsEvidence) {
+    return controller.recordToolOutcome(params);
+  }
   const task = controller.store.loadTask(params.taskId);
-  if (!task) throw new Error(`Governor task not found: ${params.taskId}`);
+  if (!task) {
+    throw new Error(`Governor task not found: ${params.taskId}`);
+  }
+  const evidence = params.outcome.evidence;
+  if (evidence === undefined) {
+    return controller.recordToolOutcome(params);
+  }
   const receiptId = broker.capabilities.submitObservedReceipt({
     scopeKey: task.scopeKey,
     taskId: task.taskId,
@@ -55,7 +63,7 @@ export function recordGovernorTestToolOutcome(
       | "structured_external"
       | "authenticated_user",
     sourceIdentity: params.proposal.capability,
-    payload: params.outcome.evidence,
+    payload: evidence,
     observedAt: params.now,
   });
   return controller.recordToolOutcome({ ...params, evidenceReceiptId: receiptId });
@@ -75,9 +83,17 @@ export function recordGovernorTestAdmittedToolOutcome(
     params.outcome.evidence !== undefined &&
     params.evidenceSourceKind !== "assistant_text" &&
     params.evidenceSourceKind !== "hidden_reasoning";
-  if (!needsEvidence) return controller.recordAdmittedToolOutcome(params);
+  if (!needsEvidence) {
+    return controller.recordAdmittedToolOutcome(params);
+  }
   const task = controller.store.loadTask(params.taskId);
-  if (!task) throw new Error(`Governor task not found: ${params.taskId}`);
+  if (!task) {
+    throw new Error(`Governor task not found: ${params.taskId}`);
+  }
+  const evidence = params.outcome.evidence;
+  if (evidence === undefined) {
+    return controller.recordAdmittedToolOutcome(params);
+  }
   const receiptId = broker.capabilities.submitObservedReceipt({
     scopeKey: task.scopeKey,
     taskId: task.taskId,
@@ -89,7 +105,7 @@ export function recordGovernorTestAdmittedToolOutcome(
       | "structured_external"
       | "authenticated_user",
     sourceIdentity: params.intent.proposal.capability,
-    payload: params.outcome.evidence,
+    payload: evidence,
     observedAt: params.now,
   });
   return controller.recordAdmittedToolOutcome({ ...params, evidenceReceiptId: receiptId });
@@ -102,7 +118,9 @@ export function resolveGovernorTestMutation(
   params: Parameters<GovernorController["resolveMutation"]>[0],
 ) {
   const task = controller.store.loadTask(params.taskId);
-  if (!task) throw new Error(`Governor task not found: ${params.taskId}`);
+  if (!task) {
+    throw new Error(`Governor task not found: ${params.taskId}`);
+  }
   const receiptId = broker.capabilities.submitObservedReceipt({
     scopeKey: task.scopeKey,
     taskId: task.taskId,

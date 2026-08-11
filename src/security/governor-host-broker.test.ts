@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
-import {
-  createHostGovernorBroker,
-  isTrustedGovernorReceiptResolver,
-} from "./governor-host-broker.js";
+import { isTrustedGovernorReceiptResolver } from "./governor-host-broker.js";
+import { createGovernorTestHostBindings } from "./governor-host-readonly.js";
 
 describe("governor host broker", () => {
   it("keeps receipt creation capability separate from a scope-bound resolver", () => {
-    const broker = createHostGovernorBroker({ receiptSigningKey: "synthetic-test-key" });
+    const broker = createGovernorTestHostBindings();
     const receiptId = broker.capabilities.submitObservedReceipt({
       scopeKey: "scope-a",
       taskId: "task-a",

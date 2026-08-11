@@ -149,7 +149,7 @@ describe("behavior governor mandatory synthetic evals", () => {
           identity: deliveryAdapter.identity,
           config: { fixture: "mandatory-eval" },
           generation: 0,
-          factory: () => deliveryAdapter,
+          send: ({ deliveryKey, payload }) => deliveryAdapter.send({ deliveryKey, payload }),
         });
         const samples: GovernorEvalSample[] = [];
         const accessSamples: GovernorEvalSample[] = [];
@@ -164,7 +164,7 @@ describe("behavior governor mandatory synthetic evals", () => {
             identity: deliveryAdapter.identity,
             config: { fixture: "mandatory-eval" },
             generation: 0,
-            factory: () => deliveryAdapter,
+            send: ({ deliveryKey, payload }) => deliveryAdapter.send({ deliveryKey, payload }),
           });
         };
 

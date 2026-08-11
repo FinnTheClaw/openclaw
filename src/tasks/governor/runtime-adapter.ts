@@ -1,6 +1,3 @@
-import type { GovernorCapabilityDefinition } from "./capability-registry.js";
-import { createGovernorControllerIfEnabled } from "./controller-bootstrap.js";
-// Provides the feature-off ingress seam without changing existing channel or task-flow behavior.
 import type { GovernorController } from "./controller.js";
 import {
   classifyGovernorWork,
@@ -40,13 +37,4 @@ export class GovernorRuntimeAdapter {
     });
     return { kind: "governed", decision, task: ingress.task };
   }
-}
-
-export function createGovernorRuntimeAdapterIfEnabled(params: {
-  env?: NodeJS.ProcessEnv;
-  stateDir?: string;
-  capabilities: readonly GovernorCapabilityDefinition[];
-}): GovernorRuntimeAdapter | null {
-  const controller = createGovernorControllerIfEnabled(params);
-  return controller ? new GovernorRuntimeAdapter(controller) : null;
 }

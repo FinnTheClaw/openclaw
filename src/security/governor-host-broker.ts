@@ -12,6 +12,10 @@ import {
   governorDigest,
   type GovernorJsonValue,
 } from "../tasks/governor/canonical-json.js";
+import {
+  isGovernorHostPersistence,
+  type GovernorHostPersistence,
+} from "./governor-host-persistence.js";
 
 declare const hostReceiptIdBrand: unique symbol;
 export type HostGovernorReceiptId = string & { readonly [hostReceiptIdBrand]: true };
@@ -37,6 +41,7 @@ type HostDeliveryIdentity = Readonly<{
 
 type HostDeliveryEntry = Readonly<{
   handle: HostGovernorDeliveryHandle;
+  identityKey: string;
   identity: HostDeliveryIdentity;
   implementationDigest: string;
   configDigest: string;
@@ -105,11 +110,22 @@ const RESOLVERS = new WeakSet<object>();
 const APPROVAL_RESOLVERS = new WeakSet<object>();
 const DELIVERY_RESOLVERS = new WeakSet<object>();
 
-function sign(key: string, value: unknown): string {
+function deepFreeze<T>(value: T): T {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  Object.freeze(value);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(child);
+  }
+  return value;
+}
+
+function sign(key: string, value: GovernorJsonValue): string {
   return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
 }
 
-function opaqueId(key: string, value: unknown): string {
+function opaqueId(key: string, value: GovernorJsonValue): string {
   return `ghr_${crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex")}`;
 }
 
@@ -147,9 +163,11 @@ export type HostGovernorCapabilities = {
     identity: HostDeliveryIdentity;
     config: GovernorJsonValue;
     generation: number;
-    factory: () => {
-      send: HostDeliveryEntry["send"];
-    };
+    send: (params: {
+      config: GovernorJsonValue;
+      deliveryKey: string;
+      payload: GovernorJsonValue;
+    }) => Promise<{ deliveryKey: string; receipt: GovernorJsonValue }>;
   }) => HostGovernorDeliveryHandle;
   readonly revokeDeliveryAdapter: (input: { handle: HostGovernorDeliveryHandle }) => boolean;
 };
@@ -218,13 +236,16 @@ export function isTrustedGovernorDeliveryResolver(
  * It deliberately takes a runtime-only key rather than loading any secret in
  * task-facing code.  The returned capabilities are object-capability scoped.
  */
-export function createHostGovernorBroker(params: { receiptSigningKey: string }): {
+export function createHostGovernorBroker(params: {
+  receiptSigningKey: string;
+  persistence: GovernorHostPersistence;
+}): {
   capabilities: HostGovernorCapabilities;
   resolver: GovernorTrustedReceiptResolver;
   approvalResolver: GovernorTrustedApprovalResolver;
   deliveryResolver: GovernorTrustedDeliveryResolver;
 } {
-  if (!params.receiptSigningKey.trim()) {
+  if (!params.receiptSigningKey.trim() || !isGovernorHostPersistence(params.persistence)) {
     throw new Error("Host governor receipt signing key is required");
   }
   const state: HostBrokerState = {
@@ -308,6 +329,16 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
       revocation: input,
       nonce: crypto.randomUUID(),
     }) as HostGovernorApprovalRevocationId;
+    // Commit the durable high-water before exposing a successful revocation.
+    if (
+      !params.persistence.revokeApproval({
+        grantId: input.grantId,
+        scopeKey: input.scopeKey,
+        observedAt: input.observedAt,
+      })
+    ) {
+      throw new Error("Governor approval revocation was not durably applied");
+    }
     const body = { id, ...input };
     state.revocations.set(id, Object.freeze({ ...body, signature: sign(state.key, body) }));
     return id;
@@ -322,13 +353,16 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     ) {
       throw new Error("Governor host delivery capability is invalid");
     }
-    const implementation = input.factory();
-    if (!implementation || typeof implementation.send !== "function") {
-      throw new Error("Governor host delivery factory did not return a sender");
+    if (typeof input.send !== "function") {
+      throw new Error("Governor host delivery capability requires a sender");
     }
-    // Bind the callable now. Later mutation of the source object cannot alter dispatch.
-    const send = implementation.send.bind(implementation);
     const identity = Object.freeze(structuredClone(input.identity));
+    const config = deepFreeze(structuredClone(input.config));
+    // Capture the bare callable and a frozen value snapshot. This never retains
+    // a caller-owned adapter object or invokes a method through mutable `this`.
+    const implementation = input.send;
+    const send: HostDeliveryEntry["send"] = ({ deliveryKey, payload }) =>
+      implementation({ config, deliveryKey, payload });
     const priorIdentity = Array.from(state.deliveries.values()).find(
       (entry) =>
         entry.identity.adapterId === identity.adapterId &&
@@ -338,8 +372,17 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     if (priorIdentity && input.generation <= priorIdentity.generation) {
       throw new Error("Governor delivery identity generation is already registered");
     }
-    const configDigest = governorDigest(input.config);
-    const implementationDigest = governorDigest({ source: String(implementation.send) });
+    const identityKey = opaqueId(state.key, { deliveryIdentity: identity });
+    const durableState = params.persistence.deliveryState(identityKey);
+    if (
+      durableState &&
+      (input.generation < durableState.generation ||
+        (input.generation === durableState.generation && durableState.status === "revoked"))
+    ) {
+      throw new Error("Governor delivery identity generation is durably stale");
+    }
+    const configDigest = governorDigest(config);
+    const implementationDigest = governorDigest({ source: String(implementation) });
     const handle = opaqueId(state.key, {
       delivery: { identity, configDigest, implementationDigest, generation: input.generation },
     }) as HostGovernorDeliveryHandle;
@@ -349,6 +392,7 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     }
     const unsigned = {
       handle,
+      identityKey,
       identity,
       implementationDigest,
       configDigest,
@@ -362,28 +406,45 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     return handle;
   };
   const revokeDeliveryAdapter: HostGovernorCapabilities["revokeDeliveryAdapter"] = ({ handle }) => {
-    if (!CAPABILITIES.has(capability))
+    if (!CAPABILITIES.has(capability)) {
       throw new Error("Governor host delivery capability is invalid");
+    }
     const prior = state.deliveries.get(handle);
-    if (!prior || prior.status === "revoked") return false;
+    if (!prior || prior.status === "revoked") {
+      return false;
+    }
     const unsigned = {
       handle: prior.handle,
+      identityKey: prior.identityKey,
       identity: prior.identity,
       implementationDigest: prior.implementationDigest,
       configDigest: prior.configDigest,
       generation: prior.generation + 1,
       status: "revoked" as const,
     };
-    state.deliveries.set(
-      handle,
-      Object.freeze({ ...unsigned, send: prior.send, signature: sign(state.key, unsigned) }),
-    );
+    const signature = sign(state.key, unsigned);
+    // This is the transaction boundary. A cache update only follows a commit.
+    if (
+      !params.persistence.revokeDelivery({
+        identityKey: prior.identityKey,
+        implementationDigest: prior.implementationDigest,
+        configDigest: prior.configDigest,
+        generation: unsigned.generation,
+        signature,
+        observedAt: Date.now(),
+      })
+    ) {
+      throw new Error("Governor delivery revocation was not durably applied");
+    }
+    state.deliveries.set(handle, Object.freeze({ ...unsigned, send: prior.send, signature }));
     return true;
   };
   const resolver: GovernorTrustedReceiptResolver = Object.freeze({
     resolve: (receiptId, scopeKey) => {
       const receipt = state.receipts.get(receiptId);
-      if (!receipt || receipt.scopeKey !== scopeKey) return null;
+      if (!receipt || receipt.scopeKey !== scopeKey) {
+        return null;
+      }
       const body = {
         scopeKey: receipt.scopeKey,
         taskId: receipt.taskId,
@@ -403,13 +464,17 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
   const approvalResolver: GovernorTrustedApprovalResolver = Object.freeze({
     resolveApproval: (receiptId, scopeKey) => {
       const receipt = state.approvals.get(receiptId);
-      if (!receipt || receipt.scopeKey !== scopeKey) return null;
+      if (!receipt || receipt.scopeKey !== scopeKey) {
+        return null;
+      }
       const { signature, ...body } = receipt;
       return sign(state.key, body) === signature ? receipt : null;
     },
     resolveRevocation: (receiptId, scopeKey) => {
       const receipt = state.revocations.get(receiptId);
-      if (!receipt || receipt.scopeKey !== scopeKey) return null;
+      if (!receipt || receipt.scopeKey !== scopeKey) {
+        return null;
+      }
       const { signature, ...body } = receipt;
       return sign(state.key, body) === signature ? receipt : null;
     },
@@ -418,7 +483,9 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
         return false;
       }
       const canonicalTargetOpaque = opaqueId(state.key, { target: canonicalTarget });
-      if (canonicalTargetOpaque !== grant.canonicalTarget) return false;
+      if (canonicalTargetOpaque !== grant.canonicalTarget) {
+        return false;
+      }
       const payload = {
         grantId: grant.grantId,
         taskId: grant.taskId,
@@ -438,7 +505,17 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
   const deliveryResolver: GovernorTrustedDeliveryResolver = Object.freeze({
     resolve: (handle) => {
       const entry = state.deliveries.get(handle);
-      if (!entry) return null;
+      if (!entry) {
+        return null;
+      }
+      const durableState = params.persistence.deliveryState(entry.identityKey);
+      if (
+        durableState &&
+        (durableState.generation > entry.generation ||
+          (durableState.generation === entry.generation && durableState.status === "revoked"))
+      ) {
+        return null;
+      }
       const { send: _send, signature, ...unsigned } = entry;
       return sign(state.key, unsigned) === signature ? entry : null;
     },

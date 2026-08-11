@@ -3,9 +3,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "..");
-const brokerImport = /security\/governor-host-broker(?:\.js)?["']/u;
+const authorityImport = /security\/governor-host-(?:broker|persistence)(?:\.js)?["']/u;
 const forbiddenAuthority =
-  /\b(?:createHostGovernorBroker|HostGovernorCapabilities|signApprovalGrant|registerStaticDeliveryAdapter|revokeDeliveryAdapter)\b/u;
+  /\b(?:createHostGovernorBroker|createGovernorHostPersistence|GovernorHostPersistence|HostGovernorCapabilities|signApprovalGrant|registerStaticDeliveryAdapter|revokeDeliveryAdapter)\b/u;
 
 function files(directory: string): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -26,14 +26,15 @@ describe("governor host authority boundary", () => {
     });
     for (const file of guarded) {
       const source = fs.readFileSync(file, "utf8");
-      expect(source, file).not.toMatch(brokerImport);
+      expect(source, file).not.toMatch(authorityImport);
       expect(source, file).not.toMatch(forbiddenAuthority);
     }
   });
 
-  it("keeps host broker and test-only bridge out of package exports", () => {
+  it("keeps host authority and test-only bridge out of package exports", () => {
     const manifest = fs.readFileSync(path.join(root, "..", "package.json"), "utf8");
     expect(manifest).not.toContain("governor-host-broker");
+    expect(manifest).not.toContain("governor-host-persistence");
     expect(manifest).not.toContain("governor-host-readonly");
   });
 });

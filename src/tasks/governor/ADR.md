@@ -51,14 +51,16 @@ isolated SQLite state.
     Grant issuance reads a host-owned approver allowlist and signs task scope, objective revision,
     capability/version, canonical target, expiry, key version, and a monotonic approval epoch.
     A model proposal or caller-provided callback cannot mint, extend, or replay a revoked grant.
+    Host revocation commits its grant tombstone and scope epoch in one durable transaction before
+    reporting success; resolver caches are never authoritative.
 14. Completion reads durable claims, contradictions, pending-update state, and evidence for the
     current objective and plan only. Corrections cancel old action/fan-out generations and make
     late results audit-only.
 15. A controller-owned host registry resolves delivery handles to implementations; dispatch never
     accepts an arbitrary provider object. A host-signed certification binds adapter identity,
     implementation digest, redacted configuration digest, key version, and a monotonic generation.
-    Revocation survives restart and fences replayed older certified rows. Provider receipts are
-    secret-filtered before persistence.
+    Revocation commits its durable generation high-water before reporting success, survives restart,
+    and fences replayed older certified rows. Provider receipts are secret-filtered before persistence.
 16. The built-in memory adapter truthfully guarantees primary tombstone plus scope-epoch fencing.
     Cache/index/embedding invalidation requires a concrete adapter and must not be reported until
     such an adapter provides verified postconditions.
@@ -107,15 +109,17 @@ are rejected unless `NODE_ENV=test`; they are never a production fallback.
 
 At a future live rollout, authenticated terminal, UI, and channel integrations must hold the host
 capabilities. They submit observed tool/channel receipts, approval/revocation receipts, and static
-delivery factories. The broker retains signing keys in the runtime secret provider only; SQLite
+delivery callables. The broker retains signing keys in the runtime secret provider only; SQLite
 stores opaque IDs, key IDs/versions, signatures, payload/semantic digests, grants, and monotonic
 epoch/generation high-water marks. Rotation creates a new key/version and accepts only explicitly
 configured active verification versions. Restart reconstructs state from durable signed records;
 revocation high-water marks fence old grants and delivery generations.
 
-Delivery factories are invoked at bootstrap and their sender closures, non-secret configuration
-digest, implementation digest, handle, and generation are snapshotted. A later mutation of the
-source object cannot change dispatch. If no authenticated host integration exists, startup must
+Delivery registration captures a bare callable with a deep-cloned, deep-frozen non-secret
+configuration snapshot; it never binds or retains a caller-owned adapter object. A later mutation
+of the source object, replacement function, or descriptor/config object cannot change dispatch.
+Trusted callable closures are still code running inside the trusted host boundary and may have their
+own side effects; that is outside the task/model API threat model. If no authenticated host integration exists, startup must
 remain fail-closed and the feature must remain disabled. `emitTrustedDiagnosticEvent` is explicitly
 inadmissible: it is a diagnostic API rather than an authenticated authority boundary and must never
 issue a governor receipt, approval, or adapter certification.
