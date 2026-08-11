@@ -97,7 +97,10 @@ export class GovernorSqliteStore {
     } = {},
   ) {
     const testBroker =
-      process.env.NODE_ENV === "test" ? createGovernorTestHostBindings() : undefined;
+      process.env.NODE_ENV === "test" &&
+      (!params.receiptResolver || !params.approvalResolver || !params.deliveryResolver)
+        ? createGovernorTestHostBindings({ stateDir: params.stateDir })
+        : undefined;
     const receiptResolver = params.receiptResolver ?? testBroker?.resolver;
     const approvalResolver = params.approvalResolver ?? testBroker?.approvalResolver;
     const deliveryResolver = params.deliveryResolver ?? testBroker?.deliveryResolver;

@@ -1,4 +1,6 @@
 // Verifies host-owned adapter registration, certification, and durable replay fences.
+import fs from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   closeOpenClawStateDatabase,
@@ -141,7 +143,7 @@ describe("governor delivery certification", () => {
     });
   });
 
-  it("rejects forged durable certification rows", async () => {
+  it("rejects a primary binding mismatch even when the ledger certification is unchanged", async () => {
     await withDeliveryState(async (state) => {
       const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       const governed = controller(store);
@@ -153,12 +155,42 @@ describe("governor delivery certification", () => {
         env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir },
       });
       db.prepare(
-        "UPDATE governor_delivery_certifications SET certification_signature = 'forged' WHERE identity_key = ?",
+        "UPDATE governor_delivery_certifications SET config_digest = 'forged' WHERE identity_key = ?",
       ).run(certified.identityKey);
       await expect(
         governed.dispatchOutbox({ ...entry, workerId: "forged", adapterHandle: handle, now: 8 }),
       ).rejects.toThrow(/signature is invalid/);
       await closeDatabaseForCleanup();
+    });
+  });
+
+  it("rejects a whole-primary-database replay before any delivery dispatch", async () => {
+    await withDeliveryState(async (state) => {
+      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
+      const governed = controller(store);
+      const entry = completion(governed);
+      const attempts: string[] = [];
+      const handle = broker.capabilities.registerStaticDeliveryAdapter({
+        identity,
+        config: { fixture: "snapshot" },
+        generation: 0,
+        send: async ({ deliveryKey }) => {
+          attempts.push(deliveryKey);
+          return { deliveryKey, receipt: {} };
+        },
+      });
+      store.resolveCertifiedDelivery(handle);
+      const primaryPath = path.join(state.stateDir, "state", "openclaw.sqlite");
+      const snapshotPath = path.join(state.root, "pre-revocation-primary.sqlite");
+      closeOpenClawStateDatabase();
+      fs.copyFileSync(primaryPath, snapshotPath);
+      expect(broker.capabilities.revokeDeliveryAdapter({ handle })).toBe(true);
+      closeOpenClawStateDatabase();
+      fs.copyFileSync(snapshotPath, primaryPath);
+      await expect(
+        governed.dispatchOutbox({ ...entry, workerId: "replayed", adapterHandle: handle, now: 10 }),
+      ).rejects.toThrow(/host-registered/);
+      expect(attempts).toHaveLength(0);
     });
   });
 

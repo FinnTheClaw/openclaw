@@ -74,6 +74,10 @@ isolated SQLite state.
 19. Mandatory governor metrics are calculated from append-only deterministic scenario execution
     logs, including duplicate ingress and crash-recovery paths; attempts and observable effects are
     counted separately, and static samples are not evidence.
+20. V9 authorization and delivery high-water state is host-owned outside replayable governor
+    SQLite tables: an HMAC/hash-chained journal and an independently signed current-head/high-water
+    anchor are both required. Missing, lower, mismatched, tampered, truncated, or key-mismatched
+    state fails closed; ledger-first writes may be retried to reconcile primary SQLite state.
 
 ## Consequences
 
@@ -86,7 +90,8 @@ can remain unused indefinitely while the feature flag is off.
 
 The governor remains disabled by default. A future production rollout must first provide host-held
 `OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY`, `OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY`,
-`OPENCLAW_GOVERNOR_APPROVAL_KEY`, and `OPENCLAW_GOVERNOR_DELIVERY_CERTIFICATION_KEY`, configure
+`OPENCLAW_GOVERNOR_APPROVAL_KEY`, `OPENCLAW_GOVERNOR_DELIVERY_CERTIFICATION_KEY`, and
+`OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY`, configure
 the host approver allowlist, register/certify each selected channel adapter, and install concrete
 cache/index/embedding invalidation adapters for every governed memory backend. Until then, this is
 a synthetic-testable control plane rather than a live message-path replacement.
@@ -106,6 +111,11 @@ broker -> read-only resolver bridge -> governor store. Governor, task, model, an
 consume read-only resolvers from `governor-host-readonly.ts`, but must not import the broker or a
 capability constructor. The static boundary test enforces that edge. Test-only synthetic bindings
 are rejected unless `NODE_ENV=test`; they are never a production fallback.
+
+V9 ledger sidecars are host-private and store only opaque stream keys, digests, generations, and
+signatures. The journal and signed head are separate from replayable governor SQLite tables. A
+full host/OS snapshot that replays both sidecars together remains outside Slice 1; hardware or
+remote monotonic storage is required for that stronger rollback guarantee.
 
 At a future live rollout, authenticated terminal, UI, and channel integrations must hold the host
 capabilities. They submit observed tool/channel receipts, approval/revocation receipts, and static

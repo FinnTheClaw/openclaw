@@ -135,6 +135,7 @@ describe("governor runtime adapter", () => {
             env: {
               OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
               OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: "synthetic-host-receipt-key",
+              OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY: "synthetic-host-ledger-key",
             },
             stateDir: state.stateDir,
             capabilities: [],

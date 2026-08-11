@@ -1,9 +1,4 @@
-/**
- * Durable host-only revocation port for the experimental governor.
- *
- * The broker owns its object capability; this module owns the SQLite
- * transaction. Task-facing code receives neither.
- */
+/** Host-only primary-state reconciliation behind the V9 anti-rollback ledger. */
 import type { DatabaseSync } from "node:sqlite";
 import {
   executeSqliteQuerySync,
@@ -11,22 +6,31 @@ import {
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
-import type { DB as OpenClawStateDatabase } from "../state/openclaw-state-db.generated.js";
+import type { DB as StateDb } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqliteDir } from "../state/openclaw-state-db.paths.js";
+import { governorDigest } from "../tasks/governor/canonical-json.js";
 import { initializeGovernorStateSchema } from "../tasks/governor/state-schema.js";
+import {
+  createGovernorHostAntiRollbackLedger,
+  isGovernorHostAntiRollbackLedger,
+  type GovernorHostAntiRollbackLedger,
+  type GovernorLedgerState,
+} from "./governor-host-anti-rollback-ledger.js";
 
-type HostPersistenceDatabase = Pick<
-  OpenClawStateDatabase,
+type HostDb = Pick<
+  StateDb,
   | "governor_approval_epochs"
   | "governor_approval_grants"
   | "governor_delivery_certification_epochs"
   | "governor_delivery_certifications"
 >;
-type PersistedDeliveryRevocation = Readonly<{
+type DeliveryInput = Readonly<{
+  handle: string;
   identityKey: string;
   implementationDigest: string;
   configDigest: string;
@@ -34,100 +38,334 @@ type PersistedDeliveryRevocation = Readonly<{
   signature: string;
   observedAt: number;
 }>;
-type DurableDeliveryState = Readonly<{ generation: number; status: "certified" | "revoked" }>;
+type DeliveryState = Readonly<{ generation: number; status: "certified" | "revoked" }>;
 
 export type GovernorHostPersistence = {
+  readonly recordApprovalGrant: (input: {
+    grantId: string;
+    scopeKey: string;
+    approvalEpoch: number;
+    observedAt: number;
+  }) => GovernorLedgerState;
+  readonly approvalGrantMatches: (input: {
+    grantId: string;
+    scopeKey: string;
+    approvalEpoch: number;
+  }) => boolean;
   readonly revokeApproval: (input: {
     grantId: string;
     scopeKey: string;
     observedAt: number;
   }) => boolean;
   readonly approvalEpoch: (scopeKey: string) => number;
-  readonly revokeDelivery: (input: PersistedDeliveryRevocation) => boolean;
-  readonly deliveryState: (identityKey: string) => DurableDeliveryState | null;
+  readonly deliveryHighWater: (identityKey: string) => GovernorLedgerState | null;
+  readonly certifyDelivery: (input: DeliveryInput) => GovernorLedgerState;
+  readonly deliveryBindingMatches: (
+    input: DeliveryInput & { status: "certified" | "revoked" },
+  ) => boolean;
+  readonly revokeDelivery: (input: DeliveryInput) => boolean;
+  readonly deliveryState: (identityKey: string) => DeliveryState | null;
 };
 
 const PORTS = new WeakSet<object>();
-const dbx = (db: DatabaseSync) => getNodeSqliteKysely<HostPersistenceDatabase>(db);
+const dbx = (db: DatabaseSync) => getNodeSqliteKysely<HostDb>(db);
+const approvalScopeKey = (scopeKey: string) => governorDigest({ kind: "scope", scopeKey });
+const approvalGrantKey = (scopeKey: string, grantId: string) =>
+  governorDigest({ kind: "grant", scopeKey, grantId });
+
+function deliveryBinding(input: DeliveryInput & { status: "certified" | "revoked" }): string {
+  return governorDigest({
+    handle: input.handle,
+    identityKey: input.identityKey,
+    implementationDigest: input.implementationDigest,
+    configDigest: input.configDigest,
+    generation: input.generation,
+    status: input.status,
+    signature: input.signature,
+  });
+}
 
 export function isGovernorHostPersistence(value: GovernorHostPersistence): boolean {
   return PORTS.has(value);
 }
 
-/** Called only from trusted application bootstrap. */
+/** Called only from trusted bootstrap; the ledger is a separate host sidecar. */
 export function createGovernorHostPersistence(
-  params: { stateDir?: string } = {},
+  params: {
+    stateDir?: string;
+    ledgerKey?: string;
+    ledger?: GovernorHostAntiRollbackLedger;
+    /** Test-only crash point for the ledger-first reconciliation contract. */
+    testAfterLedgerAppend?: () => void;
+  } = {},
 ): GovernorHostPersistence {
+  if (params.testAfterLedgerAppend && process.env.NODE_ENV !== "test") {
+    throw new Error("Governor host persistence test hooks are unavailable outside tests");
+  }
   const options: OpenClawStateDatabaseOptions = params.stateDir
     ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
     : {};
+  const ledgerKey = params.ledgerKey ?? process.env.OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY;
+  if (!params.ledger && !ledgerKey?.trim()) {
+    throw new Error("Governor host anti-rollback ledger signing key is required");
+  }
+  const ledger =
+    params.ledger ??
+    createGovernorHostAntiRollbackLedger({
+      stateDir: resolveOpenClawStateSqliteDir(options.env ?? process.env),
+      signingKey: ledgerKey as string,
+    });
+  if (!isGovernorHostAntiRollbackLedger(ledger)) {
+    throw new Error("Governor host anti-rollback ledger capability is invalid");
+  }
   initializeGovernorStateSchema(options);
+
+  const primaryApprovalEpoch = (scopeKey: string): number => {
+    const { db } = openOpenClawStateDatabase(options);
+    const row = executeSqliteQueryTakeFirstSync(
+      db,
+      dbx(db)
+        .selectFrom("governor_approval_epochs")
+        .select("epoch")
+        .where("scope_key", "=", scopeKey),
+    );
+    return normalizeSqliteNumber(row?.epoch ?? null) ?? 0;
+  };
+
   const port: GovernorHostPersistence = Object.freeze({
-    revokeApproval: (input) =>
-      runOpenClawStateWriteTransaction(({ db }) => {
-        const grant = executeSqliteQueryTakeFirstSync(
-          db,
-          dbx(db)
-            .selectFrom("governor_approval_grants")
-            .select(["scope_key", "approval_epoch", "revoked_at"])
-            .where("grant_id", "=", input.grantId),
-        );
-        if (!grant || grant.scope_key !== input.scopeKey || grant.revoked_at != null) {
-          return false;
+    recordApprovalGrant: (input) => {
+      if (!Number.isSafeInteger(input.approvalEpoch) || input.approvalEpoch < 0) {
+        throw new Error("Governor approval ledger epoch is invalid");
+      }
+      const scopeKey = approvalScopeKey(input.scopeKey);
+      const scope = ledger.state("approval", scopeKey);
+      const primaryEpoch = primaryApprovalEpoch(input.scopeKey);
+      if (primaryEpoch > input.approvalEpoch) {
+        throw new Error("Governor approval primary state is ahead of the host ledger");
+      }
+      if (!scope) {
+        if (input.approvalEpoch !== 0) {
+          throw new Error("Governor initial approval ledger epoch must be zero");
         }
-        const current = executeSqliteQueryTakeFirstSync(
-          db,
-          dbx(db)
-            .selectFrom("governor_approval_epochs")
-            .select("epoch")
-            .where("scope_key", "=", input.scopeKey),
-        );
-        const nextEpoch = Math.max(
-          normalizeSqliteNumber(current?.epoch ?? null) ?? 0,
-          (normalizeSqliteNumber(grant.approval_epoch) ?? 0) + 1,
-        );
+        ledger.append({
+          kind: "approval",
+          key: scopeKey,
+          generation: input.approvalEpoch,
+          status: "approved",
+          bindingDigest: governorDigest({ scopeKey, generation: input.approvalEpoch }),
+        });
+      } else if (input.approvalEpoch === scope.generation + 1) {
+        ledger.append({
+          kind: "approval",
+          key: scopeKey,
+          generation: input.approvalEpoch,
+          status: "approved",
+          bindingDigest: governorDigest({ scopeKey, generation: input.approvalEpoch }),
+        });
+      } else if (
+        scope.generation !== input.approvalEpoch ||
+        scope.status !== "approved" ||
+        scope.bindingDigest !== governorDigest({ scopeKey, generation: input.approvalEpoch })
+      ) {
+        throw new Error("Governor approval ledger epoch is stale");
+      }
+      const grant = ledger.append({
+        kind: "approval",
+        key: approvalGrantKey(input.scopeKey, input.grantId),
+        generation: input.approvalEpoch,
+        status: "approved",
+        bindingDigest: governorDigest({
+          scopeKey,
+          grantId: input.grantId,
+          epoch: input.approvalEpoch,
+        }),
+      });
+      runOpenClawStateWriteTransaction(({ db }) => {
         executeSqliteQuerySync(
           db,
           dbx(db)
             .insertInto("governor_approval_epochs")
-            .values({ scope_key: input.scopeKey, epoch: nextEpoch, updated_at: input.observedAt })
+            .values({
+              scope_key: input.scopeKey,
+              epoch: input.approvalEpoch,
+              updated_at: input.observedAt,
+            })
+            .onConflict((conflict) =>
+              conflict.column("scope_key").doUpdateSet({
+                epoch: input.approvalEpoch,
+                updated_at: input.observedAt,
+              }),
+            ),
+        );
+      }, options);
+      return grant;
+    },
+    approvalGrantMatches: (input) => {
+      const scopeKey = approvalScopeKey(input.scopeKey);
+      const scope = ledger.state("approval", scopeKey);
+      const grant = ledger.state("approval", approvalGrantKey(input.scopeKey, input.grantId));
+      return (
+        scope?.generation === input.approvalEpoch &&
+        scope.status === "approved" &&
+        grant?.generation === input.approvalEpoch &&
+        grant.status === "approved" &&
+        grant.bindingDigest ===
+          governorDigest({ scopeKey, grantId: input.grantId, epoch: input.approvalEpoch })
+      );
+    },
+    revokeApproval: (input) => {
+      const { db } = openOpenClawStateDatabase(options);
+      const grant = executeSqliteQueryTakeFirstSync(
+        db,
+        dbx(db)
+          .selectFrom("governor_approval_grants")
+          .select(["scope_key", "approval_epoch"])
+          .where("grant_id", "=", input.grantId),
+      );
+      if (!grant || grant.scope_key !== input.scopeKey) {
+        return false;
+      }
+      const grantEpoch = normalizeSqliteNumber(grant.approval_epoch) ?? -1;
+      const scopeKey = approvalScopeKey(input.scopeKey);
+      const scope = ledger.state("approval", scopeKey);
+      const grantState = ledger.state("approval", approvalGrantKey(input.scopeKey, input.grantId));
+      if (
+        !scope ||
+        !grantState ||
+        grantState.generation !== grantEpoch ||
+        grantState.status !== "approved" ||
+        !thisBindingMatches(
+          grantState.bindingDigest,
+          governorDigest({ scopeKey, grantId: input.grantId, epoch: grantEpoch }),
+        )
+      ) {
+        throw new Error("Governor approval ledger state is missing or mismatched");
+      }
+      const primaryEpoch = primaryApprovalEpoch(input.scopeKey);
+      if (primaryEpoch > scope.generation || grantEpoch > scope.generation) {
+        throw new Error("Governor approval primary state is ahead of the host ledger");
+      }
+      let targetEpoch = scope.generation;
+      if (scope.generation === grantEpoch) {
+        targetEpoch = grantEpoch + 1;
+        ledger.append({
+          kind: "approval",
+          key: scopeKey,
+          generation: targetEpoch,
+          status: "revoked",
+          bindingDigest: governorDigest({ scopeKey, grantId: input.grantId, epoch: targetEpoch }),
+        });
+        params.testAfterLedgerAppend?.();
+      }
+      return runOpenClawStateWriteTransaction(({ db: tx }) => {
+        executeSqliteQuerySync(
+          tx,
+          dbx(tx)
+            .insertInto("governor_approval_epochs")
+            .values({ scope_key: input.scopeKey, epoch: targetEpoch, updated_at: input.observedAt })
             .onConflict((c) =>
-              c.column("scope_key").doUpdateSet({ epoch: nextEpoch, updated_at: input.observedAt }),
+              c
+                .column("scope_key")
+                .doUpdateSet({ epoch: targetEpoch, updated_at: input.observedAt }),
             ),
         );
         const update = executeSqliteQuerySync(
-          db,
-          dbx(db)
+          tx,
+          dbx(tx)
             .updateTable("governor_approval_grants")
             .set({ revoked_at: input.observedAt })
-            .where("grant_id", "=", input.grantId)
-            .where("revoked_at", "is", null),
+            .where("grant_id", "=", input.grantId),
         );
         return update.numAffectedRows === 1n;
-      }, options),
-    approvalEpoch: (scopeKey) => {
-      const { db } = openOpenClawStateDatabase(options);
-      const row = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_approval_epochs")
-          .select("epoch")
-          .where("scope_key", "=", scopeKey),
-      );
-      return normalizeSqliteNumber(row?.epoch ?? null) ?? 0;
+      }, options);
     },
-    revokeDelivery: (input) =>
-      runOpenClawStateWriteTransaction(({ db }) => {
-        const current = executeSqliteQueryTakeFirstSync(
+    approvalEpoch: (scopeKey) =>
+      ledger.state("approval", approvalScopeKey(scopeKey))?.generation ?? 0,
+    deliveryHighWater: (identityKey) => ledger.state("delivery", identityKey),
+    certifyDelivery: (input) => {
+      const current = ledger.state("delivery", input.identityKey);
+      const bindingDigest = deliveryBinding({ ...input, status: "certified" });
+      if (
+        current &&
+        (input.generation < current.generation ||
+          (input.generation === current.generation &&
+            (current.status !== "certified" || current.bindingDigest !== bindingDigest)))
+      ) {
+        throw new Error("Governor delivery identity generation is durably stale");
+      }
+      return ledger.append({
+        kind: "delivery",
+        key: input.identityKey,
+        generation: input.generation,
+        status: "certified",
+        bindingDigest,
+      });
+    },
+    deliveryBindingMatches: (input) => {
+      const state = ledger.state("delivery", input.identityKey);
+      return (
+        state?.generation === input.generation &&
+        state.status === input.status &&
+        state.bindingDigest === deliveryBinding(input)
+      );
+    },
+    revokeDelivery: (input) => {
+      const current = ledger.state("delivery", input.identityKey);
+      if (!current) {
+        throw new Error("Governor delivery ledger state is missing");
+      }
+      const bindingDigest = deliveryBinding({ ...input, status: "revoked" });
+      if (input.generation < current.generation) {
+        throw new Error("Governor delivery ledger generation regressed");
+      }
+      if (input.generation === current.generation) {
+        if (current.status !== "revoked" || current.bindingDigest !== bindingDigest) {
+          throw new Error("Governor delivery ledger binding conflicts at generation");
+        }
+      } else {
+        ledger.append({
+          kind: "delivery",
+          key: input.identityKey,
+          generation: input.generation,
+          status: "revoked",
+          bindingDigest,
+        });
+        params.testAfterLedgerAppend?.();
+      }
+      return runOpenClawStateWriteTransaction(({ db }) => {
+        const epoch = executeSqliteQueryTakeFirstSync(
           db,
           dbx(db)
             .selectFrom("governor_delivery_certification_epochs")
             .select("generation")
             .where("identity_key", "=", input.identityKey),
         );
-        const currentGeneration = normalizeSqliteNumber(current?.generation ?? null) ?? -1;
-        if (input.generation <= currentGeneration) {
-          return false;
+        if ((normalizeSqliteNumber(epoch?.generation ?? null) ?? -1) > input.generation) {
+          throw new Error("Governor delivery primary state is ahead of the host ledger");
+        }
+        const persisted = executeSqliteQueryTakeFirstSync(
+          db,
+          dbx(db)
+            .selectFrom("governor_delivery_certifications")
+            .selectAll()
+            .where("identity_key", "=", input.identityKey),
+        );
+        const persistedGeneration =
+          normalizeSqliteNumber(persisted?.certification_generation ?? null) ?? -1;
+        if (persistedGeneration > input.generation) {
+          throw new Error("Governor delivery primary certification is ahead of the host ledger");
+        }
+        if (persistedGeneration === input.generation && persisted) {
+          const matching =
+            persisted.status === "revoked" &&
+            persisted.implementation_digest === input.implementationDigest &&
+            persisted.config_digest === input.configDigest &&
+            persisted.authority_key_id === "host-broker-v1" &&
+            normalizeSqliteNumber(persisted.authority_version) === 1 &&
+            persisted.certification_signature === input.signature;
+          if (!matching) {
+            throw new Error("Governor delivery primary binding does not match the host ledger");
+          }
         }
         executeSqliteQuerySync(
           db,
@@ -139,10 +377,9 @@ export function createGovernorHostPersistence(
               updated_at: input.observedAt,
             })
             .onConflict((c) =>
-              c.column("identity_key").doUpdateSet({
-                generation: input.generation,
-                updated_at: input.observedAt,
-              }),
+              c
+                .column("identity_key")
+                .doUpdateSet({ generation: input.generation, updated_at: input.observedAt }),
             ),
         );
         executeSqliteQuerySync(
@@ -175,30 +412,20 @@ export function createGovernorHostPersistence(
             ),
         );
         return true;
-      }, options),
+      }, options);
+    },
     deliveryState: (identityKey) => {
-      const { db } = openOpenClawStateDatabase(options);
-      const epoch = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_delivery_certification_epochs")
-          .select("generation")
-          .where("identity_key", "=", identityKey),
-      );
-      if (!epoch) {
+      const state = ledger.state("delivery", identityKey);
+      if (!state || (state.status !== "certified" && state.status !== "revoked")) {
         return null;
       }
-      const row = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_delivery_certifications")
-          .select("status")
-          .where("identity_key", "=", identityKey),
-      );
-      const status = row?.status === "certified" ? "certified" : "revoked";
-      return { generation: normalizeSqliteNumber(epoch.generation) ?? -1, status };
+      return { generation: state.generation, status: state.status };
     },
   });
   PORTS.add(port);
   return port;
+}
+
+function thisBindingMatches(actual: string, expected: string): boolean {
+  return actual === expected;
 }

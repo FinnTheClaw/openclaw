@@ -12,98 +12,34 @@ import {
   governorDigest,
   type GovernorJsonValue,
 } from "../tasks/governor/canonical-json.js";
+import type {
+  GovernorTrustedApprovalResolver,
+  GovernorTrustedDeliveryResolver,
+  GovernorTrustedReceiptResolver,
+  HostBrokerState,
+  HostDeliveryEntry,
+  HostGovernorApprovalReceiptId,
+  HostGovernorApprovalRevocationId,
+  HostGovernorCapabilities,
+  HostGovernorDeliveryHandle,
+  HostGovernorReceiptId,
+} from "./governor-host-contracts.js";
 import {
   isGovernorHostPersistence,
   type GovernorHostPersistence,
 } from "./governor-host-persistence.js";
-
-declare const hostReceiptIdBrand: unique symbol;
-export type HostGovernorReceiptId = string & { readonly [hostReceiptIdBrand]: true };
-
-declare const hostApprovalReceiptIdBrand: unique symbol;
-export type HostGovernorApprovalReceiptId = string & {
-  readonly [hostApprovalReceiptIdBrand]: true;
-};
-
-declare const hostApprovalRevocationIdBrand: unique symbol;
-export type HostGovernorApprovalRevocationId = string & {
-  readonly [hostApprovalRevocationIdBrand]: true;
-};
-
-declare const hostDeliveryHandleBrand: unique symbol;
-export type HostGovernorDeliveryHandle = string & { readonly [hostDeliveryHandleBrand]: true };
-
-type HostDeliveryIdentity = Readonly<{
-  adapterId: string;
-  version: string;
-  capability: string;
-}>;
-
-type HostDeliveryEntry = Readonly<{
-  handle: HostGovernorDeliveryHandle;
-  identityKey: string;
-  identity: HostDeliveryIdentity;
-  implementationDigest: string;
-  configDigest: string;
-  generation: number;
-  status: "certified" | "revoked";
-  send: (params: { deliveryKey: string; payload: GovernorJsonValue }) => Promise<{
-    deliveryKey: string;
-    receipt: GovernorJsonValue;
-  }>;
-  signature: string;
-}>;
-
-type HostReceipt = Readonly<{
-  id: HostGovernorReceiptId;
-  scopeKey: string;
-  taskId: string;
-  taskVersion: number;
-  objectiveRevision: number;
-  planVersion: number;
-  sourceKind: "tool" | "structured_external" | "authenticated_user";
-  sourceIdentity: string;
-  payload: GovernorJsonValue;
-  observedAt: number;
-  signature: string;
-}>;
-
-export type GovernorAuthenticatedApprovalReceipt = Readonly<{
-  id: HostGovernorApprovalReceiptId;
-  grantId: string;
-  scopeKey: string;
-  taskId: string;
-  objectiveRevision: number;
-  capability: string;
-  capabilityVersion: string;
-  canonicalTargetOpaque: string;
-  approverIdentity: string;
-  approvalEpoch: number;
-  expiresAt: number;
-  observedAt: number;
-  grantKeyId: string;
-  grantSignature: string;
-  signature: string;
-}>;
-
-export type GovernorAuthenticatedApprovalRevocation = Readonly<{
-  id: HostGovernorApprovalRevocationId;
-  grantId: string;
-  scopeKey: string;
-  observedAt: number;
-  signature: string;
-}>;
-
-type HostBrokerState = {
-  readonly key: string;
-  readonly receipts: Map<HostGovernorReceiptId, HostReceipt>;
-  readonly approvals: Map<HostGovernorApprovalReceiptId, GovernorAuthenticatedApprovalReceipt>;
-  readonly revocations: Map<
-    HostGovernorApprovalRevocationId,
-    GovernorAuthenticatedApprovalRevocation
-  >;
-  readonly deliveries: Map<HostGovernorDeliveryHandle, HostDeliveryEntry>;
-};
+export type {
+  GovernorAuthenticatedApprovalReceipt,
+  GovernorAuthenticatedApprovalRevocation,
+  GovernorTrustedApprovalResolver,
+  GovernorTrustedDeliveryResolver,
+  GovernorTrustedReceiptResolver,
+  HostGovernorApprovalReceiptId,
+  HostGovernorApprovalRevocationId,
+  HostGovernorCapabilities,
+  HostGovernorDeliveryHandle,
+  HostGovernorReceiptId,
+} from "./governor-host-contracts.js";
 
 const CAPABILITIES = new WeakSet<object>();
 const RESOLVERS = new WeakSet<object>();
@@ -128,89 +64,6 @@ function sign(key: string, value: GovernorJsonValue): string {
 function opaqueId(key: string, value: GovernorJsonValue): string {
   return `ghr_${crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex")}`;
 }
-
-/** Opaque handle retained only by host bootstrap and authenticated integrations. */
-export type HostGovernorCapabilities = {
-  readonly submitObservedReceipt: (input: {
-    scopeKey: string;
-    taskId: string;
-    taskVersion: number;
-    objectiveRevision: number;
-    planVersion: number;
-    sourceKind: HostReceipt["sourceKind"];
-    sourceIdentity: string;
-    payload: GovernorJsonValue;
-    observedAt: number;
-  }) => HostGovernorReceiptId;
-  readonly submitAuthenticatedApproval: (input: {
-    scopeKey: string;
-    taskId: string;
-    objectiveRevision: number;
-    capability: string;
-    capabilityVersion: string;
-    canonicalTarget: string;
-    approverIdentity: string;
-    approvalEpoch: number;
-    expiresAt: number;
-    observedAt: number;
-  }) => HostGovernorApprovalReceiptId;
-  readonly submitApprovalRevocation: (input: {
-    grantId: string;
-    scopeKey: string;
-    observedAt: number;
-  }) => HostGovernorApprovalRevocationId;
-  readonly registerStaticDeliveryAdapter: (input: {
-    identity: HostDeliveryIdentity;
-    config: GovernorJsonValue;
-    generation: number;
-    send: (params: {
-      config: GovernorJsonValue;
-      deliveryKey: string;
-      payload: GovernorJsonValue;
-    }) => Promise<{ deliveryKey: string; receipt: GovernorJsonValue }>;
-  }) => HostGovernorDeliveryHandle;
-  readonly revokeDeliveryAdapter: (input: { handle: HostGovernorDeliveryHandle }) => boolean;
-};
-
-/** Read-only resolver supplied to the controller; it cannot create receipts. */
-export type GovernorTrustedReceiptResolver = {
-  readonly resolve: (receiptId: HostGovernorReceiptId, scopeKey: string) => HostReceipt | null;
-};
-
-/** Read-only verifier retained by the governor store, never a host mutation capability. */
-export type GovernorTrustedApprovalResolver = {
-  readonly resolveApproval: (
-    receiptId: HostGovernorApprovalReceiptId,
-    scopeKey: string,
-  ) => GovernorAuthenticatedApprovalReceipt | null;
-  readonly resolveRevocation: (
-    receiptId: HostGovernorApprovalRevocationId,
-    scopeKey: string,
-  ) => GovernorAuthenticatedApprovalRevocation | null;
-  readonly verifyApprovalGrant: (
-    grant: {
-      grantId: string;
-      taskId: string;
-      scopeKey: string;
-      objectiveRevision: number;
-      capability: string;
-      capabilityVersion: string;
-      canonicalTarget: string;
-      issuerId: string;
-      approvalEpoch: number;
-      expiresAt: number;
-      authorityKeyId: string;
-      authorityVersion: number;
-      authoritySignature: string;
-    },
-    canonicalTarget: string,
-  ) => boolean;
-};
-
-/** Read-only delivery resolution. It cannot register, rebind, or revoke adapters. */
-export type GovernorTrustedDeliveryResolver = {
-  readonly resolve: (handle: HostGovernorDeliveryHandle) => HostDeliveryEntry | null;
-};
 
 /** Internal construction check; a caller-created lookalike resolver is rejected. */
 export function isTrustedGovernorReceiptResolver(
@@ -316,6 +169,12 @@ export function createHostGovernorBroker(params: {
       grantSignature: sign(state.key, grantPayload),
       ...input,
     };
+    params.persistence.recordApprovalGrant({
+      grantId,
+      scopeKey: input.scopeKey,
+      approvalEpoch: input.approvalEpoch,
+      observedAt: input.observedAt,
+    });
     state.approvals.set(id, Object.freeze({ ...body, signature: sign(state.key, body) }));
     return id;
   };
@@ -373,14 +232,6 @@ export function createHostGovernorBroker(params: {
       throw new Error("Governor delivery identity generation is already registered");
     }
     const identityKey = opaqueId(state.key, { deliveryIdentity: identity });
-    const durableState = params.persistence.deliveryState(identityKey);
-    if (
-      durableState &&
-      (input.generation < durableState.generation ||
-        (input.generation === durableState.generation && durableState.status === "revoked"))
-    ) {
-      throw new Error("Governor delivery identity generation is durably stale");
-    }
     const configDigest = governorDigest(config);
     const implementationDigest = governorDigest({ source: String(implementation) });
     const handle = opaqueId(state.key, {
@@ -399,10 +250,18 @@ export function createHostGovernorBroker(params: {
       generation: input.generation,
       status: "certified" as const,
     };
-    state.deliveries.set(
+    const signature = sign(state.key, unsigned);
+    // Journal certification before any replayable primary row is reconciled.
+    params.persistence.certifyDelivery({
       handle,
-      Object.freeze({ ...unsigned, send, signature: sign(state.key, unsigned) }),
-    );
+      identityKey,
+      implementationDigest,
+      configDigest,
+      generation: input.generation,
+      signature,
+      observedAt: Date.now(),
+    });
+    state.deliveries.set(handle, Object.freeze({ ...unsigned, send, signature }));
     return handle;
   };
   const revokeDeliveryAdapter: HostGovernorCapabilities["revokeDeliveryAdapter"] = ({ handle }) => {
@@ -426,6 +285,7 @@ export function createHostGovernorBroker(params: {
     // This is the transaction boundary. A cache update only follows a commit.
     if (
       !params.persistence.revokeDelivery({
+        handle: prior.handle,
         identityKey: prior.identityKey,
         implementationDigest: prior.implementationDigest,
         configDigest: prior.configDigest,
@@ -498,7 +358,14 @@ export function createHostGovernorBroker(params: {
         approvalEpoch: grant.approvalEpoch,
         expiresAt: grant.expiresAt,
       };
-      return sign(state.key, payload) === grant.authoritySignature;
+      return (
+        sign(state.key, payload) === grant.authoritySignature &&
+        params.persistence.approvalGrantMatches({
+          grantId: grant.grantId,
+          scopeKey: grant.scopeKey,
+          approvalEpoch: grant.approvalEpoch,
+        })
+      );
     },
   });
   APPROVAL_RESOLVERS.add(approvalResolver);
@@ -510,9 +377,19 @@ export function createHostGovernorBroker(params: {
       }
       const durableState = params.persistence.deliveryState(entry.identityKey);
       if (
-        durableState &&
-        (durableState.generation > entry.generation ||
-          (durableState.generation === entry.generation && durableState.status === "revoked"))
+        !durableState ||
+        durableState.generation !== entry.generation ||
+        durableState.status !== "certified" ||
+        !params.persistence.deliveryBindingMatches({
+          handle: entry.handle,
+          identityKey: entry.identityKey,
+          implementationDigest: entry.implementationDigest,
+          configDigest: entry.configDigest,
+          generation: entry.generation,
+          signature: entry.signature,
+          observedAt: 0,
+          status: entry.status,
+        })
       ) {
         return null;
       }

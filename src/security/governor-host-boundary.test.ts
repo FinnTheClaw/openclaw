@@ -3,7 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "..");
-const authorityImport = /security\/governor-host-(?:broker|persistence)(?:\.js)?["']/u;
+const authorityImport =
+  /security\/governor-host-(?:anti-rollback-ledger|broker|persistence)(?:\.js)?["']/u;
 const forbiddenAuthority =
   /\b(?:createHostGovernorBroker|createGovernorHostPersistence|GovernorHostPersistence|HostGovernorCapabilities|signApprovalGrant|registerStaticDeliveryAdapter|revokeDeliveryAdapter)\b/u;
 
@@ -35,6 +36,7 @@ describe("governor host authority boundary", () => {
     const manifest = fs.readFileSync(path.join(root, "..", "package.json"), "utf8");
     expect(manifest).not.toContain("governor-host-broker");
     expect(manifest).not.toContain("governor-host-persistence");
+    expect(manifest).not.toContain("governor-host-anti-rollback-ledger");
     expect(manifest).not.toContain("governor-host-readonly");
   });
 });

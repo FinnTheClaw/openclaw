@@ -1,4 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createHostGovernorBroker } from "../../security/governor-host-broker.js";
+import { createGovernorHostPersistence } from "../../security/governor-host-persistence.js";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
@@ -162,7 +166,20 @@ describe("governor approval grants", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-approval-adversarial-" },
       async (state) => {
-        const broker = createGovernorTestBroker({ stateDir: state.stateDir });
+        let crashAfterLedgerAppend = false;
+        const broker = createHostGovernorBroker({
+          receiptSigningKey: "synthetic-governor-test-receipt-key",
+          persistence: createGovernorHostPersistence({
+            stateDir: state.stateDir,
+            ledgerKey: "synthetic-governor-test-ledger-key",
+            testAfterLedgerAppend: () => {
+              if (crashAfterLedgerAppend) {
+                crashAfterLedgerAppend = false;
+                throw new Error("synthetic approval crash after ledger append");
+              }
+            },
+          }),
+        });
         const makeStore = () =>
           new GovernorSqliteStore({
             stateDir: state.stateDir,
@@ -237,6 +254,25 @@ describe("governor approval grants", () => {
             105,
           ),
         ).toBe("approved");
+        const primaryPath = path.join(state.stateDir, "state", "openclaw.sqlite");
+        const preRevokeSnapshot = path.join(state.root, "pre-revoke-openclaw.sqlite");
+        closeOpenClawStateDatabase();
+        fs.copyFileSync(primaryPath, preRevokeSnapshot);
+        crashAfterLedgerAppend = true;
+        expect(() =>
+          broker.capabilities.submitApprovalRevocation({
+            grantId,
+            scopeKey: task.scopeKey,
+            observedAt: 105,
+          }),
+        ).toThrow(/synthetic approval crash/);
+        expect(
+          store.approvalStatus(
+            task,
+            proposal(task.taskId, createGovernorEffectId("crash-window"), grantId),
+            105,
+          ),
+        ).toBe("revoked");
         // Host revocation commits its epoch and grant tombstone before it
         // returns a receipt. A process crash immediately here must not revive
         // the grant on a fresh broker with an empty in-memory cache.
@@ -249,6 +285,7 @@ describe("governor approval grants", () => {
           store.applyAuthenticatedApprovalRevocation({ grantId, receiptId: revokeReceipt }),
         ).toBe(true);
         closeOpenClawStateDatabase();
+        fs.copyFileSync(preRevokeSnapshot, primaryPath);
         const restartedBroker = createGovernorTestBroker({ stateDir: state.stateDir });
         const restarted = new GovernorSqliteStore({
           stateDir: state.stateDir,
@@ -261,6 +298,37 @@ describe("governor approval grants", () => {
             task,
             proposal(task.taskId, createGovernorEffectId("replayed"), grantId),
             106,
+          ),
+        ).toBe("revoked");
+        const replacementReceipt = restartedBroker.capabilities.submitAuthenticatedApproval({
+          scopeKey: task.scopeKey,
+          taskId: task.taskId,
+          objectiveRevision: task.objectiveRevision,
+          capability: "fixture.mutate",
+          capabilityVersion: "1",
+          canonicalTarget: "fixture://target",
+          approverIdentity: "synthetic",
+          approvalEpoch: 2,
+          expiresAt: 220,
+          observedAt: 107,
+        });
+        const replacementGrant = restarted.admitAuthenticatedApproval({
+          task,
+          receiptId: replacementReceipt,
+          now: 107,
+        });
+        expect(
+          restarted.approvalStatus(
+            task,
+            proposal(task.taskId, createGovernorEffectId("replacement"), replacementGrant),
+            108,
+          ),
+        ).toBe("approved");
+        expect(
+          restarted.approvalStatus(
+            task,
+            proposal(task.taskId, createGovernorEffectId("old-after-reapproval"), grantId),
+            108,
           ),
         ).toBe("revoked");
       },

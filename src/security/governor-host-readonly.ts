@@ -43,6 +43,9 @@ export function createGovernorTestHostBindings(params: { stateDir?: string } = {
   }
   return createHostGovernorBroker({
     receiptSigningKey: "synthetic-governor-test-receipt-key",
-    persistence: createGovernorHostPersistence(params),
+    persistence: createGovernorHostPersistence({
+      ...params,
+      ledgerKey: "synthetic-governor-test-ledger-key",
+    }),
   });
 }
