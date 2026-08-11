@@ -15,6 +15,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId } from "./types.js";
 
 type ActionIntentDatabase = Pick<
@@ -123,6 +124,7 @@ export class GovernorActionIntentStore {
     this.#options = params.stateDir
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
+    initializeGovernorStateSchema(this.#options);
   }
 
   load(taskId: GovernorTaskId, effectId: string): GovernorActionIntent | null {

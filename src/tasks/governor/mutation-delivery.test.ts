@@ -237,13 +237,41 @@ describe("governor mutation reconciliation and delivery", () => {
       });
       expect(verified.accepted).toBe(true);
       expect(store.listEvidence(taskId)).toHaveLength(1);
+      // Replanning invalidates the prior-plan receipt, so obtain fresh evidence
+      // under the new plan before proposing completion.
       controller.preparePlan({ taskId, plan, now: 140 });
       controller.startExecution(taskId, 150);
-      controller.beginVerification(taskId, 151);
+      controller.recordToolOutcome({
+        taskId,
+        executionFence: controller.captureExecutionFence(taskId),
+        proposal: {
+          effectId: createGovernorEffectId("post-replan-verification"),
+          criterionId: "state-verified",
+          capability: "synthetic.inspect",
+          capabilityVersion: "1",
+          canonicalTarget: "fixture://state",
+          expectedEvidence: "Current exact state",
+          sourceRank: "structured_exact",
+          stopCondition: "Current state is verified",
+          mutating: false,
+          argumentsDigest: governorArgumentsDigest({ target: "state" }),
+        },
+        progressVector: { verified: true, plan: "current" },
+        outcome: {
+          transport: "completed",
+          semantic: "success",
+          sideEffect: "not_applicable",
+          verification: "not_required",
+          summaryCode: "current_state_verified",
+          evidence: { exactState: true, source: "fixture" },
+        },
+        now: 151,
+      });
+      controller.beginVerification(taskId, 152);
       const completed = controller.proposeFinish({
         taskId,
         responseText: "Verified complete",
-        now: 152,
+        now: 153,
       });
       expect(completed.completed).toBe(true);
     });
@@ -266,11 +294,11 @@ describe("governor mutation reconciliation and delivery", () => {
         now: 121,
       });
       controller.beginVerification(taskId, 122);
+      controller.setPendingUserUpdate({ taskId, pending: true, now: 123 });
       const rejected = controller.proposeFinish({
         taskId,
         responseText: "Too early",
-        pendingUserUpdate: true,
-        now: 123,
+        now: 124,
       });
       expect(rejected.completed).toBe(false);
       if (rejected.completed) {

@@ -82,6 +82,9 @@ describe("governor memory integrity", () => {
         now: 100,
       });
       expect(first.stored).toBe(true);
+      const stored = store.retrieve({ scope: scopeA, now: 100 })[0];
+      expect(stored?.sourceIdentity).not.toBe("synthetic.inventory");
+      expect(stored?.provenance.sourceRef).not.toBe("fixture://inventory/a");
       expect(
         store.store({
           memoryId: "memory-a-assistant",
@@ -162,7 +165,7 @@ describe("governor memory integrity", () => {
         status: "deleted",
         memoryId: "memory-forget",
         scopeEpoch: 1,
-        invalidated: ["primary", "cache", "index", "embedding", "negative_requery"],
+        invalidated: ["primary", "scope_epoch"],
       });
       expect(store.retrieve({ scope: scopeA, now: 111 }).map((item) => item.memoryId)).toEqual([
         "memory-keep",

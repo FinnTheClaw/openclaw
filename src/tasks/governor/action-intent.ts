@@ -4,7 +4,11 @@ import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { governorProgressVectorHash } from "./progress-monitor.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorActionProposal } from "./tool-outcome.js";
-import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
+import {
+  opaqueGovernorReference,
+  type GovernorTaskId,
+  type GovernorTaskProjection,
+} from "./types.js";
 
 export type GovernorActionIntentState = "admitted" | "running" | "completed" | "cancelled";
 
@@ -32,6 +36,17 @@ export type GovernorActionIntent = {
   updatedAt: number;
 };
 
+export function toPersistentGovernorActionProposal(
+  proposal: GovernorActionProposal,
+): GovernorActionProposal {
+  return {
+    ...proposal,
+    canonicalTarget: /^[a-f0-9]{64}$/u.test(proposal.canonicalTarget)
+      ? proposal.canonicalTarget
+      : opaqueGovernorReference("action-target", proposal.canonicalTarget),
+  };
+}
+
 export function createGovernorActionIntent(params: {
   task: GovernorTaskProjection;
   proposal: GovernorActionProposal;
@@ -39,14 +54,21 @@ export function createGovernorActionIntent(params: {
   forceReplanAfterOutcome: boolean;
   now: number;
 }): GovernorActionIntent {
-  const proposal = assertGovernorBoundarySafe(
+  const rawProposal = assertGovernorBoundarySafe(
     "log",
     params.proposal as unknown as GovernorJsonValue,
   ) as unknown as GovernorActionProposal;
+  const proposal = toPersistentGovernorActionProposal(rawProposal);
   return {
     taskId: params.task.taskId,
     effectId: proposal.effectId,
-    idempotencyKey: governorDigest({ taskId: params.task.taskId, effectId: proposal.effectId }),
+    idempotencyKey: governorDigest({
+      taskId: params.task.taskId,
+      effectId: proposal.effectId,
+      objectiveRevision: params.task.objectiveRevision,
+      planVersion: params.task.planVersion,
+      executionGeneration: params.task.executionGeneration,
+    }),
     taskVersion: params.task.taskVersion + 1,
     objectiveRevision: params.task.objectiveRevision,
     planVersion: params.task.planVersion,
@@ -69,8 +91,16 @@ export function isSameGovernorActionIntent(
   proposal: GovernorActionProposal,
 ): boolean {
   return (
+    intent.taskId === proposal.taskId &&
+    intent.effectId === proposal.effectId &&
     intent.proposalDigest === governorDigest(proposal as unknown as GovernorJsonValue) &&
     intent.idempotencyKey ===
-      governorDigest({ taskId: proposal.taskId, effectId: proposal.effectId })
+      governorDigest({
+        taskId: proposal.taskId,
+        effectId: proposal.effectId,
+        objectiveRevision: intent.objectiveRevision,
+        planVersion: intent.planVersion,
+        executionGeneration: intent.executionGeneration,
+      })
   );
 }

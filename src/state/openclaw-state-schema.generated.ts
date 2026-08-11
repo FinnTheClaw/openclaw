@@ -1301,7 +1301,73 @@ CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_owner_key ON flow_runs(owner_key);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_updated_at ON flow_runs(updated_at);
 
-CREATE TABLE IF NOT EXISTS governor_tasks (
+
+CREATE TABLE IF NOT EXISTS migration_runs (
+  id TEXT NOT NULL PRIMARY KEY,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  status TEXT NOT NULL,
+  report_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_migration_runs_started
+  ON migration_runs(started_at DESC, id);
+
+CREATE TABLE IF NOT EXISTS migration_sources (
+  source_key TEXT NOT NULL PRIMARY KEY,
+  migration_kind TEXT NOT NULL,
+  source_path TEXT NOT NULL,
+  target_table TEXT NOT NULL,
+  source_sha256 TEXT,
+  source_size_bytes INTEGER,
+  source_record_count INTEGER,
+  last_run_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  imported_at INTEGER NOT NULL,
+  removed_source INTEGER NOT NULL DEFAULT 0,
+  report_json TEXT NOT NULL,
+  FOREIGN KEY (last_run_id) REFERENCES migration_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_migration_sources_path
+  ON migration_sources(source_path, migration_kind, target_table);
+
+CREATE INDEX IF NOT EXISTS idx_migration_sources_run
+  ON migration_sources(last_run_id, source_path);
+
+CREATE TABLE IF NOT EXISTS backup_runs (
+  id TEXT NOT NULL PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  archive_path TEXT NOT NULL,
+  status TEXT NOT NULL,
+  manifest_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_backup_runs_created
+  ON backup_runs(created_at DESC, id);
+
+CREATE TABLE IF NOT EXISTS worktrees (
+  id TEXT NOT NULL PRIMARY KEY,
+  repo_fingerprint TEXT NOT NULL,
+  repo_root TEXT NOT NULL,
+  path TEXT NOT NULL,
+  branch TEXT NOT NULL,
+  base_ref TEXT NOT NULL,
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('manual', 'workboard', 'session')),
+  owner_id TEXT,
+  snapshot_ref TEXT,
+  created_at INTEGER NOT NULL,
+  last_active_at INTEGER NOT NULL,
+  removed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_worktrees_repo_fingerprint
+  ON worktrees(repo_fingerprint);
+
+CREATE INDEX IF NOT EXISTS idx_worktrees_removed_at
+  ON worktrees(removed_at);\n`;
+
+export const GOVERNOR_STATE_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS governor_tasks (
   task_id TEXT NOT NULL PRIMARY KEY,
   flow_id TEXT,
   scope_key TEXT NOT NULL,
@@ -1432,6 +1498,7 @@ CREATE TABLE IF NOT EXISTS governor_evidence (
   source_identity TEXT NOT NULL,
   task_version INTEGER NOT NULL,
   objective_revision INTEGER NOT NULL,
+  plan_version INTEGER NOT NULL,
   scope_key TEXT NOT NULL,
   observed_at INTEGER NOT NULL,
   evidence_digest TEXT NOT NULL,
@@ -1443,7 +1510,7 @@ CREATE TABLE IF NOT EXISTS governor_evidence (
 );
 
 CREATE INDEX IF NOT EXISTS idx_governor_evidence_task
-  ON governor_evidence(task_id, objective_revision, criterion_id, created_at, evidence_id);
+  ON governor_evidence(task_id, objective_revision, plan_version, criterion_id, created_at, evidence_id);
 
 CREATE TABLE IF NOT EXISTS governor_outbox (
   task_id TEXT NOT NULL,
@@ -1451,7 +1518,9 @@ CREATE TABLE IF NOT EXISTS governor_outbox (
   delivery_key TEXT NOT NULL UNIQUE,
   task_version INTEGER NOT NULL,
   objective_revision INTEGER NOT NULL,
+  plan_version INTEGER NOT NULL,
   lease_epoch INTEGER NOT NULL,
+  execution_generation INTEGER NOT NULL,
   delivery_claim_epoch INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT,
   lease_expires_at INTEGER,
@@ -1569,67 +1638,20 @@ CREATE TABLE IF NOT EXISTS governor_fanin_reducers (
   FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS migration_runs (
-  id TEXT NOT NULL PRIMARY KEY,
-  started_at INTEGER NOT NULL,
-  finished_at INTEGER,
-  status TEXT NOT NULL,
-  report_json TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_migration_runs_started
-  ON migration_runs(started_at DESC, id);
-
-CREATE TABLE IF NOT EXISTS migration_sources (
-  source_key TEXT NOT NULL PRIMARY KEY,
-  migration_kind TEXT NOT NULL,
-  source_path TEXT NOT NULL,
-  target_table TEXT NOT NULL,
-  source_sha256 TEXT,
-  source_size_bytes INTEGER,
-  source_record_count INTEGER,
-  last_run_id TEXT NOT NULL,
-  status TEXT NOT NULL,
-  imported_at INTEGER NOT NULL,
-  removed_source INTEGER NOT NULL DEFAULT 0,
-  report_json TEXT NOT NULL,
-  FOREIGN KEY (last_run_id) REFERENCES migration_runs(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_migration_sources_path
-  ON migration_sources(source_path, migration_kind, target_table);
-
-CREATE INDEX IF NOT EXISTS idx_migration_sources_run
-  ON migration_sources(last_run_id, source_path);
-
-CREATE TABLE IF NOT EXISTS backup_runs (
-  id TEXT NOT NULL PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS governor_approval_grants (
+  grant_id TEXT NOT NULL PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  objective_revision INTEGER NOT NULL,
+  capability TEXT NOT NULL,
+  capability_version TEXT NOT NULL,
+  canonical_target TEXT NOT NULL,
+  issuer_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked_at INTEGER,
   created_at INTEGER NOT NULL,
-  archive_path TEXT NOT NULL,
-  status TEXT NOT NULL,
-  manifest_json TEXT NOT NULL
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_backup_runs_created
-  ON backup_runs(created_at DESC, id);
-
-CREATE TABLE IF NOT EXISTS worktrees (
-  id TEXT NOT NULL PRIMARY KEY,
-  repo_fingerprint TEXT NOT NULL,
-  repo_root TEXT NOT NULL,
-  path TEXT NOT NULL,
-  branch TEXT NOT NULL,
-  base_ref TEXT NOT NULL,
-  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('manual', 'workboard', 'session')),
-  owner_id TEXT,
-  snapshot_ref TEXT,
-  created_at INTEGER NOT NULL,
-  last_active_at INTEGER NOT NULL,
-  removed_at INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_worktrees_repo_fingerprint
-  ON worktrees(repo_fingerprint);
-
-CREATE INDEX IF NOT EXISTS idx_worktrees_removed_at
-  ON worktrees(removed_at);\n`;
+CREATE INDEX IF NOT EXISTS idx_governor_approval_grants_task
+  ON governor_approval_grants(task_id, objective_revision, grant_id);\n`;

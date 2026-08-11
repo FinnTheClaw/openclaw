@@ -60,7 +60,7 @@ function registry() {
       sourceRank: "structured_exact",
       mutating: true,
       canonicalTargetPrefixes: ["fixture://"],
-      requiresApproval: true,
+      requiresApproval: false,
     },
   ]);
 }
@@ -77,12 +77,7 @@ function proposal(effectId: ReturnType<typeof createGovernorEffectId>) {
     stopCondition: "State is verified",
     mutating: true,
     argumentsDigest: governorArgumentsDigest({ target: "fixture://target", value: true }),
-    approvalGrant: {
-      grantId: "approval-1",
-      objectiveRevision: 1,
-      capabilityVersion: "7",
-      canonicalTarget: "fixture://target",
-    },
+    approvalGrantId: "approval-1",
   };
 }
 

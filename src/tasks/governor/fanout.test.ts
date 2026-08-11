@@ -309,6 +309,11 @@ describe("governor durable fan-out and fan-in", () => {
         payload: { safe: true },
         now: 320,
       });
+      const runningAfterCorrection = fanout.claimNext({ workerId: "worker-corrected", now: 320 });
+      expect(runningAfterCorrection.kind).toBe("claimed");
+      if (runningAfterCorrection.kind !== "claimed") {
+        throw new Error("expected running stale worker");
+      }
       controller.ingest({
         sourceMessageId: "fanout-message-2",
         sourceSequence: 2,
@@ -321,6 +326,14 @@ describe("governor durable fan-out and fan-in", () => {
       expect(
         fanout.listJobs(task.taskId).find((job) => job.jobId === "stale-after-correction"),
       ).toMatchObject({ state: "cancelled" });
+      expect(
+        completeJob({
+          fanout,
+          job: runningAfterCorrection.job,
+          workerId: "worker-corrected",
+          now: 323,
+        }).kind,
+      ).toBe("stale_worker");
     });
   });
 

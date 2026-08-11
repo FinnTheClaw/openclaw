@@ -1296,6 +1296,7 @@ CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_owner_key ON flow_runs(owner_key);
 CREATE INDEX IF NOT EXISTS idx_flow_runs_updated_at ON flow_runs(updated_at);
 
+-- GOVERNOR_SCHEMA_BEGIN
 CREATE TABLE IF NOT EXISTS governor_tasks (
   task_id TEXT NOT NULL PRIMARY KEY,
   flow_id TEXT,
@@ -1427,6 +1428,7 @@ CREATE TABLE IF NOT EXISTS governor_evidence (
   source_identity TEXT NOT NULL,
   task_version INTEGER NOT NULL,
   objective_revision INTEGER NOT NULL,
+  plan_version INTEGER NOT NULL,
   scope_key TEXT NOT NULL,
   observed_at INTEGER NOT NULL,
   evidence_digest TEXT NOT NULL,
@@ -1438,7 +1440,7 @@ CREATE TABLE IF NOT EXISTS governor_evidence (
 );
 
 CREATE INDEX IF NOT EXISTS idx_governor_evidence_task
-  ON governor_evidence(task_id, objective_revision, criterion_id, created_at, evidence_id);
+  ON governor_evidence(task_id, objective_revision, plan_version, criterion_id, created_at, evidence_id);
 
 CREATE TABLE IF NOT EXISTS governor_outbox (
   task_id TEXT NOT NULL,
@@ -1446,7 +1448,9 @@ CREATE TABLE IF NOT EXISTS governor_outbox (
   delivery_key TEXT NOT NULL UNIQUE,
   task_version INTEGER NOT NULL,
   objective_revision INTEGER NOT NULL,
+  plan_version INTEGER NOT NULL,
   lease_epoch INTEGER NOT NULL,
+  execution_generation INTEGER NOT NULL,
   delivery_claim_epoch INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT,
   lease_expires_at INTEGER,
@@ -1564,6 +1568,25 @@ CREATE TABLE IF NOT EXISTS governor_fanin_reducers (
   FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS governor_approval_grants (
+  grant_id TEXT NOT NULL PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  objective_revision INTEGER NOT NULL,
+  capability TEXT NOT NULL,
+  capability_version TEXT NOT NULL,
+  canonical_target TEXT NOT NULL,
+  issuer_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_approval_grants_task
+  ON governor_approval_grants(task_id, objective_revision, grant_id);
+
+-- GOVERNOR_SCHEMA_END
 CREATE TABLE IF NOT EXISTS migration_runs (
   id TEXT NOT NULL PRIMARY KEY,
   started_at INTEGER NOT NULL,

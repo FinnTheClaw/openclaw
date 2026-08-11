@@ -266,6 +266,12 @@ describe("durable behavior governor", () => {
         throw new Error("expected completed finish");
       }
       expect(store.outbox.list(taskId)).toHaveLength(1);
+      expect(store.listEvents(taskId).at(-1)?.payload).toMatchObject({
+        objectiveRevision: completed.certificate.objectiveRevision,
+        planVersion: completed.certificate.planVersion,
+        executionGeneration: completed.certificate.executionGeneration,
+        evidenceDigests: completed.certificate.evidenceDigests,
+      });
 
       closeOpenClawStateDatabase();
       const restartedStore = new GovernorSqliteStore({ stateDir });
@@ -278,18 +284,34 @@ describe("durable behavior governor", () => {
         if (!observableDeliveries.has(deliveryKey)) {
           observableDeliveries.set(deliveryKey, { providerId: "delivery-1" });
         }
-        return observableDeliveries.get(deliveryKey) as { providerId: string };
+        return {
+          deliveryKey,
+          receipt: observableDeliveries.get(deliveryKey) as { providerId: string },
+        };
       });
       const effectId = restartedStore.outbox.list(taskId)[0]?.effectId;
       if (!effectId) {
         throw new Error("missing completion effect");
       }
+      const unsupportedSend = vi.fn();
+      await expect(
+        restarted.dispatchOutbox({
+          taskId,
+          effectId,
+          expectedLeaseEpoch: completed.task.leaseEpoch,
+          workerId: "unsupported-delivery-worker",
+          provider: { deliveryKeySupport: "unsupported", send: unsupportedSend },
+          now: 149,
+        }),
+      ).rejects.toThrow(/certify stable delivery-key deduplication/);
+      expect(unsupportedSend).not.toHaveBeenCalled();
+      expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "pending" });
       await restarted.dispatchOutbox({
         taskId,
         effectId,
         expectedLeaseEpoch: completed.task.leaseEpoch,
         workerId: "delivery-worker-1",
-        provider: { send },
+        provider: { deliveryKeySupport: "certified", send },
         now: 150,
       });
       const replay = await restarted.dispatchOutbox({
@@ -297,7 +319,7 @@ describe("durable behavior governor", () => {
         effectId,
         expectedLeaseEpoch: completed.task.leaseEpoch,
         workerId: "delivery-worker-2",
-        provider: { send },
+        provider: { deliveryKeySupport: "certified", send },
         now: 151,
       });
       expect(replay.kind).toBe("already_sent");

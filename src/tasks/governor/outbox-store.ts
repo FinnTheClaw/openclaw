@@ -15,6 +15,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
+import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 type OutboxDatabase = Pick<OpenClawStateKyselyDatabase, "governor_tasks" | "governor_outbox">;
@@ -28,7 +29,9 @@ export type GovernorOutboxRecord = {
   deliveryKey: string;
   taskVersion: number;
   objectiveRevision: number;
+  planVersion: number;
   leaseEpoch: number;
+  executionGeneration: number;
   deliveryClaimEpoch: number;
   claimedBy?: string;
   leaseExpiresAt?: number;
@@ -65,7 +68,9 @@ export function bindGovernorOutbox(entry: GovernorOutboxRecord): Insertable<Gove
     delivery_key: entry.deliveryKey,
     task_version: entry.taskVersion,
     objective_revision: entry.objectiveRevision,
+    plan_version: entry.planVersion,
     lease_epoch: entry.leaseEpoch,
+    execution_generation: entry.executionGeneration,
     delivery_claim_epoch: entry.deliveryClaimEpoch,
     claimed_by: entry.claimedBy ?? null,
     lease_expires_at: entry.leaseExpiresAt ?? null,
@@ -86,7 +91,9 @@ function parseOutbox(row: GovernorOutboxRow): GovernorOutboxRecord {
     deliveryKey: row.delivery_key,
     taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
     objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
+    planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
     leaseEpoch: normalizeSqliteNumber(row.lease_epoch) ?? 0,
+    executionGeneration: normalizeSqliteNumber(row.execution_generation) ?? 0,
     deliveryClaimEpoch: normalizeSqliteNumber(row.delivery_claim_epoch) ?? 0,
     ...(row.claimed_by == null ? {} : { claimedBy: row.claimed_by }),
     ...(row.lease_expires_at == null
@@ -116,6 +123,7 @@ export class GovernorOutboxStore {
     this.#options = params.stateDir
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
+    initializeGovernorStateSchema(this.#options);
   }
 
   list(taskId: GovernorTaskId): GovernorOutboxRecord[] {
@@ -152,7 +160,7 @@ export class GovernorOutboxStore {
         db,
         dbx(db)
           .selectFrom("governor_tasks")
-          .select(["objective_revision", "lease_epoch"])
+          .select(["objective_revision", "plan_version", "lease_epoch", "execution_generation"])
           .where("task_id", "=", params.taskId),
       );
       if (!task) {
@@ -173,7 +181,11 @@ export class GovernorOutboxStore {
         return { kind: "not_found" };
       }
       const entry = parseOutbox(row);
-      if (entry.objectiveRevision !== normalizeSqliteNumber(task.objective_revision)) {
+      if (
+        entry.objectiveRevision !== normalizeSqliteNumber(task.objective_revision) ||
+        entry.planVersion !== normalizeSqliteNumber(task.plan_version) ||
+        entry.executionGeneration !== normalizeSqliteNumber(task.execution_generation)
+      ) {
         return { kind: "obsolete" };
       }
       if (entry.state === "sent") {
@@ -223,7 +235,7 @@ export class GovernorOutboxStore {
         db,
         dbx(db)
           .selectFrom("governor_tasks")
-          .select(["objective_revision", "lease_epoch"])
+          .select(["objective_revision", "plan_version", "lease_epoch", "execution_generation"])
           .where("task_id", "=", params.taskId),
       );
       if (!task) {
@@ -247,7 +259,11 @@ export class GovernorOutboxStore {
       if (entry.state === "sent") {
         return { kind: "already_sent", entry };
       }
-      if (entry.objectiveRevision !== normalizeSqliteNumber(task.objective_revision)) {
+      if (
+        entry.objectiveRevision !== normalizeSqliteNumber(task.objective_revision) ||
+        entry.planVersion !== normalizeSqliteNumber(task.plan_version) ||
+        entry.executionGeneration !== normalizeSqliteNumber(task.execution_generation)
+      ) {
         return { kind: "obsolete" };
       }
       if (
@@ -257,10 +273,14 @@ export class GovernorOutboxStore {
       ) {
         return { kind: "stale_worker" };
       }
+      const safeProviderReceipt = assertGovernorBoundarySafe("log", params.providerReceipt);
+      const providerReceipt = {
+        receiptDigest: governorDigest(safeProviderReceipt),
+      } as const;
       const sent: GovernorOutboxRecord = {
         ...entry,
         state: "sent",
-        providerReceipt: structuredClone(params.providerReceipt),
+        providerReceipt,
         sentAt: params.now,
         updatedAt: params.now,
       };
@@ -291,7 +311,9 @@ export class GovernorOutboxStore {
       deliveryKey: governorDigest({ taskId: params.task.taskId, effectId: params.effectId }),
       taskVersion: params.task.taskVersion,
       objectiveRevision: params.task.objectiveRevision,
+      planVersion: params.task.planVersion,
       leaseEpoch: params.task.leaseEpoch,
+      executionGeneration: params.task.executionGeneration,
       deliveryClaimEpoch: 0,
       state: "pending",
       payload,

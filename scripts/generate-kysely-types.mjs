@@ -120,14 +120,37 @@ function readUtf8(file) {
 
 function generatedSchemaModule(schema) {
   const source = readUtf8(schema.schema).trimEnd();
-  const literal = source.replaceAll("\\", "\\\\").replaceAll("`", "\\`").replaceAll("${", "\\${");
+  const literal = (value) =>
+    value.replaceAll("\\", "\\\\").replaceAll("`", "\\`").replaceAll("${", "\\${");
+  if (schema.name === "openclaw-state") {
+    const beginMarker = "-- GOVERNOR_SCHEMA_BEGIN";
+    const endMarker = "-- GOVERNOR_SCHEMA_END";
+    const begin = source.indexOf(beginMarker);
+    const end = source.indexOf(endMarker);
+    if (begin < 0 || end < begin) {
+      throw new Error("openclaw state schema is missing governor schema markers");
+    }
+    const base = `${source.slice(0, begin)}${source.slice(end + endMarker.length)}`.trimEnd();
+    const governor = source.slice(begin + beginMarker.length, end).trim();
+    return [
+      "/**",
+      " * This file was generated from the SQLite schema source.",
+      " * Please do not edit it manually.",
+      " */",
+      "",
+      `export const ${schema.schemaExport} = \`${literal(base)}\\n\`;`,
+      "",
+      `export const GOVERNOR_STATE_SCHEMA_SQL = \`${literal(governor)}\\n\`;`,
+      "",
+    ].join("\n");
+  }
   return [
     "/**",
     " * This file was generated from the SQLite schema source.",
     " * Please do not edit it manually.",
     " */",
     "",
-    `export const ${schema.schemaExport} = \`${literal}\\n\`;`,
+    `export const ${schema.schemaExport} = \`${literal(source)}\\n\`;`,
     "",
   ].join("\n");
 }

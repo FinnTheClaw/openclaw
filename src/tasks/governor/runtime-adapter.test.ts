@@ -1,9 +1,14 @@
 // Proves the integration seam is inert while disabled and proportional when explicitly enabled.
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabase,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { GovernorController } from "./controller.js";
 import { createGovernorRuntimeAdapterIfEnabled } from "./runtime-adapter.js";
+import { GovernorSqliteStore } from "./store.js";
 import type { GovernorTaskContract, GovernorTaskScope } from "./types.js";
 
 const scope: GovernorTaskScope = {
@@ -43,6 +48,73 @@ describe("governor runtime adapter", () => {
           }),
         ).toBeNull();
         expect(fs.readdirSync(state.stateDir).toSorted()).toEqual(before);
+      },
+    );
+  });
+
+  it("does not create governor objects when the ordinary shared database opens", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-governor-schema-off-" },
+      async (state) => {
+        const env = { ...process.env, OPENCLAW_STATE_DIR: state.stateDir };
+        const database = openOpenClawStateDatabase({ env });
+        const before = database.db
+          .prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'governor_%'")
+          .all();
+        expect(before).toEqual([]);
+        closeOpenClawStateDatabase();
+        new GovernorSqliteStore({ stateDir: state.stateDir });
+        const after = openOpenClawStateDatabase({ env })
+          .db.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'governor_%'")
+          .all();
+        expect(after.length).toBeGreaterThan(0);
+        closeOpenClawStateDatabase();
+      },
+    );
+  });
+
+  it("persists only keyed opaque identity references", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-governor-opaque-identities-" },
+      async (state) => {
+        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const controller = new GovernorController(store, []);
+        try {
+          const privateScope = {
+            ...scope,
+            principalId: "+15550009113",
+            accountId: "account-private-9113",
+            conversationId: "conversation-private-7255",
+          };
+          const task = controller.ingest({
+            sourceMessageId: "message-private-9113",
+            sourceSequence: 1,
+            scope: privateScope,
+            mode: "FOCUSED",
+            contract,
+            now: 100,
+          }).task;
+          controller.recordContradiction({
+            taskId: task.taskId,
+            contradiction: {
+              contradictionId: "private-source",
+              detail: "synthetic contradiction",
+              severity: "high",
+              sourceRef: "signal://private-7255",
+              observedAt: 101,
+            },
+            now: 101,
+          });
+          const raw = JSON.stringify({
+            task: store.loadTask(task.taskId),
+            events: store.listEvents(task.taskId),
+          });
+          for (const privateValue of ["+15550009113", "9113", "7255", "message-private"]) {
+            expect(raw).not.toContain(privateValue);
+          }
+        } finally {
+          closeOpenClawStateDatabase();
+        }
       },
     );
   });

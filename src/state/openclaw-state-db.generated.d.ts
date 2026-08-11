@@ -618,6 +618,20 @@ export interface GovernorActionIntents {
   updated_at: number;
 }
 
+export interface GovernorApprovalGrants {
+  canonical_target: string;
+  capability: string;
+  capability_version: string;
+  created_at: number;
+  expires_at: number;
+  grant_id: string;
+  issuer_id: string;
+  objective_revision: number;
+  revoked_at: number | null;
+  scope_key: string;
+  task_id: string;
+}
+
 export interface GovernorCheckpoints {
   checkpoint_digest: string;
   checkpoint_id: string;
@@ -676,6 +690,7 @@ export interface GovernorEvidence {
   objective_revision: number;
   observed_at: number;
   payload_json: string;
+  plan_version: number;
   scope_key: string;
   source_identity: string;
   source_kind: string;
@@ -764,10 +779,12 @@ export interface GovernorOutbox {
   delivery_claim_epoch: Generated<number>;
   delivery_key: string;
   effect_id: string;
+  execution_generation: number;
   lease_epoch: number;
   lease_expires_at: number | null;
   objective_revision: number;
   payload_json: string;
+  plan_version: number;
   provider_receipt_json: string | null;
   sent_at: number | null;
   state: string;
@@ -1300,6 +1317,7 @@ export interface DB {
   gateway_restart_intent: GatewayRestartIntent;
   gateway_restart_sentinel: GatewayRestartSentinel;
   governor_action_intents: GovernorActionIntents;
+  governor_approval_grants: GovernorApprovalGrants;
   governor_checkpoints: GovernorCheckpoints;
   governor_effects: GovernorEffects;
   governor_events: GovernorEvents;

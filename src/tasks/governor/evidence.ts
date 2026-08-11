@@ -20,6 +20,7 @@ export type GovernorEvidenceCandidate = {
   sourceIdentity: string;
   taskVersion: number;
   objectiveRevision: number;
+  planVersion: number;
   scopeKey: string;
   observedAt: number;
   payload: GovernorJsonValue;
@@ -73,6 +74,9 @@ export function admitGovernorEvidence(params: {
     return { admitted: false, reason: "scope_mismatch" };
   }
   if (params.candidate.objectiveRevision !== params.task.objectiveRevision) {
+    return { admitted: false, reason: "objective_revision_mismatch" };
+  }
+  if (params.candidate.planVersion !== params.task.planVersion) {
     return { admitted: false, reason: "objective_revision_mismatch" };
   }
   if (params.candidate.taskVersion > params.task.taskVersion) {

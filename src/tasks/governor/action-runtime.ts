@@ -2,10 +2,14 @@
 import {
   createGovernorActionIntent,
   isSameGovernorActionIntent,
+  toPersistentGovernorActionProposal,
   type GovernorActionIntent,
 } from "./action-intent.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
-import type { GovernorCapabilityRegistry } from "./capability-registry.js";
+import {
+  GovernorActionRejectedError,
+  type GovernorCapabilityRegistry,
+} from "./capability-registry.js";
 import { createGovernorEventRecord } from "./events.js";
 import {
   admitGovernorEvidence,
@@ -106,9 +110,18 @@ export class GovernorActionRuntime {
   admit(params: GovernorAdmitActionParams): GovernorActionAdmissionResult {
     const task = this.#task(params.taskId);
     const proposal = { ...params.proposal, taskId: task.taskId };
+    const persistedProposal = toPersistentGovernorActionProposal(proposal);
     const existing = this.store.actionIntents.load(task.taskId, proposal.effectId);
     if (existing) {
-      if (!isSameGovernorActionIntent(existing, proposal)) {
+      const stale =
+        existing.objectiveRevision !== task.objectiveRevision ||
+        existing.planVersion !== task.planVersion ||
+        existing.leaseEpoch !== task.leaseEpoch ||
+        existing.executionGeneration !== task.executionGeneration;
+      if (stale) {
+        return { accepted: false, reason: "stale_execution", task };
+      }
+      if (!isSameGovernorActionIntent(existing, persistedProposal)) {
         throw new Error(`Conflicting governor action intent ${proposal.effectId}`);
       }
       return { accepted: true, task, intent: existing };
@@ -125,6 +138,18 @@ export class GovernorActionRuntime {
       throw new Error(`Cannot admit tool action while task is ${task.state}`);
     }
     this.capabilities.assertAuthorized(task, proposal);
+    if (proposal.mutating && this.capabilities.requiresApproval(proposal.capability)) {
+      const approval = this.store.approvals.status(task, proposal, params.now);
+      if (approval === "revoked") {
+        throw new GovernorActionRejectedError("approval_revoked");
+      }
+      if (approval === "stale") {
+        throw new GovernorActionRejectedError("approval_stale");
+      }
+      if (approval !== "approved") {
+        throw new GovernorActionRejectedError("approval_required");
+      }
+    }
     const admission = evaluateGovernorActionAdmission({
       proposal,
       progressVector: params.progressVector,
@@ -176,7 +201,7 @@ export class GovernorActionRuntime {
       return false;
     }
     try {
-      this.capabilities.assertAuthorized(task, stored.proposal);
+      this.capabilities.assertPersistedIntentAuthorized(task, stored.proposal);
       return true;
     } catch {
       return false;
@@ -205,6 +230,14 @@ export class GovernorActionRuntime {
     }
     const existingEffect = this.store.loadEffect(task.taskId, intent.effectId);
     if (existingEffect) {
+      if (
+        existingEffect.objectiveRevision !== task.objectiveRevision ||
+        existingEffect.planVersion !== task.planVersion ||
+        existingEffect.leaseEpoch !== task.leaseEpoch ||
+        existingEffect.executionGeneration !== task.executionGeneration
+      ) {
+        return { accepted: false, reason: "stale_execution", task };
+      }
       const existingEvidence = this.store
         .listEvidence(task.taskId)
         .find((item) => item.evidenceId === `evidence_${intent.effectId}`);
@@ -267,6 +300,7 @@ export class GovernorActionRuntime {
         sourceIdentity: intent.proposal.capability,
         taskVersion: intent.taskVersion,
         objectiveRevision: task.objectiveRevision,
+        planVersion: task.planVersion,
         scopeKey: task.scopeKey,
         observedAt: params.now,
         payload: params.outcome.evidence,
@@ -276,14 +310,28 @@ export class GovernorActionRuntime {
         evidence = admission.evidence;
       }
     }
+    const claims = evidence
+      ? [
+          ...task.claims,
+          {
+            claimId: evidence.criterionId,
+            evidenceDigest: evidence.evidenceDigest,
+            objectiveRevision: evidence.objectiveRevision,
+            planVersion: evidence.planVersion,
+            scopeKey: evidence.scopeKey,
+            admittedAt: evidence.createdAt,
+          },
+        ]
+      : task.claims;
     const next = intent.forceReplanAfterOutcome
       ? {
           ...task,
           state: "REPLAN_REQUIRED" as const,
+          claims,
           taskVersion: task.taskVersion + 1,
           updatedAt: params.now,
         }
-      : nextTaskVersion(task, params.now);
+      : { ...nextTaskVersion(task, params.now), claims };
     const event = createGovernorEventRecord({
       task: next,
       eventType: "tool_outcome_recorded",

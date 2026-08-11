@@ -15,7 +15,12 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
-import { canonicalGovernorScopeKey, type GovernorTaskScope } from "./types.js";
+import { initializeGovernorStateSchema } from "./state-schema.js";
+import {
+  canonicalGovernorScopeKey,
+  opaqueGovernorReference,
+  type GovernorTaskScope,
+} from "./types.js";
 
 type GovernorMemoryDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -71,7 +76,7 @@ export type GovernorForgetResult =
       status: "deleted";
       memoryId: string;
       scopeEpoch: number;
-      invalidated: readonly ["primary", "cache", "index", "embedding", "negative_requery"];
+      invalidated: readonly ["primary", "scope_epoch"];
     }
   | { status: "not_found"; memoryId: string; scopeEpoch: number }
   | { status: "partial_failure"; memoryId: string; scopeEpoch: number; failed: readonly string[] };
@@ -164,6 +169,7 @@ export class GovernorMemoryStore {
     this.#options = params.stateDir
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
+    initializeGovernorStateSchema(this.#options);
   }
 
   #database() {
@@ -219,7 +225,7 @@ export class GovernorMemoryStore {
         scopeEpoch: currentEpoch,
         status,
         sourceKind: params.sourceKind,
-        sourceIdentity: params.sourceIdentity,
+        sourceIdentity: opaqueGovernorReference("memory-source", params.sourceIdentity),
         sourceRank: SOURCE_RANK[params.sourceKind],
         observedAt: params.observedAt,
         ...(params.freshnessExpiresAt !== undefined
@@ -228,7 +234,7 @@ export class GovernorMemoryStore {
         confidence: params.confidence,
         sensitivity: params.sensitivity,
         provenance: {
-          sourceRef: params.sourceRef,
+          sourceRef: opaqueGovernorReference("memory-source-ref", params.sourceRef),
           observedAt: params.observedAt,
           scopeKey,
           confidence: params.confidence,
@@ -361,7 +367,7 @@ export class GovernorMemoryStore {
         status: "deleted",
         memoryId: params.memoryId,
         scopeEpoch: nextEpoch,
-        invalidated: ["primary", "cache", "index", "embedding", "negative_requery"],
+        invalidated: ["primary", "scope_epoch"],
       };
     }, this.#options);
   }

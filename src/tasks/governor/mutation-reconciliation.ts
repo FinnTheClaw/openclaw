@@ -98,6 +98,7 @@ export function resolveGovernorMutation(params: {
       sourceIdentity: params.sourceIdentity,
       taskVersion: task.taskVersion,
       objectiveRevision: task.objectiveRevision,
+      planVersion: task.planVersion,
       scopeKey: task.scopeKey,
       observedAt: params.now,
       payload: safeEvidence,
@@ -110,6 +111,19 @@ export function resolveGovernorMutation(params: {
   }
   const next: GovernorTaskProjection = {
     ...task,
+    claims: evidence
+      ? [
+          ...task.claims,
+          {
+            claimId: evidence.criterionId,
+            evidenceDigest: evidence.evidenceDigest,
+            objectiveRevision: evidence.objectiveRevision,
+            planVersion: evidence.planVersion,
+            scopeKey: evidence.scopeKey,
+            admittedAt: evidence.createdAt,
+          },
+        ]
+      : task.claims,
     taskVersion: task.taskVersion + 1,
     updatedAt: params.now,
   };

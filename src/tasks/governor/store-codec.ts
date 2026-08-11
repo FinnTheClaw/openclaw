@@ -43,6 +43,8 @@ export function parseTaskRow(row: GovernorTaskRow): GovernorTaskProjection {
   }
   return {
     ...projection,
+    conditions: projection.conditions ?? { contradictions: [], pendingUserUpdate: false },
+    claims: projection.claims ?? [],
     taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
     objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
     planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
@@ -151,6 +153,7 @@ export function bindEvidence(evidence: GovernorEvidenceRecord): Insertable<Gover
     source_identity: evidence.sourceIdentity,
     task_version: evidence.taskVersion,
     objective_revision: evidence.objectiveRevision,
+    plan_version: evidence.planVersion,
     scope_key: evidence.scopeKey,
     observed_at: evidence.observedAt,
     evidence_digest: evidence.evidenceDigest,
@@ -170,6 +173,7 @@ export function parseEvidenceRow(row: GovernorEvidenceRow): GovernorEvidenceReco
     sourceIdentity: row.source_identity,
     taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
     objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
+    planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
     scopeKey: row.scope_key,
     observedAt: normalizeSqliteNumber(row.observed_at) ?? 0,
     payload: parseJson(row.payload_json, "evidence payload") as GovernorJsonValue,

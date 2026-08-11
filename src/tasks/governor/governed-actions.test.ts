@@ -122,20 +122,9 @@ describe("governed actions", () => {
       capabilityVersion: "2",
       canonicalTarget: "fixture://mutable",
       mutating: true,
-      approvalGrant: {
-        grantId: "approval-1",
-        objectiveRevision: task.objectiveRevision,
-        capabilityVersion: "2",
-        canonicalTarget: "fixture://mutable",
-      },
+      approvalGrantId: "approval-1",
     };
     expect(() => registry().assertAuthorized(task, proposal)).not.toThrow();
-    expect(() =>
-      registry().assertAuthorized(task, {
-        ...proposal,
-        approvalGrant: { ...proposal.approvalGrant!, objectiveRevision: 0 },
-      }),
-    ).toThrow(new GovernorActionRejectedError("approval_stale"));
     expect(() =>
       registry().assertAuthorized(task, { ...proposal, canonicalTarget: "fixture://other" }),
     ).toThrow(new GovernorActionRejectedError("target_not_supported"));

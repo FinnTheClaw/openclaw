@@ -1,6 +1,6 @@
 // Authorizes versioned capabilities and binds privileged actions to current approvals.
 import type { GovernorActionProposal } from "./tool-outcome.js";
-import type { GovernorTaskProjection } from "./types.js";
+import { opaqueGovernorReference, type GovernorTaskProjection } from "./types.js";
 
 export type GovernorCapabilityDefinition = {
   capability: string;
@@ -67,6 +67,10 @@ export class GovernorCapabilityRegistry {
       );
   }
 
+  requiresApproval(capability: string): boolean {
+    return this.#definitions.get(capability)?.requiresApproval === true;
+  }
+
   assertAuthorized(task: GovernorTaskProjection, proposal: GovernorActionProposal): void {
     const definition = this.#definitions.get(proposal.capability);
     if (!definition) {
@@ -103,19 +107,43 @@ export class GovernorCapabilityRegistry {
     if (!definition.requiresApproval) {
       return;
     }
-    const approval = proposal.approvalGrant;
-    if (!approval) {
+    if (!proposal.approvalGrantId) {
       throw new GovernorActionRejectedError("approval_required");
     }
-    if (approval.revokedAt !== undefined) {
-      throw new GovernorActionRejectedError("approval_revoked");
+  }
+
+  assertPersistedIntentAuthorized(
+    task: GovernorTaskProjection,
+    proposal: GovernorActionProposal,
+  ): void {
+    const definition = this.#definitions.get(proposal.capability);
+    if (!definition) {
+      throw new GovernorActionRejectedError("unknown_capability");
+    }
+    if (definition.version !== proposal.capabilityVersion) {
+      throw new GovernorActionRejectedError("capability_version_mismatch");
     }
     if (
-      approval.objectiveRevision !== task.objectiveRevision ||
-      approval.capabilityVersion !== definition.version ||
-      approval.canonicalTarget !== proposal.canonicalTarget
+      definition.sourceRank !== proposal.sourceRank ||
+      definition.mutating !== proposal.mutating
     ) {
-      throw new GovernorActionRejectedError("approval_stale");
+      throw new GovernorActionRejectedError("source_rank_mismatch");
+    }
+    if (!proposal.mutating) {
+      if (!task.contract.authority.allowReadOnlyDiscovery) {
+        throw new GovernorActionRejectedError("read_only_discovery_denied");
+      }
+      return;
+    }
+    if (!task.contract.authority.mutationCapabilities.includes(proposal.capability)) {
+      throw new GovernorActionRejectedError("mutation_capability_denied");
+    }
+    if (
+      !task.contract.authority.canonicalTargets.some(
+        (target) => opaqueGovernorReference("action-target", target) === proposal.canonicalTarget,
+      )
+    ) {
+      throw new GovernorActionRejectedError("mutation_target_denied");
     }
   }
 }

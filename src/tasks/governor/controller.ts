@@ -40,6 +40,7 @@ import {
   type GovernorCommitResult,
   type GovernorIngressResult,
 } from "./store.js";
+import { opaqueGovernorReference } from "./types.js";
 import type {
   GovernorMode,
   GovernorPlan,
@@ -48,6 +49,7 @@ import type {
   GovernorTaskProjection,
   GovernorTaskScope,
   GovernorTaskState,
+  GovernorTaskContradiction,
 } from "./types.js";
 
 export type GovernorFinishResult =
@@ -63,7 +65,11 @@ export type {
 export type { GovernorMutationResolution } from "./mutation-reconciliation.js";
 
 export type GovernorDeliveryProvider = {
-  send: (params: { deliveryKey: string; payload: GovernorJsonValue }) => Promise<GovernorJsonValue>;
+  deliveryKeySupport: "certified" | "unsupported";
+  send: (params: { deliveryKey: string; payload: GovernorJsonValue }) => Promise<{
+    deliveryKey: string;
+    receipt: GovernorJsonValue;
+  }>;
 };
 
 function assertApplied(result: GovernorCommitResult): GovernorTaskProjection {
@@ -276,6 +282,79 @@ export class GovernorController {
     return this.#transition(this.#task(taskId), "VERIFYING", now);
   }
 
+  setPendingUserUpdate(params: {
+    taskId: GovernorTaskId;
+    pending: boolean;
+    now: number;
+  }): GovernorTaskProjection {
+    const task = this.#task(params.taskId);
+    const next = {
+      ...nextTaskVersion(task, params.now),
+      conditions: { ...task.conditions, pendingUserUpdate: params.pending },
+    };
+    const event = createGovernorEventRecord({
+      task: next,
+      eventType: "task_conditions_updated",
+      payload: { pendingUserUpdate: params.pending },
+      now: params.now,
+    });
+    return assertApplied(this.store.commit({ current: task, next, event }));
+  }
+
+  recordContradiction(params: {
+    taskId: GovernorTaskId;
+    contradiction: GovernorTaskContradiction;
+    now: number;
+  }): GovernorTaskProjection {
+    const task = this.#task(params.taskId);
+    const safe = assertGovernorBoundarySafe(
+      "log",
+      params.contradiction,
+    ) as GovernorTaskContradiction;
+    const contradiction: GovernorTaskContradiction = {
+      ...safe,
+      sourceRef: opaqueGovernorReference("contradiction-source", safe.sourceRef),
+    };
+    const next = {
+      ...nextTaskVersion(task, params.now),
+      conditions: {
+        ...task.conditions,
+        contradictions: [...task.conditions.contradictions, contradiction],
+      },
+    };
+    const event = createGovernorEventRecord({
+      task: next,
+      eventType: "task_conditions_updated",
+      payload: { contradictionId: contradiction.contradictionId, severity: contradiction.severity },
+      now: params.now,
+    });
+    return assertApplied(this.store.commit({ current: task, next, event }));
+  }
+
+  resolveContradiction(
+    taskId: GovernorTaskId,
+    contradictionId: string,
+    now: number,
+  ): GovernorTaskProjection {
+    const task = this.#task(taskId);
+    const next = {
+      ...nextTaskVersion(task, now),
+      conditions: {
+        ...task.conditions,
+        contradictions: task.conditions.contradictions.filter(
+          (item) => item.contradictionId !== contradictionId,
+        ),
+      },
+    };
+    const event = createGovernorEventRecord({
+      task: next,
+      eventType: "task_conditions_updated",
+      payload: { resolvedContradictionId: contradictionId },
+      now,
+    });
+    return assertApplied(this.store.commit({ current: task, next, event }));
+  }
+
   resolveMutation(params: {
     taskId: GovernorTaskId;
     executionFence: Omit<GovernorExecutionFence, "taskVersion">;
@@ -291,14 +370,13 @@ export class GovernorController {
   proposeFinish(params: {
     taskId: GovernorTaskId;
     responseText: string;
-    contradictions?: readonly string[];
-    pendingUserUpdate?: boolean;
     now: number;
   }): GovernorFinishResult {
     const safeFinish = assertGovernorBoundarySafe("session", {
       responseText: params.responseText,
-      contradictions: [...(params.contradictions ?? [])],
-    }) as { responseText: string; contradictions: string[] };
+    }) as {
+      responseText: string;
+    };
     let task = this.#task(params.taskId);
     if (task.state !== "VERIFYING") {
       throw new Error(`Cannot propose finish while task is ${task.state}`);
@@ -306,15 +384,13 @@ export class GovernorController {
     task = this.#transition(task, "FINISH_CANDIDATE", params.now);
     const runningActionIds = [
       ...this.store.actionIntents.listPendingIds(task.taskId, task.objectiveRevision),
-      ...this.store.listUnfinishedFanoutJobIds(task.taskId),
+      ...this.store.listUnfinishedFanoutJobIds(task),
     ].toSorted();
     const decision = evaluateGovernorFinish({
       task,
       effects: this.store.listEffects(task.taskId),
       evidence: this.store.listEvidence(task.taskId),
-      contradictions: safeFinish.contradictions,
       runningActionIds,
-      pendingUserUpdate: params.pendingUserUpdate,
       now: params.now + 1,
     });
     if (!decision.accepted) {
@@ -372,6 +448,11 @@ export class GovernorController {
       eventType: "completion_certified",
       payload: {
         certificateDigest: decision.certificate.certificateDigest,
+        objectiveRevision: decision.certificate.objectiveRevision,
+        planVersion: decision.certificate.planVersion,
+        executionGeneration: decision.certificate.executionGeneration,
+        evidenceDigests: decision.certificate.evidenceDigests,
+        verifiedAt: decision.certificate.verifiedAt,
         outboxDeliveryKey: outbox.deliveryKey,
       },
       now: params.now + 1,
@@ -391,21 +472,27 @@ export class GovernorController {
     provider: GovernorDeliveryProvider;
     now: number;
   }): Promise<GovernorOutboxClaimResult> {
+    if (params.provider.deliveryKeySupport !== "certified") {
+      throw new Error("Governor delivery provider must certify stable delivery-key deduplication");
+    }
     const claim = this.store.outbox.claim(params);
     if (claim.kind !== "claimed") {
       return claim;
     }
-    const receipt = await params.provider.send({
+    const delivery = await params.provider.send({
       deliveryKey: claim.entry.deliveryKey,
       payload: claim.entry.payload,
     });
+    if (delivery.deliveryKey !== claim.entry.deliveryKey) {
+      throw new Error("Governor delivery provider returned a mismatched delivery key");
+    }
     return this.store.outbox.markSent({
       taskId: params.taskId,
       effectId: params.effectId,
       expectedLeaseEpoch: params.expectedLeaseEpoch,
       expectedDeliveryClaimEpoch: claim.entry.deliveryClaimEpoch,
       workerId: params.workerId,
-      providerReceipt: receipt,
+      providerReceipt: delivery.receipt,
       now: params.now + 1,
     });
   }

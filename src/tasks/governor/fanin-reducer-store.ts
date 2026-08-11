@@ -21,6 +21,7 @@ import {
   type GovernorReducerClaim,
 } from "./fanout-codec.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
+import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export type GovernorClaimReducerParams = {
@@ -50,6 +51,7 @@ export class GovernorFaninReducerStore {
     this.#options = params.stateDir
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
+    initializeGovernorStateSchema(this.#options);
   }
 
   #task(db: DatabaseSync, taskId: GovernorTaskId): GovernorTaskProjection | null {

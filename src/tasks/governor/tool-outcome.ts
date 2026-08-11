@@ -37,13 +37,7 @@ export type GovernorActionProposal = {
   stopCondition: string;
   mutating: boolean;
   argumentsDigest: string;
-  approvalGrant?: {
-    grantId: string;
-    objectiveRevision: number;
-    capabilityVersion: string;
-    canonicalTarget: string;
-    revokedAt?: number;
-  };
+  approvalGrantId?: string;
 };
 
 export type GovernorEffectRecord = GovernorActionProposal & {
@@ -96,6 +90,9 @@ export function createGovernorEffectRecord(params: {
     idempotencyKey: governorDigest({
       taskId: safeProposal.taskId,
       effectId: safeProposal.effectId,
+      objectiveRevision: params.objectiveRevision,
+      planVersion: params.planVersion,
+      executionGeneration: params.executionGeneration,
     }),
     taskVersion: params.taskVersion,
     objectiveRevision: params.objectiveRevision,

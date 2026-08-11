@@ -11,6 +11,7 @@ import {
 export type GovernorEventType =
   | "task_received"
   | "task_corrected"
+  | "task_conditions_updated"
   | "stale_ingress_ignored"
   | "state_transitioned"
   | "plan_replaced"

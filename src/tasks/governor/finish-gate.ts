@@ -23,6 +23,7 @@ export type GovernorCompletionCertificate = {
   taskId: string;
   objectiveRevision: number;
   planVersion: number;
+  executionGeneration: number;
   evidenceDigests: readonly string[];
   verifiedAt: number;
   certificateDigest: string;
@@ -39,6 +40,7 @@ function currentEvidence(params: {
   return params.evidence.filter(
     (item) =>
       item.objectiveRevision === params.task.objectiveRevision &&
+      item.planVersion === params.task.planVersion &&
       item.scopeKey === params.task.scopeKey &&
       item.admissibility === "admitted" &&
       item.invalidatedAt === undefined,
@@ -49,21 +51,36 @@ export function evaluateGovernorFinish(params: {
   task: GovernorTaskProjection;
   effects: readonly GovernorEffectRecord[];
   evidence: readonly GovernorEvidenceRecord[];
-  contradictions?: readonly string[];
   runningActionIds?: readonly string[];
-  pendingUserUpdate?: boolean;
   now: number;
 }): GovernorFinishDecision {
   const evidence = currentEvidence(params);
   const supportedCriteria = new Set(evidence.map((item) => item.criterionId));
+  const supportedClaims = new Set(
+    params.task.claims
+      .filter(
+        (claim) =>
+          claim.objectiveRevision === params.task.objectiveRevision &&
+          claim.planVersion === params.task.planVersion &&
+          claim.scopeKey === params.task.scopeKey,
+      )
+      .map((claim) => claim.claimId),
+  );
   const mandatoryCriteria = params.task.contract.completionCriteria.filter(
     (criterion) => criterion.mandatory,
   );
   const unmetCriteria = mandatoryCriteria
-    .filter((criterion) => !supportedCriteria.has(criterion.criterionId))
+    .filter(
+      (criterion) =>
+        !supportedCriteria.has(criterion.criterionId) ||
+        !supportedClaims.has(criterion.criterionId),
+    )
     .map((criterion) => criterion.criterionId);
   const currentEffects = params.effects.filter(
-    (effect) => effect.objectiveRevision === params.task.objectiveRevision,
+    (effect) =>
+      effect.objectiveRevision === params.task.objectiveRevision &&
+      effect.planVersion === params.task.planVersion &&
+      effect.executionGeneration === params.task.executionGeneration,
   );
   const reconciliationEffectIds = currentEffects
     .filter((effect) => effect.reconcileRequired)
@@ -78,9 +95,11 @@ export function evaluateGovernorFinish(params: {
         (!effect.criterionId || !supportedCriteria.has(effect.criterionId)),
     )
     .map((effect) => `${effect.effectId}:${effect.outcome.semantic}`);
-  const contradictions = [...(params.contradictions ?? [])];
+  const contradictions = params.task.conditions.contradictions
+    .filter((item) => item.severity === "high")
+    .map((item) => item.detail);
   const runningActionIds = [...(params.runningActionIds ?? [])];
-  const pendingUserUpdate = params.pendingUserUpdate ?? false;
+  const pendingUserUpdate = params.task.conditions.pendingUserUpdate;
   if (
     unmetCriteria.length > 0 ||
     semanticFailures.length > 0 ||
@@ -117,6 +136,7 @@ export function evaluateGovernorFinish(params: {
     taskId: params.task.taskId,
     objectiveRevision: params.task.objectiveRevision,
     planVersion: params.task.planVersion,
+    executionGeneration: params.task.executionGeneration,
     evidenceDigests,
     verifiedAt: params.now,
   };

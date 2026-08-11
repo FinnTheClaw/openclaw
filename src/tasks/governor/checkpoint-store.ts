@@ -8,6 +8,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorCheckpoint } from "./planning-policy.js";
+import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId } from "./types.js";
 
 type CheckpointDatabase = Pick<OpenClawStateKyselyDatabase, "governor_checkpoints">;
@@ -52,6 +53,7 @@ export class GovernorCheckpointStore {
     this.#options = params.stateDir
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
+    initializeGovernorStateSchema(this.#options);
   }
 
   list(taskId: GovernorTaskId): GovernorCheckpoint[] {
