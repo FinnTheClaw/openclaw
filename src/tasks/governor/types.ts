@@ -105,21 +105,21 @@ function assertNonEmpty(value: string, label: string): string {
   return normalized;
 }
 
-function brandedId<T extends string>(prefix: string, value?: string): T {
+function brandedId(prefix: string, value?: string): string {
   const suffix = value ? assertNonEmpty(value, `${prefix} id`) : crypto.randomUUID();
-  return `${prefix}_${suffix}` as T;
+  return `${prefix}_${suffix}`;
 }
 
 export function createGovernorTaskId(value?: string): GovernorTaskId {
-  return brandedId<GovernorTaskId>("gtask", value);
+  return brandedId("gtask", value) as GovernorTaskId;
 }
 
 export function createGovernorEventId(value?: string): GovernorEventId {
-  return brandedId<GovernorEventId>("gevent", value);
+  return brandedId("gevent", value) as GovernorEventId;
 }
 
 export function createGovernorEffectId(value?: string): GovernorEffectId {
-  return brandedId<GovernorEffectId>("geffect", value);
+  return brandedId("geffect", value) as GovernorEffectId;
 }
 
 export function canonicalGovernorScopeKey(scope: GovernorTaskScope): string {

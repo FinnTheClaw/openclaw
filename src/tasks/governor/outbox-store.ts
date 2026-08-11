@@ -50,9 +50,9 @@ function dbx(db: DatabaseSync) {
   return getNodeSqliteKysely<OutboxDatabase>(db);
 }
 
-function parseJson<T>(raw: string, label: string): T {
+function parseJson(raw: string, label: string): unknown {
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(raw) as unknown;
   } catch (error) {
     throw new Error(`Invalid persisted governor ${label}`, { cause: error });
   }
@@ -93,13 +93,13 @@ function parseOutbox(row: GovernorOutboxRow): GovernorOutboxRecord {
       ? {}
       : { leaseExpiresAt: normalizeSqliteNumber(row.lease_expires_at) ?? 0 }),
     state: row.state as GovernorOutboxState,
-    payload: parseJson<GovernorJsonValue>(row.payload_json, "outbox payload"),
+    payload: parseJson(row.payload_json, "outbox payload") as GovernorJsonValue,
     ...(row.provider_receipt_json
       ? {
-          providerReceipt: parseJson<GovernorJsonValue>(
+          providerReceipt: parseJson(
             row.provider_receipt_json,
             "provider receipt",
-          ),
+          ) as GovernorJsonValue,
         }
       : {}),
     ...(row.claimed_at == null ? {} : { claimedAt: normalizeSqliteNumber(row.claimed_at) ?? 0 }),

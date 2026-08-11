@@ -36,9 +36,9 @@ function dbx(db: DatabaseSync) {
   return getNodeSqliteKysely<ActionIntentDatabase>(db);
 }
 
-function parseJson<T>(raw: string, label: string): T {
+function parseJson(raw: string, label: string): unknown {
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(raw) as unknown;
   } catch (error) {
     throw new Error(`Invalid persisted governor ${label}`, { cause: error });
   }
@@ -73,7 +73,10 @@ export function bindGovernorActionIntent(
 }
 
 function parseActionIntent(row: GovernorActionIntentRow): GovernorActionIntent {
-  const proposal = parseJson<GovernorActionIntent["proposal"]>(row.proposal_json, "action intent");
+  const proposal = parseJson(
+    row.proposal_json,
+    "action intent",
+  ) as GovernorActionIntent["proposal"];
   const intent: GovernorActionIntent = {
     taskId: row.task_id as GovernorTaskId,
     effectId: row.effect_id,

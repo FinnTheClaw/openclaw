@@ -92,9 +92,9 @@ function dbx(db: DatabaseSync) {
   return getNodeSqliteKysely<FanoutDatabase>(db);
 }
 
-function parseJson<T>(raw: string, label: string): T {
+function parseJson(raw: string, label: string): unknown {
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(raw) as unknown;
   } catch (error) {
     throw new Error(`Invalid governor fanout ${label}`, { cause: error });
   }
@@ -124,7 +124,7 @@ function parseJob(row: FanoutJobRow): GovernorFanoutJob {
     ...(row.expected_duration_ms == null
       ? {}
       : { expectedDurationMs: normalizeSqliteNumber(row.expected_duration_ms) ?? 0 }),
-    payload: parseJson<GovernorJsonValue>(row.payload_json, "job payload"),
+    payload: parseJson(row.payload_json, "job payload") as GovernorJsonValue,
     createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
     ...(row.started_at == null ? {} : { startedAt: normalizeSqliteNumber(row.started_at) ?? 0 }),
     ...(row.completed_at == null
@@ -165,7 +165,7 @@ function bindJob(job: GovernorFanoutJob): Insertable<FanoutJobRow> {
 }
 
 function parseEnvelope(row: FaninEnvelopeRow): GovernorFaninEnvelope {
-  const envelope = parseJson<GovernorFaninEnvelope>(row.envelope_json, "envelope");
+  const envelope = parseJson(row.envelope_json, "envelope") as GovernorFaninEnvelope;
   if (envelope.envelopeDigest !== row.envelope_digest || envelope.jobId !== row.job_id) {
     throw new Error(`Governor fan-in envelope mismatch for ${row.job_id}`);
   }
@@ -189,7 +189,7 @@ function bindEnvelope(envelope: GovernorFaninEnvelope): Insertable<FaninEnvelope
 }
 
 function parseTaskProjection(raw: string): GovernorTaskProjection {
-  return parseJson<GovernorTaskProjection>(raw, "task projection");
+  return parseJson(raw, "task projection") as GovernorTaskProjection;
 }
 
 export class GovernorFanoutStore {
@@ -612,7 +612,7 @@ export class GovernorFanoutStore {
       if (reducer?.state === "completed" && reducer.result_json && reducer.result_digest) {
         return {
           kind: "completed",
-          result: parseJson<GovernorJsonValue>(reducer.result_json, "reducer result"),
+          result: parseJson(reducer.result_json, "reducer result") as GovernorJsonValue,
           resultDigest: reducer.result_digest,
         };
       }

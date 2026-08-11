@@ -28,16 +28,16 @@ type GovernorEventRow = Selectable<OpenClawStateKyselyDatabase["governor_events"
 type GovernorEffectRow = Selectable<OpenClawStateKyselyDatabase["governor_effects"]>;
 type GovernorEvidenceRow = Selectable<OpenClawStateKyselyDatabase["governor_evidence"]>;
 
-function parseJson<T>(raw: string, label: string): T {
+function parseJson(raw: string, label: string): unknown {
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(raw) as unknown;
   } catch (error) {
     throw new Error(`Invalid persisted governor ${label}`, { cause: error });
   }
 }
 
 export function parseTaskRow(row: GovernorTaskRow): GovernorTaskProjection {
-  const projection = parseJson<GovernorTaskProjection>(row.projection_json, "task projection");
+  const projection = parseJson(row.projection_json, "task projection") as GovernorTaskProjection;
   if (projection.taskId !== row.task_id || projection.scopeKey !== row.scope_key) {
     throw new Error(`Persisted governor task projection identity mismatch for ${row.task_id}`);
   }
@@ -103,7 +103,7 @@ export function parseEventRow(row: GovernorEventRow): GovernorEventRecord {
     eventType: row.event_type as GovernorEventRecord["eventType"],
     taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
     objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
-    payload: parseJson<GovernorJsonValue>(row.payload_json, "event payload"),
+    payload: parseJson(row.payload_json, "event payload") as GovernorJsonValue,
     payloadDigest: row.payload_digest,
     createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
   };
@@ -135,7 +135,7 @@ export function bindEffect(effect: GovernorEffectRecord): Insertable<GovernorEff
 }
 
 export function parseEffectRow(row: GovernorEffectRow): GovernorEffectRecord {
-  const effect = parseJson<GovernorEffectRecord>(row.effect_json, "effect");
+  const effect = parseJson(row.effect_json, "effect") as GovernorEffectRecord;
   if (effect.taskId !== row.task_id || effect.effectId !== row.effect_id) {
     throw new Error(`Persisted governor effect identity mismatch for ${row.effect_id}`);
   }
@@ -172,7 +172,7 @@ export function parseEvidenceRow(row: GovernorEvidenceRow): GovernorEvidenceReco
     objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
     scopeKey: row.scope_key,
     observedAt: normalizeSqliteNumber(row.observed_at) ?? 0,
-    payload: parseJson<GovernorJsonValue>(row.payload_json, "evidence payload"),
+    payload: parseJson(row.payload_json, "evidence payload") as GovernorJsonValue,
     evidenceDigest: row.evidence_digest,
     admissibility: "admitted",
     ...(row.invalidated_at == null

@@ -89,9 +89,9 @@ function dbx(db: DatabaseSync) {
   return getNodeSqliteKysely<GovernorMemoryDatabase>(db);
 }
 
-function parseJson<T>(raw: string, label: string): T {
+function parseJson(raw: string, label: string): unknown {
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(raw) as unknown;
   } catch (error) {
     throw new Error(`Invalid governor memory ${label}`, { cause: error });
   }
@@ -110,10 +110,10 @@ function parseMemory(row: GovernorMemoryRow): GovernorMemoryRecord {
     ...(row.freshness_expires_at == null
       ? {}
       : { freshnessExpiresAt: normalizeSqliteNumber(row.freshness_expires_at) ?? 0 }),
-    confidence: Number(row.confidence),
+    confidence: row.confidence,
     sensitivity: row.sensitivity as GovernorMemoryRecord["sensitivity"],
-    provenance: parseJson<GovernorMemoryProvenance>(row.provenance_json, "provenance"),
-    content: parseJson<GovernorJsonValue>(row.content_json, "content"),
+    provenance: parseJson(row.provenance_json, "provenance") as GovernorMemoryProvenance,
+    content: parseJson(row.content_json, "content") as GovernorJsonValue,
     contentDigest: row.content_digest,
     ...(row.supersedes_id ? { supersedesId: row.supersedes_id } : {}),
     createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
