@@ -24,6 +24,8 @@ export function createGovernorTestStore(
       receiptResolver: broker.resolver,
       approvalResolver: broker.approvalResolver,
       deliveryResolver: broker.deliveryResolver,
+      physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+      memoryAuthority: broker.memoryAuthority,
       secrets: broker.secrets,
       capabilities: params.capabilities,
     }),

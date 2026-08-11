@@ -2,6 +2,7 @@
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { createGovernorEventRecord } from "./events.js";
 import { createGovernorEvidenceCandidate, type GovernorEvidenceRecord } from "./evidence.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorSqliteStore } from "./store.js";
 import type { GovernorEffectRecord, GovernorToolOutcome } from "./tool-outcome.js";
@@ -33,6 +34,16 @@ export function resolveGovernorMutation(params: {
   evidenceReceiptId?: string;
   now: number;
 }): GovernorMutationResolutionResult {
+  assertGovernorJsonResources({
+    taskId: params.taskId,
+    executionFence: params.executionFence,
+    effectId: params.effectId,
+    resolution: params.resolution,
+    evidence: params.evidence,
+    sourceIdentity: params.sourceIdentity,
+    evidenceReceiptId: params.evidenceReceiptId ?? null,
+    now: params.now,
+  });
   const task = params.store.loadTask(params.taskId);
   if (!task) {
     throw new Error(`Governor task not found: ${params.taskId}`);

@@ -1,3 +1,4 @@
+import { assertGovernorJsonResources } from "./resource-guard.js";
 // Validates governor task contracts and executable ordered/DAG plans.
 import type { GovernorPlan, GovernorTaskContract } from "./types.js";
 
@@ -16,6 +17,7 @@ function assertUniqueNonEmpty(values: readonly string[], label: string): void {
 }
 
 export function assertValidGovernorContract(contract: GovernorTaskContract): void {
+  assertGovernorJsonResources(contract);
   if (!contract.objective.trim()) {
     throw new Error("task objective must not be empty");
   }
@@ -51,6 +53,8 @@ function visitPlanStep(
 }
 
 export function assertValidGovernorPlan(plan: GovernorPlan, contract: GovernorTaskContract): void {
+  assertGovernorJsonResources(plan);
+  assertGovernorJsonResources(contract);
   const stepIds = plan.steps.map((step) => step.stepId);
   assertUniqueNonEmpty(stepIds, "plan steps");
   const knownSteps = new Set(stepIds);

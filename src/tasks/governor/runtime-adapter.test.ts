@@ -40,6 +40,7 @@ const integrations = {
   approvalOwnerId: "synthetic-approval-owner",
   deliveryOwnerId: "synthetic-delivery-owner",
   ownerIngressOwnerId: "synthetic-owner-ingress",
+  childOwnerId: "synthetic-child-owner",
   ownerIngressBindings: [
     {
       channel: "signal",
@@ -212,8 +213,13 @@ describe("governor runtime adapter", () => {
           expect(governed).toMatchObject({
             kind: "governed",
             decision: { mode: "FOCUSED", toolPolicy: "required" },
-            task: { flowId: "flow-existing-1", state: "RECEIVED" },
+            task: { state: "RECEIVED" },
           });
+          if (governed.kind !== "governed") {
+            throw new Error("expected governed runtime route");
+          }
+          expect(governed.task.flowId).toMatch(/^[a-f0-9]{64}$/u);
+          expect(governed.task.flowId).not.toBe("flow-existing-1");
         } finally {
           closeOpenClawStateDatabase();
         }
@@ -279,6 +285,13 @@ describe("governor runtime adapter", () => {
       createGovernorHostRuntimeAdapterIfEnabled({
         env: enabledEnvironment(),
         capabilities: [],
+        integrations: { ...integrations, childOwnerId: "" },
+      }),
+    ).toThrow(/child lifecycle integration owner is required/u);
+    expect(() =>
+      createGovernorHostRuntimeAdapterIfEnabled({
+        env: enabledEnvironment(),
+        capabilities: [],
         integrations: { ...integrations, ownerIngressBindings: [] },
       }),
     ).toThrow(/authenticated governor owner binding is required/u);
@@ -313,7 +326,21 @@ describe("governor runtime adapter", () => {
             approval: { ownerId: integrations.approvalOwnerId },
             delivery: { ownerId: integrations.deliveryOwnerId },
             ownerIngress: { ownerId: integrations.ownerIngressOwnerId },
+            child: { ownerId: integrations.childOwnerId },
           });
+          expect(() =>
+            runtime?.owners.child.submitLifecycleReceipt({
+              scopeKey: "synthetic-scope",
+              taskId: "synthetic-task",
+              taskVersion: 0,
+              objectiveRevision: 1,
+              planVersion: 0,
+              sourceKind: "structured_external",
+              sourceIdentity: "synthetic-source",
+              payload: { kind: "unrelated_observation" },
+              observedAt: 1,
+            }),
+          ).toThrow(/only child lifecycle observations/u);
           expect(runtime?.adapter).toBeInstanceOf(Object);
         } finally {
           for (const [name, value] of prior) {

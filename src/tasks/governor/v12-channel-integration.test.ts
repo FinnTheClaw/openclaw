@@ -56,6 +56,7 @@ function integrations(
     approvalOwnerId: "approval-owner",
     deliveryOwnerId: "delivery-owner",
     ownerIngressOwnerId: "owner-ingress-owner",
+    childOwnerId: "child-owner",
     ownerIngressBindings: [
       {
         channel: "signal",

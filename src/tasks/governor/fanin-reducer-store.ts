@@ -20,6 +20,7 @@ import {
   type FaninReducerRow,
   type GovernorReducerClaim,
 } from "./fanout-codec.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
@@ -66,6 +67,12 @@ export class GovernorFaninReducerStore {
   }
 
   claim(params: GovernorClaimReducerParams): GovernorReducerClaim {
+    assertGovernorJsonResources({
+      task: params.task,
+      round: params.round,
+      now: params.now,
+      leaseDurationMs: params.leaseDurationMs ?? null,
+    });
     const leaseDurationMs = params.leaseDurationMs ?? 60_000;
     if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs <= 0) {
       throw new Error("Governor reducer leaseDurationMs must be a positive safe integer");
@@ -163,6 +170,7 @@ export class GovernorFaninReducerStore {
   }
 
   complete(params: GovernorCompleteReducerParams): boolean {
+    assertGovernorJsonResources(params);
     const result = assertGovernorBoundarySafe("session", params.result);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const task = this.#task(db, params.taskId);

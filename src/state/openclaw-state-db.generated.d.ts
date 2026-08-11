@@ -833,6 +833,8 @@ export interface GovernorIngressSourceHighwater {
 }
 
 export interface GovernorMemories {
+  authority_binding_digest: string | null;
+  authority_generation: number | null;
   confidence: number;
   content_digest: string;
   content_json: string;
@@ -885,6 +887,19 @@ export interface GovernorMemoryRemediations {
   updated_at: number;
   verification_evidence_digest: string | null;
   verification_evidence_id: string | null;
+}
+
+export interface GovernorMemoryReobservations {
+  authority_binding_digest: string;
+  authority_generation: number;
+  created_at: number;
+  fact_key: string;
+  requirement_id: string;
+  resolved_at: number | null;
+  scope_key: string;
+  stale_memory_id: string;
+  status: string;
+  updated_at: number;
 }
 
 export interface GovernorOutbox {
@@ -1472,6 +1487,7 @@ export interface DB {
   governor_ingress_source_highwater: GovernorIngressSourceHighwater;
   governor_memories: GovernorMemories;
   governor_memory_remediations: GovernorMemoryRemediations;
+  governor_memory_reobservations: GovernorMemoryReobservations;
   governor_outbox: GovernorOutbox;
   governor_owner_ingress_receipts: GovernorOwnerIngressReceipts;
   governor_scope_epochs: GovernorScopeEpochs;

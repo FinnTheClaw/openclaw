@@ -12,6 +12,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
+import { reconcileRevokedGovernorActionIntent } from "./action-approval-reconciliation.js";
 import {
   acknowledgeGovernorActionTermination,
   beginGovernorActionEffect,
@@ -26,6 +27,7 @@ import {
 import type { GovernorActionIntent, GovernorActionTerminationOutcome } from "./action-intent.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import { loadGovernorTask } from "./store-queries.js";
 import type { GovernorIdentityContext, GovernorTaskId, GovernorTaskProjection } from "./types.js";
@@ -91,24 +93,43 @@ export class GovernorActionIntentStore {
     return row ? parseGovernorActionIntent(row) : null;
   }
 
-  listPendingIds(taskId: GovernorTaskId, objectiveRevision: number): string[] {
-    const { db } = openOpenClawStateDatabase(this.#options);
-    return executeSqliteQuerySync(
-      db,
-      dbx(db)
-        .selectFrom("governor_action_intents")
-        .select(["effect_id"])
-        .where("task_id", "=", taskId)
-        .where("objective_revision", "=", objectiveRevision)
-        .where((eb) =>
-          eb.or([
-            eb("state", "in", ["admitted", "running"]),
-            eb("termination_outcome", "=", "unknown"),
-          ]),
-        )
-        .orderBy("created_at", "asc")
-        .orderBy("effect_id", "asc"),
-    ).rows.map((row) => row.effect_id);
+  listPendingIds(taskId: GovernorTaskId, objectiveRevision: number, now = Date.now()): string[] {
+    return runOpenClawStateWriteTransaction(({ db }) => {
+      const task = loadGovernorTask(db, taskId);
+      if (!task || task.objectiveRevision !== objectiveRevision) {
+        return [];
+      }
+      const rows = executeSqliteQuerySync(
+        db,
+        dbx(db)
+          .selectFrom("governor_action_intents")
+          .selectAll()
+          .where("task_id", "=", taskId)
+          .where("objective_revision", "=", objectiveRevision)
+          .where((eb) =>
+            eb.or([
+              eb("state", "in", ["admitted", "running"]),
+              eb("termination_outcome", "=", "unknown"),
+            ]),
+          )
+          .orderBy("created_at", "asc")
+          .orderBy("effect_id", "asc"),
+      ).rows;
+      return rows.flatMap((row) => {
+        let intent = parseGovernorActionIntent(row);
+        if (
+          intent.approvalRequired &&
+          this.#approvals.statusWithinTransaction(db, task, intent.proposal, now) === "revoked"
+        ) {
+          intent = reconcileRevokedGovernorActionIntent(db, intent, now);
+        }
+        return intent.state === "admitted" ||
+          intent.state === "running" ||
+          intent.terminationOutcome === "unknown"
+          ? [intent.effectId]
+          : [];
+      });
+    }, this.#options);
   }
 
   beginEffect(params: {
@@ -122,6 +143,7 @@ export class GovernorActionIntentStore {
     executionGeneration: number;
     now: number;
   }): GovernorBeginActionEffectResult {
+    assertGovernorJsonResources(params);
     return beginGovernorActionEffect(
       {
         options: this.#options,
@@ -141,6 +163,7 @@ export class GovernorActionIntentStore {
     outcome: GovernorActionTerminationOutcome;
     now: number;
   }): GovernorActionTerminationResult {
+    assertGovernorJsonResources(params);
     return acknowledgeGovernorActionTermination(
       {
         options: this.#options,
@@ -170,6 +193,7 @@ export class GovernorActionIntentStore {
     executionGeneration: number;
     now: number;
   }): GovernorActionOutcomeValidation {
+    assertGovernorJsonResources(params);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const task = loadGovernorTask(db, params.taskId);
       const row = executeSqliteQueryTakeFirstSync(
@@ -232,6 +256,9 @@ export class GovernorActionIntentStore {
           params.now,
         );
         if (approval !== "approved") {
+          if (approval === "revoked") {
+            reconcileRevokedGovernorActionIntent(db, intent, params.now);
+          }
           return {
             kind:
               approval === "missing"
@@ -257,6 +284,17 @@ export class GovernorActionIntentStore {
     leaseDurationMs?: number;
     now: number;
   }): GovernorActionIntentClaimResult {
+    assertGovernorJsonResources({
+      taskId: params.taskId,
+      effectId: params.effectId,
+      objectiveRevision: params.objectiveRevision,
+      planVersion: params.planVersion,
+      leaseEpoch: params.leaseEpoch,
+      executionGeneration: params.executionGeneration,
+      workerId: params.workerId,
+      leaseDurationMs: params.leaseDurationMs ?? null,
+      now: params.now,
+    });
     const workerId = params.workerId.trim();
     if (!workerId) {
       throw new Error("Governor action workerId must not be empty");
@@ -323,6 +361,9 @@ export class GovernorActionIntentStore {
           params.now,
         );
         if (approval !== "approved") {
+          if (approval === "revoked") {
+            reconcileRevokedGovernorActionIntent(db, intent, params.now);
+          }
           return {
             kind:
               approval === "missing"

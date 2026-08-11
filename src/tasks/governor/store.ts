@@ -20,6 +20,7 @@ import { bindGovernorCheckpoint, GovernorCheckpointStore } from "./checkpoint-st
 import { GovernorDeliveryCertificationStore } from "./delivery-certification-store.js";
 import type { GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceCandidate, GovernorEvidenceRecord } from "./evidence.js";
+import { GovernorExternalChildRunStore } from "./external-child-runs.js";
 import { GovernorFanoutStore } from "./fanout.js";
 import { GovernorMemorySubsystem } from "./memory-subsystem.js";
 import {
@@ -28,6 +29,7 @@ import {
   type GovernorOutboxRecord,
 } from "./outbox-store.js";
 import type { GovernorCheckpoint } from "./planning-policy.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import { appendGovernorAuditEvent } from "./store-audit.js";
 import {
   createGovernorStoreDependencies,
@@ -42,6 +44,7 @@ import { ingestGovernorTask, type GovernorIngressResult } from "./store-ingress.
 import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
+  isOpaqueGovernorReference,
   opaqueGovernorReference,
   type GovernorEventId,
   type GovernorIdentityContext,
@@ -75,6 +78,7 @@ export class GovernorSqliteStore {
   readonly checkpoints: GovernorCheckpointStore;
   readonly memory: GovernorMemorySubsystem;
   readonly fanout: GovernorFanoutStore;
+  readonly children: GovernorExternalChildRunStore;
   readonly outbox: GovernorOutboxStore;
   readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
   readonly #queries: GovernorStoreQueries;
@@ -92,6 +96,7 @@ export class GovernorSqliteStore {
     this.checkpoints = dependencies.checkpoints;
     this.memory = dependencies.memory;
     this.fanout = dependencies.fanout;
+    this.children = dependencies.children;
     this.outbox = dependencies.outbox;
   }
 
@@ -154,6 +159,7 @@ export class GovernorSqliteStore {
     receiptId?: string;
     now: number;
   }): GovernorPendingEvidence {
+    assertGovernorJsonResources(params.candidate);
     return this.#evidenceAdmissions.admit(params);
   }
 
@@ -185,6 +191,18 @@ export class GovernorSqliteStore {
     evidenceAdmission?: GovernorPendingEvidence;
     outbox?: readonly GovernorOutboxRecord[];
   }): GovernorCommitResult {
+    assertGovernorJsonResources({
+      current: params.current,
+      next: params.next,
+      event: params.event,
+      effects: [...(params.effects ?? [])],
+      effectUpdates: [...(params.effectUpdates ?? [])],
+      actionIntents: [...(params.actionIntents ?? [])],
+      actionIntentUpdates: [...(params.actionIntentUpdates ?? [])],
+      checkpoints: [...(params.checkpoints ?? [])],
+      evidence: params.evidenceAdmission?.evidence ?? null,
+      outbox: [...(params.outbox ?? [])],
+    });
     if (
       params.next.taskId !== params.current.taskId ||
       params.next.scopeKey !== params.current.scopeKey ||
@@ -194,6 +212,9 @@ export class GovernorSqliteStore {
       params.event.taskId !== params.next.taskId ||
       params.event.taskVersion !== params.next.taskVersion ||
       params.event.objectiveRevision !== params.next.objectiveRevision ||
+      (params.next.flowId !== undefined && !isOpaqueGovernorReference(params.next.flowId)) ||
+      (params.event.sourceMessageId !== undefined &&
+        !isOpaqueGovernorReference(params.event.sourceMessageId)) ||
       params.event.payloadDigest !== governorDigest(params.event.payload)
     ) {
       throw new Error(`Invalid governor commit envelope for ${params.current.taskId}`);

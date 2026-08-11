@@ -48,6 +48,12 @@ export function parseGovernorMemory(row: GovernorMemoryRow): GovernorMemoryRecor
     ...(row.verified_evidence_semantic_digest
       ? { verifiedEvidenceSemanticDigest: row.verified_evidence_semantic_digest }
       : {}),
+    ...(row.authority_generation == null
+      ? {}
+      : { authorityGeneration: normalizeSqliteNumber(row.authority_generation) ?? 0 }),
+    ...(row.authority_binding_digest
+      ? { authorityBindingDigest: row.authority_binding_digest }
+      : {}),
     ...(row.supersedes_id ? { supersedesId: row.supersedes_id } : {}),
     ...(row.superseded_at == null
       ? {}
@@ -90,6 +96,8 @@ export function bindGovernorMemory(memory: GovernorMemoryRecord): Insertable<Gov
     verified_evidence_id: memory.verifiedEvidenceId ?? null,
     verified_evidence_digest: memory.verifiedEvidenceDigest ?? null,
     verified_evidence_semantic_digest: memory.verifiedEvidenceSemanticDigest ?? null,
+    authority_generation: memory.authorityGeneration ?? null,
+    authority_binding_digest: memory.authorityBindingDigest ?? null,
     supersedes_id: memory.supersedesId ?? null,
     superseded_at: memory.supersededAt ?? null,
     superseded_evidence_id: memory.supersededEvidenceId ?? null,

@@ -25,6 +25,12 @@ import {
   type HostGovernorReceiptId,
   type HostDeliveryReceipt,
 } from "./governor-host-broker.js";
+import {
+  isTrustedGovernorMemoryAuthority,
+  type GovernorMemoryAuthorityBinding,
+  type GovernorMemoryAuthorityState,
+  type GovernorTrustedMemoryAuthority,
+} from "./governor-host-memory-authority.js";
 import { createGovernorHostPersistence } from "./governor-host-persistence.js";
 import {
   isTrustedGovernorPhysicalExecutionCoordinator,
@@ -43,6 +49,7 @@ export {
   isTrustedGovernorDeliveryResolver,
   isTrustedGovernorOwnerIngressResolver,
   isTrustedGovernorPhysicalExecutionCoordinator,
+  isTrustedGovernorMemoryAuthority,
   isTrustedGovernorReceiptResolver,
 };
 export type {
@@ -53,6 +60,9 @@ export type {
   GovernorPhysicalExecutionLease,
   GovernorPhysicalExecutionState,
   GovernorTrustedPhysicalExecutionCoordinator,
+  GovernorMemoryAuthorityBinding,
+  GovernorMemoryAuthorityState,
+  GovernorTrustedMemoryAuthority,
   GovernorTrustedReceiptResolver,
   GovernorOwnerIngressClaim,
   HostGovernorApprovalReceiptId,

@@ -135,6 +135,8 @@ function migrateLegacyGovernorColumns(
   addIfMissing("governor_memories", "verified_evidence_id", "TEXT");
   addIfMissing("governor_memories", "verified_evidence_digest", "TEXT");
   addIfMissing("governor_memories", "verified_evidence_semantic_digest", "TEXT");
+  addIfMissing("governor_memories", "authority_generation", "INTEGER");
+  addIfMissing("governor_memories", "authority_binding_digest", "TEXT");
   addIfMissing("governor_fanout_jobs", "physical_slot", "INTEGER");
   addIfMissing("governor_fanout_jobs", "objective_revision", "INTEGER NOT NULL DEFAULT -1");
   addIfMissing("governor_fanout_jobs", "physical_generation", "INTEGER");

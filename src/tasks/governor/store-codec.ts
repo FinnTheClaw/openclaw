@@ -21,6 +21,7 @@ export type GovernorDatabase = Pick<
   | "governor_outbox"
   | "governor_scope_epochs"
   | "governor_fanout_jobs"
+  | "governor_fanin_reducers"
   | "governor_ingress_source_highwater"
 >;
 

@@ -44,6 +44,8 @@ export type GovernorMemoryRecord = {
   verifiedEvidenceId?: string;
   verifiedEvidenceDigest?: string;
   verifiedEvidenceSemanticDigest?: string;
+  authorityGeneration?: number;
+  authorityBindingDigest?: string;
   supersedesId?: string;
   supersededAt?: number;
   supersededEvidenceId?: string;

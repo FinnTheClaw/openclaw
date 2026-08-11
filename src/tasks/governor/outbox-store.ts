@@ -18,6 +18,8 @@ import {
   isGovernorVerifiedDeliveryReceipt,
   type GovernorVerifiedDeliveryReceipt,
 } from "./delivery-certification-store.js";
+import { createGovernorOutboxCompletion } from "./outbox-completion.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
@@ -165,6 +167,15 @@ export class GovernorOutboxStore {
     leaseDurationMs?: number;
     deliveryBinding: GovernorOutboxDeliveryBinding;
   }): GovernorOutboxClaimResult {
+    assertGovernorJsonResources({
+      taskId: params.taskId,
+      effectId: params.effectId,
+      expectedLeaseEpoch: params.expectedLeaseEpoch,
+      workerId: params.workerId,
+      now: params.now,
+      leaseDurationMs: params.leaseDurationMs ?? null,
+      deliveryBinding: params.deliveryBinding,
+    });
     const workerId = params.workerId.trim();
     if (!workerId) {
       throw new Error("Governor outbox workerId must not be empty");
@@ -288,6 +299,16 @@ export class GovernorOutboxStore {
     now: number;
     terminalState?: "sent" | "would_send";
   }): GovernorOutboxClaimResult {
+    assertGovernorJsonResources({
+      taskId: params.taskId,
+      effectId: params.effectId,
+      expectedLeaseEpoch: params.expectedLeaseEpoch,
+      expectedDeliveryClaimEpoch: params.expectedDeliveryClaimEpoch,
+      workerId: params.workerId,
+      verifiedReceipt: params.verifiedReceipt.receipt,
+      now: params.now,
+      terminalState: params.terminalState ?? null,
+    });
     return runOpenClawStateWriteTransaction(({ db }) => {
       const task = executeSqliteQueryTakeFirstSync(
         db,
@@ -396,6 +417,7 @@ export class GovernorOutboxStore {
     verifiedReceipt: GovernorVerifiedDeliveryReceipt;
     now: number;
   }): GovernorOutboxClaimResult {
+    assertGovernorJsonResources(params);
     return this.markSent({
       ...params,
       verifiedReceipt: params.verifiedReceipt,
@@ -489,21 +511,6 @@ export class GovernorOutboxStore {
     payload: GovernorJsonValue;
     now: number;
   }): GovernorOutboxRecord {
-    const payload = assertGovernorBoundarySafe("session", params.payload);
-    return {
-      taskId: params.task.taskId,
-      effectId: params.effectId,
-      deliveryKey: governorDigest({ taskId: params.task.taskId, effectId: params.effectId }),
-      taskVersion: params.task.taskVersion,
-      objectiveRevision: params.task.objectiveRevision,
-      planVersion: params.task.planVersion,
-      leaseEpoch: params.task.leaseEpoch,
-      executionGeneration: params.task.executionGeneration,
-      deliveryClaimEpoch: 0,
-      state: "pending",
-      payload,
-      createdAt: params.now,
-      updatedAt: params.now,
-    };
+    return createGovernorOutboxCompletion(params);
   }
 }

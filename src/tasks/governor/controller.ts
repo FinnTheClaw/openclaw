@@ -408,7 +408,7 @@ export class GovernorController {
     }
     task = this.#transition(task, "FINISH_CANDIDATE", params.now);
     const runningActionIds = [
-      ...this.store.actionIntents.listPendingIds(task.taskId, task.objectiveRevision),
+      ...this.store.actionIntents.listPendingIds(task.taskId, task.objectiveRevision, params.now),
       ...this.store.listUnfinishedFanoutJobIds(task),
     ].toSorted();
     const decision = evaluateGovernorFinish({

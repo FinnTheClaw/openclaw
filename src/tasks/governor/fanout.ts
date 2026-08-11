@@ -45,6 +45,7 @@ import {
   reconcileFanoutPhysicalState,
   requestFanoutCancellation,
 } from "./fanout-physical.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
@@ -109,6 +110,7 @@ export class GovernorFanoutStore {
     payload: GovernorJsonValue;
     now: number;
   }): GovernorFanoutJob {
+    assertGovernorJsonResources(params);
     const payload = assertGovernorBoundarySafe("model", params.payload);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const existing = executeSqliteQueryTakeFirstSync(
@@ -192,6 +194,11 @@ export class GovernorFanoutStore {
     now: number;
     leaseDurationMs?: number;
   }): GovernorFanoutClaim {
+    assertGovernorJsonResources({
+      workerId: params.workerId,
+      now: params.now,
+      leaseDurationMs: params.leaseDurationMs ?? null,
+    });
     const workerId = params.workerId.trim();
     if (!workerId) {
       throw new Error("Governor fanout workerId must not be empty");
@@ -324,6 +331,7 @@ export class GovernorFanoutStore {
   }
 
   cancelJob(jobId: string, now: number): boolean {
+    assertGovernorJsonResources({ jobId, now });
     return cancelFanoutJob(
       { options: this.#options, physical: this.#physical, receipts: this.#receipts },
       { jobId, now },
@@ -331,6 +339,7 @@ export class GovernorFanoutStore {
   }
 
   requestRetirement(jobId: string, disposition: "cancel" | "requeue", now: number): boolean {
+    assertGovernorJsonResources({ jobId, disposition, now });
     return cancelFanoutJob(
       { options: this.#options, physical: this.#physical, receipts: this.#receipts },
       { jobId, disposition, now },
@@ -344,6 +353,13 @@ export class GovernorFanoutStore {
     now: number;
     leaseDurationMs?: number;
   }): boolean {
+    assertGovernorJsonResources({
+      jobId: params.jobId,
+      claimEpoch: params.claimEpoch,
+      workerId: params.workerId,
+      now: params.now,
+      leaseDurationMs: params.leaseDurationMs ?? null,
+    });
     return heartbeatFanoutJob(
       { options: this.#options, physical: this.#physical, receipts: this.#receipts },
       { ...params, leaseDurationMs: params.leaseDurationMs ?? 60_000 },
@@ -356,6 +372,7 @@ export class GovernorFanoutStore {
     outcome: "crashed" | "terminated";
     now: number;
   }): boolean {
+    assertGovernorJsonResources(params);
     return acknowledgeFanoutTermination(
       { options: this.#options, physical: this.#physical, receipts: this.#receipts },
       params,
@@ -375,6 +392,7 @@ export class GovernorFanoutStore {
     outcome: "crashed" | "terminated";
     now: number;
   }): boolean {
+    assertGovernorJsonResources(params);
     return acknowledgeOrphanedFanoutTermination(
       { options: this.#options, physical: this.#physical, receipts: this.#receipts },
       params,
@@ -384,7 +402,10 @@ export class GovernorFanoutStore {
   complete(
     params: import("./fanout-completion.js").CompleteFanoutParams,
   ): GovernorFanoutCompletion {
-    return completeFanoutJob({ options: this.#options, physical: this.#physical }, params);
+    return completeFanoutJob(
+      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      params,
+    );
   }
 
   listJobs(taskId: GovernorTaskId): GovernorFanoutJob[] {

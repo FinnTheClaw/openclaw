@@ -1546,6 +1546,8 @@ CREATE TABLE IF NOT EXISTS governor_memories (
   verified_evidence_id TEXT,
   verified_evidence_digest TEXT,
   verified_evidence_semantic_digest TEXT,
+  authority_generation INTEGER,
+  authority_binding_digest TEXT,
   supersedes_id TEXT,
   superseded_at INTEGER,
   superseded_evidence_id TEXT,
@@ -1592,6 +1594,23 @@ CREATE TABLE IF NOT EXISTS governor_memory_remediations (
 
 CREATE INDEX IF NOT EXISTS idx_governor_memory_remediations_scope
   ON governor_memory_remediations(scope_key, status, updated_at, contradiction_fingerprint);
+
+CREATE TABLE IF NOT EXISTS governor_memory_reobservations (
+  requirement_id TEXT NOT NULL PRIMARY KEY,
+  scope_key TEXT NOT NULL,
+  fact_key TEXT NOT NULL,
+  authority_generation INTEGER NOT NULL,
+  authority_binding_digest TEXT NOT NULL,
+  stale_memory_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('required', 'resolved')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  UNIQUE(scope_key, fact_key, authority_generation)
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_memory_reobservations_scope
+  ON governor_memory_reobservations(scope_key, status, fact_key, authority_generation);
 
 CREATE TABLE IF NOT EXISTS governor_fanout_jobs (
   job_id TEXT NOT NULL PRIMARY KEY,

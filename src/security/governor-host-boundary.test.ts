@@ -15,6 +15,7 @@ const authorityModules = [
   "governor-host-delivery-implementations",
   "governor-host-delivery-persistence",
   "governor-host-file-lock",
+  "governor-host-memory-authority",
   "governor-host-owner-ingress",
   "governor-host-owner-ingress-persistence",
   "governor-host-persistence",
@@ -31,6 +32,7 @@ const forbiddenAuthority =
 const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
   "governor-host-anti-rollback-ledger": [
     "security/governor-host-delivery-persistence.ts",
+    "security/governor-host-memory-authority.ts",
     "security/governor-host-owner-ingress-persistence.ts",
     "security/governor-host-persistence.ts",
     "security/governor-host-physical-execution.ts",
@@ -56,6 +58,11 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   "governor-host-delivery-implementations": ["security/governor-host-delivery-broker.ts"],
   "governor-host-delivery-persistence": ["security/governor-host-persistence.ts"],
   "governor-host-file-lock": ["security/governor-host-anti-rollback-ledger.ts"],
+  "governor-host-memory-authority": [
+    "security/governor-host-broker.ts",
+    "security/governor-host-persistence.ts",
+    "security/governor-host-readonly.ts",
+  ],
   "governor-host-owner-ingress": ["security/governor-host-bootstrap.ts"],
   "governor-host-owner-ingress-persistence": ["security/governor-host-persistence.ts"],
   "governor-host-persistence": [
@@ -129,6 +136,7 @@ describe("governor host authority boundary", () => {
       "security/governor-host-delivery-broker.ts",
       "security/governor-host-delivery-implementations.ts",
       "security/governor-host-delivery-persistence.ts",
+      "security/governor-host-memory-authority.ts",
       "security/governor-host-owner-ingress-persistence.ts",
       "security/governor-host-persistence.ts",
       "security/governor-host-physical-execution.ts",

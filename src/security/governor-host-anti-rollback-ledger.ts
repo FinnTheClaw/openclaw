@@ -12,7 +12,7 @@ import path from "node:path";
 import { canonicalGovernorJson, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import { withGovernorHostFileLock } from "./governor-host-file-lock.js";
 
-type LedgerKind = "approval" | "delivery" | "execution" | "ingress";
+type LedgerKind = "approval" | "delivery" | "execution" | "ingress" | "memory";
 type LedgerStatus =
   | "approved"
   | "cancel_pending"
@@ -21,6 +21,8 @@ type LedgerStatus =
   | "completed"
   | "consumed"
   | "crashed"
+  | "memory_current"
+  | "memory_retired"
   | "revoked"
   | "terminated";
 type LedgerEntry = Readonly<{

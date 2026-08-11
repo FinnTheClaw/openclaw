@@ -1,3 +1,4 @@
+import type { GovernorTrustedMemoryAuthority } from "../../security/governor-host-readonly.js";
 // Joins scoped memory records to store-verified contradiction and repair evidence.
 import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
 import { loadCurrentGovernorEvidence } from "./current-evidence.js";
@@ -26,12 +27,14 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     identity: GovernorIdentityContext;
     evidenceAdmissions: GovernorEvidenceAdmissionStore;
     queries: GovernorStoreQueries;
+    memoryAuthority: GovernorTrustedMemoryAuthority;
   }) {
     super({
       options: params.options,
       identity: params.identity,
       evidenceAdmissions: params.evidenceAdmissions,
       queries: params.queries,
+      memoryAuthority: params.memoryAuthority,
     });
     this.#identity = params.identity;
     this.#evidenceAdmissions = params.evidenceAdmissions;
@@ -39,6 +42,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     this.#contradictions = new GovernorMemoryContradictionStore({
       options: params.options,
       evidenceAdmissions: params.evidenceAdmissions,
+      memoryAuthority: params.memoryAuthority,
     });
   }
 

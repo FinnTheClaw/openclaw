@@ -11,6 +11,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
+import { reconcileRevokedGovernorActionIntent } from "./action-approval-reconciliation.js";
 import {
   actionIntentDb,
   bindGovernorActionIntent,
@@ -138,6 +139,9 @@ export function beginGovernorActionEffect(
         params.now,
       );
       if (approval !== "approved") {
+        if (approval === "revoked") {
+          reconcileRevokedGovernorActionIntent(db, intent, params.now);
+        }
         return approvalFailure(approval);
       }
     }

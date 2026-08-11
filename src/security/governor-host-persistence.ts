@@ -25,6 +25,10 @@ import {
   type GovernorHostDeliveryPersistence,
 } from "./governor-host-delivery-persistence.js";
 import {
+  createGovernorMemoryAuthority,
+  type GovernorTrustedMemoryAuthority,
+} from "./governor-host-memory-authority.js";
+import {
   createGovernorOwnerIngressPersistence,
   type GovernorOwnerIngressPersistence,
 } from "./governor-host-owner-ingress-persistence.js";
@@ -45,6 +49,7 @@ const approvalGrantKey = (scopeKey: string, grantId: string) =>
 
 export type GovernorHostPersistence = Readonly<{
   physicalExecutions: GovernorTrustedPhysicalExecutionCoordinator;
+  memoryAuthority: GovernorTrustedMemoryAuthority;
   recordApprovalGrant: (input: {
     grantId: string;
     scopeKey: string;
@@ -244,6 +249,7 @@ export function createGovernorHostPersistence(params: {
 
   const port: GovernorHostPersistence = Object.freeze({
     physicalExecutions: createGovernorPhysicalExecutionCoordinator(ledger),
+    memoryAuthority: createGovernorMemoryAuthority(ledger, params.testAfterLedgerAppend),
     ...createGovernorOwnerIngressPersistence(options, ledger),
     ...createGovernorHostDeliveryPersistence({
       options,
@@ -324,17 +330,16 @@ export function createGovernorHostPersistence(params: {
           throw new Error("Governor approval primary state is ahead of the host ledger");
         }
         let targetEpoch = Math.max(scope.generation, grant.generation);
+        // Always reconcile the primary action rows, including an idempotent
+        // retry after a ledger-first crash rolled the SQLite transaction back.
+        if (requestStartedApprovalCancellation(db, input.grantId, input.observedAt)) {
+          return false;
+        }
+        cancelUnstartedApprovalExecutions(db, input.grantId, input.observedAt);
         if (grant.status === "approved" && scope.status === "approved") {
           // The external-effect fence, not a worker lease alone, is the
           // execution linearization point. A started effect remains in flight
           // until the host acknowledges its physical termination.
-          if (requestStartedApprovalCancellation(db, input.grantId, input.observedAt)) {
-            return false;
-          }
-          // A claim that never crossed the effect fence is safe to cancel,
-          // regardless of remaining lease time. The same SQLite write lock
-          // prevents a concurrent begin-effect operation from winning later.
-          cancelUnstartedApprovalExecutions(db, input.grantId, input.observedAt);
           targetEpoch += 1;
           ledger.append({
             kind: "approval",

@@ -17,6 +17,7 @@ export type GovernorHostIntegrationConfiguration = Readonly<{
   approvalOwnerId: string;
   deliveryOwnerId: string;
   ownerIngressOwnerId: string;
+  childOwnerId: string;
   ownerIngressBindings: readonly GovernorOwnerIngressBinding[];
   channelConfig?: OpenClawConfig;
   deliveries: readonly Readonly<{
@@ -64,6 +65,12 @@ export type GovernorHostRuntime = Readonly<{
         typeof createHostGovernorBroker
       >["capabilities"]["revokeOwnerIngressReceipt"];
     }>;
+    child: Readonly<{
+      ownerId: string;
+      submitLifecycleReceipt: ReturnType<
+        typeof createHostGovernorBroker
+      >["capabilities"]["submitObservedReceipt"];
+    }>;
   }>;
   deliveryHandles: readonly ReturnType<
     ReturnType<typeof createHostGovernorBroker>["capabilities"]["registerStaticDeliveryAdapter"]
@@ -74,6 +81,18 @@ function assertOwner(value: string, label: string): void {
   if (!value.trim()) {
     throw new Error(`Governor ${label} integration owner is required`);
   }
+}
+
+function isChildLifecyclePayload(value: GovernorJsonValue): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const kind = value.kind;
+  return (
+    kind === "governor_external_child_registration" ||
+    kind === "governor_external_child_terminal" ||
+    kind === "governor_physical_execution_termination"
+  );
 }
 
 /**
@@ -90,6 +109,7 @@ export function createGovernorHostRuntimeBindings(params: {
   assertOwner(params.integrations.approvalOwnerId, "approval");
   assertOwner(params.integrations.deliveryOwnerId, "delivery");
   assertOwner(params.integrations.ownerIngressOwnerId, "owner ingress");
+  assertOwner(params.integrations.childOwnerId, "child lifecycle");
   if (params.integrations.ownerIngressBindings.length === 0) {
     throw new Error("At least one authenticated governor owner binding is required");
   }
@@ -114,6 +134,14 @@ export function createGovernorHostRuntimeBindings(params: {
     }),
     ...(deliveryRuntime ? { deliveryRuntime } : {}),
   });
+  const submitChildLifecycleReceipt: ReturnType<
+    typeof createHostGovernorBroker
+  >["capabilities"]["submitObservedReceipt"] = (input) => {
+    if (input.sourceKind !== "structured_external" || !isChildLifecyclePayload(input.payload)) {
+      throw new Error("Governor child owner accepts only child lifecycle observations");
+    }
+    return broker.capabilities.submitObservedReceipt(input);
+  };
   const owners = Object.freeze({
     evidence: Object.freeze({
       ownerId: params.integrations.evidenceOwnerId,
@@ -138,6 +166,10 @@ export function createGovernorHostRuntimeBindings(params: {
       ),
       revokeReceipt: broker.capabilities.revokeOwnerIngressReceipt,
     }),
+    child: Object.freeze({
+      ownerId: params.integrations.childOwnerId,
+      submitLifecycleReceipt: submitChildLifecycleReceipt,
+    }),
   });
   const deliveryHandles = params.integrations.deliveries.map((registration) =>
     owners.delivery.registerStaticDeliveryAdapter(registration),
@@ -148,6 +180,7 @@ export function createGovernorHostRuntimeBindings(params: {
     deliveryResolver: broker.deliveryResolver,
     ownerIngressResolver: broker.ownerIngressResolver,
     physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+    memoryAuthority: broker.memoryAuthority,
     secrets,
     owners,
     deliveryHandles: Object.freeze(deliveryHandles),
@@ -185,6 +218,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       deliveryResolver: bindings.deliveryResolver,
       ownerIngressResolver: bindings.ownerIngressResolver,
       physicalExecutionCoordinator: bindings.physicalExecutionCoordinator,
+      memoryAuthority: bindings.memoryAuthority,
       secrets: bindings.secrets,
       stateEnv: env,
     },

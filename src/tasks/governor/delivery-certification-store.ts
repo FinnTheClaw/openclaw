@@ -18,6 +18,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 
 type CertificationDatabase = Pick<
@@ -56,6 +57,7 @@ export class GovernorDeliveryCertificationStore {
   }
 
   resolveCertified(handle: HostGovernorDeliveryHandle) {
+    assertGovernorJsonResources(handle);
     const adapter = this.#resolver.resolve(handle);
     if (!adapter) {
       throw new Error("Governor delivery adapter handle is not host-registered");

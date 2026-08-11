@@ -15639,11 +15639,11 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-anti-rollback-ledger.ts",
-      sha256: "9f8f46312d1ff156f233bfbf8756216546a68a9bfa46bd6fa8da29f0de89b4ff",
+      sha256: "22a5b6e9baaa2dac88262fce8bb22c2d08b3d2e3bf1816ae766c58414357f9b9",
     },
     {
       path: "src/security/governor-host-broker.ts",
-      sha256: "753f1ee23601b1ebc4dc1f4ca5546a49cd8013edeb868029e101c3229c31a0cb",
+      sha256: "1ff493afeeeb8afaef18107c99d8c54dcce50c8b8eba510c72b202378f37ef7c",
     },
     {
       path: "src/security/governor-host-canary-sink.ts",
@@ -15670,12 +15670,16 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "772f507e21f1952e7a88f0a7eeb05868a2f99198a43ca4dd39f93705375bdfa5",
     },
     {
+      path: "src/security/governor-host-memory-authority.ts",
+      sha256: "5290a755d0db946850da899152e2bd2f8f205fc587e0a0772bab291b90316401",
+    },
+    {
       path: "src/security/governor-host-owner-ingress-persistence.ts",
       sha256: "360b4f5db851164ff480abc1d7e48299c86e21265063b55956e5334f310c9449",
     },
     {
       path: "src/security/governor-host-persistence.ts",
-      sha256: "26564ba1f918e74bb14fe414b0f614b3ab3968e3f0c42b439672bf70414728c5",
+      sha256: "81500a5798f84379b9f1509f48e202dd7b18581ed8b9b2f5bbf2db07afd61e11",
     },
     {
       path: "src/security/governor-host-physical-execution.ts",
@@ -15683,7 +15687,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-readonly.ts",
-      sha256: "62cdf957084082ca453c43ff37fa094ab295ab4e393b77ddc16fdf432aa0fa9c",
+      sha256: "31339ea4d818df2ef8cb02c7432cf2d6d30f060efd8d06af390301f10f68c486",
     },
     {
       path: "src/security/governor-host-secrets.ts",
@@ -16347,7 +16351,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/state/openclaw-state-schema.generated.ts",
-      sha256: "1b1f5c46ab19f708b5b41269b4eb79e8124f855ab28bed50176ca67270f7724f",
+      sha256: "4defc770f8748dd9e2a50656e8e613347ad54f575741f18cf87a620ff59a7492",
     },
     {
       path: "src/status/agent-runtime-label.ts",
@@ -16483,27 +16487,35 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/delivery-certification-store.ts",
-      sha256: "a1acd23d1ed46182e0cb1f2b1746df7bca2031c2022ea09dd41237cd947535f8",
+      sha256: "a49e2e4a1ac6868cf3005194d83f82ff6d10591f4f274a477395b25a7dd0a238",
     },
     {
       path: "src/tasks/governor/delivery-dispatch.ts",
       sha256: "98e360289627ce00f423ce5a6ae216343418c3bcc1bf942814d024cda352a749",
     },
     {
+      path: "src/tasks/governor/outbox-completion.ts",
+      sha256: "be129edd3c71637723ec47b3184318e6f6317967152fa652953944305dbb5bd8",
+    },
+    {
       path: "src/tasks/governor/outbox-store.ts",
-      sha256: "c243530be69e389fbf11092cdd8f37d9cf92dcba6d7a2366bc9082ae6ba1a61d",
+      sha256: "a06e919aa2bf5c674d0551b86d37067792693f8cc104cda17b294d73bdc3f300",
+    },
+    {
+      path: "src/tasks/governor/resource-guard.ts",
+      sha256: "335d924e1bf25bee6fea16847d896c67b31c3ad514ae92e11a52daedca19cbf0",
     },
     {
       path: "src/tasks/governor/secret-filter.ts",
-      sha256: "364e1bf825a738ac9c1c36bcaca8269faea1cf84581e3b57ff2ddfb9eb88adcf",
+      sha256: "2a36b9dda07b287c38074b818de7fcb7bf24a37dfe7554ffdde7e602812e596f",
     },
     {
       path: "src/tasks/governor/state-schema.ts",
-      sha256: "85e6904f26dcf9d6f73a69a8a3acae7905351ca61bf55fd95882bd43108029cf",
+      sha256: "5161807185afa43f17333155229c43a35cb04468a3c831875c79d90e46098d07",
     },
     {
       path: "src/tasks/governor/types.ts",
-      sha256: "a64f95e71a21ee50026defd1848c41b671d22bc7a7ea9f88922d775a08722572",
+      sha256: "8358581a8e402c9728206acf165f7e7de1392f1de68c2c36512899caf66cbfdb",
     },
     {
       path: "src/tasks/native-subagent-task.ts",
@@ -17116,4 +17128,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "3e5a705d3a32eb83427e9c7ac8a61d32a642275f8e058bab05a8853605ec7a16";
+  "ad13aba53c14b6bef92065f3247d6949585334032ade671fc6433dce3afa3508";

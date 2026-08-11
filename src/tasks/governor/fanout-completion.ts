@@ -3,7 +3,11 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
-import type { GovernorTrustedPhysicalExecutionCoordinator } from "../../security/governor-host-readonly.js";
+import type {
+  GovernorTrustedPhysicalExecutionCoordinator,
+  GovernorTrustedReceiptResolver,
+  HostGovernorReceiptId,
+} from "../../security/governor-host-readonly.js";
 import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
@@ -23,6 +27,7 @@ import {
   fanoutPhysicalLease,
   requestFanoutCancellation,
 } from "./fanout-physical.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 
 export type CompleteFanoutParams = {
@@ -36,15 +41,27 @@ export type CompleteFanoutParams = {
   evidence: readonly GovernorJsonValue[];
   unresolved: readonly GovernorJsonValue[];
   now: number;
+  terminalReceiptId?: HostGovernorReceiptId;
 };
+
+function isExternalChild(payload: GovernorJsonValue): boolean {
+  return (
+    Boolean(payload) &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    (payload as Record<string, GovernorJsonValue>).kind === "governor_external_child"
+  );
+}
 
 export function completeFanoutJob(
   dependencies: {
     options: OpenClawStateDatabaseOptions;
     physical: GovernorTrustedPhysicalExecutionCoordinator;
+    receipts: GovernorTrustedReceiptResolver;
   },
   params: CompleteFanoutParams,
 ): GovernorFanoutCompletion {
+  assertGovernorJsonResources(params);
   const content = assertGovernorBoundarySafe("session", {
     claims: [...params.claims],
     evidence: [...params.evidence],
@@ -106,6 +123,29 @@ export function completeFanoutJob(
         .where("task_id", "=", job.taskId),
     );
     const task = taskRow ? parseTaskProjection(taskRow.projection_json) : null;
+    if (task && isExternalChild(job.payload)) {
+      const receipt = params.terminalReceiptId
+        ? dependencies.receipts.resolve(params.terminalReceiptId, task.scopeKey)
+        : null;
+      const expectedPayload = {
+        kind: "governor_external_child_terminal",
+        childHandle: job.jobId,
+        outcome: "completed",
+        ...content,
+      } as const;
+      if (
+        !receipt ||
+        receipt.taskId !== job.taskId ||
+        receipt.taskVersion !== job.taskVersion ||
+        receipt.objectiveRevision !== job.objectiveRevision ||
+        receipt.planVersion !== job.planVersion ||
+        receipt.sourceKind !== "structured_external" ||
+        receipt.observedAt > params.now ||
+        governorDigest(receipt.payload) !== governorDigest(expectedPayload)
+      ) {
+        return { kind: "stale_worker" } as const;
+      }
+    }
     const staleTask =
       !task ||
       task.planVersion !== job.planVersion ||

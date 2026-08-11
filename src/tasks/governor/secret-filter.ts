@@ -1,5 +1,6 @@
 // Redacts or rejects secret-like content before any model, memory, embedding, session, or log sink.
 import type { GovernorJsonValue } from "./canonical-json.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 
 export type GovernorSecretBoundary = "model" | "memory" | "embedding" | "session" | "log";
 
@@ -14,8 +15,6 @@ export type GovernorSecretScan = {
   findings: readonly GovernorSecretFinding[];
 };
 
-const SENSITIVE_FIELD =
-  /(?:^|[_-])(api[_-]?key|auth|credential|password|private[_-]?key|secret|token)(?:$|[_-])/iu;
 const CREDENTIAL_PATTERNS = [
   /\b(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{12,}\b/gu,
   /\bAKIA[A-Z0-9]{16}\b/gu,
@@ -25,6 +24,35 @@ const CREDENTIAL_PATTERNS = [
 const PRIVATE_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gu;
 const SECRET_CANARY = /GOVERNOR_SECRET_CANARY_[A-Za-z0-9_-]+/gu;
 const REDACTED = "[REDACTED]";
+
+function canonicalFieldName(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N}]/gu, "")
+    .toLowerCase();
+}
+
+function isSensitiveFieldName(value: string): boolean {
+  const name = canonicalFieldName(value);
+  return (
+    name === "auth" ||
+    name === "authorization" ||
+    name === "credential" ||
+    name === "password" ||
+    name === "privatekey" ||
+    name === "secret" ||
+    name === "apikey" ||
+    name === "accesskey" ||
+    name === "accesskeyid" ||
+    name.includes("credential") ||
+    name.includes("password") ||
+    name.includes("privatekey") ||
+    name.includes("secret") ||
+    name.endsWith("token") ||
+    name.endsWith("apikey") ||
+    name.endsWith("accesskey")
+  );
+}
 
 function redactString(value: string, path: string, findings: GovernorSecretFinding[]): string {
   let redacted = value.replace(PRIVATE_KEY, () => {
@@ -59,7 +87,7 @@ function scanValue(
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => {
         const itemPath = `${path}.${key}`;
-        if (SENSITIVE_FIELD.test(key) && typeof item === "string" && item.length > 0) {
+        if (isSensitiveFieldName(key)) {
           findings.push({ code: "sensitive_field", path: itemPath });
           return [key, REDACTED];
         }
@@ -71,6 +99,7 @@ function scanValue(
 }
 
 export function scanGovernorSecrets(value: GovernorJsonValue): GovernorSecretScan {
+  assertGovernorJsonResources(value);
   const findings: GovernorSecretFinding[] = [];
   const redacted = scanValue(value, "$", findings);
   return { safe: findings.length === 0, redacted, findings };

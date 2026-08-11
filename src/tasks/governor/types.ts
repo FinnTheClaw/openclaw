@@ -1,6 +1,7 @@
 // Defines behavior-governor task contracts, plans, scopes, and lifecycle state.
 import crypto from "node:crypto";
 import type { GovernorJsonValue } from "./canonical-json.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 
 declare const governorTaskIdBrand: unique symbol;
 declare const governorEventIdBrand: unique symbol;
@@ -64,6 +65,10 @@ export function opaqueGovernorReference(
   identity: GovernorIdentityContext,
 ): string {
   return identity.opaqueReference(kind, value);
+}
+
+export function isOpaqueGovernorReference(value: string): boolean {
+  return /^[a-f0-9]{64}$/u.test(value);
 }
 
 export function opaqueGovernorScope(
@@ -222,12 +227,24 @@ export function createGovernorTaskProjection(params: {
   now: number;
   identity: GovernorIdentityContext;
 }): GovernorTaskProjection {
+  assertGovernorJsonResources(params.contract);
+  if (params.flowId !== undefined) {
+    assertGovernorJsonResources(params.flowId);
+  }
   if (!Number.isSafeInteger(params.authenticatedSourceSequence)) {
     throw new Error("authenticatedSourceSequence must be a safe integer");
   }
+  const flowId =
+    params.flowId === undefined
+      ? undefined
+      : opaqueGovernorReference(
+          "flow-id",
+          assertNonEmpty(params.flowId, "flowId"),
+          params.identity,
+        );
   return {
     taskId: params.taskId ?? createGovernorTaskId(),
-    ...(params.flowId ? { flowId: assertNonEmpty(params.flowId, "flowId") } : {}),
+    ...(flowId ? { flowId } : {}),
     scope: opaqueGovernorScope(params.scope, params.identity),
     scopeKey: canonicalGovernorScopeKey(params.scope, params.identity),
     mode: params.mode,

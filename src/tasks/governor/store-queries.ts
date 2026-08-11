@@ -127,17 +127,36 @@ export class GovernorStoreQueries {
 
   listUnfinishedFanoutJobIds(task: GovernorTaskProjection): string[] {
     const { db } = openOpenClawStateDatabase(this.#options);
-    return executeSqliteQuerySync(
+    const jobs = executeSqliteQuerySync(
       db,
       governorDb(db)
         .selectFrom("governor_fanout_jobs")
-        .select(["job_id"])
+        .select(["job_id", "round", "state"])
         .where("task_id", "=", task.taskId)
         .where("plan_version", "=", task.planVersion)
         .where("execution_generation", "=", task.executionGeneration)
-        .where("state", "in", ["queued", "running"])
         .orderBy("queue_sequence", "asc")
         .orderBy("job_id", "asc"),
-    ).rows.map((row) => row.job_id);
+    ).rows;
+    const pending = jobs
+      .filter((row) => row.state === "queued" || row.state === "running")
+      .map((row) => row.job_id);
+    for (const round of new Set(
+      jobs.filter((row) => row.state === "completed").map((row) => row.round),
+    )) {
+      const reducer = executeSqliteQueryTakeFirstSync(
+        db,
+        governorDb(db)
+          .selectFrom("governor_fanin_reducers")
+          .select("state")
+          .where("task_id", "=", task.taskId)
+          .where("plan_version", "=", task.planVersion)
+          .where("round", "=", round),
+      );
+      if (reducer?.state !== "completed") {
+        pending.push(`fanin:${round}`);
+      }
+    }
+    return pending;
   }
 }

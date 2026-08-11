@@ -160,6 +160,32 @@ isolated SQLite state.
     authenticated supervisor termination/crash receipt releases physical capacity; late results are
     rejected. Host-ledger slots survive primary-database replay, and orphan recovery is explicit and
     audited rather than inferred from elapsed time.
+34. Approval revocation is reconciled from the host ledger into action state before claim,
+    effect-start, pending-work, outcome, or completion decisions. A ledger-first crash therefore
+    cancels an unstarted action on retry/restart instead of leaving it permanently pending. An
+    effect that already crossed its host fence remains explicitly unresolved until authenticated
+    termination evidence arrives.
+35. Verified memory supersession has its own host-ledger generation and binding digest. Restoring
+    older governor SQLite state cannot reactivate a disproven fact: a mismatched row is quarantined
+    or tombstoned and one deduplicated re-observation requirement is recorded. The ledger contains
+    only opaque fact keys and digests, not memory values. An unadmitted broker receipt is ephemeral
+    and requires re-observation after restart. Once admission commits, the durable signed evidence
+    may survive ordinary restart only while its task, objective, plan, scope, freshness, and fence
+    remain current; primary-state rollback requires fresh observation unless the protected current
+    row can still be verified. Full host-snapshot rollback remains outside this software-only
+    boundary.
+36. Every public persistence ingress is bounded before serialization or recursive inspection.
+    Governor JSON rejects excessive bytes, strings, depth, nodes, properties, arrays, and
+    collections, as well as cycles, accessors, unsupported prototypes/types, invalid Unicode,
+    non-finite numbers, and prototype-pollution keys. Credential field names are classified after
+    case/separator canonicalization, and caller flow identities are persisted only as stable keyed
+    opaque references.
+37. Ordinary governed OpenClaw child runs use the existing durable fan-out, three-slot physical
+    authority, and reducer. Registration, terminal result, and termination require exact
+    host-issued lifecycle receipts; caller-reported status is inadmissible. Parent completion stays
+    blocked while a child is queued, physically unresolved, unknown, or completed but unaggregated.
+    The child integration owner can issue only child lifecycle observations, and feature-off creates
+    no child state or capability.
 
 ## Consequences
 
@@ -174,8 +200,9 @@ The governor remains disabled by default. A future production rollout must first
 `OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY`, `OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY`,
 `OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY`, and
 `OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY` as four independently provisioned keys, set a stable
-`OPENCLAW_GOVERNOR_DEPLOYMENT_ID`, configure authenticated evidence, approval, delivery, and owner
-ingress integration owners, bind each owner channel/account/gateway/principal/action/scope tuple,
+`OPENCLAW_GOVERNOR_DEPLOYMENT_ID`, configure authenticated evidence, approval, delivery,
+owner-ingress, and child-lifecycle integration owners, bind each owner
+channel/account/gateway/principal/action/scope tuple,
 register/certify at least one compiled host-owned channel implementation, and install concrete
 cache/index/embedding invalidation adapters for every governed memory backend. Until then, this is
 a synthetic-testable control plane rather than a live message-path replacement.
@@ -194,7 +221,8 @@ system or process that can read memory or host secrets.
 `governor-host-delivery-persistence.ts`, the generated delivery build manifest,
 `governor-host-channel-delivery.ts`, `governor-host-owner-ingress.ts`,
 `governor-host-persistence.ts`, `governor-host-owner-ingress-persistence.ts`,
-`governor-host-secrets.ts`, and the anti-rollback ledger form the private host boundary. They are
+`governor-host-memory-authority.ts`, `governor-host-secrets.ts`, and the anti-rollback ledger form
+the private host boundary. They are
 not in the package export map. A whole-source allowlist permits only the explicit trusted bootstrap
 and host-internal dependency edges. Governor, task, model, and plugin code may
 consume read-only resolvers from `governor-host-readonly.ts`, but must not import the broker or a
@@ -207,9 +235,10 @@ full host/OS snapshot that replays both sidecars together remains outside Slice 
 remote monotonic storage is required for that stronger rollback guarantee.
 
 At a future live rollout, authenticated terminal, UI, and channel integrations must hold separate
-narrow evidence, approval/revocation, delivery, and owner-ingress capabilities returned only by
-trusted bootstrap. The task-facing controller receives read-only resolvers. Bootstrap fails closed
-without all four integration owners, an owner binding, and at least one certified delivery
+narrow evidence, approval/revocation, delivery, owner-ingress, and child-lifecycle capabilities
+returned only by trusted bootstrap. The task-facing controller receives read-only resolvers.
+Bootstrap fails closed without all five integration owners, an owner binding, and at least one
+certified delivery
 implementation. The broker retains signing
 keys in the runtime secret provider only; SQLite
 stores opaque IDs, key IDs/versions, signatures, payload/semantic digests, grants, and monotonic

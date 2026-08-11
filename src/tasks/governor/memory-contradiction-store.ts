@@ -13,6 +13,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { loadCurrentGovernorEvidenceInTransaction } from "./current-evidence.js";
+import { GovernorMemoryAuthorityStore } from "./memory-authority.js";
 import {
   createGovernorMemoryEvidencePredicate,
   governorMemoryRepairPredicate,
@@ -34,6 +35,7 @@ import {
   parseGovernorMemoryRemediation,
   type GovernorMemoryRemediation,
 } from "./memory-remediation.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import {
   isGovernorEvidenceAdmissionStore,
@@ -66,16 +68,22 @@ function dbx(db: DatabaseSync) {
 export class GovernorMemoryContradictionStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly #admissions: GovernorEvidenceAdmissionStore;
+  readonly #authority: GovernorMemoryAuthorityStore;
 
   constructor(params: {
     options: OpenClawStateDatabaseOptions;
     evidenceAdmissions: GovernorEvidenceAdmissionStore;
+    memoryAuthority: import("../../security/governor-host-readonly.js").GovernorTrustedMemoryAuthority;
   }) {
     if (!isGovernorEvidenceAdmissionStore(params.evidenceAdmissions)) {
       throw new Error("Governor memory contradiction store requires its evidence admission owner");
     }
     this.#options = params.options;
     this.#admissions = params.evidenceAdmissions;
+    this.#authority = new GovernorMemoryAuthorityStore({
+      authority: params.memoryAuthority,
+      options: params.options,
+    });
   }
 
   #evidence(db: DatabaseSync, taskId: GovernorTaskId, evidenceId: string) {
@@ -106,6 +114,7 @@ export class GovernorMemoryContradictionStore {
     freshnessExpiresAt?: number;
     now: number;
   }): GovernorMemoryContradictionResolution {
+    assertGovernorJsonResources(params);
     return runOpenClawStateWriteTransaction(({ db }) => {
       const evidence = this.#evidence(db, params.taskId, params.evidenceId);
       const staleRow = executeSqliteQueryTakeFirstSync(
@@ -249,7 +258,7 @@ export class GovernorMemoryContradictionStore {
         semanticDigest: evidence.semanticDigest,
       });
       const confidence = governorMemoryConfidence(sourceKind);
-      const replacement: GovernorMemoryRecord = {
+      const replacement = this.#authority.protect({
         memoryId: replacementMemoryId,
         scopeKey: stale.scopeKey,
         scopeEpoch: stale.scopeEpoch,
@@ -280,7 +289,7 @@ export class GovernorMemoryContradictionStore {
         supersedesId: stale.memoryId,
         createdAt: params.now,
         updatedAt: params.now,
-      };
+      });
       const remediation: GovernorMemoryRemediation = {
         contradictionFingerprint: qualified.fingerprint,
         scopeKey: stale.scopeKey,
@@ -330,6 +339,7 @@ export class GovernorMemoryContradictionStore {
         db,
         dbx(db).insertInto("governor_memories").values(bindGovernorMemory(replacement)),
       );
+      this.#authority.resolveRequirements(db, replacement, params.now);
       executeSqliteQuerySync(
         db,
         dbx(db)

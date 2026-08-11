@@ -19,6 +19,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
+import { assertGovernorJsonResources } from "./resource-guard.js";
 import type { GovernorActionProposal } from "./tool-outcome.js";
 import type { GovernorTaskProjection } from "./types.js";
 
@@ -141,6 +142,7 @@ export class GovernorApprovalGrantStore {
     receiptId: HostGovernorApprovalReceiptId;
     now: number;
   }): string {
+    assertGovernorJsonResources(params);
     const receipt = this.#resolver.resolveApproval(params.receiptId, params.task.scopeKey);
     if (!receipt || receipt.expiresAt <= params.now || receipt.approvalEpoch < 0) {
       throw new Error("Governor approval receipt is invalid or expired");
@@ -248,6 +250,7 @@ export class GovernorApprovalGrantStore {
     grantId: string;
     receiptId: HostGovernorApprovalRevocationId;
   }): boolean {
+    assertGovernorJsonResources(params);
     const { db } = openOpenClawStateDatabase(this.#options);
     const row = executeSqliteQueryTakeFirstSync(
       db,
