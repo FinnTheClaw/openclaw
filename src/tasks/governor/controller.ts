@@ -28,9 +28,14 @@ import {
   type GovernorMutationResolution,
 } from "./mutation-reconciliation.js";
 import type { GovernorOutboxClaimResult } from "./outbox-store.js";
+import {
+  createGovernorCheckpoint,
+  type GovernorCheckpoint,
+  type GovernorVerifiedCheckpointFact,
+} from "./planning-policy.js";
 import { evaluateGovernorActionAdmission } from "./progress-monitor.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
-import { applyGovernorTransition } from "./state-machine.js";
+import { applyGovernorTransition, reclaimGovernorLease } from "./state-machine.js";
 import {
   GovernorSqliteStore,
   type GovernorCommitResult,
@@ -191,6 +196,74 @@ export class GovernorController {
       objectiveRevision: task.objectiveRevision,
       planVersion: task.planVersion,
       executionGeneration: task.executionGeneration,
+    };
+  }
+
+  reclaimTaskLease(params: {
+    taskId: GovernorTaskId;
+    expectedTaskVersion: number;
+    expectedLeaseEpoch: number;
+    now: number;
+  }): GovernorTaskProjection {
+    const task = this.#task(params.taskId);
+    const reclaimed = reclaimGovernorLease({
+      task,
+      expectedTaskVersion: params.expectedTaskVersion,
+      expectedLeaseEpoch: params.expectedLeaseEpoch,
+      now: params.now,
+    });
+    if (!reclaimed.applied) {
+      throw new Error(`Governor lease reclaim failed: ${reclaimed.reason}`);
+    }
+    const event = createGovernorEventRecord({
+      task: reclaimed.task,
+      eventType: "lease_reclaimed",
+      payload: {
+        previousLeaseEpoch: task.leaseEpoch,
+        executionGeneration: reclaimed.task.executionGeneration,
+      },
+      now: params.now,
+    });
+    return assertApplied(this.store.commit({ current: task, next: reclaimed.task, event }));
+  }
+
+  recordCheckpoint(params: {
+    taskId: GovernorTaskId;
+    checkpointId: string;
+    verifiedFacts: readonly GovernorVerifiedCheckpointFact[];
+    discardedAssumptions: readonly string[];
+    unresolvedQuestions: readonly string[];
+    nextDiscriminatingAction: string;
+    competingHypotheses?: readonly string[];
+    now: number;
+  }): { task: GovernorTaskProjection; checkpoint: GovernorCheckpoint } {
+    const task = this.#task(params.taskId);
+    const next = nextTaskVersion(task, params.now);
+    const checkpoint = createGovernorCheckpoint({
+      checkpointId: params.checkpointId,
+      task: next,
+      verifiedFacts: params.verifiedFacts,
+      discardedAssumptions: params.discardedAssumptions,
+      unresolvedQuestions: params.unresolvedQuestions,
+      nextDiscriminatingAction: params.nextDiscriminatingAction,
+      ...(params.competingHypotheses ? { competingHypotheses: params.competingHypotheses } : {}),
+      now: params.now,
+    });
+    const event = createGovernorEventRecord({
+      task: next,
+      eventType: "checkpoint_recorded",
+      payload: {
+        checkpointId: checkpoint.checkpointId,
+        verifiedFactCount: checkpoint.verifiedFacts.length,
+        unresolvedQuestionCount: checkpoint.unresolvedQuestions.length,
+      },
+      now: params.now,
+    });
+    return {
+      task: assertApplied(
+        this.store.commit({ current: task, next, event, checkpoints: [checkpoint] }),
+      ),
+      checkpoint,
     };
   }
 

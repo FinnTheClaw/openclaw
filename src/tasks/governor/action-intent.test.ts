@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { governorDigest } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
@@ -256,6 +257,71 @@ describe("governor durable action intents", () => {
       ).toMatchObject({ accepted: false, reason: "stale_execution" });
       expect(store.listEffects(taskId)).toEqual([]);
       expect(store.listEvents(taskId).at(-1)?.eventType).toBe("late_tool_result_ignored");
+    });
+  });
+
+  it("resumes the same durable checkpoint under a new task lease and execution generation", async () => {
+    await withIntentController(({ controller, store }) => {
+      const taskId = start(controller);
+      controller.recordCheckpoint({
+        taskId,
+        checkpointId: "checkpoint-before-reclaim",
+        verifiedFacts: [
+          { claim: "Synthetic state is ready", evidenceDigest: governorDigest({ ready: true }) },
+        ],
+        discardedAssumptions: ["State was unavailable"],
+        unresolvedQuestions: ["Will the worker survive takeover?"],
+        competingHypotheses: ["Old worker returns", "New worker resumes"],
+        nextDiscriminatingAction: "Reclaim the task lease",
+        now: 120,
+      });
+      expect(store.checkpoints.list(taskId)).toHaveLength(1);
+      const oldFence = controller.captureExecutionFence(taskId);
+      const oldAdmission = controller.admitAction({
+        taskId,
+        executionFence: oldFence,
+        proposal: proposal(createGovernorEffectId("pre-reclaim")),
+        progressVector: { checkpoint: "ready" },
+        now: 121,
+      });
+      if (!oldAdmission.accepted) {
+        throw new Error("expected old action admission");
+      }
+      const before = store.loadTask(taskId);
+      if (!before) {
+        throw new Error("missing task before reclaim");
+      }
+      const reclaimed = controller.reclaimTaskLease({
+        taskId,
+        expectedTaskVersion: before.taskVersion,
+        expectedLeaseEpoch: before.leaseEpoch,
+        now: 122,
+      });
+      expect(reclaimed).toMatchObject({
+        taskId,
+        state: "EXECUTING",
+        leaseEpoch: before.leaseEpoch + 1,
+        executionGeneration: before.executionGeneration + 1,
+        planVersion: before.planVersion,
+      });
+      expect(controller.isActionIntentExecutable(oldAdmission.intent)).toBe(false);
+      expect(
+        controller.claimActionIntent({
+          intent: oldAdmission.intent,
+          workerId: "stale-worker",
+          now: 123,
+        }).kind,
+      ).toBe("stale_worker");
+      const resumed = controller.admitAction({
+        taskId,
+        executionFence: controller.captureExecutionFence(taskId),
+        proposal: proposal(createGovernorEffectId("post-reclaim")),
+        progressVector: { checkpoint: "ready", generation: 1 },
+        now: 124,
+      });
+      expect(resumed.accepted).toBe(true);
+      expect(store.listEvents(taskId).at(-2)?.eventType).toBe("lease_reclaimed");
+      expect(store.loadTask(taskId)?.taskId).toBe(taskId);
     });
   });
 });

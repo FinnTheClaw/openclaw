@@ -618,6 +618,17 @@ export interface GovernorActionIntents {
   updated_at: number;
 }
 
+export interface GovernorCheckpoints {
+  checkpoint_digest: string;
+  checkpoint_id: string;
+  checkpoint_json: string;
+  created_at: number;
+  objective_revision: number;
+  plan_version: number;
+  task_id: string;
+  task_version: number;
+}
+
 export interface GovernorEffects {
   action_fingerprint: string;
   canonical_target: string;
@@ -1289,6 +1300,7 @@ export interface DB {
   gateway_restart_intent: GatewayRestartIntent;
   gateway_restart_sentinel: GatewayRestartSentinel;
   governor_action_intents: GovernorActionIntents;
+  governor_checkpoints: GovernorCheckpoints;
   governor_effects: GovernorEffects;
   governor_events: GovernorEvents;
   governor_evidence: GovernorEvidence;

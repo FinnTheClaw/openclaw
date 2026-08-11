@@ -1,5 +1,6 @@
+import { assertGovernorBoundarySafe } from "./secret-filter.js";
 // Classifies work proportionally and creates evidence-bound progress/replan checkpoints.
-import type { GovernorMode, GovernorTaskProjection } from "./types.js";
+import type { GovernorMode, GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export type GovernorWorkProfile = {
   incident: boolean;
@@ -65,7 +66,9 @@ export type GovernorVerifiedCheckpointFact = {
 };
 
 export type GovernorCheckpoint = {
-  taskId: string;
+  checkpointId: string;
+  taskId: GovernorTaskId;
+  taskVersion: number;
   objectiveRevision: number;
   planVersion: number;
   verifiedFacts: readonly GovernorVerifiedCheckpointFact[];
@@ -83,6 +86,7 @@ function assertNonEmptyList(values: readonly string[], label: string): void {
 }
 
 export function createGovernorCheckpoint(params: {
+  checkpointId: string;
   task: GovernorTaskProjection;
   verifiedFacts: readonly GovernorVerifiedCheckpointFact[];
   discardedAssumptions: readonly string[];
@@ -91,6 +95,9 @@ export function createGovernorCheckpoint(params: {
   competingHypotheses?: readonly string[];
   now: number;
 }): GovernorCheckpoint {
+  if (!params.checkpointId.trim()) {
+    throw new Error("checkpoint id must not be empty");
+  }
   assertNonEmptyList(params.discardedAssumptions, "discarded assumptions");
   assertNonEmptyList(params.unresolvedQuestions, "unresolved questions");
   const competingHypotheses = [...(params.competingHypotheses ?? [])];
@@ -106,15 +113,17 @@ export function createGovernorCheckpoint(params: {
   if (competingHypotheses.length === 1) {
     throw new Error("a replan checkpoint requires at least two competing hypotheses");
   }
-  return {
+  return assertGovernorBoundarySafe("memory", {
+    checkpointId: params.checkpointId,
     taskId: params.task.taskId,
+    taskVersion: params.task.taskVersion,
     objectiveRevision: params.task.objectiveRevision,
     planVersion: params.task.planVersion,
-    verifiedFacts: structuredClone(params.verifiedFacts),
+    verifiedFacts: params.verifiedFacts.map((fact) => ({ ...fact })),
     discardedAssumptions: [...params.discardedAssumptions],
     unresolvedQuestions: [...params.unresolvedQuestions],
     nextDiscriminatingAction: params.nextDiscriminatingAction.trim(),
     competingHypotheses,
     createdAt: params.now,
-  };
+  }) as unknown as GovernorCheckpoint;
 }

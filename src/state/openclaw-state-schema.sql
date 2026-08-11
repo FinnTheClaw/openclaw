@@ -1372,6 +1372,21 @@ CREATE TABLE IF NOT EXISTS governor_action_intents (
 CREATE INDEX IF NOT EXISTS idx_governor_action_intents_pending
   ON governor_action_intents(task_id, objective_revision, state, created_at, effect_id);
 
+CREATE TABLE IF NOT EXISTS governor_checkpoints (
+  checkpoint_id TEXT NOT NULL PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  task_version INTEGER NOT NULL,
+  objective_revision INTEGER NOT NULL,
+  plan_version INTEGER NOT NULL,
+  checkpoint_json TEXT NOT NULL,
+  checkpoint_digest TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES governor_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_governor_checkpoints_task
+  ON governor_checkpoints(task_id, objective_revision, created_at, checkpoint_id);
+
 CREATE TABLE IF NOT EXISTS governor_effects (
   task_id TEXT NOT NULL,
   effect_id TEXT NOT NULL,

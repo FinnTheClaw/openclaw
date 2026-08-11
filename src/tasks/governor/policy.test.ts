@@ -1,6 +1,7 @@
 // Proves proportional quick/deep behavior and rejects dangerous prompt absolutes.
 import { describe, expect, it } from "vitest";
 import { governorDigest } from "./canonical-json.js";
+import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { classifyGovernorWork, createGovernorCheckpoint } from "./planning-policy.js";
 import { assertSafeGovernorPolicy, lintGovernorPolicy } from "./policy-lint.js";
 import {
@@ -73,6 +74,34 @@ describe("governor policy and proportional planning", () => {
     });
   });
 
+  it("orders exact structured capabilities before progressively broader sources", () => {
+    const preferred = new GovernorCapabilityRegistry(
+      [
+        ["broad", "broad_scan"],
+        ["targeted", "targeted_search"],
+        ["index", "scoped_index"],
+        ["exact", "structured_exact"],
+      ].map(([capability, sourceRank]) => ({
+        capability: capability!,
+        version: "1",
+        sourceRank: sourceRank as
+          | "structured_exact"
+          | "scoped_index"
+          | "targeted_search"
+          | "broad_scan",
+        mutating: false,
+        canonicalTargetPrefixes: ["fixture://"],
+        requiresApproval: false,
+      })),
+    ).preferredFor({ mutating: false, canonicalTarget: "fixture://inventory" });
+    expect(preferred.map((definition) => definition.capability)).toEqual([
+      "exact",
+      "index",
+      "targeted",
+      "broad",
+    ]);
+  });
+
   it("keeps the exact thin policy safe and rejects dangerous absolutes", () => {
     expect(GOVERNOR_SOUL_POLICY).toContain("Handle simple work simply.");
     expect(GOVERNOR_POLICY_INTERPRETATION).toContain("Tool counts are never targets.");
@@ -117,6 +146,7 @@ describe("governor policy and proportional planning", () => {
       now: 100,
     });
     const checkpoint = createGovernorCheckpoint({
+      checkpointId: "checkpoint-1",
       task,
       verifiedFacts: [
         { claim: "The exact fixture is reachable", evidenceDigest: governorDigest({ ok: true }) },
@@ -134,6 +164,7 @@ describe("governor policy and proportional planning", () => {
     });
     expect(() =>
       createGovernorCheckpoint({
+        checkpointId: "checkpoint-2",
         task,
         verifiedFacts: [],
         discardedAssumptions: [],

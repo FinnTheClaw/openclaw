@@ -11,6 +11,13 @@ export type GovernorCapabilityDefinition = {
   requiresApproval: boolean;
 };
 
+const SOURCE_RANK_PRIORITY: Record<GovernorActionProposal["sourceRank"], number> = {
+  structured_exact: 0,
+  scoped_index: 1,
+  targeted_search: 2,
+  broad_scan: 3,
+};
+
 export type GovernorActionRejectionCode =
   | "unknown_capability"
   | "capability_version_mismatch"
@@ -39,6 +46,25 @@ export class GovernorCapabilityRegistry {
       throw new Error("Governor capability registry contains duplicate capability IDs");
     }
     this.#definitions = new Map(entries);
+  }
+
+  preferredFor(params: {
+    mutating: boolean;
+    canonicalTarget: string;
+  }): GovernorCapabilityDefinition[] {
+    return [...this.#definitions.values()]
+      .filter(
+        (definition) =>
+          definition.mutating === params.mutating &&
+          definition.canonicalTargetPrefixes.some((prefix) =>
+            params.canonicalTarget.startsWith(prefix),
+          ),
+      )
+      .toSorted(
+        (left, right) =>
+          SOURCE_RANK_PRIORITY[left.sourceRank] - SOURCE_RANK_PRIORITY[right.sourceRank] ||
+          left.capability.localeCompare(right.capability),
+      );
   }
 
   assertAuthorized(task: GovernorTaskProjection, proposal: GovernorActionProposal): void {

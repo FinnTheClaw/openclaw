@@ -20,6 +20,7 @@ import {
 } from "./action-intent-store.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { bindGovernorCheckpoint, GovernorCheckpointStore } from "./checkpoint-store.js";
 import { assertValidGovernorContract } from "./contracts.js";
 import { createGovernorEventRecord, type GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceRecord } from "./evidence.js";
@@ -28,6 +29,7 @@ import {
   GovernorOutboxStore,
   type GovernorOutboxRecord,
 } from "./outbox-store.js";
+import type { GovernorCheckpoint } from "./planning-policy.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
@@ -45,6 +47,7 @@ type GovernorDatabase = Pick<
   | "governor_tasks"
   | "governor_events"
   | "governor_action_intents"
+  | "governor_checkpoints"
   | "governor_effects"
   | "governor_evidence"
   | "governor_outbox"
@@ -236,6 +239,7 @@ function governorDb(db: DatabaseSync) {
 export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly actionIntents: GovernorActionIntentStore;
+  readonly checkpoints: GovernorCheckpointStore;
   readonly outbox: GovernorOutboxStore;
 
   constructor(params: { stateDir?: string } = {}) {
@@ -243,6 +247,7 @@ export class GovernorSqliteStore {
       ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
       : {};
     this.actionIntents = new GovernorActionIntentStore(params);
+    this.checkpoints = new GovernorCheckpointStore(params);
     this.outbox = new GovernorOutboxStore(params);
   }
 
@@ -394,6 +399,7 @@ export class GovernorSqliteStore {
     effectUpdates?: readonly GovernorEffectUpdate[];
     actionIntents?: readonly GovernorActionIntent[];
     actionIntentUpdates?: readonly GovernorActionIntentUpdate[];
+    checkpoints?: readonly GovernorCheckpoint[];
     evidence?: readonly GovernorEvidenceRecord[];
     outbox?: readonly GovernorOutboxRecord[];
   }): GovernorCommitResult {
@@ -469,6 +475,15 @@ export class GovernorSqliteStore {
             `Concurrent governor action intent update ${intentUpdate.current.effectId}`,
           );
         }
+      }
+      for (const checkpoint of params.checkpoints ?? []) {
+        executeSqliteQuerySync(
+          db,
+          dbx
+            .insertInto("governor_checkpoints")
+            .values(bindGovernorCheckpoint(checkpoint))
+            .onConflict((conflict) => conflict.column("checkpoint_id").doNothing()),
+        );
       }
       for (const effect of params.effects ?? []) {
         executeSqliteQuerySync(
