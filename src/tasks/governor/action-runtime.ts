@@ -142,7 +142,7 @@ export class GovernorActionRuntime {
     }
     this.capabilities.assertAuthorized(task, proposal);
     if (proposal.mutating && this.capabilities.requiresApproval(proposal.capability)) {
-      const approval = this.store.approvals.status(task, proposal, params.now);
+      const approval = this.store.approvalStatus(task, proposal, params.now);
       if (approval === "revoked") {
         throw new GovernorActionRejectedError("approval_revoked");
       }

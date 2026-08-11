@@ -10,6 +10,7 @@ import {
   isTrustedGovernorReceiptResolver,
   type HostGovernorCapabilities,
   type GovernorTrustedReceiptResolver,
+  type GovernorTrustedApprovalResolver,
   type HostGovernorReceiptId,
 } from "../../security/governor-host-broker.js";
 import {
@@ -107,7 +108,7 @@ function governorEvidenceAdmissionKey(env: NodeJS.ProcessEnv): string {
 export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly actionIntents: GovernorActionIntentStore;
-  readonly approvals: GovernorApprovalGrantStore;
+  readonly #approvals: GovernorApprovalGrantStore;
   readonly deliveryCertifications: GovernorDeliveryCertificationStore;
   readonly checkpoints: GovernorCheckpointStore;
   readonly outbox: GovernorOutboxStore;
@@ -118,13 +119,18 @@ export class GovernorSqliteStore {
   readonly #pendingEvidence = new WeakSet<object>();
 
   constructor(
-    params: { stateDir?: string; receiptResolver?: GovernorTrustedReceiptResolver } = {},
+    params: {
+      stateDir?: string;
+      receiptResolver?: GovernorTrustedReceiptResolver;
+      approvalResolver?: GovernorTrustedApprovalResolver;
+    } = {},
   ) {
     const testBroker =
       !params.receiptResolver && process.env.NODE_ENV === "test"
         ? createHostGovernorBroker({ receiptSigningKey: "synthetic-store-test-receipt-key" })
         : undefined;
     const receiptResolver = params.receiptResolver ?? testBroker?.resolver;
+    const approvalResolver = params.approvalResolver ?? testBroker?.approvalResolver;
     if (!receiptResolver || !isTrustedGovernorReceiptResolver(receiptResolver)) {
       throw new Error("Governor store requires a trusted host receipt resolver");
     }
@@ -139,7 +145,13 @@ export class GovernorSqliteStore {
     this.#evidenceAdmissionKeyId =
       process.env.OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY_ID?.trim() || "v1";
     this.actionIntents = new GovernorActionIntentStore(params);
-    this.approvals = new GovernorApprovalGrantStore(params);
+    if (!approvalResolver) {
+      throw new Error("Governor store requires a trusted host approval resolver");
+    }
+    this.#approvals = new GovernorApprovalGrantStore({
+      stateDir: params.stateDir,
+      approvalResolver,
+    });
     this.deliveryCertifications = new GovernorDeliveryCertificationStore(params);
     this.checkpoints = new GovernorCheckpointStore(params);
     this.outbox = new GovernorOutboxStore(params);
@@ -147,6 +159,31 @@ export class GovernorSqliteStore {
 
   #database() {
     return openOpenClawStateDatabase(this.#options);
+  }
+
+  approvalStatus(
+    task: GovernorTaskProjection,
+    proposal: import("./tool-outcome.js").GovernorActionProposal,
+    now: number,
+  ) {
+    return this.#approvals.status(task, proposal, now);
+  }
+
+  /** Host integrations pass only a broker-issued opaque approval receipt. */
+  admitAuthenticatedApproval(params: {
+    task: GovernorTaskProjection;
+    receiptId: import("../../security/governor-host-broker.js").HostGovernorApprovalReceiptId;
+    now: number;
+  }): string {
+    return this.#approvals.admitAuthenticatedApproval(params);
+  }
+
+  /** Host integrations pass only a broker-issued opaque revocation receipt. */
+  applyAuthenticatedApprovalRevocation(params: {
+    grantId: string;
+    receiptId: import("../../security/governor-host-broker.js").HostGovernorApprovalRevocationId;
+  }): boolean {
+    return this.#approvals.applyAuthenticatedRevocation(params);
   }
 
   #signEvidence(evidence: Omit<GovernorEvidenceRecord, "admissionSignature">): string {

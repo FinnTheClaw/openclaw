@@ -4,6 +4,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestBroker } from "./test-broker.js";
 import { createGovernorEffectId, type GovernorTaskScope } from "./types.js";
 
 const scope: GovernorTaskScope = {
@@ -70,7 +71,12 @@ describe("governor approval grants", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-approval-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const broker = createGovernorTestBroker();
+        const store = new GovernorSqliteStore({
+          stateDir: state.stateDir,
+          receiptResolver: broker.resolver,
+          approvalResolver: broker.approvalResolver,
+        });
         const controller = new GovernorController(store, registry());
         try {
           const taskId = controller.ingest({
@@ -96,33 +102,26 @@ describe("governor approval grants", () => {
               now: 106,
             }),
           ).toThrow("approval_required");
-          expect(() =>
-            store.approvals.issue({
-              task,
-              issuerId: "unverified-owner",
-              capability: "fixture.mutate",
-              capabilityVersion: "1",
-              canonicalTarget: "fixture://target",
-              expiresAt: 200,
-              now: 107,
-            }),
-          ).toThrow("host-authenticated");
-          const grant = store.approvals.issue({
-            task,
-            issuerId: "test-host-approver",
+          expect("issue" in store).toBe(false);
+          const receiptId = broker.capabilities.submitAuthenticatedApproval({
+            scopeKey: task.scopeKey,
+            taskId: task.taskId,
+            objectiveRevision: task.objectiveRevision,
             capability: "fixture.mutate",
             capabilityVersion: "1",
             canonicalTarget: "fixture://target",
+            approverIdentity: "synthetic-host-approval-event",
+            approvalEpoch: 0,
             expiresAt: 200,
-            now: 108,
+            observedAt: 108,
           });
-          expect(grant.grantId).toMatch(/^ggrant_/u);
-          expect(grant.issuerId).not.toBe("test-host-approver");
+          const grantId = store.admitAuthenticatedApproval({ task, receiptId, now: 108 });
+          expect(grantId).toMatch(/^ggrant_/u);
           expect(
             controller.admitAction({
               taskId,
               executionFence: controller.captureExecutionFence(taskId),
-              proposal: proposal(createGovernorEffectId("approved"), grant.grantId),
+              proposal: proposal(createGovernorEffectId("approved"), grantId),
               progressVector: { step: 1 },
               now: 109,
             }).accepted,
@@ -141,7 +140,7 @@ describe("governor approval grants", () => {
             controller.admitAction({
               taskId,
               executionFence: controller.captureExecutionFence(taskId),
-              proposal: proposal(createGovernorEffectId("stale"), grant.grantId),
+              proposal: proposal(createGovernorEffectId("stale"), grantId),
               progressVector: { step: 2 },
               now: 116,
             }),
@@ -149,6 +148,87 @@ describe("governor approval grants", () => {
         } finally {
           closeOpenClawStateDatabase();
         }
+      },
+    );
+  });
+
+  it("rejects invented, cross-bound, expired, and revoked host receipts across restart", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-approval-adversarial-" },
+      async (state) => {
+        const broker = createGovernorTestBroker();
+        const makeStore = () =>
+          new GovernorSqliteStore({
+            stateDir: state.stateDir,
+            receiptResolver: broker.resolver,
+            approvalResolver: broker.approvalResolver,
+          });
+        const store = makeStore();
+        const controller = new GovernorController(store, registry());
+        const taskId = controller.ingest({
+          sourceMessageId: "message-1",
+          sourceSequence: 1,
+          scope,
+          mode: "FOCUSED",
+          contract,
+          now: 100,
+        }).task.taskId;
+        controller.preparePlan({ taskId, plan, now: 101 });
+        controller.startExecution(taskId, 102);
+        const task = store.loadTask(taskId);
+        if (!task) throw new Error("expected task");
+        expect(() =>
+          store.admitAuthenticatedApproval({
+            task,
+            receiptId: "ghr_invented" as never,
+            now: 103,
+          }),
+        ).toThrow("invalid");
+        const expired = broker.capabilities.submitAuthenticatedApproval({
+          scopeKey: task.scopeKey,
+          taskId: task.taskId,
+          objectiveRevision: task.objectiveRevision,
+          capability: "fixture.mutate",
+          capabilityVersion: "1",
+          canonicalTarget: "fixture://target",
+          approverIdentity: "synthetic",
+          approvalEpoch: 0,
+          expiresAt: 103,
+          observedAt: 102,
+        });
+        expect(() =>
+          store.admitAuthenticatedApproval({ task, receiptId: expired, now: 103 }),
+        ).toThrow("expired");
+        const valid = broker.capabilities.submitAuthenticatedApproval({
+          scopeKey: task.scopeKey,
+          taskId: task.taskId,
+          objectiveRevision: task.objectiveRevision,
+          capability: "fixture.mutate",
+          capabilityVersion: "1",
+          canonicalTarget: "fixture://target",
+          approverIdentity: "synthetic",
+          approvalEpoch: 0,
+          expiresAt: 200,
+          observedAt: 104,
+        });
+        const grantId = store.admitAuthenticatedApproval({ task, receiptId: valid, now: 104 });
+        const revokeReceipt = broker.capabilities.submitApprovalRevocation({
+          grantId,
+          scopeKey: task.scopeKey,
+          observedAt: 105,
+        });
+        expect(
+          store.applyAuthenticatedApprovalRevocation({ grantId, receiptId: revokeReceipt }),
+        ).toBe(true);
+        closeOpenClawStateDatabase();
+        const restarted = makeStore();
+        expect(
+          restarted.approvalStatus(
+            task,
+            proposal(createGovernorEffectId("replayed"), grantId),
+            106,
+          ),
+        ).toBe("revoked");
       },
     );
   });

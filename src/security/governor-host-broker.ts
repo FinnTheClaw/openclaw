@@ -16,6 +16,16 @@ import {
 declare const hostReceiptIdBrand: unique symbol;
 export type HostGovernorReceiptId = string & { readonly [hostReceiptIdBrand]: true };
 
+declare const hostApprovalReceiptIdBrand: unique symbol;
+export type HostGovernorApprovalReceiptId = string & {
+  readonly [hostApprovalReceiptIdBrand]: true;
+};
+
+declare const hostApprovalRevocationIdBrand: unique symbol;
+export type HostGovernorApprovalRevocationId = string & {
+  readonly [hostApprovalRevocationIdBrand]: true;
+};
+
 type HostReceipt = Readonly<{
   id: HostGovernorReceiptId;
   scopeKey: string;
@@ -30,20 +40,49 @@ type HostReceipt = Readonly<{
   signature: string;
 }>;
 
+export type GovernorAuthenticatedApprovalReceipt = Readonly<{
+  id: HostGovernorApprovalReceiptId;
+  scopeKey: string;
+  taskId: string;
+  objectiveRevision: number;
+  capability: string;
+  capabilityVersion: string;
+  canonicalTarget: string;
+  approverIdentity: string;
+  approvalEpoch: number;
+  expiresAt: number;
+  observedAt: number;
+  signature: string;
+}>;
+
+export type GovernorAuthenticatedApprovalRevocation = Readonly<{
+  id: HostGovernorApprovalRevocationId;
+  grantId: string;
+  scopeKey: string;
+  observedAt: number;
+  signature: string;
+}>;
+
 type HostBrokerState = {
   readonly key: string;
   readonly receipts: Map<HostGovernorReceiptId, HostReceipt>;
+  readonly approvals: Map<HostGovernorApprovalReceiptId, GovernorAuthenticatedApprovalReceipt>;
+  readonly revocations: Map<
+    HostGovernorApprovalRevocationId,
+    GovernorAuthenticatedApprovalRevocation
+  >;
 };
 
 const CAPABILITIES = new WeakSet<object>();
 const RESOLVERS = new WeakSet<object>();
+const APPROVAL_RESOLVERS = new WeakSet<object>();
 
 function sign(key: string, value: unknown): string {
   return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
 }
 
-function opaqueId(key: string, value: unknown): HostGovernorReceiptId {
-  return `ghr_${crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex")}` as HostGovernorReceiptId;
+function opaqueId(key: string, value: unknown): string {
+  return `ghr_${crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex")}`;
 }
 
 /** Opaque handle retained only by host bootstrap and authenticated integrations. */
@@ -59,6 +98,23 @@ export type HostGovernorCapabilities = {
     payload: GovernorJsonValue;
     observedAt: number;
   }) => HostGovernorReceiptId;
+  readonly submitAuthenticatedApproval: (input: {
+    scopeKey: string;
+    taskId: string;
+    objectiveRevision: number;
+    capability: string;
+    capabilityVersion: string;
+    canonicalTarget: string;
+    approverIdentity: string;
+    approvalEpoch: number;
+    expiresAt: number;
+    observedAt: number;
+  }) => HostGovernorApprovalReceiptId;
+  readonly submitApprovalRevocation: (input: {
+    grantId: string;
+    scopeKey: string;
+    observedAt: number;
+  }) => HostGovernorApprovalRevocationId;
 };
 
 /** Read-only resolver supplied to the controller; it cannot create receipts. */
@@ -66,11 +122,31 @@ export type GovernorTrustedReceiptResolver = {
   readonly resolve: (receiptId: HostGovernorReceiptId, scopeKey: string) => HostReceipt | null;
 };
 
+/** Read-only verifier retained by the governor store, never a host mutation capability. */
+export type GovernorTrustedApprovalResolver = {
+  readonly resolveApproval: (
+    receiptId: HostGovernorApprovalReceiptId,
+    scopeKey: string,
+  ) => GovernorAuthenticatedApprovalReceipt | null;
+  readonly resolveRevocation: (
+    receiptId: HostGovernorApprovalRevocationId,
+    scopeKey: string,
+  ) => GovernorAuthenticatedApprovalRevocation | null;
+  readonly signApprovalGrant: (grant: unknown) => { keyId: string; signature: string };
+  readonly verifyApprovalGrant: (grant: unknown, keyId: string, signature: string) => boolean;
+};
+
 /** Internal construction check; a caller-created lookalike resolver is rejected. */
 export function isTrustedGovernorReceiptResolver(
   resolver: GovernorTrustedReceiptResolver,
 ): boolean {
   return RESOLVERS.has(resolver);
+}
+
+export function isTrustedGovernorApprovalResolver(
+  resolver: GovernorTrustedApprovalResolver,
+): boolean {
+  return APPROVAL_RESOLVERS.has(resolver);
 }
 
 /**
@@ -81,11 +157,17 @@ export function isTrustedGovernorReceiptResolver(
 export function createHostGovernorBroker(params: { receiptSigningKey: string }): {
   capabilities: HostGovernorCapabilities;
   resolver: GovernorTrustedReceiptResolver;
+  approvalResolver: GovernorTrustedApprovalResolver;
 } {
   if (!params.receiptSigningKey.trim()) {
     throw new Error("Host governor receipt signing key is required");
   }
-  const state: HostBrokerState = { key: params.receiptSigningKey, receipts: new Map() };
+  const state: HostBrokerState = {
+    key: params.receiptSigningKey,
+    receipts: new Map(),
+    approvals: new Map(),
+    revocations: new Map(),
+  };
   const capability = {};
   CAPABILITIES.add(capability);
   const submitObservedReceipt: HostGovernorCapabilities["submitObservedReceipt"] = (input) => {
@@ -103,13 +185,44 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
       payloadDigest: governorDigest(input.payload),
       observedAt: input.observedAt,
     };
-    const id = opaqueId(state.key, { ...body, nonce: crypto.randomUUID() });
+    const id = opaqueId(state.key, {
+      ...body,
+      nonce: crypto.randomUUID(),
+    }) as HostGovernorReceiptId;
     const receipt = Object.freeze({
       id,
       ...input,
       signature: sign(state.key, { id, ...body }),
     });
     state.receipts.set(id, receipt);
+    return id;
+  };
+  const submitAuthenticatedApproval: HostGovernorCapabilities["submitAuthenticatedApproval"] = (
+    input,
+  ) => {
+    if (!CAPABILITIES.has(capability)) {
+      throw new Error("Governor host approval capability is invalid");
+    }
+    const id = opaqueId(state.key, {
+      approval: input,
+      nonce: crypto.randomUUID(),
+    }) as HostGovernorApprovalReceiptId;
+    const body = { id, ...input };
+    state.approvals.set(id, Object.freeze({ ...body, signature: sign(state.key, body) }));
+    return id;
+  };
+  const submitApprovalRevocation: HostGovernorCapabilities["submitApprovalRevocation"] = (
+    input,
+  ) => {
+    if (!CAPABILITIES.has(capability)) {
+      throw new Error("Governor host approval capability is invalid");
+    }
+    const id = opaqueId(state.key, {
+      revocation: input,
+      nonce: crypto.randomUUID(),
+    }) as HostGovernorApprovalRevocationId;
+    const body = { id, ...input };
+    state.revocations.set(id, Object.freeze({ ...body, signature: sign(state.key, body) }));
     return id;
   };
   const resolver: GovernorTrustedReceiptResolver = Object.freeze({
@@ -132,8 +245,31 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     },
   });
   RESOLVERS.add(resolver);
+  const approvalResolver: GovernorTrustedApprovalResolver = Object.freeze({
+    resolveApproval: (receiptId, scopeKey) => {
+      const receipt = state.approvals.get(receiptId);
+      if (!receipt || receipt.scopeKey !== scopeKey) return null;
+      const { signature, ...body } = receipt;
+      return sign(state.key, body) === signature ? receipt : null;
+    },
+    resolveRevocation: (receiptId, scopeKey) => {
+      const receipt = state.revocations.get(receiptId);
+      if (!receipt || receipt.scopeKey !== scopeKey) return null;
+      const { signature, ...body } = receipt;
+      return sign(state.key, body) === signature ? receipt : null;
+    },
+    signApprovalGrant: (grant) => ({ keyId: "host-broker-v1", signature: sign(state.key, grant) }),
+    verifyApprovalGrant: (grant, keyId, signature) =>
+      keyId === "host-broker-v1" && sign(state.key, grant) === signature,
+  });
+  APPROVAL_RESOLVERS.add(approvalResolver);
   return {
-    capabilities: Object.freeze({ submitObservedReceipt }),
+    capabilities: Object.freeze({
+      submitObservedReceipt,
+      submitAuthenticatedApproval,
+      submitApprovalRevocation,
+    }),
     resolver,
+    approvalResolver,
   };
 }
