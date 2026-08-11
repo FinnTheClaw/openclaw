@@ -26,6 +26,29 @@ export type HostGovernorApprovalRevocationId = string & {
   readonly [hostApprovalRevocationIdBrand]: true;
 };
 
+declare const hostDeliveryHandleBrand: unique symbol;
+export type HostGovernorDeliveryHandle = string & { readonly [hostDeliveryHandleBrand]: true };
+
+type HostDeliveryIdentity = Readonly<{
+  adapterId: string;
+  version: string;
+  capability: string;
+}>;
+
+type HostDeliveryEntry = Readonly<{
+  handle: HostGovernorDeliveryHandle;
+  identity: HostDeliveryIdentity;
+  implementationDigest: string;
+  configDigest: string;
+  generation: number;
+  status: "certified" | "revoked";
+  send: (params: { deliveryKey: string; payload: GovernorJsonValue }) => Promise<{
+    deliveryKey: string;
+    receipt: GovernorJsonValue;
+  }>;
+  signature: string;
+}>;
+
 type HostReceipt = Readonly<{
   id: HostGovernorReceiptId;
   scopeKey: string;
@@ -71,11 +94,13 @@ type HostBrokerState = {
     HostGovernorApprovalRevocationId,
     GovernorAuthenticatedApprovalRevocation
   >;
+  readonly deliveries: Map<HostGovernorDeliveryHandle, HostDeliveryEntry>;
 };
 
 const CAPABILITIES = new WeakSet<object>();
 const RESOLVERS = new WeakSet<object>();
 const APPROVAL_RESOLVERS = new WeakSet<object>();
+const DELIVERY_RESOLVERS = new WeakSet<object>();
 
 function sign(key: string, value: unknown): string {
   return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
@@ -115,6 +140,15 @@ export type HostGovernorCapabilities = {
     scopeKey: string;
     observedAt: number;
   }) => HostGovernorApprovalRevocationId;
+  readonly registerStaticDeliveryAdapter: (input: {
+    identity: HostDeliveryIdentity;
+    config: GovernorJsonValue;
+    generation: number;
+    factory: () => {
+      send: HostDeliveryEntry["send"];
+    };
+  }) => HostGovernorDeliveryHandle;
+  readonly revokeDeliveryAdapter: (input: { handle: HostGovernorDeliveryHandle }) => boolean;
 };
 
 /** Read-only resolver supplied to the controller; it cannot create receipts. */
@@ -136,6 +170,11 @@ export type GovernorTrustedApprovalResolver = {
   readonly verifyApprovalGrant: (grant: unknown, keyId: string, signature: string) => boolean;
 };
 
+/** Read-only delivery resolution. It cannot register, rebind, or revoke adapters. */
+export type GovernorTrustedDeliveryResolver = {
+  readonly resolve: (handle: HostGovernorDeliveryHandle) => HostDeliveryEntry | null;
+};
+
 /** Internal construction check; a caller-created lookalike resolver is rejected. */
 export function isTrustedGovernorReceiptResolver(
   resolver: GovernorTrustedReceiptResolver,
@@ -149,6 +188,12 @@ export function isTrustedGovernorApprovalResolver(
   return APPROVAL_RESOLVERS.has(resolver);
 }
 
+export function isTrustedGovernorDeliveryResolver(
+  resolver: GovernorTrustedDeliveryResolver,
+): boolean {
+  return DELIVERY_RESOLVERS.has(resolver);
+}
+
 /**
  * Called only by application bootstrap after it has resolved host secrets.
  * It deliberately takes a runtime-only key rather than loading any secret in
@@ -158,6 +203,7 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
   capabilities: HostGovernorCapabilities;
   resolver: GovernorTrustedReceiptResolver;
   approvalResolver: GovernorTrustedApprovalResolver;
+  deliveryResolver: GovernorTrustedDeliveryResolver;
 } {
   if (!params.receiptSigningKey.trim()) {
     throw new Error("Host governor receipt signing key is required");
@@ -167,6 +213,7 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     receipts: new Map(),
     approvals: new Map(),
     revocations: new Map(),
+    deliveries: new Map(),
   };
   const capability = {};
   CAPABILITIES.add(capability);
@@ -225,6 +272,65 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
     state.revocations.set(id, Object.freeze({ ...body, signature: sign(state.key, body) }));
     return id;
   };
+  const registerStaticDeliveryAdapter: HostGovernorCapabilities["registerStaticDeliveryAdapter"] = (
+    input,
+  ) => {
+    if (
+      !CAPABILITIES.has(capability) ||
+      !Number.isSafeInteger(input.generation) ||
+      input.generation < 0
+    ) {
+      throw new Error("Governor host delivery capability is invalid");
+    }
+    const implementation = input.factory();
+    if (!implementation || typeof implementation.send !== "function") {
+      throw new Error("Governor host delivery factory did not return a sender");
+    }
+    // Bind the callable now. Later mutation of the source object cannot alter dispatch.
+    const send = implementation.send.bind(implementation);
+    const identity = Object.freeze(structuredClone(input.identity));
+    const configDigest = governorDigest(input.config);
+    const implementationDigest = governorDigest({ source: String(implementation.send) });
+    const handle = opaqueId(state.key, {
+      delivery: { identity, configDigest, implementationDigest, generation: input.generation },
+    }) as HostGovernorDeliveryHandle;
+    const prior = state.deliveries.get(handle);
+    if (prior && prior.status !== "revoked") {
+      throw new Error("Governor delivery handle is already registered");
+    }
+    const unsigned = {
+      handle,
+      identity,
+      implementationDigest,
+      configDigest,
+      generation: input.generation,
+      status: "certified" as const,
+    };
+    state.deliveries.set(
+      handle,
+      Object.freeze({ ...unsigned, send, signature: sign(state.key, unsigned) }),
+    );
+    return handle;
+  };
+  const revokeDeliveryAdapter: HostGovernorCapabilities["revokeDeliveryAdapter"] = ({ handle }) => {
+    if (!CAPABILITIES.has(capability))
+      throw new Error("Governor host delivery capability is invalid");
+    const prior = state.deliveries.get(handle);
+    if (!prior || prior.status === "revoked") return false;
+    const unsigned = {
+      handle: prior.handle,
+      identity: prior.identity,
+      implementationDigest: prior.implementationDigest,
+      configDigest: prior.configDigest,
+      generation: prior.generation + 1,
+      status: "revoked" as const,
+    };
+    state.deliveries.set(
+      handle,
+      Object.freeze({ ...unsigned, send: prior.send, signature: sign(state.key, unsigned) }),
+    );
+    return true;
+  };
   const resolver: GovernorTrustedReceiptResolver = Object.freeze({
     resolve: (receiptId, scopeKey) => {
       const receipt = state.receipts.get(receiptId);
@@ -263,13 +369,25 @@ export function createHostGovernorBroker(params: { receiptSigningKey: string }):
       keyId === "host-broker-v1" && sign(state.key, grant) === signature,
   });
   APPROVAL_RESOLVERS.add(approvalResolver);
+  const deliveryResolver: GovernorTrustedDeliveryResolver = Object.freeze({
+    resolve: (handle) => {
+      const entry = state.deliveries.get(handle);
+      if (!entry) return null;
+      const { send: _send, signature, ...unsigned } = entry;
+      return sign(state.key, unsigned) === signature ? entry : null;
+    },
+  });
+  DELIVERY_RESOLVERS.add(deliveryResolver);
   return {
     capabilities: Object.freeze({
       submitObservedReceipt,
       submitAuthenticatedApproval,
       submitApprovalRevocation,
+      registerStaticDeliveryAdapter,
+      revokeDeliveryAdapter,
     }),
     resolver,
     approvalResolver,
+    deliveryResolver,
   };
 }

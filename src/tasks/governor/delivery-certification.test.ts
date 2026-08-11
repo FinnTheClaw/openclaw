@@ -11,7 +11,7 @@ import {
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController } from "./controller.js";
 import type { GovernorDeliveryAdapter } from "./delivery-certification.js";
-import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore } from "./test-broker.js";
 import type { GovernorPlan, GovernorTaskScope } from "./types.js";
 
 const plan: GovernorPlan = { kind: "ordered", steps: [] };
@@ -32,7 +32,7 @@ class Adapter implements GovernorDeliveryAdapter {
     return { deliveryKey: params.deliveryKey, receipt: { synthetic: true } };
   }
 }
-const controller = (store: GovernorSqliteStore) =>
+const controller = (store: import("./store.js").GovernorSqliteStore) =>
   new GovernorController(store, new GovernorCapabilityRegistry([]));
 async function closeDatabaseForCleanup(): Promise<void> {
   closeOpenClawStateDatabase();
@@ -81,12 +81,16 @@ function completion(governor: GovernorController) {
   }
   return { taskId, effectId: "completion_0", expectedLeaseEpoch: result.task.leaseEpoch };
 }
-function register(governor: GovernorController, adapter: Adapter, now: number) {
-  return governor.registerHostDeliveryAdapter({
+function register(
+  broker: ReturnType<typeof createGovernorTestStore>["broker"],
+  adapter: Adapter,
+  generation: number,
+) {
+  return broker.capabilities.registerStaticDeliveryAdapter({
     identity,
-    adapter,
     config: { fixture: "synthetic" },
-    now,
+    generation,
+    factory: () => adapter,
   });
 }
 afterEach(() => closeOpenClawStateDatabase());
@@ -94,14 +98,14 @@ afterEach(() => closeOpenClawStateDatabase());
 describe("governor delivery certification", () => {
   it("dispatches only a host-registered certified handle", async () => {
     await withDeliveryState(async (state) => {
-      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       const governed = controller(store);
       const entry = completion(governed);
       const adapter = new Adapter();
       await expect(
         governed.dispatchOutbox({ ...entry, workerId: "w", adapterHandle: "unregistered", now: 6 }),
       ).rejects.toThrow(/host-registered/);
-      const handle = register(governed, adapter, 7);
+      const handle = register(broker, adapter, 0);
       await governed.dispatchOutbox({ ...entry, workerId: "w", adapterHandle: handle, now: 8 });
       await governed.dispatchOutbox({ ...entry, workerId: "retry", adapterHandle: handle, now: 9 });
       expect(adapter.attempts).toHaveLength(1);
@@ -111,21 +115,21 @@ describe("governor delivery certification", () => {
 
   it("rejects identity clones and old certified rows after host revocation", async () => {
     await withDeliveryState(async (state) => {
-      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       const governed = controller(store);
       const entry = completion(governed);
       const adapter = new Adapter();
-      const handle = register(governed, adapter, 7);
+      const handle = register(broker, adapter, 0);
       const clone: GovernorDeliveryAdapter = {
         async send(params) {
           return { deliveryKey: params.deliveryKey, receipt: {} };
         },
       };
-      const cloneHandle = governed.registerHostDeliveryAdapter({
+      const cloneHandle = broker.capabilities.registerStaticDeliveryAdapter({
         identity,
-        adapter: clone,
         config: { fixture: "synthetic" },
-        now: 8,
+        generation: 0,
+        factory: () => clone,
       });
       await expect(
         governed.dispatchOutbox({
@@ -135,12 +139,7 @@ describe("governor delivery certification", () => {
           now: 9,
         }),
       ).rejects.toThrow(/uncertified/);
-      governed.revokeHostDeliveryAdapter({
-        identity,
-        adapter,
-        config: { fixture: "synthetic" },
-        now: 10,
-      });
+      broker.capabilities.revokeDeliveryAdapter({ handle });
       await expect(
         governed.dispatchOutbox({ ...entry, workerId: "revoked", adapterHandle: handle, now: 11 }),
       ).rejects.toThrow(/revoked/);
@@ -150,11 +149,11 @@ describe("governor delivery certification", () => {
 
   it("rejects forged durable certification rows", async () => {
     await withDeliveryState(async (state) => {
-      const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+      const { store, broker } = createGovernorTestStore({ stateDir: state.stateDir });
       const governed = controller(store);
       const entry = completion(governed);
       const adapter = new Adapter();
-      const handle = register(governed, adapter, 7);
+      const handle = register(broker, adapter, 0);
       const { db } = openOpenClawStateDatabase({
         env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir },
       });

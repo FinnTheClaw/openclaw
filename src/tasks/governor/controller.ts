@@ -16,11 +16,6 @@ import {
   type GovernorCapabilityDefinition,
 } from "./capability-registry.js";
 import { assertValidGovernorPlan } from "./contracts.js";
-import {
-  GovernorHostDeliveryRegistry,
-  type GovernorDeliveryAdapter,
-  type GovernorDeliveryAdapterIdentity,
-} from "./delivery-certification.js";
 import { dispatchGovernorOutbox, type GovernorDispatchOutboxParams } from "./delivery-dispatch.js";
 import { createGovernorEventRecord } from "./events.js";
 import { isBehaviorGovernorEnabled } from "./feature-flag.js";
@@ -76,11 +71,6 @@ export type {
 
 export type { GovernorMutationResolution } from "./mutation-reconciliation.js";
 
-export type {
-  GovernorDeliveryAdapter,
-  GovernorDeliveryAdapterIdentity,
-} from "./delivery-certification.js";
-
 function assertApplied(result: GovernorCommitResult): GovernorTaskProjection {
   if (!result.applied) {
     throw new Error(`Governor commit failed: ${result.reason}`);
@@ -94,7 +84,6 @@ function nextTaskVersion(task: GovernorTaskProjection, now: number): GovernorTas
 
 export class GovernorController {
   readonly actions: GovernorActionRuntime;
-  readonly #deliveryRegistry = new GovernorHostDeliveryRegistry();
 
   constructor(
     readonly store: GovernorSqliteStore,
@@ -494,30 +483,9 @@ export class GovernorController {
   async dispatchOutbox(params: GovernorDispatchOutboxParams) {
     return dispatchGovernorOutbox({
       store: this.store,
-      adapter: this.#deliveryRegistry.resolve(params.adapterHandle),
+      adapterHandle: params.adapterHandle,
       request: params,
     });
-  }
-
-  registerHostDeliveryAdapter(params: {
-    identity: GovernorDeliveryAdapterIdentity;
-    adapter: GovernorDeliveryAdapter;
-    config: GovernorJsonValue;
-    now: number;
-  }): string {
-    const registered = this.#deliveryRegistry.register(params);
-    this.store.deliveryCertifications.certifyHostRegistration(registered, params.now);
-    return registered.handle;
-  }
-
-  revokeHostDeliveryAdapter(params: {
-    identity: GovernorDeliveryAdapterIdentity;
-    adapter: GovernorDeliveryAdapter;
-    config: GovernorJsonValue;
-    now: number;
-  }): void {
-    const registered = this.#deliveryRegistry.register(params);
-    this.store.deliveryCertifications.revokeHostRegistration(registered, params.now);
   }
 }
 

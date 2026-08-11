@@ -12,6 +12,7 @@ import {
 } from "./eval-harness.js";
 import { GovernorRuntimeAdapter } from "./runtime-adapter.js";
 import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore } from "./test-broker.js";
 import {
   createGovernorEffectId,
   type GovernorPlan,
@@ -190,15 +191,16 @@ describe("behavior governor mandatory synthetic evals", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-crash-eval-" },
       async (state) => {
-        let store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        let testHost = createGovernorTestStore({ stateDir: state.stateDir });
+        let store = testHost.store;
         let controller = new GovernorController(store, registry());
         const mutationAdapter = new ObservedMutationAdapter();
         const deliveryAdapter = new ObservedDeliveryAdapter();
-        let deliveryHandle = controller.registerHostDeliveryAdapter({
+        let deliveryHandle = testHost.broker.capabilities.registerStaticDeliveryAdapter({
           identity: deliveryAdapter.identity,
-          adapter: deliveryAdapter,
           config: { fixture: "mandatory-eval" },
-          now: 1,
+          generation: 0,
+          factory: () => deliveryAdapter,
         });
         const samples: GovernorEvalSample[] = [];
         const accessSamples: GovernorEvalSample[] = [];
@@ -206,13 +208,14 @@ describe("behavior governor mandatory synthetic evals", () => {
         const reopen = (checkpoint: string) => {
           crashCheckpoints.add(checkpoint);
           closeOpenClawStateDatabase();
-          store = new GovernorSqliteStore({ stateDir: state.stateDir });
+          testHost = createGovernorTestStore({ stateDir: state.stateDir });
+          store = testHost.store;
           controller = new GovernorController(store, registry());
-          deliveryHandle = controller.registerHostDeliveryAdapter({
+          deliveryHandle = testHost.broker.capabilities.registerStaticDeliveryAdapter({
             identity: deliveryAdapter.identity,
-            adapter: deliveryAdapter,
             config: { fixture: "mandatory-eval" },
-            now: 1,
+            generation: 0,
+            factory: () => deliveryAdapter,
           });
         };
 
@@ -252,6 +255,7 @@ describe("behavior governor mandatory synthetic evals", () => {
 
             const accessCalls: Array<{ accepted: boolean; semantic?: string }> = [];
             for (let operation = 0; operation < 3; operation += 1) {
+              const evidence = { index, operation, found: true };
               const outcome = controller.recordToolOutcome({
                 taskId,
                 executionFence: controller.captureExecutionFence(taskId),
@@ -274,7 +278,7 @@ describe("behavior governor mandatory synthetic evals", () => {
                   sideEffect: "not_applicable",
                   verification: "not_required",
                   summaryCode: "inventory_row",
-                  evidence: { index, operation, found: true },
+                  evidence,
                 },
                 now: base + 121 + operation,
               });

@@ -5,6 +5,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore } from "./test-broker.js";
 import {
   createGovernorEffectId,
   type GovernorPlan,
@@ -274,7 +275,7 @@ describe("durable behavior governor", () => {
       });
 
       closeOpenClawStateDatabase();
-      const restartedStore = new GovernorSqliteStore({ stateDir });
+      const { store: restartedStore, broker } = createGovernorTestStore({ stateDir });
       const restarted = new GovernorController(restartedStore, capabilities());
       expect(restartedStore.loadTask(taskId)).toMatchObject({ state: "COMPLETED" });
       expect(restartedStore.outbox.list(taskId)).toHaveLength(1);
@@ -311,11 +312,11 @@ describe("durable behavior governor", () => {
       ).rejects.toThrow(/host-registered/);
       expect(unsupportedSend).not.toHaveBeenCalled();
       expect(restartedStore.outbox.list(taskId)[0]).toMatchObject({ state: "pending" });
-      const adapterHandle = restarted.registerHostDeliveryAdapter({
+      const adapterHandle = broker.capabilities.registerStaticDeliveryAdapter({
         identity: { adapterId: "synthetic", version: "1", capability: "message.send" },
-        adapter,
         config: { fixture: "controller" },
-        now: 150,
+        generation: 0,
+        factory: () => adapter,
       });
       await restarted.dispatchOutbox({
         taskId,

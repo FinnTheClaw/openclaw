@@ -11,7 +11,9 @@ import {
   type HostGovernorCapabilities,
   type GovernorTrustedReceiptResolver,
   type GovernorTrustedApprovalResolver,
+  type GovernorTrustedDeliveryResolver,
   type HostGovernorReceiptId,
+  type HostGovernorDeliveryHandle,
 } from "../../security/governor-host-broker.js";
 import {
   openOpenClawStateDatabase,
@@ -109,7 +111,7 @@ export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly actionIntents: GovernorActionIntentStore;
   readonly #approvals: GovernorApprovalGrantStore;
-  readonly deliveryCertifications: GovernorDeliveryCertificationStore;
+  readonly #deliveryCertifications: GovernorDeliveryCertificationStore;
   readonly checkpoints: GovernorCheckpointStore;
   readonly outbox: GovernorOutboxStore;
   readonly #receiptResolver: GovernorTrustedReceiptResolver;
@@ -123,6 +125,9 @@ export class GovernorSqliteStore {
       stateDir?: string;
       receiptResolver?: GovernorTrustedReceiptResolver;
       approvalResolver?: GovernorTrustedApprovalResolver;
+      deliveryResolver?: GovernorTrustedDeliveryResolver;
+      /** Test-only synthetic host capability; rejected outside the test runtime. */
+      testReceiptCapabilities?: HostGovernorCapabilities;
     } = {},
   ) {
     const testBroker =
@@ -131,6 +136,7 @@ export class GovernorSqliteStore {
         : undefined;
     const receiptResolver = params.receiptResolver ?? testBroker?.resolver;
     const approvalResolver = params.approvalResolver ?? testBroker?.approvalResolver;
+    const deliveryResolver = params.deliveryResolver ?? testBroker?.deliveryResolver;
     if (!receiptResolver || !isTrustedGovernorReceiptResolver(receiptResolver)) {
       throw new Error("Governor store requires a trusted host receipt resolver");
     }
@@ -140,7 +146,10 @@ export class GovernorSqliteStore {
       : {};
     initializeGovernorStateSchema(this.#options);
     this.#receiptResolver = receiptResolver;
-    this.#testReceiptCapabilities = testBroker?.capabilities;
+    if (params.testReceiptCapabilities && process.env.NODE_ENV !== "test") {
+      throw new Error("Governor test receipt capability is unavailable outside tests");
+    }
+    this.#testReceiptCapabilities = params.testReceiptCapabilities ?? testBroker?.capabilities;
     this.#evidenceAdmissionKey = governorEvidenceAdmissionKey(process.env);
     this.#evidenceAdmissionKeyId =
       process.env.OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY_ID?.trim() || "v1";
@@ -152,7 +161,13 @@ export class GovernorSqliteStore {
       stateDir: params.stateDir,
       approvalResolver,
     });
-    this.deliveryCertifications = new GovernorDeliveryCertificationStore(params);
+    if (!deliveryResolver) {
+      throw new Error("Governor store requires a trusted host delivery resolver");
+    }
+    this.#deliveryCertifications = new GovernorDeliveryCertificationStore({
+      stateDir: params.stateDir,
+      deliveryResolver,
+    });
     this.checkpoints = new GovernorCheckpointStore(params);
     this.outbox = new GovernorOutboxStore(params);
   }
@@ -167,6 +182,11 @@ export class GovernorSqliteStore {
     now: number,
   ) {
     return this.#approvals.status(task, proposal, now);
+  }
+
+  /** Delivery work resolves only through the host-broker-bound handle registry. */
+  resolveCertifiedDelivery(handle: HostGovernorDeliveryHandle) {
+    return this.#deliveryCertifications.resolveCertified(handle);
   }
 
   /** Host integrations pass only a broker-issued opaque approval receipt. */
