@@ -47,11 +47,30 @@ function durableMemoryState(harness: MemoryTestHarness) {
     env: { OPENCLAW_STATE_DIR: harness.stateDir },
   });
   return {
+    tasks: db.prepare("SELECT * FROM governor_tasks ORDER BY task_id").all(),
+    events: db.prepare("SELECT * FROM governor_events ORDER BY event_id").all(),
     memories: db.prepare("SELECT * FROM governor_memories ORDER BY memory_id").all(),
     repairs: db
       .prepare("SELECT * FROM governor_memory_remediations ORDER BY contradiction_fingerprint")
       .all(),
+    reobservations: db
+      .prepare("SELECT * FROM governor_memory_reobservations ORDER BY requirement_id")
+      .all(),
+    scopeEpochs: db.prepare("SELECT * FROM governor_scope_epochs ORDER BY scope_key").all(),
   };
+}
+
+function advanceTaskVersion(harness: MemoryTestHarness, taskId: GovernorTaskId, suffix: string) {
+  return persistMemoryEvidence({
+    store: harness.store,
+    broker: harness.broker,
+    taskId,
+    evidenceId: `evidence-fence-version-advance-${suffix}`,
+    criterionId: "memory-observed",
+    predicate: governorMemoryFactPredicate(`fixture.fence.version-advance.${suffix}`),
+    value: { value: "unrelated" },
+    observedAt: 205,
+  });
 }
 
 function reclaim(harness: MemoryTestHarness, taskId: GovernorTaskId, now: number) {
@@ -70,6 +89,65 @@ function reclaim(harness: MemoryTestHarness, taskId: GovernorTaskId, now: number
 afterEach(() => closeOpenClawStateDatabase());
 
 describe("governor V30 memory pre-mutation fence atomicity", () => {
+  it("rejects a capture-to-BEGIN task-version race before every durable mutation", async () => {
+    await withMemoryTestHarness((harness) => {
+      const fixture = prepareContradiction(harness, "stale-task-version");
+      const staleFence = harness.controller.captureExecutionFence(fixture.taskId);
+      const advanced = advanceTaskVersion(harness, fixture.taskId, "stale-task-version");
+      expect(advanced).toMatchObject({
+        taskVersion: staleFence.taskVersion + 1,
+        objectiveRevision: staleFence.objectiveRevision,
+        planVersion: staleFence.planVersion,
+        executionGeneration: staleFence.executionGeneration,
+      });
+      const beforeRows = durableMemoryState(harness);
+      const beforeAuthority = harness.broker.memoryAuthority.state(
+        advanced.scopeKey,
+        fixture.factKey,
+      );
+
+      expect(() =>
+        harness.controller.memoryRemediation.resolve({
+          taskId: fixture.taskId,
+          evidenceId: "evidence-fence-stale-task-version",
+          staleMemoryId: fixture.staleMemoryId,
+          contradictionClass: "stale canonical source",
+          executionFence: staleFence,
+          progressVector: { phase: "stale-task-version" },
+          now: 210,
+        }),
+      ).toThrow("GOVERNOR_MEMORY_REPAIR_FENCE_REJECTED");
+      expect(durableMemoryState(harness)).toEqual(beforeRows);
+      expect(harness.broker.memoryAuthority.state(advanced.scopeKey, fixture.factKey)).toEqual(
+        beforeAuthority,
+      );
+
+      const currentFence = harness.controller.captureExecutionFence(fixture.taskId);
+      const first = harness.controller.memoryRemediation.resolve({
+        taskId: fixture.taskId,
+        evidenceId: "evidence-fence-stale-task-version",
+        staleMemoryId: fixture.staleMemoryId,
+        contradictionClass: "stale canonical source",
+        executionFence: currentFence,
+        progressVector: { phase: "current-task-version" },
+        now: 211,
+      });
+      expect(first.resolution.kind).toBe("retired");
+      const committed = durableMemoryState(harness);
+      const retry = harness.controller.memoryRemediation.resolve({
+        taskId: fixture.taskId,
+        evidenceId: "evidence-fence-stale-task-version",
+        staleMemoryId: fixture.staleMemoryId,
+        contradictionClass: "stale canonical source",
+        executionFence: currentFence,
+        progressVector: { phase: "current-task-version" },
+        now: 212,
+      });
+      expect(retry.resolution.kind).toBe("duplicate");
+      expect(durableMemoryState(harness)).toEqual(committed);
+    });
+  });
+
   it("rejects a reclaimed lease before any memory, repair, or authority mutation", async () => {
     await withMemoryTestHarness((harness) => {
       const fixture = prepareContradiction(harness, "reclaim-first");
@@ -78,9 +156,9 @@ describe("governor V30 memory pre-mutation fence atomicity", () => {
       if (!scopeKey) {
         throw new Error("missing V30 scope key");
       }
+      reclaim(harness, fixture.taskId, 210);
       const beforeRows = durableMemoryState(harness);
       const beforeAuthority = harness.broker.memoryAuthority.state(scopeKey, fixture.factKey);
-      reclaim(harness, fixture.taskId, 210);
 
       expect(() =>
         harness.controller.memoryRemediation.resolve({
@@ -128,6 +206,7 @@ describe("governor V30 memory pre-mutation fence atomicity", () => {
       expect(durableMemoryState(harness)).toEqual(committed);
 
       reclaim(harness, fixture.taskId, 210);
+      const reclaimedState = durableMemoryState(harness);
       expect(() =>
         harness.controller.memoryRemediation.resolve({
           taskId: fixture.taskId,
@@ -150,7 +229,44 @@ describe("governor V30 memory pre-mutation fence atomicity", () => {
           now: 211,
         }),
       ).toThrow("GOVERNOR_MEMORY_REPAIR_FENCE_REJECTED");
-      expect(durableMemoryState(harness)).toEqual(committed);
+      expect(durableMemoryState(harness)).toEqual(reclaimedState);
+    });
+  });
+
+  it("rejects future and mismatched objective, plan, or generation fences", async () => {
+    await withMemoryTestHarness((harness) => {
+      const fixture = prepareContradiction(harness, "mismatched-fence");
+      const currentFence = harness.controller.captureExecutionFence(fixture.taskId);
+      const task = harness.store.loadTask(fixture.taskId);
+      if (!task) {
+        throw new Error("missing V32 mismatch fixture task");
+      }
+      const beforeRows = durableMemoryState(harness);
+      const beforeAuthority = harness.broker.memoryAuthority.state(task.scopeKey, fixture.factKey);
+      const invalidFences = [
+        { ...currentFence, taskVersion: currentFence.taskVersion + 1 },
+        { ...currentFence, objectiveRevision: currentFence.objectiveRevision + 1 },
+        { ...currentFence, planVersion: currentFence.planVersion + 1 },
+        { ...currentFence, executionGeneration: currentFence.executionGeneration + 1 },
+      ];
+
+      for (const [index, executionFence] of invalidFences.entries()) {
+        expect(() =>
+          harness.controller.memoryRemediation.resolve({
+            taskId: fixture.taskId,
+            evidenceId: "evidence-fence-mismatched-fence",
+            staleMemoryId: fixture.staleMemoryId,
+            contradictionClass: "stale canonical source",
+            executionFence,
+            progressVector: { phase: "invalid-fence", index },
+            now: 220 + index,
+          }),
+        ).toThrow("GOVERNOR_MEMORY_REPAIR_FENCE_REJECTED");
+        expect(durableMemoryState(harness)).toEqual(beforeRows);
+        expect(harness.broker.memoryAuthority.state(task.scopeKey, fixture.factKey)).toEqual(
+          beforeAuthority,
+        );
+      }
     });
   });
 });

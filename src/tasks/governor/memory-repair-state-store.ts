@@ -45,7 +45,7 @@ export function assertGovernorMemoryTaskExecutionFenceCurrent(params: {
   const fence = params.executionFence;
   if (
     !task ||
-    fence.taskVersion > task.taskVersion ||
+    fence.taskVersion !== task.taskVersion ||
     task.objectiveRevision !== fence.objectiveRevision ||
     task.planVersion !== fence.planVersion ||
     task.executionGeneration !== fence.executionGeneration
