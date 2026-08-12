@@ -37,6 +37,7 @@ import {
 import {
   createGovernorCheckpoint,
   type GovernorCheckpoint,
+  type GovernorWorkProfile,
   type GovernorVerifiedCheckpointFact,
 } from "./planning-policy.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
@@ -99,7 +100,8 @@ export class GovernorController {
     sourceMessageId: string;
     sourceSequence: number;
     scope: GovernorTaskScope;
-    mode: GovernorMode;
+    mode?: GovernorMode;
+    profile?: GovernorWorkProfile;
     contract: GovernorTaskContract;
     flowId?: string;
     now: number;

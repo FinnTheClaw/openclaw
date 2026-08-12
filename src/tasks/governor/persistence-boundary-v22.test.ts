@@ -104,13 +104,21 @@ describe("governor V22 durable persistence boundary", () => {
       if (resolution.kind !== "retired") {
         throw new Error("expected resolved V22 fixture contradiction");
       }
-      const fingerprint = resolution.remediation.contradictionFingerprint;
+      const remediation = resolution.remediation;
+      const fingerprint = remediation.contradictionFingerprint;
+      const guard = {
+        taskId,
+        executionFence: controller.captureExecutionFence(taskId),
+        expectedStatus: remediation.status,
+        expectedUpdatedAt: remediation.updatedAt,
+      } as const;
       expect(() =>
         store.memory.updateRepairState({
           fingerprint,
           status: "blocked",
           blockedReason: "x".repeat(2 * 1024 * 1024),
           now: 202,
+          guard,
         }),
       ).toThrow(GovernorResourceGuardError);
       expect(() =>
@@ -119,6 +127,7 @@ describe("governor V22 durable persistence boundary", () => {
           status: "blocked",
           blockedReason: "GOVERNOR_SECRET_CANARY_V22_REPAIR",
           now: 202,
+          guard,
         }),
       ).toThrow(GovernorSecretRejectedError);
       expect(store.memory.loadRemediation(fingerprint)?.status).toBe("queued");
@@ -224,6 +233,7 @@ describe("governor persistence guard inventory", () => {
 
     for (const entry of GOVERNOR_DURABLE_BOUNDARIES) {
       const file = parsed.get(entry.file)!;
+      expect(file, `registered durable file ${entry.file}`).toBeDefined();
       const candidates = file.named.filter((candidate) => candidate.name === entry.symbol);
       const match = candidates.find((candidate) =>
         entry.enforcementAnchors.every((anchor) =>
@@ -231,6 +241,12 @@ describe("governor persistence guard inventory", () => {
         ),
       );
       expect.soft(match, `${entry.id} (${entry.file}:${entry.symbol})`).toBeDefined();
+      if (entry.rawDurableOperation) {
+        expect(entry.rawDurableOperation.schemaVersionGuard.trim()).not.toBe("");
+        expect(entry.rawDurableOperation.transactionRule.trim()).not.toBe("");
+        expect(entry.rawDurableOperation.recoveryRule.trim()).not.toBe("");
+        expect(fs.existsSync(path.resolve(root, entry.rawDurableOperation.testFile))).toBe(true);
+      }
     }
 
     const uncovered: string[] = [];
@@ -252,12 +268,34 @@ describe("governor persistence guard inventory", () => {
             table !== undefined &&
             ts.isStringLiteral(table) &&
             table.text.startsWith("governor_");
-          if (method === "runOpenClawStateWriteTransaction" || touchesGovernorTable) {
+          const callText = node.getText(file.source);
+          const receiver = ts.isPropertyAccessExpression(expression)
+            ? expression.expression.getText(file.source)
+            : "";
+          const sqliteReceiver = receiver === "db" || receiver === "database";
+          const rawDurableOperation =
+            sqliteReceiver &&
+            (method === "exec" ||
+              (method === "prepare" && /\b(?:PRAGMA|ALTER|CREATE|DROP)\b/u.test(callText)));
+          if (
+            method === "runOpenClawStateWriteTransaction" ||
+            touchesGovernorTable ||
+            rawDurableOperation
+          ) {
             const covered = nextAncestors.some((symbol) => entries.has(`${fileName}:${symbol}`));
             if (!covered) {
               const line =
                 file.source.getLineAndCharacterOfPosition(node.getStart(file.source)).line + 1;
               uncovered.push(`${fileName}:${line}:${nextAncestors.join("/") || "anonymous"}`);
+            } else if (rawDurableOperation) {
+              const entry = nextAncestors
+                .map((symbol) => entries.get(`${fileName}:${symbol}`))
+                .find((boundaryEntry) => boundaryEntry?.rawDurableOperation);
+              if (!entry) {
+                const line =
+                  file.source.getLineAndCharacterOfPosition(node.getStart(file.source)).line + 1;
+                uncovered.push(`${fileName}:${line}:raw-operation-metadata-required`);
+              }
             }
           }
         }

@@ -59,6 +59,25 @@ export class GovernorCapabilityRegistry {
     this.#definitions = new Map(entries);
   }
 
+  workClassificationPolicy(capabilities: readonly string[]): {
+    effectful: boolean;
+    requiresApproval: boolean;
+    unknownCapability: boolean;
+    digest: string;
+  } {
+    const definitions = capabilities.map((capability) => this.#definitions.get(capability));
+    const unknownCapability = definitions.some((definition) => !definition);
+    const policy = [...this.#definitions.values()].toSorted((left, right) =>
+      left.capability.localeCompare(right.capability),
+    );
+    return {
+      effectful: capabilities.length > 0,
+      requiresApproval: definitions.some((definition) => definition?.requiresApproval === true),
+      unknownCapability,
+      digest: governorDigest(policy as unknown as GovernorJsonValue),
+    };
+  }
+
   preferredFor(params: {
     mutating: boolean;
     canonicalTarget: string;

@@ -6,6 +6,7 @@ import {
   governorMemoryRepairPredicate,
 } from "./memory-contradiction-policy.js";
 import {
+  correctMemoryTestTask,
   memoryRepairAction,
   memoryScopeA,
   persistMemoryEvidence,
@@ -259,6 +260,95 @@ describe("governor memory remediation runtime", () => {
       expect(
         store.memory.activeReplacement({ scope: memoryScopeA, factKey: "api.endpoint", now: 405 }),
       ).toMatchObject({ content: { path: "/failed/safe" }, status: "verified" });
+    });
+  });
+
+  it("fences repair-state writes by the current task generation and compare-and-swap state", async () => {
+    await withMemoryTestHarness(({ store, broker, controller }) => {
+      const taskId = startMemoryTestTask(controller, memoryScopeA);
+      seedMemoryFact({
+        store,
+        broker,
+        taskId,
+        scope: memoryScopeA,
+        memoryId: "memory-repair-cas-old",
+        factKey: "fixture.repair.cas",
+        path: "/fixture/old",
+        observedAt: 100,
+      });
+      persistMemoryEvidence({
+        store,
+        broker,
+        taskId,
+        evidenceId: "evidence-repair-cas-current",
+        criterionId: "memory-observed",
+        predicate: governorMemoryFactPredicate("fixture.repair.cas"),
+        value: { path: "/fixture/current" },
+        observedAt: 200,
+      });
+      const staleFence = controller.captureExecutionFence(taskId);
+      const resolution = store.memory.resolveContradiction({
+        taskId,
+        evidenceId: "evidence-repair-cas-current",
+        staleMemoryId: "memory-repair-cas-old",
+        contradictionClass: "stale canonical source",
+        now: 201,
+      });
+      if (resolution.kind !== "retired") {
+        throw new Error("expected queued repair CAS fixture");
+      }
+      const remediation = resolution.remediation;
+      correctMemoryTestTask(controller, memoryScopeA, 2);
+      expect(() =>
+        store.memory.updateRepairState({
+          fingerprint: remediation.contradictionFingerprint,
+          status: "blocked",
+          blockedReason: "stale_worker",
+          now: 202,
+          guard: {
+            taskId,
+            executionFence: staleFence,
+            expectedStatus: remediation.status,
+            expectedUpdatedAt: remediation.updatedAt,
+          },
+        }),
+      ).toThrow(/REPAIR_FENCE_REJECTED/u);
+
+      const currentFence = controller.captureExecutionFence(taskId);
+      expect(() =>
+        store.memory.updateRepairState({
+          fingerprint: remediation.contradictionFingerprint,
+          status: "blocked",
+          blockedReason: "current_worker",
+          now: 203,
+          guard: {
+            taskId,
+            executionFence: currentFence,
+            expectedStatus: remediation.status,
+            expectedUpdatedAt: remediation.updatedAt + 1,
+          },
+        }),
+      ).toThrow(/REPAIR_CAS_REJECTED/u);
+
+      const blocked = store.memory.updateRepairState({
+        fingerprint: remediation.contradictionFingerprint,
+        status: "blocked",
+        blockedReason: "current_worker",
+        now: 204,
+        guard: {
+          taskId,
+          executionFence: currentFence,
+          expectedStatus: remediation.status,
+          expectedUpdatedAt: remediation.updatedAt,
+        },
+      });
+      expect(blocked).toMatchObject({ status: "blocked", blockedReason: "current_worker" });
+      expect(store.memory.retrieve({ scope: memoryScopeA, now: 205 })).toEqual([]);
+      expect(store.memory.retrieveAudit({ scope: memoryScopeA })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ content: { path: "/fixture/current" } }),
+        ]),
+      );
     });
   });
 });

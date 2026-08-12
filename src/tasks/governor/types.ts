@@ -139,6 +139,24 @@ export type GovernorTaskConditions = {
   pendingUserUpdate: boolean;
 };
 
+export type GovernorWorkClassificationBinding = Readonly<{
+  policyVersion: number;
+  policyDigest: string;
+  contractDigest: string;
+  capabilityPolicyDigest: string;
+  profile: Readonly<{
+    incident: boolean;
+    effectful: boolean;
+    requiresExternalEvidence: boolean;
+    consequential: boolean;
+    estimatedUsefulActions: number;
+    independentBranches: number;
+  }>;
+  requestProfileDigest: string;
+  decisionDigest: string;
+  toolPolicy: "forbidden" | "permitted" | "required";
+}>;
+
 export type GovernorTaskClaim = {
   claimId: string;
   evidenceDigest: string;
@@ -160,6 +178,7 @@ export type GovernorTaskProjection = {
   scope: GovernorTaskScope;
   scopeKey: string;
   mode: GovernorMode;
+  classification?: GovernorWorkClassificationBinding;
   state: GovernorTaskState;
   contract: GovernorTaskContract;
   plan?: GovernorPlan;
@@ -222,6 +241,7 @@ export function createGovernorTaskProjection(params: {
   flowId?: string;
   scope: GovernorTaskScope;
   mode: GovernorMode;
+  classification?: GovernorWorkClassificationBinding;
   contract: GovernorTaskContract;
   authenticatedSourceSequence: number;
   now: number;
@@ -248,6 +268,7 @@ export function createGovernorTaskProjection(params: {
     scope: opaqueGovernorScope(params.scope, params.identity),
     scopeKey: canonicalGovernorScopeKey(params.scope, params.identity),
     mode: params.mode,
+    ...(params.classification ? { classification: params.classification } : {}),
     state: "RECEIVED",
     contract: structuredClone(params.contract),
     taskVersion: 0,

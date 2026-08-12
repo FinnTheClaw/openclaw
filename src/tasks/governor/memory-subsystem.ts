@@ -7,6 +7,7 @@ import { GovernorMemoryContradictionStore } from "./memory-contradiction-store.j
 import { GovernorMemoryStore, type GovernorMemoryRecord } from "./memory-integrity.js";
 import { evaluateGovernorMemoryReinvestigation } from "./memory-reinvestigation.js";
 import type { GovernorMemoryRemediation } from "./memory-remediation.js";
+import type { GovernorMemoryRepairFence } from "./memory-repair-state-store.js";
 import type { GovernorEvidenceAdmissionStore } from "./store-evidence-admission.js";
 import type { GovernorStoreQueries } from "./store-queries.js";
 import type { GovernorTaskAuthorityStore } from "./task-authority.js";
@@ -130,11 +131,26 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     status: "repairing" | "blocked";
     blockedReason?: string;
     now: number;
+    guard: {
+      taskId: GovernorTaskId;
+      executionFence: GovernorMemoryRepairFence;
+      expectedStatus: GovernorMemoryRemediation["status"];
+      expectedUpdatedAt: number;
+    };
   }): GovernorMemoryRemediation | null {
     return this.#contradictions.updateRepairState(params);
   }
 
-  requeueRepair(params: { fingerprint: string; taskId: GovernorTaskId; now: number }) {
+  requeueRepair(params: {
+    fingerprint: string;
+    now: number;
+    guard: {
+      taskId: GovernorTaskId;
+      executionFence: GovernorMemoryRepairFence;
+      expectedStatus: GovernorMemoryRemediation["status"];
+      expectedUpdatedAt: number;
+    };
+  }) {
     return this.#contradictions.requeueRepair(params);
   }
 
@@ -143,12 +159,19 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     evidenceId: string;
     fingerprint: string;
     now: number;
+    guard: {
+      taskId: GovernorTaskId;
+      executionFence: GovernorMemoryRepairFence;
+      expectedStatus: GovernorMemoryRemediation["status"];
+      expectedUpdatedAt: number;
+    };
   }): GovernorMemoryRemediation | null {
     return this.#contradictions.verifyRepair({
       taskId: params.taskId,
       evidenceId: params.evidenceId,
       fingerprint: params.fingerprint,
       now: params.now,
+      guard: params.guard,
     });
   }
 

@@ -5,13 +5,16 @@ import {
 } from "../../infra/kysely-sync.js";
 import {
   runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
+import type { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { assertValidGovernorContract } from "./contracts.js";
 import { createGovernorEventRecord } from "./events.js";
 import { parseJob, replaceJob } from "./fanout-codec.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
+import type { GovernorWorkProfile } from "./planning-policy.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { bindEvent, bindTask, governorDb, parseTaskRow } from "./store-codec.js";
 import { loadGovernorTask } from "./store-queries.js";
@@ -27,13 +30,18 @@ import {
   type GovernorTaskProjection,
   type GovernorTaskScope,
 } from "./types.js";
+import {
+  assertGovernorTaskClassification,
+  classifyGovernorRequest,
+} from "./work-classification.js";
 
 type IngressParams = {
   eventId?: GovernorEventId;
   sourceMessageId: string;
   sourceSequence: number;
   scope: GovernorTaskScope;
-  mode: GovernorMode;
+  mode?: GovernorMode;
+  profile?: GovernorWorkProfile;
   contract: GovernorTaskContract;
   flowId?: string;
   now: number;
@@ -44,9 +52,23 @@ export type GovernorIngressResult = {
   task: GovernorTaskProjection;
 };
 
+function runRecoverableIngressWrite(
+  options: OpenClawStateDatabaseOptions,
+  tasks: GovernorTaskAuthorityStore,
+  operation: (database: OpenClawStateDatabase) => GovernorIngressResult,
+): GovernorIngressResult {
+  try {
+    return runOpenClawStateWriteTransaction(operation, options);
+  } catch (error) {
+    runOpenClawStateWriteTransaction(({ db }) => tasks.reconcilePrimary(db), options);
+    throw error;
+  }
+}
+
 export function ingestGovernorTask(params: {
   options: OpenClawStateDatabaseOptions;
   identity: GovernorIdentityContext;
+  capabilities: GovernorCapabilityRegistry;
   tasks: GovernorTaskAuthorityStore;
   ingress: IngressParams;
 }): GovernorIngressResult {
@@ -57,6 +79,12 @@ export function ingestGovernorTask(params: {
     input.contract as unknown as GovernorJsonValue,
   ) as unknown as GovernorTaskContract;
   assertValidGovernorContract(contract);
+  const classification = classifyGovernorRequest({
+    contract,
+    capabilities: params.capabilities,
+    ...(input.profile ? { profile: input.profile } : {}),
+    ...(input.mode ? { requestedMode: input.mode } : {}),
+  });
   if (!input.sourceMessageId.trim() || !Number.isSafeInteger(input.sourceSequence)) {
     throw new Error("Governor authenticated ingress identity or sequence is invalid");
   }
@@ -69,14 +97,15 @@ export function ingestGovernorTask(params: {
       ),
     ),
     scope: input.scope,
-    mode: input.mode,
+    mode: classification.mode,
+    classification: classification.binding,
     contract,
     authenticatedSourceSequence: input.sourceSequence,
     flowId: input.flowId,
     now: input.now,
     identity: params.identity,
   });
-  const result: GovernorIngressResult = runOpenClawStateWriteTransaction(({ db }) => {
+  const result = runRecoverableIngressWrite(params.options, params.tasks, ({ db }) => {
     params.tasks.reconcilePrimary(db);
     const dbx = governorDb(db);
     const sourceMessageId = opaqueGovernorReference(
@@ -196,7 +225,7 @@ export function ingestGovernorTask(params: {
         eventType: "task_received",
         sourceMessageId,
         sourceSequence: input.sourceSequence,
-        payload: { mode: input.mode },
+        payload: { mode: classification.mode },
         now: input.now,
       });
       executeSqliteQuerySync(db, dbx.insertInto("governor_events").values(bindEvent(event)));
@@ -205,6 +234,7 @@ export function ingestGovernorTask(params: {
     }
 
     const current = parseTaskRow(activeRow);
+    assertGovernorTaskClassification(current, params.capabilities);
     const hostFence = params.tasks.state(current.taskId)?.fence;
     if (hostFence && input.sourceSequence <= hostFence.authenticatedSourceSequence) {
       throw new Error("GOVERNOR_INGRESS_SEQUENCE_REPLAY");
@@ -212,7 +242,8 @@ export function ingestGovernorTask(params: {
     const restoredPrimary = hostFence !== undefined && hostFence.taskVersion > current.taskVersion;
     const corrected: GovernorTaskProjection = {
       ...current,
-      mode: input.mode,
+      mode: classification.mode,
+      classification: classification.binding,
       contract,
       plan: undefined,
       conditions: { contradictions: [], pendingUserUpdate: false },
@@ -307,7 +338,7 @@ export function ingestGovernorTask(params: {
     executeSqliteQuerySync(db, dbx.insertInto("governor_events").values(bindEvent(event)));
     writeHighWater(corrected);
     return { kind: "corrected", task: corrected };
-  }, params.options);
+  });
   if (result.kind === "created" || result.kind === "corrected") {
     params.tasks.finalize(result.task);
   }

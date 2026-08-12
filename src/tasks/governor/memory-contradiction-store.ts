@@ -35,6 +35,12 @@ import {
   parseGovernorMemoryRemediation,
   type GovernorMemoryRemediation,
 } from "./memory-remediation.js";
+import {
+  assertGovernorMemoryRepairMutationCurrent,
+  requeueGovernorMemoryRepair,
+  updateGovernorMemoryRepairState,
+  type GovernorMemoryRepairMutationGuard,
+} from "./memory-repair-state-store.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import {
@@ -391,59 +397,25 @@ export class GovernorMemoryContradictionStore {
     status: "repairing" | "blocked";
     blockedReason?: string;
     now: number;
+    guard: GovernorMemoryRepairMutationGuard;
   }): GovernorMemoryRemediation | null {
-    assertGovernorPersistedJson("log", params);
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const current = this.#remediation(db, params.fingerprint);
-      if (!current || current.status === "verified") {
-        return current;
-      }
-      const next: GovernorMemoryRemediation = {
-        ...current,
-        status: params.status,
-        ...(params.status === "blocked"
-          ? { blockedReason: params.blockedReason?.trim() || "repair_failed" }
-          : { blockedReason: undefined }),
-        updatedAt: params.now,
-      };
-      executeSqliteQuerySync(
-        db,
-        dbx(db)
-          .updateTable("governor_memory_remediations")
-          .set(bindGovernorMemoryRemediation(next))
-          .where("contradiction_fingerprint", "=", params.fingerprint),
-      );
-      return next;
-    }, this.#options);
+    return updateGovernorMemoryRepairState({
+      options: this.#options,
+      tasks: this.#tasks,
+      ...params,
+    });
   }
 
   requeueRepair(params: {
     fingerprint: string;
-    taskId: GovernorMemoryRemediation["taskId"];
     now: number;
+    guard: GovernorMemoryRepairMutationGuard;
   }): GovernorMemoryRemediation | null {
-    assertGovernorPersistedJson("log", params);
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const current = this.#remediation(db, params.fingerprint);
-      if (!current || current.status !== "blocked" || current.taskId !== params.taskId) {
-        return current;
-      }
-      const next: GovernorMemoryRemediation = {
-        ...current,
-        status: "queued",
-        blockedReason: undefined,
-        updatedAt: params.now,
-      };
-      executeSqliteQuerySync(
-        db,
-        dbx(db)
-          .updateTable("governor_memory_remediations")
-          .set(bindGovernorMemoryRemediation(next))
-          .where("contradiction_fingerprint", "=", params.fingerprint)
-          .where("status", "=", "blocked"),
-      );
-      return next;
-    }, this.#options);
+    return requeueGovernorMemoryRepair({
+      options: this.#options,
+      tasks: this.#tasks,
+      ...params,
+    });
   }
 
   verifyRepair(params: {
@@ -451,17 +423,36 @@ export class GovernorMemoryContradictionStore {
     evidenceId: string;
     fingerprint: string;
     now: number;
+    guard: GovernorMemoryRepairMutationGuard;
   }): GovernorMemoryRemediation | null {
     assertGovernorPersistedJson("log", params);
+    if (params.taskId !== params.guard.taskId) {
+      throw new Error("GOVERNOR_MEMORY_REPAIR_FENCE_REJECTED");
+    }
     return runOpenClawStateWriteTransaction(({ db }) => {
-      const evidence = this.#evidence(db, params.taskId, params.evidenceId);
       const current = this.#remediation(db, params.fingerprint);
       if (!current || !current.replacementMemoryId) {
         return null;
       }
+      assertGovernorMemoryRepairMutationCurrent({
+        db,
+        current,
+        guard: params.guard,
+        tasks: this.#tasks,
+      });
       if (current.status === "verified") {
-        return current;
+        if (current.verificationEvidenceId === params.evidenceId) {
+          return current;
+        }
+        throw new Error("GOVERNOR_MEMORY_REPAIR_CAS_REJECTED");
       }
+      if (
+        current.status !== params.guard.expectedStatus ||
+        current.updatedAt !== params.guard.expectedUpdatedAt
+      ) {
+        throw new Error("GOVERNOR_MEMORY_REPAIR_CAS_REJECTED");
+      }
+      const evidence = this.#evidence(db, params.taskId, params.evidenceId);
       const replacementRow = executeSqliteQueryTakeFirstSync(
         db,
         dbx(db)
@@ -494,13 +485,19 @@ export class GovernorMemoryContradictionStore {
         updatedAt: params.now,
         closedAt: params.now,
       };
-      executeSqliteQuerySync(
+      const update = executeSqliteQuerySync(
         db,
         dbx(db)
           .updateTable("governor_memory_remediations")
           .set(bindGovernorMemoryRemediation(next))
-          .where("contradiction_fingerprint", "=", params.fingerprint),
+          .where("contradiction_fingerprint", "=", params.fingerprint)
+          .where("task_id", "=", params.guard.taskId)
+          .where("status", "=", params.guard.expectedStatus)
+          .where("updated_at", "=", params.guard.expectedUpdatedAt),
       );
+      if (update.numAffectedRows !== 1n) {
+        throw new Error("GOVERNOR_MEMORY_REPAIR_CAS_REJECTED");
+      }
       return next;
     }, this.#options);
   }

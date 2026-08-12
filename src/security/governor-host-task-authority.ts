@@ -21,6 +21,7 @@ export type GovernorTaskFenceBinding = Readonly<{
   planVersion: number;
   leaseEpoch: number;
   executionGeneration: number;
+  operationDigest: string;
   projection: GovernorJsonValue;
 }>;
 
@@ -29,12 +30,17 @@ export type GovernorTaskFenceState = Readonly<{
   generation: number;
   bindingDigest: string;
   fence: GovernorLedgerTaskFence;
+  priorFence?: GovernorLedgerTaskFence;
+  priorBindingDigest?: string;
 }>;
 
 export type GovernorTrustedTaskAuthority = Readonly<{
   prepare: (binding: GovernorTaskFenceBinding) => GovernorTaskFenceState;
   finalize: (binding: GovernorTaskFenceBinding) => GovernorTaskFenceState;
-  reconcile: (binding: GovernorTaskFenceBinding) => boolean;
+  reconcile: (
+    binding: GovernorTaskFenceBinding,
+    strategy?: "target-only" | "target-or-prior",
+  ) => boolean;
   matches: (binding: GovernorTaskFenceBinding) => boolean;
   state: (taskId: string) => GovernorTaskFenceState | null;
 }>;
@@ -55,6 +61,7 @@ function taskFence(binding: GovernorTaskFenceBinding): GovernorLedgerTaskFence {
     leaseEpoch: binding.leaseEpoch,
     executionGeneration: binding.executionGeneration,
     stateDigest: governorDigest({ state: binding.state }),
+    operationDigest: binding.operationDigest,
     projectionDigest: governorDigest(binding.projection),
   };
 }
@@ -76,16 +83,45 @@ function toState(state: GovernorLedgerState | null): GovernorTaskFenceState | nu
     generation: state.generation,
     bindingDigest: state.bindingDigest,
     fence: state.taskFence,
+    ...(state.priorTaskFence ? { priorFence: state.priorTaskFence } : {}),
+    ...(state.priorBindingDigest ? { priorBindingDigest: state.priorBindingDigest } : {}),
   };
 }
 
 function sameState(state: GovernorLedgerState | null, binding: GovernorTaskFenceBinding): boolean {
   const fence = taskFence(binding);
   return (
-    state?.generation === binding.taskVersion &&
-    state.bindingDigest === bindingDigest(binding, fence) &&
+    state?.bindingDigest === bindingDigest(binding, fence) &&
     state.taskFence !== undefined &&
     canonicalGovernorJson(state.taskFence) === canonicalGovernorJson(fence)
+  );
+}
+
+function samePriorState(
+  state: GovernorLedgerState | null,
+  binding: GovernorTaskFenceBinding,
+): boolean {
+  const fence = taskFence(binding);
+  return (
+    state?.status === "task_intent" &&
+    state.priorBindingDigest === bindingDigest(binding, fence) &&
+    state.priorTaskFence !== undefined &&
+    canonicalGovernorJson(state.priorTaskFence) === canonicalGovernorJson(fence)
+  );
+}
+
+function sameInitialOperation(
+  state: GovernorLedgerState | null,
+  binding: GovernorTaskFenceBinding,
+): boolean {
+  return (
+    state?.status === "task_intent" &&
+    state.priorTaskFence === undefined &&
+    state.taskFence?.operationDigest === binding.operationDigest &&
+    state.taskFence.scopeDigest === taskFence(binding).scopeDigest &&
+    state.taskFence.authenticatedSourceSequence === binding.authenticatedSourceSequence &&
+    state.taskFence.taskVersion === 0 &&
+    binding.taskVersion === 0
   );
 }
 
@@ -125,6 +161,7 @@ function validate(binding: GovernorTaskFenceBinding): void {
     !Number.isSafeInteger(binding.planVersion) ||
     !Number.isSafeInteger(binding.leaseEpoch) ||
     !Number.isSafeInteger(binding.executionGeneration) ||
+    !/^[a-f0-9]{64}$/u.test(binding.operationDigest) ||
     binding.authenticatedSourceSequence < 0 ||
     binding.taskVersion < 0 ||
     binding.objectiveRevision < 0 ||
@@ -140,16 +177,26 @@ export function createGovernorTaskAuthority(
   ledger: GovernorHostAntiRollbackLedger,
   afterAppend?: () => void,
 ): GovernorTrustedTaskAuthority {
-  const append = (binding: GovernorTaskFenceBinding, status: "task_intent" | "task_current") => {
+  const append = (
+    binding: GovernorTaskFenceBinding,
+    status: "task_intent" | "task_current",
+    current: GovernorLedgerState | null,
+  ) => {
     validate(binding);
     const fence = taskFence(binding);
     const state = ledger.append({
       kind: "task",
       key: authorityKey(binding.taskId),
-      generation: binding.taskVersion,
+      generation: (current?.generation ?? -1) + 1,
       status,
       bindingDigest: bindingDigest(binding, fence),
       taskFence: fence,
+      ...(status === "task_intent" && current?.status === "task_current" && current.taskFence
+        ? {
+            priorTaskFence: current.taskFence,
+            priorBindingDigest: current.bindingDigest,
+          }
+        : {}),
     });
     afterAppend?.();
     return state;
@@ -166,10 +213,17 @@ export function createGovernorTaskAuthority(
         return state;
       }
       if (current?.status === "task_intent") {
+        if (sameInitialOperation(current, binding)) {
+          const state = toState(append(binding, "task_intent", current));
+          if (!state) {
+            throw new Error("GOVERNOR_TASK_FENCE_STATE_INVALID");
+          }
+          return state;
+        }
         throw new Error("GOVERNOR_TASK_FENCE_INTENT_CONFLICT");
       }
       assertMonotonic(current, binding);
-      const state = toState(append(binding, "task_intent"));
+      const state = toState(append(binding, "task_intent", current));
       if (!state) {
         throw new Error("GOVERNOR_TASK_FENCE_STATE_INVALID");
       }
@@ -191,23 +245,29 @@ export function createGovernorTaskAuthority(
       if (current?.status !== "task_intent") {
         throw new Error("GOVERNOR_TASK_FENCE_FINALIZE_MISMATCH");
       }
-      const state = toState(append(binding, "task_current"));
+      const state = toState(append(binding, "task_current", current));
       if (!state) {
         throw new Error("GOVERNOR_TASK_FENCE_STATE_INVALID");
       }
       return state;
     },
-    reconcile: (binding) => {
+    reconcile: (binding, strategy = "target-only") => {
       validate(binding);
       const current = ledger.state("task", authorityKey(binding.taskId));
-      if (!sameState(current, binding)) {
+      if (current?.status === "task_current") {
+        return sameState(current, binding);
+      }
+      if (current?.status !== "task_intent") {
         return false;
       }
-      if (current?.status === "task_intent") {
-        append(binding, "task_current");
+      if (
+        sameState(current, binding) ||
+        (strategy === "target-or-prior" && samePriorState(current, binding))
+      ) {
+        append(binding, "task_current", current);
         return true;
       }
-      return current?.status === "task_current";
+      return false;
     },
     matches: (binding) => {
       validate(binding);

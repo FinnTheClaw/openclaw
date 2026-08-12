@@ -1,10 +1,12 @@
 /** Security-owned CI inventory of governor durable readers and writers. */
 import type { GovernorDurableBoundary } from "./governor-durable-boundary-contract.js";
 import { GOVERNOR_DURABLE_OWNER_BOUNDARIES } from "./governor-durable-boundary-owners.js";
+import { GOVERNOR_RAW_DURABLE_BOUNDARIES } from "./governor-durable-boundary-schema.js";
 
 export type { GovernorDurableBoundary } from "./governor-durable-boundary-contract.js";
 
 export const GOVERNOR_DURABLE_BOUNDARIES: readonly GovernorDurableBoundary[] = [
+  ...GOVERNOR_RAW_DURABLE_BOUNDARIES,
   {
     id: "task-ingress",
     file: "src/tasks/governor/store-ingress.ts",
@@ -247,22 +249,14 @@ export const GOVERNOR_DURABLE_BOUNDARIES: readonly GovernorDurableBoundary[] = [
     file: "src/tasks/governor/memory-contradiction-store.ts",
     symbol: "updateRepairState",
     direction: "read-write",
-    enforcementAnchors: [
-      "assertGovernorPersistedJson",
-      "this.#remediation",
-      "bindGovernorMemoryRemediation",
-    ],
+    enforcementAnchors: ["updateGovernorMemoryRepairState", "tasks: this.#tasks", "guard"],
   },
   {
     id: "memory-repair-requeue",
     file: "src/tasks/governor/memory-contradiction-store.ts",
     symbol: "requeueRepair",
     direction: "read-write",
-    enforcementAnchors: [
-      "assertGovernorPersistedJson",
-      "this.#remediation",
-      "bindGovernorMemoryRemediation",
-    ],
+    enforcementAnchors: ["requeueGovernorMemoryRepair", "tasks: this.#tasks", "guard"],
   },
   {
     id: "memory-repair-verify",

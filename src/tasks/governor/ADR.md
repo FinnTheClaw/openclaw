@@ -207,6 +207,17 @@ isolated SQLite state.
     Security-owned AST inventory tests require every durable reader/writer to declare its codec,
     resource/privacy guard, and host-fence enforcement. Untrusted boundary failures expose stable
     bounded codes rather than caller identifiers, key paths, payloads, or parser causes.
+39. V26 task intents authenticate both the prior and target fence plus a timestamp-independent
+    semantic operation digest. Ordinary reads may finalize only an already-applied target. Startup
+    recovery or a failed writer may abort an unapplied intent to its authenticated predecessor only
+    while holding the SQLite write lock; any third state remains unavailable. Work mode is rederived
+    from the canonical contract and the host capability-policy
+    digest, so caller hints can increase conservatism but cannot classify mutation, approval,
+    external-evidence, continuation, child/fan-out, or governed-memory work as `QUICK`. Repair-state
+    transitions require the current task/objective/plan/execution fence and a status/timestamp CAS.
+    Enabled bootstrap validates the versioned policy-semantics bundle, while raw governor
+    schema/migration/coordination SQL is explicitly owned in the durable-boundary registry with
+    idempotency and recovery rules.
 
 ## Consequences
 

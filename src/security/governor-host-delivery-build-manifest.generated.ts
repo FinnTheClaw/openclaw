@@ -15639,7 +15639,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-anti-rollback-ledger.ts",
-      sha256: "fb4d4c28459b08aaf173ef5b847731fbe22f0c06bd67399c081d28c7e325ccc1",
+      sha256: "0a2e0568e2911284087b12e4377c71c359c5460a0aa0628e6524124d5c9a2908",
     },
     {
       path: "src/security/governor-host-broker.ts",
@@ -15671,7 +15671,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-ledger-codec.ts",
-      sha256: "bed1207472ce1c356be1815defdeea137840452d3f0b7e1da9ca8d07f1a5d8b2",
+      sha256: "05cd68a20475182fe595838ee75ce3b36056f1a6f89383aec34cc02a7816eb62",
     },
     {
       path: "src/security/governor-host-ledger-storage.ts",
@@ -15703,7 +15703,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-task-authority.ts",
-      sha256: "3eb2fc25fd4cc84304978bcb1177fb87774e3c91986a5a16f98ac6afd538dafd",
+      sha256: "5c203da878a271c60a1be149d7654fed17edf1c3082d79b994c6ff18cfb864c7",
     },
     {
       path: "src/security/install-policy.ts",
@@ -16539,7 +16539,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/types.ts",
-      sha256: "553da267930d2395c8330db5ea3285850d8e7fcda47494b2d604fa2d45111a1f",
+      sha256: "1e30e1f559c2d1e998289b5ad9c312590cd79157e4553db232900e9d2f0f9f7c",
     },
     {
       path: "src/tasks/native-subagent-task.ts",
@@ -17152,4 +17152,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "16b7fb103aa3f678393f3f527c776896cba0a4f76003aaccf82754d663df0cd3";
+  "f976ad94d48712d902decfb6999a0a38b5b72d4080e7f8ec66b5a5cccebcf540";

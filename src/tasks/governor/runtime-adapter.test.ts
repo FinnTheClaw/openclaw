@@ -35,6 +35,15 @@ const contract: GovernorTaskContract = {
   authority: { allowReadOnlyDiscovery: true, mutationCapabilities: [], canonicalTargets: [] },
 };
 
+const quickContract: GovernorTaskContract = {
+  objective: "Answer a prompt-contained synthetic question",
+  constraints: [],
+  knownFacts: ["The answer is present in the prompt"],
+  unknowns: [],
+  completionCriteria: [],
+  authority: { allowReadOnlyDiscovery: false, mutationCapabilities: [], canonicalTargets: [] },
+};
+
 const integrations = {
   evidenceOwnerId: "synthetic-evidence-owner",
   approvalOwnerId: "synthetic-approval-owner",
@@ -187,7 +196,7 @@ describe("governor runtime adapter", () => {
                 estimatedUsefulActions: 0,
                 independentBranches: 0,
               },
-              contract,
+              contract: quickContract,
               now: 100,
             }),
           ).toMatchObject({

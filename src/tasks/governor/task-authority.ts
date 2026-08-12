@@ -9,11 +9,17 @@ import {
   type GovernorTaskFenceBinding,
   type GovernorTrustedTaskAuthority,
 } from "../../security/governor-host-readonly.js";
-import type { GovernorJsonValue } from "./canonical-json.js";
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { governorDb, parseTaskRow } from "./store-codec.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export function governorTaskFenceBinding(task: GovernorTaskProjection): GovernorTaskFenceBinding {
+  const {
+    createdAt: _createdAt,
+    terminalAt: _terminalAt,
+    updatedAt: _updatedAt,
+    ...operation
+  } = task;
   return {
     taskId: task.taskId,
     scopeKey: task.scopeKey,
@@ -24,18 +30,24 @@ export function governorTaskFenceBinding(task: GovernorTaskProjection): Governor
     planVersion: task.planVersion,
     leaseEpoch: task.leaseEpoch,
     executionGeneration: task.executionGeneration,
+    operationDigest: governorDigest(operation as unknown as GovernorJsonValue),
     projection: task as unknown as GovernorJsonValue,
   };
 }
 
 export class GovernorTaskAuthorityStore {
   readonly #authority: GovernorTrustedTaskAuthority;
+  readonly #validate: (task: GovernorTaskProjection) => void;
 
-  constructor(authority: GovernorTrustedTaskAuthority) {
+  constructor(
+    authority: GovernorTrustedTaskAuthority,
+    validate: (task: GovernorTaskProjection) => void = () => undefined,
+  ) {
     if (!isTrustedGovernorTaskAuthority(authority)) {
       throw new Error("GOVERNOR_TASK_AUTHORITY_REQUIRED");
     }
     this.#authority = authority;
+    this.#validate = validate;
   }
 
   prepare(task: GovernorTaskProjection): void {
@@ -46,8 +58,11 @@ export class GovernorTaskAuthorityStore {
     this.#authority.finalize(governorTaskFenceBinding(task));
   }
 
-  reconcile(task: GovernorTaskProjection): boolean {
-    return this.#authority.reconcile(governorTaskFenceBinding(task));
+  reconcile(
+    task: GovernorTaskProjection,
+    strategy: "target-only" | "target-or-prior" = "target-only",
+  ): boolean {
+    return this.#authority.reconcile(governorTaskFenceBinding(task), strategy);
   }
 
   isCurrent(task: GovernorTaskProjection): boolean {
@@ -67,7 +82,11 @@ export class GovernorTaskAuthorityStore {
       return null;
     }
     const task = parseTaskRow(row);
-    return this.isCurrent(task) ? task : null;
+    this.#validate(task);
+    if (this.isCurrent(task)) {
+      return task;
+    }
+    return this.reconcile(task) ? task : null;
   }
 
   reconcilePrimary(db: DatabaseSync): void {
@@ -76,7 +95,9 @@ export class GovernorTaskAuthorityStore {
       governorDb(db).selectFrom("governor_tasks").selectAll().orderBy("task_id", "asc"),
     ).rows;
     for (const row of rows) {
-      this.reconcile(parseTaskRow(row));
+      const task = parseTaskRow(row);
+      this.#validate(task);
+      this.reconcile(task, "target-or-prior");
     }
   }
 }

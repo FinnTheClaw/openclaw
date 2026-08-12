@@ -8,6 +8,7 @@ import type { GovernorJsonValue } from "./canonical-json.js";
 import { governorMemoryFactPredicate } from "./memory-contradiction-policy.js";
 import {
   correctMemoryTestTask,
+  memoryTestRegistry,
   persistMemoryEvidence,
   startMemoryTestTask,
   withMemoryTestHarness,
@@ -138,7 +139,10 @@ describe("governor memory integrity", () => {
       ).toThrow("GOVERNOR_MEMORY_INPUT_FIELD_INVALID");
 
       closeOpenClawStateDatabase();
-      const restarted = createGovernorTestStore({ stateDir: harness.stateDir });
+      const restarted = createGovernorTestStore({
+        stateDir: harness.stateDir,
+        capabilities: memoryTestRegistry(),
+      });
       expect(
         restarted.store.memory.retrieve({ scope: scopeA, now: 104 }).map((m) => m.memoryId),
       ).toEqual(["memory-a"]);

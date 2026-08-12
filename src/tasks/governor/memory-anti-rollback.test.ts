@@ -55,7 +55,10 @@ describe("governor memory anti-rollback authority", () => {
         fs.rmSync(`${databasePath}${suffix}`, { force: true });
       }
 
-      const restarted = createGovernorTestStore({ stateDir });
+      const restarted = createGovernorTestStore({
+        stateDir,
+        capabilities: memoryTestRegistry(),
+      });
       expect(restarted.store.loadTask(taskId)).toBeNull();
       expect(
         Array.from({ length: 100 }, () =>

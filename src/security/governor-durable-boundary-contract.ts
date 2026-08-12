@@ -5,6 +5,13 @@ export type GovernorDurableBoundary = Readonly<{
   symbol: string;
   direction: "read" | "write" | "read-write";
   enforcementAnchors: readonly [string, ...string[]];
+  rawDurableOperation?: Readonly<{
+    kind: "schema-bootstrap" | "migration" | "coordination";
+    schemaVersionGuard: string;
+    transactionRule: string;
+    recoveryRule: string;
+    testFile: `src/${string}.test.ts`;
+  }>;
 }>;
 
 export function governorDurableBoundary(
@@ -13,6 +20,14 @@ export function governorDurableBoundary(
   symbol: string,
   direction: GovernorDurableBoundary["direction"],
   enforcementAnchors: GovernorDurableBoundary["enforcementAnchors"],
+  rawDurableOperation?: GovernorDurableBoundary["rawDurableOperation"],
 ): GovernorDurableBoundary {
-  return { id, file, symbol, direction, enforcementAnchors };
+  return {
+    id,
+    file,
+    symbol,
+    direction,
+    enforcementAnchors,
+    ...(rawDurableOperation ? { rawDurableOperation } : {}),
+  };
 }

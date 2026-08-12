@@ -3,10 +3,18 @@ import { describe, expect, it } from "vitest";
 import { governorDigest } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { classifyGovernorWork, createGovernorCheckpoint } from "./planning-policy.js";
-import { assertSafeGovernorPolicy, lintGovernorPolicy } from "./policy-lint.js";
+import {
+  assertSafeGovernorPolicy,
+  assertSafeGovernorPolicyBundle,
+  lintGovernorPolicy,
+} from "./policy-lint.js";
 import {
   GOVERNOR_AGENT_RULES,
+  GOVERNOR_POLICY_DIGEST,
   GOVERNOR_POLICY_INTERPRETATION,
+  GOVERNOR_POLICY_RULES,
+  GOVERNOR_POLICY_SEMANTICS,
+  GOVERNOR_POLICY_VERSION,
   GOVERNOR_SOUL_POLICY,
 } from "./policy.js";
 import {
@@ -121,6 +129,22 @@ describe("governor policy and proportional planning", () => {
         ...GOVERNOR_AGENT_RULES,
       ]),
     ).not.toThrow();
+    expect(() =>
+      assertSafeGovernorPolicyBundle({
+        version: GOVERNOR_POLICY_VERSION,
+        digest: GOVERNOR_POLICY_DIGEST,
+        rules: GOVERNOR_POLICY_RULES,
+        semantics: GOVERNOR_POLICY_SEMANTICS,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertSafeGovernorPolicyBundle({
+        version: GOVERNOR_POLICY_VERSION,
+        digest: GOVERNOR_POLICY_DIGEST,
+        rules: GOVERNOR_POLICY_RULES,
+        semantics: { ...GOVERNOR_POLICY_SEMANTICS, toolUse: "suppressed" },
+      }),
+    ).toThrow(/tool_semantics_not_proportional/u);
     expect(
       lintGovernorPolicy([
         "Never use tools.",

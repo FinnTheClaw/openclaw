@@ -6,6 +6,7 @@ import {
 import { fanoutTerminationReceiptPayload } from "./fanout-physical.js";
 import {
   memoryScopeA,
+  memoryTestRegistry,
   startMemoryTestTask,
   withMemoryTestHarness,
 } from "./memory-contradiction-test-helpers.js";
@@ -122,7 +123,10 @@ describe("governor external child lifecycle", () => {
       ).toBe(true);
       expect(store.listUnfinishedFanoutJobIds(task)).toEqual([]);
       closeOpenClawStateDatabase();
-      const restarted = new (await import("./store.js")).GovernorSqliteStore({ stateDir });
+      const restarted = new (await import("./store.js")).GovernorSqliteStore({
+        stateDir,
+        capabilities: memoryTestRegistry(),
+      });
       expect(restarted.listUnfinishedFanoutJobIds(task)).toEqual([]);
       const { db } = openOpenClawStateDatabase({
         env: { OPENCLAW_STATE_DIR: stateDir },
@@ -219,7 +223,10 @@ describe("governor external child lifecycle", () => {
       expect(store.children.list(taskId)).toHaveLength(2);
 
       closeOpenClawStateDatabase();
-      const restarted = new (await import("./store.js")).GovernorSqliteStore({ stateDir });
+      const restarted = new (await import("./store.js")).GovernorSqliteStore({
+        stateDir,
+        capabilities: memoryTestRegistry(),
+      });
       expect(
         restarted.children
           .list(taskId)

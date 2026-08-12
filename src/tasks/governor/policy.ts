@@ -1,4 +1,5 @@
 // Keeps behavioral guidance thin while deterministic governor code owns enforcement.
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 export const GOVERNOR_SOUL_POLICY = `Be deliberate, evidence-led, proportionate, and candid.
 
 Handle simple work simply. For consequential work, understand the objective and success conditions before acting.
@@ -25,8 +26,26 @@ export const GOVERNOR_AGENT_RULES = [
   "At checkpoints, preserve verified facts, discarded assumptions, unresolved questions, superseding corrections, and the next discriminating action.",
 ] as const;
 
-export const GOVERNOR_COMPLETE_POLICY = [
+export const GOVERNOR_POLICY_RULES = [
   GOVERNOR_SOUL_POLICY,
   GOVERNOR_POLICY_INTERPRETATION,
   ...GOVERNOR_AGENT_RULES,
-].join("\n\n");
+] as const;
+
+export const GOVERNOR_POLICY_SEMANTICS = {
+  toolUse: "proportional",
+  continuation: "until_deterministic_finish_or_blocker",
+  toolCounts: "never_targets",
+  memoryAuthority: "fresh_admitted_evidence_over_memory",
+  effectfulWork: "contract_plan_execute_verify",
+} as const;
+
+export const GOVERNOR_POLICY_VERSION = 1;
+
+export const GOVERNOR_POLICY_DIGEST = governorDigest({
+  version: GOVERNOR_POLICY_VERSION,
+  semantics: GOVERNOR_POLICY_SEMANTICS,
+  rules: GOVERNOR_POLICY_RULES,
+} as unknown as GovernorJsonValue);
+
+export const GOVERNOR_COMPLETE_POLICY = GOVERNOR_POLICY_RULES.join("\n\n");

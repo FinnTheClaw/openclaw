@@ -35,6 +35,19 @@ function withRemediation(
   return { ...resolution, remediation };
 }
 
+function repairMutationGuard(
+  remediation: GovernorMemoryRemediation,
+  taskId: GovernorTaskId,
+  executionFence: GovernorExecutionFence,
+) {
+  return {
+    taskId,
+    executionFence,
+    expectedStatus: remediation.status,
+    expectedUpdatedAt: remediation.updatedAt,
+  } as const;
+}
+
 export class GovernorMemoryRemediationRuntime {
   constructor(
     readonly store: GovernorSqliteStore,
@@ -79,8 +92,8 @@ export class GovernorMemoryRemediationRuntime {
       remediation =
         this.store.memory.requeueRepair({
           fingerprint: remediation.contradictionFingerprint,
-          taskId: params.taskId,
           now: params.now,
+          guard: repairMutationGuard(remediation, params.taskId, params.executionFence),
         }) ?? remediation;
     }
     const currentResolution = withRemediation(resolution, remediation);
@@ -93,6 +106,7 @@ export class GovernorMemoryRemediationRuntime {
         status: "blocked",
         blockedReason: "repair_effect_missing",
         now: params.now,
+        guard: repairMutationGuard(remediation, params.taskId, params.executionFence),
       });
       return { resolution: withRemediation(currentResolution, blocked) };
     }
@@ -102,6 +116,7 @@ export class GovernorMemoryRemediationRuntime {
         status: "blocked",
         blockedReason: params.repairAction ? "repair_task_mismatch" : "repair_not_available",
         now: params.now,
+        guard: repairMutationGuard(remediation, params.taskId, params.executionFence),
       });
       return { resolution: withRemediation(currentResolution, blocked) };
     }
@@ -123,6 +138,7 @@ export class GovernorMemoryRemediationRuntime {
           status: "blocked",
           blockedReason: "repair_stale_execution",
           now: params.now,
+          guard: repairMutationGuard(remediation, params.taskId, params.executionFence),
         });
         return {
           resolution: withRemediation(currentResolution, blocked),
@@ -140,6 +156,7 @@ export class GovernorMemoryRemediationRuntime {
         status: "blocked",
         blockedReason,
         now: params.now,
+        guard: repairMutationGuard(remediation, params.taskId, params.executionFence),
       });
       return { resolution: withRemediation(currentResolution, blocked) };
     }
@@ -159,6 +176,21 @@ export class GovernorMemoryRemediationRuntime {
     if (!effect) {
       return remediation;
     }
+    const task = this.store.loadTask(params.taskId);
+    if (
+      !task ||
+      effect.objectiveRevision !== task.objectiveRevision ||
+      effect.planVersion !== task.planVersion ||
+      effect.executionGeneration !== task.executionGeneration
+    ) {
+      throw new Error("GOVERNOR_MEMORY_REPAIR_FENCE_REJECTED");
+    }
+    const executionFence: GovernorExecutionFence = {
+      taskVersion: task.taskVersion,
+      objectiveRevision: task.objectiveRevision,
+      planVersion: task.planVersion,
+      executionGeneration: task.executionGeneration,
+    };
     if (
       !isGovernorEffectSemanticallySuccessful(effect) ||
       effect.verificationState !== "verified"
@@ -168,6 +200,7 @@ export class GovernorMemoryRemediationRuntime {
         status: "blocked",
         blockedReason: `repair_${effect.outcome.semantic}`,
         now: params.now,
+        guard: repairMutationGuard(remediation, params.taskId, executionFence),
       });
     }
     if (!params.verificationEvidenceId) {
@@ -175,6 +208,7 @@ export class GovernorMemoryRemediationRuntime {
         fingerprint: params.fingerprint,
         status: "repairing",
         now: params.now,
+        guard: repairMutationGuard(remediation, params.taskId, executionFence),
       });
     }
     return this.store.memory.verifyRepair({
@@ -182,6 +216,7 @@ export class GovernorMemoryRemediationRuntime {
       evidenceId: params.verificationEvidenceId,
       fingerprint: params.fingerprint,
       now: params.now,
+      guard: repairMutationGuard(remediation, params.taskId, executionFence),
     });
   }
 }

@@ -32,6 +32,7 @@ export type GovernorLedgerTaskFence = Readonly<{
   leaseEpoch: number;
   executionGeneration: number;
   stateDigest: string;
+  operationDigest: string;
   projectionDigest: string;
 }>;
 export type GovernorLedgerOrdering = Readonly<{
@@ -53,6 +54,8 @@ export type GovernorLedgerAppendInput = Readonly<{
   bindingDigest: string;
   ordering?: GovernorLedgerOrdering;
   taskFence?: GovernorLedgerTaskFence;
+  priorTaskFence?: GovernorLedgerTaskFence;
+  priorBindingDigest?: string;
 }>;
 export type GovernorLedgerEntry = Readonly<
   GovernorLedgerAppendInput & {
@@ -80,6 +83,8 @@ export type GovernorLedgerState = Readonly<{
   bindingDigest: string;
   ordering?: GovernorLedgerOrdering;
   taskFence?: GovernorLedgerTaskFence;
+  priorTaskFence?: GovernorLedgerTaskFence;
+  priorBindingDigest?: string;
 }>;
 
 export const GOVERNOR_LEDGER_EMPTY_DIGEST = crypto
@@ -121,6 +126,7 @@ export function isValidGovernorTaskFence(fence: GovernorLedgerTaskFence): boolea
     Number.isSafeInteger(fence.executionGeneration) &&
     fence.executionGeneration >= 0 &&
     /^[a-f0-9]{64}$/u.test(fence.stateDigest) &&
+    /^[a-f0-9]{64}$/u.test(fence.operationDigest) &&
     /^[a-f0-9]{64}$/u.test(fence.projectionDigest)
   );
 }
@@ -158,6 +164,8 @@ function unsignedEntry(entry: Omit<GovernorLedgerEntry, "digest" | "signature">)
     bindingDigest: entry.bindingDigest,
     ...(entry.ordering ? { ordering: entry.ordering } : {}),
     ...(entry.taskFence ? { taskFence: entry.taskFence } : {}),
+    ...(entry.priorTaskFence ? { priorTaskFence: entry.priorTaskFence } : {}),
+    ...(entry.priorBindingDigest ? { priorBindingDigest: entry.priorBindingDigest } : {}),
     keyId: entry.keyId,
     keyVersion: entry.keyVersion,
     priorDigest: entry.priorDigest,
@@ -177,7 +185,12 @@ export function assertGovernorLedgerEntry(
     entry.generation < 0 ||
     (entry.ordering !== undefined && !isValidGovernorLedgerOrdering(entry.ordering)) ||
     (entry.taskFence !== undefined && !isValidGovernorTaskFence(entry.taskFence)) ||
+    (entry.priorTaskFence !== undefined && !isValidGovernorTaskFence(entry.priorTaskFence)) ||
     (entry.kind === "task") !== (entry.taskFence !== undefined) ||
+    (entry.priorTaskFence === undefined) !== (entry.priorBindingDigest === undefined) ||
+    (entry.priorBindingDigest !== undefined && !/^[a-f0-9]{64}$/u.test(entry.priorBindingDigest)) ||
+    (entry.status !== "task_intent" && entry.priorTaskFence !== undefined) ||
+    (entry.kind !== "task" && entry.priorTaskFence !== undefined) ||
     entry.priorDigest !== priorDigest ||
     entry.keyId !== governorLedgerKeyId(signingKey) ||
     entry.keyVersion !== 1 ||
@@ -228,6 +241,8 @@ export function governorLedgerStates(
       bindingDigest: entry.bindingDigest,
       ...(entry.ordering ? { ordering: entry.ordering } : {}),
       ...(entry.taskFence ? { taskFence: entry.taskFence } : {}),
+      ...(entry.priorTaskFence ? { priorTaskFence: entry.priorTaskFence } : {}),
+      ...(entry.priorBindingDigest ? { priorBindingDigest: entry.priorBindingDigest } : {}),
     });
   }
   return states;
@@ -242,6 +257,8 @@ function stateJson(key: string, state: GovernorLedgerState): GovernorJsonValue {
     bindingDigest: state.bindingDigest,
     ...(state.ordering ? { ordering: state.ordering } : {}),
     ...(state.taskFence ? { taskFence: state.taskFence } : {}),
+    ...(state.priorTaskFence ? { priorTaskFence: state.priorTaskFence } : {}),
+    ...(state.priorBindingDigest ? { priorBindingDigest: state.priorBindingDigest } : {}),
   };
 }
 
@@ -332,11 +349,16 @@ export function sameGovernorLedgerMetadata(
   return (
     (input.ordering === undefined) === (state.ordering === undefined) &&
     (input.taskFence === undefined) === (state.taskFence === undefined) &&
+    (input.priorTaskFence === undefined) === (state.priorTaskFence === undefined) &&
+    input.priorBindingDigest === state.priorBindingDigest &&
     (!input.ordering ||
       !state.ordering ||
       canonicalGovernorJson(input.ordering) === canonicalGovernorJson(state.ordering)) &&
     (!input.taskFence ||
       !state.taskFence ||
-      canonicalGovernorJson(input.taskFence) === canonicalGovernorJson(state.taskFence))
+      canonicalGovernorJson(input.taskFence) === canonicalGovernorJson(state.taskFence)) &&
+    (!input.priorTaskFence ||
+      !state.priorTaskFence ||
+      canonicalGovernorJson(input.priorTaskFence) === canonicalGovernorJson(state.priorTaskFence))
   );
 }

@@ -4,12 +4,9 @@ import {
   type HostGovernorOwnerIngressReceiptId,
 } from "../../security/governor-host-readonly.js";
 import type { GovernorController } from "./controller.js";
-import {
-  classifyGovernorWork,
-  type GovernorWorkDecision,
-  type GovernorWorkProfile,
-} from "./planning-policy.js";
+import type { GovernorWorkDecision, GovernorWorkProfile } from "./planning-policy.js";
 import type { GovernorTaskContract, GovernorTaskProjection, GovernorTaskScope } from "./types.js";
+import { classifyGovernorRequest } from "./work-classification.js";
 
 export type GovernorIngressRoute =
   | { kind: "quick"; decision: GovernorWorkDecision }
@@ -37,7 +34,11 @@ export class GovernorRuntimeAdapter {
     flowId?: string;
     now: number;
   }): GovernorIngressRoute {
-    const decision = classifyGovernorWork(params.profile);
+    const decision = classifyGovernorRequest({
+      profile: params.profile,
+      contract: params.contract,
+      capabilities: this.controller.capabilities,
+    });
     if (decision.mode === "QUICK") {
       return { kind: "quick", decision };
     }
@@ -45,7 +46,7 @@ export class GovernorRuntimeAdapter {
       sourceMessageId: params.sourceMessageId,
       sourceSequence: params.sourceSequence,
       scope: params.scope,
-      mode: decision.mode,
+      profile: params.profile,
       contract: params.contract,
       flowId: params.flowId,
       now: params.now,

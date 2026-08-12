@@ -14,6 +14,13 @@ import {
 import { GovernorController } from "./controller.js";
 // Feature-gated host construction stays separate from task-loop operations.
 import { isBehaviorGovernorEnabled } from "./feature-flag.js";
+import { assertSafeGovernorPolicyBundle } from "./policy-lint.js";
+import {
+  GOVERNOR_POLICY_DIGEST,
+  GOVERNOR_POLICY_RULES,
+  GOVERNOR_POLICY_SEMANTICS,
+  GOVERNOR_POLICY_VERSION,
+} from "./policy.js";
 import { GovernorSqliteStore, type GovernorStoreSecrets } from "./store.js";
 
 export function createGovernorControllerIfEnabled(params: {
@@ -41,6 +48,12 @@ export function createGovernorControllerIfEnabled(params: {
       "Governor host runtime bindings are required when the behavior governor is enabled",
     );
   }
+  assertSafeGovernorPolicyBundle({
+    version: GOVERNOR_POLICY_VERSION,
+    digest: GOVERNOR_POLICY_DIGEST,
+    rules: GOVERNOR_POLICY_RULES,
+    semantics: GOVERNOR_POLICY_SEMANTICS,
+  });
   const capabilities = new GovernorCapabilityRegistry(params.capabilities);
   return new GovernorController(
     new GovernorSqliteStore({

@@ -10,7 +10,7 @@ import {
   type GovernorTrustedTaskAuthority,
 } from "../../security/governor-host-readonly.js";
 import {
-  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { GovernorActionIntentStore } from "./action-intent-store.js";
@@ -27,6 +27,7 @@ import { GovernorEvidenceAdmissionStore } from "./store-evidence-admission.js";
 import { GovernorStoreQueries } from "./store-queries.js";
 import { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorIdentityContext } from "./types.js";
+import { assertGovernorTaskClassification } from "./work-classification.js";
 
 export type GovernorStoreSecrets = Readonly<{
   identity: GovernorIdentityContext;
@@ -87,8 +88,10 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
   };
   const capabilities = params.capabilities ?? new GovernorCapabilityRegistry([]);
   initializeGovernorStateSchema(options);
-  const tasks = new GovernorTaskAuthorityStore(taskAuthority);
-  tasks.reconcilePrimary(openOpenClawStateDatabase(options).db);
+  const tasks = new GovernorTaskAuthorityStore(taskAuthority, (task) =>
+    assertGovernorTaskClassification(task, capabilities),
+  );
+  runOpenClawStateWriteTransaction(({ db }) => tasks.reconcilePrimary(db), options);
   const evidenceAdmissions = new GovernorEvidenceAdmissionStore({
     receiptResolver,
     identity: secrets.identity,

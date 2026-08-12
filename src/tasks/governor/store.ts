@@ -8,6 +8,7 @@ import type { HostDeliveryReceipt } from "../../security/governor-host-readonly.
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { bindGovernorActionIntent } from "./action-intent-codec.js";
@@ -25,6 +26,7 @@ import { GovernorFanoutStore } from "./fanout.js";
 import { GovernorMemorySubsystem } from "./memory-subsystem.js";
 import { bindGovernorOutbox, GovernorOutboxStore } from "./outbox-store.js";
 import { assertGovernorPersistedJson, assertSameGovernorScope } from "./persistence-guard.js";
+import type { GovernorWorkProfile } from "./planning-policy.js";
 import { appendGovernorAuditEvent } from "./store-audit.js";
 import {
   createGovernorStoreDependencies,
@@ -60,6 +62,7 @@ import {
   type GovernorTaskProjection,
   type GovernorTaskScope,
 } from "./types.js";
+import { assertGovernorTaskClassification } from "./work-classification.js";
 
 export type { GovernorStoreSecrets } from "./store-bootstrap.js";
 
@@ -70,6 +73,24 @@ export type GovernorCommitResult = { applied: true; task: GovernorTaskProjection
 
 export type { GovernorEffectUpdate } from "./store-commit-validation.js";
 export type { GovernorPendingEvidence } from "./store-evidence-admission.js";
+
+function runRecoverableTaskWrite(
+  options: OpenClawStateDatabaseOptions,
+  tasks: GovernorTaskAuthorityStore,
+  operation: (database: OpenClawStateDatabase) => GovernorCommitResult,
+): GovernorCommitResult {
+  let result: GovernorCommitResult;
+  try {
+    result = runOpenClawStateWriteTransaction(operation, options);
+  } catch (error) {
+    runOpenClawStateWriteTransaction(({ db }) => tasks.reconcilePrimary(db), options);
+    throw error;
+  }
+  if (!result.applied) {
+    runOpenClawStateWriteTransaction(({ db }) => tasks.reconcilePrimary(db), options);
+  }
+  return result;
+}
 
 export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
@@ -176,7 +197,8 @@ export class GovernorSqliteStore {
     sourceMessageId: string;
     sourceSequence: number;
     scope: GovernorTaskScope;
-    mode: GovernorMode;
+    mode?: GovernorMode;
+    profile?: GovernorWorkProfile;
     contract: GovernorTaskContract;
     flowId?: string;
     now: number;
@@ -184,18 +206,37 @@ export class GovernorSqliteStore {
     return ingestGovernorTask({
       options: this.#options,
       identity: this.identity,
+      capabilities: this.capabilities,
       tasks: this.#tasks,
       ingress: params,
     });
   }
 
   commit(params: GovernorCommitPayload): GovernorCommitResult {
+    assertGovernorTaskClassification(params.current, this.capabilities);
+    assertGovernorTaskClassification(params.next, this.capabilities);
+    if (
+      governorDigest(
+        params.current.contract as unknown as import("./canonical-json.js").GovernorJsonValue,
+      ) !==
+        governorDigest(
+          params.next.contract as unknown as import("./canonical-json.js").GovernorJsonValue,
+        ) ||
+      governorDigest(
+        params.current.classification as unknown as import("./canonical-json.js").GovernorJsonValue,
+      ) !==
+        governorDigest(
+          params.next.classification as unknown as import("./canonical-json.js").GovernorJsonValue,
+        )
+    ) {
+      throw new Error("GOVERNOR_WORK_CLASSIFICATION_CHANGED_OUTSIDE_INGRESS");
+    }
     validateGovernorCommitPayload(params, {
       assertActionIntentPolicy: (task, intent) => this.#assertActionIntentPolicy(task, intent),
       ownsEvidence: (pending) => this.#evidenceAdmissions.owns(pending),
       verifyEvidence: (evidence) => this.#evidenceAdmissions.verify(evidence),
     });
-    const result: GovernorCommitResult = runOpenClawStateWriteTransaction(({ db }) => {
+    const result = runRecoverableTaskWrite(this.#options, this.#tasks, ({ db }) => {
       this.#tasks.reconcilePrimary(db);
       const dbx = governorDb(db);
       const storedRow = executeSqliteQueryTakeFirstSync(
@@ -383,7 +424,7 @@ export class GovernorSqliteStore {
         );
       }
       return { applied: true, task: params.next };
-    }, this.#options);
+    });
     if (result.applied) {
       this.#tasks.finalize(result.task);
     }

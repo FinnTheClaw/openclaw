@@ -33,7 +33,12 @@ function validateInput(input: GovernorLedgerAppendInput): void {
     input.generation < 0 ||
     (input.ordering !== undefined && !isValidGovernorLedgerOrdering(input.ordering)) ||
     (input.taskFence !== undefined && !isValidGovernorTaskFence(input.taskFence)) ||
-    (input.kind === "task") !== (input.taskFence !== undefined)
+    (input.priorTaskFence !== undefined && !isValidGovernorTaskFence(input.priorTaskFence)) ||
+    (input.kind === "task") !== (input.taskFence !== undefined) ||
+    (input.priorTaskFence === undefined) !== (input.priorBindingDigest === undefined) ||
+    (input.priorBindingDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.priorBindingDigest)) ||
+    (input.status !== "task_intent" && input.priorTaskFence !== undefined) ||
+    (input.kind !== "task" && input.priorTaskFence !== undefined)
   ) {
     throw new Error("GOVERNOR_HOST_LEDGER_INPUT_INVALID");
   }

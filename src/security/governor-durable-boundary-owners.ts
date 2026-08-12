@@ -6,6 +6,27 @@ import {
 
 export const GOVERNOR_DURABLE_OWNER_BOUNDARIES: readonly GovernorDurableBoundary[] = [
   boundary(
+    "task-ingress-recovery",
+    "src/tasks/governor/store-ingress.ts",
+    "runRecoverableIngressWrite",
+    "read-write",
+    ["runOpenClawStateWriteTransaction", "tasks.reconcilePrimary"],
+  ),
+  boundary(
+    "task-commit-recovery",
+    "src/tasks/governor/store.ts",
+    "runRecoverableTaskWrite",
+    "read-write",
+    ["runOpenClawStateWriteTransaction", "tasks.reconcilePrimary"],
+  ),
+  boundary(
+    "task-startup-reconciliation",
+    "src/tasks/governor/store-bootstrap.ts",
+    "createGovernorStoreDependencies",
+    "read-write",
+    ["runOpenClawStateWriteTransaction", "tasks.reconcilePrimary"],
+  ),
+  boundary(
     "action-intent-owner",
     "src/tasks/governor/action-intent-store.ts",
     "GovernorActionIntentStore",
@@ -94,6 +115,27 @@ export const GOVERNOR_DURABLE_OWNER_BOUNDARIES: readonly GovernorDurableBoundary
     "GovernorMemoryStore",
     "read-write",
     ["assertGovernorPersistedJson", "parseGovernorMemory", "bindGovernorMemory"],
+  ),
+  boundary(
+    "memory-repair-state-update",
+    "src/tasks/governor/memory-repair-state-store.ts",
+    "updateGovernorMemoryRepairState",
+    "read-write",
+    ["assertGovernorPersistedJson", "assertGovernorMemoryRepairMutationCurrent", "updated_at"],
+  ),
+  boundary(
+    "memory-repair-state-read",
+    "src/tasks/governor/memory-repair-state-store.ts",
+    "loadRepair",
+    "read",
+    ["parseGovernorMemoryRemediation", "selectFrom"],
+  ),
+  boundary(
+    "memory-repair-state-requeue",
+    "src/tasks/governor/memory-repair-state-store.ts",
+    "requeueGovernorMemoryRepair",
+    "read-write",
+    ["assertGovernorPersistedJson", "assertGovernorMemoryRepairMutationCurrent", "updated_at"],
   ),
   boundary(
     "outbox-owner",

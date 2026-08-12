@@ -476,7 +476,7 @@ describe("governor mutation reconciliation and delivery", () => {
       providerSend(oldClaim.entry.deliveryKey);
 
       closeOpenClawStateDatabase();
-      const restartedStore = new GovernorSqliteStore({ stateDir });
+      const restartedStore = new GovernorSqliteStore({ stateDir, capabilities: capabilities() });
       const newClaim = restartedStore.outbox.claim({
         taskId,
         effectId,
