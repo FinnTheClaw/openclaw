@@ -1,5 +1,13 @@
 // Rejects rule text that can suppress needed tools or turn activity counts into goals.
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import {
+  GOVERNOR_POLICY_DIGEST,
+  GOVERNOR_POLICY_ID,
+  GOVERNOR_POLICY_RULE_IDS,
+  GOVERNOR_POLICY_RULES,
+  GOVERNOR_POLICY_SEMANTICS,
+  GOVERNOR_POLICY_VERSION,
+} from "./policy.js";
 export type GovernorPolicyViolation = {
   ruleIndex: number;
   code:
@@ -14,13 +22,17 @@ export type GovernorPolicyViolation = {
     | "continuation_semantics_unsafe"
     | "tool_count_semantics_unsafe"
     | "memory_semantics_unsafe"
-    | "effectful_semantics_unsafe";
+    | "effectful_semantics_unsafe"
+    | "unapproved_policy_structure"
+    | "unapproved_policy_rule";
   excerpt: string;
 };
 
 export type GovernorPolicyBundle = Readonly<{
+  policyId: string;
   version: number;
   digest: string;
+  ruleIds: readonly string[];
   rules: readonly string[];
   semantics: Readonly<{
     toolUse: string;
@@ -30,6 +42,26 @@ export type GovernorPolicyBundle = Readonly<{
     effectfulWork: string;
   }>;
 }>;
+
+const BUNDLE_KEYS = ["digest", "policyId", "ruleIds", "rules", "semantics", "version"] as const;
+const SEMANTIC_KEYS = [
+  "continuation",
+  "effectfulWork",
+  "memoryAuthority",
+  "toolCounts",
+  "toolUse",
+] as const;
+
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).toSorted();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function hasExactSequence(actual: readonly string[], expected: readonly string[]): boolean {
+  return (
+    actual.length === expected.length && actual.every((value, index) => value === expected[index])
+  );
+}
 
 const DANGEROUS_POLICY_PATTERNS: ReadonlyArray<{
   code: GovernorPolicyViolation["code"];
@@ -76,34 +108,57 @@ export function lintGovernorPolicy(rules: readonly string[]): GovernorPolicyViol
 
 export function lintGovernorPolicyBundle(bundle: GovernorPolicyBundle): GovernorPolicyViolation[] {
   const violations = lintGovernorPolicy(bundle.rules);
+  const exactStructure =
+    hasExactKeys(bundle, BUNDLE_KEYS) &&
+    hasExactKeys(bundle.semantics, SEMANTIC_KEYS) &&
+    bundle.policyId === GOVERNOR_POLICY_ID &&
+    hasExactSequence(bundle.ruleIds, GOVERNOR_POLICY_RULE_IDS);
+  if (!exactStructure) {
+    violations.push({
+      ruleIndex: -1,
+      code: "unapproved_policy_structure",
+      excerpt: "policy-structure",
+    });
+  }
+  if (!hasExactSequence(bundle.rules, GOVERNOR_POLICY_RULES)) {
+    violations.push({
+      ruleIndex: -1,
+      code: "unapproved_policy_rule",
+      excerpt: "policy-rules",
+    });
+  }
   const structural: Array<{
     valid: boolean;
     code: GovernorPolicyViolation["code"];
     excerpt: string;
   }> = [
-    { valid: bundle.version === 1, code: "invalid_policy_version", excerpt: "policy-version" },
     {
-      valid: bundle.semantics.toolUse === "proportional",
+      valid: bundle.version === GOVERNOR_POLICY_VERSION,
+      code: "invalid_policy_version",
+      excerpt: "policy-version",
+    },
+    {
+      valid: bundle.semantics.toolUse === GOVERNOR_POLICY_SEMANTICS.toolUse,
       code: "tool_semantics_not_proportional",
       excerpt: "tool-use-semantics",
     },
     {
-      valid: bundle.semantics.continuation === "until_deterministic_finish_or_blocker",
+      valid: bundle.semantics.continuation === GOVERNOR_POLICY_SEMANTICS.continuation,
       code: "continuation_semantics_unsafe",
       excerpt: "continuation-semantics",
     },
     {
-      valid: bundle.semantics.toolCounts === "never_targets",
+      valid: bundle.semantics.toolCounts === GOVERNOR_POLICY_SEMANTICS.toolCounts,
       code: "tool_count_semantics_unsafe",
       excerpt: "tool-count-semantics",
     },
     {
-      valid: bundle.semantics.memoryAuthority === "fresh_admitted_evidence_over_memory",
+      valid: bundle.semantics.memoryAuthority === GOVERNOR_POLICY_SEMANTICS.memoryAuthority,
       code: "memory_semantics_unsafe",
       excerpt: "memory-authority-semantics",
     },
     {
-      valid: bundle.semantics.effectfulWork === "contract_plan_execute_verify",
+      valid: bundle.semantics.effectfulWork === GOVERNOR_POLICY_SEMANTICS.effectfulWork,
       code: "effectful_semantics_unsafe",
       excerpt: "effectful-work-semantics",
     },
@@ -133,11 +188,13 @@ export function assertSafeGovernorPolicyBundle(bundle: GovernorPolicyBundle): vo
     );
   }
   const expectedDigest = governorDigest({
+    policyId: bundle.policyId,
     version: bundle.version,
+    ruleIds: bundle.ruleIds,
     semantics: bundle.semantics,
     rules: bundle.rules,
   } as unknown as GovernorJsonValue);
-  if (bundle.digest !== expectedDigest) {
+  if (bundle.digest !== expectedDigest || bundle.digest !== GOVERNOR_POLICY_DIGEST) {
     throw new Error("Unsafe governor policy: invalid_policy_digest@-1");
   }
 }

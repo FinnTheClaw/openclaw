@@ -17,6 +17,8 @@ import { isBehaviorGovernorEnabled } from "./feature-flag.js";
 import { assertSafeGovernorPolicyBundle } from "./policy-lint.js";
 import {
   GOVERNOR_POLICY_DIGEST,
+  GOVERNOR_POLICY_ID,
+  GOVERNOR_POLICY_RULE_IDS,
   GOVERNOR_POLICY_RULES,
   GOVERNOR_POLICY_SEMANTICS,
   GOVERNOR_POLICY_VERSION,
@@ -49,8 +51,10 @@ export function createGovernorControllerIfEnabled(params: {
     );
   }
   assertSafeGovernorPolicyBundle({
+    policyId: GOVERNOR_POLICY_ID,
     version: GOVERNOR_POLICY_VERSION,
     digest: GOVERNOR_POLICY_DIGEST,
+    ruleIds: GOVERNOR_POLICY_RULE_IDS,
     rules: GOVERNOR_POLICY_RULES,
     semantics: GOVERNOR_POLICY_SEMANTICS,
   });

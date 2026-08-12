@@ -110,6 +110,13 @@ export const GOVERNOR_DURABLE_OWNER_BOUNDARIES: readonly GovernorDurableBoundary
     ["assertGovernorPersistedJson", "parseGovernorMemory", "bindGovernorMemory"],
   ),
   boundary(
+    "memory-replacement-current-read",
+    "src/tasks/governor/memory-replacement-validator.ts",
+    "loadCurrentGovernorMemoryReplacement",
+    "read",
+    ["loadCurrentGovernorEvidenceInTransaction", "authority.state", "parseGovernorMemory"],
+  ),
+  boundary(
     "memory-store-owner",
     "src/tasks/governor/memory-integrity.ts",
     "GovernorMemoryStore",

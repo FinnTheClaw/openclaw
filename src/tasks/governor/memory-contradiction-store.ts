@@ -41,6 +41,7 @@ import {
   updateGovernorMemoryRepairState,
   type GovernorMemoryRepairMutationGuard,
 } from "./memory-repair-state-store.js";
+import { loadCurrentGovernorMemoryReplacement } from "./memory-replacement-validator.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import {
@@ -117,6 +118,21 @@ export class GovernorMemoryContradictionStore {
     return row ? parseGovernorMemoryRemediation(row) : null;
   }
 
+  #currentReplacement(
+    db: DatabaseSync,
+    remediation: GovernorMemoryRemediation,
+    now: number,
+  ): GovernorMemoryRecord | null {
+    return loadCurrentGovernorMemoryReplacement({
+      db,
+      remediation,
+      admissions: this.#admissions,
+      authority: this.#authority,
+      tasks: this.#tasks,
+      now,
+    });
+  }
+
   resolve(params: {
     taskId: GovernorTaskId;
     evidenceId: string;
@@ -172,18 +188,12 @@ export class GovernorMemoryContradictionStore {
           stale.status === "superseded" &&
           existing?.replacementMemoryId
         ) {
-          const replacementRow = executeSqliteQueryTakeFirstSync(
-            db,
-            dbx(db)
-              .selectFrom("governor_memories")
-              .selectAll()
-              .where("memory_id", "=", existing.replacementMemoryId),
-          );
-          if (replacementRow && existing.evidenceDigest === evidence.evidenceDigest) {
+          const replacement = this.#currentReplacement(db, existing, params.now);
+          if (replacement && existing.evidenceDigest === evidence.evidenceDigest) {
             return {
               kind: "duplicate",
               retired: stale,
-              replacement: parseGovernorMemory(replacementRow),
+              replacement,
               remediation: existing,
             };
           }
@@ -199,18 +209,12 @@ export class GovernorMemoryContradictionStore {
         if (!existing.replacementMemoryId) {
           return { kind: "unresolved", remediation: existing };
         }
-        const replacementRow = executeSqliteQueryTakeFirstSync(
-          db,
-          dbx(db)
-            .selectFrom("governor_memories")
-            .selectAll()
-            .where("memory_id", "=", existing.replacementMemoryId),
-        );
-        if (replacementRow) {
+        const replacement = this.#currentReplacement(db, existing, params.now);
+        if (replacement) {
           return {
             kind: "duplicate",
             retired: stale,
-            replacement: parseGovernorMemory(replacementRow),
+            replacement,
             remediation: existing,
           };
         }
@@ -440,6 +444,10 @@ export class GovernorMemoryContradictionStore {
         guard: params.guard,
         tasks: this.#tasks,
       });
+      const replacement = this.#currentReplacement(db, current, params.now);
+      if (!replacement) {
+        throw new Error("GOVERNOR_MEMORY_REPLACEMENT_NOT_CURRENT");
+      }
       if (current.status === "verified") {
         if (current.verificationEvidenceId === params.evidenceId) {
           return current;
@@ -453,17 +461,6 @@ export class GovernorMemoryContradictionStore {
         throw new Error("GOVERNOR_MEMORY_REPAIR_CAS_REJECTED");
       }
       const evidence = this.#evidence(db, params.taskId, params.evidenceId);
-      const replacementRow = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_memories")
-          .selectAll()
-          .where("memory_id", "=", current.replacementMemoryId),
-      );
-      if (!replacementRow) {
-        return null;
-      }
-      const replacement = parseGovernorMemory(replacementRow);
       const expectedPredicate = governorMemoryRepairPredicate(current.factKey);
       if (
         evidence.scopeKey !== current.scopeKey ||

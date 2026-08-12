@@ -32,6 +32,22 @@ export const GOVERNOR_POLICY_RULES = [
   ...GOVERNOR_AGENT_RULES,
 ] as const;
 
+export const GOVERNOR_POLICY_ID = "openclaw.behavior-governor" as const;
+export const GOVERNOR_POLICY_RULE_IDS = [
+  "core.soul",
+  "core.interpretation",
+  "agent.proportional-plan",
+  "agent.precise-source-first",
+  "agent.continuation",
+  "agent.replan",
+  "agent.memory-evidence",
+  "agent.memory-retirement",
+  "agent.semantic-outcomes",
+  "agent.finish-gate",
+  "agent.safe-initiative",
+  "agent.checkpoint",
+] as const;
+
 export const GOVERNOR_POLICY_SEMANTICS = {
   toolUse: "proportional",
   continuation: "until_deterministic_finish_or_blocker",
@@ -43,7 +59,9 @@ export const GOVERNOR_POLICY_SEMANTICS = {
 export const GOVERNOR_POLICY_VERSION = 1;
 
 export const GOVERNOR_POLICY_DIGEST = governorDigest({
+  policyId: GOVERNOR_POLICY_ID,
   version: GOVERNOR_POLICY_VERSION,
+  ruleIds: GOVERNOR_POLICY_RULE_IDS,
   semantics: GOVERNOR_POLICY_SEMANTICS,
   rules: GOVERNOR_POLICY_RULES,
 } as unknown as GovernorJsonValue);
