@@ -1,5 +1,6 @@
 /** Private, compiled delivery implementations owned by the host boundary. */
 import { governorDigest, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
+import { assertGovernorPersistedJson } from "../tasks/governor/persistence-guard.js";
 import { createCanaryHostSender } from "./governor-host-canary-sink.js";
 import {
   createIMessageHostSender,
@@ -197,15 +198,15 @@ function cloneAndFreezeJson(
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
-      throw new Error(`Governor delivery config must contain finite JSON numbers (${path})`);
+      throw new Error("GOVERNOR_DELIVERY_CONFIG_NUMBER_INVALID");
     }
     return value;
   }
   if (typeof value !== "object") {
-    throw new Error(`Governor delivery config contains an executable or non-JSON value (${path})`);
+    throw new Error("GOVERNOR_DELIVERY_CONFIG_TYPE_INVALID");
   }
   if (ancestors.has(value)) {
-    throw new Error(`Governor delivery config must not contain cycles (${path})`);
+    throw new Error("GOVERNOR_DELIVERY_CONFIG_CYCLE");
   }
   ancestors.add(value);
   try {
@@ -218,13 +219,13 @@ function cloneAndFreezeJson(
             (key !== "length" && (!/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= value.length)),
         )
       ) {
-        throw new Error(`Governor delivery config array has non-JSON fields (${path})`);
+        throw new Error("GOVERNOR_DELIVERY_CONFIG_ARRAY_INVALID");
       }
       const clone: GovernorJsonValue[] = [];
       for (let index = 0; index < value.length; index += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
         if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
-          throw new Error(`Governor delivery config array is sparse or accessor-backed (${path})`);
+          throw new Error("GOVERNOR_DELIVERY_CONFIG_ARRAY_INVALID");
         }
         clone.push(cloneAndFreezeJson(descriptor.value, `${path}[${index}]`, ancestors));
       }
@@ -235,20 +236,16 @@ function cloneAndFreezeJson(
       Object.getPrototypeOf(value) !== Object.prototype &&
       Object.getPrototypeOf(value) !== null
     ) {
-      throw new Error(`Governor delivery config must contain plain JSON objects (${path})`);
+      throw new Error("GOVERNOR_DELIVERY_CONFIG_PROTOTYPE_INVALID");
     }
     const clone: Record<string, GovernorJsonValue> = {};
     for (const key of Reflect.ownKeys(value)) {
       if (typeof key === "symbol" || isExecutableConfigKey(key)) {
-        throw new Error(
-          `Governor delivery config contains an executable field (${path}.${String(key)})`,
-        );
+        throw new Error("GOVERNOR_DELIVERY_CONFIG_EXECUTABLE_REJECTED");
       }
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
-        throw new Error(
-          `Governor delivery config contains an accessor or hidden field (${path}.${key})`,
-        );
+        throw new Error("GOVERNOR_DELIVERY_CONFIG_ACCESSOR_REJECTED");
       }
       Object.defineProperty(clone, key, {
         configurable: true,
@@ -283,6 +280,7 @@ export function createHostDeliveryImplementation(params: {
   if (!compiled) {
     throw new Error("Governor host delivery implementation ID is not allowlisted");
   }
+  assertGovernorPersistedJson("log", params.config);
   const config = cloneAndFreezeJson(params.config, "config", new WeakSet());
   const buildManifestDigest = governorDeliveryBuildManifestDigest();
   const sender = compiled.createSender(config, params.runtime);

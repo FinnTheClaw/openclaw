@@ -96,7 +96,7 @@ export class GovernorEvidenceAdmissionStore {
     const candidate = createGovernorEvidenceCandidate(params.candidate);
     const validation = validateGovernorEvidenceCandidate({ task: params.task, candidate });
     if ("admitted" in validation && !validation.admitted) {
-      throw new Error(`Governor evidence candidate rejected: ${validation.reason}`);
+      throw new Error("GOVERNOR_EVIDENCE_CANDIDATE_REJECTED");
     }
     if (!params.receiptId) {
       throw new Error("Governor evidence requires a trusted host receipt");

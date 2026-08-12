@@ -198,7 +198,7 @@ describe("governor durable fan-out and fan-in", () => {
           payload: { topic: "conflict" },
           now: 1_000,
         }),
-      ).toThrow(/Conflicting governor fanout job id/);
+      ).toThrow(/GOVERNOR_FANOUT_JOB_CONFLICT/u);
 
       const inFlight: Array<{ job: GovernorFanoutJob; workerId: string }> = [];
       const claimedIds: string[] = [];
@@ -275,6 +275,7 @@ describe("governor durable fan-out and fan-in", () => {
         fanout.completeReducer({
           taskId: task.taskId,
           taskVersion: task.taskVersion,
+          objectiveRevision: task.objectiveRevision,
           planVersion: task.planVersion,
           leaseEpoch: task.leaseEpoch,
           executionGeneration: task.executionGeneration,
@@ -476,6 +477,7 @@ describe("governor durable fan-out and fan-in", () => {
       const common = {
         taskId: task.taskId,
         taskVersion: task.taskVersion,
+        objectiveRevision: task.objectiveRevision,
         planVersion: task.planVersion,
         leaseEpoch: task.leaseEpoch,
         executionGeneration: task.executionGeneration,

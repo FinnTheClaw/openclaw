@@ -707,6 +707,7 @@ export interface GovernorEffects {
   capability: string;
   created_at: number;
   criterion_id: string | null;
+  effect_digest: string;
   effect_id: string;
   effect_json: string;
   execution_generation: number;
@@ -726,6 +727,7 @@ export interface GovernorEffects {
 
 export interface GovernorEvents {
   created_at: number;
+  event_digest: string;
   event_id: string;
   event_type: string;
   objective_revision: number;
@@ -770,6 +772,7 @@ export interface GovernorFaninEnvelopes {
   execution_generation: number;
   job_id: string;
   lease_epoch: number;
+  objective_revision: number;
   plan_version: number;
   round: number;
   task_id: string;
@@ -780,6 +783,9 @@ export interface GovernorFaninReducers {
   claimed_at: number | null;
   completed_at: number | null;
   envelope_set_digest: string;
+  execution_generation: number;
+  lease_epoch: number;
+  objective_revision: number;
   plan_version: number;
   reducer_epoch: number;
   result_digest: string | null;
@@ -787,6 +793,7 @@ export interface GovernorFaninReducers {
   round: number;
   state: string;
   task_id: string;
+  task_version: number;
   updated_at: number;
 }
 
@@ -801,10 +808,12 @@ export interface GovernorFanoutJobs {
   expected_duration_ms: number | null;
   expected_output_tokens: number | null;
   fanout_group: string;
+  job_digest: string;
   job_id: string;
   lease_epoch: number;
   lease_expires_at: number | null;
   objective_revision: number;
+  payload_digest: string;
   payload_json: string;
   physical_binding_digest: string | null;
   physical_generation: number | null;
@@ -906,6 +915,7 @@ export interface GovernorOutbox {
   claimed_at: number | null;
   claimed_by: string | null;
   created_at: number;
+  delivery_binding_digest: string | null;
   delivery_claim_epoch: Generated<number>;
   delivery_key: string;
   effect_id: string;
@@ -913,6 +923,8 @@ export interface GovernorOutbox {
   lease_epoch: number;
   lease_expires_at: number | null;
   objective_revision: number;
+  outbox_digest: string;
+  payload_digest: string;
   payload_json: string;
   plan_version: number;
   provider_receipt_json: string | null;
@@ -962,6 +974,7 @@ export interface GovernorTasks {
   mode: string;
   objective_revision: number;
   plan_version: number;
+  projection_digest: string;
   projection_json: string;
   scope_key: string;
   source_sequence: number;

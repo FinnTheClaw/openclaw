@@ -27,7 +27,7 @@ import {
   bindJob,
   fanoutDb,
   parseJob,
-  parseTaskProjection,
+  replaceJob,
   type GovernorFanoutClaim,
   type GovernorFanoutCompletion,
   type GovernorFanoutJob,
@@ -48,6 +48,7 @@ import {
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export type {
@@ -65,6 +66,7 @@ export class GovernorFanoutStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly #physical: GovernorTrustedPhysicalExecutionCoordinator;
   readonly #receipts: GovernorTrustedReceiptResolver;
+  readonly #tasks: GovernorTaskAuthorityStore;
   readonly reducers: GovernorFaninReducerStore;
 
   constructor(params: {
@@ -72,6 +74,7 @@ export class GovernorFanoutStore {
     options?: OpenClawStateDatabaseOptions;
     physicalExecutionCoordinator: GovernorTrustedPhysicalExecutionCoordinator;
     receiptResolver: GovernorTrustedReceiptResolver;
+    taskAuthority: GovernorTaskAuthorityStore;
   }) {
     if (
       !isTrustedGovernorPhysicalExecutionCoordinator(params.physicalExecutionCoordinator) ||
@@ -83,20 +86,17 @@ export class GovernorFanoutStore {
       params.options ??
       (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
     initializeGovernorStateSchema(this.#options);
-    this.reducers = new GovernorFaninReducerStore({ options: this.#options });
+    this.reducers = new GovernorFaninReducerStore({
+      options: this.#options,
+      taskAuthority: params.taskAuthority,
+    });
     this.#physical = params.physicalExecutionCoordinator;
     this.#receipts = params.receiptResolver;
+    this.#tasks = params.taskAuthority;
   }
 
   #task(db: DatabaseSync, taskId: GovernorTaskId): GovernorTaskProjection | null {
-    const row = executeSqliteQueryTakeFirstSync(
-      db,
-      fanoutDb(db)
-        .selectFrom("governor_tasks")
-        .select(["projection_json"])
-        .where("task_id", "=", taskId),
-    );
-    return row ? parseTaskProjection(row.projection_json) : null;
+    return this.#tasks.loadCurrent(db, taskId);
   }
 
   enqueue(params: {
@@ -136,7 +136,7 @@ export class GovernorFanoutStore {
           job.expectedDurationMs === params.expectedDurationMs &&
           governorDigest(job.payload) === governorDigest(payload);
         if (!sameIntent) {
-          throw new Error(`Conflicting governor fanout job id ${params.jobId}`);
+          throw new Error("GOVERNOR_FANOUT_JOB_CONFLICT");
         }
         return job;
       }
@@ -145,11 +145,12 @@ export class GovernorFanoutStore {
         !current ||
         current.state !== "EXECUTING" ||
         current.taskVersion !== params.task.taskVersion ||
+        current.objectiveRevision !== params.task.objectiveRevision ||
         current.planVersion !== params.task.planVersion ||
         current.leaseEpoch !== params.task.leaseEpoch ||
         current.executionGeneration !== params.task.executionGeneration
       ) {
-        throw new Error(`Stale governor fanout enqueue for ${params.task.taskId}`);
+        throw new Error("GOVERNOR_FANOUT_ENQUEUE_STALE");
       }
       const maxSequence = executeSqliteQueryTakeFirstSync(
         db,
@@ -234,24 +235,20 @@ export class GovernorFanoutStore {
         const task = this.#task(db, job.taskId);
         if (
           !task ||
+          task.state !== "EXECUTING" ||
+          task.taskVersion !== job.taskVersion ||
+          task.objectiveRevision !== job.objectiveRevision ||
           task.planVersion !== job.planVersion ||
           task.executionGeneration !== job.executionGeneration ||
           task.leaseEpoch !== job.leaseEpoch
         ) {
-          executeSqliteQuerySync(
-            db,
-            fanoutDb(db)
-              .updateTable("governor_fanout_jobs")
-              .set({
-                state: "cancelled",
-                cancelled_at: params.now,
-                worker_id: null,
-                lease_expires_at: null,
-                updated_at: params.now,
-              })
-              .where("job_id", "=", job.jobId)
-              .where("state", "=", "queued"),
-          );
+          const { leaseExpiresAt: _leaseExpiresAt, workerId: _workerId, ...unclaimed } = job;
+          replaceJob(db, job, {
+            ...unclaimed,
+            state: "cancelled",
+            cancelledAt: params.now,
+            updatedAt: params.now,
+          });
           continue;
         }
         const {
@@ -287,14 +284,7 @@ export class GovernorFanoutStore {
             cancellationDisposition: "cancel",
             cancellationRequestedAt: params.now,
           };
-          executeSqliteQuerySync(
-            db,
-            fanoutDb(db)
-              .updateTable("governor_fanout_jobs")
-              .set(bindJob(restored))
-              .where("job_id", "=", job.jobId)
-              .where("state", "=", "queued"),
-          );
+          replaceJob(db, job, restored);
           requestFanoutCancellation({
             db,
             coordinator: this.#physical,
@@ -310,22 +300,14 @@ export class GovernorFanoutStore {
           physicalGeneration: physical.lease.generation,
           physicalBindingDigest: physical.lease.bindingDigest,
         };
-        const update = executeSqliteQuerySync(
-          db,
-          fanoutDb(db)
-            .updateTable("governor_fanout_jobs")
-            .set(bindJob(physicallyClaimed))
-            .where("job_id", "=", job.jobId)
-            .where("state", "=", "queued"),
-        );
-        if (update.numAffectedRows === 1n) {
+        if (replaceJob(db, job, physicallyClaimed)) {
           return { kind: "claimed", job: physicallyClaimed };
         }
         this.#physical.requestCancellation(
           fanoutPhysicalBinding(physicallyClaimed),
           physical.lease,
         );
-        throw new Error(`Governor fanout physical claim lost its durable row ${job.jobId}`);
+        throw new Error("GOVERNOR_FANOUT_PHYSICAL_CLAIM_LOST");
       }
     }, this.#options);
   }
@@ -333,7 +315,12 @@ export class GovernorFanoutStore {
   cancelJob(jobId: string, now: number): boolean {
     assertGovernorPersistedJson("log", { jobId, now });
     return cancelFanoutJob(
-      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      {
+        options: this.#options,
+        physical: this.#physical,
+        receipts: this.#receipts,
+        tasks: this.#tasks,
+      },
       { jobId, now },
     );
   }
@@ -341,7 +328,12 @@ export class GovernorFanoutStore {
   requestRetirement(jobId: string, disposition: "cancel" | "requeue", now: number): boolean {
     assertGovernorPersistedJson("log", { jobId, disposition, now });
     return cancelFanoutJob(
-      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      {
+        options: this.#options,
+        physical: this.#physical,
+        receipts: this.#receipts,
+        tasks: this.#tasks,
+      },
       { jobId, disposition, now },
     );
   }
@@ -361,7 +353,12 @@ export class GovernorFanoutStore {
       leaseDurationMs: params.leaseDurationMs ?? null,
     });
     return heartbeatFanoutJob(
-      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      {
+        options: this.#options,
+        physical: this.#physical,
+        receipts: this.#receipts,
+        tasks: this.#tasks,
+      },
       { ...params, leaseDurationMs: params.leaseDurationMs ?? 60_000 },
     );
   }
@@ -374,7 +371,12 @@ export class GovernorFanoutStore {
   }): boolean {
     assertGovernorPersistedJson("log", params);
     return acknowledgeFanoutTermination(
-      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      {
+        options: this.#options,
+        physical: this.#physical,
+        receipts: this.#receipts,
+        tasks: this.#tasks,
+      },
       params,
     );
   }
@@ -394,7 +396,12 @@ export class GovernorFanoutStore {
   }): boolean {
     assertGovernorPersistedJson("log", params);
     return acknowledgeOrphanedFanoutTermination(
-      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      {
+        options: this.#options,
+        physical: this.#physical,
+        receipts: this.#receipts,
+        tasks: this.#tasks,
+      },
       params,
     );
   }
@@ -403,7 +410,12 @@ export class GovernorFanoutStore {
     params: import("./fanout-completion.js").CompleteFanoutParams,
   ): GovernorFanoutCompletion {
     return completeFanoutJob(
-      { options: this.#options, physical: this.#physical, receipts: this.#receipts },
+      {
+        options: this.#options,
+        physical: this.#physical,
+        receipts: this.#receipts,
+        tasks: this.#tasks,
+      },
       params,
     );
   }

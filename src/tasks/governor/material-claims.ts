@@ -53,7 +53,7 @@ export function createGovernorMaterialClaims(params: {
   );
   const claimedIds = new Set(params.task.claims.map((claim) => claim.claimId));
   if (params.task.conditions.contradictions.some((item) => item.severity === "high")) {
-    throw new Error("Governor material claims cannot bypass a current high-severity contradiction");
+    throw new Error("GOVERNOR_MATERIAL_CLAIM_CONTRADICTION_ACTIVE");
   }
   const output: GovernorTaskClaim[] = [];
   for (const input of params.claims) {
@@ -69,17 +69,15 @@ export function createGovernorMaterialClaims(params: {
       );
     }
     if (claimedIds.has(safe.claimId)) {
-      throw new Error(`Governor material claim already exists: ${safe.claimId}`);
+      throw new Error("GOVERNOR_MATERIAL_CLAIM_CONFLICT");
     }
     const evidence = safe.evidenceIds.map((evidenceId) => currentEvidence.get(evidenceId));
     if (evidence.some((item) => !item)) {
-      throw new Error(`Governor material claim has unsupported evidence: ${safe.claimId}`);
+      throw new Error("GOVERNOR_MATERIAL_CLAIM_UNSUPPORTED");
     }
     const semanticDigest = governorDigest({ predicate: safe.predicate, value: safe.value });
     if (evidence.some((item) => item!.semanticDigest !== semanticDigest)) {
-      throw new Error(
-        `Governor material claim has semantically unrelated evidence: ${safe.claimId}`,
-      );
+      throw new Error("GOVERNOR_MATERIAL_CLAIM_SEMANTIC_MISMATCH");
     }
     claimedIds.add(safe.claimId);
     output.push({

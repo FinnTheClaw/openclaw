@@ -5,6 +5,7 @@ import type {
   GovernorTrustedMemoryAuthority,
   GovernorTrustedPhysicalExecutionCoordinator,
   GovernorTrustedReceiptResolver,
+  GovernorTrustedTaskAuthority,
 } from "../../security/governor-host-readonly.js";
 import {
   GovernorCapabilityRegistry,
@@ -26,6 +27,7 @@ export function createGovernorControllerIfEnabled(params: {
     ownerIngressResolver: GovernorTrustedOwnerIngressResolver;
     physicalExecutionCoordinator: GovernorTrustedPhysicalExecutionCoordinator;
     memoryAuthority: GovernorTrustedMemoryAuthority;
+    taskAuthority: GovernorTrustedTaskAuthority;
     secrets: GovernorStoreSecrets;
     stateEnv: NodeJS.ProcessEnv;
   };

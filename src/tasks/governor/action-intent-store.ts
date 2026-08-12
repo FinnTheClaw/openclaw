@@ -30,6 +30,7 @@ import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import { loadGovernorTask } from "./store-queries.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorIdentityContext, GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export type GovernorActionIntentUpdate = {
@@ -61,6 +62,7 @@ export class GovernorActionIntentStore {
   readonly #capabilities: GovernorCapabilityRegistry;
   readonly #identity: GovernorIdentityContext;
   readonly #receipts: GovernorTrustedReceiptResolver;
+  readonly #tasks: GovernorTaskAuthorityStore;
 
   constructor(params: {
     stateDir?: string;
@@ -69,6 +71,7 @@ export class GovernorActionIntentStore {
     capabilities: GovernorCapabilityRegistry;
     identity: GovernorIdentityContext;
     receiptResolver: GovernorTrustedReceiptResolver;
+    taskAuthority: GovernorTaskAuthorityStore;
   }) {
     this.#options =
       params.options ??
@@ -77,6 +80,7 @@ export class GovernorActionIntentStore {
     this.#capabilities = params.capabilities;
     this.#identity = params.identity;
     this.#receipts = params.receiptResolver;
+    this.#tasks = params.taskAuthority;
     initializeGovernorStateSchema(this.#options);
   }
 
@@ -95,7 +99,7 @@ export class GovernorActionIntentStore {
 
   listPendingIds(taskId: GovernorTaskId, objectiveRevision: number, now = Date.now()): string[] {
     return runOpenClawStateWriteTransaction(({ db }) => {
-      const task = loadGovernorTask(db, taskId);
+      const task = loadGovernorTask(db, taskId, this.#tasks);
       if (!task || task.objectiveRevision !== objectiveRevision) {
         return [];
       }
@@ -151,6 +155,7 @@ export class GovernorActionIntentStore {
         capabilities: this.#capabilities,
         identity: this.#identity,
         receipts: this.#receipts,
+        tasks: this.#tasks,
       },
       params,
     );
@@ -171,6 +176,7 @@ export class GovernorActionIntentStore {
         capabilities: this.#capabilities,
         identity: this.#identity,
         receipts: this.#receipts,
+        tasks: this.#tasks,
       },
       params,
     );
@@ -195,7 +201,7 @@ export class GovernorActionIntentStore {
   }): GovernorActionOutcomeValidation {
     assertGovernorPersistedJson("log", params);
     return runOpenClawStateWriteTransaction(({ db }) => {
-      const task = loadGovernorTask(db, params.taskId);
+      const task = loadGovernorTask(db, params.taskId, this.#tasks);
       const row = executeSqliteQueryTakeFirstSync(
         db,
         dbx(db)
@@ -304,7 +310,7 @@ export class GovernorActionIntentStore {
       throw new Error("Governor action leaseDurationMs must be a positive safe integer");
     }
     return runOpenClawStateWriteTransaction(({ db }) => {
-      const task = loadGovernorTask(db, params.taskId);
+      const task = loadGovernorTask(db, params.taskId, this.#tasks);
       const row = executeSqliteQueryTakeFirstSync(
         db,
         dbx(db)

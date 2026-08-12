@@ -108,6 +108,7 @@ describe("governor external child lifecycle", () => {
       expect(
         store.fanout.completeReducer({
           taskId,
+          objectiveRevision: task.objectiveRevision,
           planVersion: task.planVersion,
           round: 7,
           taskVersion: task.taskVersion,

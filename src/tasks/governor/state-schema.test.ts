@@ -1,9 +1,15 @@
 // Verifies additive upgrades from the first governor evidence and outbox shapes.
 import { afterEach, describe, expect, it } from "vitest";
+import { createGovernorHostAntiRollbackLedger } from "../../security/governor-host-anti-rollback-ledger.js";
+import {
+  resolveGovernorSecrets,
+  syntheticGovernorSecretsEnvironment,
+} from "../../security/governor-host-secrets.js";
 import {
   closeOpenClawStateDatabase,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqliteDir } from "../../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import { GovernorSqliteStore } from "./store.js";
@@ -21,7 +27,14 @@ describe("governor schema migration", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-legacy-schema-" },
       async (state) => {
-        const options = { env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir } };
+        const env = syntheticGovernorSecretsEnvironment(state.stateDir);
+        const options = { env: { ...process.env, ...env, OPENCLAW_STATE_DIR: state.stateDir } };
+        const secrets = resolveGovernorSecrets(env);
+        createGovernorHostAntiRollbackLedger({
+          stateDir: resolveOpenClawStateSqliteDir(options.env),
+          signingKey: secrets.ledgerSigningKey,
+          allowInitialization: true,
+        });
         const { db } = openOpenClawStateDatabase(options);
         db.exec(`
           CREATE TABLE governor_evidence (
@@ -67,7 +80,13 @@ describe("governor schema migration", () => {
           ]),
         );
         expect(columns(db, "governor_outbox")).toEqual(
-          expect.arrayContaining(["plan_version", "execution_generation"]),
+          expect.arrayContaining([
+            "plan_version",
+            "execution_generation",
+            "payload_digest",
+            "delivery_binding_digest",
+            "outbox_digest",
+          ]),
         );
         expect(columns(db, "governor_memories")).toEqual(
           expect.arrayContaining([
@@ -96,11 +115,21 @@ describe("governor schema migration", () => {
           .get("legacy-evidence") as { plan_version: number; semantic_digest: string };
         const outbox = db
           .prepare(
-            "SELECT plan_version, execution_generation FROM governor_outbox WHERE effect_id = ?",
+            "SELECT plan_version, execution_generation, payload_digest, outbox_digest FROM governor_outbox WHERE effect_id = ?",
           )
-          .get("legacy-effect") as { plan_version: number; execution_generation: number };
+          .get("legacy-effect") as {
+          plan_version: number;
+          execution_generation: number;
+          payload_digest: string;
+          outbox_digest: string;
+        };
         expect(evidence).toEqual({ plan_version: -1, semantic_digest: "legacy-unverified" });
-        expect(outbox).toEqual({ plan_version: -1, execution_generation: -1 });
+        expect(outbox).toEqual({
+          plan_version: -1,
+          execution_generation: -1,
+          payload_digest: "legacy-unverified",
+          outbox_digest: "legacy-unverified",
+        });
         expect(
           db
             .prepare("SELECT fact_key, status FROM governor_memories WHERE memory_id = ?")
@@ -112,9 +141,7 @@ describe("governor schema migration", () => {
         expect(indexColumns.map((row) => row.name)).toContain("plan_version");
         closeOpenClawStateDatabase();
         const store = new GovernorSqliteStore({ stateDir: state.stateDir });
-        expect(() => store.listEvidence("legacy-task" as never)).toThrow(
-          /opaque keyed reference|semantic digest mismatch/u,
-        );
+        expect(store.listEvidence("legacy-task" as never)).toEqual([]);
         closeOpenClawStateDatabase();
       },
     );

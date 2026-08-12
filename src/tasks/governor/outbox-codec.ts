@@ -4,7 +4,8 @@ import type { Insertable, Selectable } from "kysely";
 import { getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
-import type { GovernorJsonValue } from "./canonical-json.js";
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { parseGovernorStoredJson } from "./integrity-error.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import type { GovernorTaskId } from "./types.js";
 
@@ -39,6 +40,8 @@ export type GovernorOutboxRecord = {
   leaseExpiresAt?: number;
   state: GovernorOutboxState;
   payload: GovernorJsonValue;
+  payloadDigest: string;
+  deliveryBindingDigest?: string;
   providerReceipt?: GovernorJsonValue;
   claimedAt?: number;
   sentAt?: number;
@@ -56,16 +59,46 @@ export function governorOutboxDb(db: DatabaseSync) {
   return getNodeSqliteKysely<OutboxDatabase>(db);
 }
 
-function parseJson(raw: string, label: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error(`Invalid persisted governor ${label}`);
-  }
+export function governorOutboxPendingDeliveryKey(
+  entry: Pick<
+    GovernorOutboxRecord,
+    | "taskId"
+    | "effectId"
+    | "objectiveRevision"
+    | "planVersion"
+    | "executionGeneration"
+    | "payloadDigest"
+  >,
+): string {
+  return governorDigest({
+    taskId: entry.taskId,
+    effectId: entry.effectId,
+    objectiveRevision: entry.objectiveRevision,
+    planVersion: entry.planVersion,
+    executionGeneration: entry.executionGeneration,
+    payloadDigest: entry.payloadDigest,
+  });
+}
+
+export function governorOutboxDeliveryKey(entry: GovernorOutboxRecord): string {
+  const pendingKey = governorOutboxPendingDeliveryKey(entry);
+  return entry.deliveryBindingDigest
+    ? governorDigest({ pendingKey, bindingDigest: entry.deliveryBindingDigest })
+    : pendingKey;
+}
+
+export function governorOutboxRecordDigest(entry: GovernorOutboxRecord): string {
+  return governorDigest(entry as unknown as GovernorJsonValue);
 }
 
 export function bindGovernorOutbox(entry: GovernorOutboxRecord): Insertable<GovernorOutboxRow> {
   assertGovernorPersistedJson("log", entry);
+  if (
+    governorDigest(entry.payload) !== entry.payloadDigest ||
+    governorOutboxDeliveryKey(entry) !== entry.deliveryKey
+  ) {
+    throw new Error("GOVERNOR_OUTBOX_BINDING_INVALID");
+  }
   return {
     task_id: entry.taskId,
     effect_id: entry.effectId,
@@ -80,6 +113,9 @@ export function bindGovernorOutbox(entry: GovernorOutboxRecord): Insertable<Gove
     lease_expires_at: entry.leaseExpiresAt ?? null,
     state: entry.state,
     payload_json: JSON.stringify(entry.payload),
+    payload_digest: entry.payloadDigest,
+    delivery_binding_digest: entry.deliveryBindingDigest ?? null,
+    outbox_digest: governorOutboxRecordDigest(entry),
     provider_receipt_json: entry.providerReceipt ? JSON.stringify(entry.providerReceipt) : null,
     claimed_at: entry.claimedAt ?? null,
     sent_at: entry.sentAt ?? null,
@@ -104,13 +140,18 @@ export function parseGovernorOutbox(row: GovernorOutboxRow): GovernorOutboxRecor
       ? {}
       : { leaseExpiresAt: normalizeSqliteNumber(row.lease_expires_at) ?? 0 }),
     state: row.state as GovernorOutboxState,
-    payload: parseJson(row.payload_json, "outbox payload") as GovernorJsonValue,
+    payload: parseGovernorStoredJson(row.payload_json, "log", "GOVERNOR_OUTBOX_PAYLOAD_INVALID"),
+    payloadDigest: row.payload_digest,
+    ...(row.delivery_binding_digest == null
+      ? {}
+      : { deliveryBindingDigest: row.delivery_binding_digest }),
     ...(row.provider_receipt_json
       ? {
-          providerReceipt: parseJson(
+          providerReceipt: parseGovernorStoredJson(
             row.provider_receipt_json,
-            "provider receipt",
-          ) as GovernorJsonValue,
+            "log",
+            "GOVERNOR_OUTBOX_RECEIPT_INVALID",
+          ),
         }
       : {}),
     ...(row.claimed_at == null ? {} : { claimedAt: normalizeSqliteNumber(row.claimed_at) ?? 0 }),
@@ -119,5 +160,12 @@ export function parseGovernorOutbox(row: GovernorOutboxRow): GovernorOutboxRecor
     updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
   };
   assertGovernorPersistedJson("log", entry);
+  if (
+    governorDigest(entry.payload) !== entry.payloadDigest ||
+    governorOutboxDeliveryKey(entry) !== entry.deliveryKey ||
+    governorOutboxRecordDigest(entry) !== row.outbox_digest
+  ) {
+    throw new Error("GOVERNOR_OUTBOX_BINDING_INVALID");
+  }
   return entry;
 }

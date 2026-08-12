@@ -108,7 +108,7 @@ describe("governor host broker", () => {
         config: { send: functionVariable } as never,
         generation: 0,
       }),
-    ).toThrow(/executable|non-JSON/);
+    ).toThrow(/unsupported_type/u);
     functionVariable = () => "after";
     closureState = "after";
 
@@ -118,7 +118,7 @@ describe("governor host broker", () => {
         config: { nested: { factory: "caller-owned" } } as never,
         generation: 0,
       }),
-    ).toThrow(/executable/);
+    ).toThrow(/GOVERNOR_DELIVERY_CONFIG_EXECUTABLE_REJECTED/u);
     expect(() =>
       broker.capabilities.registerStaticDeliveryAdapter({
         implementationId: "synthetic",

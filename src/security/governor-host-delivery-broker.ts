@@ -248,13 +248,13 @@ export function createHostGovernorDeliveryBroker(params: {
       let result: Awaited<ReturnType<typeof implementation.send>>;
       try {
         result = await implementation.send(request);
-      } catch (error) {
+      } catch {
         params.persistence.markDeliveryEffectUnknown({
           ...effect,
           observedAt: Date.now(),
           reasonDigest: governorDigest({ reason: "delivery_transport_interrupted" }),
         });
-        throw error;
+        throw new Error("GOVERNOR_DELIVERY_TRANSPORT_INTERRUPTED");
       }
       if (result.status === "sent") {
         const sent = {

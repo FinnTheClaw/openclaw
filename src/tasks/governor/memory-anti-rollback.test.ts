@@ -14,6 +14,7 @@ import { GovernorController } from "./controller.js";
 import { governorMemoryAuthorityBinding } from "./memory-authority.js";
 import { governorMemoryFactPredicate } from "./memory-contradiction-policy.js";
 import {
+  correctMemoryTestTask,
   memoryScopeA,
   memoryTestRegistry,
   persistMemoryEvidence,
@@ -27,6 +28,58 @@ import { createGovernorTestStore } from "./test-broker.js";
 afterEach(() => closeOpenClawStateDatabase());
 
 describe("governor memory anti-rollback authority", () => {
+  it("keeps an obsolete plan fact inactive after restoring the pre-correction primary", async () => {
+    await withMemoryTestHarness(async ({ store, broker, controller, stateDir }) => {
+      const taskId = startMemoryTestTask(controller, memoryScopeA);
+      seedMemoryFact({
+        store,
+        broker,
+        taskId,
+        scope: memoryScopeA,
+        memoryId: "memory-pre-correction-path",
+        factKey: "fixture.path",
+        path: "/fixture/obsolete",
+        observedAt: 100,
+      });
+      closeOpenClawStateDatabase();
+      const databasePath = resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: stateDir });
+      const snapshotPath = path.join(stateDir, "primary-before-task-correction.sqlite");
+      fs.copyFileSync(databasePath, snapshotPath);
+
+      expect(correctMemoryTestTask(controller, memoryScopeA, 2)).toBe(taskId);
+      expect(store.memory.retrieve({ scope: memoryScopeA, now: 210 })).toEqual([]);
+
+      closeOpenClawStateDatabase();
+      fs.copyFileSync(snapshotPath, databasePath);
+      for (const suffix of ["-wal", "-shm"]) {
+        fs.rmSync(`${databasePath}${suffix}`, { force: true });
+      }
+
+      const restarted = createGovernorTestStore({ stateDir });
+      expect(restarted.store.loadTask(taskId)).toBeNull();
+      expect(
+        Array.from({ length: 100 }, () =>
+          restarted.store.memory.retrieve({ scope: memoryScopeA, now: 300 }),
+        ).every((items) => items.length === 0),
+      ).toBe(true);
+      expect(restarted.store.memory.listReobservationRequirements(memoryScopeA)).toMatchObject([
+        { status: "required", staleMemoryId: "memory-pre-correction-path" },
+      ]);
+      expect(
+        restarted.store.memory.promoteVerified({
+          taskId,
+          evidenceId: "seed-evidence-memory-pre-correction-path",
+          memoryId: "memory-replayed-old-plan",
+          factKey: "fixture.path",
+          scope: memoryScopeA,
+          expectedScopeEpoch: 0,
+          now: 301,
+        }),
+      ).toMatchObject({ stored: false, reason: "provenance_rejected" });
+      expect(restarted.store.memory.listReobservationRequirements(memoryScopeA)).toHaveLength(1);
+    });
+  });
+
   it("never restores a disproven fact after replaying an older primary database", async () => {
     await withMemoryTestHarness(async ({ store, broker, controller, stateDir }) => {
       const taskId = startMemoryTestTask(controller, memoryScopeA);
@@ -86,7 +139,11 @@ describe("governor memory anti-rollback authority", () => {
         fs.rmSync(`${databasePath}${suffix}`, { force: true });
       }
 
-      const restarted = createGovernorTestStore({ stateDir });
+      const restartedCapabilities = memoryTestRegistry();
+      const restarted = createGovernorTestStore({
+        stateDir,
+        capabilities: restartedCapabilities,
+      });
       expect(restarted.store.memory.retrieve({ scope: memoryScopeA, now: 300 })).toEqual([]);
       expect(
         Array.from({ length: 100 }, () =>
@@ -118,10 +175,14 @@ describe("governor memory anti-rollback authority", () => {
         { status: "required", staleMemoryId: "memory-stale-path" },
       ]);
 
+      const recoveryController = new GovernorController(restarted.store, restartedCapabilities);
+      const recoveredTaskId = startMemoryTestTask(recoveryController, memoryScopeA, 2);
+      expect(recoveredTaskId).toBe(taskId);
+
       persistMemoryEvidence({
         store: restarted.store,
         broker: restarted.broker,
-        taskId,
+        taskId: recoveredTaskId,
         evidenceId: "evidence-reobserved-path",
         criterionId: "memory-observed",
         predicate: governorMemoryFactPredicate("ssh.path"),
@@ -130,7 +191,7 @@ describe("governor memory anti-rollback authority", () => {
       });
       expect(
         restarted.store.memory.promoteVerified({
-          taskId,
+          taskId: recoveredTaskId,
           evidenceId: "evidence-reobserved-path",
           memoryId: "memory-reobserved-path",
           factKey: "ssh.path",

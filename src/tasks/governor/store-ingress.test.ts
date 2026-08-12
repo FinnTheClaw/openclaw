@@ -91,7 +91,7 @@ describe("governor task ingress resource boundary", () => {
         });
 
         expect(() => store.commit({ current, next, event })).toThrow(
-          /Invalid governor commit envelope/u,
+          /GOVERNOR_COMMIT_ENVELOPE_INVALID/u,
         );
         expect(store.loadTask(current.taskId)?.flowId).toBeUndefined();
 

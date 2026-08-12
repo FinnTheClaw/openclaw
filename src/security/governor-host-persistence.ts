@@ -8,6 +8,7 @@ import {
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
 import type { DB as StateDb } from "../state/openclaw-state-db.generated.js";
 import {
+  openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
@@ -38,6 +39,10 @@ import {
   type GovernorTrustedPhysicalExecutionCoordinator,
 } from "./governor-host-physical-execution.js";
 import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
+import {
+  createGovernorTaskAuthority,
+  type GovernorTrustedTaskAuthority,
+} from "./governor-host-task-authority.js";
 
 type ApprovalDb = Pick<
   StateDb,
@@ -48,9 +53,33 @@ const approvalScopeKey = (scopeKey: string) => governorDigest({ kind: "scope", s
 const approvalGrantKey = (scopeKey: string, grantId: string) =>
   governorDigest({ kind: "grant", scopeKey, grantId });
 
+function governorPrimaryHasDurableState(options: OpenClawStateDatabaseOptions): boolean {
+  const { db } = openOpenClawStateDatabase(options);
+  const tables =
+    // sqlite-allow-raw: closed sqlite_schema inventory before governor schema bootstrap
+    db
+      .prepare(
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'governor_%' ORDER BY name",
+      )
+      .all() as Array<{ name: string }>;
+  for (const { name } of tables) {
+    if (!/^governor_[a-z0-9_]+$/u.test(name)) {
+      throw new Error("GOVERNOR_PRIMARY_SCHEMA_INVALID");
+    }
+    const present =
+      // sqlite-allow-raw: validated closed governor table name
+      db.prepare(`SELECT 1 AS present FROM "${name}" LIMIT 1`).get();
+    if (present) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export type GovernorHostPersistence = Readonly<{
   physicalExecutions: GovernorTrustedPhysicalExecutionCoordinator;
   memoryAuthority: GovernorTrustedMemoryAuthority;
+  taskAuthority: GovernorTrustedTaskAuthority;
   recordApprovalGrant: (input: {
     grantId: string;
     scopeKey: string;
@@ -223,17 +252,29 @@ export function createGovernorHostPersistence(params: {
   if (!params.ledger && !ledgerKey?.trim()) {
     throw new Error("Governor host anti-rollback ledger signing key is required");
   }
+  const stateDb = openOpenClawStateDatabase(options).db;
+  const schemaHasGovernorTables = Boolean(
+    // sqlite-allow-raw: closed sqlite_schema existence probe before trust-root creation
+    stateDb
+      .prepare(
+        "SELECT 1 AS present FROM sqlite_schema WHERE type = 'table' AND name LIKE 'governor_%' LIMIT 1",
+      )
+      .get(),
+  );
+  const primaryHasDurableState = schemaHasGovernorTables
+    ? governorPrimaryHasDurableState(options)
+    : false;
   const ledger =
     params.ledger ??
     createGovernorHostAntiRollbackLedger({
       stateDir: resolveOpenClawStateSqliteDir(options.env),
       signingKey: ledgerKey as string,
+      allowInitialization: !primaryHasDurableState,
     });
   if (!isGovernorHostAntiRollbackLedger(ledger)) {
     throw new Error("Governor host anti-rollback ledger capability is invalid");
   }
   initializeGovernorStateSchema(options);
-
   const approvalLedgerMatches: GovernorHostPersistence["approvalLedgerMatches"] = (input) => {
     const scopeKey = approvalScopeKey(input.scopeKey);
     const scope = ledger.state("approval", scopeKey);
@@ -251,6 +292,7 @@ export function createGovernorHostPersistence(params: {
   const port: GovernorHostPersistence = Object.freeze({
     physicalExecutions: createGovernorPhysicalExecutionCoordinator(ledger),
     memoryAuthority: createGovernorMemoryAuthority(ledger, params.testAfterLedgerAppend),
+    taskAuthority: createGovernorTaskAuthority(ledger, params.testAfterLedgerAppend),
     ...createGovernorOwnerIngressPersistence(options, ledger),
     ...createGovernorHostDeliveryPersistence({
       options,

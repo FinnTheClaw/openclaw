@@ -46,12 +46,12 @@ export function resolveGovernorMutation(params: {
   });
   const task = params.store.loadTask(params.taskId);
   if (!task) {
-    throw new Error(`Governor task not found: ${params.taskId}`);
+    throw new Error("GOVERNOR_TASK_NOT_FOUND");
   }
   const safeEvidence = assertGovernorBoundarySafe("model", params.evidence);
   const effect = params.store.loadEffect(task.taskId, params.effectId);
   if (!effect || !effect.mutating) {
-    throw new Error(`Governor mutation effect not found: ${params.effectId}`);
+    throw new Error("GOVERNOR_EFFECT_NOT_FOUND");
   }
   if (
     params.executionFence.objectiveRevision !== task.objectiveRevision ||
@@ -157,7 +157,7 @@ export function resolveGovernorMutation(params: {
     ...(evidenceAdmission ? { evidenceAdmission } : {}),
   });
   if (!committed.applied) {
-    throw new Error(`Governor commit failed: ${committed.reason}`);
+    throw new Error("GOVERNOR_COMMIT_REJECTED");
   }
   return {
     accepted: true,

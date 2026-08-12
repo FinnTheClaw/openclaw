@@ -8,6 +8,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorController } from "./controller.js";
+import { replaceJob } from "./fanout-codec.js";
 import { MAX_GOVERNOR_PHYSICAL_EXECUTIONS } from "./fanout.js";
 import { GovernorSqliteStore } from "./store.js";
 import type { GovernorPlan, GovernorTaskContract, GovernorTaskScope } from "./types.js";
@@ -216,11 +217,15 @@ describe("governor host-owned physical fanout cap", () => {
         const { db } = openOpenClawStateDatabase({
           env: { OPENCLAW_STATE_DIR: state.stateDir },
         });
-        db.prepare(
-          `UPDATE governor_fanout_jobs
-              SET state = 'completed', completed_at = ?, lease_expires_at = NULL, updated_at = ?
-            WHERE job_id = ? AND state = 'running'`,
-        ).run(320, 320, completed.job.jobId);
+        const { leaseExpiresAt: _leaseExpiresAt, ...completedWithoutLease } = completed.job;
+        expect(
+          replaceJob(db, completed.job, {
+            ...completedWithoutLease,
+            state: "completed",
+            completedAt: 320,
+            updatedAt: 320,
+          }),
+        ).toBe(true);
 
         const recovered = store.fanout.claimNext({
           workerId: "completion-recovery-fourth",

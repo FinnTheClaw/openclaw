@@ -1,8 +1,8 @@
 import type { Insertable, Selectable } from "kysely";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
-import type { GovernorJsonValue } from "./canonical-json.js";
 import { isOpaqueEvidenceSourceRef } from "./evidence.js";
+import { parseGovernorStoredJson } from "./integrity-error.js";
 import type {
   GovernorMemoryProvenance,
   GovernorMemoryRecord,
@@ -12,13 +12,10 @@ import type {
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 
 export type GovernorMemoryRow = Selectable<OpenClawStateKyselyDatabase["governor_memories"]>;
+type GovernorScopeEpochRow = Selectable<OpenClawStateKyselyDatabase["governor_scope_epochs"]>;
 
-function parseJson(raw: string, label: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error(`Invalid governor memory ${label}`);
-  }
+export function parseGovernorScopeEpoch(row: GovernorScopeEpochRow | undefined): number {
+  return row ? (normalizeSqliteNumber(row.epoch) ?? 0) : 0;
 }
 
 export function parseGovernorMemory(row: GovernorMemoryRow): GovernorMemoryRecord {
@@ -37,8 +34,12 @@ export function parseGovernorMemory(row: GovernorMemoryRow): GovernorMemoryRecor
       : { freshnessExpiresAt: normalizeSqliteNumber(row.freshness_expires_at) ?? 0 }),
     confidence: row.confidence,
     sensitivity: row.sensitivity as GovernorMemoryRecord["sensitivity"],
-    provenance: parseJson(row.provenance_json, "provenance") as GovernorMemoryProvenance,
-    content: parseJson(row.content_json, "content") as GovernorJsonValue,
+    provenance: parseGovernorStoredJson(
+      row.provenance_json,
+      "memory",
+      "GOVERNOR_MEMORY_PROVENANCE_INVALID",
+    ) as unknown as GovernorMemoryProvenance,
+    content: parseGovernorStoredJson(row.content_json, "memory", "GOVERNOR_MEMORY_CONTENT_INVALID"),
     contentDigest: row.content_digest,
     ...(row.verified_evidence_task_id
       ? { verifiedEvidenceTaskId: row.verified_evidence_task_id }

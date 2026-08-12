@@ -43,6 +43,12 @@ import {
   resolveGovernorSecrets,
   syntheticGovernorSecretsEnvironment,
 } from "./governor-host-secrets.js";
+import {
+  isTrustedGovernorTaskAuthority,
+  type GovernorTaskFenceBinding,
+  type GovernorTaskFenceState,
+  type GovernorTrustedTaskAuthority,
+} from "./governor-host-task-authority.js";
 
 export {
   isTrustedGovernorApprovalResolver,
@@ -50,6 +56,7 @@ export {
   isTrustedGovernorOwnerIngressResolver,
   isTrustedGovernorPhysicalExecutionCoordinator,
   isTrustedGovernorMemoryAuthority,
+  isTrustedGovernorTaskAuthority,
   isTrustedGovernorReceiptResolver,
 };
 export type {
@@ -63,6 +70,9 @@ export type {
   GovernorMemoryAuthorityBinding,
   GovernorMemoryAuthorityState,
   GovernorTrustedMemoryAuthority,
+  GovernorTaskFenceBinding,
+  GovernorTaskFenceState,
+  GovernorTrustedTaskAuthority,
   GovernorTrustedReceiptResolver,
   GovernorOwnerIngressClaim,
   HostGovernorApprovalReceiptId,

@@ -71,7 +71,7 @@ export type { GovernorMutationResolution } from "./mutation-reconciliation.js";
 
 function assertApplied(result: GovernorCommitResult): GovernorTaskProjection {
   if (!result.applied) {
-    throw new Error(`Governor commit failed: ${result.reason}`);
+    throw new Error("GOVERNOR_COMMIT_REJECTED");
   }
   return result.task;
 }
@@ -110,7 +110,7 @@ export class GovernorController {
   #task(taskId: GovernorTaskId): GovernorTaskProjection {
     const task = this.store.loadTask(taskId);
     if (!task) {
-      throw new Error(`Governor task not found: ${taskId}`);
+      throw new Error("GOVERNOR_TASK_NOT_FOUND");
     }
     return task;
   }
@@ -128,7 +128,7 @@ export class GovernorController {
       now,
     });
     if (!transition.applied) {
-      throw new Error(`Governor transition failed: ${transition.reason}`);
+      throw new Error("GOVERNOR_TRANSITION_REJECTED");
     }
     const event = createGovernorEventRecord({
       task: transition.task,
@@ -157,7 +157,7 @@ export class GovernorController {
       task = this.#transition(task, "PLANNING", params.now + 1);
     }
     if (task.state !== "PLANNING") {
-      throw new Error(`Cannot prepare plan while task is ${task.state}`);
+      throw new Error("GOVERNOR_PLAN_STATE_INVALID");
     }
     const planned: GovernorTaskProjection = {
       ...task,
@@ -204,7 +204,7 @@ export class GovernorController {
       now: params.now,
     });
     if (!reclaimed.applied) {
-      throw new Error(`Governor lease reclaim failed: ${reclaimed.reason}`);
+      throw new Error("GOVERNOR_LEASE_RECLAIM_REJECTED");
     }
     const event = createGovernorEventRecord({
       task: reclaimed.task,
@@ -385,7 +385,7 @@ export class GovernorController {
   }): GovernorTaskProjection {
     const task = this.#task(params.taskId);
     if (task.state !== "VERIFYING") {
-      throw new Error(`Cannot admit material claims while task is ${task.state}`);
+      throw new Error("GOVERNOR_MATERIAL_CLAIM_STATE_INVALID");
     }
     const admission = admitGovernorMaterialClaims({
       store: this.store,
@@ -404,7 +404,7 @@ export class GovernorController {
     let task = this.#task(params.taskId);
     const responseDraft = assertGovernorResponseDraft(params.response);
     if (task.state !== "VERIFYING") {
-      throw new Error(`Cannot propose finish while task is ${task.state}`);
+      throw new Error("GOVERNOR_FINISH_STATE_INVALID");
     }
     task = this.#transition(task, "FINISH_CANDIDATE", params.now);
     const runningActionIds = [
@@ -413,7 +413,7 @@ export class GovernorController {
     ].toSorted();
     const decision = evaluateGovernorFinish({
       task,
-      effects: this.store.listEffects(task.taskId),
+      effects: this.store.listCurrentEffects(task.taskId),
       evidence: this.store.listEvidence(task.taskId),
       runningActionIds,
       response: responseDraft,
@@ -428,7 +428,7 @@ export class GovernorController {
         now: params.now + 1,
       });
       if (!transition.applied) {
-        throw new Error(`Governor recovery transition failed: ${transition.reason}`);
+        throw new Error("GOVERNOR_RECOVERY_TRANSITION_REJECTED");
       }
       const event = createGovernorEventRecord({
         task: transition.task,
@@ -457,7 +457,7 @@ export class GovernorController {
       now: params.now + 1,
     });
     if (!transition.applied) {
-      throw new Error(`Governor completion transition failed: ${transition.reason}`);
+      throw new Error("GOVERNOR_COMPLETION_TRANSITION_REJECTED");
     }
     const effectId = `completion_${transition.task.objectiveRevision}`;
     const payload: GovernorJsonValue = {

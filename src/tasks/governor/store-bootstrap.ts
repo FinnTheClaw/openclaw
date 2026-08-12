@@ -7,8 +7,12 @@ import {
   type GovernorTrustedMemoryAuthority,
   type GovernorTrustedPhysicalExecutionCoordinator,
   type GovernorTrustedReceiptResolver,
+  type GovernorTrustedTaskAuthority,
 } from "../../security/governor-host-readonly.js";
-import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  type OpenClawStateDatabaseOptions,
+} from "../../state/openclaw-state-db.js";
 import { GovernorActionIntentStore } from "./action-intent-store.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
@@ -21,6 +25,7 @@ import { GovernorOutboxStore } from "./outbox-store.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import { GovernorEvidenceAdmissionStore } from "./store-evidence-admission.js";
 import { GovernorStoreQueries } from "./store-queries.js";
+import { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorIdentityContext } from "./types.js";
 
 export type GovernorStoreSecrets = Readonly<{
@@ -36,6 +41,7 @@ export type GovernorSqliteStoreParams = {
   deliveryResolver?: GovernorTrustedDeliveryResolver;
   physicalExecutionCoordinator?: GovernorTrustedPhysicalExecutionCoordinator;
   memoryAuthority?: GovernorTrustedMemoryAuthority;
+  taskAuthority?: GovernorTrustedTaskAuthority;
   secrets?: GovernorStoreSecrets;
   stateEnv?: NodeJS.ProcessEnv;
   capabilities?: GovernorCapabilityRegistry;
@@ -48,6 +54,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
     !params.deliveryResolver ||
     !params.physicalExecutionCoordinator ||
     !params.memoryAuthority ||
+    !params.taskAuthority ||
     !params.secrets
       ? createGovernorTestHostBindings({ stateDir: params.stateDir })
       : undefined;
@@ -57,6 +64,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
   const physicalExecutionCoordinator =
     params.physicalExecutionCoordinator ?? testBroker?.physicalExecutionCoordinator;
   const memoryAuthority = params.memoryAuthority ?? testBroker?.memoryAuthority;
+  const taskAuthority = params.taskAuthority ?? testBroker?.taskAuthority;
   const secrets = params.secrets ?? testBroker?.secrets;
   if (!receiptResolver || !isTrustedGovernorReceiptResolver(receiptResolver)) {
     throw new Error("Governor store requires a trusted host receipt resolver");
@@ -66,6 +74,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
     !deliveryResolver ||
     !physicalExecutionCoordinator ||
     !memoryAuthority ||
+    !taskAuthority ||
     !secrets
   ) {
     throw new Error("Governor store requires explicit host bindings and secrets");
@@ -78,13 +87,15 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
   };
   const capabilities = params.capabilities ?? new GovernorCapabilityRegistry([]);
   initializeGovernorStateSchema(options);
+  const tasks = new GovernorTaskAuthorityStore(taskAuthority);
+  tasks.reconcilePrimary(openOpenClawStateDatabase(options).db);
   const evidenceAdmissions = new GovernorEvidenceAdmissionStore({
     receiptResolver,
     identity: secrets.identity,
     evidenceAdmissionKey: secrets.evidenceAdmissionKey,
     evidenceAdmissionKeyId: secrets.evidenceAdmissionKeyId,
   });
-  const queries = new GovernorStoreQueries(options, (evidence) =>
+  const queries = new GovernorStoreQueries(options, tasks, (evidence) =>
     evidenceAdmissions.verify(evidence),
   );
   const approvals = new GovernorApprovalGrantStore({ options, approvalResolver });
@@ -92,6 +103,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
     options,
     physicalExecutionCoordinator,
     receiptResolver,
+    taskAuthority: tasks,
   });
   return {
     options,
@@ -104,6 +116,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
       evidenceAdmissions,
       queries,
       memoryAuthority,
+      taskAuthority: tasks,
     }),
     capabilities,
     actionIntents: new GovernorActionIntentStore({
@@ -112,6 +125,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
       capabilities,
       identity: secrets.identity,
       receiptResolver,
+      taskAuthority: tasks,
     }),
     approvals,
     deliveryCertifications: new GovernorDeliveryCertificationStore({
@@ -119,7 +133,8 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
       deliveryResolver,
     }),
     checkpoints: new GovernorCheckpointStore({ options }),
-    outbox: new GovernorOutboxStore({ options }),
+    outbox: new GovernorOutboxStore({ options, taskAuthority: tasks }),
+    tasks,
     fanout,
     children: new GovernorExternalChildRunStore({ fanout, receiptResolver }),
   };

@@ -16,13 +16,13 @@ import {
   parseEnvelope,
   parseJob,
   parseReducerResult,
-  parseTaskProjection,
   type FaninReducerRow,
   type GovernorReducerClaim,
 } from "./fanout-codec.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export type GovernorClaimReducerParams = {
@@ -34,6 +34,7 @@ export type GovernorClaimReducerParams = {
 
 export type GovernorCompleteReducerParams = {
   taskId: GovernorTaskId;
+  objectiveRevision: number;
   planVersion: number;
   round: number;
   taskVersion: number;
@@ -47,23 +48,22 @@ export type GovernorCompleteReducerParams = {
 
 export class GovernorFaninReducerStore {
   readonly #options: OpenClawStateDatabaseOptions;
+  readonly #tasks: GovernorTaskAuthorityStore;
 
-  constructor(params: { stateDir?: string; options?: OpenClawStateDatabaseOptions } = {}) {
+  constructor(params: {
+    stateDir?: string;
+    options?: OpenClawStateDatabaseOptions;
+    taskAuthority: GovernorTaskAuthorityStore;
+  }) {
     this.#options =
       params.options ??
       (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
     initializeGovernorStateSchema(this.#options);
+    this.#tasks = params.taskAuthority;
   }
 
   #task(db: DatabaseSync, taskId: GovernorTaskId): GovernorTaskProjection | null {
-    const row = executeSqliteQueryTakeFirstSync(
-      db,
-      fanoutDb(db)
-        .selectFrom("governor_tasks")
-        .select(["projection_json"])
-        .where("task_id", "=", taskId),
-    );
-    return row ? parseTaskProjection(row.projection_json) : null;
+    return this.#tasks.loadCurrent(db, taskId);
   }
 
   claim(params: GovernorClaimReducerParams): GovernorReducerClaim {
@@ -82,6 +82,7 @@ export class GovernorFaninReducerStore {
       if (
         !current ||
         current.taskVersion !== params.task.taskVersion ||
+        current.objectiveRevision !== params.task.objectiveRevision ||
         current.leaseEpoch !== params.task.leaseEpoch ||
         current.planVersion !== params.task.planVersion ||
         current.executionGeneration !== params.task.executionGeneration
@@ -99,6 +100,18 @@ export class GovernorFaninReducerStore {
           .orderBy("queue_sequence", "asc"),
       ).rows.map(parseJob);
       if (
+        jobs.some(
+          (job) =>
+            job.taskVersion !== current.taskVersion ||
+            job.objectiveRevision !== current.objectiveRevision ||
+            job.planVersion !== current.planVersion ||
+            job.leaseEpoch !== current.leaseEpoch ||
+            job.executionGeneration !== current.executionGeneration,
+        )
+      ) {
+        return { kind: "stale_task" };
+      }
+      if (
         jobs.length === 0 ||
         jobs.some((job) => job.state === "queued" || job.state === "running")
       ) {
@@ -114,6 +127,24 @@ export class GovernorFaninReducerStore {
           .where("round", "=", params.round)
           .orderBy("job_id", "asc"),
       ).rows.map(parseEnvelope);
+      const completedJobIds = jobs
+        .filter((job) => job.state === "completed")
+        .map((job) => job.jobId)
+        .toSorted();
+      if (
+        envelopes.some(
+          (envelope) =>
+            envelope.taskVersion !== current.taskVersion ||
+            envelope.objectiveRevision !== current.objectiveRevision ||
+            envelope.planVersion !== current.planVersion ||
+            envelope.leaseEpoch !== current.leaseEpoch ||
+            envelope.executionGeneration !== current.executionGeneration,
+        ) ||
+        completedJobIds.length !== envelopes.length ||
+        completedJobIds.some((jobId, index) => jobId !== envelopes[index]?.jobId)
+      ) {
+        return { kind: "stale_task" };
+      }
       const envelopeSetDigest = governorDigest(
         envelopes.map((envelope) => ({
           jobId: envelope.jobId,
@@ -129,10 +160,28 @@ export class GovernorFaninReducerStore {
           .where("plan_version", "=", current.planVersion)
           .where("round", "=", params.round),
       );
-      if (reducer?.state === "completed" && reducer.result_json && reducer.result_digest) {
+      if (
+        reducer?.state === "completed" &&
+        reducer.result_json &&
+        reducer.result_digest &&
+        normalizeSqliteNumber(reducer.task_version) === current.taskVersion &&
+        normalizeSqliteNumber(reducer.objective_revision) === current.objectiveRevision &&
+        normalizeSqliteNumber(reducer.lease_epoch) === current.leaseEpoch &&
+        normalizeSqliteNumber(reducer.execution_generation) === current.executionGeneration &&
+        reducer.envelope_set_digest === envelopeSetDigest
+      ) {
         return {
           kind: "completed",
-          result: parseReducerResult(reducer.result_json),
+          result: parseReducerResult(reducer.result_json, reducer.result_digest, {
+            taskId: current.taskId,
+            taskVersion: current.taskVersion,
+            objectiveRevision: current.objectiveRevision,
+            planVersion: current.planVersion,
+            leaseEpoch: current.leaseEpoch,
+            executionGeneration: current.executionGeneration,
+            round: params.round,
+            envelopeSetDigest,
+          }),
           resultDigest: reducer.result_digest,
         };
       }
@@ -149,6 +198,10 @@ export class GovernorFaninReducerStore {
         round: params.round,
         reducer_epoch: reducerEpoch,
         state: "claimed",
+        task_version: current.taskVersion,
+        objective_revision: current.objectiveRevision,
+        lease_epoch: current.leaseEpoch,
+        execution_generation: current.executionGeneration,
         envelope_set_digest: envelopeSetDigest,
         result_json: null,
         result_digest: null,
@@ -177,12 +230,24 @@ export class GovernorFaninReducerStore {
       if (
         !task ||
         task.taskVersion !== params.taskVersion ||
+        task.objectiveRevision !== params.objectiveRevision ||
         task.planVersion !== params.planVersion ||
         task.leaseEpoch !== params.leaseEpoch ||
         task.executionGeneration !== params.executionGeneration
       ) {
         return false;
       }
+      const resultDigest = governorDigest({
+        taskId: params.taskId,
+        taskVersion: params.taskVersion,
+        objectiveRevision: params.objectiveRevision,
+        planVersion: params.planVersion,
+        leaseEpoch: params.leaseEpoch,
+        executionGeneration: params.executionGeneration,
+        round: params.round,
+        envelopeSetDigest: params.envelopeSetDigest,
+        result,
+      });
       const update = executeSqliteQuerySync(
         db,
         fanoutDb(db)
@@ -190,13 +255,17 @@ export class GovernorFaninReducerStore {
           .set({
             state: "completed",
             result_json: JSON.stringify(result),
-            result_digest: governorDigest(result),
+            result_digest: resultDigest,
             completed_at: params.now,
             updated_at: params.now,
           })
           .where("task_id", "=", params.taskId)
           .where("plan_version", "=", params.planVersion)
           .where("round", "=", params.round)
+          .where("task_version", "=", params.taskVersion)
+          .where("objective_revision", "=", params.objectiveRevision)
+          .where("lease_epoch", "=", params.leaseEpoch)
+          .where("execution_generation", "=", params.executionGeneration)
           .where("reducer_epoch", "=", params.reducerEpoch)
           .where("envelope_set_digest", "=", params.envelopeSetDigest)
           .where("state", "=", "claimed"),

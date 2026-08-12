@@ -108,6 +108,7 @@ export function createHostGovernorBroker(params: {
   ownerIngressResolver: GovernorTrustedOwnerIngressResolver;
   physicalExecutionCoordinator: GovernorTrustedPhysicalExecutionCoordinator;
   memoryAuthority: import("./governor-host-memory-authority.js").GovernorTrustedMemoryAuthority;
+  taskAuthority: import("./governor-host-task-authority.js").GovernorTrustedTaskAuthority;
 } {
   if (!isGovernorSecrets(params.secrets) || !isGovernorHostPersistence(params.persistence)) {
     throw new Error("Host governor validated secrets and persistence are required");
@@ -497,5 +498,6 @@ export function createHostGovernorBroker(params: {
     ownerIngressResolver,
     physicalExecutionCoordinator: params.persistence.physicalExecutions,
     memoryAuthority: params.persistence.memoryAuthority,
+    taskAuthority: params.persistence.taskAuthority,
   };
 }

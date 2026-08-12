@@ -175,7 +175,7 @@ describe("governor mutation reconciliation and delivery", () => {
           },
           now: 122,
         }),
-      ).toThrow(/reconcile_before_retry/);
+      ).toThrow(/GOVERNOR_ACTION_REJECTED/u);
 
       const reconciliationFence = controller.captureExecutionFence(taskId);
       const reconciled = resolveGovernorTestMutation(controller, broker, {

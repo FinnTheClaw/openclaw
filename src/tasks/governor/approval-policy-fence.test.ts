@@ -146,7 +146,7 @@ describe("governor action approval policy fence", () => {
             }),
             actionIntents: [{ ...admitted.intent, approvalRequired: false }],
           }),
-        ).toThrow(/approval policy mismatch/u);
+        ).toThrow(/GOVERNOR_ACTION_POLICY_BINDING_INVALID/u);
 
         openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: state.stateDir } })
           .db.prepare(

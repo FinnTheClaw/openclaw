@@ -6,6 +6,7 @@ import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { parseGovernorStoredJson } from "./integrity-error.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import type { GovernorTaskId } from "./types.js";
 
@@ -17,14 +18,6 @@ type GovernorActionIntentRow = Selectable<OpenClawStateKyselyDatabase["governor_
 
 export function actionIntentDb(db: DatabaseSync) {
   return getNodeSqliteKysely<ActionIntentDatabase>(db);
-}
-
-function parseJson(raw: string, label: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error(`Invalid persisted governor ${label}`);
-  }
 }
 
 export function bindGovernorActionIntent(
@@ -64,10 +57,11 @@ export function bindGovernorActionIntent(
 }
 
 export function parseGovernorActionIntent(row: GovernorActionIntentRow): GovernorActionIntent {
-  const proposal = parseJson(
+  const proposal = parseGovernorStoredJson(
     row.proposal_json,
-    "action intent",
-  ) as GovernorActionIntent["proposal"];
+    "log",
+    "GOVERNOR_ACTION_INTENT_INVALID",
+  ) as unknown as GovernorActionIntent["proposal"];
   const intent: GovernorActionIntent = {
     taskId: row.task_id as GovernorTaskId,
     effectId: row.effect_id,
@@ -125,7 +119,7 @@ export function parseGovernorActionIntent(row: GovernorActionIntentRow): Governo
     proposal.taskId !== intent.taskId ||
     proposal.effectId !== intent.effectId
   ) {
-    throw new Error(`Persisted governor action intent mismatch for ${row.effect_id}`);
+    throw new Error("GOVERNOR_ACTION_INTENT_BINDING_INVALID");
   }
   assertGovernorPersistedJson("log", intent);
   return intent;

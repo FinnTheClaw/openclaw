@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 const root = path.resolve(import.meta.dirname, "..");
 const authorityModules = [
   "governor-host-anti-rollback-ledger",
+  "governor-host-ledger-codec",
+  "governor-host-ledger-storage",
   "governor-host-bootstrap",
   "governor-host-broker",
   "governor-host-canary-sink",
@@ -21,6 +23,7 @@ const authorityModules = [
   "governor-host-persistence",
   "governor-host-physical-execution",
   "governor-host-secrets",
+  "governor-host-task-authority",
 ] as const;
 const authorityImport = new RegExp(
   `security/(?:${authorityModules.map((name) => name.replaceAll(".", "\\.")).join("|")})(?:\\.js)?["']`,
@@ -36,7 +39,13 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-host-owner-ingress-persistence.ts",
     "security/governor-host-persistence.ts",
     "security/governor-host-physical-execution.ts",
+    "security/governor-host-task-authority.ts",
   ],
+  "governor-host-ledger-codec": [
+    "security/governor-host-anti-rollback-ledger.ts",
+    "security/governor-host-ledger-storage.ts",
+  ],
+  "governor-host-ledger-storage": ["security/governor-host-anti-rollback-ledger.ts"],
   "governor-host-bootstrap": [],
   "governor-host-broker": [
     "security/governor-host-bootstrap.ts",
@@ -57,7 +66,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   "governor-host-delivery-broker": ["security/governor-host-broker.ts"],
   "governor-host-delivery-implementations": ["security/governor-host-delivery-broker.ts"],
   "governor-host-delivery-persistence": ["security/governor-host-persistence.ts"],
-  "governor-host-file-lock": ["security/governor-host-anti-rollback-ledger.ts"],
+  "governor-host-file-lock": ["security/governor-host-ledger-storage.ts"],
   "governor-host-memory-authority": [
     "security/governor-host-broker.ts",
     "security/governor-host-persistence.ts",
@@ -80,6 +89,11 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-host-bootstrap.ts",
     "security/governor-host-broker.ts",
     "security/governor-host-delivery-broker.ts",
+    "security/governor-host-persistence.ts",
+    "security/governor-host-readonly.ts",
+  ],
+  "governor-host-task-authority": [
+    "security/governor-host-broker.ts",
     "security/governor-host-persistence.ts",
     "security/governor-host-readonly.ts",
   ],
@@ -132,6 +146,8 @@ describe("governor host authority boundary", () => {
     const ambientFree = [
       "security/governor-host-broker.ts",
       "security/governor-host-anti-rollback-ledger.ts",
+      "security/governor-host-ledger-codec.ts",
+      "security/governor-host-ledger-storage.ts",
       "security/governor-host-delivery-build-manifest.ts",
       "security/governor-host-delivery-broker.ts",
       "security/governor-host-delivery-implementations.ts",
@@ -141,6 +157,7 @@ describe("governor host authority boundary", () => {
       "security/governor-host-persistence.ts",
       "security/governor-host-physical-execution.ts",
       "security/governor-host-secrets.ts",
+      "security/governor-host-task-authority.ts",
       "tasks/governor/action-intent-store.ts",
       "tasks/governor/approval-store.ts",
       "tasks/governor/checkpoint-store.ts",

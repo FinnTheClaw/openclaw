@@ -160,6 +160,22 @@ export class GovernorMemoryAuthorityStore {
     return "stale";
   }
 
+  auditStatus(memory: GovernorMemoryRecord): "current" | "legacy" | "retired" | "stale" {
+    assertGovernorPersistedJson("memory", memory);
+    const state = this.#authority.state(memory.scopeKey, memory.factKey);
+    if (!state) {
+      return "legacy";
+    }
+    if (state.status === "retired") {
+      return "retired";
+    }
+    try {
+      return this.state(memory);
+    } catch {
+      return "stale";
+    }
+  }
+
   quarantineMismatch(
     db: DatabaseSync,
     memory: GovernorMemoryRecord,

@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
+import { GOVERNOR_DURABLE_BOUNDARIES } from "../../security/governor-durable-boundary-registry.js";
 import {
   closeOpenClawStateDatabase,
   openOpenClawStateDatabase,
@@ -182,49 +184,87 @@ describe("governor V22 durable persistence boundary", () => {
 });
 
 describe("governor persistence guard inventory", () => {
-  it("requires every transactional writer and durable JSON binder to name a guard", () => {
+  it("binds every durable database call to an explicit symbol-level enforcement entry", () => {
     const directory = path.dirname(fileURLToPath(import.meta.url));
-    const securityDirectory = path.resolve(directory, "../../security");
-    const sourceFiles = [directory, securityDirectory].flatMap((sourceDirectory) =>
-      fs
-        .readdirSync(sourceDirectory)
-        .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
-        .map(
-          (name) =>
-            [
-              path.relative(directory, path.join(sourceDirectory, name)),
-              fs.readFileSync(path.join(sourceDirectory, name), "utf8"),
-            ] as const,
+    const root = path.resolve(directory, "../../..");
+    const entries = new Map(
+      GOVERNOR_DURABLE_BOUNDARIES.map((entry) => [`${entry.file}:${entry.symbol}`, entry]),
+    );
+    expect(entries.size).toBe(GOVERNOR_DURABLE_BOUNDARIES.length);
+
+    const parsed = new Map<
+      string,
+      { source: ts.SourceFile; text: string; named: Array<{ name: string; node: ts.Node }> }
+    >();
+    const sourcePaths = [directory, path.resolve(directory, "../../security")].flatMap(
+      (sourceDirectory) =>
+        fs
+          .readdirSync(sourceDirectory, { withFileTypes: true })
+          .filter(
+            (item) => item.isFile() && item.name.endsWith(".ts") && !item.name.endsWith(".test.ts"),
+          )
+          .map((item) => path.join(sourceDirectory, item.name)),
+    );
+    for (const absolute of sourcePaths) {
+      const fileName = path.relative(root, absolute).replaceAll("\\", "/");
+      const text = fs.readFileSync(absolute, "utf8");
+      const source = ts.createSourceFile(absolute, text, ts.ScriptTarget.Latest, true);
+      const named: Array<{ name: string; node: ts.Node }> = [];
+      const visit = (node: ts.Node): void => {
+        const candidate = node as ts.Node & { name?: ts.Node };
+        const name = candidate.name?.getText(source);
+        if (name) {
+          named.push({ name: name.replace(/^#/, ""), node });
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      parsed.set(fileName, { source, text, named });
+    }
+
+    for (const entry of GOVERNOR_DURABLE_BOUNDARIES) {
+      const file = parsed.get(entry.file)!;
+      const candidates = file.named.filter((candidate) => candidate.name === entry.symbol);
+      const match = candidates.find((candidate) =>
+        entry.enforcementAnchors.every((anchor) =>
+          candidate.node.getText(file.source).includes(anchor),
         ),
-    );
-    const writers = sourceFiles.filter(([, source]) =>
-      source.includes("runOpenClawStateWriteTransaction"),
-    );
-    expect(writers.length).toBeGreaterThan(10);
-    for (const [name, source] of writers) {
-      expect
-        .soft(source, name)
-        .toMatch(/assertGovernor(?:JsonResources|PersistedJson|BoundarySafe)/u);
-    }
-    expect(
-      fs.readFileSync(
-        path.join(securityDirectory, "governor-host-anti-rollback-ledger.ts"),
-        "utf8",
-      ),
-    ).toContain("assertGovernorBoundarySafe");
-    for (const name of [
-      "action-intent-codec.ts",
-      "checkpoint-store.ts",
-      "fanout-codec.ts",
-      "memory-record-codec.ts",
-      "memory-remediation.ts",
-      "outbox-codec.ts",
-      "outbox-store.ts",
-      "store-codec.ts",
-    ]) {
-      expect(fs.readFileSync(path.join(directory, name), "utf8"), name).toContain(
-        "assertGovernorPersistedJson",
       );
+      expect.soft(match, `${entry.id} (${entry.file}:${entry.symbol})`).toBeDefined();
     }
+
+    const uncovered: string[] = [];
+    for (const [fileName, file] of parsed) {
+      const visit = (node: ts.Node, ancestors: readonly string[]): void => {
+        const candidate = node as ts.Node & { name?: ts.Node };
+        const ownName = candidate.name?.getText(file.source).replace(/^#/, "");
+        const nextAncestors = ownName ? [...ancestors, ownName] : ancestors;
+        if (ts.isCallExpression(node)) {
+          const expression = node.expression;
+          const method = ts.isIdentifier(expression)
+            ? expression.text
+            : ts.isPropertyAccessExpression(expression)
+              ? expression.name.text
+              : "";
+          const table = node.arguments[0];
+          const touchesGovernorTable =
+            new Set(["selectFrom", "insertInto", "updateTable", "deleteFrom"]).has(method) &&
+            table !== undefined &&
+            ts.isStringLiteral(table) &&
+            table.text.startsWith("governor_");
+          if (method === "runOpenClawStateWriteTransaction" || touchesGovernorTable) {
+            const covered = nextAncestors.some((symbol) => entries.has(`${fileName}:${symbol}`));
+            if (!covered) {
+              const line =
+                file.source.getLineAndCharacterOfPosition(node.getStart(file.source)).line + 1;
+              uncovered.push(`${fileName}:${line}:${nextAncestors.join("/") || "anonymous"}`);
+            }
+          }
+        }
+        ts.forEachChild(node, (child) => visit(child, nextAncestors));
+      };
+      visit(file.source, []);
+    }
+    expect(uncovered).toEqual([]);
   });
 });

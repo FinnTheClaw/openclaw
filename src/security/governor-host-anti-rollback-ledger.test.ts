@@ -40,7 +40,11 @@ describe("governor V9 host anti-rollback ledger", () => {
   it("seals current high-water state and rejects same-generation binding changes", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "governor-v9-ledger-"));
     try {
-      const first = createGovernorHostAntiRollbackLedger({ stateDir: root, signingKey: ledgerKey });
+      const first = createGovernorHostAntiRollbackLedger({
+        stateDir: root,
+        signingKey: ledgerKey,
+        allowInitialization: true,
+      });
       first.append({
         kind: "delivery",
         key: "opaque-adapter",
@@ -56,7 +60,7 @@ describe("governor V9 host anti-rollback ledger", () => {
           status: "certified",
           bindingDigest: "b",
         }),
-      ).toThrow(/binding/);
+      ).toThrow(/GOVERNOR_HOST_LEDGER_BINDING_CONFLICT/u);
       const paths = {
         journal: path.join(root, "host-governor", "anti-rollback-v1.journal"),
         head: path.join(root, "host-governor", "anti-rollback-v1.head"),
@@ -80,12 +84,15 @@ describe("governor V9 host anti-rollback ledger", () => {
         paths.journal,
         fs.readFileSync(paths.journal, "utf8").split("\n").slice(0, 1).join("\n") + "\n",
       );
-      expect(() =>
-        createGovernorHostAntiRollbackLedger({ stateDir: root, signingKey: ledgerKey }),
-      ).toThrow(/truncated|head/);
+      expect(
+        createGovernorHostAntiRollbackLedger({ stateDir: root, signingKey: ledgerKey }).state(
+          "approval",
+          "opaque-scope",
+        ),
+      ).toMatchObject({ generation: 1, status: "revoked" });
       expect(() =>
         createGovernorHostAntiRollbackLedger({ stateDir: root, signingKey: "wrong-key" }),
-      ).toThrow(/key mismatch|integrity|head/);
+      ).toThrow(/GOVERNOR_HOST_AUTHORITY_RECOVERY_REQUIRED/u);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -97,6 +104,7 @@ describe("governor V9 host anti-rollback ledger", () => {
       const ledger = createGovernorHostAntiRollbackLedger({
         stateDir: root,
         signingKey: ledgerKey,
+        allowInitialization: true,
       });
       ledger.append({
         kind: "approval",
@@ -145,6 +153,7 @@ describe("governor V9 host anti-rollback ledger", () => {
       const ledger = createGovernorHostAntiRollbackLedger({
         stateDir: root,
         signingKey: ledgerKey,
+        allowInitialization: true,
       });
       ledger.append({
         kind: "memory",
@@ -167,9 +176,17 @@ describe("governor V9 host anti-rollback ledger", () => {
       };
       entry.ordering.observedAt += 1;
       fs.writeFileSync(journal, `${JSON.stringify(entry)}\n`);
+      expect(
+        createGovernorHostAntiRollbackLedger({ stateDir: root, signingKey: ledgerKey }).state(
+          "memory",
+          "opaque-memory-fact",
+        ),
+      ).toMatchObject({ ordering });
+      fs.writeFileSync(journal, "corrupt\n");
+      fs.writeFileSync(path.join(root, "host-governor", "anti-rollback-v1.head"), "corrupt\n");
       expect(() =>
         createGovernorHostAntiRollbackLedger({ stateDir: root, signingKey: ledgerKey }),
-      ).toThrow(/integrity/u);
+      ).toThrow(/GOVERNOR_HOST_AUTHORITY_RECOVERY_REQUIRED/u);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -221,22 +238,67 @@ describe("governor V9 host anti-rollback ledger", () => {
     );
   });
 
-  it("fails closed when the independent head or ledger is missing", async () => {
+  it("recovers either signed copy and fails closed when both are missing", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v9-missing-" },
       async (state) => {
         createGovernorHostAntiRollbackLedger({
           stateDir: path.join(state.stateDir, "state"),
           signingKey: ledgerKey,
+          allowInitialization: true,
         });
         const paths = ledgerPaths(state.stateDir);
         fs.unlinkSync(paths.head);
+        expect(
+          createGovernorHostAntiRollbackLedger({
+            stateDir: path.join(state.stateDir, "state"),
+            signingKey: ledgerKey,
+          }).state("memory", "absent"),
+        ).toBeNull();
+        fs.unlinkSync(paths.head);
+        fs.unlinkSync(paths.journal);
         expect(() =>
           createGovernorHostAntiRollbackLedger({
             stateDir: path.join(state.stateDir, "state"),
             signingKey: ledgerKey,
           }),
-        ).toThrow(/incomplete|head/);
+        ).toThrow(/GOVERNOR_HOST_AUTHORITY_RECOVERY_REQUIRED/u);
+      },
+    );
+  });
+
+  it("initializes only beside an empty primary and rejects complete authority loss later", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-v24-authority-loss-" },
+      async (state) => {
+        const env = syntheticGovernorSecretsEnvironment(state.stateDir);
+        const secrets = resolveGovernorSecrets(env);
+        expect(() =>
+          createGovernorHostPersistence({
+            env,
+            stateDir: state.stateDir,
+            secrets,
+            testMode: true,
+          }),
+        ).not.toThrow();
+        const { db } = openOpenClawStateDatabase({
+          env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir },
+        });
+        db.prepare(
+          "INSERT INTO governor_scope_epochs(scope_key, epoch, updated_at) VALUES (?, ?, ?)",
+        ).run("gref_established_primary_fixture", 0, 1);
+        closeOpenClawStateDatabase();
+        const paths = ledgerPaths(state.stateDir);
+        fs.unlinkSync(paths.head);
+        fs.unlinkSync(paths.journal);
+        expect(() =>
+          createGovernorHostPersistence({
+            env,
+            stateDir: state.stateDir,
+            secrets,
+            testMode: true,
+          }),
+        ).toThrow(/GOVERNOR_HOST_AUTHORITY_RECOVERY_REQUIRED/u);
       },
     );
   });

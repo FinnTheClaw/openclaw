@@ -230,7 +230,7 @@ describe("governor material response claims", () => {
                 claims: [{ ...claim, evidenceIds: [verified.evidenceId] }],
                 now: verified.base + 8,
               }),
-            ).toThrow(/semantically unrelated/u);
+            ).toThrow(/GOVERNOR_MATERIAL_CLAIM_SEMANTIC_MISMATCH/u);
           }
           governed.recordContradiction({
             taskId: verified.taskId,
@@ -256,7 +256,7 @@ describe("governor material response claims", () => {
               ],
               now: verified.base + 10,
             }),
-          ).toThrow(/high-severity contradiction/u);
+          ).toThrow(/GOVERNOR_MATERIAL_CLAIM_CONTRADICTION_ACTIVE/u);
         } finally {
           closeOpenClawStateDatabase();
         }

@@ -41,6 +41,7 @@ import {
   isGovernorEvidenceAdmissionStore,
   type GovernorEvidenceAdmissionStore,
 } from "./store-evidence-admission.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorTaskId } from "./types.js";
 
 type ContradictionDatabase = Pick<
@@ -69,11 +70,13 @@ export class GovernorMemoryContradictionStore {
   readonly #options: OpenClawStateDatabaseOptions;
   readonly #admissions: GovernorEvidenceAdmissionStore;
   readonly #authority: GovernorMemoryAuthorityStore;
+  readonly #tasks: GovernorTaskAuthorityStore;
 
   constructor(params: {
     options: OpenClawStateDatabaseOptions;
     evidenceAdmissions: GovernorEvidenceAdmissionStore;
     memoryAuthority: import("../../security/governor-host-readonly.js").GovernorTrustedMemoryAuthority;
+    taskAuthority: GovernorTaskAuthorityStore;
   }) {
     if (!isGovernorEvidenceAdmissionStore(params.evidenceAdmissions)) {
       throw new Error("Governor memory contradiction store requires its evidence admission owner");
@@ -84,6 +87,7 @@ export class GovernorMemoryContradictionStore {
       authority: params.memoryAuthority,
       options: params.options,
     });
+    this.#tasks = params.taskAuthority;
   }
 
   #evidence(db: DatabaseSync, taskId: GovernorTaskId, evidenceId: string) {
@@ -92,6 +96,7 @@ export class GovernorMemoryContradictionStore {
       admissions: this.#admissions,
       taskId,
       evidenceId,
+      tasks: this.#tasks,
     });
   }
 

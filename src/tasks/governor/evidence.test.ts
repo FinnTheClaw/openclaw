@@ -179,7 +179,7 @@ describe("governor evidence host receipt boundary", () => {
         const { next, event } = nextEvent(task);
         expect(() =>
           store.commit({ current: task, next, event, evidenceAdmission: forged }),
-        ).toThrow(/not created by this store/u);
+        ).toThrow(/GOVERNOR_EVIDENCE_ADMISSION_UNTRUSTED/u);
         expect(
           store.commit({ current: task, next, event, evidenceAdmission: admission }).applied,
         ).toBe(true);
@@ -187,7 +187,9 @@ describe("governor evidence host receipt boundary", () => {
           env: { ...process.env, OPENCLAW_STATE_DIR: state.stateDir },
         });
         db.prepare("UPDATE governor_evidence SET payload_json = ?").run('{"forged":true}');
-        expect(() => store.listEvidence(task.taskId)).toThrow(/payload digest mismatch/u);
+        expect(() => store.listEvidence(task.taskId)).toThrow(
+          /GOVERNOR_EVIDENCE_PAYLOAD_DIGEST_INVALID/u,
+        );
         closeOpenClawStateDatabase();
       },
     );

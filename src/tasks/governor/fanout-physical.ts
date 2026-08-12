@@ -8,12 +8,12 @@ import type {
 } from "../../security/governor-host-readonly.js";
 import { governorDigest } from "./canonical-json.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
-import { fanoutDb, parseJob, type GovernorFanoutJob } from "./fanout-codec.js";
+import { fanoutDb, parseJob, replaceJob, type GovernorFanoutJob } from "./fanout-codec.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 
 export function fanoutPhysicalBinding(job: GovernorFanoutJob): GovernorPhysicalExecutionBinding {
   if (!job.workerId) {
-    throw new Error(`Governor fanout job ${job.jobId} has no physical worker`);
+    throw new Error("GOVERNOR_FANOUT_PHYSICAL_WORKER_MISSING");
   }
   return {
     jobId: job.jobId,
@@ -34,7 +34,7 @@ export function fanoutPhysicalLease(job: GovernorFanoutJob): GovernorPhysicalExe
     job.physicalGeneration === undefined ||
     !job.physicalBindingDigest
   ) {
-    throw new Error(`Governor fanout job ${job.jobId} has no durable physical lease`);
+    throw new Error("GOVERNOR_FANOUT_PHYSICAL_LEASE_MISSING");
   }
   return {
     slot: job.physicalSlot,
@@ -62,22 +62,14 @@ function applyCancellationFence(params: {
   if (!pending) {
     return false;
   }
-  executeSqliteQuerySync(
-    params.db,
-    fanoutDb(params.db)
-      .updateTable("governor_fanout_jobs")
-      .set({
-        physical_generation: pending.generation,
-        physical_binding_digest: pending.bindingDigest,
-        cancellation_disposition: params.job.cancellationDisposition ?? "cancel",
-        cancellation_requested_at: params.job.cancellationRequestedAt ?? params.now,
-        updated_at: params.now,
-      })
-      .where("job_id", "=", params.job.jobId)
-      .where("state", "=", "running")
-      .where("claim_epoch", "=", params.job.claimEpoch),
-  );
-  return true;
+  return replaceJob(params.db, params.job, {
+    ...params.job,
+    physicalGeneration: pending.generation,
+    physicalBindingDigest: pending.bindingDigest,
+    cancellationDisposition: params.job.cancellationDisposition ?? "cancel",
+    cancellationRequestedAt: params.job.cancellationRequestedAt ?? params.now,
+    updatedAt: params.now,
+  });
 }
 
 function reconcileReleasedJob(params: {
@@ -94,31 +86,27 @@ function reconcileReleasedJob(params: {
   if (
     !state ||
     state.bindingDigest !== params.job.physicalBindingDigest ||
-    !["completed", "crashed", "terminated"].includes(state.status)
+    (state.status !== "completed" && state.status !== "crashed" && state.status !== "terminated")
   ) {
     return false;
   }
   const requeue = state.status !== "completed" && params.job.cancellationDisposition === "requeue";
-  executeSqliteQuerySync(
-    params.db,
-    fanoutDb(params.db)
-      .updateTable("governor_fanout_jobs")
-      .set({
-        state: requeue ? "queued" : "cancelled",
-        worker_id: null,
-        lease_expires_at: null,
-        physical_generation: state.generation,
-        termination_outcome: state.status,
-        termination_evidence_digest: state.ledgerDigest,
-        termination_acknowledged_at: params.now,
-        cancelled_at: requeue ? null : params.now,
-        updated_at: params.now,
-      })
-      .where("job_id", "=", params.job.jobId)
-      .where("state", "=", "running")
-      .where("claim_epoch", "=", params.job.claimEpoch),
-  );
-  return true;
+  const {
+    cancelledAt: _cancelledAt,
+    leaseExpiresAt: _leaseExpiresAt,
+    workerId: _workerId,
+    ...released
+  } = params.job;
+  return replaceJob(params.db, params.job, {
+    ...released,
+    state: requeue ? "queued" : "cancelled",
+    physicalGeneration: state.generation,
+    terminationOutcome: state.status,
+    terminationEvidenceDigest: state.ledgerDigest,
+    terminationAcknowledgedAt: params.now,
+    ...(requeue ? {} : { cancelledAt: params.now }),
+    updatedAt: params.now,
+  });
 }
 
 /** Reconciles only host-proven terminal work and fences every expired lease. */
@@ -162,15 +150,12 @@ export function reconcileFanoutPhysicalState(params: {
       job.cancellationRequestedAt !== undefined ||
       (job.leaseExpiresAt !== undefined && job.leaseExpiresAt <= params.now);
     if (cancellationDue) {
-      const requestedJob = {
-        ...job,
-        cancellationDisposition:
-          job.cancellationDisposition ??
-          (job.leaseExpiresAt !== undefined && job.leaseExpiresAt <= params.now
-            ? ("requeue" as const)
-            : ("cancel" as const)),
-      };
-      if (!applyCancellationFence({ ...params, job: requestedJob })) {
+      const disposition =
+        job.cancellationDisposition ??
+        (job.leaseExpiresAt !== undefined && job.leaseExpiresAt <= params.now
+          ? ("requeue" as const)
+          : ("cancel" as const));
+      if (!requestFanoutCancellation({ ...params, job, disposition })) {
         unprovableRunning = true;
         continue;
       }
@@ -208,22 +193,18 @@ export function requestFanoutCancellation(params: {
     disposition: params.disposition,
     now: params.now,
   });
-  executeSqliteQuerySync(
-    params.db,
-    fanoutDb(params.db)
-      .updateTable("governor_fanout_jobs")
-      .set({
-        cancellation_disposition: params.disposition,
-        cancellation_requested_at: params.job.cancellationRequestedAt ?? params.now,
-        updated_at: params.now,
-      })
-      .where("job_id", "=", params.job.jobId)
-      .where("state", "=", "running")
-      .where("claim_epoch", "=", params.job.claimEpoch),
-  );
+  const requested: GovernorFanoutJob = {
+    ...params.job,
+    cancellationDisposition: params.disposition,
+    cancellationRequestedAt: params.job.cancellationRequestedAt ?? params.now,
+    updatedAt: params.now,
+  };
+  if (!replaceJob(params.db, params.job, requested)) {
+    return false;
+  }
   return applyCancellationFence({
     ...params,
-    job: { ...params.job, cancellationDisposition: params.disposition },
+    job: requested,
   });
 }
 

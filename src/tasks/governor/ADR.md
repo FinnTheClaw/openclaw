@@ -195,6 +195,18 @@ isolated SQLite state.
     identity, not receipt identity; multiple authenticated retry receipts therefore converge on one
     job and fan-in result while distinct children remain distinct. The child integration owner can
     issue only child lifecycle observations, and feature-off creates no child state or capability.
+38. V24 makes the signed host ledger authoritative for each task's opaque scope, authenticated
+    source sequence, task/objective/plan revisions, lease epoch, execution generation, state, and
+    canonical projection digest. A transition first appends a signed intent, then commits SQLite,
+    then appends a signed current marker. Exact retry or restart reconciles either interrupted edge;
+    a conflicting or older primary snapshot remains unavailable rather than authorizing stale
+    memory, evidence, fan-out, effects, completion, or delivery. Complete loss of both independently
+    signed ledger copies beside nonempty governor state enters explicit recovery-required state;
+    only a provably empty governor store may initialize a new authority. Canonical codecs recompute
+    and bind task, event, effect, fan-in, reducer, and outbox JSON/digests to their scalar columns.
+    Security-owned AST inventory tests require every durable reader/writer to declare its codec,
+    resource/privacy guard, and host-fence enforcement. Untrusted boundary failures expose stable
+    bounded codes rather than caller identifiers, key paths, payloads, or parser causes.
 
 ## Consequences
 
@@ -230,18 +242,22 @@ system or process that can read memory or host secrets.
 `governor-host-delivery-persistence.ts`, the generated delivery build manifest,
 `governor-host-channel-delivery.ts`, `governor-host-owner-ingress.ts`,
 `governor-host-persistence.ts`, `governor-host-owner-ingress-persistence.ts`,
-`governor-host-memory-authority.ts`, `governor-host-secrets.ts`, and the anti-rollback ledger form
-the private host boundary. They are
+`governor-host-memory-authority.ts`, `governor-host-task-authority.ts`,
+`governor-host-secrets.ts`, and the anti-rollback ledger codec/storage form the private host
+boundary. They are
 not in the package export map. A whole-source allowlist permits only the explicit trusted bootstrap
 and host-internal dependency edges. Governor, task, model, and plugin code may
 consume read-only resolvers from `governor-host-readonly.ts`, but must not import the broker or a
 capability constructor. The static boundary test enforces that edge. Test-only synthetic bindings
 are rejected unless `NODE_ENV=test`; they are never a production fallback.
 
-V9 ledger sidecars are host-private and store only opaque stream keys, digests, generations, and
-signatures. The journal and signed head are separate from replayable governor SQLite tables. A
-full host/OS snapshot that replays both sidecars together remains outside Slice 1; hardware or
-remote monotonic storage is required for that stronger rollback guarantee.
+The host ledger sidecars are private and store only opaque stream keys, digests, generations,
+signed task fences, and signatures. The append-only journal and independently signed full-state
+head can repair one missing or corrupt copy and are separate from replayable governor SQLite
+tables. If both disappear after governor state exists, bootstrap fails closed instead of creating a
+new trust root. A full host/OS snapshot that replays both sidecars together remains outside this
+software boundary; hardware or remote monotonic storage is required for that stronger rollback
+guarantee.
 
 At a future live rollout, authenticated terminal, UI, and channel integrations must hold separate
 narrow evidence, approval/revocation, delivery, owner-ingress, and child-lifecycle capabilities

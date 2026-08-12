@@ -1,5 +1,8 @@
 // Persists governed task projections, immutable events, effects, evidence, and outbox intents.
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+} from "../../infra/kysely-sync.js";
 import type { HostGovernorDeliveryHandle } from "../../security/governor-host-readonly.js";
 import type { HostDeliveryReceipt } from "../../security/governor-host-readonly.js";
 import {
@@ -8,10 +11,7 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { bindGovernorActionIntent } from "./action-intent-codec.js";
-import {
-  GovernorActionIntentStore,
-  type GovernorActionIntentUpdate,
-} from "./action-intent-store.js";
+import { GovernorActionIntentStore } from "./action-intent-store.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import { GovernorApprovalGrantStore } from "./approval-store.js";
 import { governorDigest } from "./canonical-json.js";
@@ -23,28 +23,34 @@ import type { GovernorEvidenceCandidate, GovernorEvidenceRecord } from "./eviden
 import { GovernorExternalChildRunStore } from "./external-child-runs.js";
 import { GovernorFanoutStore } from "./fanout.js";
 import { GovernorMemorySubsystem } from "./memory-subsystem.js";
-import {
-  bindGovernorOutbox,
-  GovernorOutboxStore,
-  type GovernorOutboxRecord,
-} from "./outbox-store.js";
+import { bindGovernorOutbox, GovernorOutboxStore } from "./outbox-store.js";
 import { assertGovernorPersistedJson, assertSameGovernorScope } from "./persistence-guard.js";
-import type { GovernorCheckpoint } from "./planning-policy.js";
 import { appendGovernorAuditEvent } from "./store-audit.js";
 import {
   createGovernorStoreDependencies,
   type GovernorSqliteStoreParams,
 } from "./store-bootstrap.js";
-import { bindEffect, bindEvent, bindEvidence, bindTask, governorDb } from "./store-codec.js";
+import {
+  bindEffect,
+  bindEvent,
+  bindEvidence,
+  bindTask,
+  governorDb,
+  parseTaskRow,
+} from "./store-codec.js";
+import {
+  type GovernorCommitPayload,
+  validateGovernorCommitPayload,
+} from "./store-commit-validation.js";
 import {
   GovernorEvidenceAdmissionStore,
   type GovernorPendingEvidence,
 } from "./store-evidence-admission.js";
 import { ingestGovernorTask, type GovernorIngressResult } from "./store-ingress.js";
 import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
-  isOpaqueGovernorReference,
   opaqueGovernorReference,
   type GovernorEventId,
   type GovernorIdentityContext,
@@ -62,10 +68,7 @@ export type { GovernorIngressResult } from "./store-ingress.js";
 // oxfmt-ignore
 export type GovernorCommitResult = { applied: true; task: GovernorTaskProjection } | { applied: false; reason: "not_found" | "task_version_conflict" | "lease_epoch_conflict"; current?: GovernorTaskProjection };
 
-export type GovernorEffectUpdate = {
-  current: GovernorEffectRecord;
-  next: GovernorEffectRecord;
-};
+export type { GovernorEffectUpdate } from "./store-commit-validation.js";
 export type { GovernorPendingEvidence } from "./store-evidence-admission.js";
 
 export class GovernorSqliteStore {
@@ -82,6 +85,7 @@ export class GovernorSqliteStore {
   readonly outbox: GovernorOutboxStore;
   readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
   readonly #queries: GovernorStoreQueries;
+  readonly #tasks: GovernorTaskAuthorityStore;
 
   constructor(params: GovernorSqliteStoreParams = {}) {
     const dependencies = createGovernorStoreDependencies(params);
@@ -89,6 +93,7 @@ export class GovernorSqliteStore {
     this.identity = dependencies.identity;
     this.#evidenceAdmissions = dependencies.evidenceAdmissions;
     this.#queries = dependencies.queries;
+    this.#tasks = dependencies.tasks;
     this.actionIntents = dependencies.actionIntents;
     this.capabilities = dependencies.capabilities;
     this.#approvals = dependencies.approvals;
@@ -132,7 +137,7 @@ export class GovernorSqliteStore {
       intent.approvalRequired !== policy.required ||
       intent.approvalPolicyDigest !== policy.digest
     ) {
-      throw new Error(`Governor action intent approval policy mismatch ${intent.effectId}`);
+      throw new Error("GOVERNOR_ACTION_POLICY_BINDING_INVALID");
     }
   }
 
@@ -164,7 +169,7 @@ export class GovernorSqliteStore {
   }
 
   // oxfmt-ignore
-  loadTask(taskId: GovernorTaskId): GovernorTaskProjection | null { return loadGovernorTask(this.#database().db, taskId); }
+  loadTask(taskId: GovernorTaskId): GovernorTaskProjection | null { return loadGovernorTask(this.#database().db, taskId, this.#tasks); }
 
   ingest(params: {
     eventId?: GovernorEventId;
@@ -176,66 +181,46 @@ export class GovernorSqliteStore {
     flowId?: string;
     now: number;
   }): GovernorIngressResult {
-    return ingestGovernorTask({ options: this.#options, identity: this.identity, ingress: params });
+    return ingestGovernorTask({
+      options: this.#options,
+      identity: this.identity,
+      tasks: this.#tasks,
+      ingress: params,
+    });
   }
 
-  commit(params: {
-    current: GovernorTaskProjection;
-    next: GovernorTaskProjection;
-    event: GovernorEventRecord;
-    effects?: readonly GovernorEffectRecord[];
-    effectUpdates?: readonly GovernorEffectUpdate[];
-    actionIntents?: readonly GovernorActionIntent[];
-    actionIntentUpdates?: readonly GovernorActionIntentUpdate[];
-    checkpoints?: readonly GovernorCheckpoint[];
-    evidenceAdmission?: GovernorPendingEvidence;
-    outbox?: readonly GovernorOutboxRecord[];
-  }): GovernorCommitResult {
-    assertGovernorPersistedJson("log", {
-      current: params.current,
-      next: params.next,
-      event: params.event,
-      effects: [...(params.effects ?? [])],
-      effectUpdates: [...(params.effectUpdates ?? [])],
-      actionIntents: [...(params.actionIntents ?? [])],
-      actionIntentUpdates: [...(params.actionIntentUpdates ?? [])],
-      checkpoints: [...(params.checkpoints ?? [])],
-      evidence: params.evidenceAdmission?.evidence ?? null,
-      outbox: [...(params.outbox ?? [])],
+  commit(params: GovernorCommitPayload): GovernorCommitResult {
+    validateGovernorCommitPayload(params, {
+      assertActionIntentPolicy: (task, intent) => this.#assertActionIntentPolicy(task, intent),
+      ownsEvidence: (pending) => this.#evidenceAdmissions.owns(pending),
+      verifyEvidence: (evidence) => this.#evidenceAdmissions.verify(evidence),
     });
-    assertSameGovernorScope(params.current, params.current);
-    assertSameGovernorScope(params.current, params.next);
-    if (
-      params.next.taskId !== params.current.taskId ||
-      params.next.scopeKey !== params.current.scopeKey ||
-      params.next.taskVersion !== params.current.taskVersion + 1 ||
-      params.next.leaseEpoch < params.current.leaseEpoch ||
-      params.next.leaseEpoch > params.current.leaseEpoch + 1 ||
-      params.event.taskId !== params.next.taskId ||
-      params.event.scopeKey !== params.next.scopeKey ||
-      params.event.taskVersion !== params.next.taskVersion ||
-      params.event.objectiveRevision !== params.next.objectiveRevision ||
-      (params.next.flowId !== undefined && !isOpaqueGovernorReference(params.next.flowId)) ||
-      (params.event.sourceMessageId !== undefined &&
-        !isOpaqueGovernorReference(params.event.sourceMessageId)) ||
-      params.event.payloadDigest !== governorDigest(params.event.payload)
-    ) {
-      throw new Error(`Invalid governor commit envelope for ${params.current.taskId}`);
-    }
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const stored = loadGovernorTask(db, params.current.taskId);
-      if (!stored) {
+    const result: GovernorCommitResult = runOpenClawStateWriteTransaction(({ db }) => {
+      this.#tasks.reconcilePrimary(db);
+      const dbx = governorDb(db);
+      const storedRow = executeSqliteQueryTakeFirstSync(
+        db,
+        dbx.selectFrom("governor_tasks").selectAll().where("task_id", "=", params.current.taskId),
+      );
+      if (!storedRow) {
         return { applied: false, reason: "not_found" };
       }
+      const stored = parseTaskRow(storedRow);
       assertSameGovernorScope(stored, params.current);
       assertSameGovernorScope(stored, params.next);
-      if (stored.taskVersion !== params.current.taskVersion) {
+      if (
+        stored.taskVersion !== params.current.taskVersion ||
+        governorDigest(stored as unknown as import("./canonical-json.js").GovernorJsonValue) !==
+          governorDigest(
+            params.current as unknown as import("./canonical-json.js").GovernorJsonValue,
+          )
+      ) {
         return { applied: false, reason: "task_version_conflict", current: stored };
       }
       if (stored.leaseEpoch !== params.current.leaseEpoch) {
         return { applied: false, reason: "lease_epoch_conflict", current: stored };
       }
-      const dbx = governorDb(db);
+      this.#tasks.prepare(params.next);
       const update = executeSqliteQuerySync(
         db,
         dbx
@@ -246,11 +231,22 @@ export class GovernorSqliteStore {
           .where("lease_epoch", "=", params.current.leaseEpoch),
       );
       if (update.numAffectedRows !== 1n) {
-        const current = loadGovernorTask(db, params.current.taskId) ?? undefined;
+        const current = loadGovernorTask(db, params.current.taskId, this.#tasks) ?? undefined;
         return { applied: false, reason: "task_version_conflict", current };
       }
       executeSqliteQuerySync(db, dbx.insertInto("governor_events").values(bindEvent(params.event)));
       for (const intent of params.actionIntents ?? []) {
+        if (
+          intent.taskId !== params.next.taskId ||
+          intent.objectiveRevision !== params.next.objectiveRevision ||
+          intent.planVersion !== params.next.planVersion ||
+          intent.leaseEpoch !== params.next.leaseEpoch ||
+          intent.executionGeneration !== params.next.executionGeneration ||
+          intent.taskVersion < params.current.taskVersion ||
+          intent.taskVersion > params.next.taskVersion
+        ) {
+          throw new Error("GOVERNOR_ACTION_INTENT_TASK_BINDING_INVALID");
+        }
         this.#assertActionIntentPolicy(params.next, intent);
         executeSqliteQuerySync(
           db,
@@ -269,7 +265,7 @@ export class GovernorSqliteStore {
           intentUpdate.next.objectiveRevision !== params.next.objectiveRevision ||
           intentUpdate.next.updatedAt < intentUpdate.current.updatedAt
         ) {
-          throw new Error(`Invalid governor action intent update ${intentUpdate.current.effectId}`);
+          throw new Error("GOVERNOR_ACTION_INTENT_UPDATE_INVALID");
         }
         const actionUpdate = executeSqliteQuerySync(
           db,
@@ -281,12 +277,18 @@ export class GovernorSqliteStore {
             .where("updated_at", "=", intentUpdate.current.updatedAt),
         );
         if (actionUpdate.numAffectedRows !== 1n) {
-          throw new Error(
-            `Concurrent governor action intent update ${intentUpdate.current.effectId}`,
-          );
+          throw new Error("GOVERNOR_ACTION_INTENT_UPDATE_CONFLICT");
         }
       }
       for (const checkpoint of params.checkpoints ?? []) {
+        if (
+          checkpoint.taskId !== params.next.taskId ||
+          checkpoint.objectiveRevision !== params.next.objectiveRevision ||
+          checkpoint.planVersion !== params.next.planVersion ||
+          checkpoint.taskVersion !== params.next.taskVersion
+        ) {
+          throw new Error("GOVERNOR_CHECKPOINT_TASK_BINDING_INVALID");
+        }
         executeSqliteQuerySync(
           db,
           dbx
@@ -296,6 +298,17 @@ export class GovernorSqliteStore {
         );
       }
       for (const effect of params.effects ?? []) {
+        if (
+          effect.taskId !== params.next.taskId ||
+          effect.objectiveRevision !== params.next.objectiveRevision ||
+          effect.planVersion !== params.next.planVersion ||
+          effect.leaseEpoch !== params.next.leaseEpoch ||
+          effect.executionGeneration !== params.next.executionGeneration ||
+          effect.taskVersion < params.current.taskVersion ||
+          effect.taskVersion > params.next.taskVersion
+        ) {
+          throw new Error("GOVERNOR_EFFECT_TASK_BINDING_INVALID");
+        }
         executeSqliteQuerySync(
           db,
           dbx
@@ -312,7 +325,7 @@ export class GovernorSqliteStore {
           effectUpdate.next.objectiveRevision !== params.next.objectiveRevision ||
           effectUpdate.next.updatedAt < effectUpdate.current.updatedAt
         ) {
-          throw new Error(`Invalid governor effect update ${effectUpdate.current.effectId}`);
+          throw new Error("GOVERNOR_EFFECT_UPDATE_INVALID");
         }
         const effectUpdateResult = executeSqliteQuerySync(
           db,
@@ -324,7 +337,7 @@ export class GovernorSqliteStore {
             .where("updated_at", "=", effectUpdate.current.updatedAt),
         );
         if (effectUpdateResult.numAffectedRows !== 1n) {
-          throw new Error(`Concurrent governor effect update ${effectUpdate.current.effectId}`);
+          throw new Error("GOVERNOR_EFFECT_UPDATE_CONFLICT");
         }
       }
       if (params.evidenceAdmission) {
@@ -351,6 +364,16 @@ export class GovernorSqliteStore {
         );
       }
       for (const outbox of params.outbox ?? []) {
+        if (
+          outbox.taskId !== params.next.taskId ||
+          outbox.taskVersion !== params.next.taskVersion ||
+          outbox.objectiveRevision !== params.next.objectiveRevision ||
+          outbox.planVersion !== params.next.planVersion ||
+          outbox.leaseEpoch !== params.next.leaseEpoch ||
+          outbox.executionGeneration !== params.next.executionGeneration
+        ) {
+          throw new Error("GOVERNOR_OUTBOX_TASK_BINDING_INVALID");
+        }
         executeSqliteQuerySync(
           db,
           dbx
@@ -361,6 +384,10 @@ export class GovernorSqliteStore {
       }
       return { applied: true, task: params.next };
     }, this.#options);
+    if (result.applied) {
+      this.#tasks.finalize(result.task);
+    }
+    return result;
   }
 
   appendAuditEvent(params: { task: GovernorTaskProjection; event: GovernorEventRecord }): boolean {
@@ -373,6 +400,10 @@ export class GovernorSqliteStore {
 
   listEffects(taskId: GovernorTaskId): GovernorEffectRecord[] {
     return this.#queries.listEffects(taskId);
+  }
+
+  listCurrentEffects(taskId: GovernorTaskId): GovernorEffectRecord[] {
+    return this.#queries.listCurrentEffects(taskId);
   }
 
   loadEffect(taskId: GovernorTaskId, effectId: string): GovernorEffectRecord | null {

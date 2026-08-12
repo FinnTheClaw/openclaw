@@ -16,9 +16,10 @@ import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import {
   bindEnvelope,
   fanoutDb,
+  governorFaninEnvelopeDigest,
   parseEnvelope,
   parseJob,
-  parseTaskProjection,
+  replaceJob,
   type GovernorFaninEnvelope,
   type GovernorFanoutCompletion,
 } from "./fanout-codec.js";
@@ -29,6 +30,7 @@ import {
 } from "./fanout-physical.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 
 export type CompleteFanoutParams = {
   jobId: string;
@@ -58,6 +60,7 @@ export function completeFanoutJob(
     options: OpenClawStateDatabaseOptions;
     physical: GovernorTrustedPhysicalExecutionCoordinator;
     receipts: GovernorTrustedReceiptResolver;
+    tasks: GovernorTaskAuthorityStore;
   },
   params: CompleteFanoutParams,
 ): GovernorFanoutCompletion {
@@ -89,13 +92,18 @@ export function completeFanoutJob(
       return { kind: "not_found" } as const;
     }
     const job = parseJob(row);
-    const envelopeDigest = governorDigest({
+    const envelopeBase = {
+      envelopeId: `envelope_${job.jobId}`,
       jobId: job.jobId,
       taskId: job.taskId,
+      objectiveRevision: job.objectiveRevision,
       planVersion: job.planVersion,
       round: job.round,
+      taskVersion: params.taskVersion,
+      leaseEpoch: params.leaseEpoch,
+      executionGeneration: params.executionGeneration,
       ...content,
-    });
+    } as const;
     const existing = executeSqliteQueryTakeFirstSync(
       db,
       fanoutDb(db)
@@ -105,7 +113,11 @@ export function completeFanoutJob(
     );
     if (existing) {
       const envelope = parseEnvelope(existing);
-      if (envelope.envelopeDigest !== envelopeDigest) {
+      const expectedDigest = governorFaninEnvelopeDigest({
+        ...envelopeBase,
+        createdAt: envelope.createdAt,
+      });
+      if (envelope.envelopeDigest !== expectedDigest) {
         return { kind: "conflict" } as const;
       }
       const lease = fanoutPhysicalLease(job);
@@ -115,14 +127,7 @@ export function completeFanoutJob(
       }
       return { kind: "duplicate", envelope } as const;
     }
-    const taskRow = executeSqliteQueryTakeFirstSync(
-      db,
-      fanoutDb(db)
-        .selectFrom("governor_tasks")
-        .select("projection_json")
-        .where("task_id", "=", job.taskId),
-    );
-    const task = taskRow ? parseTaskProjection(taskRow.projection_json) : null;
+    const task = dependencies.tasks.loadCurrent(db, job.taskId);
     if (task && isExternalChild(job.payload)) {
       const receipt = params.terminalReceiptId
         ? dependencies.receipts.resolve(params.terminalReceiptId, task.scopeKey)
@@ -148,6 +153,9 @@ export function completeFanoutJob(
     }
     const staleTask =
       !task ||
+      task.state !== "EXECUTING" ||
+      task.taskVersion !== job.taskVersion ||
+      task.objectiveRevision !== job.objectiveRevision ||
       task.planVersion !== job.planVersion ||
       task.leaseEpoch !== job.leaseEpoch ||
       task.executionGeneration !== job.executionGeneration;
@@ -186,43 +194,30 @@ export function completeFanoutJob(
     ) {
       return { kind: "stale_worker" } as const;
     }
-    const envelope: GovernorFaninEnvelope = {
-      envelopeId: `envelope_${job.jobId}`,
-      jobId: job.jobId,
-      taskId: job.taskId,
-      planVersion: job.planVersion,
-      round: job.round,
-      taskVersion: params.taskVersion,
-      leaseEpoch: params.leaseEpoch,
-      executionGeneration: params.executionGeneration,
-      claims: content.claims,
-      evidence: content.evidence,
-      unresolved: content.unresolved,
-      envelopeDigest,
+    const envelopeWithoutDigest = {
+      ...envelopeBase,
       createdAt: params.now,
+    };
+    const envelope: GovernorFaninEnvelope = {
+      ...envelopeWithoutDigest,
+      envelopeDigest: governorFaninEnvelopeDigest(envelopeWithoutDigest),
     };
     executeSqliteQuerySync(
       db,
       fanoutDb(db).insertInto("governor_fanin_envelopes").values(bindEnvelope(envelope)),
     );
-    const update = executeSqliteQuerySync(
-      db,
-      fanoutDb(db)
-        .updateTable("governor_fanout_jobs")
-        .set({
-          state: "completed",
-          completed_at: params.now,
-          lease_expires_at: null,
-          termination_outcome: "completed",
-          termination_acknowledged_at: params.now,
-          updated_at: params.now,
-        })
-        .where("job_id", "=", job.jobId)
-        .where("state", "=", "running")
-        .where("claim_epoch", "=", job.claimEpoch),
-    );
-    if (update.numAffectedRows !== 1n) {
-      throw new Error(`Governor fanout completion lost its claim ${job.jobId}`);
+    const { leaseExpiresAt: _leaseExpiresAt, ...completed } = job;
+    if (
+      !replaceJob(db, job, {
+        ...completed,
+        state: "completed",
+        completedAt: params.now,
+        terminationOutcome: "completed",
+        terminationAcknowledgedAt: params.now,
+        updatedAt: params.now,
+      })
+    ) {
+      throw new Error("GOVERNOR_FANOUT_COMPLETION_CLAIM_LOST");
     }
     release = { binding: fanoutPhysicalBinding(job), lease };
     return { kind: "completed", envelope } as const;
@@ -230,9 +225,7 @@ export function completeFanoutJob(
   if (release && (result.kind === "completed" || result.kind === "duplicate")) {
     const released = dependencies.physical.complete(release.binding, release.lease);
     if (!released) {
-      throw new Error(
-        `Governor fanout physical completion was not durably released ${params.jobId}`,
-      );
+      throw new Error("GOVERNOR_FANOUT_PHYSICAL_RELEASE_FAILED");
     }
   }
   return result;

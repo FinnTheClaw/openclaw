@@ -176,10 +176,10 @@ export type GovernorTaskProjection = {
   terminalAt?: number;
 };
 
-function assertNonEmpty(value: string, label: string): string {
+function assertNonEmpty(value: string, _label: string): string {
   const normalized = value.trim();
   if (!normalized) {
-    throw new Error(`${label} must not be empty`);
+    throw new Error("GOVERNOR_IDENTITY_VALUE_REQUIRED");
   }
   return normalized;
 }

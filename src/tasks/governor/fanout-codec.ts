@@ -1,12 +1,13 @@
 // Encodes durable FIFO subagent jobs and immutable fan-in envelopes.
 import type { DatabaseSync } from "node:sqlite";
 import type { Insertable, Selectable } from "kysely";
-import { getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
-import type { GovernorJsonValue } from "./canonical-json.js";
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import { parseGovernorStoredJson } from "./integrity-error.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
-import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
+import type { GovernorTaskId } from "./types.js";
 
 export type FanoutDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -21,6 +22,7 @@ export type GovernorFanoutJobState = "queued" | "running" | "completed" | "cance
 export type GovernorFanoutJob = {
   jobId: string;
   taskId: GovernorTaskId;
+  objectiveRevision: number;
   planVersion: number;
   round: number;
   queueSequence: number;
@@ -28,7 +30,6 @@ export type GovernorFanoutJob = {
   fanoutGroup: string;
   state: GovernorFanoutJobState;
   taskVersion: number;
-  objectiveRevision: number;
   leaseEpoch: number;
   executionGeneration: number;
   claimEpoch: number;
@@ -56,6 +57,7 @@ export type GovernorFaninEnvelope = {
   envelopeId: string;
   jobId: string;
   taskId: GovernorTaskId;
+  objectiveRevision: number;
   planVersion: number;
   round: number;
   taskVersion: number;
@@ -86,12 +88,8 @@ export type GovernorReducerClaim =
   | { kind: "busy" | "not_ready" | "stale_task" }
   | { kind: "completed"; result: GovernorJsonValue; resultDigest: string };
 
-function parseJson(raw: string, label: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error(`Invalid governor fanout ${label}`);
-  }
+export function governorFanoutJobDigest(job: GovernorFanoutJob): string {
+  return governorDigest(job as unknown as GovernorJsonValue);
 }
 
 export function parseJob(row: FanoutJobRow): GovernorFanoutJob {
@@ -147,7 +145,7 @@ export function parseJob(row: FanoutJobRow): GovernorFanoutJob {
     ...(row.expected_duration_ms == null
       ? {}
       : { expectedDurationMs: normalizeSqliteNumber(row.expected_duration_ms) ?? 0 }),
-    payload: parseJson(row.payload_json, "job payload") as GovernorJsonValue,
+    payload: parseGovernorStoredJson(row.payload_json, "log", "GOVERNOR_FANOUT_PAYLOAD_INVALID"),
     createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
     ...(row.started_at == null ? {} : { startedAt: normalizeSqliteNumber(row.started_at) ?? 0 }),
     ...(row.completed_at == null
@@ -159,6 +157,12 @@ export function parseJob(row: FanoutJobRow): GovernorFanoutJob {
     updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
   };
   assertGovernorPersistedJson("log", job);
+  if (
+    governorDigest(job.payload) !== row.payload_digest ||
+    governorFanoutJobDigest(job) !== row.job_digest
+  ) {
+    throw new Error("GOVERNOR_FANOUT_JOB_BINDING_INVALID");
+  }
   return job;
 }
 
@@ -191,6 +195,8 @@ export function bindJob(job: GovernorFanoutJob): Insertable<FanoutJobRow> {
     expected_output_tokens: job.expectedOutputTokens ?? null,
     expected_duration_ms: job.expectedDurationMs ?? null,
     payload_json: JSON.stringify(job.payload),
+    payload_digest: governorDigest(job.payload),
+    job_digest: governorFanoutJobDigest(job),
     created_at: job.createdAt,
     started_at: job.startedAt ?? null,
     completed_at: job.completedAt ?? null,
@@ -199,10 +205,59 @@ export function bindJob(job: GovernorFanoutJob): Insertable<FanoutJobRow> {
   };
 }
 
+export function replaceJob(
+  db: DatabaseSync,
+  current: GovernorFanoutJob,
+  replacement: GovernorFanoutJob,
+): boolean {
+  if (
+    replacement.jobId !== current.jobId ||
+    replacement.taskId !== current.taskId ||
+    replacement.objectiveRevision !== current.objectiveRevision ||
+    replacement.planVersion !== current.planVersion ||
+    replacement.round !== current.round ||
+    replacement.queueSequence !== current.queueSequence ||
+    replacement.fanoutGroup !== current.fanoutGroup ||
+    replacement.taskVersion !== current.taskVersion ||
+    replacement.leaseEpoch !== current.leaseEpoch ||
+    replacement.executionGeneration !== current.executionGeneration ||
+    replacement.createdAt !== current.createdAt ||
+    governorDigest(replacement.payload) !== governorDigest(current.payload)
+  ) {
+    throw new Error("GOVERNOR_FANOUT_JOB_IMMUTABLE_BINDING_INVALID");
+  }
+  const update = executeSqliteQuerySync(
+    db,
+    fanoutDb(db)
+      .updateTable("governor_fanout_jobs")
+      .set(bindJob(replacement))
+      .where("job_id", "=", current.jobId)
+      .where("job_digest", "=", governorFanoutJobDigest(current)),
+  );
+  return update.numAffectedRows === 1n;
+}
+
 export function parseEnvelope(row: FaninEnvelopeRow): GovernorFaninEnvelope {
-  const envelope = parseJson(row.envelope_json, "envelope") as GovernorFaninEnvelope;
-  if (envelope.envelopeDigest !== row.envelope_digest || envelope.jobId !== row.job_id) {
-    throw new Error(`Governor fan-in envelope mismatch for ${row.job_id}`);
+  const envelope = parseGovernorStoredJson(
+    row.envelope_json,
+    "log",
+    "GOVERNOR_FANIN_ENVELOPE_INVALID",
+  ) as unknown as GovernorFaninEnvelope;
+  if (
+    envelope.envelopeId !== row.envelope_id ||
+    envelope.jobId !== row.job_id ||
+    envelope.taskId !== row.task_id ||
+    envelope.objectiveRevision !== (normalizeSqliteNumber(row.objective_revision) ?? -1) ||
+    envelope.planVersion !== (normalizeSqliteNumber(row.plan_version) ?? -1) ||
+    envelope.round !== (normalizeSqliteNumber(row.round) ?? -1) ||
+    envelope.taskVersion !== (normalizeSqliteNumber(row.task_version) ?? -1) ||
+    envelope.leaseEpoch !== (normalizeSqliteNumber(row.lease_epoch) ?? -1) ||
+    envelope.executionGeneration !== (normalizeSqliteNumber(row.execution_generation) ?? -1) ||
+    envelope.createdAt !== (normalizeSqliteNumber(row.created_at) ?? -1) ||
+    envelope.envelopeDigest !== row.envelope_digest ||
+    governorFaninEnvelopeDigest(envelope) !== row.envelope_digest
+  ) {
+    throw new Error("GOVERNOR_FANIN_ENVELOPE_BINDING_INVALID");
   }
   assertGovernorPersistedJson("log", envelope);
   return envelope;
@@ -210,10 +265,14 @@ export function parseEnvelope(row: FaninEnvelopeRow): GovernorFaninEnvelope {
 
 export function bindEnvelope(envelope: GovernorFaninEnvelope): Insertable<FaninEnvelopeRow> {
   assertGovernorPersistedJson("log", envelope);
+  if (governorFaninEnvelopeDigest(envelope) !== envelope.envelopeDigest) {
+    throw new Error("GOVERNOR_FANIN_ENVELOPE_DIGEST_INVALID");
+  }
   return {
     envelope_id: envelope.envelopeId,
     job_id: envelope.jobId,
     task_id: envelope.taskId,
+    objective_revision: envelope.objectiveRevision,
     plan_version: envelope.planVersion,
     round: envelope.round,
     task_version: envelope.taskVersion,
@@ -225,14 +284,46 @@ export function bindEnvelope(envelope: GovernorFaninEnvelope): Insertable<FaninE
   };
 }
 
-export function parseTaskProjection(raw: string): GovernorTaskProjection {
-  const task = parseJson(raw, "task projection") as GovernorTaskProjection;
-  assertGovernorPersistedJson("log", task);
-  return task;
+export function governorFaninEnvelopeDigest(
+  envelope: Omit<GovernorFaninEnvelope, "envelopeDigest"> | GovernorFaninEnvelope,
+): string {
+  return governorDigest({
+    envelopeId: envelope.envelopeId,
+    jobId: envelope.jobId,
+    taskId: envelope.taskId,
+    objectiveRevision: envelope.objectiveRevision,
+    planVersion: envelope.planVersion,
+    round: envelope.round,
+    taskVersion: envelope.taskVersion,
+    leaseEpoch: envelope.leaseEpoch,
+    executionGeneration: envelope.executionGeneration,
+    claims: [...envelope.claims],
+    evidence: [...envelope.evidence],
+    unresolved: [...envelope.unresolved],
+    createdAt: envelope.createdAt,
+  });
 }
 
-export function parseReducerResult(raw: string): GovernorJsonValue {
-  return parseJson(raw, "reducer result") as GovernorJsonValue;
+export function parseReducerResult(
+  raw: string,
+  digest: string,
+  binding: Readonly<{
+    taskId: string;
+    taskVersion: number;
+    objectiveRevision: number;
+    planVersion: number;
+    leaseEpoch: number;
+    executionGeneration: number;
+    round: number;
+    envelopeSetDigest: string;
+  }>,
+): GovernorJsonValue {
+  const result = parseGovernorStoredJson(raw, "log", "GOVERNOR_FANIN_RESULT_INVALID");
+  assertGovernorPersistedJson("log", result);
+  if (governorDigest({ ...binding, result }) !== digest) {
+    throw new Error("GOVERNOR_FANIN_RESULT_DIGEST_INVALID");
+  }
+  return result;
 }
 
 export function fanoutDb(db: DatabaseSync) {

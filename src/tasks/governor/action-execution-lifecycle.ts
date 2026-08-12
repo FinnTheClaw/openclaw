@@ -23,6 +23,7 @@ import { governorDigest } from "./canonical-json.js";
 import type { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { loadGovernorTask } from "./store-queries.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorIdentityContext, GovernorTaskId } from "./types.js";
 
 export type GovernorActionLifecycleDependencies = Readonly<{
@@ -31,6 +32,7 @@ export type GovernorActionLifecycleDependencies = Readonly<{
   capabilities: GovernorCapabilityRegistry;
   identity: GovernorIdentityContext;
   receipts: GovernorTrustedReceiptResolver;
+  tasks: GovernorTaskAuthorityStore;
 }>;
 
 export type GovernorBeginActionEffectResult =
@@ -78,7 +80,7 @@ export function beginGovernorActionEffect(
 ): GovernorBeginActionEffectResult {
   assertGovernorPersistedJson("log", params);
   return runOpenClawStateWriteTransaction(({ db }) => {
-    const task = loadGovernorTask(db, params.taskId);
+    const task = loadGovernorTask(db, params.taskId, dependencies.tasks);
     const row = executeSqliteQueryTakeFirstSync(
       db,
       actionIntentDb(db)
@@ -212,7 +214,7 @@ export function acknowledgeGovernorActionTermination(
 ): GovernorActionTerminationResult {
   assertGovernorPersistedJson("log", params);
   return runOpenClawStateWriteTransaction(({ db }) => {
-    const task = loadGovernorTask(db, params.taskId);
+    const task = loadGovernorTask(db, params.taskId, dependencies.tasks);
     const row = executeSqliteQueryTakeFirstSync(
       db,
       actionIntentDb(db)

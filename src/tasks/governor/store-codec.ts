@@ -8,6 +8,7 @@ import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorEventRecord } from "./events.js";
 import type { GovernorEvidenceRecord } from "./evidence.js";
 import { isOpaqueEvidenceSourceRef } from "./evidence.js";
+import { parseGovernorStoredJson } from "./integrity-error.js";
 import { assertGovernorPersistedJson, assertOpaqueGovernorScope } from "./persistence-guard.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
@@ -37,19 +38,12 @@ type GovernorEventRow = Selectable<OpenClawStateKyselyDatabase["governor_events"
 type GovernorEffectRow = Selectable<OpenClawStateKyselyDatabase["governor_effects"]>;
 type GovernorEvidenceRow = Selectable<OpenClawStateKyselyDatabase["governor_evidence"]>;
 
-function parseJson(raw: string, label: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error(`Invalid persisted governor ${label}`);
-  }
-}
-
 export function parseTaskRow(row: GovernorTaskRow): GovernorTaskProjection {
-  const projection = parseJson(row.projection_json, "task projection") as GovernorTaskProjection;
-  if (projection.taskId !== row.task_id || projection.scopeKey !== row.scope_key) {
-    throw new Error(`Persisted governor task projection identity mismatch for ${row.task_id}`);
-  }
+  const projection = parseGovernorStoredJson(
+    row.projection_json,
+    "log",
+    "GOVERNOR_TASK_PROJECTION_INVALID",
+  ) as unknown as GovernorTaskProjection;
   const task: GovernorTaskProjection = {
     ...projection,
     conditions: projection.conditions ?? { contradictions: [], pendingUserUpdate: false },
@@ -64,6 +58,25 @@ export function parseTaskRow(row: GovernorTaskRow): GovernorTaskProjection {
     updatedAt: normalizeSqliteNumber(row.updated_at) ?? 0,
     ...(row.terminal_at == null ? {} : { terminalAt: normalizeSqliteNumber(row.terminal_at) ?? 0 }),
   };
+  if (
+    projection.taskId !== row.task_id ||
+    projection.flowId !== (row.flow_id ?? undefined) ||
+    projection.scopeKey !== row.scope_key ||
+    projection.state !== row.state ||
+    projection.mode !== row.mode ||
+    projection.taskVersion !== task.taskVersion ||
+    projection.objectiveRevision !== task.objectiveRevision ||
+    projection.planVersion !== task.planVersion ||
+    projection.leaseEpoch !== task.leaseEpoch ||
+    projection.executionGeneration !== task.executionGeneration ||
+    projection.authenticatedSourceSequence !== task.authenticatedSourceSequence ||
+    projection.createdAt !== task.createdAt ||
+    projection.updatedAt !== task.updatedAt ||
+    projection.terminalAt !== task.terminalAt ||
+    governorDigest(projection as unknown as GovernorJsonValue) !== row.projection_digest
+  ) {
+    throw new Error("GOVERNOR_TASK_PROJECTION_BINDING_INVALID");
+  }
   assertGovernorPersistedJson("log", task);
   assertOpaqueGovernorScope(task.scope, task.scopeKey);
   return task;
@@ -85,6 +98,7 @@ export function bindTask(task: GovernorTaskProjection): Insertable<GovernorTaskR
     execution_generation: task.executionGeneration,
     source_sequence: task.authenticatedSourceSequence,
     projection_json: JSON.stringify(task),
+    projection_digest: governorDigest(task as unknown as GovernorJsonValue),
     created_at: task.createdAt,
     updated_at: task.updatedAt,
     terminal_at: task.terminalAt ?? null,
@@ -94,10 +108,11 @@ export function bindTask(task: GovernorTaskProjection): Insertable<GovernorTaskR
 export function bindEvent(event: GovernorEventRecord): Insertable<GovernorEventRow> {
   assertGovernorPersistedJson("log", event);
   if (
+    event.payloadDigest !== governorDigest(event.payload) ||
     !isOpaqueGovernorReference(event.scopeKey) ||
     (event.sourceMessageId !== undefined && !isOpaqueGovernorReference(event.sourceMessageId))
   ) {
-    throw new Error("Governor event durable identity is not host-opaque");
+    throw new Error("GOVERNOR_EVENT_BINDING_INVALID");
   }
   return {
     event_id: event.eventId,
@@ -110,6 +125,7 @@ export function bindEvent(event: GovernorEventRecord): Insertable<GovernorEventR
     objective_revision: event.objectiveRevision,
     payload_json: JSON.stringify(event.payload),
     payload_digest: event.payloadDigest,
+    event_digest: governorDigest(event as unknown as GovernorJsonValue),
     created_at: event.createdAt,
   };
 }
@@ -126,16 +142,18 @@ export function parseEventRow(row: GovernorEventRow): GovernorEventRecord {
     eventType: row.event_type as GovernorEventRecord["eventType"],
     taskVersion: normalizeSqliteNumber(row.task_version) ?? 0,
     objectiveRevision: normalizeSqliteNumber(row.objective_revision) ?? 0,
-    payload: parseJson(row.payload_json, "event payload") as GovernorJsonValue,
+    payload: parseGovernorStoredJson(row.payload_json, "log", "GOVERNOR_EVENT_PAYLOAD_INVALID"),
     payloadDigest: row.payload_digest,
     createdAt: normalizeSqliteNumber(row.created_at) ?? 0,
   };
   assertGovernorPersistedJson("log", event);
   if (
+    event.payloadDigest !== governorDigest(event.payload) ||
+    governorDigest(event as unknown as GovernorJsonValue) !== row.event_digest ||
     !isOpaqueGovernorReference(event.scopeKey) ||
     (event.sourceMessageId !== undefined && !isOpaqueGovernorReference(event.sourceMessageId))
   ) {
-    throw new Error("Persisted governor event identity is not host-opaque");
+    throw new Error("GOVERNOR_EVENT_BINDING_INVALID");
   }
   return event;
 }
@@ -161,6 +179,7 @@ export function bindEffect(effect: GovernorEffectRecord): Insertable<GovernorEff
     progress_vector_hash: effect.progressVectorHash,
     mutating: effect.mutating ? 1 : 0,
     effect_json: JSON.stringify(effect),
+    effect_digest: governorDigest(effect as unknown as GovernorJsonValue),
     outcome_json: JSON.stringify(effect.outcome),
     verification_state: effect.verificationState,
     reconcile_required: effect.reconcileRequired ? 1 : 0,
@@ -170,9 +189,39 @@ export function bindEffect(effect: GovernorEffectRecord): Insertable<GovernorEff
 }
 
 export function parseEffectRow(row: GovernorEffectRow): GovernorEffectRecord {
-  const effect = parseJson(row.effect_json, "effect") as GovernorEffectRecord;
-  if (effect.taskId !== row.task_id || effect.effectId !== row.effect_id) {
-    throw new Error(`Persisted governor effect identity mismatch for ${row.effect_id}`);
+  const effect = parseGovernorStoredJson(
+    row.effect_json,
+    "log",
+    "GOVERNOR_EFFECT_INVALID",
+  ) as unknown as GovernorEffectRecord;
+  const outcome = parseGovernorStoredJson(
+    row.outcome_json,
+    "log",
+    "GOVERNOR_EFFECT_OUTCOME_INVALID",
+  );
+  if (
+    effect.taskId !== row.task_id ||
+    effect.effectId !== row.effect_id ||
+    effect.idempotencyKey !== row.idempotency_key ||
+    effect.taskVersion !== (normalizeSqliteNumber(row.task_version) ?? 0) ||
+    effect.objectiveRevision !== (normalizeSqliteNumber(row.objective_revision) ?? 0) ||
+    effect.planVersion !== (normalizeSqliteNumber(row.plan_version) ?? 0) ||
+    effect.leaseEpoch !== (normalizeSqliteNumber(row.lease_epoch) ?? 0) ||
+    effect.executionGeneration !== (normalizeSqliteNumber(row.execution_generation) ?? 0) ||
+    effect.capability !== row.capability ||
+    effect.canonicalTarget !== row.canonical_target ||
+    effect.criterionId !== (row.criterion_id ?? undefined) ||
+    effect.actionFingerprint !== row.action_fingerprint ||
+    effect.progressVectorHash !== row.progress_vector_hash ||
+    effect.mutating !== (normalizeSqliteNumber(row.mutating) === 1) ||
+    effect.verificationState !== row.verification_state ||
+    effect.reconcileRequired !== (normalizeSqliteNumber(row.reconcile_required) === 1) ||
+    effect.createdAt !== (normalizeSqliteNumber(row.created_at) ?? 0) ||
+    effect.updatedAt !== (normalizeSqliteNumber(row.updated_at) ?? 0) ||
+    governorDigest(effect.outcome as unknown as GovernorJsonValue) !== governorDigest(outcome) ||
+    governorDigest(effect as unknown as GovernorJsonValue) !== row.effect_digest
+  ) {
+    throw new Error("GOVERNOR_EFFECT_BINDING_INVALID");
   }
   assertGovernorPersistedJson("log", effect);
   if (!isOpaqueGovernorReference(effect.canonicalTarget)) {
@@ -228,7 +277,11 @@ export function parseEvidenceRow(
   row: GovernorEvidenceRow,
   assertVerified: (evidence: GovernorEvidenceRecord) => void,
 ): GovernorEvidenceRecord {
-  const value = parseJson(row.claim_value_json, "evidence claim value") as GovernorJsonValue;
+  const value = parseGovernorStoredJson(
+    row.claim_value_json,
+    "log",
+    "GOVERNOR_EVIDENCE_VALUE_INVALID",
+  );
   const evidence: GovernorEvidenceRecord = {
     evidenceId: row.evidence_id,
     taskId: row.task_id as GovernorTaskId,
@@ -240,7 +293,7 @@ export function parseEvidenceRow(
     planVersion: normalizeSqliteNumber(row.plan_version) ?? 0,
     scopeKey: row.scope_key,
     observedAt: normalizeSqliteNumber(row.observed_at) ?? 0,
-    payload: parseJson(row.payload_json, "evidence payload") as GovernorJsonValue,
+    payload: parseGovernorStoredJson(row.payload_json, "log", "GOVERNOR_EVIDENCE_PAYLOAD_INVALID"),
     evidenceDigest: row.evidence_digest,
     predicate: row.claim_predicate,
     value,
@@ -258,14 +311,10 @@ export function parseEvidenceRow(
     governorDigest({ predicate: evidence.predicate, value: evidence.value }) !==
     evidence.semanticDigest
   ) {
-    throw new Error(
-      `Persisted governor evidence semantic digest mismatch for ${evidence.evidenceId}`,
-    );
+    throw new Error("GOVERNOR_EVIDENCE_SEMANTIC_DIGEST_INVALID");
   }
   if (governorDigest(evidence.payload) !== evidence.evidenceDigest) {
-    throw new Error(
-      `Persisted governor evidence payload digest mismatch for ${evidence.evidenceId}`,
-    );
+    throw new Error("GOVERNOR_EVIDENCE_PAYLOAD_DIGEST_INVALID");
   }
   assertVerified(evidence);
   assertGovernorPersistedJson("log", evidence);

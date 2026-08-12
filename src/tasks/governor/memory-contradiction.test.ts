@@ -295,7 +295,7 @@ describe("governor memory contradiction retirement", () => {
           contradictionClass: "stale canonical source",
           now: 201,
         }),
-      ).toThrow(/stale, invalidated, or out of scope/);
+      ).toThrow(/GOVERNOR_EVIDENCE_NOT_CURRENT/u);
       expect(
         store.memory.activeReplacement({ scope: memoryScopeA, factKey: "ssh.path", now: 202 }),
       ).toBeNull();

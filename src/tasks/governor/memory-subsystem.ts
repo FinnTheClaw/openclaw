@@ -9,6 +9,7 @@ import { evaluateGovernorMemoryReinvestigation } from "./memory-reinvestigation.
 import type { GovernorMemoryRemediation } from "./memory-remediation.js";
 import type { GovernorEvidenceAdmissionStore } from "./store-evidence-admission.js";
 import type { GovernorStoreQueries } from "./store-queries.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import {
   canonicalGovernorScopeKey,
   type GovernorIdentityContext,
@@ -28,6 +29,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     evidenceAdmissions: GovernorEvidenceAdmissionStore;
     queries: GovernorStoreQueries;
     memoryAuthority: GovernorTrustedMemoryAuthority;
+    taskAuthority: GovernorTaskAuthorityStore;
   }) {
     super({
       options: params.options,
@@ -35,6 +37,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       evidenceAdmissions: params.evidenceAdmissions,
       queries: params.queries,
       memoryAuthority: params.memoryAuthority,
+      taskAuthority: params.taskAuthority,
     });
     this.#identity = params.identity;
     this.#evidenceAdmissions = params.evidenceAdmissions;
@@ -43,6 +46,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       options: params.options,
       evidenceAdmissions: params.evidenceAdmissions,
       memoryAuthority: params.memoryAuthority,
+      taskAuthority: params.taskAuthority,
     });
   }
 

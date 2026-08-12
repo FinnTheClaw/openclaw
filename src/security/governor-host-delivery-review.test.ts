@@ -31,7 +31,7 @@ describe("governor unknown delivery review", () => {
         }
         const payload = { safe: "payload" };
         await expect(adapter.send({ deliveryKey: "unknown-key", payload })).rejects.toThrow(
-          /interrupted before observable send/,
+          /GOVERNOR_DELIVERY_TRANSPORT_INTERRUPTED/u,
         );
         expect(getSyntheticHostObservableSends("test", "review-observer")).toEqual([]);
         expect(() => first.capabilities.revokeDeliveryAdapter({ handle })).toThrow(

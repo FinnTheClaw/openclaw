@@ -194,7 +194,9 @@ describe("governor V14 host concurrency fences", () => {
           throw new Error("expected certified delivery entry");
         }
         const request = { deliveryKey: "effect-crash-key", payload: { text: "fixture" } };
-        await expect(entry.send(request)).rejects.toThrow(/interrupted before observable send/u);
+        await expect(entry.send(request)).rejects.toThrow(
+          /GOVERNOR_DELIVERY_TRANSPORT_INTERRUPTED/u,
+        );
         closeOpenClawStateDatabase();
         const restarted = createGovernorTestHostBindings({ stateDir: state.stateDir });
         const restartedHandle = restarted.capabilities.registerStaticDeliveryAdapter({

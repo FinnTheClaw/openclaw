@@ -11,10 +11,9 @@ export function createGovernorOutboxCompletion(params: {
 }) {
   assertGovernorPersistedJson("log", params);
   const payload = assertGovernorBoundarySafe("session", params.payload);
-  return {
+  const base = {
     taskId: params.task.taskId,
     effectId: params.effectId,
-    deliveryKey: governorDigest({ taskId: params.task.taskId, effectId: params.effectId }),
     taskVersion: params.task.taskVersion,
     objectiveRevision: params.task.objectiveRevision,
     planVersion: params.task.planVersion,
@@ -23,7 +22,19 @@ export function createGovernorOutboxCompletion(params: {
     deliveryClaimEpoch: 0,
     state: "pending" as const,
     payload,
+    payloadDigest: governorDigest(payload),
     createdAt: params.now,
     updatedAt: params.now,
+  };
+  return {
+    ...base,
+    deliveryKey: governorDigest({
+      taskId: base.taskId,
+      effectId: base.effectId,
+      objectiveRevision: base.objectiveRevision,
+      planVersion: base.planVersion,
+      executionGeneration: base.executionGeneration,
+      payloadDigest: base.payloadDigest,
+    }),
   };
 }

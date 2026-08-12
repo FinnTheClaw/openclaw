@@ -2,15 +2,15 @@ import { assertGovernorJsonResources } from "./resource-guard.js";
 // Validates governor task contracts and executable ordered/DAG plans.
 import type { GovernorPlan, GovernorTaskContract } from "./types.js";
 
-function assertUniqueNonEmpty(values: readonly string[], label: string): void {
+function assertUniqueNonEmpty(values: readonly string[], _label: string): void {
   const seen = new Set<string>();
   for (const value of values) {
     const normalized = value.trim();
     if (!normalized) {
-      throw new Error(`${label} must not contain empty values`);
+      throw new Error("GOVERNOR_CONTRACT_EMPTY_VALUE");
     }
     if (seen.has(normalized)) {
-      throw new Error(`${label} contains duplicate value ${normalized}`);
+      throw new Error("GOVERNOR_CONTRACT_DUPLICATE_VALUE");
     }
     seen.add(normalized);
   }
@@ -25,7 +25,7 @@ export function assertValidGovernorContract(contract: GovernorTaskContract): voi
   assertUniqueNonEmpty(criterionIds, "completion criteria");
   for (const criterion of contract.completionCriteria) {
     if (!criterion.description.trim()) {
-      throw new Error(`completion criterion ${criterion.criterionId} must have a description`);
+      throw new Error("GOVERNOR_CRITERION_DESCRIPTION_REQUIRED");
     }
   }
   assertUniqueNonEmpty(contract.authority.mutationCapabilities, "mutation capabilities");
@@ -42,7 +42,7 @@ function visitPlanStep(
     return;
   }
   if (visiting.has(stepId)) {
-    throw new Error(`plan contains a dependency cycle at ${stepId}`);
+    throw new Error("GOVERNOR_PLAN_DEPENDENCY_CYCLE");
   }
   visiting.add(stepId);
   for (const dependency of dependencies.get(stepId) ?? []) {
@@ -64,18 +64,18 @@ export function assertValidGovernorPlan(plan: GovernorPlan, contract: GovernorTa
   const dependencies = new Map<string, readonly string[]>();
   for (const step of plan.steps) {
     if (!step.description.trim()) {
-      throw new Error(`plan step ${step.stepId} must have a description`);
+      throw new Error("GOVERNOR_PLAN_STEP_DESCRIPTION_REQUIRED");
     }
     assertUniqueNonEmpty(step.dependsOn, `dependencies for ${step.stepId}`);
     assertUniqueNonEmpty(step.criterionIds, `criteria for ${step.stepId}`);
     for (const dependency of step.dependsOn) {
       if (!knownSteps.has(dependency)) {
-        throw new Error(`plan step ${step.stepId} depends on unknown step ${dependency}`);
+        throw new Error("GOVERNOR_PLAN_DEPENDENCY_UNKNOWN");
       }
     }
     for (const criterionId of step.criterionIds) {
       if (!knownCriteria.has(criterionId)) {
-        throw new Error(`plan step ${step.stepId} references unknown criterion ${criterionId}`);
+        throw new Error("GOVERNOR_PLAN_CRITERION_UNKNOWN");
       }
     }
     dependencies.set(step.stepId, step.dependsOn);
@@ -89,9 +89,7 @@ export function assertValidGovernorPlan(plan: GovernorPlan, contract: GovernorTa
       const laterSteps = new Set(stepIds.slice(index + 1));
       const invalidDependency = step.dependsOn.find((dependency) => laterSteps.has(dependency));
       if (invalidDependency) {
-        throw new Error(
-          `ordered plan step ${step.stepId} depends on later step ${invalidDependency}`,
-        );
+        throw new Error("GOVERNOR_ORDERED_PLAN_DEPENDENCY_INVALID");
       }
     }
   }

@@ -49,6 +49,7 @@ function migrateLegacyGovernorColumns(
     "plan_version",
     "INTEGER NOT NULL DEFAULT -1",
   );
+  addIfMissing("governor_tasks", "projection_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
   addIfMissing("governor_evidence", "claim_predicate", "TEXT NOT NULL DEFAULT ''");
   addIfMissing("governor_evidence", "claim_value_json", "TEXT NOT NULL DEFAULT 'null'");
   addIfMissing("governor_evidence", "semantic_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
@@ -80,6 +81,7 @@ function migrateLegacyGovernorColumns(
   addIfMissing("governor_action_intents", "termination_outcome", "TEXT");
   addIfMissing("governor_action_intents", "termination_evidence_digest", "TEXT");
   addIfMissing("governor_action_intents", "termination_acknowledged_at", "INTEGER");
+  addIfMissing("governor_effects", "effect_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
   addIfMissing(
     "governor_delivery_certifications",
     "implementation_digest",
@@ -113,6 +115,16 @@ function migrateLegacyGovernorColumns(
   );
   addIfMissing("governor_outbox", "plan_version", "INTEGER NOT NULL DEFAULT -1");
   addIfMissing("governor_outbox", "execution_generation", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing("governor_outbox", "payload_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
+  addIfMissing("governor_outbox", "delivery_binding_digest", "TEXT");
+  addIfMissing("governor_outbox", "outbox_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
+  addIfMissing("governor_events", "event_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
+  addIfMissing(
+    "governor_fanout_jobs",
+    "payload_digest",
+    "TEXT NOT NULL DEFAULT 'legacy-unverified'",
+  );
+  addIfMissing("governor_fanout_jobs", "job_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
   addIfMissing(
     "governor_owner_ingress_receipts",
     "source_binding_ref",
@@ -146,6 +158,11 @@ function migrateLegacyGovernorColumns(
   addIfMissing("governor_fanout_jobs", "termination_outcome", "TEXT");
   addIfMissing("governor_fanout_jobs", "termination_evidence_digest", "TEXT");
   addIfMissing("governor_fanout_jobs", "termination_acknowledged_at", "INTEGER");
+  addIfMissing("governor_fanin_envelopes", "objective_revision", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing("governor_fanin_reducers", "task_version", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing("governor_fanin_reducers", "objective_revision", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing("governor_fanin_reducers", "lease_epoch", "INTEGER NOT NULL DEFAULT -1");
+  addIfMissing("governor_fanin_reducers", "execution_generation", "INTEGER NOT NULL DEFAULT -1");
   if (migratedEvidence) {
     db.exec("DROP INDEX IF EXISTS idx_governor_evidence_task");
   }

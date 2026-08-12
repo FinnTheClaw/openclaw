@@ -7,6 +7,7 @@ import {
   loadGovernorTask,
   type GovernorStoreQueries,
 } from "./store-queries.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorTaskId } from "./types.js";
 
 export function loadCurrentGovernorEvidence(params: {
@@ -17,7 +18,7 @@ export function loadCurrentGovernorEvidence(params: {
 }): GovernorEvidenceRecord {
   const evidence = params.queries.loadEvidence(params.taskId, params.evidenceId);
   if (!evidence) {
-    throw new Error(`Governor evidence not found: ${params.evidenceId}`);
+    throw new Error("GOVERNOR_EVIDENCE_NOT_FOUND");
   }
   const task = params.queries.loadTask(params.taskId);
   if (
@@ -28,7 +29,7 @@ export function loadCurrentGovernorEvidence(params: {
     evidence.planVersion !== task.planVersion ||
     evidence.taskVersion > task.taskVersion
   ) {
-    throw new Error("Governor evidence is stale, invalidated, or out of scope");
+    throw new Error("GOVERNOR_EVIDENCE_NOT_CURRENT");
   }
   params.admissions.verify(evidence);
   return evidence;
@@ -39,14 +40,15 @@ export function loadCurrentGovernorEvidenceInTransaction(params: {
   admissions: GovernorEvidenceAdmissionStore;
   taskId: GovernorTaskId;
   evidenceId: string;
+  tasks: GovernorTaskAuthorityStore;
 }): GovernorEvidenceRecord {
   const evidence = loadGovernorEvidence(params.db, params.taskId, params.evidenceId, (record) =>
     params.admissions.verify(record),
   );
   if (!evidence) {
-    throw new Error(`Governor evidence not found: ${params.evidenceId}`);
+    throw new Error("GOVERNOR_EVIDENCE_NOT_FOUND");
   }
-  const task = loadGovernorTask(params.db, params.taskId);
+  const task = loadGovernorTask(params.db, params.taskId, params.tasks);
   if (
     !task ||
     evidence.invalidatedAt !== undefined ||
@@ -55,7 +57,7 @@ export function loadCurrentGovernorEvidenceInTransaction(params: {
     evidence.planVersion !== task.planVersion ||
     evidence.taskVersion > task.taskVersion
   ) {
-    throw new Error("Governor evidence is stale, invalidated, or out of scope");
+    throw new Error("GOVERNOR_EVIDENCE_NOT_CURRENT");
   }
   params.admissions.verify(evidence);
   return evidence;

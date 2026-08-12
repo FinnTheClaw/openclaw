@@ -3,7 +3,6 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
-import { normalizeSqliteNumber } from "../../infra/sqlite-number.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -16,6 +15,7 @@ import {
 } from "./delivery-certification-store.js";
 import {
   bindGovernorOutbox,
+  governorOutboxDeliveryKey,
   governorOutboxDb as dbx,
   parseGovernorOutbox as parseOutbox,
   type GovernorOutboxClaimResult,
@@ -26,6 +26,7 @@ import { createGovernorOutboxCompletion } from "./outbox-completion.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 export { bindGovernorOutbox } from "./outbox-codec.js";
@@ -38,11 +39,17 @@ export type {
 
 export class GovernorOutboxStore {
   readonly #options: OpenClawStateDatabaseOptions;
+  readonly #tasks: GovernorTaskAuthorityStore;
 
-  constructor(params: { stateDir?: string; options?: OpenClawStateDatabaseOptions } = {}) {
+  constructor(params: {
+    stateDir?: string;
+    options?: OpenClawStateDatabaseOptions;
+    taskAuthority: GovernorTaskAuthorityStore;
+  }) {
     this.#options =
       params.options ??
       (params.stateDir ? { env: { OPENCLAW_STATE_DIR: params.stateDir } } : { env: {} });
+    this.#tasks = params.taskAuthority;
     initializeGovernorStateSchema(this.#options);
   }
 
@@ -86,17 +93,11 @@ export class GovernorOutboxStore {
       throw new Error("Governor outbox leaseDurationMs must be a positive safe integer");
     }
     return runOpenClawStateWriteTransaction(({ db }) => {
-      const task = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_tasks")
-          .select(["objective_revision", "plan_version", "lease_epoch", "execution_generation"])
-          .where("task_id", "=", params.taskId),
-      );
+      const task = this.#tasks.loadCurrent(db, params.taskId);
       if (!task) {
         return { kind: "not_found" };
       }
-      if (normalizeSqliteNumber(task.lease_epoch) !== params.expectedLeaseEpoch) {
+      if (task.leaseEpoch !== params.expectedLeaseEpoch) {
         return { kind: "stale_worker" };
       }
       const row = executeSqliteQueryTakeFirstSync(
@@ -115,21 +116,18 @@ export class GovernorOutboxStore {
         "log",
         params.deliveryBinding as unknown as GovernorJsonValue,
       ) as unknown as GovernorOutboxDeliveryBinding;
-      const payloadDigest = governorDigest(entry.payload);
+      const payloadDigest = entry.payloadDigest;
       const bindingDigest = governorDigest(safeBinding as unknown as GovernorJsonValue);
-      const deliveryKey = governorDigest({
-        taskId: entry.taskId,
-        effectId: entry.effectId,
-        objectiveRevision: entry.objectiveRevision,
-        planVersion: entry.planVersion,
-        executionGeneration: entry.executionGeneration,
-        payloadDigest,
-        bindingDigest,
+      const deliveryKey = governorOutboxDeliveryKey({
+        ...entry,
+        deliveryBindingDigest: bindingDigest,
       });
       if (
-        entry.objectiveRevision !== normalizeSqliteNumber(task.objective_revision) ||
-        entry.planVersion !== normalizeSqliteNumber(task.plan_version) ||
-        entry.executionGeneration !== normalizeSqliteNumber(task.execution_generation)
+        entry.taskVersion !== task.taskVersion ||
+        entry.objectiveRevision !== task.objectiveRevision ||
+        entry.planVersion !== task.planVersion ||
+        entry.leaseEpoch !== task.leaseEpoch ||
+        entry.executionGeneration !== task.executionGeneration
       ) {
         return { kind: "obsolete" };
       }
@@ -142,16 +140,9 @@ export class GovernorOutboxStore {
       if (entry.state === "manual_review") {
         return { kind: "manual_review", entry };
       }
-      const priorBindingDigest =
-        entry.providerReceipt &&
-        !Array.isArray(entry.providerReceipt) &&
-        typeof entry.providerReceipt === "object" &&
-        typeof entry.providerReceipt.bindingDigest === "string"
-          ? entry.providerReceipt.bindingDigest
-          : undefined;
       if (
         entry.state === "claimed" &&
-        (entry.deliveryKey !== deliveryKey || priorBindingDigest !== bindingDigest)
+        (entry.deliveryKey !== deliveryKey || entry.deliveryBindingDigest !== bindingDigest)
       ) {
         return { kind: "obsolete" };
       }
@@ -173,6 +164,7 @@ export class GovernorOutboxStore {
         claimedBy: workerId,
         leaseExpiresAt: params.now + leaseDurationMs,
         state: "claimed",
+        deliveryBindingDigest: bindingDigest,
         providerReceipt: { bindingDigest, payloadDigest },
         claimedAt: params.now,
         updatedAt: params.now,
@@ -211,17 +203,11 @@ export class GovernorOutboxStore {
       terminalState: params.terminalState ?? null,
     });
     return runOpenClawStateWriteTransaction(({ db }) => {
-      const task = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_tasks")
-          .select(["objective_revision", "plan_version", "lease_epoch", "execution_generation"])
-          .where("task_id", "=", params.taskId),
-      );
+      const task = this.#tasks.loadCurrent(db, params.taskId);
       if (!task) {
         return { kind: "not_found" };
       }
-      if (normalizeSqliteNumber(task.lease_epoch) !== params.expectedLeaseEpoch) {
+      if (task.leaseEpoch !== params.expectedLeaseEpoch) {
         return { kind: "stale_worker" };
       }
       const row = executeSqliteQueryTakeFirstSync(
@@ -243,9 +229,11 @@ export class GovernorOutboxStore {
         return { kind: "would_send", entry };
       }
       if (
-        entry.objectiveRevision !== normalizeSqliteNumber(task.objective_revision) ||
-        entry.planVersion !== normalizeSqliteNumber(task.plan_version) ||
-        entry.executionGeneration !== normalizeSqliteNumber(task.execution_generation)
+        entry.taskVersion !== task.taskVersion ||
+        entry.objectiveRevision !== task.objectiveRevision ||
+        entry.planVersion !== task.planVersion ||
+        entry.leaseEpoch !== task.leaseEpoch ||
+        entry.executionGeneration !== task.executionGeneration
       ) {
         return { kind: "obsolete" };
       }
@@ -260,16 +248,9 @@ export class GovernorOutboxStore {
         throw new Error("Governor outbox requires a verified host delivery receipt");
       }
       const terminalState = params.terminalState ?? "sent";
-      const expectedPayloadDigest =
-        entry.providerReceipt &&
-        !Array.isArray(entry.providerReceipt) &&
-        typeof entry.providerReceipt === "object" &&
-        typeof entry.providerReceipt.payloadDigest === "string"
-          ? entry.providerReceipt.payloadDigest
-          : undefined;
       if (
         params.verifiedReceipt.receipt.deliveryKey !== entry.deliveryKey ||
-        params.verifiedReceipt.receipt.payloadDigest !== expectedPayloadDigest ||
+        params.verifiedReceipt.receipt.payloadDigest !== entry.payloadDigest ||
         params.verifiedReceipt.receipt.outcome !== terminalState
       ) {
         throw new Error("Governor delivery receipt binding is mismatched");
@@ -339,13 +320,7 @@ export class GovernorOutboxStore {
       throw new Error("Governor manual-review reason must be a SHA-256 digest");
     }
     return runOpenClawStateWriteTransaction(({ db }) => {
-      const task = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_tasks")
-          .select(["objective_revision", "plan_version", "lease_epoch", "execution_generation"])
-          .where("task_id", "=", params.taskId),
-      );
+      const task = this.#tasks.loadCurrent(db, params.taskId);
       if (!task) {
         return { kind: "not_found" };
       }
@@ -362,10 +337,11 @@ export class GovernorOutboxStore {
       }
       const entry = parseOutbox(row);
       if (
-        normalizeSqliteNumber(task.lease_epoch) !== params.expectedLeaseEpoch ||
-        entry.objectiveRevision !== normalizeSqliteNumber(task.objective_revision) ||
-        entry.planVersion !== normalizeSqliteNumber(task.plan_version) ||
-        entry.executionGeneration !== normalizeSqliteNumber(task.execution_generation)
+        task.leaseEpoch !== params.expectedLeaseEpoch ||
+        entry.taskVersion !== task.taskVersion ||
+        entry.objectiveRevision !== task.objectiveRevision ||
+        entry.planVersion !== task.planVersion ||
+        entry.executionGeneration !== task.executionGeneration
       ) {
         return { kind: "stale_worker" };
       }
@@ -386,23 +362,25 @@ export class GovernorOutboxStore {
           : {}),
         unknownOutcomeDigest: params.reasonDigest,
       } as GovernorJsonValue;
+      const reviewed: GovernorOutboxRecord = {
+        ...entry,
+        state: "manual_review",
+        providerReceipt,
+        updatedAt: params.now,
+      };
+      delete reviewed.leaseExpiresAt;
       executeSqliteQuerySync(
         db,
         dbx(db)
           .updateTable("governor_outbox")
-          .set({
-            state: "manual_review",
-            provider_receipt_json: JSON.stringify(providerReceipt),
-            lease_expires_at: null,
-            updated_at: params.now,
-          })
+          .set(bindGovernorOutbox(reviewed))
           .where("task_id", "=", params.taskId)
           .where("effect_id", "=", params.effectId)
           .where("state", "=", "claimed"),
       );
       return {
         kind: "manual_review",
-        entry: { ...entry, state: "manual_review", providerReceipt, updatedAt: params.now },
+        entry: reviewed,
       };
     }, this.#options);
   }

@@ -104,7 +104,7 @@ export type GovernorRecordToolOutcomeParams = {
 
 function assertApplied(result: GovernorCommitResult): GovernorTaskProjection {
   if (!result.applied) {
-    throw new Error(`Governor commit failed: ${result.reason}`);
+    throw new Error("GOVERNOR_COMMIT_REJECTED");
   }
   return result.task;
 }
@@ -142,7 +142,7 @@ export class GovernorActionRuntime {
   #task(taskId: GovernorTaskId): GovernorTaskProjection {
     const task = this.store.loadTask(taskId);
     if (!task) {
-      throw new Error(`Governor task not found: ${taskId}`);
+      throw new Error("GOVERNOR_TASK_NOT_FOUND");
     }
     return task;
   }
@@ -162,7 +162,7 @@ export class GovernorActionRuntime {
         return { accepted: false, reason: "stale_execution", task };
       }
       if (!isSameGovernorActionIntent(existing, persistedProposal)) {
-        throw new Error(`Conflicting governor action intent ${proposal.effectId}`);
+        throw new Error("GOVERNOR_ACTION_INTENT_CONFLICT");
       }
       return { accepted: true, task, intent: existing };
     }
@@ -175,7 +175,7 @@ export class GovernorActionRuntime {
       return { accepted: false, reason: "stale_execution", task };
     }
     if (task.state !== "EXECUTING") {
-      throw new Error(`Cannot admit tool action while task is ${task.state}`);
+      throw new Error("GOVERNOR_ACTION_STATE_INVALID");
     }
     this.capabilities.assertAuthorized(task, proposal);
     if (proposal.mutating && this.capabilities.requiresApproval(proposal.capability)) {
@@ -193,12 +193,12 @@ export class GovernorActionRuntime {
     const admission = evaluateGovernorActionAdmission({
       proposal,
       progressVector: params.progressVector,
-      priorEffects: this.store.listEffects(task.taskId),
+      priorEffects: this.store.listCurrentEffects(task.taskId),
       objectiveRevision: task.objectiveRevision,
       identity: this.store.identity,
     });
     if (!admission.admitted) {
-      throw new Error(`Governor action rejected: ${admission.reason}`);
+      throw new Error("GOVERNOR_ACTION_REJECTED");
     }
     const approvalPolicy = this.capabilities.approvalPolicy(proposal);
     const intent = createGovernorActionIntent({
@@ -302,7 +302,7 @@ export class GovernorActionRuntime {
     const initialTask = this.#task(params.taskId);
     const loadedIntent = this.store.actionIntents.load(initialTask.taskId, params.intent.effectId);
     if (!loadedIntent || !isSameGovernorActionIntent(loadedIntent, params.intent.proposal)) {
-      throw new Error(`Governor action intent not found: ${params.intent.effectId}`);
+      throw new Error("GOVERNOR_ACTION_INTENT_NOT_FOUND");
     }
     const existingEffect = this.store.loadEffect(initialTask.taskId, loadedIntent.effectId);
     if (existingEffect) {
@@ -347,7 +347,7 @@ export class GovernorActionRuntime {
     const task = validation.task;
     const intent = validation.intent;
     if (task.state !== "EXECUTING") {
-      throw new Error(`Cannot record tool outcome while task is ${task.state}`);
+      throw new Error("GOVERNOR_ACTION_RESULT_STATE_INVALID");
     }
     const effect = createGovernorEffectRecord({
       proposal: intent.proposal,
@@ -488,7 +488,7 @@ export class GovernorActionRuntime {
       });
     }
     if (claim.kind !== "claimed") {
-      throw new Error(`Governor action claim failed: ${claim.kind}`);
+      throw new Error("GOVERNOR_ACTION_CLAIM_REJECTED");
     }
     const started = this.beginEffect({
       intent: claim.intent,
@@ -497,7 +497,7 @@ export class GovernorActionRuntime {
       now: params.now,
     });
     if (started.kind !== "started") {
-      throw new Error(`Governor action effect fence failed: ${started.kind}`);
+      throw new Error("GOVERNOR_ACTION_EFFECT_FENCE_REJECTED");
     }
     return this.record({
       taskId: params.taskId,

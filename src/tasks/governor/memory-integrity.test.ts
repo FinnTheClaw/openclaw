@@ -135,7 +135,7 @@ describe("governor memory integrity", () => {
           confidence: 1,
           sourceRef: "caller-asserted",
         }),
-      ).toThrow("unknown field");
+      ).toThrow("GOVERNOR_MEMORY_INPUT_FIELD_INVALID");
 
       closeOpenClawStateDatabase();
       const restarted = createGovernorTestStore({ stateDir: harness.stateDir });
@@ -219,7 +219,7 @@ describe("governor memory integrity", () => {
         observedAt: 100,
       });
       correctMemoryTestTask(harness.controller, scopeA);
-      expect(() =>
+      expect(
         harness.store.memory.promoteVerified({
           taskId,
           evidenceId: "evidence-before-correction",
@@ -229,7 +229,7 @@ describe("governor memory integrity", () => {
           expectedScopeEpoch: 0,
           now: 101,
         }),
-      ).toThrow("stale, invalidated, or out of scope");
+      ).toEqual({ stored: false, reason: "provenance_rejected", currentEpoch: 0 });
       expect("storeVerifiedEvidence" in harness.store.memory).toBe(false);
       expect(harness.store.memory.retrieve({ scope: scopeA, now: 102 })).toEqual([]);
     });

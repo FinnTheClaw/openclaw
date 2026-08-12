@@ -1,20 +1,18 @@
 // Heartbeat, cancellation, and authenticated physical-termination lifecycle for fanout jobs.
 import type { DatabaseSync } from "node:sqlite";
-import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-} from "../../infra/kysely-sync.js";
+import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import type {
   GovernorTrustedPhysicalExecutionCoordinator,
   GovernorTrustedReceiptResolver,
   HostGovernorReceiptId,
 } from "../../security/governor-host-readonly.js";
 import {
+  openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { governorDigest } from "./canonical-json.js";
-import { fanoutDb, parseJob, parseTaskProjection, type GovernorFanoutJob } from "./fanout-codec.js";
+import { fanoutDb, parseJob, replaceJob, type GovernorFanoutJob } from "./fanout-codec.js";
 import {
   fanoutPhysicalBinding,
   fanoutPhysicalLease,
@@ -23,11 +21,13 @@ import {
   requestFanoutCancellation,
 } from "./fanout-physical.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
+import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 
 type LifecycleDependencies = Readonly<{
   options: OpenClawStateDatabaseOptions;
   physical: GovernorTrustedPhysicalExecutionCoordinator;
   receipts: GovernorTrustedReceiptResolver;
+  tasks: GovernorTaskAuthorityStore;
 }>;
 
 function loadJob(db: DatabaseSync, jobId: string): GovernorFanoutJob | null {
@@ -46,19 +46,27 @@ export function cancelFanoutJob(
   return runOpenClawStateWriteTransaction(({ db }) => {
     reconcileFanoutPhysicalState({ db, coordinator: dependencies.physical, now: params.now });
     const job = loadJob(db, params.jobId);
-    if (!job || job.state === "completed" || job.state === "cancelled") {
+    const task = job ? dependencies.tasks.loadCurrent(db, job.taskId) : null;
+    if (
+      !job ||
+      !task ||
+      task.taskVersion !== job.taskVersion ||
+      task.objectiveRevision !== job.objectiveRevision ||
+      task.planVersion !== job.planVersion ||
+      task.leaseEpoch !== job.leaseEpoch ||
+      task.executionGeneration !== job.executionGeneration ||
+      job.state === "completed" ||
+      job.state === "cancelled"
+    ) {
       return false;
     }
     if (job.state === "queued") {
-      const update = executeSqliteQuerySync(
-        db,
-        fanoutDb(db)
-          .updateTable("governor_fanout_jobs")
-          .set({ state: "cancelled", cancelled_at: params.now, updated_at: params.now })
-          .where("job_id", "=", job.jobId)
-          .where("state", "=", "queued"),
-      );
-      return update.numAffectedRows === 1n;
+      return replaceJob(db, job, {
+        ...job,
+        state: "cancelled",
+        cancelledAt: params.now,
+        updatedAt: params.now,
+      });
     }
     if (job.cancellationRequestedAt !== undefined) {
       return false;
@@ -87,8 +95,16 @@ export function heartbeatFanoutJob(
   return runOpenClawStateWriteTransaction(({ db }) => {
     reconcileFanoutPhysicalState({ db, coordinator: dependencies.physical, now: params.now });
     const job = loadJob(db, params.jobId);
+    const task = job ? dependencies.tasks.loadCurrent(db, job.taskId) : null;
     if (
       !job ||
+      !task ||
+      task.state !== "EXECUTING" ||
+      task.taskVersion !== job.taskVersion ||
+      task.objectiveRevision !== job.objectiveRevision ||
+      task.planVersion !== job.planVersion ||
+      task.leaseEpoch !== job.leaseEpoch ||
+      task.executionGeneration !== job.executionGeneration ||
       job.state !== "running" ||
       job.claimEpoch !== params.claimEpoch ||
       job.workerId !== params.workerId ||
@@ -115,17 +131,11 @@ export function heartbeatFanoutJob(
     ) {
       return false;
     }
-    const update = executeSqliteQuerySync(
-      db,
-      fanoutDb(db)
-        .updateTable("governor_fanout_jobs")
-        .set({ lease_expires_at: params.now + params.leaseDurationMs, updated_at: params.now })
-        .where("job_id", "=", job.jobId)
-        .where("state", "=", "running")
-        .where("claim_epoch", "=", job.claimEpoch)
-        .where("worker_id", "=", params.workerId),
-    );
-    return update.numAffectedRows === 1n;
+    return replaceJob(db, job, {
+      ...job,
+      leaseExpiresAt: params.now + params.leaseDurationMs,
+      updatedAt: params.now,
+    });
   }, dependencies.options);
 }
 
@@ -146,19 +156,8 @@ export function acknowledgeFanoutTermination(
       return false;
     }
     const expectedPayload = fanoutTerminationReceiptPayload(job, params.outcome);
-    const receipt = dependencies.receipts.resolve(
-      params.receiptId,
-      (() => {
-        const row = executeSqliteQueryTakeFirstSync(
-          db,
-          fanoutDb(db)
-            .selectFrom("governor_tasks")
-            .select("projection_json")
-            .where("task_id", "=", job.taskId),
-        );
-        return row ? parseTaskProjection(row.projection_json).scopeKey : "";
-      })(),
-    );
+    const task = dependencies.tasks.loadCurrent(db, job.taskId);
+    const receipt = task ? dependencies.receipts.resolve(params.receiptId, task.scopeKey) : null;
     const evidenceDigest = governorDigest({
       receiptId: params.receiptId,
       payload: expectedPayload,
@@ -199,26 +198,22 @@ export function acknowledgeFanoutTermination(
       return false;
     }
     const requeue = job.cancellationDisposition === "requeue";
-    const update = executeSqliteQuerySync(
-      db,
-      fanoutDb(db)
-        .updateTable("governor_fanout_jobs")
-        .set({
-          state: requeue ? "queued" : "cancelled",
-          worker_id: null,
-          lease_expires_at: null,
-          physical_generation: terminal.generation,
-          termination_outcome: params.outcome,
-          termination_evidence_digest: evidenceDigest,
-          termination_acknowledged_at: params.now,
-          cancelled_at: requeue ? null : params.now,
-          updated_at: params.now,
-        })
-        .where("job_id", "=", job.jobId)
-        .where("state", "=", "running")
-        .where("claim_epoch", "=", job.claimEpoch),
-    );
-    return update.numAffectedRows === 1n;
+    const {
+      cancelledAt: _cancelledAt,
+      leaseExpiresAt: _leaseExpiresAt,
+      workerId: _workerId,
+      ...released
+    } = job;
+    return replaceJob(db, job, {
+      ...released,
+      state: requeue ? "queued" : "cancelled",
+      physicalGeneration: terminal.generation,
+      terminationOutcome: params.outcome,
+      terminationEvidenceDigest: evidenceDigest,
+      terminationAcknowledgedAt: params.now,
+      ...(requeue ? {} : { cancelledAt: params.now }),
+      updatedAt: params.now,
+    });
   }, dependencies.options);
 }
 
@@ -239,7 +234,16 @@ export function acknowledgeOrphanedFanoutTermination(
   },
 ): boolean {
   assertGovernorPersistedJson("log", params);
-  const receipt = dependencies.receipts.resolve(params.receiptId, params.scopeKey);
+  const { db } = openOpenClawStateDatabase(dependencies.options);
+  const task = dependencies.tasks.loadCurrent(db, params.taskId as never);
+  const receipt =
+    task &&
+    task.scopeKey === params.scopeKey &&
+    task.taskVersion === params.taskVersion &&
+    task.objectiveRevision === params.objectiveRevision &&
+    task.planVersion === params.planVersion
+      ? dependencies.receipts.resolve(params.receiptId, task.scopeKey)
+      : null;
   const expectedPayload = {
     kind: "governor_orphaned_physical_execution_termination",
     taskId: params.taskId,

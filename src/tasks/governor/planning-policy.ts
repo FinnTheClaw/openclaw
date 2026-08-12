@@ -79,9 +79,9 @@ export type GovernorCheckpoint = {
   createdAt: number;
 };
 
-function assertNonEmptyList(values: readonly string[], label: string): void {
+function assertNonEmptyList(values: readonly string[], _label: string): void {
   if (values.some((value) => !value.trim())) {
-    throw new Error(`${label} must not contain empty values`);
+    throw new Error("GOVERNOR_CHECKPOINT_EMPTY_VALUE");
   }
 }
 
