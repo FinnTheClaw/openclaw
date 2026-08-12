@@ -189,7 +189,11 @@ describe("governor memory integrity", () => {
       ).toEqual({ stored: false, reason: "scope_epoch_conflict", currentEpoch: 1 });
       expect(
         harness.store.memory.retrieve({ scope: scopeA, now: 113 }).map((m) => m.memoryId),
-      ).toEqual(["memory-keep"]);
+      ).toEqual([]);
+      expect(harness.store.memory.retrieveAudit({ scope: scopeA })).toEqual([
+        expect.objectContaining({ memoryId: "memory-forget", status: "tombstoned" }),
+        expect.objectContaining({ memoryId: "memory-keep", status: "quarantined" }),
+      ]);
     });
   });
 

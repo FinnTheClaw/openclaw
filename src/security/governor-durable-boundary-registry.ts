@@ -242,7 +242,12 @@ export const GOVERNOR_DURABLE_BOUNDARIES: readonly GovernorDurableBoundary[] = [
     file: "src/tasks/governor/memory-contradiction-store.ts",
     symbol: "resolve",
     direction: "read-write",
-    enforcementAnchors: ["assertGovernorPersistedJson", "this.#evidence", "bindGovernorMemory"],
+    enforcementAnchors: [
+      "assertGovernorPersistedJson",
+      "assertCurrentExecution",
+      "this.#evidence",
+      "bindGovernorMemory",
+    ],
   },
   {
     id: "memory-repair-update",

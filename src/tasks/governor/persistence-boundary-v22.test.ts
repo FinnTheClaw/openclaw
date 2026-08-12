@@ -99,6 +99,7 @@ describe("governor V22 durable persistence boundary", () => {
         evidenceId: "evidence-v22-guard",
         staleMemoryId: "memory-v22-guard",
         contradictionClass: "stale fixture source",
+        executionFence: controller.captureExecutionFence(taskId),
         now: 201,
       });
       if (resolution.kind !== "retired") {

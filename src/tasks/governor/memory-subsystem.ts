@@ -65,6 +65,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     evidenceId: string;
     staleMemoryId: string;
     contradictionClass: string;
+    executionFence: GovernorMemoryRepairFence;
     freshnessExpiresAt?: number;
     now: number;
   }) {
@@ -73,6 +74,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       evidenceId: params.evidenceId,
       staleMemoryId: params.staleMemoryId,
       contradictionClass: params.contradictionClass,
+      executionFence: params.executionFence,
       ...(params.freshnessExpiresAt === undefined
         ? {}
         : { freshnessExpiresAt: params.freshnessExpiresAt }),

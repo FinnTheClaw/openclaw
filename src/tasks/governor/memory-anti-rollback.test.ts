@@ -118,6 +118,7 @@ describe("governor memory anti-rollback authority", () => {
           evidenceId: "evidence-current-path",
           staleMemoryId: "memory-stale-path",
           contradictionClass: "stale canonical source",
+          executionFence: controller.captureExecutionFence(taskId),
           now: 201,
         }).kind,
       ).toBe("retired");
@@ -278,6 +279,7 @@ describe("governor memory anti-rollback authority", () => {
             evidenceId: "evidence-before-memory-crash",
             staleMemoryId: "memory-before-crash",
             contradictionClass: "stale canonical source",
+            executionFence: controller.captureExecutionFence(taskId),
             now: 201,
           }),
         ).toThrow(/synthetic memory crash/u);

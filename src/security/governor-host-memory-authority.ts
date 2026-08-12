@@ -13,9 +13,14 @@ export type GovernorMemoryAuthorityBinding = Readonly<{
   factKey: string;
   scopeEpoch: number;
   memoryId: string;
+  sourceKind: string;
   sourceIdentity: string;
   sourceReference: string;
+  freshnessExpiresAt: number | null;
+  sensitivity: string;
+  factDigest: string;
   contentDigest: string;
+  provenanceDigest: string;
   evidenceDigest: string;
   semanticDigest: string;
   ordering: GovernorLedgerOrdering;

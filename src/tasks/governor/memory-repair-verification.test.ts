@@ -149,6 +149,7 @@ describe("governor memory repair replacement truth", () => {
           evidenceId: `evidence-current-duplicates`,
           staleMemoryId: "memory-stale-duplicates",
           contradictionClass: "stale canonical source",
+          executionFence: harness.controller.captureExecutionFence(fixture.taskId),
           now: 202,
         }),
       ).toMatchObject({ kind: "duplicate", replacement: { status: "verified" } });
@@ -181,6 +182,7 @@ describe("governor memory repair replacement truth", () => {
           evidenceId: "evidence-current-duplicates",
           staleMemoryId: "memory-stale-duplicates",
           contradictionClass: "stale canonical source",
+          executionFence: harness.controller.captureExecutionFence(fixture.taskId),
           now: 312,
         }),
       ).toMatchObject({ kind: "rejected" });
@@ -195,6 +197,7 @@ describe("governor memory repair replacement truth", () => {
           evidenceId: "evidence-current-duplicates",
           staleMemoryId: "memory-stale-duplicates",
           contradictionClass: "stale canonical source",
+          executionFence: harness.controller.captureExecutionFence(fixture.taskId),
           now: 313,
         }),
       ).toMatchObject({ kind: "rejected" });

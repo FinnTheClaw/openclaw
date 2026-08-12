@@ -15,7 +15,12 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
 import { governorDigest } from "./canonical-json.js";
-import { bindGovernorMemory, parseGovernorMemory } from "./memory-record-codec.js";
+import { createGovernorMemoryAuthorityBinding } from "./memory-authority-binding.js";
+import {
+  assertCanonicalGovernorMemoryRecord,
+  bindGovernorMemory,
+  parseGovernorMemory,
+} from "./memory-record-codec.js";
 import type { GovernorMemoryRecord } from "./memory-types.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 
@@ -51,41 +56,8 @@ const dbx = (db: DatabaseSync) => getNodeSqliteKysely<MemoryAuthorityDatabase>(d
 export function governorMemoryAuthorityBinding(
   memory: GovernorMemoryRecord,
 ): GovernorMemoryAuthorityBinding {
-  if (
-    memory.status !== "verified" ||
-    !memory.verifiedEvidenceDigest ||
-    !memory.verifiedEvidenceSemanticDigest ||
-    !memory.verifiedEvidenceTaskId ||
-    memory.provenance.evidenceTaskId !== memory.verifiedEvidenceTaskId ||
-    memory.provenance.evidenceTaskVersion === undefined ||
-    memory.provenance.objectiveRevision === undefined ||
-    memory.provenance.planVersion === undefined ||
-    memory.provenance.recordedAt === undefined
-  ) {
-    throw new Error("Governor memory authority requires verified evidence bindings");
-  }
-  return {
-    scopeKey: memory.scopeKey,
-    factKey: memory.factKey,
-    scopeEpoch: memory.scopeEpoch,
-    memoryId: memory.memoryId,
-    sourceIdentity: memory.sourceIdentity,
-    sourceReference: memory.provenance.sourceRef,
-    contentDigest: memory.contentDigest,
-    evidenceDigest: memory.verifiedEvidenceDigest,
-    semanticDigest: memory.verifiedEvidenceSemanticDigest,
-    ordering: {
-      scopeEpoch: memory.scopeEpoch,
-      observedAt: memory.observedAt,
-      recordedAt: memory.provenance.recordedAt,
-      sourceRank: memory.sourceRank,
-      confidenceMillionths: Math.round(memory.confidence * 1_000_000),
-      taskVersion: memory.provenance.evidenceTaskVersion,
-      objectiveRevision: memory.provenance.objectiveRevision,
-      planVersion: memory.provenance.planVersion,
-      taskDigest: governorDigest({ taskId: memory.verifiedEvidenceTaskId }),
-    },
-  };
+  assertCanonicalGovernorMemoryRecord(memory);
+  return createGovernorMemoryAuthorityBinding(memory);
 }
 
 function parseRequirement(row: ReobservationRow): GovernorMemoryReobservation {
@@ -260,7 +232,20 @@ export class GovernorMemoryAuthorityStore {
       dbx(db).selectFrom("governor_memories").selectAll().where("status", "=", "verified"),
     ).rows;
     for (const row of rows) {
-      const parsed = parseGovernorMemory(row);
+      let parsed: GovernorMemoryRecord;
+      try {
+        parsed = parseGovernorMemory(row);
+      } catch {
+        executeSqliteQuerySync(
+          db,
+          dbx(db)
+            .updateTable("governor_memories")
+            .set({ status: "quarantined", updated_at: now })
+            .where("memory_id", "=", row.memory_id)
+            .where("status", "=", "verified"),
+        );
+        continue;
+      }
       let memory: GovernorMemoryRecord;
       try {
         memory = verify(parsed);

@@ -30,18 +30,22 @@ import {
 } from "./memory-contradiction-records.js";
 import type { GovernorMemoryRecord, GovernorMemorySourceKind } from "./memory-integrity.js";
 import { bindGovernorMemory, parseGovernorMemory } from "./memory-record-codec.js";
+import { listGovernorMemoryRemediations } from "./memory-remediation-query.js";
 import {
   bindGovernorMemoryRemediation,
   parseGovernorMemoryRemediation,
   type GovernorMemoryRemediation,
 } from "./memory-remediation.js";
 import {
+  assertGovernorMemoryTaskExecutionFenceCurrent,
   assertGovernorMemoryRepairMutationCurrent,
   requeueGovernorMemoryRepair,
   updateGovernorMemoryRepairState,
+  type GovernorMemoryRepairFence,
   type GovernorMemoryRepairMutationGuard,
 } from "./memory-repair-state-store.js";
 import { loadCurrentGovernorMemoryReplacement } from "./memory-replacement-validator.js";
+import { loadCurrentGovernorMemoryScopeEpoch } from "./memory-scope-epoch.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import {
@@ -53,7 +57,7 @@ import type { GovernorTaskId } from "./types.js";
 
 type ContradictionDatabase = Pick<
   OpenClawStateKyselyDatabase,
-  "governor_memories" | "governor_memory_remediations"
+  "governor_memories" | "governor_memory_remediations" | "governor_scope_epochs"
 >;
 
 export type GovernorMemoryContradictionResolution =
@@ -138,11 +142,19 @@ export class GovernorMemoryContradictionStore {
     evidenceId: string;
     staleMemoryId: string;
     contradictionClass: string;
+    executionFence: GovernorMemoryRepairFence;
     freshnessExpiresAt?: number;
     now: number;
   }): GovernorMemoryContradictionResolution {
     assertGovernorPersistedJson("memory", params);
     return runOpenClawStateWriteTransaction(({ db }) => {
+      const assertCurrentExecution = () =>
+        assertGovernorMemoryTaskExecutionFenceCurrent({
+          db,
+          taskId: params.taskId,
+          executionFence: params.executionFence,
+          tasks: this.#tasks,
+        });
       const evidence = this.#evidence(db, params.taskId, params.evidenceId);
       const staleRow = executeSqliteQueryTakeFirstSync(
         db,
@@ -156,6 +168,10 @@ export class GovernorMemoryContradictionStore {
       }
       const stale = parseGovernorMemory(staleRow);
       const factKey = normalizeGovernorFactKey(stale.factKey);
+      const currentEpoch = loadCurrentGovernorMemoryScopeEpoch(db, stale.scopeKey);
+      if (stale.scopeEpoch !== currentEpoch) {
+        return { kind: "rejected", reason: "state_conflict" };
+      }
       const activeFactRows = executeSqliteQuerySync(
         db,
         dbx(db)
@@ -163,6 +179,7 @@ export class GovernorMemoryContradictionStore {
           .select(["memory_id"])
           .where("scope_key", "=", stale.scopeKey)
           .where("fact_key", "=", factKey)
+          .where("scope_epoch", "=", currentEpoch)
           .where("status", "=", "verified"),
       ).rows;
       if (
@@ -246,6 +263,7 @@ export class GovernorMemoryContradictionStore {
           createdAt: existing?.createdAt ?? params.now,
           updatedAt: params.now,
         };
+        assertCurrentExecution();
         executeSqliteQuerySync(
           db,
           dbx(db)
@@ -273,10 +291,11 @@ export class GovernorMemoryContradictionStore {
         semanticDigest: evidence.semanticDigest,
       });
       const confidence = governorMemoryConfidence(sourceKind);
+      assertCurrentExecution();
       const protectedReplacement = this.#authority.protect({
         memoryId: replacementMemoryId,
         scopeKey: stale.scopeKey,
-        scopeEpoch: stale.scopeEpoch,
+        scopeEpoch: currentEpoch,
         factKey,
         status: "verified",
         sourceKind,
@@ -354,6 +373,7 @@ export class GovernorMemoryContradictionStore {
           .where("memory_id", "=", stale.memoryId)
           .where("scope_key", "=", stale.scopeKey)
           .where("fact_key", "=", factKey)
+          .where("scope_epoch", "=", currentEpoch)
           .where("status", "=", "verified"),
       );
       if (retiredUpdate.numAffectedRows !== 1n) {
@@ -384,16 +404,7 @@ export class GovernorMemoryContradictionStore {
   }
 
   list(scopeKey: string): GovernorMemoryRemediation[] {
-    const { db } = openOpenClawStateDatabase(this.#options);
-    return executeSqliteQuerySync(
-      db,
-      dbx(db)
-        .selectFrom("governor_memory_remediations")
-        .selectAll()
-        .where("scope_key", "=", scopeKey)
-        .orderBy("created_at", "asc")
-        .orderBy("contradiction_fingerprint", "asc"),
-    ).rows.map(parseGovernorMemoryRemediation);
+    return listGovernorMemoryRemediations(openOpenClawStateDatabase(this.#options).db, scopeKey);
   }
 
   updateRepairState(params: {

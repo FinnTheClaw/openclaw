@@ -17,7 +17,7 @@ import {
 } from "./memory-remediation.js";
 import { assertGovernorPersistedJson } from "./persistence-guard.js";
 import type { GovernorTaskAuthorityStore } from "./task-authority.js";
-import type { GovernorTaskId } from "./types.js";
+import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
 type RepairDatabase = Pick<OpenClawStateKyselyDatabase, "governor_memory_remediations">;
 
@@ -34,6 +34,26 @@ export type GovernorMemoryRepairMutationGuard = Readonly<{
   expectedStatus: GovernorMemoryRemediation["status"];
   expectedUpdatedAt: number;
 }>;
+
+export function assertGovernorMemoryTaskExecutionFenceCurrent(params: {
+  db: DatabaseSync;
+  taskId: GovernorTaskId;
+  executionFence: GovernorMemoryRepairFence;
+  tasks: GovernorTaskAuthorityStore;
+}): GovernorTaskProjection {
+  const task = params.tasks.loadCurrent(params.db, params.taskId);
+  const fence = params.executionFence;
+  if (
+    !task ||
+    fence.taskVersion > task.taskVersion ||
+    task.objectiveRevision !== fence.objectiveRevision ||
+    task.planVersion !== fence.planVersion ||
+    task.executionGeneration !== fence.executionGeneration
+  ) {
+    throw new Error("GOVERNOR_MEMORY_REPAIR_FENCE_REJECTED");
+  }
+  return task;
+}
 
 function dbx(db: DatabaseSync) {
   return getNodeSqliteKysely<RepairDatabase>(db);
@@ -56,16 +76,13 @@ export function assertGovernorMemoryRepairMutationCurrent(params: {
   guard: GovernorMemoryRepairMutationGuard;
   tasks: GovernorTaskAuthorityStore;
 }): void {
-  const task = params.tasks.loadCurrent(params.db, params.guard.taskId);
-  const fence = params.guard.executionFence;
-  if (
-    !task ||
-    params.current.taskId !== task.taskId ||
-    task.taskVersion !== fence.taskVersion ||
-    task.objectiveRevision !== fence.objectiveRevision ||
-    task.planVersion !== fence.planVersion ||
-    task.executionGeneration !== fence.executionGeneration
-  ) {
+  const task = assertGovernorMemoryTaskExecutionFenceCurrent({
+    db: params.db,
+    taskId: params.guard.taskId,
+    executionFence: params.guard.executionFence,
+    tasks: params.tasks,
+  });
+  if (params.current.taskId !== task.taskId) {
     throw new Error("GOVERNOR_MEMORY_REPAIR_FENCE_REJECTED");
   }
 }

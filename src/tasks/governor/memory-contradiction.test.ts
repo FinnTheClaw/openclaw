@@ -293,6 +293,7 @@ describe("governor memory contradiction retirement", () => {
           evidenceId: "evidence-before-correction",
           staleMemoryId: "memory-stale-objective",
           contradictionClass: "stale canonical source",
+          executionFence: controller.captureExecutionFence(taskId),
           now: 201,
         }),
       ).toThrow(/GOVERNOR_EVIDENCE_NOT_CURRENT/u);

@@ -161,6 +161,7 @@ export function seedMemoryFact(params: {
   factKey: string;
   path: string;
   observedAt: number;
+  expectedScopeEpoch?: number;
   sourceKind?: "tool" | "structured_external";
   sourceIdentity?: string;
 }) {
@@ -183,7 +184,7 @@ export function seedMemoryFact(params: {
     memoryId: params.memoryId,
     factKey: params.factKey,
     scope: params.scope,
-    expectedScopeEpoch: 0,
+    expectedScopeEpoch: params.expectedScopeEpoch ?? 0,
     now: params.observedAt,
   });
   if (!result.stored) {

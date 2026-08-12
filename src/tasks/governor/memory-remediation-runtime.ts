@@ -71,6 +71,7 @@ export class GovernorMemoryRemediationRuntime {
       evidenceId: params.evidenceId,
       staleMemoryId: params.staleMemoryId,
       contradictionClass: params.contradictionClass,
+      executionFence: params.executionFence,
       ...(params.freshnessExpiresAt === undefined
         ? {}
         : { freshnessExpiresAt: params.freshnessExpiresAt }),

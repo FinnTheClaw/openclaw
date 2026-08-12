@@ -292,6 +292,7 @@ describe("governor memory remediation runtime", () => {
         evidenceId: "evidence-repair-cas-current",
         staleMemoryId: "memory-repair-cas-old",
         contradictionClass: "stale canonical source",
+        executionFence: staleFence,
         now: 201,
       });
       if (resolution.kind !== "retired") {
