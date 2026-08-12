@@ -4,6 +4,11 @@ import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-
 import { createGovernorControllerIfEnabled } from "../tasks/governor/controller-bootstrap.js";
 import { isBehaviorGovernorEnabled } from "../tasks/governor/feature-flag.js";
 import { GovernorRuntimeAdapter } from "../tasks/governor/runtime-adapter.js";
+import { validateGovernorAgentLoopConfiguration } from "./governor-agent-loop-config.js";
+import {
+  installGovernorAgentLoopHost,
+  type GovernorAgentLoopConfiguration,
+} from "./governor-agent-loop-host.js";
 /** Trusted host bootstrap for feature-gated governor read-only bindings. */
 import { createHostGovernorBroker } from "./governor-host-broker.js";
 import { createGovernorHostDeliveryRuntime } from "./governor-host-channel-delivery.js";
@@ -19,6 +24,7 @@ export type GovernorHostIntegrationConfiguration = Readonly<{
   ownerIngressOwnerId: string;
   childOwnerId: string;
   ownerIngressBindings: readonly GovernorOwnerIngressBinding[];
+  agentLoop?: GovernorAgentLoopConfiguration;
   channelConfig?: OpenClawConfig;
   deliveries: readonly Readonly<{
     implementationId: string;
@@ -75,6 +81,7 @@ export type GovernorHostRuntime = Readonly<{
   deliveryHandles: readonly ReturnType<
     ReturnType<typeof createHostGovernorBroker>["capabilities"]["registerStaticDeliveryAdapter"]
   >[];
+  close: () => void;
 }>;
 
 function assertOwner(value: string, label: string): void {
@@ -205,6 +212,9 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   if (!params.integrations) {
     throw new Error("Authenticated governor integration owners are required");
   }
+  const agentLoop = params.integrations.agentLoop
+    ? validateGovernorAgentLoopConfiguration(params.integrations.agentLoop, params.capabilities)
+    : undefined;
   const bindings = createGovernorHostRuntimeBindings({
     env,
     stateDir: params.stateDir,
@@ -228,10 +238,19 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   if (!controller) {
     throw new Error("Enabled governor controller failed to initialize");
   }
+  const closeAgentLoop = agentLoop
+    ? installGovernorAgentLoopHost({
+        controller,
+        submitObservedReceipt: bindings.owners.evidence.submitObservedReceipt,
+        capabilities: params.capabilities,
+        config: agentLoop,
+      })
+    : () => {};
   return Object.freeze({
     adapter: new GovernorRuntimeAdapter(controller, bindings.ownerIngressResolver),
     owners: bindings.owners,
     deliveryHandles: bindings.deliveryHandles,
+    close: closeAgentLoop,
   });
 }
 
@@ -239,5 +258,9 @@ export function createGovernorHostRuntimeIfEnabled(params: {
 export function createGovernorHostRuntimeAdapterIfEnabled(
   params: Parameters<typeof createGovernorHostRuntimeIfEnabled>[0],
 ): GovernorRuntimeAdapter | null {
+  const env = params.env ?? process.env;
+  if (isBehaviorGovernorEnabled(env) && params.integrations?.agentLoop) {
+    throw new Error("GOVERNOR_AGENT_LOOP_RUNTIME_LIFECYCLE_REQUIRED");
+  }
   return createGovernorHostRuntimeIfEnabled(params)?.adapter ?? null;
 }

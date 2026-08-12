@@ -96,6 +96,8 @@ export interface BeforeToolCallContext {
   toolCall: AgentToolCall;
   /** Validated tool arguments for the target tool schema. */
   args: unknown;
+  /** Exact resolved tool implementation that will execute if the hook permits it. */
+  tool: AgentTool;
   /** Current agent context at the time the tool call is prepared. */
   context: AgentContext;
 }

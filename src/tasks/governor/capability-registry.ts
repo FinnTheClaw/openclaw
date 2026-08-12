@@ -101,6 +101,10 @@ export class GovernorCapabilityRegistry {
     return this.#definitions.get(capability)?.requiresApproval === true;
   }
 
+  definition(capability: string): GovernorCapabilityDefinition | undefined {
+    return this.#definitions.get(capability);
+  }
+
   approvalPolicy(proposal: GovernorActionProposal): {
     required: boolean;
     digest: string;

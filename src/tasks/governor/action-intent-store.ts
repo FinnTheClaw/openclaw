@@ -381,11 +381,37 @@ export class GovernorActionIntentStore {
         }
       }
       if (intent.state === "running" && intent.effectStartedAt !== undefined) {
+        const expired = intent.leaseExpiresAt !== undefined && intent.leaseExpiresAt <= params.now;
         if (
-          intent.leaseExpiresAt !== undefined &&
-          intent.leaseExpiresAt <= params.now &&
-          intent.cancellationRequestedAt === undefined
+          !intent.proposal.mutating &&
+          !intent.approvalRequired &&
+          expired &&
+          intent.cancellationRequestedAt === undefined &&
+          intent.terminationOutcome === undefined
         ) {
+          const recovered: GovernorActionIntent = {
+            ...intent,
+            claimEpoch: intent.claimEpoch + 1,
+            claimedBy: workerId,
+            leaseExpiresAt: params.now + leaseDurationMs,
+            effectStartedAt: params.now,
+            updatedAt: params.now,
+          };
+          const update = executeSqliteQuerySync(
+            db,
+            dbx(db)
+              .updateTable("governor_action_intents")
+              .set(bindGovernorActionIntent(recovered))
+              .where("task_id", "=", intent.taskId)
+              .where("effect_id", "=", intent.effectId)
+              .where("claim_epoch", "=", intent.claimEpoch)
+              .where("updated_at", "=", intent.updatedAt),
+          );
+          return update.numAffectedRows === 1n
+            ? { kind: "claimed", intent: recovered }
+            : { kind: "busy" };
+        }
+        if (expired && intent.cancellationRequestedAt === undefined) {
           const cancelling = {
             ...intent,
             cancellationRequestedAt: params.now,

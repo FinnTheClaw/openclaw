@@ -288,6 +288,7 @@ import {
   resolvePreparedExtraParams,
 } from "../extra-params.js";
 import { prepareGooglePromptCacheStreamFn } from "../google-prompt-cache.js";
+import { installGovernorLoopBridge, type GovernorLoopBridge } from "../governor-loop-bridge.js";
 import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "../history.js";
 import { log } from "../logger.js";
 import { buildEmbeddedMessageActionDiscoveryInput } from "../message-action-discovery-input.js";
@@ -2265,6 +2266,7 @@ export async function runEmbeddedAttempt(
     await throwIfAttemptAbortSignalFiredAfterPrepCleanup();
 
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+    let governorLoopBridge: GovernorLoopBridge | undefined;
     let removeToolResultContextGuard: (() => void) | undefined;
     let trajectoryRecorder: ReturnType<typeof createTrajectoryRuntimeRecorder> | null = null;
     let trajectoryEndRecorded = false;
@@ -2663,6 +2665,12 @@ export async function runEmbeddedAttempt(
           didDeliverSourceReplyViaMessageTool = true;
         },
       });
+      if (params.governorAgentLoopScope) {
+        governorLoopBridge = installGovernorLoopBridge({
+          agent: activeSession.agent,
+          scope: params.governorAgentLoopScope,
+        });
+      }
       prepStages.mark("agent-session");
       if (isRawModelRun) {
         // Raw model probes should measure exactly the requested prompt against
@@ -3642,7 +3650,17 @@ export async function runEmbeddedAttempt(
       const onBlockReplyFlush = params.onBlockReplyFlush
         ? bindOwnedSessionTranscriptWrites(ownedTranscriptWriteContext, params.onBlockReplyFlush)
         : undefined;
-      const onBeforeTerminalDelivery = hookRunner?.hasHooks("before_agent_finalize")
+      type BeforeTerminalDeliveryEvent = {
+        messages: AgentMessage[];
+        willRetry: boolean;
+        lastAssistant?: AgentMessage;
+        assistantTexts: readonly string[];
+        hasAssistantVisibleText: boolean;
+        isError: boolean;
+        incompleteTerminalAssistant: boolean;
+        hadDeterministicSideEffect: boolean;
+      };
+      const pluginBeforeTerminalDelivery = hookRunner?.hasHooks("before_agent_finalize")
         ? async (event: {
             messages: AgentMessage[];
             willRetry: boolean;
@@ -3754,6 +3772,22 @@ export async function runEmbeddedAttempt(
             return { suppressTerminalDelivery: true };
           }
         : undefined;
+      const onBeforeTerminalDelivery =
+        governorLoopBridge || pluginBeforeTerminalDelivery
+          ? async (
+              event: BeforeTerminalDeliveryEvent,
+            ): Promise<void | { suppressTerminalDelivery: true }> => {
+              if (
+                governorLoopBridge &&
+                !event.willRetry &&
+                !event.isError &&
+                !event.incompleteTerminalAssistant
+              ) {
+                governorLoopBridge.assertTerminal();
+              }
+              return await pluginBeforeTerminalDelivery?.(event);
+            }
+          : undefined;
 
       let toolMetasForTerminal: readonly AsyncStartedToolMeta[] = [];
       const subscription = subscribeEmbeddedAgentSession(
@@ -6069,6 +6103,11 @@ export async function runEmbeddedAttempt(
       // See: https://github.com/openclaw/openclaw/issues/8643
       let cleanupError: unknown;
       try {
+        governorLoopBridge?.dispose();
+      } catch (err) {
+        cleanupError = err;
+      }
+      try {
         clearToolSearchCatalog({
           sessionId: params.sessionId,
           sessionKey: sandboxSessionKey,
@@ -6102,7 +6141,7 @@ export async function runEmbeddedAttempt(
           sessionId: params.sessionId,
         });
       } catch (err) {
-        cleanupError = err;
+        cleanupError ??= err;
       }
       const synthesizedCleanupTakeoverError =
         !cleanupError && promptError && sessionLockController.hasSessionTakeover()

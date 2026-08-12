@@ -25,7 +25,12 @@ export type GovernorEventType =
   | "finish_rejected"
   | "completion_certified"
   | "lease_reclaimed"
-  | "outbox_enqueued";
+  | "outbox_enqueued"
+  | "runtime_model_turn_recorded"
+  | "runtime_tool_proposed"
+  | "runtime_tool_observed"
+  | "runtime_finish_proposed"
+  | "runtime_replan_requested";
 
 export type GovernorEventRecord = {
   eventId: GovernorEventId;

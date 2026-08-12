@@ -218,6 +218,22 @@ isolated SQLite state.
     Enabled bootstrap validates the versioned policy-semantics bundle, while raw governor
     schema/migration/coordination SQL is explicitly owned in the durable-boundary registry with
     idempotency and recovery rules.
+40. V33 adds an opt-in bridge at the production embedded `Agent` loop. OFF installs no scope or
+    hook and leaves the legacy loop unchanged; shadow records decisions without blocking legacy
+    execution. The first enforceable integration is intentionally a closed, compiled, disposable
+    read-only tool set. Bootstrap binds each tool name to an allowlisted implementation ID and the
+    exact frozen tool object installed for that run; a same-name plugin or mutable registry entry
+    cannot inherit its capability, target, or evidence authority. The bridge admits only the
+    effective result after existing post-tool hooks and binds observations to the exact effect,
+    implementation digest, capability/version, target, and result digest. Host-assigned ingress
+    sequencing is monotonic and durable for channels with nonnumeric message IDs. Interrupted
+    read-only effects become durable non-evidence outcomes and force replan; expired read-only
+    claims can resume idempotently after restart. Adapter-only bootstrap rejects an agent-loop
+    configuration because it cannot own the required process-global teardown. Bootstrap rejects
+    every mutating or approval-requiring binding and any `sessions_spawn` external-child binding;
+    V33 does not claim support for either capability until separate host-owned postcondition
+    verification and pre-dispatch child admission/terminal integration exist. This slice therefore
+    authorizes only a read-only disposable live-model canary, not production rollout.
 
 ## Consequences
 

@@ -15,11 +15,26 @@ import {
 import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { assertValidGovernorPlan } from "./contracts.js";
+import {
+  recordGovernorContradiction,
+  resolveGovernorContradiction,
+  setGovernorPendingUserUpdate,
+  type GovernorContradictionRequest,
+  type GovernorPendingUpdateRequest,
+} from "./controller-conditions.js";
+import {
+  assessGovernorRuntimeFinish,
+  recordGovernorRuntimeEvent,
+  requestGovernorRuntimeReplan,
+  type GovernorRuntimeEventRequest,
+  type GovernorRuntimeFinishRequest,
+} from "./controller-runtime.js";
 import { dispatchGovernorOutbox, type GovernorDispatchOutboxParams } from "./delivery-dispatch.js";
 import { createGovernorEventRecord } from "./events.js";
 import {
   evaluateGovernorFinish,
   type GovernorCompletionCertificate,
+  type GovernorFinishDecision,
   type GovernorRecoveryDirective,
 } from "./finish-gate.js";
 import { admitGovernorMaterialClaims } from "./material-claim-admission.js";
@@ -55,7 +70,6 @@ import type {
   GovernorTaskProjection,
   GovernorTaskScope,
   GovernorTaskState,
-  GovernorTaskContradiction,
 } from "./types.js";
 
 export type GovernorFinishResult =
@@ -107,6 +121,12 @@ export class GovernorController {
     now: number;
   }): GovernorIngressResult {
     return this.store.ingest(params);
+  }
+
+  ingestHostSequenced(
+    params: Omit<Parameters<GovernorController["ingest"]>[0], "sourceSequence">,
+  ): GovernorIngressResult {
+    return this.store.ingestHostSequenced(params);
   }
 
   #task(taskId: GovernorTaskId): GovernorTaskProjection {
@@ -294,53 +314,24 @@ export class GovernorController {
     return this.#transition(this.#task(taskId), "VERIFYING", now);
   }
 
-  setPendingUserUpdate(params: {
-    taskId: GovernorTaskId;
-    pending: boolean;
-    now: number;
-  }): GovernorTaskProjection {
-    const task = this.#task(params.taskId);
-    const next = {
-      ...nextTaskVersion(task, params.now),
-      conditions: { ...task.conditions, pendingUserUpdate: params.pending },
-    };
-    const event = createGovernorEventRecord({
-      task: next,
-      eventType: "task_conditions_updated",
-      payload: { pendingUserUpdate: params.pending },
-      now: params.now,
-    });
-    return assertApplied(this.store.commit({ current: task, next, event }));
+  recordRuntimeEvent(params: GovernorRuntimeEventRequest): GovernorTaskProjection {
+    return recordGovernorRuntimeEvent(this.store, this.#task(params.taskId), params);
   }
 
-  recordContradiction(params: {
-    taskId: GovernorTaskId;
-    contradiction: GovernorTaskContradiction;
-    now: number;
-  }): GovernorTaskProjection {
-    const task = this.#task(params.taskId);
-    const safe = assertGovernorBoundarySafe(
-      "log",
-      params.contradiction,
-    ) as GovernorTaskContradiction;
-    const contradiction: GovernorTaskContradiction = {
-      ...safe,
-      sourceRef: this.store.opaqueReference("contradiction-source", safe.sourceRef),
-    };
-    const next = {
-      ...nextTaskVersion(task, params.now),
-      conditions: {
-        ...task.conditions,
-        contradictions: [...task.conditions.contradictions, contradiction],
-      },
-    };
-    const event = createGovernorEventRecord({
-      task: next,
-      eventType: "task_conditions_updated",
-      payload: { contradictionId: contradiction.contradictionId, severity: contradiction.severity },
-      now: params.now,
-    });
-    return assertApplied(this.store.commit({ current: task, next, event }));
+  requestRuntimeReplan(taskId: GovernorTaskId, now: number): GovernorTaskProjection {
+    return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now);
+  }
+
+  assessFinish(params: GovernorRuntimeFinishRequest): GovernorFinishDecision {
+    return assessGovernorRuntimeFinish(this.store, this.#task(params.taskId), params);
+  }
+
+  setPendingUserUpdate(params: GovernorPendingUpdateRequest): GovernorTaskProjection {
+    return setGovernorPendingUserUpdate(this.store, this.#task(params.taskId), params);
+  }
+
+  recordContradiction(params: GovernorContradictionRequest): GovernorTaskProjection {
+    return recordGovernorContradiction(this.store, this.#task(params.taskId), params);
   }
 
   resolveContradiction(
@@ -348,23 +339,7 @@ export class GovernorController {
     contradictionId: string,
     now: number,
   ): GovernorTaskProjection {
-    const task = this.#task(taskId);
-    const next = {
-      ...nextTaskVersion(task, now),
-      conditions: {
-        ...task.conditions,
-        contradictions: task.conditions.contradictions.filter(
-          (item) => item.contradictionId !== contradictionId,
-        ),
-      },
-    };
-    const event = createGovernorEventRecord({
-      task: next,
-      eventType: "task_conditions_updated",
-      payload: { resolvedContradictionId: contradictionId },
-      now,
-    });
-    return assertApplied(this.store.commit({ current: task, next, event }));
+    return resolveGovernorContradiction(this.store, this.#task(taskId), contradictionId, now);
   }
 
   resolveMutation(params: {

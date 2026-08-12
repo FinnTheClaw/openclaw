@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "..");
 const authorityModules = [
+  "governor-agent-loop-config",
+  "governor-agent-loop-host",
+  "governor-agent-loop-task",
+  "governor-agent-loop-tools",
+  "governor-agent-loop-values",
   "governor-host-anti-rollback-ledger",
   "governor-host-ledger-codec",
   "governor-host-ledger-storage",
@@ -30,9 +35,26 @@ const authorityImport = new RegExp(
   "u",
 );
 const forbiddenAuthority =
-  /\b(?:createCompiledOwnerIngress|createGovernorHostDeliveryRuntime|createGovernorHostPersistence|createGovernorHostRuntimeBindings|createGovernorHostRuntimeIfEnabled|createHostDeliveryImplementation|createHostGovernorBroker|GovernorHostPersistence|GovernorHostRuntime|GovernorSecrets|HostGovernorCapabilities|registerStaticDeliveryAdapter|resolveGovernorSecrets|revokeDeliveryAdapter|revokeOwnerIngressReceipt|signApprovalGrant|submitAuthenticatedOwnerIngress)\b/u;
+  /\b(?:createCompiledOwnerIngress|createGovernorAgentLoopTool|createGovernorHostDeliveryRuntime|createGovernorHostPersistence|createGovernorHostRuntimeBindings|createGovernorHostRuntimeIfEnabled|createHostDeliveryImplementation|createHostGovernorBroker|GovernorHostPersistence|GovernorHostRuntime|GovernorSecrets|HostGovernorCapabilities|installGovernorAgentLoopHost|matchesHostGovernorAgentLoopTool|registerStaticDeliveryAdapter|resolveGovernorSecrets|revokeDeliveryAdapter|revokeOwnerIngressReceipt|signApprovalGrant|submitAuthenticatedOwnerIngress)\b/u;
 
 const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
+  "governor-agent-loop-config": [
+    "security/governor-agent-loop-host.ts",
+    "security/governor-host-bootstrap.ts",
+  ],
+  "governor-agent-loop-host": [
+    "security/governor-agent-loop-readonly.ts",
+    "security/governor-host-bootstrap.ts",
+  ],
+  "governor-agent-loop-task": ["security/governor-agent-loop-host.ts"],
+  "governor-agent-loop-tools": [
+    "security/governor-agent-loop-config.ts",
+    "security/governor-agent-loop-host.ts",
+  ],
+  "governor-agent-loop-values": [
+    "security/governor-agent-loop-host.ts",
+    "security/governor-agent-loop-task.ts",
+  ],
   "governor-host-anti-rollback-ledger": [
     "security/governor-host-delivery-persistence.ts",
     "security/governor-host-memory-authority.ts",
@@ -144,6 +166,11 @@ describe("governor host authority boundary", () => {
 
   it("keeps ambient process secrets out of the broker, persistence, and governor stores", () => {
     const ambientFree = [
+      "security/governor-agent-loop-config.ts",
+      "security/governor-agent-loop-host.ts",
+      "security/governor-agent-loop-task.ts",
+      "security/governor-agent-loop-tools.ts",
+      "security/governor-agent-loop-values.ts",
       "security/governor-host-broker.ts",
       "security/governor-host-anti-rollback-ledger.ts",
       "security/governor-host-ledger-codec.ts",

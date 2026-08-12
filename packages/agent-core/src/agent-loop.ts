@@ -1149,6 +1149,7 @@ async function prepareToolCall(
           assistantMessage,
           toolCall,
           args: validatedArgs,
+          tool,
           context: currentContext,
         },
         signal,

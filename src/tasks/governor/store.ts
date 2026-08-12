@@ -212,6 +212,18 @@ export class GovernorSqliteStore {
     });
   }
 
+  ingestHostSequenced(
+    params: Omit<Parameters<GovernorSqliteStore["ingest"]>[0], "sourceSequence">,
+  ): GovernorIngressResult {
+    return ingestGovernorTask({
+      options: this.#options,
+      identity: this.identity,
+      capabilities: this.capabilities,
+      tasks: this.#tasks,
+      ingress: params,
+    });
+  }
+
   commit(params: GovernorCommitPayload): GovernorCommitResult {
     assertGovernorTaskClassification(params.current, this.capabilities);
     assertGovernorTaskClassification(params.next, this.capabilities);

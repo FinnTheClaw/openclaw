@@ -19,6 +19,7 @@ export function createGovernorActionFingerprint(
     canonicalTarget: targetFingerprint(proposal.canonicalTarget, identity),
     criterionId: proposal.criterionId ?? null,
     argumentsDigest: proposal.argumentsDigest,
+    toolImplementationDigest: proposal.toolImplementationDigest ?? null,
     mutating: proposal.mutating,
   });
 }

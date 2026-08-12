@@ -32,6 +32,8 @@ export type GovernorActionProposal = {
   stopCondition: string;
   mutating: boolean;
   argumentsDigest: string;
+  /** Host-owned identity of the exact resolved tool implementation. */
+  toolImplementationDigest?: string;
   approvalGrantId?: string;
 };
 

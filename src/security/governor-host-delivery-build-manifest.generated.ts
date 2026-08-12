@@ -567,7 +567,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/agent-core/src/agent-loop.ts",
-      sha256: "2d178c2f568eb96ea2e2d0bf18cbd2d79c96e470e634f61b1782abfeda22bb07",
+      sha256: "442465d6b105e90255e51fcd64350d4bb9d63db28acb6b03e5107741941e79bc",
     },
     {
       path: "packages/agent-core/src/agent.ts",
@@ -663,7 +663,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/agent-core/src/types.ts",
-      sha256: "8d9e4751f17cd5f986cc92dde17bdfe0cc541940261c8382ee376b205be359aa",
+      sha256: "b28c38f6dd24535fa60260049909be72c43975187e4c25e36144ccd742313030",
     },
     {
       path: "packages/agent-core/src/validation.ts",
@@ -2422,6 +2422,10 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "3d3ca8709d10e0f227c7fbe19806604810eccdedd413fa2429089e8ae7495b10",
     },
     {
+      path: "src/agents/embedded-agent-runner/governor-loop-bridge.ts",
+      sha256: "0db9bc5c8a015e0d4a3a34276a820bb219bc56a822c0a92c5ae350d5de95268e",
+    },
+    {
       path: "src/agents/embedded-agent-runner/history.ts",
       sha256: "862e422b3500217351ce019ddfc8a5f6f6b276b9f603c7f5d6f87d982d7f704e",
     },
@@ -2499,7 +2503,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/embedded-agent-runner/run.ts",
-      sha256: "ac8f9566d8465286d84ffd5d658e9ad598570b691130accdf45cd7ebefc5bede",
+      sha256: "25c54a442edd8e7b20f9cba3e531001db3f5b25354c76c68390ea2d04baed29f",
     },
     {
       path: "src/agents/embedded-agent-runner/run/abortable.ts",
@@ -2623,7 +2627,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/embedded-agent-runner/run/attempt.ts",
-      sha256: "3d72178ebbb699a6d3bbb5d441fd498c20ba5cdb000fab09cf0487b52fd275f8",
+      sha256: "11a20bde98ced5e63b0508a142fce2badaf250e691d1000cdae470e99d6b1991",
     },
     {
       path: "src/agents/embedded-agent-runner/run/auth-controller.ts",
@@ -15638,6 +15642,30 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "c80f00c46cd729621f8d796f5003dc262299724d548c24ff81a050488ba287df",
     },
     {
+      path: "src/security/governor-agent-loop-config.ts",
+      sha256: "44d806c363b2ae0ff72a8b6411136d06b8cb49e89e0ccea54111552661434ea3",
+    },
+    {
+      path: "src/security/governor-agent-loop-host.ts",
+      sha256: "7d0c6ad02a68252231c270ef432bbbc2e2b976479fb784ae56a43fe1c5e34a23",
+    },
+    {
+      path: "src/security/governor-agent-loop-readonly.ts",
+      sha256: "2749379a6026bebfa2d86989b38441d1e6009b8b2519195fe4c8186dd48bef6c",
+    },
+    {
+      path: "src/security/governor-agent-loop-task.ts",
+      sha256: "d99ee8f03b2d245b04f355e642f468cdcbd9d37aea687ac3d3201c9260269007",
+    },
+    {
+      path: "src/security/governor-agent-loop-tools.ts",
+      sha256: "0f238dda7bee19f34d359a75b07d704bbeea60da09e5b59970013e62c36e2b26",
+    },
+    {
+      path: "src/security/governor-agent-loop-values.ts",
+      sha256: "65da854311d0cff2d3a2eb1b52b553c19db38a32ff38f048cb28fed9f544b33b",
+    },
+    {
       path: "src/security/governor-host-anti-rollback-ledger.ts",
       sha256: "0a2e0568e2911284087b12e4377c71c359c5460a0aa0628e6524124d5c9a2908",
     },
@@ -17152,4 +17180,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "917a4200e8dc45ab963ebe09e1d060da9b3329fd6c28c0b9f66ef26bf54ef810";
+  "e9b4ab16a8489924ca022b7ab7e8511957c6990ff9aa66f54b2af212b68197b9";

@@ -42,6 +42,7 @@ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { resolveProviderAuthProfileId } from "../../plugins/provider-runtime.js";
 import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../process/command-queue.js";
 import type { CommandQueueEnqueueOptions } from "../../process/command-queue.types.js";
+import { resolveGovernorAgentLoopRunScope } from "../../security/governor-agent-loop-readonly.js";
 import { createAgentHarnessTaskRuntimeScope } from "../../tasks/agent-harness-task-runtime-scope.js";
 import { resolveUserPath } from "../../utils.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
@@ -2402,6 +2403,28 @@ async function runEmbeddedAgentInternal(
                   }),
                 }
               : {}),
+            governorAgentLoopScope: resolveGovernorAgentLoopRunScope({
+              runId: params.runId,
+              sessionKey: resolvedSessionKey ?? params.sessionId,
+              sessionId: activeSessionId,
+              agentId: workspaceResolution.agentId,
+              workspaceId: resolvedWorkspace,
+              channel: params.messageChannel ?? params.messageProvider ?? "local",
+              accountId: params.agentAccountId ?? "default",
+              principalId: params.senderId ?? "anonymous",
+              conversationId:
+                params.chatId ??
+                params.currentMessagingTarget ??
+                resolvedSessionKey ??
+                params.sessionId,
+              sourceMessageId: String(params.currentMessageId ?? params.runId),
+              ...(typeof params.currentMessageId === "number" &&
+              Number.isSafeInteger(params.currentMessageId)
+                ? { sourceSequence: params.currentMessageId }
+                : {}),
+              prompt,
+              now: Date.now(),
+            }),
             runtimePlan,
             model: applyAuthHeaderOverride(
               applyLocalNoAuthHeaderOverride(effectiveModel, apiKeyInfo),

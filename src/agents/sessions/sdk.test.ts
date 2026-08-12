@@ -2,12 +2,7 @@
 // session write-lock behavior.
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  AssistantMessage,
-  Context,
-  Model,
-  SimpleStreamOptions,
-} from "../../llm/types.js";
+import type { AssistantMessage, Context, Model, SimpleStreamOptions } from "../../llm/types.js";
 import {
   createUserTurnTranscriptRecorder,
   takeRuntimeUserTurnTranscriptContext,
@@ -548,6 +543,7 @@ describe("createAgentSession tool defaults", () => {
       },
       toolCall: { type: "toolCall", id: "call_1", name: "read", arguments: {} },
       args: {},
+      tool: session.agent.state.tools.find((tool) => tool.name === "read")!,
       context: {
         systemPrompt: "",
         messages: [],
@@ -598,6 +594,7 @@ describe("createAgentSession tool defaults", () => {
       },
       toolCall: { type: "toolCall", id: "call_1", name: "write_file", arguments: {} },
       args: {},
+      tool: session.agent.state.tools.find((tool) => tool.name === "write_file")!,
       context: {
         systemPrompt: "",
         messages: [],

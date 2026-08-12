@@ -22,6 +22,7 @@ import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import {
   createGovernorTaskProjection,
   createGovernorTaskId,
+  canonicalGovernorScopeKey,
   opaqueGovernorReference,
   type GovernorEventId,
   type GovernorIdentityContext,
@@ -38,7 +39,7 @@ import {
 type IngressParams = {
   eventId?: GovernorEventId;
   sourceMessageId: string;
-  sourceSequence: number;
+  sourceSequence?: number;
   scope: GovernorTaskScope;
   mode?: GovernorMode;
   profile?: GovernorWorkProfile;
@@ -85,37 +86,42 @@ export function ingestGovernorTask(params: {
     ...(input.profile ? { profile: input.profile } : {}),
     ...(input.mode ? { requestedMode: input.mode } : {}),
   });
-  if (!input.sourceMessageId.trim() || !Number.isSafeInteger(input.sourceSequence)) {
+  if (
+    !input.sourceMessageId.trim() ||
+    (input.sourceSequence !== undefined && !Number.isSafeInteger(input.sourceSequence))
+  ) {
     throw new Error("Governor authenticated ingress identity or sequence is invalid");
   }
-  const incoming = createGovernorTaskProjection({
-    taskId: createGovernorTaskId(
-      opaqueGovernorReference(
-        "task-ingress",
-        JSON.stringify({ scope: input.scope, sourceMessageId: input.sourceMessageId }),
-        params.identity,
+  const scopeKey = canonicalGovernorScopeKey(input.scope, params.identity);
+  const incomingForSequence = (sourceSequence: number) =>
+    createGovernorTaskProjection({
+      taskId: createGovernorTaskId(
+        opaqueGovernorReference(
+          "task-ingress",
+          JSON.stringify({ scope: input.scope, sourceMessageId: input.sourceMessageId }),
+          params.identity,
+        ),
       ),
-    ),
-    scope: input.scope,
-    mode: classification.mode,
-    classification: classification.binding,
-    contract,
-    authenticatedSourceSequence: input.sourceSequence,
-    flowId: input.flowId,
-    now: input.now,
-    identity: params.identity,
-  });
+      scope: input.scope,
+      mode: classification.mode,
+      classification: classification.binding,
+      contract,
+      authenticatedSourceSequence: sourceSequence,
+      flowId: input.flowId,
+      now: input.now,
+      identity: params.identity,
+    });
   const result = runRecoverableIngressWrite(params.options, params.tasks, ({ db }) => {
     params.tasks.reconcilePrimary(db);
     const dbx = governorDb(db);
     const sourceMessageId = opaqueGovernorReference(
-      `source-message:${incoming.scopeKey}`,
+      `source-message:${scopeKey}`,
       input.sourceMessageId,
       params.identity,
     );
     const sourceBindingRef = opaqueGovernorReference(
-      `authenticated-source:${incoming.scopeKey}`,
-      incoming.scopeKey,
+      `authenticated-source:${scopeKey}`,
+      scopeKey,
       params.identity,
     );
     const duplicate = executeSqliteQueryTakeFirstSync(
@@ -123,7 +129,7 @@ export function ingestGovernorTask(params: {
       dbx
         .selectFrom("governor_events")
         .select(["task_id"])
-        .where("scope_key", "=", incoming.scopeKey)
+        .where("scope_key", "=", scopeKey)
         .where("source_message_id", "=", sourceMessageId),
     );
     if (duplicate) {
@@ -152,18 +158,26 @@ export function ingestGovernorTask(params: {
           dbx
             .selectFrom("governor_tasks")
             .selectAll()
-            .where("scope_key", "=", incoming.scopeKey)
+            .where("scope_key", "=", scopeKey)
             .orderBy("source_sequence", "desc")
             .orderBy("updated_at", "desc")
             .limit(1),
         );
-    const authoritativeSequence = durableHighWater
+    const primaryTaskId = durableHighWater?.task_id ?? legacyTaskRow?.task_id;
+    const hostSequence = primaryTaskId
+      ? params.tasks.state(primaryTaskId as GovernorTaskProjection["taskId"])?.fence
+          .authenticatedSourceSequence
+      : undefined;
+    const primarySequence = durableHighWater
       ? durableHighWater.source_sequence
       : legacyTaskRow
         ? parseTaskRow(legacyTaskRow).authenticatedSourceSequence
         : -1;
-    if (input.sourceSequence <= authoritativeSequence) {
-      const taskId = durableHighWater?.task_id ?? legacyTaskRow?.task_id;
+    const authoritativeSequence = Math.max(primarySequence, hostSequence ?? -1);
+    const sourceSequence = input.sourceSequence ?? Math.max(0, authoritativeSequence) + 1;
+    const incoming = incomingForSequence(sourceSequence);
+    if (sourceSequence <= authoritativeSequence) {
+      const taskId = primaryTaskId;
       const task = taskId
         ? loadGovernorTask(db, taskId as GovernorTaskProjection["taskId"], params.tasks)
         : null;
@@ -175,7 +189,7 @@ export function ingestGovernorTask(params: {
         eventId: input.eventId,
         eventType: "stale_ingress_ignored",
         sourceMessageId,
-        sourceSequence: input.sourceSequence,
+        sourceSequence,
         payload: { authoritativeSequence },
         now: input.now,
       });
@@ -188,7 +202,7 @@ export function ingestGovernorTask(params: {
       dbx
         .selectFrom("governor_tasks")
         .selectAll()
-        .where("scope_key", "=", incoming.scopeKey)
+        .where("scope_key", "=", scopeKey)
         .where("terminal_at", "is", null)
         .orderBy("updated_at", "desc")
         .orderBy("task_id", "asc")
@@ -201,14 +215,14 @@ export function ingestGovernorTask(params: {
           .insertInto("governor_ingress_source_highwater")
           .values({
             source_binding_ref: sourceBindingRef,
-            source_sequence: input.sourceSequence,
+            source_sequence: sourceSequence,
             source_message_ref: sourceMessageId,
             task_id: task.taskId,
             updated_at: input.now,
           })
           .onConflict((conflict) =>
             conflict.column("source_binding_ref").doUpdateSet({
-              source_sequence: input.sourceSequence,
+              source_sequence: sourceSequence,
               source_message_ref: sourceMessageId,
               task_id: task.taskId,
               updated_at: input.now,
@@ -224,7 +238,7 @@ export function ingestGovernorTask(params: {
         eventId: input.eventId,
         eventType: "task_received",
         sourceMessageId,
-        sourceSequence: input.sourceSequence,
+        sourceSequence,
         payload: { mode: classification.mode },
         now: input.now,
       });
@@ -236,7 +250,7 @@ export function ingestGovernorTask(params: {
     const current = parseTaskRow(activeRow);
     assertGovernorTaskClassification(current, params.capabilities);
     const hostFence = params.tasks.state(current.taskId)?.fence;
-    if (hostFence && input.sourceSequence <= hostFence.authenticatedSourceSequence) {
+    if (hostFence && sourceSequence <= hostFence.authenticatedSourceSequence) {
       throw new Error("GOVERNOR_INGRESS_SEQUENCE_REPLAY");
     }
     const restoredPrimary = hostFence !== undefined && hostFence.taskVersion > current.taskVersion;
@@ -257,7 +271,7 @@ export function ingestGovernorTask(params: {
       planVersion: (hostFence?.planVersion ?? current.planVersion) + 1,
       leaseEpoch: Math.max(current.leaseEpoch, hostFence?.leaseEpoch ?? current.leaseEpoch),
       executionGeneration: (hostFence?.executionGeneration ?? current.executionGeneration) + 1,
-      authenticatedSourceSequence: input.sourceSequence,
+      authenticatedSourceSequence: sourceSequence,
       updatedAt: input.now,
     };
     params.tasks.prepare(corrected);
@@ -331,7 +345,7 @@ export function ingestGovernorTask(params: {
       eventId: input.eventId,
       eventType: "task_corrected",
       sourceMessageId,
-      sourceSequence: input.sourceSequence,
+      sourceSequence,
       payload: { previousObjectiveRevision: current.objectiveRevision },
       now: input.now,
     });
