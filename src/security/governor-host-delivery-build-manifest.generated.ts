@@ -2515,7 +2515,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/embedded-agent-runner/run.ts",
-      sha256: "f96f952262393815ca1d9e7b0b5f36fd5870364188b833941996eff22013ec9e",
+      sha256: "afc11a2a638b351dc7c9b0a08f0f74789b1f90f68f3a6477ed105c69ddec69b0",
     },
     {
       path: "src/agents/embedded-agent-runner/run/abortable.ts",
@@ -17236,4 +17236,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "37ce5e1be9f56f64fceaee2a1f4f3788c3bdd2fb3e7f740aa8713005e2f2d0b9";
+  "700307227077f2ce8c43f0acdc3567028129714c75ee30995c48d358608a398b";

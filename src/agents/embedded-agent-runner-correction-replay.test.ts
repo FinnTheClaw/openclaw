@@ -1,17 +1,18 @@
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import "./test-helpers/fast-coding-tools.js";
+import { getCommandLaneSnapshot } from "../process/command-queue.js";
 import type { GovernorAgentLoopRunScope } from "../security/governor-agent-loop-types.js";
 import { governorDigest } from "../tasks/governor/canonical-json.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 import type { GovernorTaskId } from "../tasks/governor/types.js";
+import { resolveSessionLane } from "./embedded-agent-runner/lanes.js";
 import {
   buildEmbeddedRunnerAssistant,
   cleanupEmbeddedAgentRunnerTestWorkspace,
   createEmbeddedAgentRunnerOpenAiConfig,
   createEmbeddedAgentRunnerTestWorkspace,
   createMockUsage,
-  immediateEnqueue,
   makeEmbeddedRunnerAttempt,
   type EmbeddedAgentRunnerTestWorkspace,
 } from "./test-helpers/embedded-agent-runner-e2e-fixtures.js";
@@ -236,6 +237,23 @@ describe("embedded runner correction-source replay", () => {
     const removeAbortListener = vi.spyOn(abortController.signal, "removeEventListener");
     const onExecutionStarted = vi.fn();
     const onExecutionPhase = vi.fn();
+    let releaseCorrection: () => void = () => undefined;
+    const correctionReleased = new Promise<void>((resolve) => {
+      releaseCorrection = resolve;
+    });
+    let correctionStarted: () => void = () => undefined;
+    const correctionEntered = new Promise<void>((resolve) => {
+      correctionStarted = resolve;
+    });
+    let replayWaitingResolve: () => void = () => undefined;
+    const replayWaiting = new Promise<void>((resolve) => {
+      replayWaitingResolve = resolve;
+    });
+    const onLaneWait = vi.fn((info: { waiting?: boolean }) => {
+      if (info.waiting) {
+        replayWaitingResolve();
+      }
+    });
     let taskId: GovernorTaskId | undefined;
     attempt
       .mockImplementationOnce(async (rawParams: unknown) => {
@@ -264,6 +282,8 @@ describe("embedded runner correction-source replay", () => {
         if (!scope || !taskId || scope.taskId !== taskId) {
           throw new Error("correction scope mismatch");
         }
+        correctionStarted();
+        await correctionReleased;
         const decision = scope.beforeTool({
           toolCallId: "correction-tool",
           toolName: "observe",
@@ -315,22 +335,20 @@ describe("embedded runner correction-source replay", () => {
       abortSignal: abortController.signal,
       onExecutionStarted,
       onExecutionPhase,
+      onLaneWait,
       currentMessageId: "correction-initial",
-      enqueue: immediateEnqueue,
     } as const;
     try {
       await runEmbeddedAgent({ ...params, runId: "correction-initial-run" });
       if (!taskId) {
         throw new Error("initial task missing");
       }
-      await runEmbeddedAgent({
+      const correctionRun = runEmbeddedAgent({
         ...params,
         runId: "correction-run",
         currentMessageId: "correction-source",
       });
-      const events = runtime!.adapter.controller.store.listEvents(taskId);
-      expect(events.some((event) => event.eventType === "task_corrected")).toBe(true);
-      expect(runtime!.adapter.controller.store.loadTask(taskId)?.state).toBe("COMPLETED");
+      await correctionEntered;
       const beforeReplay = {
         attempts: attempt.mock.calls.length,
         models: resolveModel.mock.calls.length,
@@ -340,17 +358,43 @@ describe("embedded runner correction-source replay", () => {
         phases: onExecutionPhase.mock.calls.length,
         added: addAbortListener.mock.calls.length,
         removed: removeAbortListener.mock.calls.length,
-        events,
       };
       hookRunner.runBeforeAgentReply.mockResolvedValue({
         handled: true,
         reply: { text: "must-not-run" },
       });
-      const replay = await runEmbeddedAgent({
+      const replayRun = runEmbeddedAgent({
         ...params,
         runId: "correction-replay",
         currentMessageId: "correction-source",
       });
+      await replayWaiting;
+      releaseCorrection();
+      await correctionRun;
+      const afterCorrection = {
+        attempts: attempt.mock.calls.length,
+        models: resolveModel.mock.calls.length,
+        configs: ensureModels.mock.calls.length,
+        hooks: hookRunner.runBeforeAgentReply.mock.calls.length,
+        started: onExecutionStarted.mock.calls.length,
+        phases: onExecutionPhase.mock.calls.length,
+        added: addAbortListener.mock.calls.length,
+        removed: removeAbortListener.mock.calls.length,
+      };
+      expect(afterCorrection).toMatchObject({
+        attempts: beforeReplay.attempts,
+        models: beforeReplay.models,
+        configs: beforeReplay.configs,
+        hooks: beforeReplay.hooks,
+        started: beforeReplay.started,
+        phases: beforeReplay.phases,
+        added: beforeReplay.added,
+        removed: beforeReplay.removed + 1,
+      });
+      const events = runtime!.adapter.controller.store.listEvents(taskId);
+      expect(events.some((event) => event.eventType === "task_corrected")).toBe(true);
+      expect(runtime!.adapter.controller.store.loadTask(taskId)?.state).toBe("COMPLETED");
+      const replay = await replayRun;
       expect(replay.payloads ?? []).toEqual([]);
       expect(replay.didSendViaMessagingTool).toBeUndefined();
       expect(replay.didDeliverSourceReplyViaMessageTool).toBeUndefined();
@@ -358,15 +402,19 @@ describe("embedded runner correction-source replay", () => {
         terminalReplyKind: "silent-empty",
         stopReason: "completed_replay",
       });
-      expect(attempt.mock.calls.length).toBe(beforeReplay.attempts);
-      expect(resolveModel.mock.calls.length).toBe(beforeReplay.models);
-      expect(ensureModels.mock.calls.length).toBe(beforeReplay.configs);
-      expect(hookRunner.runBeforeAgentReply.mock.calls.length).toBe(beforeReplay.hooks);
-      expect(onExecutionStarted.mock.calls.length).toBe(beforeReplay.started);
-      expect(onExecutionPhase.mock.calls.length).toBe(beforeReplay.phases);
-      expect(addAbortListener.mock.calls.length).toBe(beforeReplay.added);
-      expect(removeAbortListener.mock.calls.length).toBe(beforeReplay.removed);
-      expect(runtime!.adapter.controller.store.listEvents(taskId)).toEqual(beforeReplay.events);
+      expect(attempt.mock.calls.length).toBe(afterCorrection.attempts);
+      expect(resolveModel.mock.calls.length).toBe(afterCorrection.models);
+      expect(ensureModels.mock.calls.length).toBe(afterCorrection.configs);
+      expect(hookRunner.runBeforeAgentReply.mock.calls.length).toBe(afterCorrection.hooks);
+      expect(onExecutionStarted.mock.calls.length).toBe(afterCorrection.started);
+      expect(onExecutionPhase.mock.calls.length).toBe(afterCorrection.phases);
+      expect(addAbortListener.mock.calls.length).toBe(afterCorrection.added);
+      expect(removeAbortListener.mock.calls.length).toBe(afterCorrection.removed);
+      expect(runtime!.adapter.controller.store.listEvents(taskId)).toEqual(events);
+      expect(getCommandLaneSnapshot(resolveSessionLane(sessionKey))).toMatchObject({
+        queuedCount: 0,
+        activeCount: 0,
+      });
     } finally {
       runtime?.close();
       closeOpenClawStateDatabase();

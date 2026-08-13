@@ -1027,6 +1027,34 @@ async function runEmbeddedAgentInternal(
 
   return enqueueSession(async () => {
     throwIfAborted();
+    const laneReplayTaskId = resolveGovernorCompletedIngressReplay({
+      runId: params.runId,
+      sessionKey: params.sessionKey ?? params.sessionId,
+      sessionId: params.sessionId,
+      agentId: earlyWorkspaceResolution.agentId,
+      workspaceId: earlyWorkspaceResolution.workspaceDir,
+      channel: params.messageChannel ?? params.messageProvider ?? "local",
+      accountId: params.agentAccountId ?? "default",
+      principalId: params.senderId ?? "anonymous",
+      conversationId:
+        params.chatId ?? params.currentMessagingTarget ?? params.sessionKey ?? params.sessionId,
+      sourceMessageId: String(params.currentMessageId ?? params.runId),
+      ...(typeof params.currentMessageId === "number" &&
+      Number.isSafeInteger(params.currentMessageId)
+        ? { sourceSequence: params.currentMessageId }
+        : {}),
+      prompt: params.prompt,
+      now: Date.now(),
+    });
+    if (laneReplayTaskId) {
+      return createEmbeddedCompletedReplayResult({
+        startedAt: Date.now(),
+        sessionId: params.sessionId,
+        sessionFile: params.sessionFile,
+        provider: params.provider,
+        model: params.model,
+      });
+    }
     // Same-session reads below must see any prior deferred transcript rewrite.
     // Checkpoint before the global lane so unrelated sessions can still start
     // while this session waits on its own maintenance lane.
