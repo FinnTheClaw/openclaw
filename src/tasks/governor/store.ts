@@ -204,6 +204,7 @@ export class GovernorSqliteStore {
     flowId?: string;
     now: number;
   }): GovernorIngressResult {
+    this.#lifecycle.assertAdmissionOpen();
     return ingestGovernorTask({
       options: this.#options,
       identity: this.identity,
@@ -216,6 +217,7 @@ export class GovernorSqliteStore {
   ingestHostSequenced(
     params: Omit<Parameters<GovernorSqliteStore["ingest"]>[0], "sourceSequence">,
   ): GovernorIngressResult {
+    this.#lifecycle.assertAdmissionOpen();
     return ingestGovernorTask({
       options: this.#options,
       identity: this.identity,

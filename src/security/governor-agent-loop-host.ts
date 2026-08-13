@@ -3,6 +3,10 @@ import { governorDigest } from "../tasks/governor/canonical-json.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 import type { GovernorController } from "../tasks/governor/controller.js";
 import { createGovernorEffectId } from "../tasks/governor/types.js";
+import {
+  assertGovernorAgentLoopAdmission,
+  createGovernorAgentLoopHostFreeze,
+} from "./governor-agent-loop-admission.js";
 import { createGovernorCompletedReplayScope } from "./governor-agent-loop-completed-replay.js";
 import {
   validateGovernorAgentLoopConfiguration,
@@ -10,6 +14,7 @@ import {
 } from "./governor-agent-loop-config.js";
 import { recoverGovernorAgentLoopGuidance } from "./governor-agent-loop-guidance-recovery.js";
 import { closeGovernorAgentLoopHost } from "./governor-agent-loop-host-close.js";
+import { createGovernorAgentLoopHostReplayResolver } from "./governor-agent-loop-host-replay.js";
 import { installGovernorAgentLoopInertRegistry } from "./governor-agent-loop-inert-registry.js";
 import { createGovernorAgentLoopIngress } from "./governor-agent-loop-ingress.js";
 import {
@@ -29,7 +34,6 @@ import {
   recordGovernorAgentLoopToolObservation,
   type GovernorAgentLoopTicketState,
 } from "./governor-agent-loop-task.js";
-import { resolveHostGovernorCompletedIngressReplay as resolveCompletedReplayForHost } from "./governor-agent-loop-terminal-replay.js";
 import { createGovernorAgentLoopTools } from "./governor-agent-loop-tool-bindings.js";
 import {
   governorAgentLoopToolImplementationDigest,
@@ -68,6 +72,9 @@ function createScope(
   host: ActiveHost,
   input: GovernorAgentLoopRunInput,
 ): GovernorAgentLoopRunScope | undefined {
+  if (!assertGovernorAgentLoopAdmission(host, host.config.mode)) {
+    return undefined;
+  }
   const promptDigest = governorDigest(input.prompt);
   const definitions = host.config.toolBindings.map((binding) =>
     host.controller.capabilities.definition(binding.capability),
@@ -428,7 +435,6 @@ function createScope(
   host.scopes.add(scope);
   return scope;
 }
-
 /** Trusted bootstrap-only activation. The returned closure removes this exact host. */
 export function installGovernorAgentLoopHost(params: {
   controller: GovernorController;
@@ -461,12 +467,18 @@ export function installGovernorAgentLoopHost(params: {
       },
     });
 }
+export const freezeGovernorAgentLoopHostAdmission = createGovernorAgentLoopHostFreeze(
+  () => activeHost,
+);
 /** Read-only resolution used by the production run seam. */
 export function resolveHostGovernorAgentLoopScope(
   input: GovernorAgentLoopRunInput,
 ): GovernorAgentLoopRunScope | undefined {
   const host = activeHost;
   if (!host) {
+    return undefined;
+  }
+  if (!assertGovernorAgentLoopAdmission(host, host.config.mode)) {
     return undefined;
   }
   if (!isSelectedGovernorAgentLoopScope(host, input)) {
@@ -482,16 +494,7 @@ export function resolveHostGovernorAgentLoopScope(
   }
 }
 /** Resolves completed ingress without ingesting, allocating, or emitting runtime state. */
-export function resolveHostGovernorCompletedIngressReplay(
-  input: GovernorAgentLoopRunInput,
-): string | undefined {
-  try {
-    return resolveCompletedReplayForHost({ host: activeHost, input });
-  } catch (error) {
-    if (activeHost?.config.mode === "shadow") {
-      return undefined;
-    }
-    throw error;
-  }
-}
+export const resolveHostGovernorCompletedIngressReplay = createGovernorAgentLoopHostReplayResolver(
+  () => activeHost,
+);
 export { isHostIssuedGovernorAgentLoopScope } from "./governor-agent-loop-scope-token.js";

@@ -8,6 +8,7 @@ import {
 export class GovernorStoreLifecycle {
   readonly #databasePath: string;
   #closed = false;
+  #admissionFrozen = false;
 
   constructor(readonly options: OpenClawStateDatabaseOptions) {
     this.#databasePath = openOpenClawStateDatabase(options).path;
@@ -17,6 +18,18 @@ export class GovernorStoreLifecycle {
     if (this.#closed) {
       throw new Error("GOVERNOR_HOST_CAPABILITY_CLOSED");
     }
+  }
+
+  assertAdmissionOpen(): void {
+    this.assertOpen();
+    if (this.#admissionFrozen) {
+      throw new Error("GOVERNOR_HOST_ADMISSION_FROZEN");
+    }
+  }
+
+  freezeAdmissions(): void {
+    this.assertOpen();
+    this.#admissionFrozen = true;
   }
 
   database() {

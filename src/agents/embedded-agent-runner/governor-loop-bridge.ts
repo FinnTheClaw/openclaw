@@ -100,10 +100,12 @@ export function installGovernorLoopBridge(params: {
 
   const afterToolCall: NonNullable<Agent["afterToolCall"]> = async (context, signal) => {
     let priorResult: AfterToolCallResult | undefined;
+    let priorThrew = false;
     let priorError: unknown;
     try {
       priorResult = (await priorAfter?.(context, signal)) as AfterToolCallResult | undefined;
     } catch (error) {
+      priorThrew = true;
       priorError = error;
     }
     try {
@@ -111,7 +113,7 @@ export function installGovernorLoopBridge(params: {
         ticket: tickets.get(context.toolCall.id),
         toolCallId: context.toolCall.id,
         toolName: context.toolCall.name,
-        result: priorError
+        result: priorThrew
           ? {
               content: [{ type: "text", text: "GOVERNOR_POST_TOOL_HOOK_FAILED" }],
               details: null,
@@ -120,7 +122,7 @@ export function installGovernorLoopBridge(params: {
               content: priorResult?.content ?? context.result.content,
               details: priorResult?.details ?? context.result.details ?? null,
             },
-        isError: priorError ? true : (priorResult?.isError ?? context.isError),
+        isError: priorThrew ? true : (priorResult?.isError ?? context.isError),
         now: now(),
       });
     } catch (error) {
@@ -130,9 +132,8 @@ export function installGovernorLoopBridge(params: {
     } finally {
       tickets.delete(context.toolCall.id);
     }
-    if (priorError) {
+    if (priorThrew) {
       // The legacy Agent loop preserves arbitrary hook throw values here.
-      // oxlint-disable-next-line typescript/only-throw-error -- preserve the exact legacy hook throw value.
       throw priorError;
     }
     return priorResult;

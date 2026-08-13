@@ -7,6 +7,7 @@ import { GovernorRuntimeAdapter } from "../tasks/governor/runtime-adapter.js";
 import { GovernorStoreLifecycle } from "../tasks/governor/store-lifecycle.js";
 import { validateGovernorAgentLoopConfiguration } from "./governor-agent-loop-config.js";
 import {
+  freezeGovernorAgentLoopHostAdmission,
   installGovernorAgentLoopHost,
   type GovernorAgentLoopConfiguration,
 } from "./governor-agent-loop-host.js";
@@ -306,7 +307,7 @@ export function createGovernorHostRuntimeBindings(params: {
     owners,
     deliveryHandles: Object.freeze(deliveryHandles),
     lifecycle,
-    freeze: broker.freeze,
+    freeze: () => lifecycle.freezeAdmissions(),
     close,
   };
 }
@@ -467,7 +468,10 @@ export function createGovernorHostRuntimeIfEnabled(params: {
     adapter,
     owners: bindings.owners,
     deliveryHandles: bindings.deliveryHandles,
-    freeze: () => bindings.freeze(),
+    freeze: () => {
+      bindings.freeze();
+      freezeGovernorAgentLoopHostAdmission();
+    },
     close,
   });
 }

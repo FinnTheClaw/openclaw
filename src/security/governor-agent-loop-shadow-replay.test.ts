@@ -143,17 +143,27 @@ describe("shadow terminal replay transparency", () => {
     );
   });
 
-  it.each(["error", "value"] as const)(
+  it.each(["error", "value", "zero", "false", "undefined", "null", "empty"] as const)(
     "preserves the pre-existing afterToolCall throw result in shadow mode (%s)",
     async (variant) => {
       await withOpenClawTestState(
         { layout: "state-only", prefix: `shadow-hook-${variant}-` },
         async (state) => {
           const stateDir = state.stateDir;
-          const marker =
+          const marker: unknown =
             variant === "error"
               ? new Error("shadow-hook-error-marker")
-              : { kind: "shadow-hook-value-marker" };
+              : variant === "value"
+                ? { kind: "shadow-hook-value-marker" }
+                : variant === "zero"
+                  ? 0
+                  : variant === "false"
+                    ? false
+                    : variant === "undefined"
+                      ? undefined
+                      : variant === "null"
+                        ? null
+                        : "";
           const run = async (mode: "off" | "shadow") => {
             const runtime =
               mode === "shadow"
@@ -178,7 +188,6 @@ describe("shadow terminal replay transparency", () => {
                 ],
               },
               afterToolCall: async () => {
-                // oxlint-disable-next-line typescript/only-throw-error -- differential fixture uses an arbitrary legacy throw value.
                 throw marker;
               },
               streamFn: scriptedStream(() => {

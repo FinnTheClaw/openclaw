@@ -124,7 +124,6 @@ export function createHostGovernorBroker(params: {
   physicalExecutionCoordinator: GovernorTrustedPhysicalExecutionCoordinator;
   memoryAuthority: import("./governor-host-memory-authority.js").GovernorTrustedMemoryAuthority;
   taskAuthority: import("./governor-host-task-authority.js").GovernorTrustedTaskAuthority;
-  freeze: () => void;
   close: () => void;
 } {
   if (!isGovernorSecrets(params.secrets) || !isGovernorHostPersistence(params.persistence)) {
@@ -376,9 +375,6 @@ export function createHostGovernorBroker(params: {
     physicalExecutionCoordinator,
     memoryAuthority,
     taskAuthority,
-    freeze: () => {
-      closing = true;
-    },
     close,
   };
 }
