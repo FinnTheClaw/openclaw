@@ -48,6 +48,8 @@ import {
   GovernorEvidenceAdmissionStore,
   type GovernorPendingEvidence,
 } from "./store-evidence-admission.js";
+import type { GovernorEvidenceInvalidationReason } from "./store-evidence-invalidation.js";
+import { invalidateGovernorEvidence } from "./store-evidence-invalidation.js";
 import { ingestGovernorTask, type GovernorIngressResult } from "./store-ingress.js";
 import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
 import type { GovernorTaskAuthorityStore } from "./task-authority.js";
@@ -187,6 +189,20 @@ export class GovernorSqliteStore {
   }): GovernorPendingEvidence {
     assertGovernorPersistedJson("log", params.candidate);
     return this.#evidenceAdmissions.admit(params);
+  }
+
+  invalidateEvidence(params: {
+    taskId: GovernorTaskId;
+    evidenceId: string;
+    reasonCode: GovernorEvidenceInvalidationReason;
+    now: number;
+  }): GovernorEvidenceRecord {
+    return invalidateGovernorEvidence({
+      options: this.#options,
+      admissions: this.#evidenceAdmissions,
+      tasks: this.#tasks,
+      ...params,
+    });
   }
 
   // oxfmt-ignore

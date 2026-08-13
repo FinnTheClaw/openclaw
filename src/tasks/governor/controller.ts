@@ -24,10 +24,13 @@ import {
 } from "./controller-conditions.js";
 import {
   assessGovernorRuntimeFinish,
+  blockGovernorRuntimeTask,
   recordGovernorRuntimeEvent,
+  recordGovernorRuntimeReplanGuidance,
   requestGovernorRuntimeReplan,
   type GovernorRuntimeEventRequest,
   type GovernorRuntimeFinishRequest,
+  type GovernorRuntimeBlockReason,
 } from "./controller-runtime.js";
 import { dispatchGovernorOutbox, type GovernorDispatchOutboxParams } from "./delivery-dispatch.js";
 import { createGovernorEventRecord } from "./events.js";
@@ -320,6 +323,18 @@ export class GovernorController {
 
   requestRuntimeReplan(taskId: GovernorTaskId, now: number): GovernorTaskProjection {
     return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now);
+  }
+
+  recordRuntimeReplanGuidance(
+    taskId: GovernorTaskId,
+    now: number,
+    request: Parameters<typeof recordGovernorRuntimeReplanGuidance>[3],
+  ): GovernorTaskProjection {
+    return recordGovernorRuntimeReplanGuidance(this.store, this.#task(taskId), now, request);
+  }
+
+  blockRuntime(taskId: GovernorTaskId, now: number, reasonCode: GovernorRuntimeBlockReason) {
+    return blockGovernorRuntimeTask(this.store, this.#task(taskId), now, reasonCode);
   }
 
   assessFinish(params: GovernorRuntimeFinishRequest): GovernorFinishDecision {

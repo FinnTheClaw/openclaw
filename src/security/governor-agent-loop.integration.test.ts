@@ -220,12 +220,34 @@ describe("host-governed production Agent loop bridge", () => {
           initialState: { model, tools: [] },
           streamFn: scriptedStream(() => assistant([{ type: "text", text: "simple-answer" }])),
         });
+        agent.steer({
+          role: "user",
+          content: [{ type: "text", text: "unrelated steering" }],
+          timestamp: 1,
+        });
+        agent.steerKeyed("openclaw-governor-progress", {
+          role: "user",
+          content: [{ type: "text", text: "stale governor progress" }],
+          timestamp: 2,
+        });
+        agent.followUp({
+          role: "user",
+          content: [{ type: "text", text: "unrelated follow-up" }],
+          timestamp: 3,
+        });
         const bridge = install(agent, scope);
         await agent.prompt("simple");
         bridge.assertTerminal();
         expect(task(runtime, scope).state).toBe("COMPLETED");
         expect(runtime.adapter.controller.store.listEffects(scope.taskId as never)).toHaveLength(0);
+        expect(agent.state.messages.map((message) => JSON.stringify(message))).toEqual(
+          expect.not.arrayContaining([expect.stringContaining("stale governor progress")]),
+        );
         bridge.dispose();
+        await agent.continue();
+        expect(agent.state.messages.map((message) => JSON.stringify(message))).toEqual(
+          expect.arrayContaining([expect.stringContaining("unrelated follow-up")]),
+        );
         runtime.close();
       },
     );
@@ -437,7 +459,7 @@ describe("host-governed production Agent loop bridge", () => {
         expect(turn).toBe(24);
         const finished = task(runtime, scope);
         expect(finished.state).toBe("COMPLETED");
-        expect(finished.planVersion).toBe(2);
+        expect(finished.planVersion).toBe(1);
         expect(runtime.adapter.controller.store.listEvidence(scope.taskId as never)).toHaveLength(
           21,
         );

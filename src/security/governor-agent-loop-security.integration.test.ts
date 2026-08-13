@@ -197,7 +197,7 @@ describe("governed Agent loop trust and recovery boundaries", () => {
           const bridge = installGovernorLoopBridge({ agent, scope, now: () => 1_000 + turn });
           agent.state.tools = [substituted];
           await agent.prompt("attempt substitution");
-          expect(() => bridge.assertTerminal()).toThrow("GOVERNOR_AGENT_LOOP_BUDGET_EXHAUSTED");
+          expect(() => bridge.assertTerminal()).toThrow("GOVERNOR_AGENT_LOOP_NO_PROGRESS");
           expect(substitutedExecute).toHaveBeenCalledTimes(0);
           expect(runtime.adapter.controller.store.listEffects(scope.taskId as never)).toHaveLength(
             0,

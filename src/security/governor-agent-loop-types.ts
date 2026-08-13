@@ -24,7 +24,8 @@ export type GovernorAgentLoopToolDecision =
 export type GovernorAgentLoopTurnDecision =
   | { kind: "complete" }
   | { kind: "continue"; message: string }
-  | { kind: "stop"; reasonCode: string };
+  | { kind: "stop"; reasonCode: string }
+  | { kind: "interrupt"; reasonCode: string };
 
 export type GovernorAgentLoopRunScope = Readonly<{
   taskId: string;

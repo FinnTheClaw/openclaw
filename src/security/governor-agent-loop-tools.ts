@@ -1,6 +1,7 @@
 /** Closed, host-owned disposable tools for the first live governor loop canary. */
 import { Type } from "typebox";
 import type { AgentTool } from "../../packages/agent-core/src/types.js";
+import { stringEnum } from "../agents/schema/typebox.js";
 import { governorDigest } from "../tasks/governor/canonical-json.js";
 
 export type GovernorAgentLoopToolImplementationId =
@@ -58,14 +59,11 @@ export function createGovernorAgentLoopTool(params: {
   const argumentSchema = params.argumentName
     ? Type.Object(
         {
-          [params.argumentName]: Type.Optional(
-            Type.String({
-              maxLength: 256,
-              ...(params.allowedArgumentValues?.length
-                ? { description: `Allowed values: ${params.allowedArgumentValues.join(", ")}` }
-                : {}),
-            }),
-          ),
+          [params.argumentName]: params.allowedArgumentValues?.length
+            ? stringEnum(params.allowedArgumentValues, {
+                description: `Allowed values: ${params.allowedArgumentValues.join(", ")}`,
+              })
+            : Type.String({ maxLength: 256 }),
         },
         { additionalProperties: false },
       )

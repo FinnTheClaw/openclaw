@@ -114,13 +114,6 @@ export function recordGovernorAgentLoopToolObservation(params: {
   if (!recorded.accepted) {
     throw new Error("GOVERNOR_AGENT_LOOP_RESULT_STALE");
   }
-  if (
-    params.observation.isError &&
-    params.controller.store.loadTask(params.taskId)?.state === "EXECUTING"
-  ) {
-    params.controller.requestRuntimeReplan(params.taskId, params.observation.now + 1);
-    ensureGovernorAgentLoopExecuting(params.controller, params.taskId, params.observation.now + 2);
-  }
 }
 
 export function interruptGovernorAgentLoopTool(params: {

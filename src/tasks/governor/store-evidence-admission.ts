@@ -148,6 +148,19 @@ export class GovernorEvidenceAdmissionStore {
     return pending;
   }
 
+  invalidate(evidence: GovernorEvidenceRecord, now: number): GovernorEvidenceRecord {
+    this.verify(evidence);
+    if (evidence.invalidatedAt !== undefined) {
+      return evidence;
+    }
+    const unsigned = { ...evidence, invalidatedAt: now };
+    const { admissionSignature: _ignored, ...unsignedWithoutSignature } = unsigned;
+    return Object.freeze({
+      ...unsigned,
+      admissionSignature: this.#sign(unsignedWithoutSignature),
+    });
+  }
+
   owns(pending: GovernorPendingEvidence): boolean {
     return this.#pending.has(pending);
   }

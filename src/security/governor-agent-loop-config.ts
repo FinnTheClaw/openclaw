@@ -119,7 +119,9 @@ export function validateGovernorAgentLoopConfiguration(
     if (!isGovernorAgentLoopToolImplementationId(item.implementationId)) {
       throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
     }
-    const definition = capabilities.find((item) => item.capability === capability);
+    const definition = capabilities.find(
+      (capabilityDefinition) => capabilityDefinition.capability === capability,
+    );
     if (definition?.mutating || definition?.requiresApproval || toolName === "sessions_spawn") {
       throw new Error("GOVERNOR_AGENT_LOOP_READ_ONLY_CANARY_REQUIRED");
     }
@@ -132,6 +134,9 @@ export function validateGovernorAgentLoopConfiguration(
       (Object.getPrototypeOf(item.criteriaByValue) !== Object.prototype ||
         Object.keys(item.criteriaByValue).length > 256)
     ) {
+      throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
+    }
+    if (Boolean(item.criterionArgument) !== Boolean(item.criteriaByValue)) {
       throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
     }
     let criteriaByValue: Readonly<Record<string, string>> | undefined;

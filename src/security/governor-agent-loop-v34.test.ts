@@ -14,7 +14,6 @@ import { closeOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { governorDigest } from "../tasks/governor/canonical-json.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { buildGovernorAgentLoopProgress } from "./governor-agent-loop-progress.js";
 import { resolveGovernorAgentLoopRunScope } from "./governor-agent-loop-readonly.js";
 import { createGovernorHostRuntimeIfEnabled } from "./governor-host-bootstrap.js";
 
@@ -258,7 +257,7 @@ describe("V34 governed continuation", () => {
           );
           expect(
             runtime.adapter.controller.store.loadTask(scope.taskId as never)?.planVersion,
-          ).toBe(2);
+          ).toBe(1);
           bridge.dispose();
         } finally {
           runtime.close();
@@ -267,28 +266,235 @@ describe("V34 governed continuation", () => {
     );
   });
 
-  it("keeps invalidated evidence eligible for justified revalidation", () => {
-    const snapshot = buildGovernorAgentLoopProgress(
-      {
-        store: {
-          loadTask: () => ({
-            planVersion: 1,
-            contract: { completionCriteria: [{ criterionId: "alpha", mandatory: true }] },
-          }),
-          listEvidence: () => [
-            { criterionId: "alpha", admissibility: "admitted", invalidatedAt: 200 },
-          ],
-          listEffects: () => [],
-        },
-      } as never,
-      "v34-task" as never,
-      {
-        criteria: [{ criterionId: "alpha", description: "Verify alpha" }],
-        toolBindings: [{ toolName: "observe", criterionId: "alpha" }],
-      } as never,
+  it("allows justified revalidation through the signed invalidation API", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-v34-revalidate-" },
+      async (state) => {
+        const runtime = start(state.stateDir, ["alpha"]);
+        try {
+          const scope = resolveGovernorAgentLoopRunScope(input())!;
+          let turn = 0;
+          const agent = new Agent({
+            initialState: { model, tools: [] },
+            streamFn: streamFor(() => {
+              turn += 1;
+              if (turn === 2) {
+                const evidence = runtime.adapter.controller.store.listEvidence(
+                  scope.taskId as never,
+                )[0];
+                runtime.adapter.controller.store.invalidateEvidence({
+                  taskId: scope.taskId as never,
+                  evidenceId: evidence!.evidenceId,
+                  reasonCode: "contradicted_by_newer_evidence",
+                  now: 200,
+                });
+              }
+              if (turn <= 2) {
+                return assistant([
+                  {
+                    type: "toolCall",
+                    id: `revalidate-${turn}`,
+                    name: "observe",
+                    arguments: { key: "alpha" },
+                  },
+                ]);
+              }
+              return assistant([{ type: "text", text: "done" }]);
+            }),
+          });
+          let timestamp = 0;
+          const bridge = installGovernorLoopBridge({ agent, scope, now: () => ++timestamp });
+          await agent.prompt("revalidate the fixture");
+          bridge.assertTerminal();
+          expect(turn).toBe(3);
+          const evidence = runtime.adapter.controller.store.listEvidence(scope.taskId as never);
+          expect(evidence).toHaveLength(2);
+          expect(
+            runtime.adapter.controller.store
+              .listEvents(scope.taskId as never)
+              .find((event) => event.eventType === "evidence_invalidated")?.payload,
+          ).toMatchObject({ reasonCode: "contradicted_by_newer_evidence" });
+          bridge.dispose();
+        } finally {
+          runtime.close();
+        }
+      },
     );
-    expect(snapshot.satisfiedCriteria).toEqual([]);
-    expect(snapshot.remainingCriteria).toEqual(["alpha"]);
-    expect(snapshot.nextActions[0]?.criterionId).toBe("alpha");
+  });
+
+  it("rejects missing and unknown criterion arguments before physical execution", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-v34-arguments-" },
+      async (state) => {
+        const runtime = start(state.stateDir, ["alpha", "beta"]);
+        try {
+          const scope = resolveGovernorAgentLoopRunScope(input())!;
+          const agent = new Agent({
+            initialState: { model, tools: [] },
+            streamFn: streamFor(() => assistant([{ type: "text", text: "done" }])),
+          });
+          const bridge = installGovernorLoopBridge({ agent, scope, now: () => 1 });
+          const tool = agent.state.tools.find((item) => item.name === "observe");
+          const missing = scope.beforeTool({
+            toolCallId: "missing",
+            toolName: "observe",
+            args: {},
+            tool,
+            now: 1,
+          });
+          const unknown = scope.beforeTool({
+            toolCallId: "unknown",
+            toolName: "observe",
+            args: { key: "gamma" },
+            tool,
+            now: 1,
+          });
+          expect(missing).toMatchObject({ kind: "block" });
+          expect(unknown).toMatchObject({ kind: "block" });
+          expect(JSON.stringify(missing)).toContain("ALLOWED:alpha,beta");
+          expect(JSON.stringify(unknown)).toContain("ALLOWED:alpha,beta");
+          expect(runtime.adapter.controller.store.listEffects(scope.taskId as never)).toEqual([]);
+          bridge.dispose();
+        } finally {
+          runtime.close();
+        }
+      },
+    );
+  });
+
+  it("replaces pending owned steering and permits reissue after delivery", async () => {
+    const seen: string[][] = [];
+    let turn = 0;
+    const agent = new Agent({
+      initialState: { model, tools: [] },
+      streamFn: streamFor(() => {
+        turn += 1;
+        return assistant([{ type: "text", text: `turn-${turn}` }]);
+      }, seen),
+    });
+    agent.steer({
+      role: "user",
+      content: [{ type: "text", text: "unrelated steering" }],
+      timestamp: 1,
+    });
+    agent.steerKeyed("governor", {
+      role: "user",
+      content: [{ type: "text", text: "progress A" }],
+      timestamp: 2,
+    });
+    agent.steerKeyed("governor", {
+      role: "user",
+      content: [{ type: "text", text: "progress B" }],
+      timestamp: 3,
+    });
+    await agent.prompt("start");
+    expect(seen.flat()).toContain("unrelated steering");
+    expect(seen.flat()).toContain("progress B");
+    expect(seen.flat()).not.toContain("progress A");
+
+    agent.steerKeyed("governor", {
+      role: "user",
+      content: [{ type: "text", text: "progress B" }],
+      timestamp: 4,
+    });
+    await agent.continue();
+    expect(seen.flat()).toContain("progress B");
+    expect(turn).toBe(3);
+  });
+
+  it("reconstructs one durable tool-error replan after a restart", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-v34-replan-restart-" },
+      async (state) => {
+        const runtime = start(state.stateDir, ["alpha"]);
+        const scope = resolveGovernorAgentLoopRunScope(input())!;
+        const tool = scope.governedTools()[0];
+        const first = scope.beforeTool({
+          toolCallId: "failed-first",
+          toolName: "observe",
+          args: { key: "alpha" },
+          tool,
+          now: 101,
+        });
+        expect(first.kind).toBe("allow");
+        if (first.kind !== "allow" || !first.ticket) {
+          throw new Error("fixture ticket missing");
+        }
+        scope.afterTool({
+          ticket: first.ticket,
+          toolCallId: "failed-first",
+          toolName: "observe",
+          result: { content: [], details: null },
+          isError: true,
+          now: 102,
+        });
+        scope.dispose();
+        runtime.close();
+        closeOpenClawStateDatabase();
+
+        const restarted = start(state.stateDir, ["alpha"]);
+        const recovered = resolveGovernorAgentLoopRunScope(input())!;
+        const guidance = restarted.adapter.controller.store
+          .listEvents(recovered.taskId as never)
+          .filter((event) => event.eventType === "runtime_replan_requested");
+        expect(guidance).toHaveLength(1);
+        expect(guidance[0]?.payload).toMatchObject({
+          guidanceOnly: true,
+          reasonCode: "tool_semantic_failure",
+        });
+
+        const retry = recovered.beforeTool({
+          toolCallId: "failed-retry",
+          toolName: "observe",
+          args: { key: "alpha" },
+          tool: recovered.governedTools()[0],
+          now: 201,
+        });
+        expect(retry.kind).toBe("allow");
+        if (retry.kind !== "allow" || !retry.ticket) {
+          throw new Error("fixture retry ticket missing");
+        }
+        recovered.afterTool({
+          ticket: retry.ticket,
+          toolCallId: "failed-retry",
+          toolName: "observe",
+          result: { content: [], details: null },
+          isError: true,
+          now: 202,
+        });
+        expect(recovered.afterTurn({ assistantText: "", toolCallCount: 1, now: 203 })).toEqual({
+          kind: "stop",
+          reasonCode: "GOVERNOR_AGENT_LOOP_NO_PROGRESS",
+        });
+        expect(
+          restarted.adapter.controller.store
+            .listEvents(recovered.taskId as never)
+            .filter((event) => event.eventType === "runtime_replan_requested"),
+        ).toHaveLength(1);
+        recovered.dispose();
+        restarted.close();
+      },
+    );
+  });
+
+  it("reconstructs the absolute model-turn budget across restart", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-v34-budget-restart-" },
+      async (state) => {
+        const runtime = start(state.stateDir, ["alpha"], 2);
+        const scope = resolveGovernorAgentLoopRunScope(input())!;
+        expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 101 }).kind).toBe(
+          "continue",
+        );
+        scope.dispose();
+        runtime.close();
+        closeOpenClawStateDatabase();
+        const restarted = start(state.stateDir, ["alpha"], 1);
+        expect(() => resolveGovernorAgentLoopRunScope(input())).toThrow(
+          "GOVERNOR_AGENT_LOOP_BUDGET_EXHAUSTED",
+        );
+        restarted.close();
+      },
+    );
   });
 });

@@ -48,10 +48,21 @@ export function installGovernorLoopBridge(params: {
   const tickets = new Map<string, GovernorAgentLoopToolTicket | undefined>();
   const priorBefore = params.agent.beforeToolCall;
   const priorAfter = params.agent.afterToolCall;
+  const priorShouldStop = params.agent.shouldStopAfterTurn;
   const priorTools = [...params.agent.state.tools];
   let installedTools: AgentTool[] | undefined;
   const governedTools = new Map(params.scope.governedTools().map((tool) => [tool.name, tool]));
   let stoppedReason: string | undefined;
+  let terminalRequested = false;
+  const shouldStopAfterTurn = async (
+    context: Parameters<NonNullable<Agent["shouldStopAfterTurn"]>>[0],
+  ) => {
+    if (terminalRequested) {
+      return true;
+    }
+    return (await priorShouldStop?.(context)) === true;
+  };
+  const governorSteeringKey = "openclaw-governor-progress";
   if (params.scope.mode === "enforce") {
     const legacyTools = params.agent.state.tools.filter((tool) => !governedTools.has(tool.name));
     installedTools = [...legacyTools, ...governedTools.values()];
@@ -127,6 +138,7 @@ export function installGovernorLoopBridge(params: {
 
   params.agent.beforeToolCall = beforeToolCall;
   params.agent.afterToolCall = afterToolCall;
+  params.agent.shouldStopAfterTurn = shouldStopAfterTurn;
   const unsubscribe = params.agent.subscribe(async (event: AgentEvent) => {
     if (event.type !== "turn_end") {
       return;
@@ -145,14 +157,22 @@ export function installGovernorLoopBridge(params: {
         now: now(),
       });
       if (decision.kind === "continue" && decision.message) {
-        params.agent.steer({
+        params.agent.steerKeyed(governorSteeringKey, {
           role: "user",
           content: [{ type: "text", text: decision.message }],
           timestamp: now(),
         });
       } else if (decision.kind === "stop") {
         stoppedReason = decision.reasonCode;
-        params.agent.abort();
+        params.agent.removeSteeringKey(governorSteeringKey);
+        terminalRequested = true;
+      } else if (decision.kind === "interrupt") {
+        stoppedReason = decision.reasonCode;
+      } else if (decision.kind === "complete") {
+        if (params.scope.mode !== "shadow") {
+          terminalRequested = true;
+          params.agent.removeSteeringKey(governorSteeringKey);
+        }
       }
     } catch (error) {
       if (params.scope.mode !== "shadow") {
@@ -176,7 +196,9 @@ export function installGovernorLoopBridge(params: {
       disposed = true;
       let interruptError: unknown;
       try {
-        params.scope.interrupt({ now: now() });
+        if (!terminalRequested) {
+          params.scope.interrupt({ now: now() });
+        }
       } catch (error) {
         if (params.scope.mode !== "shadow") {
           interruptError = error;
@@ -189,10 +211,14 @@ export function installGovernorLoopBridge(params: {
       if (params.agent.afterToolCall === afterToolCall) {
         params.agent.afterToolCall = priorAfter;
       }
+      if (params.agent.shouldStopAfterTurn === shouldStopAfterTurn) {
+        params.agent.shouldStopAfterTurn = priorShouldStop;
+      }
       if (installedTools && params.agent.state.tools === installedTools) {
         params.agent.state.tools = priorTools;
       }
       tickets.clear();
+      params.agent.removeSteeringKey(governorSteeringKey);
       params.scope.dispose();
       if (interruptError) {
         throw asThrownError(interruptError, "GOVERNOR_AGENT_LOOP_INTERRUPT_FAILED");

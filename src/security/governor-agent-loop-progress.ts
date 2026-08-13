@@ -45,16 +45,6 @@ export function buildGovernorAgentLoopProgress(
       .filter((item) => item.admissibility === "admitted" && item.invalidatedAt === undefined)
       .map((item) => item.criterionId),
   );
-  for (const effect of controller.store.listEffects(taskId)) {
-    if (
-      effect.objectiveRevision === task.objectiveRevision &&
-      effect.executionGeneration === task.executionGeneration &&
-      effect.outcome.semantic === "success" &&
-      effect.criterionId
-    ) {
-      satisfied.add(effect.criterionId);
-    }
-  }
   const criteria = task.contract.completionCriteria.filter((criterion) => criterion.mandatory);
   const satisfiedCriteria = criteria
     .filter((criterion) => satisfied.has(criterion.criterionId))
@@ -101,9 +91,19 @@ export function buildGovernorAgentLoopProgress(
     remainingCriteria,
     nextActions,
   });
+  const evidenceFingerprint = governorDigest(
+    controller.store.listEvidence(taskId).map((item) => ({
+      evidenceId: item.evidenceId,
+      evidenceDigest: item.evidenceDigest,
+      invalidatedAt: item.invalidatedAt ?? null,
+      taskVersion: item.taskVersion,
+      planVersion: item.planVersion,
+    })),
+  );
   const fingerprint = governorDigest({
     planVersion: task.planVersion,
     semanticFingerprint,
+    evidenceFingerprint,
   });
   return Object.freeze({
     planVersion: task.planVersion,
@@ -128,7 +128,7 @@ export function formatGovernorAgentLoopProgress(
         )
         .join("; ")
     : "none";
-  return `Host progress (verified): plan=${snapshot.planVersion}; satisfied=[${satisfied}]; remaining=[${remaining}]; eligible-next=[${next}]. Use an eligible next action and do not repeat a satisfied criterion.`;
+  return `Host progress (verified): revision=${snapshot.fingerprint}; plan=${snapshot.planVersion}; satisfied=[${satisfied}]; remaining=[${remaining}]; eligible-next=[${next}]. Use an eligible next action and do not repeat a satisfied criterion.`;
 }
 
 export function formatGovernorAlreadySatisfiedReason(
