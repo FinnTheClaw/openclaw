@@ -6,6 +6,7 @@ import { createGovernorEffectId } from "../tasks/governor/types.js";
 import {
   assertGovernorAgentLoopAdmission,
   createGovernorAgentLoopHostFreeze,
+  type GovernorAgentLoopHostLifecycle,
 } from "./governor-agent-loop-admission.js";
 import { createGovernorCompletedReplayScope } from "./governor-agent-loop-completed-replay.js";
 import {
@@ -435,13 +436,13 @@ function createScope(
   host.scopes.add(scope);
   return scope;
 }
-/** Trusted bootstrap-only activation. The returned closure removes this exact host. */
+/** Trusted bootstrap-only activation. The lifecycle handle owns this exact host. */
 export function installGovernorAgentLoopHost(params: {
   controller: GovernorController;
   submitObservedReceipt: HostGovernorCapabilities["submitObservedReceipt"];
   capabilities: readonly GovernorCapabilityDefinition[];
   config: GovernorAgentLoopConfiguration;
-}): () => void {
+}): GovernorAgentLoopHostLifecycle {
   if (activeHost) {
     throw new Error("GOVERNOR_AGENT_LOOP_HOST_ALREADY_ACTIVE");
   }
@@ -457,20 +458,19 @@ export function installGovernorAgentLoopHost(params: {
     resolveCompletedReplay: resolveHostGovernorCompletedIngressReplay,
     isScope: isHostIssuedGovernorAgentLoopScope,
   });
-  return () =>
-    closeGovernorAgentLoopHost({
-      host,
-      registryToken,
-      isActive: () => activeHost === host,
-      clearActive: () => {
-        activeHost = undefined;
-      },
-    });
+  return Object.freeze({
+    freezeAdmission: createGovernorAgentLoopHostFreeze(() => host),
+    close: () =>
+      closeGovernorAgentLoopHost({
+        host,
+        registryToken,
+        isActive: () => activeHost === host,
+        clearActive: () => {
+          activeHost = undefined;
+        },
+      }),
+  });
 }
-export const freezeGovernorAgentLoopHostAdmission = createGovernorAgentLoopHostFreeze(
-  () => activeHost,
-);
-/** Read-only resolution used by the production run seam. */
 export function resolveHostGovernorAgentLoopScope(
   input: GovernorAgentLoopRunInput,
 ): GovernorAgentLoopRunScope | undefined {

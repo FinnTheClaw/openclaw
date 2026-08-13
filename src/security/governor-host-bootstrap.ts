@@ -5,9 +5,9 @@ import { createGovernorControllerIfEnabled } from "../tasks/governor/controller-
 import { isBehaviorGovernorEnabled } from "../tasks/governor/feature-flag.js";
 import { GovernorRuntimeAdapter } from "../tasks/governor/runtime-adapter.js";
 import { GovernorStoreLifecycle } from "../tasks/governor/store-lifecycle.js";
+import type { GovernorAgentLoopHostLifecycle } from "./governor-agent-loop-admission.js";
 import { validateGovernorAgentLoopConfiguration } from "./governor-agent-loop-config.js";
 import {
-  freezeGovernorAgentLoopHostAdmission,
   installGovernorAgentLoopHost,
   type GovernorAgentLoopConfiguration,
 } from "./governor-agent-loop-host.js";
@@ -338,7 +338,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
     stateDir: params.stateDir,
     integrations: params.integrations,
   });
-  let closeAgentLoop = () => {};
+  let agentLoopLifecycle: GovernorAgentLoopHostLifecycle | undefined;
   let controller: NonNullable<ReturnType<typeof createGovernorControllerIfEnabled>> | undefined;
   try {
     const created = createGovernorControllerIfEnabled({
@@ -362,18 +362,18 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       throw new Error("Enabled governor controller failed to initialize");
     }
     controller = created;
-    closeAgentLoop = agentLoop
+    agentLoopLifecycle = agentLoop
       ? installGovernorAgentLoopHost({
           controller,
           submitObservedReceipt: bindings.owners.evidence.submitObservedReceipt,
           capabilities: params.capabilities,
           config: agentLoop,
         })
-      : () => {};
+      : undefined;
   } catch (error) {
     const cleanupErrors: unknown[] = [];
     try {
-      closeAgentLoop();
+      agentLoopLifecycle?.close();
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
@@ -415,7 +415,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       errors.push(error);
     }
     try {
-      closeAgentLoop();
+      agentLoopLifecycle?.close();
     } catch (error) {
       errors.push(error);
     }
@@ -441,7 +441,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   } catch (error) {
     const cleanupErrors: unknown[] = [];
     try {
-      closeAgentLoop();
+      agentLoopLifecycle?.close();
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
@@ -470,7 +470,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
     deliveryHandles: bindings.deliveryHandles,
     freeze: () => {
       bindings.freeze();
-      freezeGovernorAgentLoopHostAdmission();
+      agentLoopLifecycle?.freezeAdmission();
     },
     close,
   });

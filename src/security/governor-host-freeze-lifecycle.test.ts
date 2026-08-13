@@ -29,7 +29,10 @@ const env = (stateDir: string): NodeJS.ProcessEnv => ({
   OPENCLAW_GOVERNOR_DEPLOYMENT_ID: "freeze-deployment-id",
 });
 
-const input = (sourceMessageId: string) => ({
+const input = (
+  sourceMessageId: string,
+  sourceSequence = sourceMessageId === "held-source" ? 1 : 2,
+) => ({
   runId: `freeze-${sourceMessageId}`,
   sessionKey: "freeze-session",
   sessionId: "freeze-session",
@@ -40,13 +43,13 @@ const input = (sourceMessageId: string) => ({
   principalId: "freeze-principal",
   conversationId: "freeze-conversation",
   sourceMessageId,
-  sourceSequence: sourceMessageId === "held-source" ? 1 : 2,
+  sourceSequence,
   prompt: "observe fixture",
   now: 100,
 });
 
-function integrations() {
-  return {
+function integrations(includeAgentLoop = true) {
+  const base = {
     evidenceOwnerId: "freeze-evidence-owner",
     approvalOwnerId: "freeze-approval-owner",
     deliveryOwnerId: "freeze-delivery-owner",
@@ -63,32 +66,37 @@ function integrations() {
       },
     ],
     deliveries: [{ implementationId: "synthetic", config: { channel: "fixture" }, generation: 0 }],
-    agentLoop: {
-      mode: "enforce" as const,
-      scopes: [{ sessionKey: "freeze-session" }],
-      criteria: [{ criterionId: "observed", description: "Observe fixture" }],
-      toolBindings: [
-        {
-          toolName: "observe",
-          capability: capability.capability,
-          canonicalTarget: "fixture:read",
-          criterionId: "observed",
-          implementationId: "disposable-observation-v1" as const,
-        },
-      ],
-      maxTurns: 4,
-      expectedAssistantTextDigest: governorDigest("fixture"),
-    },
   };
+  return includeAgentLoop
+    ? {
+        ...base,
+        agentLoop: {
+          mode: "enforce" as const,
+          scopes: [{ sessionKey: "freeze-session" }],
+          criteria: [{ criterionId: "observed", description: "Observe fixture" }],
+          toolBindings: [
+            {
+              toolName: "observe",
+              capability: capability.capability,
+              canonicalTarget: "fixture:read",
+              criterionId: "observed",
+              implementationId: "disposable-observation-v1" as const,
+            },
+          ],
+          maxTurns: 4,
+          expectedAssistantTextDigest: governorDigest("fixture"),
+        },
+      }
+    : base;
 }
 
-function createRuntime(stateDir: string) {
+function createRuntime(stateDir: string, includeAgentLoop = true) {
   return createGovernorHostRuntimeIfEnabled({
     enabled: true,
     env: env(stateDir),
     stateDir,
     capabilities: [capability],
-    integrations: integrations(),
+    integrations: integrations(includeAgentLoop),
   });
 }
 
@@ -162,6 +170,44 @@ describe("governor admission freeze lifecycle", () => {
         expect(fs.existsSync(`${databasePath}-wal`)).toBe(false);
         expect(fs.existsSync(`${databasePath}-shm`)).toBe(false);
         issued.dispose();
+      },
+    );
+  });
+
+  it("binds admission freeze to its owning runtime host", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-host-freeze-owner-" },
+      async (state) => {
+        const runtimeA = createRuntime(`${state.stateDir}-a`, true);
+        const runtimeB = createRuntime(`${state.stateDir}-b`, false);
+        if (!runtimeA || !runtimeB) {
+          throw new Error("expected runtimes");
+        }
+        const beforeBFreeze = resolveGovernorAgentLoopRunScope(input("a-before-b-freeze", 2));
+        expect(beforeBFreeze).toBeTruthy();
+        beforeBFreeze?.dispose();
+
+        runtimeB.freeze();
+        const afterBFreeze = resolveGovernorAgentLoopRunScope(input("a-after-b-freeze", 3));
+        expect(afterBFreeze).toBeTruthy();
+        afterBFreeze?.dispose();
+
+        runtimeA.freeze();
+        expect(() => resolveGovernorAgentLoopRunScope(input("a-after-a-freeze", 4))).toThrow(
+          "GOVERNOR_HOST_ADMISSION_FROZEN",
+        );
+        runtimeB.close();
+        runtimeA.close();
+
+        const runtimeC = createRuntime(`${state.stateDir}-c`, true);
+        if (!runtimeC) {
+          throw new Error("expected replacement runtime");
+        }
+        expect(() => runtimeA.freeze()).toThrow("GOVERNOR_HOST_CAPABILITY_CLOSED");
+        const replacementScope = resolveGovernorAgentLoopRunScope(input("c-after-stale-freeze"));
+        expect(replacementScope).toBeTruthy();
+        replacementScope?.dispose();
+        runtimeC.close();
       },
     );
   });

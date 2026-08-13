@@ -2,6 +2,11 @@ import type { GovernorAgentLoopMode } from "./governor-agent-loop-config.js";
 
 const FROZEN_HOSTS = new WeakSet<object>();
 
+export type GovernorAgentLoopHostLifecycle = Readonly<{
+  freezeAdmission: () => void;
+  close: () => void;
+}>;
+
 export function freezeGovernorAgentLoopHostAdmission(host: object): void {
   FROZEN_HOSTS.add(host);
 }

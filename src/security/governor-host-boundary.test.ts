@@ -4,9 +4,11 @@ import { describe, expect, it } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "..");
 const authorityModules = [
+  "governor-agent-loop-admission",
   "governor-agent-loop-config",
   "governor-agent-loop-contract",
   "governor-agent-loop-host",
+  "governor-agent-loop-host-replay",
   "governor-agent-loop-progress",
   "governor-agent-loop-task",
   "governor-agent-loop-tools",
@@ -41,7 +43,13 @@ const forbiddenAuthority =
   /\b(?:createCompiledOwnerIngress|createGovernorAgentLoopTool|createGovernorHostDeliveryRuntime|createGovernorHostPersistence|createGovernorHostRuntimeBindings|createGovernorHostRuntimeIfEnabled|createHostDeliveryImplementation|createHostGovernorBroker|GovernorHostPersistence|GovernorHostRuntime|GovernorSecrets|HostGovernorCapabilities|installGovernorAgentLoopHost|matchesHostGovernorAgentLoopTool|registerStaticDeliveryAdapter|resolveGovernorSecrets|revokeDeliveryAdapter|revokeOwnerIngressReceipt|signApprovalGrant|submitAuthenticatedOwnerIngress)\b/u;
 
 const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
+  "governor-agent-loop-admission": [
+    "security/governor-host-bootstrap.ts",
+    "security/governor-agent-loop-host-replay.ts",
+    "security/governor-agent-loop-host.ts",
+  ],
   "governor-agent-loop-config": [
+    "security/governor-agent-loop-admission.ts",
     "gateway/behavior-governor-lifecycle.ts",
     "security/governor-agent-loop-completed-replay.ts",
     "security/governor-agent-loop-contract.ts",
@@ -54,6 +62,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-agent-loop-turn-handler.ts",
     "security/governor-host-bootstrap.ts",
   ],
+  "governor-agent-loop-host-replay": ["security/governor-agent-loop-host.ts"],
   "governor-agent-loop-contract": ["security/governor-agent-loop-ingress.ts"],
   "governor-agent-loop-host": ["security/governor-host-bootstrap.ts"],
   "governor-agent-loop-progress": [
@@ -69,6 +78,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   "governor-agent-loop-types": [
     "security/governor-agent-loop-completed-replay.ts",
     "security/governor-agent-loop-host-close.ts",
+    "security/governor-agent-loop-host-replay.ts",
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-inert-registry.ts",
     "security/governor-agent-loop-ingress.ts",

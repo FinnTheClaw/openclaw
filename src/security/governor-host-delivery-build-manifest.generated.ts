@@ -15671,7 +15671,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-admission.ts",
-      sha256: "b519061f93adbce6cc61adf19db2c432a458b7606654caa1bd9191343890e87a",
+      sha256: "9ae08ccf34e8e5526416fee61bcb2fe016bf027c23947c2599cf47a2c59aeef6",
     },
     {
       path: "src/security/governor-agent-loop-completed-replay.ts",
@@ -15695,11 +15695,11 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-host-replay.ts",
-      sha256: "5c71e27faa792356fc8eb7d4678cad053d9a42f77d908f29de41b6fcc1c2ef44",
+      sha256: "144db1c18b3f43e39fcdd98edc812b0329215c7291c36a85f9da5681a198348a",
     },
     {
       path: "src/security/governor-agent-loop-host.ts",
-      sha256: "0f13fb62305b7cce1960515f7b4d69bb359dbb5c3698b80a8cb686a6a88da772",
+      sha256: "2f1137aec4006754146686cc50668bb4ed52e9336427dac1177cf8925e3ffb5a",
     },
     {
       path: "src/security/governor-agent-loop-inert-registry.ts",
@@ -15763,7 +15763,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-bootstrap.ts",
-      sha256: "9956aafe26fe9aaec5b7b640c67817ffa4fd455b5f515aef038c387597aaf78d",
+      sha256: "3267ee1c072fd54cfeeb1733fe40248d6c3a66bddee74a3eb6ef2deeb117260e",
     },
     {
       path: "src/security/governor-host-broker-resolvers.ts",
@@ -17584,4 +17584,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "5528d60bed7d5dead984cf238f96da4b44601d14d06894361a2ea70a19f6b258";
+  "38f362a59a5f3a08e408dd0ba43fec731cc00e2a07e4b57f67acc355b4449dd8";
