@@ -23,10 +23,39 @@ export function assertValidGovernorContract(contract: GovernorTaskContract): voi
   }
   const criterionIds = contract.completionCriteria.map((criterion) => criterion.criterionId);
   assertUniqueNonEmpty(criterionIds, "completion criteria");
+  const knownCriteria = new Set(criterionIds);
+  const dependencies = new Map<string, readonly string[]>();
   for (const criterion of contract.completionCriteria) {
     if (!criterion.description.trim()) {
       throw new Error("GOVERNOR_CRITERION_DESCRIPTION_REQUIRED");
     }
+    const criterionDependencies = criterion.dependsOnCriteria ?? [];
+    assertUniqueNonEmpty(criterionDependencies, `dependencies for ${criterion.criterionId}`);
+    for (const dependency of criterionDependencies) {
+      if (!knownCriteria.has(dependency) || dependency === criterion.criterionId) {
+        throw new Error("GOVERNOR_CONTRACT_DEPENDENCY_UNKNOWN");
+      }
+    }
+    dependencies.set(criterion.criterionId, criterionDependencies);
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (criterionId: string): void => {
+    if (visited.has(criterionId)) {
+      return;
+    }
+    if (visiting.has(criterionId)) {
+      throw new Error("GOVERNOR_CONTRACT_DEPENDENCY_CYCLE");
+    }
+    visiting.add(criterionId);
+    for (const dependency of dependencies.get(criterionId) ?? []) {
+      visit(dependency);
+    }
+    visiting.delete(criterionId);
+    visited.add(criterionId);
+  };
+  for (const criterionId of criterionIds) {
+    visit(criterionId);
   }
   assertUniqueNonEmpty(contract.authority.mutationCapabilities, "mutation capabilities");
   assertUniqueNonEmpty(contract.authority.canonicalTargets, "canonical targets");

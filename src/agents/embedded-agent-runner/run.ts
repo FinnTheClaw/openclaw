@@ -2328,6 +2328,47 @@ async function runEmbeddedAgentInternal(
             runLoopIterations,
             maxRunLoopIterations: MAX_RUN_LOOP_ITERATIONS,
           });
+          const governorAgentLoopScope = resolveGovernorAgentLoopRunScope({
+            runId: params.runId,
+            sessionKey: resolvedSessionKey ?? params.sessionId,
+            sessionId: activeSessionId,
+            agentId: workspaceResolution.agentId,
+            workspaceId: resolvedWorkspace,
+            channel: params.messageChannel ?? params.messageProvider ?? "local",
+            accountId: params.agentAccountId ?? "default",
+            principalId: params.senderId ?? "anonymous",
+            conversationId:
+              params.chatId ??
+              params.currentMessagingTarget ??
+              resolvedSessionKey ??
+              params.sessionId,
+            sourceMessageId: String(params.currentMessageId ?? params.runId),
+            ...(typeof params.currentMessageId === "number" &&
+            Number.isSafeInteger(params.currentMessageId)
+              ? { sourceSequence: params.currentMessageId }
+              : {}),
+            prompt,
+            now: Date.now(),
+          });
+          if (governorAgentLoopScope?.disposition === "completed_replay") {
+            governorAgentLoopScope.dispose();
+            return {
+              meta: {
+                durationMs: Date.now() - started,
+                agentMeta: {
+                  sessionId: activeSessionId,
+                  sessionFile: activeSessionFile,
+                  provider,
+                  model: modelId,
+                  agentHarnessId: agentHarness.id,
+                },
+                terminalReplyKind: "silent-empty",
+                stopReason: "completed_replay",
+                livenessState: "working",
+                completion: { stopReason: "completed_replay", finishReason: "completed_replay" },
+              },
+            };
+          }
           const rawAttempt = await runEmbeddedAttemptWithBackend({
             sessionId: activeSessionId,
             sessionKey: resolvedSessionKey,
@@ -2403,28 +2444,7 @@ async function runEmbeddedAgentInternal(
                   }),
                 }
               : {}),
-            governorAgentLoopScope: resolveGovernorAgentLoopRunScope({
-              runId: params.runId,
-              sessionKey: resolvedSessionKey ?? params.sessionId,
-              sessionId: activeSessionId,
-              agentId: workspaceResolution.agentId,
-              workspaceId: resolvedWorkspace,
-              channel: params.messageChannel ?? params.messageProvider ?? "local",
-              accountId: params.agentAccountId ?? "default",
-              principalId: params.senderId ?? "anonymous",
-              conversationId:
-                params.chatId ??
-                params.currentMessagingTarget ??
-                resolvedSessionKey ??
-                params.sessionId,
-              sourceMessageId: String(params.currentMessageId ?? params.runId),
-              ...(typeof params.currentMessageId === "number" &&
-              Number.isSafeInteger(params.currentMessageId)
-                ? { sourceSequence: params.currentMessageId }
-                : {}),
-              prompt,
-              now: Date.now(),
-            }),
+            governorAgentLoopScope,
             runtimePlan,
             model: applyAuthHeaderOverride(
               applyLocalNoAuthHeaderOverride(effectiveModel, apiKeyInfo),

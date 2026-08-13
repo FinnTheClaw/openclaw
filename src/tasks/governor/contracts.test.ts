@@ -75,4 +75,41 @@ describe("governor contract resource boundaries", () => {
     expect(create(firstIdentity).flowId).toBe(first.flowId);
     expect(create(secondIdentity).flowId).not.toBe(first.flowId);
   });
+
+  it("validates criterion dependencies at the contract boundary", () => {
+    const dependent: GovernorTaskContract = {
+      ...contract,
+      completionCriteria: [
+        { criterionId: "alpha", description: "alpha", mandatory: true },
+        {
+          criterionId: "aggregate",
+          description: "aggregate",
+          mandatory: true,
+          dependsOnCriteria: ["alpha"],
+        },
+      ],
+    };
+    assertValidGovernorContract(dependent);
+    expect(() =>
+      assertValidGovernorContract({
+        ...dependent,
+        completionCriteria: dependent.completionCriteria.map((criterion) =>
+          criterion.criterionId === "aggregate"
+            ? { ...criterion, dependsOnCriteria: ["missing"] }
+            : criterion,
+        ),
+      }),
+    ).toThrow("GOVERNOR_CONTRACT_DEPENDENCY_UNKNOWN");
+    expect(() =>
+      assertValidGovernorContract({
+        ...dependent,
+        completionCriteria: dependent.completionCriteria.map((criterion) => {
+          if (criterion.criterionId === "alpha") {
+            return Object.assign({}, criterion, { dependsOnCriteria: ["aggregate"] });
+          }
+          return criterion;
+        }),
+      }),
+    ).toThrow("GOVERNOR_CONTRACT_DEPENDENCY_CYCLE");
+  });
 });

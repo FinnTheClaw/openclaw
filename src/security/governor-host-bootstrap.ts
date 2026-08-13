@@ -41,6 +41,9 @@ export type GovernorHostRuntime = Readonly<{
       submitObservedReceipt: ReturnType<
         typeof createHostGovernorBroker
       >["capabilities"]["submitObservedReceipt"];
+      submitEvidenceInvalidation: ReturnType<
+        typeof createHostGovernorBroker
+      >["capabilities"]["submitEvidenceInvalidation"];
     }>;
     approval: Readonly<{
       ownerId: string;
@@ -153,6 +156,7 @@ export function createGovernorHostRuntimeBindings(params: {
     evidence: Object.freeze({
       ownerId: params.integrations.evidenceOwnerId,
       submitObservedReceipt: broker.capabilities.submitObservedReceipt,
+      submitEvidenceInvalidation: broker.capabilities.submitEvidenceInvalidation,
     }),
     approval: Object.freeze({
       ownerId: params.integrations.approvalOwnerId,
@@ -183,6 +187,7 @@ export function createGovernorHostRuntimeBindings(params: {
   );
   return {
     resolver: broker.resolver,
+    evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
     approvalResolver: broker.approvalResolver,
     deliveryResolver: broker.deliveryResolver,
     ownerIngressResolver: broker.ownerIngressResolver,
@@ -225,6 +230,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
     env,
     hostBindings: {
       receiptResolver: bindings.resolver,
+      evidenceInvalidationResolver: bindings.evidenceInvalidationResolver,
       approvalResolver: bindings.approvalResolver,
       deliveryResolver: bindings.deliveryResolver,
       ownerIngressResolver: bindings.ownerIngressResolver,

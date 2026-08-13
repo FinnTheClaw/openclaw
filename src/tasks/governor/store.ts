@@ -5,6 +5,7 @@ import {
 } from "../../infra/kysely-sync.js";
 import type { HostGovernorDeliveryHandle } from "../../security/governor-host-readonly.js";
 import type { HostDeliveryReceipt } from "../../security/governor-host-readonly.js";
+import type { HostGovernorEvidenceInvalidationReceiptId } from "../../security/governor-host-readonly.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -48,7 +49,6 @@ import {
   GovernorEvidenceAdmissionStore,
   type GovernorPendingEvidence,
 } from "./store-evidence-admission.js";
-import type { GovernorEvidenceInvalidationReason } from "./store-evidence-invalidation.js";
 import { invalidateGovernorEvidence } from "./store-evidence-invalidation.js";
 import { ingestGovernorTask, type GovernorIngressResult } from "./store-ingress.js";
 import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
@@ -107,6 +107,9 @@ export class GovernorSqliteStore {
   readonly children: GovernorExternalChildRunStore;
   readonly outbox: GovernorOutboxStore;
   readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
+  readonly #evidenceInvalidationResolver: NonNullable<
+    GovernorSqliteStoreParams["evidenceInvalidationResolver"]
+  >;
   readonly #queries: GovernorStoreQueries;
   readonly #tasks: GovernorTaskAuthorityStore;
 
@@ -115,6 +118,7 @@ export class GovernorSqliteStore {
     this.#options = dependencies.options;
     this.identity = dependencies.identity;
     this.#evidenceAdmissions = dependencies.evidenceAdmissions;
+    this.#evidenceInvalidationResolver = dependencies.evidenceInvalidationResolver;
     this.#queries = dependencies.queries;
     this.#tasks = dependencies.tasks;
     this.actionIntents = dependencies.actionIntents;
@@ -191,16 +195,16 @@ export class GovernorSqliteStore {
     return this.#evidenceAdmissions.admit(params);
   }
 
-  invalidateEvidence(params: {
+  invalidateEvidenceWithReceipt(params: {
     taskId: GovernorTaskId;
     evidenceId: string;
-    reasonCode: GovernorEvidenceInvalidationReason;
-    now: number;
+    receiptId: HostGovernorEvidenceInvalidationReceiptId;
   }): GovernorEvidenceRecord {
     return invalidateGovernorEvidence({
       options: this.#options,
       admissions: this.#evidenceAdmissions,
       tasks: this.#tasks,
+      resolver: this.#evidenceInvalidationResolver,
       ...params,
     });
   }

@@ -96,6 +96,7 @@ export type GovernorCompletionCriterion = {
   criterionId: string;
   description: string;
   mandatory: boolean;
+  dependsOnCriteria?: readonly string[];
 };
 
 export type GovernorTaskContract = {

@@ -5,6 +5,7 @@ import type {
   GovernorTrustedMemoryAuthority,
   GovernorTrustedPhysicalExecutionCoordinator,
   GovernorTrustedReceiptResolver,
+  GovernorTrustedEvidenceInvalidationResolver,
   GovernorTrustedTaskAuthority,
 } from "../../security/governor-host-readonly.js";
 import {
@@ -31,6 +32,7 @@ export function createGovernorControllerIfEnabled(params: {
   capabilities: readonly GovernorCapabilityDefinition[];
   hostBindings?: {
     receiptResolver: GovernorTrustedReceiptResolver;
+    evidenceInvalidationResolver: GovernorTrustedEvidenceInvalidationResolver;
     approvalResolver: GovernorTrustedApprovalResolver;
     deliveryResolver: GovernorTrustedDeliveryResolver;
     ownerIngressResolver: GovernorTrustedOwnerIngressResolver;

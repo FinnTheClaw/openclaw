@@ -282,6 +282,17 @@ export const GOVERNOR_DURABLE_BOUNDARIES: readonly GovernorDurableBoundary[] = [
     enforcementAnchors: ["assertGovernorPersistedJson", "tasks.loadCurrent", "parseOutbox"],
   },
   {
+    id: "evidence-invalidation",
+    file: "src/tasks/governor/store-evidence-invalidation.ts",
+    symbol: "invalidateGovernorEvidence",
+    direction: "read-write",
+    enforcementAnchors: [
+      "runOpenClawStateWriteTransaction",
+      "loadGovernorTask",
+      "params.admissions.verify",
+    ],
+  },
+  {
     id: "outbox-sent",
     file: "src/tasks/governor/outbox-store.ts",
     symbol: "markSent",

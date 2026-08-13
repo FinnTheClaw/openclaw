@@ -350,7 +350,7 @@ describe("host-governed production Agent loop bridge", () => {
       "utf8",
     );
     expect(outer).toContain("resolveGovernorAgentLoopRunScope({");
-    expect(outer).toContain("governorAgentLoopScope:");
+    expect(outer).toContain("governorAgentLoopScope");
     expect(attempt).toContain("installGovernorLoopBridge({");
     expect(attempt).toContain("governorLoopBridge.assertTerminal()");
   });

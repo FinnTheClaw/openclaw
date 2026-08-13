@@ -27,6 +27,7 @@ import type {
   AgentLoopConfig,
   AgentLoopTurnUpdate,
   AgentMessage,
+  AgentTool,
   AgentState,
   BeforeToolCallContext,
   BeforeToolCallResult,
@@ -68,6 +69,11 @@ export class Agent {
   ) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
   public shouldStopAfterTurn?: AgentLoopConfig["shouldStopAfterTurn"];
   private activeRun?: ActiveRun;
+  private toolInventoryOwner?: {
+    token: symbol;
+    installed: readonly AgentTool[];
+    previous: readonly AgentTool[];
+  };
   /** Session identifier forwarded to providers for cache-aware backends. */
   public sessionId?: string;
   /** Optional per-level thinking token budgets forwarded to the stream function. */
@@ -139,6 +145,39 @@ export class Agent {
 
   removeSteeringKey(key: string): void {
     this.steeringQueue.removeKey(key);
+  }
+
+  /** Installs a lifecycle-owned tool inventory and restores it only if unchanged. */
+  installToolInventory(tools: readonly AgentTool[]): Readonly<{ restore(): void }> {
+    if (this.toolInventoryOwner) {
+      throw new Error("Agent tool inventory already has an owner");
+    }
+    const token = Symbol("agent-tool-inventory");
+    const installed = [...tools];
+    const previous = [...this.mutableState.tools];
+    this.mutableState.tools = installed;
+    this.toolInventoryOwner = { token, installed, previous };
+    let restored = false;
+    return Object.freeze({
+      restore: () => {
+        if (restored) {
+          return;
+        }
+        restored = true;
+        const owner = this.toolInventoryOwner;
+        const current = this.mutableState.tools;
+        if (!owner || owner.token !== token) {
+          return;
+        }
+        this.toolInventoryOwner = undefined;
+        if (
+          current.length === installed.length &&
+          current.every((tool, index) => tool === installed[index])
+        ) {
+          this.mutableState.tools = [...previous];
+        }
+      },
+    });
   }
 
   followUp(message: AgentMessage): void {

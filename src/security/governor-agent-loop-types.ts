@@ -30,6 +30,7 @@ export type GovernorAgentLoopTurnDecision =
 export type GovernorAgentLoopRunScope = Readonly<{
   taskId: string;
   mode: GovernorAgentLoopMode;
+  disposition?: "runnable" | "completed_replay";
   beforeTool(input: {
     toolCallId: string;
     toolName: string;

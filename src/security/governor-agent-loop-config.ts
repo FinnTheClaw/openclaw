@@ -11,6 +11,7 @@ export type GovernorAgentLoopMode = "shadow" | "enforce";
 export type GovernorAgentLoopCriterion = Readonly<{
   criterionId: string;
   description: string;
+  dependsOnCriteria?: readonly string[];
 }>;
 
 export type GovernorAgentLoopToolBinding = Readonly<{
@@ -18,6 +19,7 @@ export type GovernorAgentLoopToolBinding = Readonly<{
   capability: string;
   canonicalTarget: string;
   criterionId?: string;
+  auxiliary?: boolean;
   criterionArgument?: string;
   criteriaByValue?: Readonly<Record<string, string>>;
   approvalGrantArgument?: string;
@@ -90,10 +92,22 @@ export function validateGovernorAgentLoopConfiguration(
   }
   const capabilityIds = new Set(capabilities.map((item) => item.capability));
   const criteria = safeInput.criteria.map((item) => {
-    assertKeys(item, ["criterionId", "description"]);
+    assertKeys(item, ["criterionId", "description", "dependsOnCriteria"]);
+    const dependsOnCriteria = item.dependsOnCriteria;
+    if (
+      dependsOnCriteria !== undefined &&
+      (!Array.isArray(dependsOnCriteria) ||
+        dependsOnCriteria.length > 256 ||
+        new Set(dependsOnCriteria).size !== dependsOnCriteria.length)
+    ) {
+      throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
+    }
     return Object.freeze({
       criterionId: assertString(item.criterionId),
       description: assertString(item.description),
+      ...(dependsOnCriteria
+        ? { dependsOnCriteria: Object.freeze(dependsOnCriteria.map(assertString)) }
+        : {}),
     });
   });
   const criterionIds = new Set(criteria.map((item) => item.criterionId));
@@ -106,6 +120,7 @@ export function validateGovernorAgentLoopConfiguration(
       "capability",
       "canonicalTarget",
       "criterionId",
+      "auxiliary",
       "criterionArgument",
       "criteriaByValue",
       "approvalGrantArgument",
@@ -126,8 +141,25 @@ export function validateGovernorAgentLoopConfiguration(
       throw new Error("GOVERNOR_AGENT_LOOP_READ_ONLY_CANARY_REQUIRED");
     }
     const criterionId = item.criterionId ? assertString(item.criterionId) : undefined;
+    const auxiliary = item.auxiliary === true;
+    const hasFixedCriterion = criterionId !== undefined;
+    const hasMappedCriterion =
+      item.criterionArgument !== undefined || item.criteriaByValue !== undefined;
+    if (!auxiliary && hasFixedCriterion === hasMappedCriterion) {
+      throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_BINDING_AMBIGUOUS");
+    }
+    if (auxiliary && (hasFixedCriterion || hasMappedCriterion)) {
+      throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_BINDING_AMBIGUOUS");
+    }
     if (criterionId && !criterionIds.has(criterionId)) {
       throw new Error("GOVERNOR_AGENT_LOOP_CRITERION_UNKNOWN");
+    }
+    const canonicalTarget = assertString(item.canonicalTarget);
+    if (
+      !definition ||
+      !definition.canonicalTargetPrefixes.some((prefix) => canonicalTarget.startsWith(prefix))
+    ) {
+      throw new Error("GOVERNOR_AGENT_LOOP_TARGET_NOT_ALLOWED");
     }
     if (
       item.criteriaByValue &&
@@ -153,8 +185,9 @@ export function validateGovernorAgentLoopConfiguration(
     return Object.freeze({
       toolName,
       capability,
-      canonicalTarget: assertString(item.canonicalTarget),
+      canonicalTarget,
       implementationId: item.implementationId,
+      ...(auxiliary ? { auxiliary: true } : {}),
       ...(criterionId ? { criterionId } : {}),
       ...(item.criterionArgument
         ? { criterionArgument: assertString(item.criterionArgument) }
@@ -167,6 +200,45 @@ export function validateGovernorAgentLoopConfiguration(
   });
   if (new Set(toolBindings.map((item) => item.toolName)).size !== toolBindings.length) {
     throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
+  }
+  const boundCriteria = new Set(
+    toolBindings.flatMap((binding) =>
+      binding.criterionId
+        ? [binding.criterionId]
+        : binding.criteriaByValue
+          ? Object.values(binding.criteriaByValue)
+          : [],
+    ),
+  );
+  for (const criterion of criteria) {
+    if (!boundCriteria.has(criterion.criterionId)) {
+      throw new Error("GOVERNOR_AGENT_LOOP_CRITERION_UNBOUND");
+    }
+    for (const dependency of criterion.dependsOnCriteria ?? []) {
+      if (dependency === criterion.criterionId || !criterionIds.has(dependency)) {
+        throw new Error("GOVERNOR_AGENT_LOOP_DEPENDENCY_INVALID");
+      }
+    }
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (criterionId: string): void => {
+    if (visiting.has(criterionId)) {
+      throw new Error("GOVERNOR_AGENT_LOOP_DEPENDENCY_CYCLE");
+    }
+    if (visited.has(criterionId)) {
+      return;
+    }
+    visiting.add(criterionId);
+    const criterion = criteria.find((item) => item.criterionId === criterionId);
+    for (const dependency of criterion?.dependsOnCriteria ?? []) {
+      visit(dependency);
+    }
+    visiting.delete(criterionId);
+    visited.add(criterionId);
+  };
+  for (const criterion of criteria) {
+    visit(criterion.criterionId);
   }
   const scopes = safeInput.scopes.map((scope) => {
     assertKeys(scope, ["sessionKey", "agentId"]);

@@ -24,6 +24,7 @@ export type GovernorRuntimeEventRequest = Readonly<{
 }>;
 
 export type GovernorRuntimeReplanReason = "semantic_stagnation" | "tool_semantic_failure";
+export type GovernorRuntimeTransitionReason = GovernorRuntimeReplanReason | "provider_interrupted";
 export type GovernorRuntimeBlockReason =
   | "budget_exhausted"
   | "semantic_stagnation"
@@ -92,6 +93,7 @@ export function requestGovernorRuntimeReplan(
   store: GovernorSqliteStore,
   task: GovernorTaskProjection,
   now: number,
+  reasonCode: GovernorRuntimeTransitionReason = "tool_semantic_failure",
 ): GovernorTaskProjection {
   if (task.state !== "EXECUTING") {
     throw new Error("GOVERNOR_RUNTIME_REPLAN_STATE_INVALID");
@@ -109,7 +111,7 @@ export function requestGovernorRuntimeReplan(
   const event = createGovernorEventRecord({
     task: transition.task,
     eventType: "runtime_replan_requested",
-    payload: { reasonCode: "tool_semantic_failure" },
+    payload: { reasonCode },
     now,
   });
   const committed = store.commit({ current: task, next: transition.task, event });

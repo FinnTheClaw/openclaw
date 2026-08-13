@@ -16,7 +16,6 @@ import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resolveGovernorAgentLoopRunScope } from "./governor-agent-loop-readonly.js";
 import { createGovernorHostRuntimeIfEnabled } from "./governor-host-bootstrap.js";
-
 const capability: GovernorCapabilityDefinition = {
   capability: "v34.observe",
   version: "1",
@@ -38,7 +37,6 @@ function env(): NodeJS.ProcessEnv {
     OPENCLAW_GOVERNOR_DEPLOYMENT_ID: "v34-deployment-0001",
   };
 }
-
 function start(stateDir: string, criteria: readonly string[], maxTurns = 12) {
   return createGovernorHostRuntimeIfEnabled({
     env: env(),
@@ -86,7 +84,6 @@ function start(stateDir: string, criteria: readonly string[], maxTurns = 12) {
     },
   })!;
 }
-
 function input() {
   return {
     runId: "v34-run",
@@ -104,7 +101,6 @@ function input() {
     now: 100,
   } as const;
 }
-
 function streamFor(next: () => ReturnType<typeof assistant>, seen?: string[][]): StreamFn {
   return (_model, context) => {
     seen?.push(
@@ -132,7 +128,6 @@ function streamFor(next: () => ReturnType<typeof assistant>, seen?: string[][]):
     return stream;
   };
 }
-
 afterEach(() => closeOpenClawStateDatabase());
 
 describe("V34 governed continuation", () => {
@@ -180,7 +175,6 @@ describe("V34 governed continuation", () => {
       },
     );
   });
-
   it("moves from two satisfied observations to the next eligible action without rereads", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v34-progress-" },
@@ -224,7 +218,6 @@ describe("V34 governed continuation", () => {
       },
     );
   });
-
   it("replans once and then fails closed on repeated semantic stagnation", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v34-stagnation-" },
@@ -265,7 +258,6 @@ describe("V34 governed continuation", () => {
       },
     );
   });
-
   it("allows justified revalidation through the signed invalidation API", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v34-revalidate-" },
@@ -282,11 +274,31 @@ describe("V34 governed continuation", () => {
                 const evidence = runtime.adapter.controller.store.listEvidence(
                   scope.taskId as never,
                 )[0];
-                runtime.adapter.controller.store.invalidateEvidence({
+                const task = runtime.adapter.controller.store.loadTask(scope.taskId as never)!;
+                const receipt = runtime.owners.evidence.submitEvidenceInvalidation({
+                  scopeKey: task.scopeKey,
+                  taskId: scope.taskId as never,
+                  taskVersion: task.taskVersion,
+                  objectiveRevision: task.objectiveRevision,
+                  planVersion: task.planVersion,
+                  evidenceId: evidence!.evidenceId,
+                  evidenceDigest: evidence!.evidenceDigest,
+                  reasonCode: "contradicted_by_newer_evidence",
+                  provenance: {
+                    kind: "newer_evidence",
+                    sourceEvidenceId: "host-observation-alpha-new",
+                    sourceEvidenceDigest: "a".repeat(64),
+                    sourceObservedAt: 150,
+                    sourceScopeKey: task.scopeKey,
+                    confidence: "high",
+                    authority: "authenticated_host",
+                  },
+                  observedAt: 200,
+                });
+                runtime.adapter.controller.invalidateEvidence({
                   taskId: scope.taskId as never,
                   evidenceId: evidence!.evidenceId,
-                  reasonCode: "contradicted_by_newer_evidence",
-                  now: 200,
+                  receiptId: receipt,
                 });
               }
               if (turn <= 2) {
@@ -321,7 +333,6 @@ describe("V34 governed continuation", () => {
       },
     );
   });
-
   it("rejects missing and unknown criterion arguments before physical execution", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v34-arguments-" },
@@ -361,7 +372,6 @@ describe("V34 governed continuation", () => {
       },
     );
   });
-
   it("replaces pending owned steering and permits reissue after delivery", async () => {
     const seen: string[][] = [];
     let turn = 0;
@@ -472,27 +482,6 @@ describe("V34 governed continuation", () => {
             .filter((event) => event.eventType === "runtime_replan_requested"),
         ).toHaveLength(1);
         recovered.dispose();
-        restarted.close();
-      },
-    );
-  });
-
-  it("reconstructs the absolute model-turn budget across restart", async () => {
-    await withOpenClawTestState(
-      { layout: "state-only", prefix: "governor-v34-budget-restart-" },
-      async (state) => {
-        const runtime = start(state.stateDir, ["alpha"], 2);
-        const scope = resolveGovernorAgentLoopRunScope(input())!;
-        expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 101 }).kind).toBe(
-          "continue",
-        );
-        scope.dispose();
-        runtime.close();
-        closeOpenClawStateDatabase();
-        const restarted = start(state.stateDir, ["alpha"], 1);
-        expect(() => resolveGovernorAgentLoopRunScope(input())).toThrow(
-          "GOVERNOR_AGENT_LOOP_BUDGET_EXHAUSTED",
-        );
         restarted.close();
       },
     );

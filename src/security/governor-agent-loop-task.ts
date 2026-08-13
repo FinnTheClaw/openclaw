@@ -16,13 +16,28 @@ export type GovernorAgentLoopTicketState = Readonly<{
 }>;
 
 function planFor(task: GovernorTaskProjection) {
+  const criterionStep = new Map(
+    task.contract.completionCriteria.map((criterion, index) => [
+      criterion.criterionId,
+      `runtime-step-${index + 1}`,
+    ]),
+  );
+  const hasDependencies = task.contract.completionCriteria.some(
+    (criterion) => (criterion.dependsOnCriteria?.length ?? 0) > 0,
+  );
   return {
-    kind: "ordered" as const,
+    kind: hasDependencies ? ("dag" as const) : ("ordered" as const),
     steps: task.contract.completionCriteria.map((criterion, index) => ({
       stepId: `runtime-step-${index + 1}`,
       description: `Satisfy ${criterion.criterionId}`,
       criterionIds: [criterion.criterionId],
-      dependsOn: index === 0 ? [] : [`runtime-step-${index}`],
+      dependsOn: criterion.dependsOnCriteria?.length
+        ? criterion.dependsOnCriteria.map((id) => criterionStep.get(id)!).toSorted()
+        : hasDependencies
+          ? []
+          : index === 0
+            ? []
+            : [`runtime-step-${index}`],
     })),
   };
 }
@@ -62,6 +77,14 @@ export function recordGovernorAgentLoopToolObservation(params: {
 }): void {
   const safeResult = safeGovernorAgentLoopValue(params.observation.result);
   const resultDigest = governorDigest(safeResult);
+  const currentTask = params.controller.store.loadTask(params.taskId);
+  if (
+    !currentTask ||
+    currentTask.objectiveRevision !== params.state.intent.objectiveRevision ||
+    currentTask.planVersion !== params.state.intent.planVersion
+  ) {
+    throw new Error("GOVERNOR_AGENT_LOOP_RESULT_STALE");
+  }
   const evidence: GovernorJsonValue = {
     kind: "host_observed_tool_result",
     effectId: params.state.intent.effectId,
@@ -72,15 +95,12 @@ export function recordGovernorAgentLoopToolObservation(params: {
     toolImplementationDigest: params.state.intent.proposal.toolImplementationDigest ?? "absent",
     resultDigest,
     observationKey: params.state.observationKey ?? "none",
+    dependsOnCriteria: [
+      ...(currentTask.contract.completionCriteria.find(
+        (criterion) => criterion.criterionId === params.state.criterionId,
+      )?.dependsOnCriteria ?? []),
+    ],
   };
-  const currentTask = params.controller.store.loadTask(params.taskId);
-  if (
-    !currentTask ||
-    currentTask.objectiveRevision !== params.state.intent.objectiveRevision ||
-    currentTask.planVersion !== params.state.intent.planVersion
-  ) {
-    throw new Error("GOVERNOR_AGENT_LOOP_RESULT_STALE");
-  }
   const receiptId = params.state.criterionId
     ? params.submitObservedReceipt({
         scopeKey: currentTask.scopeKey,
@@ -138,6 +158,6 @@ export function interruptGovernorAgentLoopTool(params: {
     now: params.now,
   });
   if (recorded.accepted && recorded.task.state === "EXECUTING") {
-    params.controller.requestRuntimeReplan(params.taskId, params.now + 1);
+    params.controller.requestRuntimeReplan(params.taskId, params.now + 1, "provider_interrupted");
   }
 }

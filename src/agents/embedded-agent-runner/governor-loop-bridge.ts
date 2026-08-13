@@ -9,7 +9,6 @@ import type {
   Agent,
   AgentEvent,
   AgentMessage,
-  AgentTool,
   BeforeToolCallResult,
 } from "../runtime/index.js";
 
@@ -49,8 +48,7 @@ export function installGovernorLoopBridge(params: {
   const priorBefore = params.agent.beforeToolCall;
   const priorAfter = params.agent.afterToolCall;
   const priorShouldStop = params.agent.shouldStopAfterTurn;
-  const priorTools = [...params.agent.state.tools];
-  let installedTools: AgentTool[] | undefined;
+  let toolInventoryLease: Readonly<{ restore(): void }> | undefined;
   const governedTools = new Map(params.scope.governedTools().map((tool) => [tool.name, tool]));
   let stoppedReason: string | undefined;
   let terminalRequested = false;
@@ -65,8 +63,10 @@ export function installGovernorLoopBridge(params: {
   const governorSteeringKey = "openclaw-governor-progress";
   if (params.scope.mode === "enforce") {
     const legacyTools = params.agent.state.tools.filter((tool) => !governedTools.has(tool.name));
-    installedTools = [...legacyTools, ...governedTools.values()];
-    params.agent.state.tools = installedTools;
+    toolInventoryLease = params.agent.installToolInventory([
+      ...legacyTools,
+      ...governedTools.values(),
+    ]);
   }
 
   const beforeToolCall: NonNullable<Agent["beforeToolCall"]> = async (context, signal) => {
@@ -168,6 +168,7 @@ export function installGovernorLoopBridge(params: {
         terminalRequested = true;
       } else if (decision.kind === "interrupt") {
         stoppedReason = decision.reasonCode;
+        params.scope.interrupt({ now: now() });
       } else if (decision.kind === "complete") {
         if (params.scope.mode !== "shadow") {
           terminalRequested = true;
@@ -214,9 +215,7 @@ export function installGovernorLoopBridge(params: {
       if (params.agent.shouldStopAfterTurn === shouldStopAfterTurn) {
         params.agent.shouldStopAfterTurn = priorShouldStop;
       }
-      if (installedTools && params.agent.state.tools === installedTools) {
-        params.agent.state.tools = priorTools;
-      }
+      toolInventoryLease?.restore();
       tickets.clear();
       params.agent.removeSteeringKey(governorSteeringKey);
       params.scope.dispose();

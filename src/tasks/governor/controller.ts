@@ -1,3 +1,4 @@
+import type { HostGovernorEvidenceInvalidationReceiptId } from "../../security/governor-host-readonly.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import {
   GovernorActionRuntime,
@@ -78,7 +79,6 @@ import type {
 export type GovernorFinishResult =
   | { completed: true; task: GovernorTaskProjection; certificate: GovernorCompletionCertificate }
   | { completed: false; task: GovernorTaskProjection; recovery: GovernorRecoveryDirective };
-
 export type {
   GovernorActionAdmissionResult,
   GovernorExecutionFence,
@@ -86,7 +86,6 @@ export type {
 } from "./action-runtime.js";
 
 export type { GovernorMutationResolution } from "./mutation-reconciliation.js";
-
 function assertApplied(result: GovernorCommitResult): GovernorTaskProjection {
   if (!result.applied) {
     throw new Error("GOVERNOR_COMMIT_REJECTED");
@@ -97,7 +96,6 @@ function assertApplied(result: GovernorCommitResult): GovernorTaskProjection {
 function nextTaskVersion(task: GovernorTaskProjection, now: number): GovernorTaskProjection {
   return { ...task, taskVersion: task.taskVersion + 1, updatedAt: now };
 }
-
 export class GovernorController {
   readonly actions: GovernorActionRuntime;
   readonly memoryRemediation: GovernorMemoryRemediationRuntime;
@@ -112,7 +110,6 @@ export class GovernorController {
     this.actions = new GovernorActionRuntime(store, capabilities);
     this.memoryRemediation = new GovernorMemoryRemediationRuntime(store, this.actions);
   }
-
   ingest(params: {
     sourceMessageId: string;
     sourceSequence: number;
@@ -125,13 +122,19 @@ export class GovernorController {
   }): GovernorIngressResult {
     return this.store.ingest(params);
   }
-
   ingestHostSequenced(
     params: Omit<Parameters<GovernorController["ingest"]>[0], "sourceSequence">,
   ): GovernorIngressResult {
     return this.store.ingestHostSequenced(params);
   }
-
+  /** Invalidates evidence only with a host-issued, binding-checked receipt. */
+  invalidateEvidence(params: {
+    taskId: GovernorTaskId;
+    evidenceId: string;
+    receiptId: HostGovernorEvidenceInvalidationReceiptId;
+  }) {
+    return this.store.invalidateEvidenceWithReceipt(params);
+  }
   #task(taskId: GovernorTaskId): GovernorTaskProjection {
     const task = this.store.loadTask(taskId);
     if (!task) {
@@ -139,7 +142,6 @@ export class GovernorController {
     }
     return task;
   }
-
   #transition(
     task: GovernorTaskProjection,
     to: GovernorTaskState,
@@ -163,7 +165,6 @@ export class GovernorController {
     });
     return assertApplied(this.store.commit({ current: task, next: transition.task, event }));
   }
-
   preparePlan(params: {
     taskId: GovernorTaskId;
     plan: GovernorPlan;
@@ -200,11 +201,9 @@ export class GovernorController {
     task = assertApplied(this.store.commit({ current: task, next: planned, event }));
     return this.#transition(task, "READY", params.now + 3);
   }
-
   startExecution(taskId: GovernorTaskId, now: number): GovernorTaskProjection {
     return this.#transition(this.#task(taskId), "EXECUTING", now);
   }
-
   captureExecutionFence(taskId: GovernorTaskId): GovernorExecutionFence {
     const task = this.#task(taskId);
     return {
@@ -214,7 +213,6 @@ export class GovernorController {
       executionGeneration: task.executionGeneration,
     };
   }
-
   reclaimTaskLease(params: {
     taskId: GovernorTaskId;
     expectedTaskVersion: number;
@@ -321,8 +319,12 @@ export class GovernorController {
     return recordGovernorRuntimeEvent(this.store, this.#task(params.taskId), params);
   }
 
-  requestRuntimeReplan(taskId: GovernorTaskId, now: number): GovernorTaskProjection {
-    return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now);
+  requestRuntimeReplan(
+    taskId: GovernorTaskId,
+    now: number,
+    reasonCode?: Parameters<typeof requestGovernorRuntimeReplan>[3],
+  ): GovernorTaskProjection {
+    return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now, reasonCode);
   }
 
   recordRuntimeReplanGuidance(

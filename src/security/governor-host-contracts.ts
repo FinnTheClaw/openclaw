@@ -4,6 +4,11 @@ import type { GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 declare const hostReceiptIdBrand: unique symbol;
 export type HostGovernorReceiptId = string & { readonly [hostReceiptIdBrand]: true };
 
+declare const hostEvidenceInvalidationReceiptIdBrand: unique symbol;
+export type HostGovernorEvidenceInvalidationReceiptId = string & {
+  readonly [hostEvidenceInvalidationReceiptIdBrand]: true;
+};
+
 declare const hostApprovalReceiptIdBrand: unique symbol;
 export type HostGovernorApprovalReceiptId = string & {
   readonly [hostApprovalReceiptIdBrand]: true;
@@ -137,6 +142,53 @@ export type HostReceipt = Readonly<{
   signature: string;
 }>;
 
+export type GovernorEvidenceInvalidationReason =
+  | "contradicted_by_newer_evidence"
+  | "scope_revoked"
+  | "freshness_expired"
+  | "operator_requested";
+
+export type GovernorEvidenceInvalidationProvenance =
+  | Readonly<{
+      kind: "newer_evidence";
+      sourceEvidenceId: string;
+      sourceEvidenceDigest: string;
+      sourceObservedAt: number;
+      sourceScopeKey: string;
+      confidence: "high";
+      authority: "authenticated_host";
+    }>
+  | Readonly<{
+      kind: "scope_revocation";
+      scopeEpoch: number;
+      authorityDigest: string;
+    }>
+  | Readonly<{
+      kind: "freshness_policy";
+      freshnessExpiresAt: number;
+      policyDigest: string;
+    }>
+  | Readonly<{
+      kind: "operator_instruction";
+      operatorReceiptDigest: string;
+    }>;
+
+export type GovernorAuthenticatedEvidenceInvalidation = Readonly<{
+  id: HostGovernorEvidenceInvalidationReceiptId;
+  scopeKey: string;
+  taskId: string;
+  taskVersion: number;
+  objectiveRevision: number;
+  planVersion: number;
+  evidenceId: string;
+  evidenceDigest: string;
+  reasonCode: GovernorEvidenceInvalidationReason;
+  provenance: GovernorEvidenceInvalidationProvenance;
+  provenanceDigest: string;
+  observedAt: number;
+  signature: string;
+}>;
+
 export type GovernorAuthenticatedApprovalReceipt = Readonly<{
   id: HostGovernorApprovalReceiptId;
   grantId: string;
@@ -166,6 +218,10 @@ export type GovernorAuthenticatedApprovalRevocation = Readonly<{
 export type HostBrokerState = {
   readonly key: string;
   readonly receipts: Map<HostGovernorReceiptId, HostReceipt>;
+  readonly evidenceInvalidations: Map<
+    HostGovernorEvidenceInvalidationReceiptId,
+    GovernorAuthenticatedEvidenceInvalidation
+  >;
   readonly approvals: Map<HostGovernorApprovalReceiptId, GovernorAuthenticatedApprovalReceipt>;
   readonly revocations: Map<
     HostGovernorApprovalRevocationId,
@@ -187,6 +243,18 @@ export type HostGovernorCapabilities = {
     payload: GovernorJsonValue;
     observedAt: number;
   }) => HostGovernorReceiptId;
+  readonly submitEvidenceInvalidation: (input: {
+    scopeKey: string;
+    taskId: string;
+    taskVersion: number;
+    objectiveRevision: number;
+    planVersion: number;
+    evidenceId: string;
+    evidenceDigest: string;
+    reasonCode: GovernorEvidenceInvalidationReason;
+    provenance: GovernorEvidenceInvalidationProvenance;
+    observedAt: number;
+  }) => HostGovernorEvidenceInvalidationReceiptId;
   readonly submitAuthenticatedApproval: (input: {
     scopeKey: string;
     taskId: string;
@@ -237,6 +305,13 @@ export type HostGovernorCapabilities = {
 
 export type GovernorTrustedReceiptResolver = {
   readonly resolve: (receiptId: HostGovernorReceiptId, scopeKey: string) => HostReceipt | null;
+};
+
+export type GovernorTrustedEvidenceInvalidationResolver = {
+  readonly resolveEvidenceInvalidation: (
+    receiptId: HostGovernorEvidenceInvalidationReceiptId,
+    scopeKey: string,
+  ) => GovernorAuthenticatedEvidenceInvalidation | null;
 };
 
 export type GovernorTrustedApprovalResolver = {

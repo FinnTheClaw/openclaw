@@ -12,20 +12,19 @@ import {
   governorDigest,
   type GovernorJsonValue,
 } from "../tasks/governor/canonical-json.js";
+import { createHostApprovalCapabilities } from "./governor-host-approval-capabilities.js";
 import type { GovernorHostDeliveryRuntime } from "./governor-host-channel-delivery.js";
 import type {
   GovernorAuthenticatedApprovalReceipt,
+  GovernorTrustedEvidenceInvalidationResolver,
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
   GovernorTrustedOwnerIngressResolver,
   GovernorTrustedReceiptResolver,
   GovernorOwnerIngressClaim,
   HostBrokerState,
-  HostGovernorApprovalReceiptId,
-  HostGovernorApprovalRevocationId,
   HostGovernorCapabilities,
   HostGovernorOwnerIngressReceiptId,
-  HostGovernorReceiptId,
 } from "./governor-host-contracts.js";
 import {
   createHostGovernorDeliveryBroker,
@@ -36,16 +35,22 @@ import {
   type GovernorHostPersistence,
 } from "./governor-host-persistence.js";
 import type { GovernorTrustedPhysicalExecutionCoordinator } from "./governor-host-physical-execution.js";
+import { createHostReceiptCapabilities } from "./governor-host-receipt-capabilities.js";
 import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
 export type {
   GovernorAuthenticatedApprovalReceipt,
   GovernorAuthenticatedApprovalRevocation,
+  GovernorAuthenticatedEvidenceInvalidation,
+  GovernorEvidenceInvalidationProvenance,
+  GovernorEvidenceInvalidationReason,
+  GovernorTrustedEvidenceInvalidationResolver,
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
   GovernorTrustedOwnerIngressResolver,
   GovernorTrustedReceiptResolver,
   GovernorOwnerIngressClaim,
   HostGovernorApprovalReceiptId,
+  HostGovernorEvidenceInvalidationReceiptId,
   HostGovernorApprovalRevocationId,
   HostGovernorCapabilities,
   HostGovernorDeliveryHandle,
@@ -57,11 +62,11 @@ export type {
 
 const CAPABILITIES = new WeakSet<object>();
 const RESOLVERS = new WeakSet<object>();
+const EVIDENCE_INVALIDATION_RESOLVERS = new WeakSet<object>();
 const APPROVAL_RESOLVERS = new WeakSet<object>();
 const OWNER_INGRESS_RESOLVERS = new WeakSet<object>();
 const OWNER_INGRESS_CLAIMS = new WeakSet<object>();
 const OWNER_INGRESS_LEASE_MS = 30_000;
-
 function sign(key: string, value: GovernorJsonValue): string {
   return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
 }
@@ -75,6 +80,12 @@ export function isTrustedGovernorReceiptResolver(
   resolver: GovernorTrustedReceiptResolver,
 ): boolean {
   return RESOLVERS.has(resolver);
+}
+
+export function isTrustedGovernorEvidenceInvalidationResolver(
+  resolver: GovernorTrustedEvidenceInvalidationResolver,
+): boolean {
+  return EVIDENCE_INVALIDATION_RESOLVERS.has(resolver);
 }
 
 export function isTrustedGovernorApprovalResolver(
@@ -103,6 +114,7 @@ export function createHostGovernorBroker(params: {
 }): {
   capabilities: HostGovernorCapabilities;
   resolver: GovernorTrustedReceiptResolver;
+  evidenceInvalidationResolver: GovernorTrustedEvidenceInvalidationResolver;
   approvalResolver: GovernorTrustedApprovalResolver;
   deliveryResolver: GovernorTrustedDeliveryResolver;
   ownerIngressResolver: GovernorTrustedOwnerIngressResolver;
@@ -116,6 +128,7 @@ export function createHostGovernorBroker(params: {
   const state: HostBrokerState = {
     key: params.secrets.receiptSigningKey,
     receipts: new Map(),
+    evidenceInvalidations: new Map(),
     approvals: new Map(),
     revocations: new Map(),
     deliveries: new Map(),
@@ -129,101 +142,23 @@ export function createHostGovernorBroker(params: {
   });
   const capability = {};
   CAPABILITIES.add(capability);
-  const submitObservedReceipt: HostGovernorCapabilities["submitObservedReceipt"] = (input) => {
-    if (!CAPABILITIES.has(capability)) {
-      throw new Error("Governor host receipt capability is invalid");
-    }
-    const body = {
-      scopeKey: input.scopeKey,
-      taskId: input.taskId,
-      taskVersion: input.taskVersion,
-      objectiveRevision: input.objectiveRevision,
-      planVersion: input.planVersion,
-      sourceKind: input.sourceKind,
-      sourceIdentity: input.sourceIdentity,
-      payloadDigest: governorDigest(input.payload),
-      observedAt: input.observedAt,
-    };
-    const id = opaqueId(state.key, {
-      ...body,
-      nonce: crypto.randomUUID(),
-    }) as HostGovernorReceiptId;
-    const receipt = Object.freeze({
-      id,
-      ...input,
-      signature: sign(state.key, { id, ...body }),
-    });
-    state.receipts.set(id, receipt);
-    return id;
-  };
-  const submitAuthenticatedApproval: HostGovernorCapabilities["submitAuthenticatedApproval"] = (
-    input,
-  ) => {
-    if (!CAPABILITIES.has(capability)) {
-      throw new Error("Governor host approval capability is invalid");
-    }
-    const id = opaqueId(state.key, {
-      approval: input,
-      nonce: crypto.randomUUID(),
-    }) as HostGovernorApprovalReceiptId;
-    const grantId = `ggrant_${crypto.randomUUID()}`;
-    const canonicalTargetOpaque = params.secrets.identity.opaqueReference(
-      "action-target",
-      input.canonicalTarget,
-    );
-    const grantPayload = {
-      grantId,
-      taskId: input.taskId,
-      scopeKey: input.scopeKey,
-      objectiveRevision: input.objectiveRevision,
-      capability: input.capability,
-      capabilityVersion: input.capabilityVersion,
-      canonicalTargetOpaque,
-      approvalReceiptId: id,
-      approvalEpoch: input.approvalEpoch,
-      expiresAt: input.expiresAt,
-    };
-    const body = {
-      id,
-      grantId,
-      canonicalTargetOpaque,
-      grantKeyId: "host-broker-v1",
-      grantSignature: sign(state.key, grantPayload),
-      ...input,
-    };
-    params.persistence.recordApprovalGrant({
-      grantId,
-      scopeKey: input.scopeKey,
-      approvalEpoch: input.approvalEpoch,
-      observedAt: input.observedAt,
-    });
-    state.approvals.set(id, Object.freeze({ ...body, signature: sign(state.key, body) }));
-    return id;
-  };
-  const submitApprovalRevocation: HostGovernorCapabilities["submitApprovalRevocation"] = (
-    input,
-  ) => {
-    if (!CAPABILITIES.has(capability)) {
-      throw new Error("Governor host approval capability is invalid");
-    }
-    const id = opaqueId(state.key, {
-      revocation: input,
-      nonce: crypto.randomUUID(),
-    }) as HostGovernorApprovalRevocationId;
-    // Commit the durable high-water before exposing a successful revocation.
-    if (
-      !params.persistence.revokeApproval({
-        grantId: input.grantId,
-        scopeKey: input.scopeKey,
-        observedAt: input.observedAt,
-      })
-    ) {
-      throw new Error("Governor approval revocation was not durably applied");
-    }
-    const body = { id, ...input };
-    state.revocations.set(id, Object.freeze({ ...body, signature: sign(state.key, body) }));
-    return id;
-  };
+  const { submitObservedReceipt, submitEvidenceInvalidation } = createHostReceiptCapabilities({
+    state,
+    capability,
+    isCapability: (value) => CAPABILITIES.has(value),
+    sign,
+    opaqueId,
+  });
+  const { submitAuthenticatedApproval, submitApprovalRevocation } = createHostApprovalCapabilities({
+    state,
+    capability,
+    isCapability: (value) => CAPABILITIES.has(value),
+    sign,
+    opaqueId,
+    targetOpaque: (target) => params.secrets.identity.opaqueReference("action-target", target),
+    recordGrant: (grant) => params.persistence.recordApprovalGrant(grant),
+    revokeGrant: (grant) => params.persistence.revokeApproval(grant),
+  });
   const submitAuthenticatedOwnerIngress: HostGovernorCapabilities["submitAuthenticatedOwnerIngress"] =
     (input) => {
       if (!CAPABILITIES.has(capability)) {
@@ -346,6 +281,17 @@ export function createHostGovernorBroker(params: {
     },
   });
   RESOLVERS.add(resolver);
+  const evidenceInvalidationResolver: GovernorTrustedEvidenceInvalidationResolver = Object.freeze({
+    resolveEvidenceInvalidation: (receiptId, scopeKey) => {
+      const receipt = state.evidenceInvalidations.get(receiptId);
+      if (!receipt || receipt.scopeKey !== scopeKey) {
+        return null;
+      }
+      const { signature, ...body } = receipt;
+      return sign(state.key, body) === signature ? receipt : null;
+    },
+  });
+  EVIDENCE_INVALIDATION_RESOLVERS.add(evidenceInvalidationResolver);
   const approvalReceiptCurrent = (receipt: GovernorAuthenticatedApprovalReceipt): boolean => {
     const { signature, ...body } = receipt;
     return (
@@ -484,6 +430,7 @@ export function createHostGovernorBroker(params: {
   return {
     capabilities: Object.freeze({
       submitObservedReceipt,
+      submitEvidenceInvalidation,
       submitAuthenticatedApproval,
       submitApprovalRevocation,
       registerStaticDeliveryAdapter: deliveryBroker.register,
@@ -493,6 +440,7 @@ export function createHostGovernorBroker(params: {
       revokeOwnerIngressReceipt,
     }),
     resolver,
+    evidenceInvalidationResolver,
     approvalResolver,
     deliveryResolver: deliveryBroker.resolver,
     ownerIngressResolver,

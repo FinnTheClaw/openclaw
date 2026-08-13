@@ -46,6 +46,10 @@ export function buildGovernorAgentLoopProgress(
       .map((item) => item.criterionId),
   );
   const criteria = task.contract.completionCriteria.filter((criterion) => criterion.mandatory);
+  const eligible = (criterionId: string) => {
+    const criterion = criteria.find((item) => item.criterionId === criterionId);
+    return (criterion?.dependsOnCriteria ?? []).every((dependency) => satisfied.has(dependency));
+  };
   const satisfiedCriteria = criteria
     .filter((criterion) => satisfied.has(criterion.criterionId))
     .map((criterion) => criterion.criterionId);
@@ -56,7 +60,7 @@ export function buildGovernorAgentLoopProgress(
 
   for (const binding of config.toolBindings) {
     if (binding.criterionId) {
-      if (!satisfied.has(binding.criterionId)) {
+      if (!satisfied.has(binding.criterionId) && eligible(binding.criterionId)) {
         nextActions.push({
           toolName: binding.toolName,
           criterionId: binding.criterionId,
@@ -68,7 +72,7 @@ export function buildGovernorAgentLoopProgress(
     }
     if (binding.criteriaByValue && binding.criterionArgument) {
       for (const [value, criterionId] of Object.entries(binding.criteriaByValue)) {
-        if (!satisfied.has(criterionId)) {
+        if (!satisfied.has(criterionId) && eligible(criterionId)) {
           nextActions.push({
             toolName: binding.toolName,
             criterionId,
@@ -77,6 +81,9 @@ export function buildGovernorAgentLoopProgress(
           });
         }
       }
+      continue;
+    }
+    if (!binding.auxiliary) {
       continue;
     }
     nextActions.push({

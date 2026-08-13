@@ -2,11 +2,13 @@
 import {
   createGovernorTestHostBindings,
   isTrustedGovernorReceiptResolver,
+  isTrustedGovernorEvidenceInvalidationResolver,
   type GovernorTrustedApprovalResolver,
   type GovernorTrustedDeliveryResolver,
   type GovernorTrustedMemoryAuthority,
   type GovernorTrustedPhysicalExecutionCoordinator,
   type GovernorTrustedReceiptResolver,
+  type GovernorTrustedEvidenceInvalidationResolver,
   type GovernorTrustedTaskAuthority,
 } from "../../security/governor-host-readonly.js";
 import {
@@ -38,6 +40,7 @@ export type GovernorStoreSecrets = Readonly<{
 export type GovernorSqliteStoreParams = {
   stateDir?: string;
   receiptResolver?: GovernorTrustedReceiptResolver;
+  evidenceInvalidationResolver?: GovernorTrustedEvidenceInvalidationResolver;
   approvalResolver?: GovernorTrustedApprovalResolver;
   deliveryResolver?: GovernorTrustedDeliveryResolver;
   physicalExecutionCoordinator?: GovernorTrustedPhysicalExecutionCoordinator;
@@ -51,6 +54,7 @@ export type GovernorSqliteStoreParams = {
 export function createGovernorStoreDependencies(params: GovernorSqliteStoreParams) {
   const testBroker =
     !params.receiptResolver ||
+    !params.evidenceInvalidationResolver ||
     !params.approvalResolver ||
     !params.deliveryResolver ||
     !params.physicalExecutionCoordinator ||
@@ -60,6 +64,8 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
       ? createGovernorTestHostBindings({ stateDir: params.stateDir })
       : undefined;
   const receiptResolver = params.receiptResolver ?? testBroker?.resolver;
+  const evidenceInvalidationResolver =
+    params.evidenceInvalidationResolver ?? testBroker?.evidenceInvalidationResolver;
   const approvalResolver = params.approvalResolver ?? testBroker?.approvalResolver;
   const deliveryResolver = params.deliveryResolver ?? testBroker?.deliveryResolver;
   const physicalExecutionCoordinator =
@@ -69,6 +75,12 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
   const secrets = params.secrets ?? testBroker?.secrets;
   if (!receiptResolver || !isTrustedGovernorReceiptResolver(receiptResolver)) {
     throw new Error("Governor store requires a trusted host receipt resolver");
+  }
+  if (
+    !evidenceInvalidationResolver ||
+    !isTrustedGovernorEvidenceInvalidationResolver(evidenceInvalidationResolver)
+  ) {
+    throw new Error("Governor store requires a trusted evidence invalidation resolver");
   }
   if (
     !approvalResolver ||
@@ -112,6 +124,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
     options,
     identity: secrets.identity,
     evidenceAdmissions,
+    evidenceInvalidationResolver,
     queries,
     memory: new GovernorMemorySubsystem({
       options,

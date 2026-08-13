@@ -8,15 +8,18 @@
 import {
   createHostGovernorBroker,
   isTrustedGovernorApprovalResolver,
+  isTrustedGovernorEvidenceInvalidationResolver,
   isTrustedGovernorDeliveryResolver,
   isTrustedGovernorOwnerIngressResolver,
   isTrustedGovernorReceiptResolver,
   type GovernorTrustedApprovalResolver,
+  type GovernorTrustedEvidenceInvalidationResolver,
   type GovernorTrustedDeliveryResolver,
   type GovernorTrustedOwnerIngressResolver,
   type GovernorTrustedReceiptResolver,
   type GovernorOwnerIngressClaim,
   type HostGovernorApprovalReceiptId,
+  type HostGovernorEvidenceInvalidationReceiptId,
   type HostGovernorApprovalRevocationId,
   type HostGovernorCapabilities,
   type HostGovernorDeliveryHandle,
@@ -52,6 +55,7 @@ import {
 
 export {
   isTrustedGovernorApprovalResolver,
+  isTrustedGovernorEvidenceInvalidationResolver,
   isTrustedGovernorDeliveryResolver,
   isTrustedGovernorOwnerIngressResolver,
   isTrustedGovernorPhysicalExecutionCoordinator,
@@ -61,6 +65,7 @@ export {
 };
 export type {
   GovernorTrustedApprovalResolver,
+  GovernorTrustedEvidenceInvalidationResolver,
   GovernorTrustedDeliveryResolver,
   GovernorTrustedOwnerIngressResolver,
   GovernorPhysicalExecutionBinding,
@@ -76,6 +81,7 @@ export type {
   GovernorTrustedReceiptResolver,
   GovernorOwnerIngressClaim,
   HostGovernorApprovalReceiptId,
+  HostGovernorEvidenceInvalidationReceiptId,
   HostGovernorApprovalRevocationId,
   HostGovernorCapabilities,
   HostGovernorDeliveryHandle,

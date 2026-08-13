@@ -3,11 +3,13 @@ import { governorDigest } from "../tasks/governor/canonical-json.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 import type { GovernorController } from "../tasks/governor/controller.js";
 import { createGovernorEffectId } from "../tasks/governor/types.js";
+import { createGovernorCompletedReplayScope } from "./governor-agent-loop-completed-replay.js";
 import {
   validateGovernorAgentLoopConfiguration,
   type GovernorAgentLoopConfiguration,
 } from "./governor-agent-loop-config.js";
 import { createGovernorAgentLoopContract } from "./governor-agent-loop-contract.js";
+import { recoverGovernorAgentLoopGuidance } from "./governor-agent-loop-guidance-recovery.js";
 import {
   buildGovernorAgentLoopProgress,
   formatGovernorAlreadySatisfiedReason,
@@ -103,6 +105,11 @@ function createScope(
     throw new Error("GOVERNOR_AGENT_LOOP_STALE_INGRESS");
   }
   const taskId = route.task.taskId;
+  if (route.kind === "duplicate" && route.task.state === "COMPLETED") {
+    const completedReplayScope = createGovernorCompletedReplayScope(taskId, host.config.mode);
+    RUN_SCOPES.add(completedReplayScope);
+    return completedReplayScope;
+  }
   ensureGovernorAgentLoopExecuting(host.controller, taskId, input.now + 1);
   const currentTask = host.controller.store.loadTask(taskId);
   if (!currentTask) {
@@ -126,63 +133,14 @@ function createScope(
     toolErrorObserved: false,
     terminal: currentTask.state === "COMPLETED",
   };
-  const runtimeEvents = host.controller.store.listEvents(taskId);
-  const handledFailureEffects = new Set(
-    runtimeEvents
-      .filter((event) => event.eventType === "runtime_replan_requested")
-      .flatMap((event) => {
-        const payload = event.payload;
-        return typeof payload === "object" &&
-          payload !== null &&
-          !Array.isArray(payload) &&
-          typeof payload.sourceEffectId === "string"
-          ? [payload.sourceEffectId]
-          : [];
-      }),
-  );
-  let priorGuidance = runtimeEvents.toReversed().find((event) => {
-    const payload = event.payload;
-    return (
-      event.eventType === "runtime_replan_requested" &&
-      typeof payload === "object" &&
-      payload !== null &&
-      !Array.isArray(payload) &&
-      payload.guidanceOnly === true &&
-      payload.progressDigest === progress.fingerprint
-    );
-  });
-  if (!priorGuidance) {
-    const failedEffect = host.controller.store
-      .listCurrentEffects(taskId)
-      .toReversed()
-      .find(
-        (effect) =>
-          effect.outcome.semantic === "transient_failure" &&
-          !handledFailureEffects.has(effect.effectId),
-      );
-    if (failedEffect) {
-      host.controller.recordRuntimeReplanGuidance(taskId, input.now + 1, {
-        reasonCode: "tool_semantic_failure",
-        progressDigest: progress.fingerprint,
-        sourceEffectId: failedEffect.effectId,
-      });
-      priorGuidance = host.controller.store
-        .listEvents(taskId)
-        .toReversed()
-        .find((event) => {
-          const payload = event.payload;
-          return (
-            event.eventType === "runtime_replan_requested" &&
-            typeof payload === "object" &&
-            payload !== null &&
-            !Array.isArray(payload) &&
-            payload.guidanceOnly === true &&
-            payload.progressDigest === progress.fingerprint
-          );
-        });
-    }
-  }
-  if (priorGuidance) {
+  if (
+    recoverGovernorAgentLoopGuidance({
+      controller: host.controller,
+      taskId,
+      progressDigest: progress.fingerprint,
+      now: input.now,
+    })
+  ) {
     turnState.replannedAfterStagnation = true;
   }
   const governedTools = createGovernorAgentLoopTools(host.config);
@@ -260,6 +218,22 @@ function createScope(
         return {
           kind: "block",
           reasonCode: formatGovernorAlreadySatisfiedReason(turnState.progress, criterionId),
+        };
+      }
+      if (
+        criterionId &&
+        !turnState.progress.nextActions.some((action) => {
+          if (action.criterionId !== criterionId || action.toolName !== binding.toolName) {
+            return false;
+          }
+          return Object.entries(action.arguments).every(
+            ([key, value]) => governorAgentLoopTopLevelString(args, key) === value,
+          );
+        })
+      ) {
+        return {
+          kind: "block",
+          reasonCode: `GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:${criterionId};NEXT:${turnState.progress.nextActions.map((action) => action.criterionId ?? action.toolName).join(",") || "none"}`,
         };
       }
       const replanGuidanceDigest = governorDigest(
@@ -425,7 +399,7 @@ function createScope(
         TICKETS.delete(opaque);
       }
       if (host.controller.store.loadTask(taskId)?.state === "EXECUTING") {
-        host.controller.requestRuntimeReplan(taskId, interruption.now + 1);
+        host.controller.requestRuntimeReplan(taskId, interruption.now + 1, "provider_interrupted");
       }
     },
     assertTerminal() {
