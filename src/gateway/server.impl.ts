@@ -59,11 +59,20 @@ import type { RuntimeEnv } from "../runtime.js";
 import {
   clearSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeConfigSnapshot,
+  getActiveSecretsRuntimeGovernorSnapshot,
 } from "../secrets/runtime-state.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
 import { resolveGatewayAuth } from "./auth.js";
+import type {
+  GatewayBehaviorGovernorHostFactory,
+  GatewayBehaviorGovernorLifecycle,
+} from "./behavior-governor-lifecycle.js";
+
+function aggregateWithCause(errors: unknown[], message: string, cause: unknown): AggregateError {
+  return new AggregateError(errors, message, { cause });
+}
 import type { RestartRecoveryCandidate } from "./chat-abort.js";
 import { ADMIN_SCOPE } from "./method-scopes.js";
 import {
@@ -512,6 +521,8 @@ export type GatewayServerOptions = {
    * reparsing openclaw.json during server startup.
    */
   startupConfigSnapshotRead?: ReadConfigFileSnapshotWithPluginMetadataResult;
+  /** Internal host-owned binding provider; absent enabled config fails closed. */
+  behaviorGovernorHostFactory?: GatewayBehaviorGovernorHostFactory;
 };
 
 type SetupWizardRunner = NonNullable<GatewayServerOptions["wizardRunner"]>;
@@ -980,6 +991,52 @@ export async function startGatewayServer(
   };
 
   let closePreludeStarted = false;
+  let behaviorGovernorLifecycle: GatewayBehaviorGovernorLifecycle | undefined;
+  const applyBehaviorGovernorConfig = async (
+    plan: { restartGateway: boolean; changedPaths: readonly string[] } | undefined,
+    config: OpenClawConfig,
+  ): Promise<void> => {
+    if (
+      plan &&
+      (plan.restartGateway ||
+        !plan.changedPaths.some(
+          (changedPath) =>
+            changedPath === "experimental.behaviorGovernor" ||
+            changedPath.startsWith("experimental.behaviorGovernor."),
+        ))
+    ) {
+      return;
+    }
+    const enabled = config.experimental?.behaviorGovernor?.enabled === true;
+    if (!enabled && !behaviorGovernorLifecycle) {
+      return;
+    }
+    if (!behaviorGovernorLifecycle) {
+      const { createGatewayBehaviorGovernorLifecycle } =
+        await import("./behavior-governor-lifecycle.js");
+      behaviorGovernorLifecycle = createGatewayBehaviorGovernorLifecycle(
+        opts.behaviorGovernorHostFactory ? { hostFactory: opts.behaviorGovernorHostFactory } : {},
+      );
+    }
+    const secretSnapshot = getActiveSecretsRuntimeGovernorSnapshot();
+    if (!secretSnapshot) {
+      throw new Error("GOVERNOR_GATEWAY_SECRET_SNAPSHOT_REQUIRED");
+    }
+    await behaviorGovernorLifecycle.apply(config, {
+      env: secretSnapshot.env,
+      generation: secretSnapshot.generation,
+      sourceConfig: secretSnapshot.sourceConfig,
+      config: secretSnapshot.config,
+    });
+  };
+  const closeBehaviorGovernor = async () => {
+    const lifecycle = behaviorGovernorLifecycle;
+    if (!lifecycle) {
+      return;
+    }
+    await lifecycle.close();
+    behaviorGovernorLifecycle = undefined;
+  };
   let postReadyMaintenanceTimer: ReturnType<typeof setTimeout> | null = null;
   const clearPostReadyMaintenanceTimer = () => {
     if (!postReadyMaintenanceTimer) {
@@ -994,29 +1051,43 @@ export async function startGatewayServer(
   };
   const runClosePrelude = async () => {
     markClosePreludeStarted();
-    clearPluginMetadataLifecycleCaches();
-    const { runGatewayClosePrelude } = await loadGatewayCloseModule();
-    await runGatewayClosePrelude({
-      ...(diagnosticsEnabled ? { stopDiagnostics: stopDiagnosticHeartbeat } : {}),
-      clearSkillsRefreshTimer: () => {
-        if (!runtimeState?.skillsRefreshTimer) {
-          return;
-        }
-        clearTimeout(runtimeState.skillsRefreshTimer);
-        runtimeState.skillsRefreshTimer = null;
-      },
-      skillsChangeUnsub: runtimeState.skillsChangeUnsub,
-      disposeAuthRateLimiter: () => {
-        authRateLimiter.dispose();
-        nodeReapprovalCoordinator.dispose();
-      },
-      disposeBrowserAuthRateLimiter: () => browserAuthRateLimiter.dispose(),
-      stopModelPricingRefresh: runtimeState.stopModelPricingRefresh,
-      stopChannelHealthMonitor: () => runtimeState?.channelHealthMonitor?.stop(),
-      stopReadinessEventLoopHealth: readinessEventLoopHealth.stop,
-      clearSecretsRuntimeSnapshot,
-      closeMcpServer: closeMcpLoopbackServerOnDemand,
-    });
+    const errors: unknown[] = [];
+    try {
+      await closeBehaviorGovernor();
+    } catch (error) {
+      errors.push(error);
+      log.error("behavior governor close failed; continuing gateway shutdown");
+    }
+    try {
+      clearPluginMetadataLifecycleCaches();
+      const { runGatewayClosePrelude } = await loadGatewayCloseModule();
+      await runGatewayClosePrelude({
+        ...(diagnosticsEnabled ? { stopDiagnostics: stopDiagnosticHeartbeat } : {}),
+        clearSkillsRefreshTimer: () => {
+          if (!runtimeState?.skillsRefreshTimer) {
+            return;
+          }
+          clearTimeout(runtimeState.skillsRefreshTimer);
+          runtimeState.skillsRefreshTimer = null;
+        },
+        skillsChangeUnsub: runtimeState.skillsChangeUnsub,
+        disposeAuthRateLimiter: () => {
+          authRateLimiter.dispose();
+          nodeReapprovalCoordinator.dispose();
+        },
+        disposeBrowserAuthRateLimiter: () => browserAuthRateLimiter.dispose(),
+        stopModelPricingRefresh: runtimeState.stopModelPricingRefresh,
+        stopChannelHealthMonitor: () => runtimeState?.channelHealthMonitor?.stop(),
+        stopReadinessEventLoopHealth: readinessEventLoopHealth.stop,
+        clearSecretsRuntimeSnapshot,
+        closeMcpServer: closeMcpLoopbackServerOnDemand,
+      });
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "GATEWAY_CLOSE_PRELUDE_FAILED");
+    }
   };
   const { getRuntimeSnapshot, startChannels, startChannel, stopChannel, markChannelLoggedOut } =
     channelManager;
@@ -1032,15 +1103,31 @@ export async function startGatewayServer(
   const stopRegisteredPostReadySidecars = async () => {
     const postReadySidecars = runtimeState.postReadySidecars;
     runtimeState.postReadySidecars = [];
+    const errors: unknown[] = [];
     for (const postReadySidecar of postReadySidecars) {
-      await postReadySidecar.stop();
+      try {
+        await postReadySidecar.stop();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "GATEWAY_POST_READY_SIDECAR_CLOSE_FAILED");
     }
   };
   const stopRegisteredGatewayLifetimeSidecars = async () => {
     const gatewayLifetimeSidecars = runtimeState.gatewayLifetimeSidecars;
     runtimeState.gatewayLifetimeSidecars = [];
+    const errors: unknown[] = [];
     for (const gatewayLifetimeSidecar of gatewayLifetimeSidecars) {
-      await gatewayLifetimeSidecar.stop();
+      try {
+        await gatewayLifetimeSidecar.stop();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "GATEWAY_LIFETIME_SIDECAR_CLOSE_FAILED");
     }
   };
   const createCloseHandler = () => async (optsValue?: GatewayCloseOptions) => {
@@ -1112,13 +1199,30 @@ export async function startGatewayServer(
   };
   let clearFallbackGatewayContextForServer = () => {};
   const closeOnStartupFailure = async () => {
+    const errors: unknown[] = [];
     try {
       await stopRegisteredGatewayLifetimeSidecars();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       await stopRegisteredPostReadySidecars();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       await runClosePrelude();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       await createCloseHandler()({ reason: "gateway startup failed" });
-    } finally {
-      clearFallbackGatewayContextForServer();
+    } catch (error) {
+      errors.push(error);
+    }
+    clearFallbackGatewayContextForServer();
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "GATEWAY_STARTUP_CLOSE_FAILED");
     }
   };
   const broadcastVoiceWakeRoutingChanged = (config: VoiceWakeRoutingConfig) => {
@@ -1126,6 +1230,7 @@ export async function startGatewayServer(
   };
 
   try {
+    await applyBehaviorGovernorConfig(undefined, cfgAtStart);
     const earlyRuntime = await startupTrace.measure("runtime.early", () =>
       loadGatewayStartupEarlyModule().then(({ startGatewayEarlyRuntime }) =>
         startGatewayEarlyRuntime({
@@ -1783,6 +1888,7 @@ export async function startGatewayServer(
           (agentId) => terminalLaunchPolicy.resolve(agentId).ok,
         );
       },
+      onBehaviorGovernorConfigChange: applyBehaviorGovernorConfig,
       commitTerminalConfig: terminalLaunchPolicy.commitConfig,
       channelManager,
       activateRuntimeSecrets,
@@ -1841,29 +1947,70 @@ export async function startGatewayServer(
       startupTrace.detail("memory.post-ready", collectGatewayProcessMemoryUsageMb());
     }
   } catch (err) {
-    await closeOnStartupFailure();
+    try {
+      await closeOnStartupFailure();
+    } catch (cleanupError) {
+      throw aggregateWithCause(
+        [err, cleanupError],
+        "GATEWAY_STARTUP_FAILED_WITH_CLEANUP_ERRORS",
+        err,
+      );
+    }
     throw err;
   }
 
   const close = createCloseHandler();
+  const closeGatewayResources = async (optsLocal: Parameters<typeof close>[0]) => {
+    const errors: unknown[] = [];
+    try {
+      markClosePreludeStarted();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      terminalSessions.disposeAll();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await stopRegisteredGatewayLifetimeSidecars();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await stopRegisteredPostReadySidecars();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      const { runGlobalGatewayStopSafely } = await import("../plugins/hook-runner-global.js");
+      await runGlobalGatewayStopSafely({
+        event: { reason: optsLocal?.reason ?? "gateway stopping" },
+        ctx: { port },
+        onError: () => log.warn("gateway_stop hook failed"),
+      });
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await runClosePrelude();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await close(optsLocal);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "GATEWAY_CLOSE_FAILED");
+    }
+  };
 
   return {
     close: async (optsLocal) => {
       try {
-        markClosePreludeStarted();
-        // Kill any live operator shells before the socket layer tears down.
-        terminalSessions.disposeAll();
-        await stopRegisteredGatewayLifetimeSidecars();
-        await stopRegisteredPostReadySidecars();
-        // Run gateway_stop plugin hook before shutdown
-        const { runGlobalGatewayStopSafely } = await import("../plugins/hook-runner-global.js");
-        await runGlobalGatewayStopSafely({
-          event: { reason: optsLocal?.reason ?? "gateway stopping" },
-          ctx: { port },
-          onError: (err) => log.warn(`gateway_stop hook failed: ${String(err)}`),
-        });
-        await runClosePrelude();
-        await close(optsLocal);
+        await closeGatewayResources(optsLocal);
       } finally {
         clearFallbackGatewayContextForServer();
       }

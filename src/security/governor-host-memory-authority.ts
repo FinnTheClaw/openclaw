@@ -54,6 +54,7 @@ export type GovernorTrustedMemoryAuthority = Readonly<{
 }>;
 
 const AUTHORITIES = new WeakSet<object>();
+const CLOSERS = new WeakMap<object, () => void>();
 const authorityKey = (scopeKey: string, factKey: string) =>
   governorDigest({ kind: "memory-fact", scopeKey, factKey });
 const authorityBinding = (binding: GovernorMemoryAuthorityBinding) =>
@@ -128,8 +129,15 @@ export function createGovernorMemoryAuthority(
   ledger: GovernorHostAntiRollbackLedger,
   afterLedgerAppend?: () => void,
 ): GovernorTrustedMemoryAuthority {
+  let closed = false;
+  const assertOpen = () => {
+    if (closed) {
+      throw new Error("GOVERNOR_HOST_CAPABILITY_CLOSED");
+    }
+  };
   const authority: GovernorTrustedMemoryAuthority = Object.freeze({
     advance: (binding) => {
+      assertOpen();
       const digest = authorityBinding(binding);
       const key = authorityKey(binding.scopeKey, binding.factKey);
       const current = ledger.state("memory", key);
@@ -154,6 +162,7 @@ export function createGovernorMemoryAuthority(
       return { accepted: true, state: toState(next) as GovernorMemoryAuthorityState };
     },
     retire: (binding) => {
+      assertOpen();
       assertGovernorBoundarySafe("memory", assertGovernorJsonResources(binding));
       const key = authorityKey(binding.scopeKey, binding.factKey);
       const digest = governorDigest({ kind: "memory-retired", ...binding });
@@ -178,8 +187,12 @@ export function createGovernorMemoryAuthority(
       afterLedgerAppend?.();
       return toState(next) as GovernorMemoryAuthorityState;
     },
-    state: (scopeKey, factKey) => toState(ledger.state("memory", authorityKey(scopeKey, factKey))),
+    state: (scopeKey, factKey) => {
+      assertOpen();
+      return toState(ledger.state("memory", authorityKey(scopeKey, factKey)));
+    },
     matches: (binding, generation, bindingDigest) => {
+      assertOpen();
       authorityBinding(binding);
       const current = ledger.state("memory", authorityKey(binding.scopeKey, binding.factKey));
       return (
@@ -191,9 +204,16 @@ export function createGovernorMemoryAuthority(
     },
   });
   AUTHORITIES.add(authority);
+  CLOSERS.set(authority, () => {
+    closed = true;
+  });
   return authority;
 }
 
 export function isTrustedGovernorMemoryAuthority(value: GovernorTrustedMemoryAuthority): boolean {
   return AUTHORITIES.has(value);
+}
+
+export function closeGovernorMemoryAuthority(value: GovernorTrustedMemoryAuthority): void {
+  CLOSERS.get(value)?.();
 }

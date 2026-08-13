@@ -18,6 +18,7 @@ import type {
   GovernorLedgerState,
 } from "./governor-host-anti-rollback-ledger.js";
 import type { GovernorDeliveryManualResolution } from "./governor-host-contracts.js";
+import { writePrimaryDeliveryCertification } from "./governor-host-delivery-primary.js";
 
 type HostDeliveryDb = Pick<
   StateDb,
@@ -118,58 +119,6 @@ function primaryBindingMatches(
   );
 }
 
-function writePrimaryCertification(
-  db: DatabaseSync,
-  input: DeliveryCertificationInput,
-  status: "certified" | "revoked",
-): void {
-  executeSqliteQuerySync(
-    db,
-    dbx(db)
-      .insertInto("governor_delivery_certification_epochs")
-      .values({
-        identity_key: input.identityKey,
-        generation: input.generation,
-        updated_at: input.observedAt,
-      })
-      .onConflict((conflict) =>
-        conflict.column("identity_key").doUpdateSet({
-          generation: input.generation,
-          updated_at: input.observedAt,
-        }),
-      ),
-  );
-  executeSqliteQuerySync(
-    db,
-    dbx(db)
-      .insertInto("governor_delivery_certifications")
-      .values({
-        identity_key: input.identityKey,
-        status,
-        implementation_digest: input.implementationDigest,
-        config_digest: input.configDigest,
-        certification_generation: input.generation,
-        authority_key_id: "host-broker-v1",
-        authority_version: 1,
-        certification_signature: input.signature,
-        created_at: input.observedAt,
-        revoked_at: status === "revoked" ? input.observedAt : null,
-      })
-      .onConflict((conflict) =>
-        conflict.column("identity_key").doUpdateSet({
-          status,
-          implementation_digest: input.implementationDigest,
-          config_digest: input.configDigest,
-          certification_generation: input.generation,
-          authority_key_id: "host-broker-v1",
-          authority_version: 1,
-          certification_signature: input.signature,
-          revoked_at: status === "revoked" ? input.observedAt : null,
-        }),
-      ),
-  );
-}
-
 function hasStartedEffect(db: DatabaseSync, identityKey: string): boolean {
   return Boolean(
     executeSqliteQueryTakeFirstSync(
@@ -213,6 +162,17 @@ export function createGovernorHostDeliveryPersistence(params: {
         assertGovernorPersistedJson("log", input);
         const current = ledger.state("delivery", input.identityKey);
         const bindingDigest = deliveryBinding({ ...input, status: "certified" });
+        if (
+          current?.generation === input.generation &&
+          current.status === "certified" &&
+          current.bindingDigest === bindingDigest &&
+          primaryBindingMatches(db, input, "certified")
+        ) {
+          // Re-registering the exact certified binding after restart is a
+          // read-only reconstruction. Never append a same-generation ledger
+          // record or reopen a revoked/changed identity.
+          return current;
+        }
         if (hasStartedEffect(db, input.identityKey)) {
           // Restart reconstruction is allowed only for the byte-identical
           // certified binding. It exposes reconciliation but never resets or
@@ -242,7 +202,7 @@ export function createGovernorHostDeliveryPersistence(params: {
           status: "certified",
           bindingDigest,
         });
-        writePrimaryCertification(db, input, "certified");
+        writePrimaryDeliveryCertification(db, input, "certified");
         return next;
       }, options),
     deliveryBindingMatches: (input) => {
@@ -289,7 +249,7 @@ export function createGovernorHostDeliveryPersistence(params: {
             .where("identity_key", "=", input.identityKey)
             .where("state", "=", "claimed"),
         );
-        writePrimaryCertification(db, input, "revoked");
+        writePrimaryDeliveryCertification(db, input, "revoked");
         return true;
       }, options),
     deliveryState: (identityKey) => {

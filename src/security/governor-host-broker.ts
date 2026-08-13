@@ -7,21 +7,21 @@
  * It does not defend a process/OS compromise that can inspect memory.
  */
 import crypto from "node:crypto";
-import {
-  canonicalGovernorJson,
-  governorDigest,
-  type GovernorJsonValue,
-} from "../tasks/governor/canonical-json.js";
+import { canonicalGovernorJson, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import { createHostApprovalCapabilities } from "./governor-host-approval-capabilities.js";
+import {
+  createHostBrokerResolvers,
+  isTrustedGovernorApprovalResolver as isTrustedApprovalResolver,
+  isTrustedGovernorEvidenceInvalidationResolver as isTrustedEvidenceResolver,
+  isTrustedGovernorReceiptResolver as isTrustedReceiptResolver,
+} from "./governor-host-broker-resolvers.js";
 import type { GovernorHostDeliveryRuntime } from "./governor-host-channel-delivery.js";
 import type {
-  GovernorAuthenticatedApprovalReceipt,
   GovernorTrustedEvidenceInvalidationResolver,
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
   GovernorTrustedOwnerIngressResolver,
   GovernorTrustedReceiptResolver,
-  GovernorOwnerIngressClaim,
   HostBrokerState,
   HostGovernorCapabilities,
   HostGovernorOwnerIngressReceiptId,
@@ -30,13 +30,22 @@ import {
   createHostGovernorDeliveryBroker,
   isTrustedGovernorDeliveryResolver,
 } from "./governor-host-delivery-broker.js";
+import { closeGovernorMemoryAuthority } from "./governor-host-memory-authority.js";
+import {
+  createHostOwnerIngressResolver,
+  isTrustedGovernorOwnerIngressResolver as isTrustedOwnerIngressResolver,
+} from "./governor-host-owner-ingress-resolver.js";
 import {
   isGovernorHostPersistence,
   type GovernorHostPersistence,
 } from "./governor-host-persistence.js";
-import type { GovernorTrustedPhysicalExecutionCoordinator } from "./governor-host-physical-execution.js";
+import {
+  closeGovernorPhysicalExecutionCoordinator,
+  type GovernorTrustedPhysicalExecutionCoordinator,
+} from "./governor-host-physical-execution.js";
 import { createHostReceiptCapabilities } from "./governor-host-receipt-capabilities.js";
 import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
+import { closeGovernorTaskAuthority } from "./governor-host-task-authority.js";
 export type {
   GovernorAuthenticatedApprovalReceipt,
   GovernorAuthenticatedApprovalRevocation,
@@ -61,12 +70,6 @@ export type {
 } from "./governor-host-contracts.js";
 
 const CAPABILITIES = new WeakSet<object>();
-const RESOLVERS = new WeakSet<object>();
-const EVIDENCE_INVALIDATION_RESOLVERS = new WeakSet<object>();
-const APPROVAL_RESOLVERS = new WeakSet<object>();
-const OWNER_INGRESS_RESOLVERS = new WeakSet<object>();
-const OWNER_INGRESS_CLAIMS = new WeakSet<object>();
-const OWNER_INGRESS_LEASE_MS = 30_000;
 function sign(key: string, value: GovernorJsonValue): string {
   return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
 }
@@ -79,19 +82,19 @@ function opaqueId(key: string, value: GovernorJsonValue): string {
 export function isTrustedGovernorReceiptResolver(
   resolver: GovernorTrustedReceiptResolver,
 ): boolean {
-  return RESOLVERS.has(resolver);
+  return isTrustedReceiptResolver(resolver);
 }
 
 export function isTrustedGovernorEvidenceInvalidationResolver(
   resolver: GovernorTrustedEvidenceInvalidationResolver,
 ): boolean {
-  return EVIDENCE_INVALIDATION_RESOLVERS.has(resolver);
+  return isTrustedEvidenceResolver(resolver);
 }
 
 export function isTrustedGovernorApprovalResolver(
   resolver: GovernorTrustedApprovalResolver,
 ): boolean {
-  return APPROVAL_RESOLVERS.has(resolver);
+  return isTrustedApprovalResolver(resolver);
 }
 
 export { isTrustedGovernorDeliveryResolver };
@@ -99,7 +102,7 @@ export { isTrustedGovernorDeliveryResolver };
 export function isTrustedGovernorOwnerIngressResolver(
   resolver: GovernorTrustedOwnerIngressResolver,
 ): boolean {
-  return OWNER_INGRESS_RESOLVERS.has(resolver);
+  return isTrustedOwnerIngressResolver(resolver);
 }
 
 /**
@@ -121,6 +124,8 @@ export function createHostGovernorBroker(params: {
   physicalExecutionCoordinator: GovernorTrustedPhysicalExecutionCoordinator;
   memoryAuthority: import("./governor-host-memory-authority.js").GovernorTrustedMemoryAuthority;
   taskAuthority: import("./governor-host-task-authority.js").GovernorTrustedTaskAuthority;
+  freeze: () => void;
+  close: () => void;
 } {
   if (!isGovernorSecrets(params.secrets) || !isGovernorHostPersistence(params.persistence)) {
     throw new Error("Host governor validated secrets and persistence are required");
@@ -142,6 +147,14 @@ export function createHostGovernorBroker(params: {
   });
   const capability = {};
   CAPABILITIES.add(capability);
+  let closing = false;
+  let closed = false;
+  let closeFailure: AggregateError | undefined;
+  const assertOpen = () => {
+    if (closing || closed) {
+      throw new Error("GOVERNOR_HOST_CAPABILITY_CLOSED");
+    }
+  };
   const { submitObservedReceipt, submitEvidenceInvalidation } = createHostReceiptCapabilities({
     state,
     capability,
@@ -259,193 +272,123 @@ export function createHostGovernorBroker(params: {
     }
     return revoked;
   };
-  const resolver: GovernorTrustedReceiptResolver = Object.freeze({
-    resolve: (receiptId, scopeKey) => {
-      const receipt = state.receipts.get(receiptId);
-      if (!receipt || receipt.scopeKey !== scopeKey) {
-        return null;
-      }
-      const body = {
-        scopeKey: receipt.scopeKey,
-        taskId: receipt.taskId,
-        taskVersion: receipt.taskVersion,
-        objectiveRevision: receipt.objectiveRevision,
-        planVersion: receipt.planVersion,
-        sourceKind: receipt.sourceKind,
-        sourceIdentity: receipt.sourceIdentity,
-        payloadDigest: governorDigest(receipt.payload),
-        observedAt: receipt.observedAt,
-      };
-      const expected = sign(state.key, { id: receipt.id, ...body });
-      return expected === receipt.signature ? receipt : null;
-    },
+  const { resolver, evidenceInvalidationResolver, approvalResolver } = createHostBrokerResolvers({
+    state,
+    secrets: params.secrets,
+    persistence: params.persistence,
+    assertOpen,
+    sign,
   });
-  RESOLVERS.add(resolver);
-  const evidenceInvalidationResolver: GovernorTrustedEvidenceInvalidationResolver = Object.freeze({
-    resolveEvidenceInvalidation: (receiptId, scopeKey) => {
-      const receipt = state.evidenceInvalidations.get(receiptId);
-      if (!receipt || receipt.scopeKey !== scopeKey) {
-        return null;
-      }
-      const { signature, ...body } = receipt;
-      return sign(state.key, body) === signature ? receipt : null;
-    },
+  const ownerIngressResolver = createHostOwnerIngressResolver({
+    state,
+    key: state.key,
+    secrets: params.secrets,
+    persistence: params.persistence,
+    assertOpen,
+    sign,
+    opaqueId,
   });
-  EVIDENCE_INVALIDATION_RESOLVERS.add(evidenceInvalidationResolver);
-  const approvalReceiptCurrent = (receipt: GovernorAuthenticatedApprovalReceipt): boolean => {
-    const { signature, ...body } = receipt;
-    return (
-      sign(state.key, body) === signature &&
-      params.persistence.approvalLedgerMatches({
-        grantId: receipt.grantId,
-        scopeKey: receipt.scopeKey,
-        approvalEpoch: receipt.approvalEpoch,
-      })
-    );
+  const physicalExecutionCoordinator = params.persistence.physicalExecutions;
+  const memoryAuthority = params.persistence.memoryAuthority;
+  const taskAuthority = params.persistence.taskAuthority;
+  const capabilities = Object.freeze({
+    submitObservedReceipt: (input: Parameters<typeof submitObservedReceipt>[0]) => {
+      assertOpen();
+      return submitObservedReceipt(input);
+    },
+    submitEvidenceInvalidation: (input: Parameters<typeof submitEvidenceInvalidation>[0]) => {
+      assertOpen();
+      return submitEvidenceInvalidation(input);
+    },
+    submitAuthenticatedApproval: (input: Parameters<typeof submitAuthenticatedApproval>[0]) => {
+      assertOpen();
+      return submitAuthenticatedApproval(input);
+    },
+    submitApprovalRevocation: (input: Parameters<typeof submitApprovalRevocation>[0]) => {
+      assertOpen();
+      return submitApprovalRevocation(input);
+    },
+    registerStaticDeliveryAdapter: (input: Parameters<typeof deliveryBroker.register>[0]) => {
+      assertOpen();
+      return deliveryBroker.register(input);
+    },
+    revokeDeliveryAdapter: (input: Parameters<typeof deliveryBroker.revoke>[0]) => {
+      assertOpen();
+      return deliveryBroker.revoke(input);
+    },
+    resolveUnknownDelivery: (input: Parameters<typeof deliveryBroker.resolveUnknown>[0]) => {
+      assertOpen();
+      return deliveryBroker.resolveUnknown(input);
+    },
+    submitAuthenticatedOwnerIngress: (
+      input: Parameters<typeof submitAuthenticatedOwnerIngress>[0],
+    ) => {
+      assertOpen();
+      return submitAuthenticatedOwnerIngress(input);
+    },
+    revokeOwnerIngressReceipt: (input: Parameters<typeof revokeOwnerIngressReceipt>[0]) => {
+      assertOpen();
+      return revokeOwnerIngressReceipt(input);
+    },
+  }) satisfies HostGovernorCapabilities;
+  const close = () => {
+    if (closeFailure) {
+      throw closeFailure;
+    }
+    if (closed) {
+      return;
+    }
+    closing = true;
+    const errors: unknown[] = [];
+    for (const [handle, entry] of state.deliveries) {
+      if (entry.status !== "certified") {
+        continue;
+      }
+      try {
+        deliveryBroker.revoke({ handle });
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    try {
+      deliveryBroker.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      closeGovernorPhysicalExecutionCoordinator(physicalExecutionCoordinator);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      closeGovernorMemoryAuthority(memoryAuthority);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      closeGovernorTaskAuthority(taskAuthority);
+    } catch (error) {
+      errors.push(error);
+    }
+    closed = true;
+    if (errors.length > 0) {
+      closeFailure = new AggregateError(errors, "GOVERNOR_HOST_DELIVERY_CLOSE_FAILED");
+      throw closeFailure;
+    }
   };
-  const approvalResolver: GovernorTrustedApprovalResolver = Object.freeze({
-    resolveApproval: (receiptId, scopeKey) => {
-      const receipt = state.approvals.get(receiptId);
-      if (!receipt || receipt.scopeKey !== scopeKey) {
-        return null;
-      }
-      const { signature, ...body } = receipt;
-      return sign(state.key, body) === signature &&
-        params.persistence.approvalGrantMatches({
-          grantId: receipt.grantId,
-          scopeKey: receipt.scopeKey,
-          approvalEpoch: receipt.approvalEpoch,
-        })
-        ? receipt
-        : null;
-    },
-    resolveRevocation: (receiptId, scopeKey) => {
-      const receipt = state.revocations.get(receiptId);
-      if (!receipt || receipt.scopeKey !== scopeKey) {
-        return null;
-      }
-      const { signature, ...body } = receipt;
-      return sign(state.key, body) === signature ? receipt : null;
-    },
-    verifyApprovalReceiptCurrent: approvalReceiptCurrent,
-    verifyApprovalGrant: (grant, canonicalTarget) => {
-      if (grant.authorityKeyId !== "host-broker-v1" || grant.authorityVersion !== 1) {
-        return false;
-      }
-      const canonicalTargetOpaque = /^[a-f0-9]{64}$/u.test(canonicalTarget)
-        ? canonicalTarget
-        : params.secrets.identity.opaqueReference("action-target", canonicalTarget);
-      if (canonicalTargetOpaque !== grant.canonicalTarget) {
-        return false;
-      }
-      const payload = {
-        grantId: grant.grantId,
-        taskId: grant.taskId,
-        scopeKey: grant.scopeKey,
-        objectiveRevision: grant.objectiveRevision,
-        capability: grant.capability,
-        capabilityVersion: grant.capabilityVersion,
-        canonicalTargetOpaque: grant.canonicalTarget,
-        approvalReceiptId: grant.issuerId,
-        approvalEpoch: grant.approvalEpoch,
-        expiresAt: grant.expiresAt,
-      };
-      return (
-        sign(state.key, payload) === grant.authoritySignature &&
-        params.persistence.approvalLedgerMatches({
-          grantId: grant.grantId,
-          scopeKey: grant.scopeKey,
-          approvalEpoch: grant.approvalEpoch,
-        })
-      );
-    },
-  });
-  APPROVAL_RESOLVERS.add(approvalResolver);
-  const ownerIngressResolver: GovernorTrustedOwnerIngressResolver = Object.freeze({
-    claim: (receiptId, now) => {
-      const receipt =
-        state.ownerIngress.get(receiptId) ?? params.persistence.loadOwnerIngress(receiptId);
-      if (
-        !receipt ||
-        receipt.consumedAt !== undefined ||
-        receipt.expiresAt <= now ||
-        receipt.deploymentIdentity !== params.secrets.deploymentIdentity
-      ) {
-        return null;
-      }
-      const { signature, consumedAt: _consumedAt, ...body } = receipt;
-      if (sign(state.key, body) !== signature) {
-        return null;
-      }
-      const claimToken = opaqueId(state.key, {
-        ownerIngressClaim: receipt.id,
-        nonce: crypto.randomUUID(),
-      }) as import("./governor-host-contracts.js").HostGovernorOwnerIngressClaimToken;
-      const claimAttemptIdentity = opaqueId(state.key, {
-        ownerIngressAttempt: receipt.id,
-        claimToken,
-      });
-      const leaseExpiresAt = Math.min(receipt.expiresAt, now + OWNER_INGRESS_LEASE_MS);
-      if (
-        !params.persistence.claimOwnerIngress({
-          receipt,
-          claimToken,
-          claimAttemptIdentity,
-          now,
-          leaseExpiresAt,
-        })
-      ) {
-        return null;
-      }
-      state.ownerIngress.set(receiptId, receipt);
-      const claim: GovernorOwnerIngressClaim = Object.freeze({
-        receipt,
-        claimToken,
-        claimAttemptIdentity,
-        leaseExpiresAt,
-      });
-      OWNER_INGRESS_CLAIMS.add(claim);
-      return claim;
-    },
-    finalize: (claim, taskId, now) => {
-      if (!OWNER_INGRESS_CLAIMS.has(claim) || !taskId.trim()) {
-        return false;
-      }
-      const consumed = params.persistence.finalizeOwnerIngress({
-        receipt: claim.receipt,
-        claimToken: claim.claimToken,
-        taskId,
-        consumedAt: now,
-      });
-      if (consumed) {
-        state.ownerIngress.set(
-          claim.receipt.id,
-          Object.freeze({ ...claim.receipt, consumedAt: now }),
-        );
-      }
-      return consumed;
-    },
-  });
-  OWNER_INGRESS_RESOLVERS.add(ownerIngressResolver);
   return {
-    capabilities: Object.freeze({
-      submitObservedReceipt,
-      submitEvidenceInvalidation,
-      submitAuthenticatedApproval,
-      submitApprovalRevocation,
-      registerStaticDeliveryAdapter: deliveryBroker.register,
-      revokeDeliveryAdapter: deliveryBroker.revoke,
-      resolveUnknownDelivery: deliveryBroker.resolveUnknown,
-      submitAuthenticatedOwnerIngress,
-      revokeOwnerIngressReceipt,
-    }),
+    capabilities,
     resolver,
     evidenceInvalidationResolver,
     approvalResolver,
     deliveryResolver: deliveryBroker.resolver,
     ownerIngressResolver,
-    physicalExecutionCoordinator: params.persistence.physicalExecutions,
-    memoryAuthority: params.persistence.memoryAuthority,
-    taskAuthority: params.persistence.taskAuthority,
+    physicalExecutionCoordinator,
+    memoryAuthority,
+    taskAuthority,
+    freeze: () => {
+      closing = true;
+    },
+    close,
   };
 }

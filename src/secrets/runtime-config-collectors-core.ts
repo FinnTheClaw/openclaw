@@ -7,6 +7,7 @@ import {
   resolveEffectiveMediaEntryCapabilities,
 } from "../media-understanding/entry-capabilities.js";
 import { buildMediaUnderstandingCapabilityRegistry } from "../media-understanding/provider-capability-registry.js";
+import { collectBehaviorGovernorSecretAssignments } from "./runtime-config-collectors-governor.js";
 import { collectTtsApiKeyAssignments } from "./runtime-config-collectors-tts.js";
 import { evaluateGatewayAuthSurfaceStates } from "./runtime-gateway-auth-surfaces.js";
 import {
@@ -694,4 +695,5 @@ export function collectCoreConfigAssignments(params: {
   collectAgentTtsAssignments(params);
   collectCronAssignments(params);
   collectMediaRequestAssignments(params);
+  collectBehaviorGovernorSecretAssignments(params);
 }

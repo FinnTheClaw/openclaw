@@ -17,6 +17,7 @@ import { SilentReplyPolicyConfigSchema } from "./zod-schema.agent-defaults.js";
 import { ToolsSchema } from "./zod-schema.agent-runtime.js";
 import { AgentsSchema, AudioSchema, BindingsSchema, BroadcastSchema } from "./zod-schema.agents.js";
 import { ApprovalsSchema } from "./zod-schema.approvals.js";
+import { BehaviorGovernorConfigSchema } from "./zod-schema.behavior-governor.js";
 import { ChannelsSchema } from "./zod-schema.channels-config.js";
 import {
   HexColorSchema,
@@ -537,6 +538,10 @@ const CommitmentsSchema = z
 export const OpenClawSchema = z
   .object({
     $schema: z.string().optional(),
+    experimental: z
+      .object({ behaviorGovernor: BehaviorGovernorConfigSchema.optional() })
+      .strict()
+      .optional(),
     meta: z
       .object({
         lastTouchedVersion: z.string().optional(),

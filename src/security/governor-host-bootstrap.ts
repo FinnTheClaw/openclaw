@@ -17,6 +17,10 @@ import type { GovernorOwnerIngressBinding } from "./governor-host-owner-ingress.
 import { createGovernorHostPersistence } from "./governor-host-persistence.js";
 import { resolveGovernorSecrets } from "./governor-host-secrets.js";
 
+function aggregateWithCause(errors: unknown[], message: string, cause: unknown): AggregateError {
+  return new AggregateError(errors, message, { cause });
+}
+
 export type GovernorHostIntegrationConfiguration = Readonly<{
   evidenceOwnerId: string;
   approvalOwnerId: string;
@@ -135,15 +139,26 @@ export function createGovernorHostRuntimeBindings(params: {
         identity: secrets.identity,
       })
     : undefined;
-  const broker = createHostGovernorBroker({
+  const persistence = createGovernorHostPersistence({
+    env: params.env,
+    stateDir: params.stateDir,
     secrets,
-    persistence: createGovernorHostPersistence({
-      env: params.env,
-      stateDir: params.stateDir,
-      secrets,
-    }),
-    ...(deliveryRuntime ? { deliveryRuntime } : {}),
   });
+  let broker: ReturnType<typeof createHostGovernorBroker>;
+  try {
+    broker = createHostGovernorBroker({
+      secrets,
+      persistence,
+      ...(deliveryRuntime ? { deliveryRuntime } : {}),
+    });
+  } catch (error) {
+    try {
+      persistence.close();
+    } catch {
+      // Preserve the original broker-construction failure.
+    }
+    throw error;
+  }
   const submitChildLifecycleReceipt: ReturnType<
     typeof createHostGovernorBroker
   >["capabilities"]["submitObservedReceipt"] = (input) => {
@@ -182,9 +197,52 @@ export function createGovernorHostRuntimeBindings(params: {
       submitLifecycleReceipt: submitChildLifecycleReceipt,
     }),
   });
-  const deliveryHandles = params.integrations.deliveries.map((registration) =>
-    owners.delivery.registerStaticDeliveryAdapter(registration),
-  );
+  let deliveryHandles: ReturnType<
+    ReturnType<typeof createHostGovernorBroker>["capabilities"]["registerStaticDeliveryAdapter"]
+  >[];
+  try {
+    deliveryHandles = params.integrations.deliveries.map((registration) =>
+      owners.delivery.registerStaticDeliveryAdapter(registration),
+    );
+  } catch (error) {
+    try {
+      broker.close();
+    } catch {
+      // Preserve the original startup failure; cleanup is retried by the owner.
+    }
+    try {
+      persistence.close();
+    } catch {
+      // Preserve the original startup failure; cleanup is best effort here.
+    }
+    throw error;
+  }
+  let closed = false;
+  let closeFailure: AggregateError | undefined;
+  const close = () => {
+    if (closeFailure) {
+      throw closeFailure;
+    }
+    if (closed) {
+      return;
+    }
+    const errors: unknown[] = [];
+    try {
+      broker.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      persistence.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      closeFailure = new AggregateError(errors, "GOVERNOR_HOST_BINDINGS_CLOSE_FAILED");
+      throw closeFailure;
+    }
+    closed = true;
+  };
   return {
     resolver: broker.resolver,
     evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
@@ -197,6 +255,8 @@ export function createGovernorHostRuntimeBindings(params: {
     secrets,
     owners,
     deliveryHandles: Object.freeze(deliveryHandles),
+    freeze: broker.freeze,
+    close,
   };
 }
 
@@ -206,12 +266,13 @@ export function createGovernorHostRuntimeBindings(params: {
  */
 export function createGovernorHostRuntimeIfEnabled(params: {
   env?: NodeJS.ProcessEnv;
+  enabled?: boolean;
   stateDir?: string;
   capabilities: readonly GovernorCapabilityDefinition[];
   integrations?: GovernorHostIntegrationConfiguration;
 }): GovernorHostRuntime | null {
   const env = params.env ?? process.env;
-  if (!isBehaviorGovernorEnabled(env)) {
+  if (params.enabled !== true && !isBehaviorGovernorEnabled(env)) {
     return null;
   }
   if (!params.integrations) {
@@ -225,38 +286,136 @@ export function createGovernorHostRuntimeIfEnabled(params: {
     stateDir: params.stateDir,
     integrations: params.integrations,
   });
-  const controller = createGovernorControllerIfEnabled({
-    ...params,
-    env,
-    hostBindings: {
-      receiptResolver: bindings.resolver,
-      evidenceInvalidationResolver: bindings.evidenceInvalidationResolver,
-      approvalResolver: bindings.approvalResolver,
-      deliveryResolver: bindings.deliveryResolver,
-      ownerIngressResolver: bindings.ownerIngressResolver,
-      physicalExecutionCoordinator: bindings.physicalExecutionCoordinator,
-      memoryAuthority: bindings.memoryAuthority,
-      taskAuthority: bindings.taskAuthority,
-      secrets: bindings.secrets,
-      stateEnv: env,
-    },
-  });
-  if (!controller) {
-    throw new Error("Enabled governor controller failed to initialize");
+  let closeAgentLoop = () => {};
+  let controller: NonNullable<ReturnType<typeof createGovernorControllerIfEnabled>> | undefined;
+  try {
+    const created = createGovernorControllerIfEnabled({
+      ...params,
+      env,
+      hostBindings: {
+        receiptResolver: bindings.resolver,
+        evidenceInvalidationResolver: bindings.evidenceInvalidationResolver,
+        approvalResolver: bindings.approvalResolver,
+        deliveryResolver: bindings.deliveryResolver,
+        ownerIngressResolver: bindings.ownerIngressResolver,
+        physicalExecutionCoordinator: bindings.physicalExecutionCoordinator,
+        memoryAuthority: bindings.memoryAuthority,
+        taskAuthority: bindings.taskAuthority,
+        secrets: bindings.secrets,
+        stateEnv: env,
+      },
+    });
+    if (!created) {
+      throw new Error("Enabled governor controller failed to initialize");
+    }
+    controller = created;
+    closeAgentLoop = agentLoop
+      ? installGovernorAgentLoopHost({
+          controller,
+          submitObservedReceipt: bindings.owners.evidence.submitObservedReceipt,
+          capabilities: params.capabilities,
+          config: agentLoop,
+        })
+      : () => {};
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    try {
+      closeAgentLoop();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    try {
+      bindings.close();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    try {
+      controller?.close();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw aggregateWithCause(
+        [error, ...cleanupErrors],
+        "GOVERNOR_HOST_RUNTIME_STARTUP_CLEANUP_FAILED",
+        error,
+      );
+    }
+    throw error;
   }
-  const closeAgentLoop = agentLoop
-    ? installGovernorAgentLoopHost({
-        controller,
-        submitObservedReceipt: bindings.owners.evidence.submitObservedReceipt,
-        capabilities: params.capabilities,
-        config: agentLoop,
-      })
-    : () => {};
+  if (!controller) {
+    throw new Error("GOVERNOR_HOST_CONTROLLER_UNAVAILABLE");
+  }
+  let closed = false;
+  let closeFailure: AggregateError | undefined;
+  const close = () => {
+    if (closeFailure) {
+      throw closeFailure;
+    }
+    if (closed) {
+      return;
+    }
+    const errors: unknown[] = [];
+    try {
+      bindings.freeze();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      closeAgentLoop();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      bindings.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      controller.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      closeFailure = new AggregateError(errors, "GOVERNOR_HOST_RUNTIME_CLOSE_FAILED");
+      throw closeFailure;
+    }
+    closed = true;
+  };
+  let adapter: GovernorRuntimeAdapter;
+  try {
+    adapter = new GovernorRuntimeAdapter(controller, bindings.ownerIngressResolver);
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    try {
+      closeAgentLoop();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    try {
+      bindings.close();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    try {
+      controller.close();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw aggregateWithCause(
+        [error, ...cleanupErrors],
+        "GOVERNOR_HOST_RUNTIME_STARTUP_FAILED",
+        error,
+      );
+    }
+    throw error;
+  }
   return Object.freeze({
-    adapter: new GovernorRuntimeAdapter(controller, bindings.ownerIngressResolver),
+    adapter,
     owners: bindings.owners,
     deliveryHandles: bindings.deliveryHandles,
-    close: closeAgentLoop,
+    close,
   });
 }
 

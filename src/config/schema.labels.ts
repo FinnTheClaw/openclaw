@@ -3,6 +3,11 @@ import { MEDIA_AUDIO_FIELD_LABELS } from "./media-audio-field-metadata.js";
 
 export const FIELD_LABELS: Record<string, string> = {
   meta: "Metadata",
+  experimental: "Experimental",
+  "experimental.behaviorGovernor": "Behavior Governor",
+  "experimental.behaviorGovernor.mode": "Behavior Governor Mode",
+  "experimental.behaviorGovernor.secretRefs": "Behavior Governor Secret References",
+  "experimental.behaviorGovernor.agentLoop": "Behavior Governor Agent Loop",
   "meta.lastTouchedVersion": "Config Last Touched Version",
   "meta.lastTouchedAt": "Config Last Touched At",
   marketplaces: "Marketplaces",

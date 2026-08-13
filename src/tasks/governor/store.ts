@@ -6,12 +6,7 @@ import {
 import type { HostGovernorDeliveryHandle } from "../../security/governor-host-readonly.js";
 import type { HostDeliveryReceipt } from "../../security/governor-host-readonly.js";
 import type { HostGovernorEvidenceInvalidationReceiptId } from "../../security/governor-host-readonly.js";
-import {
-  openOpenClawStateDatabase,
-  runOpenClawStateWriteTransaction,
-  type OpenClawStateDatabase,
-  type OpenClawStateDatabaseOptions,
-} from "../../state/openclaw-state-db.js";
+import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
 import { bindGovernorActionIntent } from "./action-intent-codec.js";
 import { GovernorActionIntentStore } from "./action-intent-store.js";
 import type { GovernorActionIntent } from "./action-intent.js";
@@ -51,7 +46,10 @@ import {
 } from "./store-evidence-admission.js";
 import { invalidateGovernorEvidence } from "./store-evidence-invalidation.js";
 import { ingestGovernorTask, type GovernorIngressResult } from "./store-ingress.js";
+import { GovernorStoreLifecycle } from "./store-lifecycle.js";
 import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
+import { runRecoverableTaskWrite } from "./store-recovery.js";
+import type { GovernorCommitResult } from "./store-types.js";
 import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorEffectRecord } from "./tool-outcome.js";
 import {
@@ -70,32 +68,14 @@ export type { GovernorStoreSecrets } from "./store-bootstrap.js";
 
 export type { GovernorIngressResult } from "./store-ingress.js";
 
-// oxfmt-ignore
-export type GovernorCommitResult = { applied: true; task: GovernorTaskProjection } | { applied: false; reason: "not_found" | "task_version_conflict" | "lease_epoch_conflict"; current?: GovernorTaskProjection };
+export type { GovernorCommitResult } from "./store-types.js";
 
 export type { GovernorEffectUpdate } from "./store-commit-validation.js";
 export type { GovernorPendingEvidence } from "./store-evidence-admission.js";
 
-function runRecoverableTaskWrite(
-  options: OpenClawStateDatabaseOptions,
-  tasks: GovernorTaskAuthorityStore,
-  operation: (database: OpenClawStateDatabase) => GovernorCommitResult,
-): GovernorCommitResult {
-  let result: GovernorCommitResult;
-  try {
-    result = runOpenClawStateWriteTransaction(operation, options);
-  } catch (error) {
-    runOpenClawStateWriteTransaction(({ db }) => tasks.reconcilePrimary(db), options);
-    throw error;
-  }
-  if (!result.applied) {
-    runOpenClawStateWriteTransaction(({ db }) => tasks.reconcilePrimary(db), options);
-  }
-  return result;
-}
-
 export class GovernorSqliteStore {
   readonly #options: OpenClawStateDatabaseOptions;
+  readonly #lifecycle: GovernorStoreLifecycle;
   readonly identity: GovernorIdentityContext;
   readonly actionIntents: GovernorActionIntentStore;
   readonly capabilities: GovernorCapabilityRegistry;
@@ -116,6 +96,7 @@ export class GovernorSqliteStore {
   constructor(params: GovernorSqliteStoreParams = {}) {
     const dependencies = createGovernorStoreDependencies(params);
     this.#options = dependencies.options;
+    this.#lifecycle = new GovernorStoreLifecycle(this.#options);
     this.identity = dependencies.identity;
     this.#evidenceAdmissions = dependencies.evidenceAdmissions;
     this.#evidenceInvalidationResolver = dependencies.evidenceInvalidationResolver;
@@ -136,8 +117,8 @@ export class GovernorSqliteStore {
     return opaqueGovernorReference(kind, value, this.identity);
   }
 
-  #database() {
-    return openOpenClawStateDatabase(this.#options);
+  close(): void {
+    this.#lifecycle.close();
   }
 
   approvalStatus(
@@ -210,7 +191,7 @@ export class GovernorSqliteStore {
   }
 
   // oxfmt-ignore
-  loadTask(taskId: GovernorTaskId): GovernorTaskProjection | null { return loadGovernorTask(this.#database().db, taskId, this.#tasks); }
+  loadTask(taskId: GovernorTaskId): GovernorTaskProjection | null { return loadGovernorTask(this.#lifecycle.database().db, taskId, this.#tasks); }
 
   ingest(params: {
     eventId?: GovernorEventId;

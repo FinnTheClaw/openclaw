@@ -46,6 +46,7 @@ export type GovernorTrustedTaskAuthority = Readonly<{
 }>;
 
 const AUTHORITIES = new WeakSet<object>();
+const CLOSERS = new WeakMap<object, () => void>();
 
 function authorityKey(taskId: string): string {
   return governorDigest({ kind: "governor-task-fence", taskId });
@@ -177,11 +178,18 @@ export function createGovernorTaskAuthority(
   ledger: GovernorHostAntiRollbackLedger,
   afterAppend?: () => void,
 ): GovernorTrustedTaskAuthority {
+  let closed = false;
+  const assertOpen = () => {
+    if (closed) {
+      throw new Error("GOVERNOR_HOST_CAPABILITY_CLOSED");
+    }
+  };
   const append = (
     binding: GovernorTaskFenceBinding,
     status: "task_intent" | "task_current",
     current: GovernorLedgerState | null,
   ) => {
+    assertOpen();
     validate(binding);
     const fence = taskFence(binding);
     const state = ledger.append({
@@ -203,6 +211,7 @@ export function createGovernorTaskAuthority(
   };
   const authority: GovernorTrustedTaskAuthority = Object.freeze({
     prepare: (binding) => {
+      assertOpen();
       validate(binding);
       const current = ledger.state("task", authorityKey(binding.taskId));
       if (sameState(current, binding)) {
@@ -230,6 +239,7 @@ export function createGovernorTaskAuthority(
       return state;
     },
     finalize: (binding) => {
+      assertOpen();
       validate(binding);
       const current = ledger.state("task", authorityKey(binding.taskId));
       if (!sameState(current, binding)) {
@@ -252,6 +262,7 @@ export function createGovernorTaskAuthority(
       return state;
     },
     reconcile: (binding, strategy = "target-only") => {
+      assertOpen();
       validate(binding);
       const current = ledger.state("task", authorityKey(binding.taskId));
       if (current?.status === "task_current") {
@@ -270,16 +281,27 @@ export function createGovernorTaskAuthority(
       return false;
     },
     matches: (binding) => {
+      assertOpen();
       validate(binding);
       const current = ledger.state("task", authorityKey(binding.taskId));
       return current?.status === "task_current" && sameState(current, binding);
     },
-    state: (taskId) => toState(ledger.state("task", authorityKey(taskId))),
+    state: (taskId) => {
+      assertOpen();
+      return toState(ledger.state("task", authorityKey(taskId)));
+    },
   });
   AUTHORITIES.add(authority);
+  CLOSERS.set(authority, () => {
+    closed = true;
+  });
   return authority;
 }
 
 export function isTrustedGovernorTaskAuthority(value: GovernorTrustedTaskAuthority): boolean {
   return AUTHORITIES.has(value);
+}
+
+export function closeGovernorTaskAuthority(value: GovernorTrustedTaskAuthority): void {
+  CLOSERS.get(value)?.();
 }

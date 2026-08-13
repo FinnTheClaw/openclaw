@@ -42,21 +42,20 @@ const forbiddenAuthority =
 
 const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
   "governor-agent-loop-config": [
+    "gateway/behavior-governor-lifecycle.ts",
     "security/governor-agent-loop-completed-replay.ts",
     "security/governor-agent-loop-contract.ts",
     "security/governor-agent-loop-progress.ts",
     "security/governor-agent-loop-replay-lookup.ts",
     "security/governor-agent-loop-types.ts",
     "security/governor-agent-loop-host.ts",
+    "security/governor-agent-loop-ingress.ts",
     "security/governor-agent-loop-tool-bindings.ts",
     "security/governor-agent-loop-turn-handler.ts",
     "security/governor-host-bootstrap.ts",
   ],
-  "governor-agent-loop-contract": ["security/governor-agent-loop-host.ts"],
-  "governor-agent-loop-host": [
-    "security/governor-agent-loop-readonly.ts",
-    "security/governor-host-bootstrap.ts",
-  ],
+  "governor-agent-loop-contract": ["security/governor-agent-loop-ingress.ts"],
+  "governor-agent-loop-host": ["security/governor-host-bootstrap.ts"],
   "governor-agent-loop-progress": [
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-turn-handler.ts",
@@ -69,8 +68,14 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   ],
   "governor-agent-loop-types": [
     "security/governor-agent-loop-completed-replay.ts",
+    "security/governor-agent-loop-host-close.ts",
     "security/governor-agent-loop-host.ts",
+    "security/governor-agent-loop-inert-registry.ts",
+    "security/governor-agent-loop-ingress.ts",
+    "security/governor-agent-loop-readonly.ts",
     "security/governor-agent-loop-replay-lookup.ts",
+    "security/governor-agent-loop-scope-token.ts",
+    "security/governor-agent-loop-terminal-replay.ts",
     "security/governor-agent-loop-turn-handler.ts",
   ],
   "governor-agent-loop-values": [
@@ -90,7 +95,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-host-ledger-storage.ts",
   ],
   "governor-host-ledger-storage": ["security/governor-host-anti-rollback-ledger.ts"],
-  "governor-host-bootstrap": [],
+  "governor-host-bootstrap": ["gateway/behavior-governor-lifecycle.ts"],
   "governor-host-broker": [
     "security/governor-host-bootstrap.ts",
     "security/governor-host-readonly.ts",
@@ -120,8 +125,10 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   "governor-host-owner-ingress-persistence": ["security/governor-host-persistence.ts"],
   "governor-host-persistence": [
     "security/governor-host-bootstrap.ts",
+    "security/governor-host-broker-resolvers.ts",
     "security/governor-host-broker.ts",
     "security/governor-host-delivery-broker.ts",
+    "security/governor-host-owner-ingress-resolver.ts",
     "security/governor-host-readonly.ts",
   ],
   "governor-host-physical-execution": [
@@ -131,8 +138,10 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   ],
   "governor-host-secrets": [
     "security/governor-host-bootstrap.ts",
+    "security/governor-host-broker-resolvers.ts",
     "security/governor-host-broker.ts",
     "security/governor-host-delivery-broker.ts",
+    "security/governor-host-owner-ingress-resolver.ts",
     "security/governor-host-persistence.ts",
     "security/governor-host-readonly.ts",
   ],

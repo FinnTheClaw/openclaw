@@ -28,7 +28,8 @@ export type GovernorRuntimeTransitionReason = GovernorRuntimeReplanReason | "pro
 export type GovernorRuntimeBlockReason =
   | "budget_exhausted"
   | "semantic_stagnation"
-  | "tool_semantic_failure";
+  | "tool_semantic_failure"
+  | "shadow_observed";
 
 export type GovernorRuntimeReplanGuidanceRequest = Readonly<{
   reasonCode: GovernorRuntimeReplanReason;

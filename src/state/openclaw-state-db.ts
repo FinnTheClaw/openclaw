@@ -256,17 +256,65 @@ export function runOpenClawStateWriteTransaction<T>(
 }
 
 export function closeOpenClawStateDatabase(): void {
-  for (const database of cachedDatabases.values()) {
-    if (database.db.isOpen) {
-      database.walMaintenance.checkpoint();
-    }
-    database.walMaintenance.close();
-    clearNodeSqliteKyselyCacheForDatabase(database.db);
-    if (database.db.isOpen) {
-      database.db.close();
+  const errors: unknown[] = [];
+  for (const [pathname, database] of cachedDatabases) {
+    try {
+      closeOpenClawStateDatabaseEntry(database);
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      cachedDatabases.delete(pathname);
     }
   }
   cachedDatabases.clear();
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "OPENCLAW_STATE_DATABASE_CLOSE_FAILED");
+  }
+}
+
+function closeOpenClawStateDatabaseEntry(database: OpenClawStateDatabase): void {
+  const errors: unknown[] = [];
+  try {
+    if (database.db.isOpen) {
+      database.walMaintenance.checkpoint();
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    database.walMaintenance.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    clearNodeSqliteKyselyCacheForDatabase(database.db);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    if (database.db.isOpen) {
+      database.db.close();
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "OPENCLAW_STATE_DATABASE_CLOSE_ENTRY_FAILED");
+  }
+}
+
+/** Close one owned state database without affecting other gateway databases. */
+export function closeOpenClawStateDatabaseAtPath(pathname: string): void {
+  const key = path.resolve(pathname);
+  const database = cachedDatabases.get(key);
+  if (!database) {
+    return;
+  }
+  try {
+    closeOpenClawStateDatabaseEntry(database);
+  } finally {
+    cachedDatabases.delete(key);
+  }
 }
 
 export function isOpenClawStateDatabaseOpen(): boolean {

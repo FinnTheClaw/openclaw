@@ -37,7 +37,7 @@ function env(): NodeJS.ProcessEnv {
     OPENCLAW_GOVERNOR_DEPLOYMENT_ID: "v34-deployment-0001",
   };
 }
-function start(stateDir: string, criteria: readonly string[], maxTurns = 12) {
+function start(stateDir: string, criteria: readonly string[], maxTurns = 12, generation = 0) {
   return createGovernorHostRuntimeIfEnabled({
     env: env(),
     stateDir,
@@ -58,9 +58,7 @@ function start(stateDir: string, criteria: readonly string[], maxTurns = 12) {
           scopeKeys: ["v34-owner-scope"],
         },
       ],
-      deliveries: [
-        { implementationId: "synthetic", config: { channel: "fixture" }, generation: 0 },
-      ],
+      deliveries: [{ implementationId: "synthetic", config: { channel: "fixture" }, generation }],
       agentLoop: {
         mode: "enforce",
         scopes: [{ sessionKey: "v34-session" }],
@@ -442,7 +440,7 @@ describe("V34 governed continuation", () => {
         runtime.close();
         closeOpenClawStateDatabase();
 
-        const restarted = start(state.stateDir, ["alpha"]);
+        const restarted = start(state.stateDir, ["alpha"], 12, 2);
         const recovered = resolveGovernorAgentLoopRunScope(input())!;
         const guidance = restarted.adapter.controller.store
           .listEvents(recovered.taskId as never)

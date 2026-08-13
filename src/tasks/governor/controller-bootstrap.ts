@@ -28,6 +28,7 @@ import { GovernorSqliteStore, type GovernorStoreSecrets } from "./store.js";
 
 export function createGovernorControllerIfEnabled(params: {
   env?: NodeJS.ProcessEnv;
+  enabled?: boolean;
   stateDir?: string;
   capabilities: readonly GovernorCapabilityDefinition[];
   hostBindings?: {
@@ -44,7 +45,7 @@ export function createGovernorControllerIfEnabled(params: {
   };
 }): GovernorController | null {
   const env = params.env ?? {};
-  if (!isBehaviorGovernorEnabled(env)) {
+  if (params.enabled !== true && !isBehaviorGovernorEnabled(env)) {
     return null;
   }
   if (!params.hostBindings) {

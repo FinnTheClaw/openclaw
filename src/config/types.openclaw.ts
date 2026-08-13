@@ -13,6 +13,7 @@ import type {
   SessionConfig,
   WebConfig,
 } from "./types.base.js";
+import type { BehaviorGovernorConfig } from "./types.behavior-governor.js";
 import type { BrowserConfig } from "./types.browser.js";
 import type { ChannelsConfig } from "./types.channels.js";
 import type { CliConfig } from "./types.cli.js";
@@ -94,6 +95,10 @@ export type SurfaceConfigEntry = {
 export type OpenClawConfig = {
   /** JSON schema URL used by editors and generated config files. */
   $schema?: string;
+  /** Explicit, host-owned behavior-governor rollout configuration. */
+  experimental?: {
+    behaviorGovernor?: BehaviorGovernorConfig;
+  };
   meta?: {
     /** Last OpenClaw version that wrote this config. */
     lastTouchedVersion?: string;

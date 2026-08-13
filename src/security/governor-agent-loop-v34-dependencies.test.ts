@@ -45,7 +45,7 @@ function env(): NodeJS.ProcessEnv {
   };
 }
 
-function start(stateDir: string) {
+function start(stateDir: string, generation = 0) {
   const agentLoop: GovernorAgentLoopConfiguration = {
     mode: "enforce" as const,
     scopes: [{ sessionKey: "v34-dependency-session" }],
@@ -85,9 +85,7 @@ function start(stateDir: string) {
           scopeKeys: ["v34-dependency-owner-scope"],
         },
       ],
-      deliveries: [
-        { implementationId: "synthetic", config: { channel: "fixture" }, generation: 0 },
-      ],
+      deliveries: [{ implementationId: "synthetic", config: { channel: "fixture" }, generation }],
       agentLoop,
     },
   })!;
@@ -238,7 +236,7 @@ describe("V34 host-owned criterion dependencies", () => {
           scope.dispose();
           runtime.close();
           closeOpenClawStateDatabase();
-          const replayRuntime = start(state.stateDir);
+          const replayRuntime = start(state.stateDir, 2);
           const beforeReplayEvents = replayRuntime.runtime.adapter.controller.store.listEvents(
             scope.taskId as never,
           );
@@ -324,7 +322,7 @@ describe("V34 host-owned criterion dependencies", () => {
         firstRuntime.runtime.close();
         closeOpenClawStateDatabase();
 
-        const restarted = start(state.stateDir);
+        const restarted = start(state.stateDir, 2);
         const recovered = resolveGovernorAgentLoopRunScope(input())!;
         const betaFailure = recovered.beforeTool({
           toolCallId: "beta-failed",

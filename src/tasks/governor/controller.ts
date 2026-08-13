@@ -13,7 +13,7 @@ import {
   type GovernorToolRecordResult,
 } from "./action-runtime.js";
 // Orchestrates the feature-flagged governed task loop over durable state.
-import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
+import type { GovernorJsonValue } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { assertValidGovernorPlan } from "./contracts.js";
 import {
@@ -86,6 +86,7 @@ export type {
 } from "./action-runtime.js";
 
 export type { GovernorMutationResolution } from "./mutation-reconciliation.js";
+export { governorArgumentsDigest } from "./controller-digest.js";
 function assertApplied(result: GovernorCommitResult): GovernorTaskProjection {
   if (!result.applied) {
     throw new Error("GOVERNOR_COMMIT_REJECTED");
@@ -109,6 +110,9 @@ export class GovernorController {
     }
     this.actions = new GovernorActionRuntime(store, capabilities);
     this.memoryRemediation = new GovernorMemoryRemediationRuntime(store, this.actions);
+  }
+  close(): void {
+    this.store.close();
   }
   ingest(params: {
     sourceMessageId: string;
@@ -492,8 +496,4 @@ export class GovernorController {
       request: params,
     });
   }
-}
-
-export function governorArgumentsDigest(value: GovernorJsonValue): string {
-  return governorDigest(value);
 }

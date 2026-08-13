@@ -1,14 +1,16 @@
-/** Read-only object-capability exposed to the embedded agent loop. */
+/** Tiny inert registry exposed to the embedded agent loop. */
 import {
-  isHostIssuedGovernorAgentLoopScope,
-  resolveHostGovernorCompletedIngressReplay,
-  resolveHostGovernorAgentLoopScope,
-  type GovernorAgentLoopRunInput,
-  type GovernorAgentLoopRunScope,
-  type GovernorAgentLoopToolDecision,
-  type GovernorAgentLoopToolTicket,
-  type GovernorAgentLoopTurnDecision,
-} from "./governor-agent-loop-host.js";
+  isGovernorAgentLoopRunScope as isRegisteredGovernorAgentLoopRunScope,
+  resolveGovernorAgentLoopRunScope as resolveRegisteredScope,
+  resolveGovernorCompletedIngressReplay as resolveRegisteredReplay,
+} from "./governor-agent-loop-inert-registry.js";
+import type {
+  GovernorAgentLoopRunInput,
+  GovernorAgentLoopRunScope,
+  GovernorAgentLoopToolDecision,
+  GovernorAgentLoopToolTicket,
+  GovernorAgentLoopTurnDecision,
+} from "./governor-agent-loop-types.js";
 
 export type {
   GovernorAgentLoopRunInput,
@@ -22,16 +24,16 @@ export type {
 export function resolveGovernorAgentLoopRunScope(
   input: GovernorAgentLoopRunInput,
 ): GovernorAgentLoopRunScope | undefined {
-  return resolveHostGovernorAgentLoopScope(input);
+  return resolveRegisteredScope(input);
 }
 
 /** Performs only the authenticated, read-only completed-ingress lookup. */
 export function resolveGovernorCompletedIngressReplay(
   input: GovernorAgentLoopRunInput,
 ): string | undefined {
-  return resolveHostGovernorCompletedIngressReplay(input);
+  return resolveRegisteredReplay(input);
 }
 
 export function isGovernorAgentLoopRunScope(scope: GovernorAgentLoopRunScope): boolean {
-  return isHostIssuedGovernorAgentLoopScope(scope);
+  return isRegisteredGovernorAgentLoopRunScope(scope);
 }

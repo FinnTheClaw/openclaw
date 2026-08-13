@@ -225,6 +225,10 @@ type ManagedGatewayConfigReloaderParams = Omit<
   sharedGatewaySessionGenerationState: SharedGatewaySessionGenerationState;
   clients: Iterable<SharedGatewayAuthClient>;
   reconcileTerminalSessions: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void;
+  onBehaviorGovernorConfigChange?: (
+    plan: GatewayReloadPlan,
+    nextConfig: OpenClawConfig,
+  ) => Promise<void>;
   commitTerminalConfig: () => void;
 };
 
@@ -794,7 +798,10 @@ export function startManagedGatewayConfigReloader(
     readSnapshot: params.readSnapshot,
     promoteSnapshot: async (snapshot, _reason) => await params.promoteSnapshot(snapshot),
     subscribeToWrites: params.subscribeToWrites,
-    onConfigChange: (plan, nextConfig) => params.reconcileTerminalSessions(plan, nextConfig),
+    onConfigChange: async (plan, nextConfig) => {
+      await params.onBehaviorGovernorConfigChange?.(plan, nextConfig);
+      params.reconcileTerminalSessions(plan, nextConfig);
+    },
     onConfigApplied: () => params.commitTerminalConfig(),
     onNoopConfigCommit: async (_plan, nextConfig) => {
       await params.activateRuntimeSecrets(nextConfig, {

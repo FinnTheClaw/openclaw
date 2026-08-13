@@ -11,7 +11,12 @@ import {
   setRuntimeConfigSnapshotRefreshHandler,
   type RuntimeConfigSnapshotRefreshHandler,
 } from "../config/runtime-snapshot.js";
+import type {
+  BehaviorGovernorConfig,
+  BehaviorGovernorSecretRefs,
+} from "../config/types.behavior-governor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isSecretRef } from "../config/types.secrets.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import type { PluginOrigin } from "../plugins/plugin-origin.types.js";
 import type { SecretResolverWarning } from "./runtime-shared.js";
@@ -42,6 +47,7 @@ export type SecretsRuntimeRefreshContext = {
 
 let activeSnapshot: PreparedSecretsRuntimeSnapshot | null = null;
 let activeRefreshContext: SecretsRuntimeRefreshContext | null = null;
+let activeSnapshotGeneration = 0;
 const clearHooks = new Set<() => void>();
 const preparedSnapshotRefreshContext = new WeakMap<
   PreparedSecretsRuntimeSnapshot,
@@ -140,6 +146,7 @@ export function activateSecretsRuntimeSnapshotState(params: {
   setRuntimeConfigSnapshot(next.config, next.sourceConfig);
   replaceRuntimeAuthProfileStoreSnapshots(next.authStores);
   activeSnapshot = next;
+  activeSnapshotGeneration += 1;
   activeRefreshContext = nextRefreshContext;
   if (nextRefreshContext) {
     preparedSnapshotRefreshContext.set(next, cloneSecretsRuntimeRefreshContext(nextRefreshContext));
@@ -165,6 +172,11 @@ export function getActiveSecretsRuntimeSnapshot(): PreparedSecretsRuntimeSnapsho
   return snapshot;
 }
 
+/** Opaque process-local generation for the currently activated startup snapshot. */
+export function getActiveSecretsRuntimeGeneration(): string | null {
+  return activeSnapshot ? `secrets:${activeSnapshotGeneration}` : null;
+}
+
 // Hot-path readers only need the config pair for availability decisions.
 // Return the active references and keep full snapshot clone isolation on
 // getActiveSecretsRuntimeSnapshot() for callers that need mutable data.
@@ -178,6 +190,62 @@ export function getActiveSecretsRuntimeConfigSnapshot(): Pick<
   return {
     config: activeSnapshot.config,
     sourceConfig: activeSnapshot.sourceConfig,
+  };
+}
+
+/** Returns the one prepared config/env/generation tuple used by gateway activation. */
+export function getActiveSecretsRuntimeGovernorSnapshot(): {
+  sourceConfig: Extract<BehaviorGovernorConfig, { enabled: true }>;
+  config: Readonly<{
+    secretRefs: Readonly<Record<keyof BehaviorGovernorSecretRefs, string>>;
+  }>;
+  env: NodeJS.ProcessEnv;
+  generation: string;
+} | null {
+  if (!activeSnapshot || !activeRefreshContext) {
+    return null;
+  }
+  const sourceGovernor = activeSnapshot.sourceConfig.experimental?.behaviorGovernor;
+  const resolvedGovernor = activeSnapshot.config.experimental?.behaviorGovernor;
+  if (sourceGovernor?.enabled !== true || resolvedGovernor?.enabled !== true) {
+    return null;
+  }
+  const secretFields = [
+    "identityHmacKey",
+    "evidenceAdmissionKey",
+    "receiptSigningKey",
+    "ledgerSigningKey",
+    "deploymentIdentity",
+  ] as const;
+  const resolvedSecretValues = resolvedGovernor.secretRefs as unknown as Record<string, unknown>;
+  for (const field of secretFields) {
+    const resolvedValue = resolvedSecretValues[field];
+    if (
+      !isSecretRef(sourceGovernor.secretRefs[field]) ||
+      typeof resolvedValue !== "string" ||
+      !resolvedValue.trim()
+    ) {
+      return null;
+    }
+  }
+  const sourceConfig = structuredClone(sourceGovernor);
+  const resolvedSecretRefs = {
+    identityHmacKey: resolvedSecretValues.identityHmacKey as string,
+    evidenceAdmissionKey: resolvedSecretValues.evidenceAdmissionKey as string,
+    receiptSigningKey: resolvedSecretValues.receiptSigningKey as string,
+    ledgerSigningKey: resolvedSecretValues.ledgerSigningKey as string,
+    deploymentIdentity: resolvedSecretValues.deploymentIdentity as string,
+    evidenceAdmissionKeyId:
+      typeof resolvedSecretValues.evidenceAdmissionKeyId === "string" &&
+      resolvedSecretValues.evidenceAdmissionKeyId
+        ? resolvedSecretValues.evidenceAdmissionKeyId
+        : "v1",
+  };
+  return {
+    sourceConfig,
+    config: { secretRefs: resolvedSecretRefs },
+    env: { ...activeRefreshContext.env },
+    generation: `secrets:${activeSnapshotGeneration}`,
   };
 }
 
@@ -199,6 +267,7 @@ export function getLiveSecretsRuntimeAuthStores(): PreparedSecretsRuntimeSnapsho
  */
 export function clearSecretsRuntimeSnapshot(): void {
   activeSnapshot = null;
+  activeSnapshotGeneration += 1;
   activeRefreshContext = null;
   clearActiveRuntimeWebToolsMetadata();
   setRuntimeConfigSnapshotRefreshHandler(null);

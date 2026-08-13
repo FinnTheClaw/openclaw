@@ -59,6 +59,7 @@ export type GovernorTrustedPhysicalExecutionCoordinator = Readonly<{
 }>;
 
 const COORDINATORS = new WeakSet<object>();
+const CLOSERS = new WeakMap<object, () => void>();
 const slotKey = (slot: number) => `physical-slot:${slot}`;
 const bindingDigest = (binding: GovernorPhysicalExecutionBinding) => governorDigest(binding);
 
@@ -110,8 +111,15 @@ function matches(
 export function createGovernorPhysicalExecutionCoordinator(
   ledger: GovernorHostAntiRollbackLedger,
 ): GovernorTrustedPhysicalExecutionCoordinator {
+  let closed = false;
+  const assertOpen = () => {
+    if (closed) {
+      throw new Error("GOVERNOR_HOST_CAPABILITY_CLOSED");
+    }
+  };
   const coordinator: GovernorTrustedPhysicalExecutionCoordinator = Object.freeze({
     claim: (binding) => {
+      assertOpen();
       const digest = bindingDigest(binding);
       for (let slot = 0; slot < GOVERNOR_PHYSICAL_EXECUTION_SLOTS; slot += 1) {
         const current = ledger.state("execution", slotKey(slot));
@@ -145,6 +153,7 @@ export function createGovernorPhysicalExecutionCoordinator(
       return { kind: "saturated" };
     },
     requestCancellation: (binding, lease) => {
+      assertOpen();
       assertLease(lease);
       const digest = bindingDigest(binding);
       const current = ledger.state("execution", slotKey(lease.slot));
@@ -169,6 +178,7 @@ export function createGovernorPhysicalExecutionCoordinator(
       return { slot: lease.slot, generation: next.generation, bindingDigest: digest };
     },
     complete: (binding, lease) => {
+      assertOpen();
       assertLease(lease);
       const digest = bindingDigest(binding);
       const current = ledger.state("execution", slotKey(lease.slot));
@@ -188,6 +198,7 @@ export function createGovernorPhysicalExecutionCoordinator(
       return true;
     },
     acknowledgeTermination: (binding, lease, outcome) => {
+      assertOpen();
       assertLease(lease);
       const digest = bindingDigest(binding);
       const current = ledger.state("execution", slotKey(lease.slot));
@@ -207,6 +218,7 @@ export function createGovernorPhysicalExecutionCoordinator(
       return { slot: lease.slot, generation: next.generation, bindingDigest: digest };
     },
     acknowledgeOrphanedTermination: (lease, outcome) => {
+      assertOpen();
       assertLease(lease);
       const current = ledger.state("execution", slotKey(lease.slot));
       if (current?.status === outcome && current.bindingDigest === lease.bindingDigest) {
@@ -229,6 +241,7 @@ export function createGovernorPhysicalExecutionCoordinator(
       return { slot: lease.slot, generation: next.generation, bindingDigest: lease.bindingDigest };
     },
     state: (slot) => {
+      assertOpen();
       if (!Number.isInteger(slot) || slot < 0 || slot >= GOVERNOR_PHYSICAL_EXECUTION_SLOTS) {
         return null;
       }
@@ -236,6 +249,9 @@ export function createGovernorPhysicalExecutionCoordinator(
     },
   });
   COORDINATORS.add(coordinator);
+  CLOSERS.set(coordinator, () => {
+    closed = true;
+  });
   return coordinator;
 }
 
@@ -243,4 +259,10 @@ export function isTrustedGovernorPhysicalExecutionCoordinator(
   value: GovernorTrustedPhysicalExecutionCoordinator,
 ): boolean {
   return COORDINATORS.has(value);
+}
+
+export function closeGovernorPhysicalExecutionCoordinator(
+  value: GovernorTrustedPhysicalExecutionCoordinator,
+): void {
+  CLOSERS.get(value)?.();
 }

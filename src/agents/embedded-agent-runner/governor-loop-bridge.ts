@@ -138,7 +138,9 @@ export function installGovernorLoopBridge(params: {
 
   params.agent.beforeToolCall = beforeToolCall;
   params.agent.afterToolCall = afterToolCall;
-  params.agent.shouldStopAfterTurn = shouldStopAfterTurn;
+  if (params.scope.mode === "enforce") {
+    params.agent.shouldStopAfterTurn = shouldStopAfterTurn;
+  }
   const unsubscribe = params.agent.subscribe(async (event: AgentEvent) => {
     if (event.type !== "turn_end") {
       return;
@@ -156,6 +158,9 @@ export function installGovernorLoopBridge(params: {
             : 0,
         now: now(),
       });
+      if (params.scope.mode === "shadow") {
+        return;
+      }
       if (decision.kind === "continue" && decision.message) {
         params.agent.steerKeyed(governorSteeringKey, {
           role: "user",
@@ -170,10 +175,8 @@ export function installGovernorLoopBridge(params: {
         stoppedReason = decision.reasonCode;
         params.scope.interrupt({ now: now() });
       } else if (decision.kind === "complete") {
-        if (params.scope.mode !== "shadow") {
-          terminalRequested = true;
-          params.agent.removeSteeringKey(governorSteeringKey);
-        }
+        terminalRequested = true;
+        params.agent.removeSteeringKey(governorSteeringKey);
       }
     } catch (error) {
       if (params.scope.mode !== "shadow") {
@@ -197,7 +200,7 @@ export function installGovernorLoopBridge(params: {
       disposed = true;
       let interruptError: unknown;
       try {
-        if (!terminalRequested) {
+        if (params.scope.mode !== "shadow" && !terminalRequested) {
           params.scope.interrupt({ now: now() });
         }
       } catch (error) {
@@ -217,7 +220,9 @@ export function installGovernorLoopBridge(params: {
       }
       toolInventoryLease?.restore();
       tickets.clear();
-      params.agent.removeSteeringKey(governorSteeringKey);
+      if (params.scope.mode === "enforce") {
+        params.agent.removeSteeringKey(governorSteeringKey);
+      }
       params.scope.dispose();
       if (interruptError) {
         throw asThrownError(interruptError, "GOVERNOR_AGENT_LOOP_INTERRUPT_FAILED");

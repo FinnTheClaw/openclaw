@@ -1,10 +1,5 @@
 /** Host-only immutable delivery registration, receipt signing, and revocation. */
-import crypto from "node:crypto";
-import {
-  canonicalGovernorJson,
-  governorDigest,
-  type GovernorJsonValue,
-} from "../tasks/governor/canonical-json.js";
+import { governorDigest, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import type { GovernorHostDeliveryRuntime } from "./governor-host-channel-delivery.js";
 import type {
   GovernorDeliveryManualResolution,
@@ -15,51 +10,20 @@ import type {
   HostGovernorDeliveryHandle,
 } from "./governor-host-contracts.js";
 import { createHostDeliveryImplementation } from "./governor-host-delivery-implementations.js";
+import {
+  assertGovernorDeliveryRegistrationInput,
+  opaqueGovernorDeliveryId as opaqueId,
+  signGovernorDelivery as sign,
+} from "./governor-host-delivery-primitives.js";
 import type { GovernorHostPersistence } from "./governor-host-persistence.js";
 import type { GovernorSecrets } from "./governor-host-secrets.js";
-
 const DELIVERY_AUTHORITIES = new WeakSet<object>();
 const DELIVERY_RESOLVERS = new WeakSet<object>();
-
-function sign(key: string, value: GovernorJsonValue): string {
-  return crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex");
-}
-
-function opaqueId(key: string, value: GovernorJsonValue): string {
-  return `ghr_${crypto.createHmac("sha256", key).update(canonicalGovernorJson(value)).digest("hex")}`;
-}
-
-function assertRegistrationInput(
-  input: Parameters<HostGovernorCapabilities["registerStaticDeliveryAdapter"]>[0],
-): void {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error(
-      "Governor host delivery registration accepts only implementationId, config, and generation",
-    );
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(input);
-  const keys = Reflect.ownKeys(input);
-  if (
-    keys.length !== 3 ||
-    keys.some(
-      (key) =>
-        typeof key === "symbol" ||
-        (key !== "implementationId" && key !== "config" && key !== "generation") ||
-        !("value" in descriptors[key]),
-    )
-  ) {
-    throw new Error(
-      "Governor host delivery registration accepts only implementationId, config, and generation",
-    );
-  }
-}
-
 export function isTrustedGovernorDeliveryResolver(
   resolver: GovernorTrustedDeliveryResolver,
 ): boolean {
   return DELIVERY_RESOLVERS.has(resolver);
 }
-
 export function createHostGovernorDeliveryBroker(params: {
   secrets: GovernorSecrets;
   persistence: GovernorHostPersistence;
@@ -70,13 +34,20 @@ export function createHostGovernorDeliveryBroker(params: {
   revoke: HostGovernorCapabilities["revokeDeliveryAdapter"];
   resolveUnknown: HostGovernorCapabilities["resolveUnknownDelivery"];
   resolver: GovernorTrustedDeliveryResolver;
+  close: () => void;
 } {
   const key = params.secrets.receiptSigningKey;
   const authority = Object.freeze({});
   DELIVERY_AUTHORITIES.add(authority);
-
+  let closed = false;
+  const assertOpen = () => {
+    if (closed) {
+      throw new Error("GOVERNOR_HOST_CAPABILITY_CLOSED");
+    }
+  };
   const register: HostGovernorCapabilities["registerStaticDeliveryAdapter"] = (input) => {
-    assertRegistrationInput(input);
+    assertOpen();
+    assertGovernorDeliveryRegistrationInput(input);
     if (
       !DELIVERY_AUTHORITIES.has(authority) ||
       !Number.isSafeInteger(input.generation) ||
@@ -143,7 +114,6 @@ export function createHostGovernorDeliveryBroker(params: {
       signature,
       observedAt: Date.now(),
     });
-
     const issueReceipt = (receipt: {
       deliveryKey: string;
       payloadDigest: string;
@@ -336,8 +306,8 @@ export function createHostGovernorDeliveryBroker(params: {
     params.deliveries.set(handle, Object.freeze({ ...unsigned, send, reconcile, signature }));
     return handle;
   };
-
   const revoke: HostGovernorCapabilities["revokeDeliveryAdapter"] = ({ handle }) => {
+    assertOpen();
     if (!DELIVERY_AUTHORITIES.has(authority)) {
       throw new Error("Governor host delivery capability is invalid");
     }
@@ -381,8 +351,8 @@ export function createHostGovernorDeliveryBroker(params: {
     );
     return true;
   };
-
   const resolveUnknown: HostGovernorCapabilities["resolveUnknownDelivery"] = (input) => {
+    assertOpen();
     if (!DELIVERY_AUTHORITIES.has(authority)) {
       throw new Error("Governor host delivery capability is invalid");
     }
@@ -432,9 +402,11 @@ export function createHostGovernorDeliveryBroker(params: {
       resolutionSignature: sign(key, body),
     });
   };
-
   const resolver: GovernorTrustedDeliveryResolver = Object.freeze({
     resolve: (handle) => {
+      if (closed) {
+        return null;
+      }
       const entry = params.deliveries.get(handle);
       if (!entry) {
         return null;
@@ -462,6 +434,9 @@ export function createHostGovernorDeliveryBroker(params: {
       return sign(key, unsigned) === signature ? entry : null;
     },
     verifyReceipt: (receipt) => {
+      if (closed) {
+        return false;
+      }
       const entry = params.deliveries.get(receipt.handle);
       if (!entry || entry.status !== "certified") {
         return false;
@@ -491,5 +466,5 @@ export function createHostGovernorDeliveryBroker(params: {
     },
   });
   DELIVERY_RESOLVERS.add(resolver);
-  return { register, revoke, resolveUnknown, resolver };
+  return { register, revoke, resolveUnknown, resolver, close: () => (closed = true) };
 }

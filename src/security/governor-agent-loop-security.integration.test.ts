@@ -105,12 +105,15 @@ function runInput(overrides: Partial<GovernorAgentLoopRunInput> = {}): GovernorA
   };
 }
 
-function startRuntime(stateDir: string): GovernorHostRuntime {
+function startRuntime(stateDir: string, generation = 0): GovernorHostRuntime {
   return createGovernorHostRuntimeIfEnabled({
     env: environment(),
     stateDir,
     capabilities: [capability],
-    integrations: integrations(loopConfig()),
+    integrations: {
+      ...integrations(loopConfig()),
+      deliveries: [{ implementationId: "synthetic", config: { channel: "fixture" }, generation }],
+    },
   })!;
 }
 
@@ -150,7 +153,7 @@ describe("governed Agent loop trust and recovery boundaries", () => {
 
           runtime.close();
           closeOpenClawStateDatabase();
-          runtime = startRuntime(state.stateDir);
+          runtime = startRuntime(state.stateDir, 2);
           const third = resolveGovernorAgentLoopRunScope(
             runInput({ sourceMessageId: "string-message-gamma", now: 130 }),
           )!;
@@ -235,7 +238,7 @@ describe("governed Agent loop trust and recovery boundaries", () => {
             runtime.close();
             closeOpenClawStateDatabase();
 
-            runtime = startRuntime(state.stateDir);
+            runtime = startRuntime(state.stateDir, 2);
             const recovered = resolveGovernorAgentLoopRunScope(runInput({ now: 70_000 }))!;
             const recoveredTool = recovered.governedTools()[0]!;
             const recoveredDecision = recovered.beforeTool({

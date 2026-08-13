@@ -13,8 +13,9 @@ rules cannot provide those guarantees because a model can omit, repeat, or contr
 
 Add a behavior-governor control plane under `src/tasks/governor`. It will:
 
-- use the shared private `openclaw-state.db` for an append-only event log, a CAS-fenced task
-  projection, scope epochs, effect records, and a transactional outbox;
+- reuse the shared private SQLite implementation and schema boundary for an append-only event log,
+  a CAS-fenced task projection, scope epochs, effect records, and a transactional outbox, while
+  the production gateway roots the governor database separately below `<stateRoot>/governor`;
 - link governed tasks to existing task flows instead of replacing `task_runs`, `flow_runs`, or the
   task executor;
 - treat model output as proposals and let deterministic code own transitions, evidence admission,
@@ -234,6 +235,25 @@ isolated SQLite state.
     V33 does not claim support for either capability until separate host-owned postcondition
     verification and pre-dispatch child admission/terminal integration exist. This slice therefore
     authorizes only a read-only disposable live-model canary, not production rollout.
+
+41. The gateway integration is lifecycle-owned and restart-only. An absent or disabled
+    `experimental.behaviorGovernor` value does not load heavyweight host/bootstrap/state modules,
+    resolve governor secrets, open governor state, or install the process-global host; a tiny
+    inert runner registry remains statically available. An explicitly enabled
+    configuration is accepted only from the typed config surface, canonical `SecretRef` values,
+    the active startup secret snapshot (resolved through the canonical startup authority), its
+    opaque generation, and a closed host-owned binding factory. Resolved values cross this trusted
+    lifecycle boundary only; task, model, plugin, and ordinary tool code never receives them.
+    The factory may return a private rollback handle only when it owns an allocation; otherwise it
+    is a pure compiled-registry lookup. A governor config change while active returns
+    `GOVERNOR_GATEWAY_RESTART_REQUIRED` and leaves the old generation installed. A secret-provider
+    refresh is restart-only in this slice: the gateway must be restarted before a rotated governor
+    key is applied because no hot-refresh callback is claimed here.
+    Shutdown drains that generation's scopes before revoking authorities and closing its dedicated
+    `<stateRoot>/governor` persistence. Close is serialized, idempotent, failure-aggregating, and
+    never reopens a closed database or permits retained owner capabilities to write. Shadow is
+    observational, including terminal/replay paths: it may record private bounded observations but
+    cannot suppress a normal OpenClaw retry, steer, stop, interrupt, alter tools, or alter replies.
 
 ## Consequences
 

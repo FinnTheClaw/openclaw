@@ -26,7 +26,7 @@ const env = (): NodeJS.ProcessEnv => ({
   OPENCLAW_GOVERNOR_DEPLOYMENT_ID: "v34-budget-deployment",
 });
 
-function start(stateDir: string, maxTurns: number) {
+function start(stateDir: string, maxTurns: number, generation = 0) {
   return createGovernorHostRuntimeIfEnabled({
     env: env(),
     stateDir,
@@ -47,9 +47,7 @@ function start(stateDir: string, maxTurns: number) {
           scopeKeys: ["v34-budget-scope"],
         },
       ],
-      deliveries: [
-        { implementationId: "synthetic", config: { channel: "fixture" }, generation: 0 },
-      ],
+      deliveries: [{ implementationId: "synthetic", config: { channel: "fixture" }, generation }],
       agentLoop: {
         mode: "enforce",
         scopes: [{ sessionKey: "v34-budget-session" }],
@@ -104,7 +102,7 @@ describe("V34 durable model-turn budget", () => {
         scope.dispose();
         runtime.close();
         closeOpenClawStateDatabase();
-        const restarted = start(state.stateDir, 1);
+        const restarted = start(state.stateDir, 1, 2);
         expect(() => resolveGovernorAgentLoopRunScope(input())).toThrow(
           "GOVERNOR_AGENT_LOOP_BUDGET_EXHAUSTED",
         );

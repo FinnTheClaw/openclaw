@@ -8,6 +8,7 @@ import {
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
 import type { DB as StateDb } from "../state/openclaw-state-db.generated.js";
 import {
+  closeOpenClawStateDatabaseAtPath,
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
@@ -77,6 +78,7 @@ function governorPrimaryHasDurableState(options: OpenClawStateDatabaseOptions): 
 }
 
 export type GovernorHostPersistence = Readonly<{
+  close: () => void;
   physicalExecutions: GovernorTrustedPhysicalExecutionCoordinator;
   memoryAuthority: GovernorTrustedMemoryAuthority;
   taskAuthority: GovernorTrustedTaskAuthority;
@@ -252,7 +254,9 @@ export function createGovernorHostPersistence(params: {
   if (!params.ledger && !ledgerKey?.trim()) {
     throw new Error("Governor host anti-rollback ledger signing key is required");
   }
-  const stateDb = openOpenClawStateDatabase(options).db;
+  const stateDatabase = openOpenClawStateDatabase(options);
+  const stateDb = stateDatabase.db;
+  const stateDbPath = stateDatabase.path;
   const schemaHasGovernorTables = Boolean(
     // sqlite-allow-raw: closed sqlite_schema existence probe before trust-root creation
     stateDb
@@ -290,6 +294,7 @@ export function createGovernorHostPersistence(params: {
   };
 
   const port: GovernorHostPersistence = Object.freeze({
+    close: () => closeOpenClawStateDatabaseAtPath(stateDbPath),
     physicalExecutions: createGovernorPhysicalExecutionCoordinator(ledger),
     memoryAuthority: createGovernorMemoryAuthority(ledger, params.testAfterLedgerAppend),
     taskAuthority: createGovernorTaskAuthority(ledger, params.testAfterLedgerAppend),
