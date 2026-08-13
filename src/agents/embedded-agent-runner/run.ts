@@ -42,7 +42,10 @@ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { resolveProviderAuthProfileId } from "../../plugins/provider-runtime.js";
 import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../process/command-queue.js";
 import type { CommandQueueEnqueueOptions } from "../../process/command-queue.types.js";
-import { resolveGovernorAgentLoopRunScope } from "../../security/governor-agent-loop-readonly.js";
+import {
+  resolveGovernorAgentLoopRunScope,
+  resolveGovernorCompletedIngressReplay,
+} from "../../security/governor-agent-loop-readonly.js";
 import { createAgentHarnessTaskRuntimeScope } from "../../tasks/agent-harness-task-runtime-scope.js";
 import { resolveUserPath } from "../../utils.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
@@ -157,6 +160,10 @@ import {
   compactContextEngineWithSafetyTimeout,
   resolveCompactionTimeoutMs,
 } from "./compaction-safety-timeout.js";
+import {
+  createEmbeddedCompletedReplayResult,
+  throwIfEmbeddedRunAborted,
+} from "./completed-replay-result.js";
 import { resolveContextEngineCapabilities } from "./context-engine-capabilities.js";
 import {
   runContextEngineMaintenance,
@@ -829,6 +836,45 @@ async function runEmbeddedAgentInternal(
     sessionKey: paramsBase.sessionKey,
     agentId: paramsBase.agentId,
   });
+  throwIfEmbeddedRunAborted(paramsBase.abortSignal);
+  const earlySessionKey = normalizeOptionalString(effectiveSessionKey ?? paramsBase.sessionKey);
+  const earlyWorkspaceResolution = resolveRunWorkspaceDir({
+    workspaceDir: paramsBase.workspaceDir,
+    sessionKey: earlySessionKey,
+    agentId: paramsBase.agentId,
+    config: paramsBase.config,
+  });
+  const earlyReplayTaskId = resolveGovernorCompletedIngressReplay({
+    runId: paramsBase.runId,
+    sessionKey: earlySessionKey ?? paramsBase.sessionId,
+    sessionId: paramsBase.sessionId,
+    agentId: earlyWorkspaceResolution.agentId,
+    workspaceId: earlyWorkspaceResolution.workspaceDir,
+    channel: paramsBase.messageChannel ?? paramsBase.messageProvider ?? "local",
+    accountId: paramsBase.agentAccountId ?? "default",
+    principalId: paramsBase.senderId ?? "anonymous",
+    conversationId:
+      paramsBase.chatId ??
+      paramsBase.currentMessagingTarget ??
+      earlySessionKey ??
+      paramsBase.sessionId,
+    sourceMessageId: String(paramsBase.currentMessageId ?? paramsBase.runId),
+    ...(typeof paramsBase.currentMessageId === "number" &&
+    Number.isSafeInteger(paramsBase.currentMessageId)
+      ? { sourceSequence: paramsBase.currentMessageId }
+      : {}),
+    prompt: paramsBase.prompt,
+    now: Date.now(),
+  });
+  if (earlyReplayTaskId) {
+    return createEmbeddedCompletedReplayResult({
+      startedAt: Date.now(),
+      sessionId: paramsBase.sessionId,
+      sessionFile: paramsBase.sessionFile,
+      provider: paramsBase.provider,
+      model: paramsBase.model,
+    });
+  }
   const runSessionTarget = await resolveAgentRunSessionTarget({
     ...paramsBase,
     sessionKey: effectiveSessionKey,
@@ -1141,12 +1187,7 @@ async function runEmbeddedAgentInternal(
       };
       params.onExecutionStarted?.({ lifecycleGeneration });
       notifyExecutionPhase("runner_entered");
-      const workspaceResolution = resolveRunWorkspaceDir({
-        workspaceDir: params.workspaceDir,
-        sessionKey: params.sessionKey,
-        agentId: params.agentId,
-        config: params.config,
-      });
+      const workspaceResolution = earlyWorkspaceResolution;
       const resolvedWorkspace = workspaceResolution.workspaceDir;
       const canonicalWorkspace = resolveUserPath(
         resolveAgentWorkspaceDir(params.config ?? {}, workspaceResolution.agentId),
@@ -2352,22 +2393,14 @@ async function runEmbeddedAgentInternal(
           });
           if (governorAgentLoopScope?.disposition === "completed_replay") {
             governorAgentLoopScope.dispose();
-            return {
-              meta: {
-                durationMs: Date.now() - started,
-                agentMeta: {
-                  sessionId: activeSessionId,
-                  sessionFile: activeSessionFile,
-                  provider,
-                  model: modelId,
-                  agentHarnessId: agentHarness.id,
-                },
-                terminalReplyKind: "silent-empty",
-                stopReason: "completed_replay",
-                livenessState: "working",
-                completion: { stopReason: "completed_replay", finishReason: "completed_replay" },
-              },
-            };
+            return createEmbeddedCompletedReplayResult({
+              startedAt: started,
+              sessionId: activeSessionId,
+              sessionFile: activeSessionFile,
+              provider,
+              model: modelId,
+              agentHarnessId: agentHarness.id,
+            });
           }
           const rawAttempt = await runEmbeddedAttemptWithBackend({
             sessionId: activeSessionId,

@@ -2386,6 +2386,10 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "bac06473a318427840ae64d9c4350a6925ef778b5faf8b8550102f22624f0aa2",
     },
     {
+      path: "src/agents/embedded-agent-runner/completed-replay-result.ts",
+      sha256: "f92f4624e805d68a7ac6202dcc5cd0c677c6c2b3f90b832e5f86ea2ae623c7aa",
+    },
+    {
       path: "src/agents/embedded-agent-runner/context-engine-capabilities.ts",
       sha256: "7fe2b762550c9f59dea2452992fca99a3c9fa0fe57fdebfcdc1946c010daff3d",
     },
@@ -2511,7 +2515,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/embedded-agent-runner/run.ts",
-      sha256: "54b95076768d5e84ffb58d1f1e46587c6ec11adc3f78fc0bc5a9da3c7942c870",
+      sha256: "f96f952262393815ca1d9e7b0b5f36fd5870364188b833941996eff22013ec9e",
     },
     {
       path: "src/agents/embedded-agent-runner/run/abortable.ts",
@@ -15667,7 +15671,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-host.ts",
-      sha256: "461d751d7ca94e9c8d74d615b0df4c261fe4dfb0665ec36571ac699f0867fa89",
+      sha256: "75e9406b63ae8989ad033d24056904d7fc327675431cc4c6909c606ff100494f",
     },
     {
       path: "src/security/governor-agent-loop-progress.ts",
@@ -15675,11 +15679,15 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-readonly.ts",
-      sha256: "2749379a6026bebfa2d86989b38441d1e6009b8b2519195fe4c8186dd48bef6c",
+      sha256: "98eb3a4f288a6a9bf748cb1b310a317d151cb1cdcf1832b6d4cdf561f3ebbe88",
     },
     {
       path: "src/security/governor-agent-loop-recovery.ts",
       sha256: "cd34f154c13a85f6f4e6ff8786939cd4f632db383393c382ddc9c216450a98e8",
+    },
+    {
+      path: "src/security/governor-agent-loop-replay-lookup.ts",
+      sha256: "71322c0ac515a5942c0ef19b9d1f6c897bb90e9da63ae232729c633d94f58a79",
     },
     {
       path: "src/security/governor-agent-loop-task.ts",
@@ -17228,4 +17236,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "7b40dc93b1d55def05d9bcc1cd57766312d02459620614b03d85c0fa85413869";
+  "6838cb8c4d098e20000d901c4e4b336424f8a7ecb9315a1cd555d022278ae305";

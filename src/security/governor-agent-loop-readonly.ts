@@ -1,6 +1,7 @@
 /** Read-only object-capability exposed to the embedded agent loop. */
 import {
   isHostIssuedGovernorAgentLoopScope,
+  resolveHostGovernorCompletedIngressReplay,
   resolveHostGovernorAgentLoopScope,
   type GovernorAgentLoopRunInput,
   type GovernorAgentLoopRunScope,
@@ -22,6 +23,13 @@ export function resolveGovernorAgentLoopRunScope(
   input: GovernorAgentLoopRunInput,
 ): GovernorAgentLoopRunScope | undefined {
   return resolveHostGovernorAgentLoopScope(input);
+}
+
+/** Performs only the authenticated, read-only completed-ingress lookup. */
+export function resolveGovernorCompletedIngressReplay(
+  input: GovernorAgentLoopRunInput,
+): string | undefined {
+  return resolveHostGovernorCompletedIngressReplay(input);
 }
 
 export function isGovernorAgentLoopRunScope(scope: GovernorAgentLoopRunScope): boolean {

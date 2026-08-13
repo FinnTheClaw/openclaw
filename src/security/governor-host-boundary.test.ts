@@ -42,8 +42,10 @@ const forbiddenAuthority =
 
 const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
   "governor-agent-loop-config": [
+    "security/governor-agent-loop-completed-replay.ts",
     "security/governor-agent-loop-contract.ts",
     "security/governor-agent-loop-progress.ts",
+    "security/governor-agent-loop-replay-lookup.ts",
     "security/governor-agent-loop-types.ts",
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-tool-bindings.ts",
@@ -66,7 +68,9 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-agent-loop-tool-bindings.ts",
   ],
   "governor-agent-loop-types": [
+    "security/governor-agent-loop-completed-replay.ts",
     "security/governor-agent-loop-host.ts",
+    "security/governor-agent-loop-replay-lookup.ts",
     "security/governor-agent-loop-turn-handler.ts",
   ],
   "governor-agent-loop-values": [

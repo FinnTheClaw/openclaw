@@ -17,6 +17,10 @@ import {
 } from "./governor-agent-loop-progress.js";
 import { reconstructGovernorAgentLoopTurns } from "./governor-agent-loop-recovery.js";
 import {
+  isSelectedGovernorAgentLoopScope,
+  resolveCompletedGovernorIngressTask,
+} from "./governor-agent-loop-replay-lookup.js";
+import {
   ensureGovernorAgentLoopExecuting,
   interruptGovernorAgentLoopTool,
   recordGovernorAgentLoopToolObservation,
@@ -417,6 +421,7 @@ function createScope(
   RUN_SCOPES.add(scope);
   return scope;
 }
+
 /** Trusted bootstrap-only activation. The returned closure removes this exact host. */
 export function installGovernorAgentLoopHost(params: {
   controller: GovernorController;
@@ -447,15 +452,29 @@ export function resolveHostGovernorAgentLoopScope(
   if (!host) {
     return undefined;
   }
-  const selected = host.config.scopes.some(
-    (scope) =>
-      scope.sessionKey === input.sessionKey && (!scope.agentId || scope.agentId === input.agentId),
-  );
-  if (!selected) {
+  if (!isSelectedGovernorAgentLoopScope(host, input)) {
     return undefined;
   }
   try {
     return createScope(host, input);
+  } catch (error) {
+    if (host.config.mode === "shadow") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+/** Resolves completed ingress without ingesting, allocating, or emitting runtime state. */
+export function resolveHostGovernorCompletedIngressReplay(
+  input: GovernorAgentLoopRunInput,
+): string | undefined {
+  const host = activeHost;
+  if (!host || !isSelectedGovernorAgentLoopScope(host, input)) {
+    return undefined;
+  }
+  try {
+    return resolveCompletedGovernorIngressTask(host, input);
   } catch (error) {
     if (host.config.mode === "shadow") {
       return undefined;

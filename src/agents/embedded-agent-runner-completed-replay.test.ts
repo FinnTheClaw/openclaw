@@ -37,6 +37,15 @@ const resolveModel = vi.fn(async (provider: string, modelId: string) => ({
   modelRegistry: {},
 }));
 const ensureModels = vi.fn(async () => ({ wrote: false }));
+const hookRunner = {
+  hasHooks: vi.fn<(hookName: string) => boolean>(() => false),
+  runBeforeAgentReply: vi.fn<
+    (
+      payload: unknown,
+      context: unknown,
+    ) => Promise<{ handled?: boolean; reply?: { text?: string } } | undefined>
+  >(async () => undefined),
+};
 
 vi.mock("openclaw/plugin-sdk/llm", async () => {
   const actual =
@@ -60,6 +69,13 @@ vi.mock("openclaw/plugin-sdk/llm", async () => {
 
 function installMocks() {
   installEmbeddedRunnerBaseE2eMocks({ hookRunner: "full" });
+  vi.doMock("../plugins/hook-runner-global.js", () => ({
+    getGlobalHookRunner: vi.fn(() => hookRunner),
+    getGlobalPluginRegistry: vi.fn(() => null),
+    hasGlobalHooks: vi.fn(() => false),
+    initializeGlobalHookRunner: vi.fn(),
+    resetGlobalHookRunner: vi.fn(),
+  }));
   installEmbeddedRunnerFastRunE2eMocks({ runEmbeddedAttempt: (params) => attempt(params) });
   vi.doMock("./command/session.js", async () => {
     const actual =
@@ -199,6 +215,10 @@ beforeEach(() => {
   disposeMcp.mockReset();
   resolveModel.mockClear();
   ensureModels.mockClear();
+  hookRunner.hasHooks.mockReset();
+  hookRunner.hasHooks.mockReturnValue(false);
+  hookRunner.runBeforeAgentReply.mockReset();
+  hookRunner.runBeforeAgentReply.mockResolvedValue(undefined);
 });
 
 describe("embedded runner completed replay", () => {
@@ -209,6 +229,15 @@ describe("embedded runner completed replay", () => {
     resolveSession.mockReturnValue({ sessionKey, sessionStore: {}, storePath: sessionFile });
     let physicalTools = 0;
     let completedTaskId: GovernorTaskId | undefined;
+    const abortController = new AbortController();
+    const addAbortListener = vi.spyOn(abortController.signal, "addEventListener");
+    const removeAbortListener = vi.spyOn(abortController.signal, "removeEventListener");
+    const onExecutionStarted = vi.fn();
+    const onExecutionPhase = vi.fn();
+    hookRunner.hasHooks.mockImplementation((hookName) => hookName === "before_agent_reply");
+    hookRunner.runBeforeAgentReply
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValue({ handled: true, reply: { text: "must-not-run" } });
     attempt.mockImplementationOnce(async (rawParams: unknown) => {
       const scope = (
         rawParams as {
@@ -262,20 +291,43 @@ describe("embedded runner completed replay", () => {
       timeoutMs: 5_000,
       agentDir,
       currentMessageId: "embedded-replay-source",
+      trigger: "cron",
+      abortSignal: abortController.signal,
+      onExecutionStarted,
+      onExecutionPhase,
       enqueue: immediateEnqueue,
     } as const;
     try {
       const first = await runEmbeddedAgent({ ...params, runId: "completed-first" });
       expect(first.meta.error).toBeUndefined();
+      expect(hookRunner.runBeforeAgentReply).toHaveBeenCalledTimes(1);
+      expect(onExecutionStarted).toHaveBeenCalledTimes(1);
+      expect(onExecutionPhase).toHaveBeenCalled();
+      expect(addAbortListener).toHaveBeenCalled();
+      expect(removeAbortListener).toHaveBeenCalledTimes(addAbortListener.mock.calls.length);
       const taskId = completedTaskId;
       if (!taskId) {
         throw new Error("completed replay task missing");
       }
       const events = runtime!.adapter.controller.store.listEvents(taskId);
       const attempts = attempt.mock.calls.length;
+      const hookCalls = hookRunner.runBeforeAgentReply.mock.calls.length;
+      const startedCalls = onExecutionStarted.mock.calls.length;
+      const phaseCalls = onExecutionPhase.mock.calls.length;
+      const addedListeners = addAbortListener.mock.calls.length;
+      const removedListeners = removeAbortListener.mock.calls.length;
+      const modelCalls = resolveModel.mock.calls.length;
+      const modelConfigCalls = ensureModels.mock.calls.length;
       const second = await runEmbeddedAgent({ ...params, runId: "completed-replay" });
       expect(attempt).toHaveBeenCalledTimes(attempts);
       expect(physicalTools).toBe(1);
+      expect(hookRunner.runBeforeAgentReply).toHaveBeenCalledTimes(hookCalls);
+      expect(onExecutionStarted).toHaveBeenCalledTimes(startedCalls);
+      expect(onExecutionPhase).toHaveBeenCalledTimes(phaseCalls);
+      expect(addAbortListener).toHaveBeenCalledTimes(addedListeners);
+      expect(removeAbortListener).toHaveBeenCalledTimes(removedListeners);
+      expect(resolveModel).toHaveBeenCalledTimes(modelCalls);
+      expect(ensureModels).toHaveBeenCalledTimes(modelConfigCalls);
       expect(runtime!.adapter.controller.store.listEvents(taskId)).toEqual(events);
       expect(second.payloads ?? []).toEqual([]);
       expect(second.didSendViaMessagingTool).toBeUndefined();
