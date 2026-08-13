@@ -142,4 +142,81 @@ describe("shadow terminal replay transparency", () => {
       },
     );
   });
+
+  it.each(["error", "value"] as const)(
+    "preserves the pre-existing afterToolCall throw result in shadow mode (%s)",
+    async (variant) => {
+      await withOpenClawTestState(
+        { layout: "state-only", prefix: `shadow-hook-${variant}-` },
+        async (state) => {
+          const stateDir = state.stateDir;
+          const marker =
+            variant === "error"
+              ? new Error("shadow-hook-error-marker")
+              : { kind: "shadow-hook-value-marker" };
+          const run = async (mode: "off" | "shadow") => {
+            const runtime =
+              mode === "shadow"
+                ? createGovernorHostRuntimeIfEnabled({
+                    env: env(),
+                    stateDir,
+                    capabilities: [capability],
+                    integrations: integrations(),
+                  })
+                : null;
+            const scope = mode === "shadow" ? resolveGovernorAgentLoopRunScope(input) : undefined;
+            let turn = 0;
+            let observedHistory = "";
+            const agent = new Agent({
+              initialState: {
+                model,
+                tools: [
+                  textTool("observe", async () => ({
+                    content: [{ type: "text" as const, text: "fixture" }],
+                    details: null,
+                  })),
+                ],
+              },
+              afterToolCall: async () => {
+                // oxlint-disable-next-line typescript/only-throw-error -- differential fixture uses an arbitrary legacy throw value.
+                throw marker;
+              },
+              streamFn: scriptedStream(() => {
+                if (turn++ === 1) {
+                  observedHistory = JSON.stringify(agent.state.messages, (key, value) =>
+                    key === "timestamp" || key === "id" || key === "toolCallId"
+                      ? "<stable>"
+                      : value,
+                  );
+                }
+                return assistant(
+                  turn === 1
+                    ? [
+                        {
+                          type: "toolCall",
+                          id: `shadow-hook-${mode}`,
+                          name: "observe",
+                          arguments: {},
+                        },
+                      ]
+                    : [{ type: "text", text: "fixture reply" }],
+                );
+              }),
+            });
+            const bridge = scope ? installGovernorLoopBridge({ agent, scope }) : undefined;
+            try {
+              await agent.prompt("shadow hook");
+              return observedHistory;
+            } finally {
+              bridge?.dispose();
+              runtime?.close();
+            }
+          };
+          const absentHistory = await run("off");
+          const shadowHistory = await run("shadow");
+          expect(shadowHistory).toBe(absentHistory);
+        },
+      );
+    },
+  );
 });

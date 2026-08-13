@@ -1037,6 +1037,9 @@ export async function startGatewayServer(
     await lifecycle.close();
     behaviorGovernorLifecycle = undefined;
   };
+  const freezeBehaviorGovernor = async () => {
+    await behaviorGovernorLifecycle?.freeze();
+  };
   let postReadyMaintenanceTimer: ReturnType<typeof setTimeout> | null = null;
   const clearPostReadyMaintenanceTimer = () => {
     if (!postReadyMaintenanceTimer) {
@@ -1049,14 +1052,16 @@ export async function startGatewayServer(
     closePreludeStarted = true;
     clearPostReadyMaintenanceTimer();
   };
-  const runClosePrelude = async () => {
+  const runClosePrelude = async (options?: { skipGovernorFreeze?: boolean }) => {
     markClosePreludeStarted();
     const errors: unknown[] = [];
-    try {
-      await closeBehaviorGovernor();
-    } catch (error) {
-      errors.push(error);
-      log.error("behavior governor close failed; continuing gateway shutdown");
+    if (!options?.skipGovernorFreeze) {
+      try {
+        await freezeBehaviorGovernor();
+      } catch (error) {
+        errors.push(error);
+        log.error("behavior governor freeze failed; continuing gateway shutdown");
+      }
     }
     try {
       clearPluginMetadataLifecycleCaches();
@@ -1217,6 +1222,11 @@ export async function startGatewayServer(
     }
     try {
       await createCloseHandler()({ reason: "gateway startup failed" });
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await closeBehaviorGovernor();
     } catch (error) {
       errors.push(error);
     }
@@ -1968,6 +1978,12 @@ export async function startGatewayServer(
       errors.push(error);
     }
     try {
+      await freezeBehaviorGovernor();
+    } catch (error) {
+      errors.push(error);
+      log.error("behavior governor freeze failed; continuing gateway shutdown");
+    }
+    try {
       terminalSessions.disposeAll();
     } catch (error) {
       errors.push(error);
@@ -1993,12 +2009,17 @@ export async function startGatewayServer(
       errors.push(error);
     }
     try {
-      await runClosePrelude();
+      await runClosePrelude({ skipGovernorFreeze: true });
     } catch (error) {
       errors.push(error);
     }
     try {
       await close(optsLocal);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await closeBehaviorGovernor();
     } catch (error) {
       errors.push(error);
     }

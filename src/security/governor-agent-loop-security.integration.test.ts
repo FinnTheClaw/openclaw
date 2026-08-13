@@ -153,7 +153,7 @@ describe("governed Agent loop trust and recovery boundaries", () => {
 
           runtime.close();
           closeOpenClawStateDatabase();
-          runtime = startRuntime(state.stateDir, 2);
+          runtime = startRuntime(state.stateDir);
           const third = resolveGovernorAgentLoopRunScope(
             runInput({ sourceMessageId: "string-message-gamma", now: 130 }),
           )!;
@@ -238,7 +238,7 @@ describe("governed Agent loop trust and recovery boundaries", () => {
             runtime.close();
             closeOpenClawStateDatabase();
 
-            runtime = startRuntime(state.stateDir, 2);
+            runtime = startRuntime(state.stateDir);
             const recovered = resolveGovernorAgentLoopRunScope(runInput({ now: 70_000 }))!;
             const recoveredTool = recovered.governedTools()[0]!;
             const recoveredDecision = recovered.beforeTool({

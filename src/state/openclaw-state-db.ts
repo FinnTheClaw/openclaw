@@ -47,7 +47,13 @@ export type OpenClawStateDatabase = {
 export type OpenClawStateDatabaseOptions = {
   env?: NodeJS.ProcessEnv;
   path?: string;
+  /** Optional owner fence checked before every cached/opened database access. */
+  lifecycle?: OpenClawStateDatabaseLifecycle;
 };
+
+export type OpenClawStateDatabaseLifecycle = Readonly<{
+  assertOpen: () => void;
+}>;
 
 export type OpenClawStateDatabaseSchemaMigration = {
   kind: "agent-databases-composite-primary-key";
@@ -202,6 +208,7 @@ function ensureSchema(db: DatabaseSync, pathname: string): void {
 export function openOpenClawStateDatabase(
   options: OpenClawStateDatabaseOptions = {},
 ): OpenClawStateDatabase {
+  options.lifecycle?.assertOpen();
   const env = options.env ?? process.env;
   const pathname = resolveDatabasePath(options);
   const cached = cachedDatabases.get(pathname);

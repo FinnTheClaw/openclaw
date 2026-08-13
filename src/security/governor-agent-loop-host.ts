@@ -141,6 +141,7 @@ function createScope(
   const governedTools = createGovernorAgentLoopTools(host.config);
   const governedToolsByName = new Map(governedTools.map((tool) => [tool.name, tool]));
   const pendingTickets = new Set<object>();
+  let disposed = false;
   const scope: GovernorAgentLoopRunScope = Object.freeze({
     taskId,
     mode: host.config.mode,
@@ -409,6 +410,10 @@ function createScope(
       return governedTools;
     },
     dispose() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
       pendingTickets.clear();
       if (host.config.mode === "shadow") {
         const current = host.controller.store.loadTask(taskId);

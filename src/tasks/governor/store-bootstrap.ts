@@ -26,6 +26,7 @@ import { GovernorMemorySubsystem } from "./memory-subsystem.js";
 import { GovernorOutboxStore } from "./outbox-store.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
 import { GovernorEvidenceAdmissionStore } from "./store-evidence-admission.js";
+import { GovernorStoreLifecycle } from "./store-lifecycle.js";
 import { GovernorStoreQueries } from "./store-queries.js";
 import { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorIdentityContext } from "./types.js";
@@ -49,6 +50,7 @@ export type GovernorSqliteStoreParams = {
   secrets?: GovernorStoreSecrets;
   stateEnv?: NodeJS.ProcessEnv;
   capabilities?: GovernorCapabilityRegistry;
+  lifecycle?: GovernorStoreLifecycle;
 };
 
 export function createGovernorStoreDependencies(params: GovernorSqliteStoreParams) {
@@ -92,12 +94,14 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
   ) {
     throw new Error("Governor store requires explicit host bindings and secrets");
   }
-  const options: OpenClawStateDatabaseOptions = {
+  const baseOptions: OpenClawStateDatabaseOptions = {
     env: {
       ...params.stateEnv,
       ...(params.stateDir ? { OPENCLAW_STATE_DIR: params.stateDir } : {}),
     },
   };
+  const lifecycle = params.lifecycle ?? new GovernorStoreLifecycle(baseOptions);
+  const options: OpenClawStateDatabaseOptions = { ...baseOptions, lifecycle };
   const capabilities = params.capabilities ?? new GovernorCapabilityRegistry([]);
   initializeGovernorStateSchema(options);
   const tasks = new GovernorTaskAuthorityStore(taskAuthority, (task) =>
@@ -122,6 +126,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
   });
   return {
     options,
+    lifecycle,
     identity: secrets.identity,
     evidenceAdmissions,
     evidenceInvalidationResolver,

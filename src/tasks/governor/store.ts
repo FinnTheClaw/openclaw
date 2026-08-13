@@ -96,7 +96,7 @@ export class GovernorSqliteStore {
   constructor(params: GovernorSqliteStoreParams = {}) {
     const dependencies = createGovernorStoreDependencies(params);
     this.#options = dependencies.options;
-    this.#lifecycle = new GovernorStoreLifecycle(this.#options);
+    this.#lifecycle = dependencies.lifecycle;
     this.identity = dependencies.identity;
     this.#evidenceAdmissions = dependencies.evidenceAdmissions;
     this.#evidenceInvalidationResolver = dependencies.evidenceInvalidationResolver;

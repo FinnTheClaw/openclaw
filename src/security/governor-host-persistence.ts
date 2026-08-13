@@ -8,7 +8,6 @@ import {
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
 import type { DB as StateDb } from "../state/openclaw-state-db.generated.js";
 import {
-  closeOpenClawStateDatabaseAtPath,
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
@@ -17,6 +16,7 @@ import { resolveOpenClawStateSqliteDir } from "../state/openclaw-state-db.paths.
 import { governorDigest } from "../tasks/governor/canonical-json.js";
 import { assertGovernorPersistedJson } from "../tasks/governor/persistence-guard.js";
 import { initializeGovernorStateSchema } from "../tasks/governor/state-schema.js";
+import { GovernorStoreLifecycle } from "../tasks/governor/store-lifecycle.js";
 import {
   createGovernorHostAntiRollbackLedger,
   isGovernorHostAntiRollbackLedger,
@@ -236,27 +236,33 @@ export function createGovernorHostPersistence(params: {
   secrets?: GovernorSecrets;
   ledger?: GovernorHostAntiRollbackLedger;
   testAfterLedgerAppend?: () => void;
+  testClose?: () => void;
   testMode?: boolean;
+  lifecycle?: GovernorStoreLifecycle;
 }): GovernorHostPersistence {
   if (params.testAfterLedgerAppend && params.testMode !== true) {
+    throw new Error("Governor host persistence test hooks are unavailable outside tests");
+  }
+  if (params.testClose && params.testMode !== true) {
     throw new Error("Governor host persistence test hooks are unavailable outside tests");
   }
   if (params.secrets && !isGovernorSecrets(params.secrets)) {
     throw new Error("Governor host persistence requires validated governor secrets");
   }
-  const options: OpenClawStateDatabaseOptions = {
+  const baseOptions: OpenClawStateDatabaseOptions = {
     env: {
       ...params.env,
       ...(params.stateDir ? { OPENCLAW_STATE_DIR: params.stateDir } : {}),
     },
   };
+  const lifecycle = params.lifecycle ?? new GovernorStoreLifecycle(baseOptions);
+  const options: OpenClawStateDatabaseOptions = { ...baseOptions, lifecycle };
   const ledgerKey = params.secrets?.ledgerSigningKey;
   if (!params.ledger && !ledgerKey?.trim()) {
     throw new Error("Governor host anti-rollback ledger signing key is required");
   }
   const stateDatabase = openOpenClawStateDatabase(options);
   const stateDb = stateDatabase.db;
-  const stateDbPath = stateDatabase.path;
   const schemaHasGovernorTables = Boolean(
     // sqlite-allow-raw: closed sqlite_schema existence probe before trust-root creation
     stateDb
@@ -294,7 +300,22 @@ export function createGovernorHostPersistence(params: {
   };
 
   const port: GovernorHostPersistence = Object.freeze({
-    close: () => closeOpenClawStateDatabaseAtPath(stateDbPath),
+    close: () => {
+      const errors: unknown[] = [];
+      try {
+        params.testClose?.();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        lifecycle.close();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "GOVERNOR_HOST_PERSISTENCE_CLOSE_FAILED");
+      }
+    },
     physicalExecutions: createGovernorPhysicalExecutionCoordinator(ledger),
     memoryAuthority: createGovernorMemoryAuthority(ledger, params.testAfterLedgerAppend),
     taskAuthority: createGovernorTaskAuthority(ledger, params.testAfterLedgerAppend),

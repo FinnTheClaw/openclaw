@@ -24,6 +24,7 @@ import {
   GOVERNOR_POLICY_SEMANTICS,
   GOVERNOR_POLICY_VERSION,
 } from "./policy.js";
+import type { GovernorStoreLifecycle } from "./store-lifecycle.js";
 import { GovernorSqliteStore, type GovernorStoreSecrets } from "./store.js";
 
 export function createGovernorControllerIfEnabled(params: {
@@ -42,6 +43,7 @@ export function createGovernorControllerIfEnabled(params: {
     taskAuthority: GovernorTrustedTaskAuthority;
     secrets: GovernorStoreSecrets;
     stateEnv: NodeJS.ProcessEnv;
+    lifecycle?: GovernorStoreLifecycle;
   };
 }): GovernorController | null {
   const env = params.env ?? {};

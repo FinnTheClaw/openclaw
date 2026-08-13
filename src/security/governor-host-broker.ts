@@ -340,16 +340,6 @@ export function createHostGovernorBroker(params: {
     }
     closing = true;
     const errors: unknown[] = [];
-    for (const [handle, entry] of state.deliveries) {
-      if (entry.status !== "certified") {
-        continue;
-      }
-      try {
-        deliveryBroker.revoke({ handle });
-      } catch (error) {
-        errors.push(error);
-      }
-    }
     try {
       deliveryBroker.close();
     } catch (error) {

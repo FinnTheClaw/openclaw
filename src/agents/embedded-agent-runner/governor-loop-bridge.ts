@@ -131,7 +131,9 @@ export function installGovernorLoopBridge(params: {
       tickets.delete(context.toolCall.id);
     }
     if (priorError) {
-      throw asThrownError(priorError, "GOVERNOR_POST_TOOL_HOOK_FAILED");
+      // The legacy Agent loop preserves arbitrary hook throw values here.
+      // oxlint-disable-next-line typescript/only-throw-error -- preserve the exact legacy hook throw value.
+      throw priorError;
     }
     return priorResult;
   };

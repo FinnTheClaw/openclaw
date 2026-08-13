@@ -4,6 +4,7 @@ import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-
 import { createGovernorControllerIfEnabled } from "../tasks/governor/controller-bootstrap.js";
 import { isBehaviorGovernorEnabled } from "../tasks/governor/feature-flag.js";
 import { GovernorRuntimeAdapter } from "../tasks/governor/runtime-adapter.js";
+import { GovernorStoreLifecycle } from "../tasks/governor/store-lifecycle.js";
 import { validateGovernorAgentLoopConfiguration } from "./governor-agent-loop-config.js";
 import {
   installGovernorAgentLoopHost,
@@ -88,6 +89,7 @@ export type GovernorHostRuntime = Readonly<{
   deliveryHandles: readonly ReturnType<
     ReturnType<typeof createHostGovernorBroker>["capabilities"]["registerStaticDeliveryAdapter"]
   >[];
+  freeze: () => void;
   close: () => void;
 }>;
 
@@ -118,7 +120,16 @@ export function createGovernorHostRuntimeBindings(params: {
   env: NodeJS.ProcessEnv;
   stateDir?: string;
   integrations: GovernorHostIntegrationConfiguration;
+  testMode?: boolean;
+  testAfterPersistenceCreated?: () => void;
+  testPersistenceClose?: () => void;
 }) {
+  if (
+    (params.testAfterPersistenceCreated || params.testPersistenceClose) &&
+    params.testMode !== true
+  ) {
+    throw new Error("Governor host bootstrap test hooks are unavailable outside tests");
+  }
   assertOwner(params.integrations.evidenceOwnerId, "evidence");
   assertOwner(params.integrations.approvalOwnerId, "approval");
   assertOwner(params.integrations.deliveryOwnerId, "delivery");
@@ -139,23 +150,54 @@ export function createGovernorHostRuntimeBindings(params: {
         identity: secrets.identity,
       })
     : undefined;
-  const persistence = createGovernorHostPersistence({
-    env: params.env,
-    stateDir: params.stateDir,
-    secrets,
-  });
+  const stateEnv = {
+    ...params.env,
+    ...(params.stateDir ? { OPENCLAW_STATE_DIR: params.stateDir } : {}),
+  };
+  const lifecycle = new GovernorStoreLifecycle({ env: stateEnv });
+  let persistence: ReturnType<typeof createGovernorHostPersistence>;
+  try {
+    persistence = createGovernorHostPersistence({
+      env: params.env,
+      stateDir: params.stateDir,
+      secrets,
+      lifecycle,
+      testMode: params.testMode,
+      testClose: params.testPersistenceClose,
+    });
+  } catch (error) {
+    try {
+      lifecycle.close();
+    } catch (cleanupError) {
+      throw aggregateWithCause(
+        [error, cleanupError],
+        "GOVERNOR_HOST_PERSISTENCE_STARTUP_CLEANUP_FAILED",
+        error,
+      );
+    }
+    throw error;
+  }
   let broker: ReturnType<typeof createHostGovernorBroker>;
   try {
+    params.testAfterPersistenceCreated?.();
     broker = createHostGovernorBroker({
       secrets,
       persistence,
       ...(deliveryRuntime ? { deliveryRuntime } : {}),
     });
   } catch (error) {
+    const cleanupErrors: unknown[] = [];
     try {
       persistence.close();
-    } catch {
-      // Preserve the original broker-construction failure.
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw aggregateWithCause(
+        [error, ...cleanupErrors],
+        "GOVERNOR_HOST_BROKER_STARTUP_CLEANUP_FAILED",
+        error,
+      );
     }
     throw error;
   }
@@ -205,15 +247,23 @@ export function createGovernorHostRuntimeBindings(params: {
       owners.delivery.registerStaticDeliveryAdapter(registration),
     );
   } catch (error) {
+    const cleanupErrors: unknown[] = [];
     try {
       broker.close();
-    } catch {
-      // Preserve the original startup failure; cleanup is retried by the owner.
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
     }
     try {
       persistence.close();
-    } catch {
-      // Preserve the original startup failure; cleanup is best effort here.
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw aggregateWithCause(
+        [error, ...cleanupErrors],
+        "GOVERNOR_HOST_DELIVERY_STARTUP_CLEANUP_FAILED",
+        error,
+      );
     }
     throw error;
   }
@@ -255,6 +305,7 @@ export function createGovernorHostRuntimeBindings(params: {
     secrets,
     owners,
     deliveryHandles: Object.freeze(deliveryHandles),
+    lifecycle,
     freeze: broker.freeze,
     close,
   };
@@ -303,6 +354,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
         taskAuthority: bindings.taskAuthority,
         secrets: bindings.secrets,
         stateEnv: env,
+        lifecycle: bindings.lifecycle,
       },
     });
     if (!created) {
@@ -325,12 +377,12 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       cleanupErrors.push(cleanupError);
     }
     try {
-      bindings.close();
+      controller?.close();
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
     try {
-      controller?.close();
+      bindings.close();
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
@@ -367,12 +419,12 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       errors.push(error);
     }
     try {
-      bindings.close();
+      controller.close();
     } catch (error) {
       errors.push(error);
     }
     try {
-      controller.close();
+      bindings.close();
     } catch (error) {
       errors.push(error);
     }
@@ -393,12 +445,12 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       cleanupErrors.push(cleanupError);
     }
     try {
-      bindings.close();
+      controller.close();
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
     try {
-      controller.close();
+      bindings.close();
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
@@ -415,6 +467,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
     adapter,
     owners: bindings.owners,
     deliveryHandles: bindings.deliveryHandles,
+    freeze: () => bindings.freeze(),
     close,
   });
 }

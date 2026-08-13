@@ -55,6 +55,7 @@ export type GatewayBehaviorGovernorLifecycle = Readonly<{
     secretSnapshot: GatewayBehaviorGovernorSecretSnapshot,
   ) => Promise<void>;
   close: () => Promise<void>;
+  freeze: () => Promise<void>;
 }>;
 
 function aggregateWithCause(errors: unknown[], message: string, cause: unknown): AggregateError {
@@ -184,6 +185,10 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       throw current.closeFailure;
     }
     active = undefined;
+  };
+
+  const freezeUnsafe = () => {
+    active?.runtime.freeze();
   };
 
   const applyUnsafe = async (
@@ -323,7 +328,13 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     return result;
   };
 
-  return Object.freeze({ apply, close });
+  const freeze = () => {
+    const result = serial.then(freezeUnsafe);
+    serial = result.catch(() => {});
+    return result;
+  };
+
+  return Object.freeze({ apply, close, freeze });
 }
 
 function deepFreeze<T>(value: T): T {
