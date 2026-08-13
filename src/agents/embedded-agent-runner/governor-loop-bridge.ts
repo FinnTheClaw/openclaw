@@ -24,9 +24,11 @@ function assistantText(message: AgentMessage): string {
 }
 
 function assistantStopReason(message: AgentMessage): string | undefined {
-  return message.role === "assistant" && "stopReason" in message
-    ? String(message.stopReason)
-    : undefined;
+  return message.role === "assistant" && "stopReason" in message ? message.stopReason : undefined;
+}
+
+function asThrownError(value: unknown, fallback: string): Error {
+  return value instanceof Error ? value : new Error(fallback);
 }
 
 export type GovernorLoopBridge = Readonly<{
@@ -49,6 +51,7 @@ export function installGovernorLoopBridge(params: {
   const priorTools = [...params.agent.state.tools];
   let installedTools: AgentTool[] | undefined;
   const governedTools = new Map(params.scope.governedTools().map((tool) => [tool.name, tool]));
+  let stoppedReason: string | undefined;
   if (params.scope.mode === "enforce") {
     const legacyTools = params.agent.state.tools.filter((tool) => !governedTools.has(tool.name));
     installedTools = [...legacyTools, ...governedTools.values()];
@@ -117,7 +120,7 @@ export function installGovernorLoopBridge(params: {
       tickets.delete(context.toolCall.id);
     }
     if (priorError) {
-      throw priorError;
+      throw asThrownError(priorError, "GOVERNOR_POST_TOOL_HOOK_FAILED");
     }
     return priorResult;
   };
@@ -126,6 +129,9 @@ export function installGovernorLoopBridge(params: {
   params.agent.afterToolCall = afterToolCall;
   const unsubscribe = params.agent.subscribe(async (event: AgentEvent) => {
     if (event.type !== "turn_end") {
+      return;
+    }
+    if (stoppedReason) {
       return;
     }
     try {
@@ -139,11 +145,14 @@ export function installGovernorLoopBridge(params: {
         now: now(),
       });
       if (decision.kind === "continue" && decision.message) {
-        params.agent.followUp({
+        params.agent.steer({
           role: "user",
           content: [{ type: "text", text: decision.message }],
           timestamp: now(),
         });
+      } else if (decision.kind === "stop") {
+        stoppedReason = decision.reasonCode;
+        params.agent.abort();
       }
     } catch (error) {
       if (params.scope.mode !== "shadow") {
@@ -155,6 +164,9 @@ export function installGovernorLoopBridge(params: {
   let disposed = false;
   return Object.freeze({
     assertTerminal() {
+      if (stoppedReason) {
+        throw new Error(stoppedReason);
+      }
       params.scope.assertTerminal();
     },
     dispose() {
@@ -183,7 +195,7 @@ export function installGovernorLoopBridge(params: {
       tickets.clear();
       params.scope.dispose();
       if (interruptError) {
-        throw interruptError;
+        throw asThrownError(interruptError, "GOVERNOR_AGENT_LOOP_INTERRUPT_FAILED");
       }
     },
   });

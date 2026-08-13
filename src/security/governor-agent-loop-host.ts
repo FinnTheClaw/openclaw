@@ -6,8 +6,14 @@ import { createGovernorEffectId } from "../tasks/governor/types.js";
 import {
   validateGovernorAgentLoopConfiguration,
   type GovernorAgentLoopConfiguration,
-  type GovernorAgentLoopMode,
 } from "./governor-agent-loop-config.js";
+import { createGovernorAgentLoopContract } from "./governor-agent-loop-contract.js";
+import {
+  buildGovernorAgentLoopProgress,
+  formatGovernorAgentLoopProgress,
+  formatGovernorAlreadySatisfiedReason,
+  governorAgentLoopSafetyBudget,
+} from "./governor-agent-loop-progress.js";
 import {
   ensureGovernorAgentLoopExecuting,
   interruptGovernorAgentLoopTool,
@@ -19,78 +25,32 @@ import {
   governorAgentLoopToolImplementationDigest,
   matchesHostGovernorAgentLoopTool,
 } from "./governor-agent-loop-tools.js";
+import type {
+  GovernorAgentLoopRunInput,
+  GovernorAgentLoopRunScope,
+} from "./governor-agent-loop-types.js";
 import {
   governorAgentLoopTopLevelString,
   safeGovernorAgentLoopValue,
 } from "./governor-agent-loop-values.js";
 import type { HostGovernorCapabilities } from "./governor-host-contracts.js";
+
+export type {
+  GovernorAgentLoopRunInput,
+  GovernorAgentLoopRunScope,
+  GovernorAgentLoopToolDecision,
+  GovernorAgentLoopToolTicket,
+  GovernorAgentLoopTurnDecision,
+} from "./governor-agent-loop-types.js";
 export type { GovernorAgentLoopConfiguration } from "./governor-agent-loop-config.js";
-
-export type GovernorAgentLoopRunInput = Readonly<{
-  runId: string;
-  sessionKey: string;
-  sessionId: string;
-  agentId: string;
-  workspaceId: string;
-  channel: string;
-  accountId: string;
-  principalId: string;
-  conversationId: string;
-  sourceMessageId: string;
-  sourceSequence?: number;
-  prompt: string;
-  now: number;
-}>;
-
-export type GovernorAgentLoopToolTicket = Readonly<{ opaque: object }>;
-export type GovernorAgentLoopToolDecision =
-  | { kind: "allow"; ticket?: GovernorAgentLoopToolTicket }
-  | { kind: "block"; reasonCode: string };
-export type GovernorAgentLoopTurnDecision =
-  | { kind: "complete" }
-  | { kind: "continue"; message: string }
-  | { kind: "stop"; reasonCode: string };
-
-export type GovernorAgentLoopRunScope = Readonly<{
-  taskId: string;
-  mode: GovernorAgentLoopMode;
-  beforeTool(input: {
-    toolCallId: string;
-    toolName: string;
-    args: unknown;
-    tool: import("../../packages/agent-core/src/types.js").AgentTool | undefined;
-    now: number;
-  }): GovernorAgentLoopToolDecision;
-  afterTool(input: {
-    ticket?: GovernorAgentLoopToolTicket;
-    toolCallId: string;
-    toolName: string;
-    result: unknown;
-    isError: boolean;
-    now: number;
-  }): void;
-  afterTurn(input: {
-    assistantText: string;
-    assistantStopReason?: string;
-    toolCallCount: number;
-    now: number;
-  }): GovernorAgentLoopTurnDecision;
-  interrupt(input: { now: number }): void;
-  assertTerminal(): void;
-  governedTools(): readonly import("../../packages/agent-core/src/types.js").AgentTool[];
-  dispose(): void;
-}>;
-
 type ActiveHost = Readonly<{
   config: GovernorAgentLoopConfiguration;
   controller: GovernorController;
   submitObservedReceipt: HostGovernorCapabilities["submitObservedReceipt"];
 }>;
-
 const RUN_SCOPES = new WeakSet<object>();
 const TICKETS = new WeakMap<object, GovernorAgentLoopTicketState>();
 let activeHost: ActiveHost | undefined;
-
 function createScope(
   host: ActiveHost,
   input: GovernorAgentLoopRunInput,
@@ -102,25 +62,11 @@ function createScope(
   if (definitions.some((item) => !item)) {
     throw new Error("GOVERNOR_AGENT_LOOP_CAPABILITY_UNKNOWN");
   }
-  const contract = {
-    objective: `Complete host-governed agent request ${promptDigest.slice(0, 16)}`,
-    constraints: [
-      "Use only host-authorized capabilities",
-      "Completion requires current admitted evidence",
-    ],
-    knownFacts: [],
-    unknowns: host.config.criteria.map((item) => item.criterionId),
-    completionCriteria: host.config.criteria.map((item) => ({ ...item, mandatory: true })),
-    authority: {
-      allowReadOnlyDiscovery: true,
-      mutationCapabilities: definitions
-        .filter((item) => item?.mutating)
-        .map((item) => item!.capability),
-      canonicalTargets: host.config.toolBindings
-        .filter((_, index) => definitions[index]?.mutating)
-        .map((item) => item.canonicalTarget),
-    },
-  };
+  const contract = createGovernorAgentLoopContract({
+    promptDigest,
+    config: host.config,
+    definitions,
+  });
   const ingress: Omit<Parameters<GovernorController["ingest"]>[0], "sourceSequence"> = {
     sourceMessageId: input.sourceMessageId,
     scope: {
@@ -155,19 +101,33 @@ function createScope(
   const taskId = route.task.taskId;
   ensureGovernorAgentLoopExecuting(host.controller, taskId, input.now + 1);
   let turns = 0;
+  let progress = buildGovernorAgentLoopProgress(host.controller, taskId, host.config);
+  let priorProgressFingerprint = progress.semanticFingerprint;
+  let replannedAfterStagnation = false;
+  let skipNextStagnationCheck = false;
+  const safetyBudget = governorAgentLoopSafetyBudget(host.config);
   let terminal = route.task.state === "COMPLETED";
   let terminalReason: string | undefined;
   const governedTools = Object.freeze(
-    host.config.toolBindings.map((binding) =>
-      createGovernorAgentLoopTool({
+    host.config.toolBindings.map((binding) => {
+      const criterionId =
+        binding.criterionId ??
+        (binding.criteriaByValue ? Object.values(binding.criteriaByValue)[0] : undefined);
+      return createGovernorAgentLoopTool({
         toolName: binding.toolName,
         implementationId: binding.implementationId,
-      }),
-    ),
+        purpose:
+          host.config.criteria.find((criterion) => criterion.criterionId === criterionId)
+            ?.description ?? "Host-authorized action",
+        ...(binding.criterionArgument ? { argumentName: binding.criterionArgument } : {}),
+        ...(binding.criteriaByValue
+          ? { allowedArgumentValues: Object.keys(binding.criteriaByValue) }
+          : {}),
+      });
+    }),
   );
   const governedToolsByName = new Map(governedTools.map((tool) => [tool.name, tool]));
   const pendingTickets = new Set<object>();
-
   const scope: GovernorAgentLoopRunScope = Object.freeze({
     taskId,
     mode: host.config.mode,
@@ -220,6 +180,13 @@ function createScope(
         (observationKey && binding.criteriaByValue
           ? binding.criteriaByValue[observationKey]
           : undefined);
+      progress = buildGovernorAgentLoopProgress(host.controller, taskId, host.config);
+      if (criterionId && progress.satisfiedCriteria.includes(criterionId)) {
+        return {
+          kind: "block",
+          reasonCode: formatGovernorAlreadySatisfiedReason(progress, criterionId),
+        };
+      }
       const effectDigest = governorDigest({
         taskId,
         objectiveRevision: task.objectiveRevision,
@@ -335,11 +302,23 @@ function createScope(
           now: observation.now,
         },
       });
+      if (observation.isError) {
+        replannedAfterStagnation = true;
+        skipNextStagnationCheck = true;
+      }
       pendingTickets.delete(observation.ticket!.opaque);
       TICKETS.delete(observation.ticket!.opaque);
     },
     afterTurn(turn) {
       turns += 1;
+      progress = buildGovernorAgentLoopProgress(host.controller, taskId, host.config);
+      const progressed = progress.semanticFingerprint !== priorProgressFingerprint;
+      const skipStagnationCheck = skipNextStagnationCheck;
+      skipNextStagnationCheck = false;
+      if (progressed) {
+        replannedAfterStagnation = false;
+      }
+      priorProgressFingerprint = progress.semanticFingerprint;
       host.controller.recordRuntimeEvent({
         taskId,
         eventType: "runtime_model_turn_recorded",
@@ -348,6 +327,10 @@ function createScope(
           assistantTextDigest: governorDigest(turn.assistantText),
           toolCallCount: turn.toolCallCount,
           stopReason: turn.assistantStopReason ?? "unknown",
+          planVersion: progress.planVersion,
+          satisfiedCriteria: progress.satisfiedCriteria.length,
+          remainingCriteria: progress.remainingCriteria.length,
+          progressDigest: progress.fingerprint,
         },
         now: turn.now,
       });
@@ -362,8 +345,27 @@ function createScope(
         }
         return { kind: "complete" };
       }
+      if (turn.toolCallCount > 0 && !progressed && !skipStagnationCheck) {
+        if (replannedAfterStagnation) {
+          terminalReason = "GOVERNOR_AGENT_LOOP_NO_PROGRESS";
+          return { kind: "stop", reasonCode: terminalReason };
+        }
+        host.controller.requestRuntimeReplan(taskId, turn.now + 1);
+        ensureGovernorAgentLoopExecuting(host.controller, taskId, turn.now + 2);
+        progress = buildGovernorAgentLoopProgress(host.controller, taskId, host.config);
+        priorProgressFingerprint = progress.semanticFingerprint;
+        replannedAfterStagnation = true;
+        return {
+          kind: "continue",
+          message: `${formatGovernorAgentLoopProgress(progress)} Progress stalled; the host issued one replan. Choose a different eligible action.`,
+        };
+      }
       if (turn.toolCallCount > 0) {
-        return { kind: "continue", message: "" };
+        if (turns >= safetyBudget) {
+          terminalReason = "GOVERNOR_AGENT_LOOP_BUDGET_EXHAUSTED";
+          return { kind: "stop", reasonCode: terminalReason };
+        }
+        return { kind: "continue", message: formatGovernorAgentLoopProgress(progress) };
       }
       const responseDigestMatches =
         !host.config.expectedAssistantTextDigest ||
@@ -395,18 +397,17 @@ function createScope(
           return { kind: "complete" };
         }
       }
-      if (turns >= host.config.maxTurns) {
+      if (turns >= safetyBudget) {
         terminalReason = "GOVERNOR_AGENT_LOOP_BUDGET_EXHAUSTED";
         return { kind: "stop", reasonCode: terminalReason };
       }
-      const unmet = decision.accepted ? ["response"] : decision.recovery.unmetCriteria;
       return {
         kind: "continue",
-        message: `Governor continuation required. Remaining criteria: ${unmet.join(", ") || "verification"}.`,
+        message: `${formatGovernorAgentLoopProgress(progress)} Governor completion requires current admitted evidence and verification.`,
       };
     },
     interrupt(interruption) {
-      for (const opaque of [...pendingTickets]) {
+      for (const opaque of pendingTickets) {
         const state = TICKETS.get(opaque);
         if (!state) {
           pendingTickets.delete(opaque);
@@ -440,7 +441,6 @@ function createScope(
   RUN_SCOPES.add(scope);
   return scope;
 }
-
 /** Trusted bootstrap-only activation. The returned closure removes this exact host. */
 export function installGovernorAgentLoopHost(params: {
   controller: GovernorController;
@@ -463,7 +463,6 @@ export function installGovernorAgentLoopHost(params: {
     }
   };
 }
-
 /** Read-only resolution used by the production run seam. */
 export function resolveHostGovernorAgentLoopScope(
   input: GovernorAgentLoopRunInput,

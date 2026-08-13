@@ -5,9 +5,12 @@ import { describe, expect, it } from "vitest";
 const root = path.resolve(import.meta.dirname, "..");
 const authorityModules = [
   "governor-agent-loop-config",
+  "governor-agent-loop-contract",
   "governor-agent-loop-host",
+  "governor-agent-loop-progress",
   "governor-agent-loop-task",
   "governor-agent-loop-tools",
+  "governor-agent-loop-types",
   "governor-agent-loop-values",
   "governor-host-anti-rollback-ledger",
   "governor-host-ledger-codec",
@@ -39,18 +42,24 @@ const forbiddenAuthority =
 
 const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
   "governor-agent-loop-config": [
+    "security/governor-agent-loop-contract.ts",
+    "security/governor-agent-loop-progress.ts",
+    "security/governor-agent-loop-types.ts",
     "security/governor-agent-loop-host.ts",
     "security/governor-host-bootstrap.ts",
   ],
+  "governor-agent-loop-contract": ["security/governor-agent-loop-host.ts"],
   "governor-agent-loop-host": [
     "security/governor-agent-loop-readonly.ts",
     "security/governor-host-bootstrap.ts",
   ],
+  "governor-agent-loop-progress": ["security/governor-agent-loop-host.ts"],
   "governor-agent-loop-task": ["security/governor-agent-loop-host.ts"],
   "governor-agent-loop-tools": [
     "security/governor-agent-loop-config.ts",
     "security/governor-agent-loop-host.ts",
   ],
+  "governor-agent-loop-types": ["security/governor-agent-loop-host.ts"],
   "governor-agent-loop-values": [
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-task.ts",

@@ -35,6 +35,9 @@ export function governorAgentLoopToolImplementationDigest(
 export function createGovernorAgentLoopTool(params: {
   toolName: string;
   implementationId: GovernorAgentLoopToolImplementationId;
+  purpose?: string;
+  argumentName?: string;
+  allowedArgumentValues?: readonly string[];
 }): AgentTool {
   let failed = false;
   const execute: AgentTool["execute"] = async (_callId, input) => {
@@ -42,7 +45,8 @@ export function createGovernorAgentLoopTool(params: {
       typeof input === "object" && input !== null
         ? (input as Readonly<Record<string, unknown>>)
         : undefined;
-    const key = typeof record?.key === "string" ? record.key : "none";
+    const argumentName = params.argumentName ?? "key";
+    const key = typeof record?.[argumentName] === "string" ? record[argumentName] : "none";
     if (params.implementationId === "disposable-observation-fail-once-v1" && !failed) {
       failed = true;
       throw new Error("GOVERNOR_DISPOSABLE_OBSERVATION_RETRY");
@@ -51,14 +55,28 @@ export function createGovernorAgentLoopTool(params: {
       params.implementationId === "disposable-aggregate-v1" ? "42" : `observation:${key}`;
     return { content: [{ type: "text", text }], details: null };
   };
+  const argumentSchema = params.argumentName
+    ? Type.Object(
+        {
+          [params.argumentName]: Type.Optional(
+            Type.String({
+              maxLength: 256,
+              ...(params.allowedArgumentValues?.length
+                ? { description: `Allowed values: ${params.allowedArgumentValues.join(", ")}` }
+                : {}),
+            }),
+          ),
+        },
+        { additionalProperties: false },
+      )
+    : Type.Object({}, { additionalProperties: false });
   const tool: AgentTool = Object.freeze({
     name: params.toolName,
     label: params.toolName,
-    description: "Host-owned disposable governor canary tool",
-    parameters: Type.Object(
-      { key: Type.Optional(Type.String({ maxLength: 256 })) },
-      { additionalProperties: false },
-    ),
+    description: params.purpose
+      ? `Host-owned governed action: ${params.purpose}`
+      : "Host-owned governed action",
+    parameters: argumentSchema,
     executionMode: "sequential" as const,
     execute,
   });
