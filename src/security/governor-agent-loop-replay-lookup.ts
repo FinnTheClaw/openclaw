@@ -50,15 +50,24 @@ export function resolveCompletedGovernorIngressTask(
       identity,
     ),
   );
-  const task = host.controller.store.loadTask(taskId);
-  if (
-    !task ||
-    task.state !== "COMPLETED" ||
-    !host.controller.store
-      .listEvents(taskId)
-      .some((event) => event.scopeKey === scopeKey && event.sourceMessageId === sourceMessageId)
-  ) {
-    return undefined;
+  const candidateTaskIds = new Set<GovernorTaskId>([taskId]);
+  const sourceTask = host.controller.store.findTaskForAuthenticatedSource(
+    scopeKey,
+    sourceMessageId,
+  );
+  if (sourceTask) {
+    candidateTaskIds.add(sourceTask.taskId);
   }
-  return taskId;
+  for (const candidateTaskId of candidateTaskIds) {
+    const task = host.controller.store.loadTask(candidateTaskId);
+    if (
+      task?.state === "COMPLETED" &&
+      host.controller.store
+        .listEvents(candidateTaskId)
+        .some((event) => event.scopeKey === scopeKey && event.sourceMessageId === sourceMessageId)
+    ) {
+      return candidateTaskId;
+    }
+  }
+  return undefined;
 }

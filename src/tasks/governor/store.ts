@@ -471,6 +471,10 @@ export class GovernorSqliteStore {
     return this.#queries.listEvents(taskId);
   }
 
+  findTaskForAuthenticatedSource(scopeKey: string, sourceMessageId: string) {
+    return this.#queries.findTaskForAuthenticatedSource(scopeKey, sourceMessageId);
+  }
+
   listEffects(taskId: GovernorTaskId): GovernorEffectRecord[] {
     return this.#queries.listEffects(taskId);
   }

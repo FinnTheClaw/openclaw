@@ -75,6 +75,25 @@ export class GovernorStoreQueries {
     ).rows.map(parseEventRow);
   }
 
+  findTaskForAuthenticatedSource(
+    scopeKey: string,
+    sourceMessageId: string,
+  ): GovernorTaskProjection | null {
+    const { db } = openOpenClawStateDatabase(this.#options);
+    const row = executeSqliteQueryTakeFirstSync(
+      db,
+      governorDb(db)
+        .selectFrom("governor_events")
+        .select("task_id")
+        .where("scope_key", "=", scopeKey)
+        .where("source_message_id", "=", sourceMessageId)
+        .orderBy("created_at", "desc")
+        .orderBy("event_id", "desc")
+        .limit(1),
+    );
+    return row ? loadGovernorTask(db, row.task_id as GovernorTaskId, this.#tasks) : null;
+  }
+
   listEffects(taskId: GovernorTaskId): GovernorEffectRecord[] {
     const { db } = openOpenClawStateDatabase(this.#options);
     if (!loadGovernorTask(db, taskId, this.#tasks)) {
