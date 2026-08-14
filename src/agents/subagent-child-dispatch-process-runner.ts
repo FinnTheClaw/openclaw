@@ -8,6 +8,7 @@ import {
   createChildDispatchHarness,
   readPhysicalStarts,
 } from "./subagent-child-dispatch-process-harness.js";
+import { runGatewayRestartFenceBatch } from "./subagent-child-dispatch-process-restart.js";
 
 type Evidence = {
   version: 1;
@@ -480,6 +481,8 @@ async function main(): Promise<void> {
     results.push(await runCrashAfterAcceptanceScenario());
   } else if (requestedScenario === "named-slots-and-binding-conflicts") {
     results.push(await runNamedIdentityScenario());
+  } else if (requestedScenario === "gateway-restart-fence") {
+    results.push(...(await runGatewayRestartFenceBatch()));
   } else if (selectedScenarios.length === 0) {
     throw new Error(`unknown child-dispatch scenario: ${requestedScenario}`);
   } else {
