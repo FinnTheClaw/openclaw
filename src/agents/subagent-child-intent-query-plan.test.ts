@@ -40,7 +40,8 @@ describe("child intent lifecycle query plans", () => {
       database.db,
       `SELECT intent_id FROM subagent_child_intents
         WHERE controller_session_key = 'agent:main:main'
-          AND canonical_key = 'child-intent'`,
+          AND canonical_key = 'child-intent'
+          AND operation_key IS NULL`,
     );
     expect(detail).toMatch(/SEARCH subagent_child_intents USING (INDEX|COVERING INDEX)/);
     expect(detail).toMatch(/controller_session_key=.*canonical_key/);

@@ -203,4 +203,16 @@ export function ensureAdditiveStateColumns(db: DatabaseSync): void {
   add("subagent_runs", "task_name TEXT");
   add("subagent_runs", "projection_revision INTEGER NOT NULL DEFAULT 0");
   add("subagent_child_intents", "preparation_digest TEXT NOT NULL DEFAULT ''");
+  for (const column of [
+    "created_at INTEGER NOT NULL DEFAULT 0",
+    "acceptance_epoch TEXT NOT NULL DEFAULT ''",
+    "envelope_digest TEXT NOT NULL DEFAULT ''",
+    "envelope_json TEXT NOT NULL DEFAULT '{}'",
+    "key_id TEXT NOT NULL DEFAULT ''",
+    "nonce TEXT NOT NULL DEFAULT ''",
+    "signature TEXT NOT NULL DEFAULT ''",
+    "cancel_epoch INTEGER NOT NULL DEFAULT 0",
+  ]) {
+    add("subagent_gateway_acceptance_receipts", column);
+  }
 }

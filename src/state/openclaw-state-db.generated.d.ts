@@ -1293,17 +1293,25 @@ export interface SubagentChildIntents {
 }
 
 export interface SubagentGatewayAcceptanceReceipts {
+  acceptance_epoch: Generated<string>;
   acceptance_key: string;
   accepted_at: number | null;
+  cancel_epoch: Generated<number>;
   child_session_key: string;
   controller_session_key: string;
+  created_at: Generated<number>;
+  envelope_digest: Generated<string>;
+  envelope_json: Generated<string>;
   gateway_run_id: string;
   intent_id: string;
+  key_id: Generated<string>;
   lifecycle: string;
+  nonce: Generated<string>;
   payload_json: Generated<string>;
   receipt_generation: number;
   request_digest: string;
   resolved_digest: string;
+  signature: Generated<string>;
   updated_at: number;
 }
 

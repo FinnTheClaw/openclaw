@@ -7,6 +7,10 @@ import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { resolveSubagentChildIntentBehaviorDigest } from "./subagent-child-intent.js";
 import {
+  markGatewayAcceptanceNotAccepted,
+  reserveGatewayAcceptanceReceipt,
+} from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
+import {
   cancelSubagentChildIntent,
   abandonUnresolvedSubagentChildIntent,
   adoptSubagentChildIntent,
@@ -96,6 +100,20 @@ describe("durable child intent reservations", () => {
     markSubagentChildIntentDispatching({
       childIntentKey: first.childIntentKey,
       reservationToken: first.reservationToken!,
+    });
+    reserveGatewayAcceptanceReceipt({
+      acceptanceKey: first.childIntentKey,
+      intentId: first.childIntentKey,
+      controllerSessionKey: first.controllerSessionKey!,
+      requestDigest: first.requestDigest!,
+      resolvedDigest: first.resolvedDigest!,
+      gatewayRunId: "provider-never-accepted",
+      childSessionKey: first.childSessionKey,
+      acceptanceEpoch: "test",
+    });
+    markGatewayAcceptanceNotAccepted({
+      acceptanceKey: first.childIntentKey,
+      gatewayRunId: "provider-never-accepted",
     });
     markSubagentChildIntentUnknown({
       childIntentKey: first.childIntentKey,

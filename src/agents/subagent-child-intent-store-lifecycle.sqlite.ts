@@ -3,15 +3,94 @@ import type { Kysely, Selectable, Updateable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
-import type { ChildIntentState } from "./subagent-child-intent-store.sqlite.js";
+import type { ChildIntentState } from "./subagent-child-intent-types.js";
+import {
+  readGatewayAcceptanceReceiptFromDatabase,
+  requestGatewayAcceptanceCancel,
+} from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 type ChildIntentTable = DB["subagent_child_intents"];
 type ChildIntentRow = Selectable<ChildIntentTable>;
-type ChildIntentDatabase = Pick<DB, "subagent_child_intents">;
+type ChildIntentDatabase = Pick<
+  DB,
+  "subagent_child_intents" | "subagent_gateway_acceptance_receipts"
+>;
 type ChildIntentUpdate = Updateable<ChildIntentTable>;
 
 const ANONYMOUS_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const TERMINAL_PRUNE_BATCH_SIZE = 100;
+
+export function commitSubagentRunRegistrationInTransaction(
+  db: DatabaseSync,
+  entry: SubagentRunRecord,
+): boolean {
+  if (!entry.childIntentKey || !entry.reservationOwnerToken) {
+    return true;
+  }
+  const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
+  const row = executeSqliteQuerySync(
+    db,
+    stateDb
+      .selectFrom("subagent_child_intents")
+      .selectAll()
+      .where(
+        "controller_session_key",
+        "=",
+        (entry.controllerSessionKey ?? entry.requesterSessionKey).trim(),
+      )
+      .where("canonical_key", "=", entry.childIntentKey),
+  ).rows[0];
+  if (!row || row.lease_owner !== entry.reservationOwnerToken) {
+    return false;
+  }
+  const receiptKey = row.gateway_receipt_id ?? row.canonical_key;
+  const receipt = readGatewayAcceptanceReceiptFromDatabase(db, receiptKey);
+  if (
+    !receipt ||
+    !["accepted", "started", "terminal"].includes(receipt.lifecycle) ||
+    receipt.intentId !== row.canonical_key ||
+    receipt.controllerSessionKey !== row.controller_session_key ||
+    receipt.childSessionKey !== row.child_session_key ||
+    receipt.requestDigest !== row.request_digest ||
+    receipt.resolvedDigest !== row.resolved_digest ||
+    receipt.gatewayRunId !== entry.runId ||
+    (row.provider_run_id !== null && row.provider_run_id !== entry.runId)
+  ) {
+    return false;
+  }
+  if (row.state === "registered" && row.registered_run_id === entry.runId) {
+    return true;
+  }
+  if (!["dispatch_claimed", "gateway_accepted"].includes(row.state)) {
+    return false;
+  }
+  const result = updateRow(
+    db,
+    stateDb,
+    row,
+    {
+      state: "registered",
+      generation: row.generation + 1,
+      registered_run_id: entry.runId,
+      provider_run_id: entry.runId,
+      gateway_receipt_id: receipt.acceptanceKey,
+      updated_at: Date.now(),
+      payload_json: JSON.stringify(entry),
+    },
+    row.state as ChildIntentState,
+    entry.reservationOwnerToken,
+  );
+  return result;
+}
+
+export function commitSubagentRunRegistrationAtomically(entry: SubagentRunRecord): boolean {
+  let committed = false;
+  runOpenClawStateWriteTransaction(({ db }) => {
+    committed = commitSubagentRunRegistrationInTransaction(db, entry);
+  });
+  return committed;
+}
 
 function updateRow(
   database: DatabaseSync,
@@ -19,17 +98,36 @@ function updateRow(
   row: ChildIntentRow,
   values: ChildIntentUpdate,
   expectedState?: ChildIntentState,
+  expectedLeaseOwner?: string,
 ): boolean {
-  const result = executeSqliteQuerySync(
+  let query = db
+    .updateTable("subagent_child_intents")
+    .set(values)
+    .where("intent_id", "=", row.intent_id)
+    .where("generation", "=", row.generation)
+    .where("state", "=", expectedState ?? (row.state as ChildIntentState));
+  if (expectedLeaseOwner) {
+    query = query.where("lease_owner", "=", expectedLeaseOwner);
+  }
+  const result = executeSqliteQuerySync(database, query);
+  return Number(result.numAffectedRows ?? 0) === 1;
+}
+
+function resolveReceiptToCancel(
+  database: DatabaseSync,
+  db: Kysely<ChildIntentDatabase>,
+  row: ChildIntentRow,
+): { acceptanceKey: string; gatewayRunId: string } | undefined {
+  const receipt = executeSqliteQuerySync(
     database,
     db
-      .updateTable("subagent_child_intents")
-      .set(values)
-      .where("intent_id", "=", row.intent_id)
-      .where("generation", "=", row.generation)
-      .where("state", "=", expectedState ?? (row.state as ChildIntentState)),
-  );
-  return Number(result.numAffectedRows ?? 0) === 1;
+      .selectFrom("subagent_gateway_acceptance_receipts")
+      .select(["acceptance_key", "gateway_run_id"])
+      .where("acceptance_key", "=", row.gateway_receipt_id ?? row.canonical_key),
+  ).rows[0];
+  return receipt
+    ? { acceptanceKey: receipt.acceptance_key, gatewayRunId: receipt.gateway_run_id }
+    : undefined;
 }
 
 export function removeSubagentReservationAtomically(params: {
@@ -53,10 +151,26 @@ export function removeSubagentReservationAtomically(params: {
     if (!row) {
       return;
     }
+    const reconciledBeforeAcceptance = (() => {
+      if (params.allowUnknown !== true || row.state !== "gateway_accepted") {
+        return false;
+      }
+      const receipt = readGatewayAcceptanceReceiptFromDatabase(
+        db,
+        row.gateway_receipt_id ?? row.canonical_key,
+      );
+      return Boolean(
+        receipt &&
+        receipt.lifecycle === "not_accepted" &&
+        receipt.intentId === row.canonical_key &&
+        receipt.controllerSessionKey === row.controller_session_key &&
+        receipt.childSessionKey === row.child_session_key &&
+        (row.provider_run_id === null || receipt.gatewayRunId === row.provider_run_id),
+      );
+    })();
     const removable = params.onlyExpired
       ? row.state === "reserved"
-      : ["reserved", "dispatch_claimed"].includes(row.state) ||
-        (params.allowUnknown === true && row.state === "gateway_accepted");
+      : row.state === "reserved" || reconciledBeforeAcceptance;
     if (
       !removable ||
       (params.reservationOwnerToken && row.lease_owner !== params.reservationOwnerToken)
@@ -84,6 +198,7 @@ export function cancelSubagentChildIntentAtomically(params: {
   controllerSessionKey: string;
 }): boolean {
   let changed = false;
+  let receiptToCancel: { acceptanceKey: string; gatewayRunId: string } | undefined;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
     const row = executeSqliteQuerySync(
@@ -112,7 +227,13 @@ export function cancelSubagentChildIntentAtomically(params: {
       cancel_requested_at: Date.now(),
       updated_at: Date.now(),
     });
+    if (changed) {
+      receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+    }
   });
+  if (receiptToCancel) {
+    requestGatewayAcceptanceCancel(receiptToCancel);
+  }
   return changed;
 }
 
@@ -122,6 +243,7 @@ export function cancelSubagentChildIntentByRunOrSessionAtomically(params: {
   childSessionKey?: string;
 }): boolean {
   let changed = false;
+  let receiptToCancel: { acceptanceKey: string; gatewayRunId: string } | undefined;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
     const row = executeSqliteQuerySync(
@@ -156,7 +278,13 @@ export function cancelSubagentChildIntentByRunOrSessionAtomically(params: {
       cancel_requested_at: Date.now(),
       updated_at: Date.now(),
     });
+    if (changed) {
+      receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+    }
   });
+  if (receiptToCancel) {
+    requestGatewayAcceptanceCancel(receiptToCancel);
+  }
   return changed;
 }
 

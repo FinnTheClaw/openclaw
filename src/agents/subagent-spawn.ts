@@ -1443,12 +1443,11 @@ export async function spawnSubagentDirect(
           receipt.childSessionKey !== childIntentReservation.childSessionKey ||
           receipt.controllerSessionKey !== childIntentReservation.controllerSessionKey ||
           receipt.requestDigest !== childIntentReservation.requestDigest ||
-          receipt.resolvedDigest !== childIntentReservation.resolvedDigest ||
-          receipt.gatewayRunId !== childIntentReservation.existingRunId
+          receipt.resolvedDigest !== childIntentReservation.resolvedDigest
         ) {
           return undefined;
         }
-        return { lifecycle: receipt.lifecycle };
+        return { lifecycle: receipt.lifecycle, gatewayRunId: receipt.gatewayRunId };
       },
       waitForProvider: async () =>
         await callSubagentGateway({
@@ -1485,7 +1484,14 @@ export async function spawnSubagentDirect(
       }
     }
     if (reconciliation === "adopt") {
-      const recoveredRunId = childIntentReservation.existingRunId ?? childIntentKey;
+      const recoveredRunId = childIntentReservation.existingRunId;
+      if (!recoveredRunId) {
+        return {
+          status: "error",
+          error: "Cannot adopt a child without an authenticated gateway run identity",
+          childSessionKey,
+        };
+      }
       try {
         registerSubagentRun({
           runId: recoveredRunId,
@@ -1835,7 +1841,7 @@ export async function spawnSubagentDirect(
   childIntentReservation.resolvedDigest = finalIntentBehaviorDigest;
 
   const childIdem = childIntentKey;
-  let childRunId: string = childIntentReservation.reservationRunId;
+  let childRunId: string | undefined;
   const deliverInitialChildRunDirectly =
     requestThreadBinding && spawnMode === "session" && hasBoundThreadDeliveryOrigin;
   const shouldAnnounceCompletion = deliverInitialChildRunDirectly
@@ -1892,9 +1898,10 @@ export async function spawnSubagentDirect(
       timeoutMs: resolveSubagentAgentGatewayTimeoutMs(runTimeoutSeconds),
     });
     const runId = readGatewayRunId(response);
-    if (runId) {
-      childRunId = runId;
+    if (!runId) {
+      throw new Error("Gateway acceptance did not return an authoritative run identity");
     }
+    childRunId = runId;
   } catch (err) {
     await rollbackPreparedContextEngine(contextEnginePreparation);
     if (attachmentAbsDir) {
@@ -1911,7 +1918,7 @@ export async function spawnSubagentDirect(
       markSubagentChildIntentUnknown({
         childIntentKey,
         reservationToken: childIntentReservation.reservationToken!,
-        providerRunId: childRunId,
+        ...(childRunId ? { providerRunId: childRunId } : {}),
       });
     } catch {
       // Preserve the primary provider error; an uncertain reservation remains
@@ -1921,7 +1928,7 @@ export async function spawnSubagentDirect(
       status: "error",
       error: messageText,
       childSessionKey,
-      runId: childRunId,
+      ...(childRunId ? { runId: childRunId } : {}),
     };
   }
 

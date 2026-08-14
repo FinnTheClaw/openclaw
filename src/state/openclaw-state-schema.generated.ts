@@ -1244,15 +1244,21 @@ CREATE TABLE IF NOT EXISTS subagent_child_intents (
   cancel_requested_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  payload_json TEXT NOT NULL DEFAULT '{}',
-  UNIQUE(controller_session_key, canonical_key),
-  UNIQUE(controller_session_key, operation_key)
+  payload_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS idx_subagent_child_intents_active_controller
   ON subagent_child_intents(controller_session_key, state, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_subagent_child_intents_controller_canonical
+  ON subagent_child_intents(controller_session_key, canonical_key);
 CREATE INDEX IF NOT EXISTS idx_subagent_child_intents_registered_run
   ON subagent_child_intents(registered_run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_subagent_child_intents_controller_operation
+  ON subagent_child_intents(controller_session_key, operation_key)
+  WHERE operation_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_subagent_child_intents_controller_canonical
+  ON subagent_child_intents(controller_session_key, canonical_key)
+  WHERE operation_key IS NULL;
 
 CREATE TABLE IF NOT EXISTS subagent_gateway_acceptance_receipts (
   acceptance_key TEXT NOT NULL PRIMARY KEY,
@@ -1265,7 +1271,15 @@ CREATE TABLE IF NOT EXISTS subagent_gateway_acceptance_receipts (
   lifecycle TEXT NOT NULL,
   receipt_generation INTEGER NOT NULL,
   accepted_at INTEGER,
+  created_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL,
+  acceptance_epoch TEXT NOT NULL DEFAULT '',
+  envelope_digest TEXT NOT NULL DEFAULT '',
+  envelope_json TEXT NOT NULL DEFAULT '{}',
+  key_id TEXT NOT NULL DEFAULT '',
+  nonce TEXT NOT NULL DEFAULT '',
+  signature TEXT NOT NULL DEFAULT '',
+  cancel_epoch INTEGER NOT NULL DEFAULT 0,
   payload_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(intent_id, receipt_generation)
 );

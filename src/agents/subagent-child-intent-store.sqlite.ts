@@ -9,6 +9,7 @@ import {
   subagentChildIntentStateFromRecord,
   type ChildIntentDatabase,
 } from "./subagent-child-intent-query.sqlite.js";
+import type { ChildIntentState } from "./subagent-child-intent-types.js";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -19,20 +20,14 @@ type ChildIntentUpdate = Updateable<ChildIntentTable>;
 export {
   cancelSubagentChildIntentAtomically,
   cancelSubagentChildIntentByRunOrSessionAtomically,
+  commitSubagentRunRegistrationAtomically,
+  commitSubagentRunRegistrationInTransaction,
   expireSubagentReservationsAtomically,
   releaseRegisteredSubagentChildIntent,
   removeSubagentReservationAtomically,
 } from "./subagent-child-intent-store-lifecycle.sqlite.js";
 
-export type ChildIntentState =
-  | "reserved"
-  | "dispatch_claimed"
-  | "gateway_accepted"
-  | "registered"
-  | "cancelled_requested"
-  | "expired"
-  | "legacy_ambiguous"
-  | "terminal";
+export type { ChildIntentState } from "./subagent-child-intent-types.js";
 
 const ACTIVE_STATES: readonly ChildIntentState[] = [
   "reserved",
@@ -438,62 +433,4 @@ export function claimSubagentChildIntentAtomically(params: {
     }
   });
   return token;
-}
-
-export function commitSubagentRunRegistrationInTransaction(
-  db: DatabaseSync,
-  entry: SubagentRunRecord,
-): boolean {
-  if (!entry.childIntentKey || !entry.reservationOwnerToken) {
-    return true;
-  }
-  const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
-  const row = executeSqliteQuerySync(
-    db,
-    stateDb
-      .selectFrom("subagent_child_intents")
-      .selectAll()
-      .where(
-        "controller_session_key",
-        "=",
-        (entry.controllerSessionKey ?? entry.requesterSessionKey).trim(),
-      )
-      .where("canonical_key", "=", entry.childIntentKey!),
-  ).rows[0];
-  if (!row || row.lease_owner !== entry.reservationOwnerToken) {
-    return false;
-  }
-  if (row.state === "registered" && row.registered_run_id === entry.runId) {
-    return true;
-  }
-  if (!["dispatch_claimed", "gateway_accepted"].includes(row.state)) {
-    return false;
-  }
-  const result = setRow(
-    db,
-    stateDb,
-    row.intent_id,
-    {
-      state: "registered",
-      generation: row.generation + 1,
-      registered_run_id: entry.runId,
-      provider_run_id: entry.providerRunId ?? entry.runId,
-      updated_at: Date.now(),
-      payload_json: JSON.stringify(entry),
-    },
-    {
-      generation: row.generation,
-      state: row.state as ChildIntentState,
-      leaseOwner: entry.reservationOwnerToken,
-    },
-  );
-  return Number(result.numAffectedRows ?? 0) === 1;
-}
-
-export function commitSubagentRunRegistrationAtomically(entry: SubagentRunRecord): boolean {
-  let committed = false;
-  runOpenClawStateWriteTransaction(({ db }) => {
-    committed = commitSubagentRunRegistrationInTransaction(db, entry);
-  });
-  return committed;
 }

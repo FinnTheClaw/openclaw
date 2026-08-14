@@ -13,7 +13,10 @@ import {
   resolveSubagentChildIntentKey,
 } from "./subagent-child-intent.js";
 import {
+  markGatewayAcceptanceAccepted,
+  markGatewayAcceptanceDispatchClaimed,
   markGatewayAcceptanceNotAccepted,
+  markGatewayAcceptanceRunnable,
   readGatewayAcceptanceReceipt,
   reserveGatewayAcceptanceReceipt,
 } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
@@ -168,12 +171,42 @@ describe("child-intent authority boundaries", () => {
       task: "projection CAS",
       cleanup: "keep" as const,
       maxActiveChildren: 3,
+      intentRequestDigest: "projection-cas-request",
+      intentBehaviorDigest: "projection-cas-resolved",
     };
     const reservation = reserveSubagentChildIntent(input);
     markSubagentChildIntentDispatching({
       childIntentKey: reservation.childIntentKey,
       reservationToken: reservation.reservationToken!,
     });
+    reserveGatewayAcceptanceReceipt({
+      acceptanceKey: reservation.childIntentKey,
+      intentId: reservation.childIntentKey,
+      controllerSessionKey: input.requesterSessionKey,
+      requestDigest: input.intentRequestDigest,
+      resolvedDigest: input.intentBehaviorDigest,
+      gatewayRunId: "provider-projection-cas",
+      childSessionKey: input.childSessionKey,
+      acceptanceEpoch: "projection-cas",
+    });
+    expect(
+      markGatewayAcceptanceRunnable({
+        acceptanceKey: reservation.childIntentKey,
+        gatewayRunId: "provider-projection-cas",
+      }),
+    ).toBe(true);
+    expect(
+      markGatewayAcceptanceDispatchClaimed({
+        acceptanceKey: reservation.childIntentKey,
+        gatewayRunId: "provider-projection-cas",
+      }),
+    ).toBe(true);
+    expect(
+      markGatewayAcceptanceAccepted({
+        acceptanceKey: reservation.childIntentKey,
+        gatewayRunId: "provider-projection-cas",
+      }),
+    ).toBe(true);
     markSubagentChildIntentUnknown({
       childIntentKey: reservation.childIntentKey,
       reservationToken: reservation.reservationToken!,

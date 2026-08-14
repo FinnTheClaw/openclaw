@@ -44,17 +44,29 @@ export function findSubagentChildIntentRow(
   if (!controller) {
     return undefined;
   }
-  return executeSqliteQuerySync(
+  const canonicalRow = executeSqliteQuerySync(
     database,
     db
       .selectFrom("subagent_child_intents")
       .selectAll()
       .where("controller_session_key", "=", controller)
-      .where((eb) =>
-        eb.or([
-          eb("canonical_key", "=", canonicalKey),
-          ...(operationKey ? [eb("operation_key", "=", operationKey)] : []),
-        ]),
-      ),
+      .where("canonical_key", "=", canonicalKey)
+      .where("operation_key", "is", null),
   ).rows[0];
+  if (!operationKey) {
+    return canonicalRow;
+  }
+  const operationRow = executeSqliteQuerySync(
+    database,
+    db
+      .selectFrom("subagent_child_intents")
+      .selectAll()
+      .where("controller_session_key", "=", controller)
+      .where("operation_key", "=", operationKey)
+      .where("operation_key", "is not", null),
+  ).rows[0];
+  if (canonicalRow && operationRow && canonicalRow.intent_id !== operationRow.intent_id) {
+    throw new Error("child intent canonical and operation identities conflict");
+  }
+  return operationRow ?? canonicalRow;
 }

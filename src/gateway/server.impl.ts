@@ -6,6 +6,11 @@ import {
   getActiveEmbeddedRunCount,
   resolveActiveEmbeddedRunSessionId,
 } from "../agents/embedded-agent-runner/run-state.js";
+import { fencePriorGatewayAcceptanceReceipts } from "../agents/subagent-gateway-acceptance-receipt-recovery.sqlite.js";
+import {
+  clearGatewayAcceptanceReceiptSigner,
+  installGatewayAcceptanceReceiptSigner,
+} from "../agents/subagent-gateway-acceptance-receipt-runtime.js";
 import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.js";
 import {
   getLoadedChannelPluginEntryById,
@@ -27,6 +32,7 @@ import { applyConfigOverrides } from "../config/runtime-overrides.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getActiveCronJobCount } from "../cron/active-jobs.js";
+import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import {
   isDiagnosticsEnabled,
   setDiagnosticsEnabledForProcess,
@@ -1028,6 +1034,15 @@ export async function startGatewayServer(
       sourceConfig: secretSnapshot.sourceConfig,
       config: secretSnapshot.config,
     });
+    const receiptSigningKey = secretSnapshot.config.secretRefs.receiptSigningKey;
+    if (typeof receiptSigningKey !== "string" || !receiptSigningKey.trim()) {
+      throw new Error("GOVERNOR_GATEWAY_RECEIPT_SIGNER_INVALID");
+    }
+    installGatewayAcceptanceReceiptSigner({
+      signingKey: receiptSigningKey,
+      generation: secretSnapshot.generation,
+    });
+    fencePriorGatewayAcceptanceReceipts(getAgentEventLifecycleGeneration());
   };
   const closeBehaviorGovernor = async () => {
     const lifecycle = behaviorGovernorLifecycle;
@@ -1036,6 +1051,7 @@ export async function startGatewayServer(
     }
     await lifecycle.close();
     behaviorGovernorLifecycle = undefined;
+    clearGatewayAcceptanceReceiptSigner();
   };
   const freezeBehaviorGovernor = async () => {
     await behaviorGovernorLifecycle?.freeze();

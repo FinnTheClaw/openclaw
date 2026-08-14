@@ -63,8 +63,18 @@ import {
   resolveIngressWorkspaceOverrideForSpawnedRun,
 } from "../../agents/spawned-context.js";
 import {
+  buildGatewayAcceptanceReceiptEnvelope,
+  gatewayAcceptanceReceiptEnvelopeDigest,
+} from "../../agents/subagent-gateway-acceptance-receipt-auth.js";
+import {
   markGatewayAcceptanceAccepted,
+  markGatewayAcceptanceCancelled,
+  markGatewayAcceptanceDispatchClaimed,
   markGatewayAcceptanceNotAccepted,
+  markGatewayAcceptanceRunnable,
+  markGatewayAcceptanceStarted,
+  markGatewayAcceptanceTerminal,
+  isGatewayAcceptanceDispatchAllowed,
   readGatewayAcceptanceReceipt,
   reserveGatewayAcceptanceReceipt,
 } from "../../agents/subagent-gateway-acceptance-receipt-store.sqlite.js";
@@ -897,6 +907,7 @@ function setAbortedAgentDedupeEntries(params: {
   sessionKey?: string;
   runId: string;
   stopReason: string;
+  durableAcceptanceKey?: string;
 }) {
   setGatewayDedupeEntries({
     dedupe: params.dedupe,
@@ -916,7 +927,7 @@ function setAbortedAgentDedupeEntries(params: {
       },
     },
   });
-  const acceptanceKey = params.keys.find((key) => key.startsWith("agent:"))?.slice("agent:".length);
+  const acceptanceKey = params.durableAcceptanceKey;
   if (acceptanceKey) {
     try {
       markGatewayAcceptanceNotAccepted({ acceptanceKey, gatewayRunId: params.runId });
@@ -980,6 +991,7 @@ function deleteGatewayDedupeEntries(params: {
 function dispatchAgentRunFromGateway(params: {
   ingressOpts: Parameters<typeof agentCommandFromIngress>[0];
   runId: string;
+  acceptanceKey?: string;
   dedupeKeys: readonly string[];
   /**
    * Controller whose signal is wired into `ingressOpts.abortSignal`. Used on
@@ -992,6 +1004,31 @@ function dispatchAgentRunFromGateway(params: {
   context: GatewayRequestHandlerOptions["context"];
   taskTrackingMode: Exclude<GatewayAgentTaskTrackingMode, "plugin_subagent">;
 }) {
+  const settleDurableReceipt = () => {
+    if (!params.acceptanceKey) {
+      return;
+    }
+    try {
+      const receipt = readGatewayAcceptanceReceipt(params.acceptanceKey);
+      if (!receipt || receipt.gatewayRunId !== params.runId) {
+        return;
+      }
+      if (receipt.lifecycle === "cancel_requested") {
+        markGatewayAcceptanceCancelled({
+          acceptanceKey: params.acceptanceKey,
+          gatewayRunId: params.runId,
+        });
+      } else if (receipt.lifecycle === "accepted" || receipt.lifecycle === "started") {
+        markGatewayAcceptanceTerminal({
+          acceptanceKey: params.acceptanceKey,
+          gatewayRunId: params.runId,
+        });
+      }
+    } catch {
+      // A missing/invalid receipt remains fenced; never synthesize terminal
+      // authority from the process-local completion callback.
+    }
+  };
   const shouldTrackTask = params.taskTrackingMode === "cli";
   let taskTracked = false;
   if (shouldTrackTask) {
@@ -1060,6 +1097,7 @@ function dispatchAgentRunFromGateway(params: {
       // Send a second res frame (same id) so TS clients with expectFinal can wait.
       // Swift clients will typically treat the first res as the result and ignore this.
       params.respond(true, payload, undefined, { runId: params.runId });
+      settleDurableReceipt();
     })
     .catch((err: unknown) => {
       const aborted = isGatewayAgentAbortRejection(err, params.abortController.signal);
@@ -1095,6 +1133,7 @@ function dispatchAgentRunFromGateway(params: {
         runId: params.runId,
         ...(aborted ? {} : { error: formatForLog(err) }),
       });
+      settleDurableReceipt();
     })
     .finally(() => {
       clearAgentRunContext(params.runId, params.ingressOpts.lifecycleGeneration);
@@ -1280,6 +1319,23 @@ export const agentHandlers: GatewayRequestHandlers = {
       typeof request.childIntentControllerSessionKey === "string"
         ? request.childIntentControllerSessionKey
         : (request.sessionKey ?? "");
+    const durableChildReceiptRequired =
+      typeof request.childIntentRequestDigest === "string" &&
+      typeof request.childIntentResolvedDigest === "string" &&
+      typeof request.childIntentControllerSessionKey === "string";
+    const gatewayReceiptEnvelope = buildGatewayAcceptanceReceiptEnvelope({
+      acceptanceKey: idem,
+      intentId: idem,
+      controllerSessionKey: childControllerSessionKey,
+      childSessionKey: request.sessionKey ?? "",
+      requestDigest: childRequestDigest,
+      preparationDigest: childRequestDigest,
+      resolvedDigest: childResolvedDigest,
+      request,
+      gatewayRunId: runId,
+      acceptanceEpoch: lifecycleGeneration,
+      receiptGeneration: 0,
+    });
     const execApprovalFollowupApprovalId = parseExecApprovalFollowupApprovalId(idem);
     if (execApprovalFollowupApprovalId && !canUseInternalRuntimeHandoff) {
       respond(
@@ -1315,51 +1371,90 @@ export const agentHandlers: GatewayRequestHandlers = {
       dedupe: context.dedupe,
       keys: agentDedupeKeys,
     });
+    let durableReceiptReadFailed = false;
+    let cachedDurableReceipt: ReturnType<typeof readGatewayAcceptanceReceipt>;
+    if (cached && request.sessionKey && durableChildReceiptRequired) {
+      try {
+        cachedDurableReceipt = readGatewayAcceptanceReceipt(idem);
+      } catch {
+        durableReceiptReadFailed = true;
+      }
+    }
     if (cached) {
-      if (cached.ok && isAcceptedAgentDedupePayload(cached.payload)) {
-        const cachedRunId =
-          typeof cached.payload.runId === "string" && cached.payload.runId.trim()
-            ? cached.payload.runId.trim()
-            : runId;
-        const cachedSessionKey =
-          typeof cached.payload.sessionKey === "string" && cached.payload.sessionKey.trim()
-            ? cached.payload.sessionKey.trim()
-            : undefined;
-        const cachedAgentId =
-          cachedSessionKey === "global" &&
-          typeof cached.payload.agentId === "string" &&
-          cached.payload.agentId.trim()
-            ? cached.payload.agentId.trim()
-            : undefined;
+      if (durableReceiptReadFailed) {
         respond(
-          true,
-          {
-            runId: cachedRunId,
-            status: "in_flight" as const,
-            ...(cachedSessionKey ? { sessionKey: cachedSessionKey } : {}),
-            ...(cachedAgentId ? { agentId: cachedAgentId } : {}),
-          },
+          false,
           undefined,
-          {
-            cached: true,
-            runId: cachedRunId,
-          },
+          errorShape(ErrorCodes.UNAVAILABLE, "durable gateway receipt is unavailable"),
+          { cached: true, runId },
         );
         return;
       }
-      respond(cached.ok, cached.payload, cached.error, {
-        cached: true,
-      });
-      return;
+      if (cachedDurableReceipt) {
+        // The durable receipt below is the binding authority. Do not let the
+        // process-local response cache bypass its exact replay checks.
+      } else {
+        if (cached.ok && isAcceptedAgentDedupePayload(cached.payload)) {
+          const cachedRunId =
+            typeof cached.payload.runId === "string" && cached.payload.runId.trim()
+              ? cached.payload.runId.trim()
+              : runId;
+          const cachedSessionKey =
+            typeof cached.payload.sessionKey === "string" && cached.payload.sessionKey.trim()
+              ? cached.payload.sessionKey.trim()
+              : undefined;
+          const cachedAgentId =
+            cachedSessionKey === "global" &&
+            typeof cached.payload.agentId === "string" &&
+            cached.payload.agentId.trim()
+              ? cached.payload.agentId.trim()
+              : undefined;
+          respond(
+            true,
+            {
+              runId: cachedRunId,
+              status: "in_flight" as const,
+              ...(cachedSessionKey ? { sessionKey: cachedSessionKey } : {}),
+              ...(cachedAgentId ? { agentId: cachedAgentId } : {}),
+            },
+            undefined,
+            {
+              cached: true,
+              runId: cachedRunId,
+            },
+          );
+          return;
+        }
+        respond(cached.ok, cached.payload, cached.error, {
+          cached: true,
+        });
+        return;
+      }
     }
     try {
+      if (!durableChildReceiptRequired) {
+        throw new Error("GOVERNOR_GATEWAY_RECEIPT_NOT_REQUIRED");
+      }
       const durableReceipt = readGatewayAcceptanceReceipt(idem);
-      if (durableReceipt?.lifecycle === "accepted" || durableReceipt?.lifecycle === "preaccepted") {
+      if (
+        durableReceipt &&
+        durableReceipt.lifecycle !== "not_accepted" &&
+        durableReceipt.lifecycle !== "terminal" &&
+        durableReceipt.lifecycle !== "cancelled"
+      ) {
         if (
           durableReceipt.requestDigest !== childRequestDigest ||
           durableReceipt.resolvedDigest !== childResolvedDigest ||
+          durableReceipt.intentId !== idem ||
           durableReceipt.controllerSessionKey !== childControllerSessionKey ||
-          durableReceipt.gatewayRunId !== runId
+          durableReceipt.gatewayRunId !== runId ||
+          (request.sessionKey !== undefined &&
+            durableReceipt.childSessionKey !== request.sessionKey) ||
+          durableReceipt.envelopeDigest !==
+            gatewayAcceptanceReceiptEnvelopeDigest({
+              ...gatewayReceiptEnvelope,
+              childSessionKey: durableReceipt.childSessionKey,
+            })
         ) {
           respond(
             false,
@@ -1371,16 +1466,32 @@ export const agentHandlers: GatewayRequestHandlers = {
           );
           return;
         }
-        respond(
-          true,
-          {
-            runId: durableReceipt.gatewayRunId,
-            status: "in_flight" as const,
-            sessionKey: durableReceipt.childSessionKey,
-          },
-          undefined,
-          { cached: true, runId: durableReceipt.gatewayRunId },
-        );
+        if (durableReceipt.lifecycle === "preaccepted" || durableReceipt.lifecycle === "runnable") {
+          respond(
+            false,
+            undefined,
+            errorShape(ErrorCodes.UNAVAILABLE, "agent request remains durably fenced for recovery"),
+            { cached: true, runId: durableReceipt.gatewayRunId },
+          );
+        } else if (durableReceipt.lifecycle === "unknown") {
+          respond(
+            false,
+            undefined,
+            errorShape(ErrorCodes.UNAVAILABLE, "agent request requires gateway recovery"),
+            { cached: true, runId: durableReceipt.gatewayRunId },
+          );
+        } else {
+          respond(
+            true,
+            {
+              runId: durableReceipt.gatewayRunId,
+              status: "in_flight" as const,
+              sessionKey: durableReceipt.childSessionKey,
+            },
+            undefined,
+            { cached: true, runId: durableReceipt.gatewayRunId },
+          );
+        }
         return;
       }
     } catch {
@@ -1404,13 +1515,36 @@ export const agentHandlers: GatewayRequestHandlers = {
       typeof client?.connect?.device?.id === "string" ? client.connect.device.id : undefined;
     const reservePreAcceptedAgentDedupe = (sessionKey?: string, dedupeAgentId?: string) => {
       if (agentDedupeReserved) {
+        if (sessionKey && durableChildReceiptRequired) {
+          const existingReceipt = readGatewayAcceptanceReceipt(idem);
+          if (existingReceipt && existingReceipt.childSessionKey !== sessionKey) {
+            throw new Error("gateway receipt conflicts with a different resolved session");
+          }
+          if (!existingReceipt) {
+            reserveGatewayAcceptanceReceipt({
+              acceptanceKey: idem,
+              intentId: idem,
+              controllerSessionKey: childControllerSessionKey,
+              requestDigest: childRequestDigest,
+              resolvedDigest: childResolvedDigest,
+              gatewayRunId: runId,
+              childSessionKey: sessionKey,
+              acceptanceEpoch: lifecycleGeneration,
+              envelope: {
+                ...gatewayReceiptEnvelope,
+                targetAgentId: dedupeAgentId ?? gatewayReceiptEnvelope.targetAgentId,
+                childSessionKey: sessionKey,
+              },
+            });
+          }
+        }
         return;
       }
       const dedupeSessionResolvesGlobal = sessionKey
         ? resolveSessionStoreKey({ cfg, sessionKey }) === "global"
         : false;
       const acceptedAt = Date.now();
-      if (sessionKey) {
+      if (sessionKey && durableChildReceiptRequired) {
         reserveGatewayAcceptanceReceipt({
           acceptanceKey: idem,
           intentId: idem,
@@ -1419,6 +1553,12 @@ export const agentHandlers: GatewayRequestHandlers = {
           resolvedDigest: childResolvedDigest,
           gatewayRunId: runId,
           childSessionKey: sessionKey,
+          acceptanceEpoch: lifecycleGeneration,
+          envelope: {
+            ...gatewayReceiptEnvelope,
+            targetAgentId: dedupeAgentId ?? gatewayReceiptEnvelope.targetAgentId,
+            childSessionKey: sessionKey,
+          },
           now: acceptedAt,
         });
       }
@@ -1482,7 +1622,9 @@ export const agentHandlers: GatewayRequestHandlers = {
         keys: agentDedupeKeys,
       });
       try {
-        markGatewayAcceptanceNotAccepted({ acceptanceKey: idem, gatewayRunId: runId });
+        if (durableChildReceiptRequired) {
+          markGatewayAcceptanceNotAccepted({ acceptanceKey: idem, gatewayRunId: runId });
+        }
       } catch {
         // An uncertain durable receipt remains fenced and cannot be retried.
       }
@@ -1536,6 +1678,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         sessionKey: target?.sessionKey,
         runId,
         stopReason,
+        durableAcceptanceKey: durableChildReceiptRequired ? idem : undefined,
       });
       respond(
         true,
@@ -2002,6 +2145,7 @@ export const agentHandlers: GatewayRequestHandlers = {
               sessionKey: resolvedSessionKey,
               runId,
               stopReason: "timeout",
+              durableAcceptanceKey: durableChildReceiptRequired ? idem : undefined,
             });
             return;
           }
@@ -2036,6 +2180,7 @@ export const agentHandlers: GatewayRequestHandlers = {
               sessionKey: resolvedSessionKey,
               runId,
               stopReason: "timeout",
+              durableAcceptanceKey: durableChildReceiptRequired ? idem : undefined,
             });
             return;
           }
@@ -2094,6 +2239,7 @@ export const agentHandlers: GatewayRequestHandlers = {
             sessionKey: resolvedSessionKey,
             runId,
             stopReason: AGENT_RUN_RESTART_ABORT_STOP_REASON,
+            durableAcceptanceKey: durableChildReceiptRequired ? idem : undefined,
           });
         }
       };
@@ -3234,6 +3380,19 @@ export const agentHandlers: GatewayRequestHandlers = {
         }
       }
 
+      if (
+        durableChildReceiptRequired &&
+        !markGatewayAcceptanceRunnable({ acceptanceKey: idem, gatewayRunId: runId })
+      ) {
+        activeGatewayWorkAdmission.release();
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, "agent receipt admission was fenced"),
+        );
+        return;
+      }
+
       const resolvedThreadId = explicitThreadId ?? deliveryPlan.resolvedThreadId;
       // Confirmed only when the caller is the trusted in-process backend ACP
       // spawn client, the turn is an ACP manual spawn, the canonical session key
@@ -3313,13 +3472,10 @@ export const agentHandlers: GatewayRequestHandlers = {
         await yieldAfterAgentAcceptedAck();
         let dispatched = false;
         try {
-          if (
-            resolvedSessionKey &&
-            !markGatewayAcceptanceAccepted({ acceptanceKey: idem, gatewayRunId: runId })
-          ) {
-            throw new Error("durable gateway acceptance changed before runner admission");
-          }
           if (activeRunAbort.controller.signal.aborted) {
+            if (durableChildReceiptRequired) {
+              markGatewayAcceptanceNotAccepted({ acceptanceKey: idem, gatewayRunId: runId });
+            }
             const stopReason = resolveAbortedAgentStopReason(activeRunAbort.entry);
             setAbortedAgentDedupeEntries({
               dedupe: context.dedupe,
@@ -3327,6 +3483,7 @@ export const agentHandlers: GatewayRequestHandlers = {
               agentId: resolvedSessionKey === "global" ? activeSessionAgentId : undefined,
               runId,
               stopReason,
+              durableAcceptanceKey: durableChildReceiptRequired ? idem : undefined,
             });
             respond(
               true,
@@ -3342,6 +3499,13 @@ export const agentHandlers: GatewayRequestHandlers = {
               { runId },
             );
             return;
+          }
+
+          if (
+            durableChildReceiptRequired &&
+            !markGatewayAcceptanceDispatchClaimed({ acceptanceKey: idem, gatewayRunId: runId })
+          ) {
+            throw new Error("durable gateway dispatch claim was fenced");
           }
 
           if (resolvedSessionKey) {
@@ -3405,6 +3569,12 @@ export const agentHandlers: GatewayRequestHandlers = {
           const execApprovalFollowupElevatedDefaults =
             execApprovalFollowupRuntimeHandoff?.bashElevated;
 
+          if (
+            durableChildReceiptRequired &&
+            !isGatewayAcceptanceDispatchAllowed({ acceptanceKey: idem, gatewayRunId: runId })
+          ) {
+            throw new Error("durable gateway dispatch was cancelled before handoff");
+          }
           dispatchAgentRunFromGateway({
             ingressOpts: {
               message,
@@ -3498,6 +3668,7 @@ export const agentHandlers: GatewayRequestHandlers = {
               allowModelOverride,
             },
             runId,
+            acceptanceKey: durableChildReceiptRequired ? idem : undefined,
             dedupeKeys: agentDedupeKeys,
             abortController: activeRunAbort.controller,
             cleanupAbortController: cleanupAdmittedRun,
@@ -3506,7 +3677,32 @@ export const agentHandlers: GatewayRequestHandlers = {
             taskTrackingMode: dispatchTaskTrackingMode,
           });
           dispatched = true;
+          if (
+            durableChildReceiptRequired &&
+            !markGatewayAcceptanceAccepted({ acceptanceKey: idem, gatewayRunId: runId })
+          ) {
+            throw new Error("durable gateway acceptance changed after runner admission");
+          }
+          if (
+            durableChildReceiptRequired &&
+            !markGatewayAcceptanceStarted({ acceptanceKey: idem, gatewayRunId: runId })
+          ) {
+            throw new Error("durable gateway start changed after runner admission");
+          }
         } catch (err) {
+          if (durableChildReceiptRequired) {
+            try {
+              const receipt = readGatewayAcceptanceReceipt(idem);
+              if (receipt?.gatewayRunId === runId && receipt.lifecycle === "cancel_requested") {
+                markGatewayAcceptanceCancelled({
+                  acceptanceKey: idem,
+                  gatewayRunId: runId,
+                });
+              }
+            } catch {
+              // Keep an uncertain cancellation durably fenced for recovery.
+            }
+          }
           const error = errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err));
           const payload = {
             runId,

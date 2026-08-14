@@ -2,20 +2,6 @@ import type { SubagentChildIntentReservation } from "./subagent-child-intent-reg
 
 export type ChildIntentReconciliation = "duplicate" | "retry" | "adopt";
 
-function isProvenNotAccepted(response: unknown): boolean {
-  if (!response || typeof response !== "object") {
-    return false;
-  }
-  const value = response as {
-    status?: unknown;
-    providerStarted?: unknown;
-    timeoutPhase?: unknown;
-  };
-  return (
-    value.status === "timeout" && value.providerStarted === false && value.timeoutPhase === "queue"
-  );
-}
-
 function isProviderPresent(response: unknown): boolean {
   if (!response || typeof response !== "object") {
     return false;
@@ -29,14 +15,28 @@ function isProviderPresent(response: unknown): boolean {
 
 /**
  * Reconciles a durable dispatching/unknown row without ever retrying an
- * ambiguous provider outcome. A queue timeout is the only proof that a new
- * dispatch is safe; every other observed provider state is adopted.
+ * ambiguous provider outcome. Only the durable receipt's not_accepted state
+ * authorizes a new attempt; an agent.wait response is never proof after a
+ * gateway restart because that lookup is not an authoritative receipt.
  */
 export async function reconcileSubagentChildIntent(params: {
   reservation: SubagentChildIntentReservation;
   waitForProvider: () => Promise<unknown>;
   lookupAcceptance: () =>
-    | { lifecycle: "preaccepted" | "accepted" | "not_accepted" | "cancelled" }
+    | {
+        lifecycle:
+          | "preaccepted"
+          | "runnable"
+          | "dispatch_claimed"
+          | "accepted"
+          | "started"
+          | "unknown"
+          | "not_accepted"
+          | "cancel_requested"
+          | "cancelled"
+          | "terminal";
+        gatewayRunId?: string;
+      }
     | undefined;
   adopt: () => boolean;
   abandon: () => boolean;
@@ -45,32 +45,34 @@ export async function reconcileSubagentChildIntent(params: {
     return "duplicate";
   }
   const receipt = params.lookupAcceptance();
-  if (receipt?.lifecycle === "accepted") {
+  if (receipt && ["accepted", "started", "terminal"].includes(receipt.lifecycle)) {
+    // The durable gateway receipt, not the reservation placeholder, owns the
+    // provider identity. This also covers a controller crash after the
+    // gateway accepted the run but before the child row was updated.
+    if (receipt.gatewayRunId) {
+      params.reservation.existingRunId = receipt.gatewayRunId;
+    }
     return params.adopt() ? "adopt" : "duplicate";
   }
-  if (receipt?.lifecycle !== "not_accepted") {
-    if (!receipt && params.reservation.durableReceiptRequired !== true) {
+  if (receipt?.lifecycle === "not_accepted") {
+    return params.abandon() ? "retry" : "duplicate";
+  }
+  if (receipt?.lifecycle !== undefined) {
+    // preaccepted, runnable, dispatch_claimed, and cancel_requested are
+    // durable fences. They require host reconciliation and cannot be retried.
+    return "duplicate";
+  }
+  if (params.reservation.durableReceiptRequired !== true) {
+    if (!receipt) {
       // Legacy test/in-process adapters do not expose the durable receipt
       // seam; retain their provider-presence behavior. Real persisted rows
       // always set durableReceiptRequired and remain fenced when absent.
       const legacyResponse = await params.waitForProvider();
       return isProviderPresent(legacyResponse) && params.adopt() ? "adopt" : "duplicate";
     }
-    // A missing or unavailable receipt is ambiguous after a gateway restart.
-    // agent.wait cannot prove that an accepted request did not exist.
-    return "duplicate";
   }
-  let response: unknown;
-  try {
-    response = await params.waitForProvider();
-  } catch {
-    return "duplicate";
-  }
-  if (isProvenNotAccepted(response)) {
-    return params.abandon() ? "retry" : "duplicate";
-  }
-  if (isProviderPresent(response) && params.adopt()) {
-    return "adopt";
-  }
+  // A missing or unavailable durable receipt is ambiguous after a gateway
+  // restart. The callback may have failed before returning, so no provider
+  // wait result can prove that an accepted request did not exist.
   return "duplicate";
 }
