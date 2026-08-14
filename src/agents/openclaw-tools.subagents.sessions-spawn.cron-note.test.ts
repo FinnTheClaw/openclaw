@@ -30,7 +30,9 @@ describe("sessions_spawn: cron isolated session note suppression", () => {
     // the current model turn without introducing a polling loop.
     expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).toContain("Auto-announce is push-based");
     expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).toContain("Continue any independent work");
-    expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).toContain("call sessions_yield when available");
+    expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).toContain(
+      "call sessions_yield when available",
+    );
     expect(SUBAGENT_SPAWN_ACCEPTED_NOTE).toContain(
       "wait for completion events for ALL required children",
     );
