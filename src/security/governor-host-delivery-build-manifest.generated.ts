@@ -15859,7 +15859,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-turn-handler.ts",
-      sha256: "cc979eabe37c287207e5bb368d9b586de5a7a52e2de1bb6d1e6371edecf50911",
+      sha256: "8b358b519f12784148764acdd2aa10ba4c76f6148e5f3e2d1e970121c115c8e2",
     },
     {
       path: "src/security/governor-agent-loop-turn-state.ts",
@@ -16827,7 +16827,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/controller.ts",
-      sha256: "890aa197bbec88672e9d08b69647b2f33b722068eca020c235709131e6a4ccff",
+      sha256: "96c451dd605d8476d0c9dc06fe1b1ea92148a1ae10c98e4cd26c598ee89c6836",
     },
     {
       path: "src/tasks/governor/current-evidence.ts",
@@ -16884,6 +16884,10 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     {
       path: "src/tasks/governor/finish-gate.ts",
       sha256: "542170f957a3b985f9a7ab74661f745f3ae03e6951b7c3092b6c3d5413348037",
+    },
+    {
+      path: "src/tasks/governor/finish-pending-rejection.ts",
+      sha256: "f39104376359d94061aa2c7d04c24792be3dd2092131da3a7af1928c60923079",
     },
     {
       path: "src/tasks/governor/integrity-error.ts",
@@ -17716,4 +17720,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "a606c1f97cd71abbfa6b02e45e761c5ab986d41ffa73abfd054e4efc0c65a749";
+  "7a361d876f01f2f1a5aa2d8cf6eb29d7cc9dbc80f53fd9d5e292afb0823c5070";

@@ -266,6 +266,88 @@ describe("C02/C05 restart recovery boundaries", () => {
       await expect(runFinishCandidateRecovery(failureBoundary)).resolves.toBeUndefined(),
   );
 
+  it("durably replans when recovered finish evidence is no longer current", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-c02-recovery-invalidated-" },
+      async (state) => {
+        const runtime = start(state.stateDir, [{ criterionId: "alpha" }]);
+        const scope = resolveGovernorAgentLoopRunScope(inputs("recovery-invalidated"))!;
+        runTool(scope, 101);
+        scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 103 });
+        const store = runtime.adapter.controller.store;
+        const task = store.loadTask(scope.taskId as never)!;
+        const source = store.listAllEvidence(scope.taskId as never)[0]!;
+        persistFinishCandidate(runtime.adapter.controller, task.taskId, 104);
+        const candidateTask = store.loadTask(task.taskId)!;
+        const receipt = runtime.owners.evidence.submitEvidenceInvalidation({
+          scopeKey: candidateTask.scopeKey,
+          taskId: candidateTask.taskId,
+          taskVersion: candidateTask.taskVersion,
+          objectiveRevision: candidateTask.objectiveRevision,
+          planVersion: candidateTask.planVersion,
+          evidenceId: source.evidenceId,
+          evidenceDigest: source.evidenceDigest,
+          reasonCode: "contradicted_by_newer_evidence",
+          provenance: {
+            kind: "newer_evidence",
+            sourceEvidenceId: "recovery-correction",
+            sourceEvidenceDigest: "d".repeat(64),
+            sourceObservedAt: 200,
+            sourceScopeKey: candidateTask.scopeKey,
+            confidence: "high",
+            authority: "authenticated_host",
+          },
+          observedAt: 201,
+        });
+        runtime.adapter.controller.invalidateEvidence({
+          taskId: task.taskId,
+          evidenceId: source.evidenceId,
+          receiptId: receipt,
+        });
+        expect(
+          scope.afterTurn({ assistantText: "done", toolCallCount: 0, now: 205 }),
+        ).toMatchObject({
+          kind: "continue",
+          phase: "actions",
+        });
+        expect(store.loadTask(task.taskId)?.state).toBe("REPLAN_REQUIRED");
+        expect(store.loadTask(task.taskId)?.finalResponsePhase).toBeUndefined();
+        expect(scope.turnPhase()).toBe("actions");
+        scope.dispose();
+        runtime.close();
+      },
+    );
+  });
+
+  it("durably replans when recovered finish response validation fails", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-c02-recovery-response-" },
+      async (state) => {
+        const runtime = start(state.stateDir, [{ criterionId: "alpha" }]);
+        const scope = resolveGovernorAgentLoopRunScope(inputs("recovery-response"))!;
+        runTool(scope, 101);
+        scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 103 });
+        const task = runtime.adapter.controller.store.loadTask(scope.taskId as never)!;
+        persistFinishCandidate(runtime.adapter.controller, task.taskId, 104);
+        expect(
+          scope.afterTurn({ assistantText: "wrong", toolCallCount: 0, now: 105 }),
+        ).toMatchObject({
+          kind: "continue",
+          phase: "actions",
+        });
+        expect(runtime.adapter.controller.store.loadTask(task.taskId)?.state).toBe(
+          "REPLAN_REQUIRED",
+        );
+        expect(
+          runtime.adapter.controller.store.loadTask(task.taskId)?.finalResponsePhase,
+        ).toBeUndefined();
+        expect(scope.turnPhase()).toBe("actions");
+        scope.dispose();
+        runtime.close();
+      },
+    );
+  });
+
   it("rejects carry-forward whose source was invalidated before the write transaction", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-c05-invalidation-race-" },

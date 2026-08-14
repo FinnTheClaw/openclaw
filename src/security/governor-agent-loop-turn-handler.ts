@@ -212,20 +212,60 @@ export function recordGovernorAgentLoopTurn(params: {
     },
     now: turn.now + 2,
   });
+  const currentTask = params.controller.store.loadTask(params.taskId);
+  const pendingFinish =
+    currentTask?.state === "VERIFYING" || currentTask?.state === "FINISH_CANDIDATE";
+  if (pendingFinish) {
+    const finishRequest = {
+      taskId: params.taskId,
+      response: { framing: "none" as const, materialClaimIds: [] },
+      now: turn.now + 4,
+    };
+    const finished = responseDigestMatches
+      ? params.controller.resumePendingFinish(finishRequest)
+      : {
+          completed: false,
+          task: params.controller.rejectPendingFinish({
+            taskId: params.taskId,
+            now: turn.now + 4,
+            pendingUserUpdate: "Final response did not match the host-bound response contract.",
+          }),
+        };
+    state.terminal = finished.completed;
+    if (state.terminal) {
+      return { kind: "complete" };
+    }
+    clearGovernorFinalResponsePending({
+      controller: params.controller,
+      taskId: params.taskId,
+      now: turn.now + 5,
+    });
+    state.finalResponsePending = false;
+    state.progress = buildGovernorAgentLoopProgress(
+      params.controller,
+      params.taskId,
+      params.config,
+    );
+    state.priorProgressFingerprint = state.progress.fingerprint;
+    state.replannedAfterStagnation = false;
+    return {
+      kind: "continue",
+      phase: "actions",
+      message: `${formatGovernorAgentLoopProgress(state.progress)} ${
+        finished.task.state === "REPLAN_REQUIRED"
+          ? "Current evidence or response validation rejected the pending finish; choose an eligible action."
+          : "Governor completion requires current admitted evidence and verification."
+      }`,
+    };
+  }
   if (decision.accepted && responseDigestMatches) {
     const finishRequest = {
       taskId: params.taskId,
       response: { framing: "none" as const, materialClaimIds: [] },
       now: turn.now + 4,
     };
-    const currentTask = params.controller.store.loadTask(params.taskId);
-    let finished;
-    if (currentTask?.state === "VERIFYING" || currentTask?.state === "FINISH_CANDIDATE") {
-      finished = params.controller.resumePendingFinish(finishRequest);
-    } else {
-      params.controller.beginVerification(params.taskId, turn.now + 3);
-      finished = params.controller.proposeFinish(finishRequest);
-    }
+    params.controller.beginVerification(params.taskId, turn.now + 3);
+    const finished = params.controller.proposeFinish(finishRequest);
     state.terminal = finished.completed;
     if (state.terminal) {
       return { kind: "complete" };

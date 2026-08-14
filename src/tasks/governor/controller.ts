@@ -41,6 +41,7 @@ import {
   type GovernorFinishDecision,
   type GovernorRecoveryDirective,
 } from "./finish-gate.js";
+import { rejectPendingGovernorFinish } from "./finish-pending-rejection.js";
 import { admitGovernorMaterialClaims } from "./material-claim-admission.js";
 import {
   assertGovernorResponseDraft,
@@ -382,6 +383,18 @@ export class GovernorController {
       throw new Error("GOVERNOR_PENDING_FINISH_STATE_INVALID");
     }
     return this.proposeFinish(params);
+  }
+
+  rejectPendingFinish(params: {
+    taskId: GovernorTaskId;
+    now: number;
+    pendingUserUpdate: string;
+  }): GovernorTaskProjection {
+    return rejectPendingGovernorFinish({
+      store: this.store,
+      task: this.#task(params.taskId),
+      ...params,
+    });
   }
 
   proposeFinish(params: {
