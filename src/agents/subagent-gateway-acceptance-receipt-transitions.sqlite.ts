@@ -11,6 +11,7 @@ import {
   type ReceiptDb,
 } from "./subagent-gateway-acceptance-receipt-read.sqlite.js";
 import type { GatewayAcceptanceReceiptLifecycle } from "./subagent-gateway-acceptance-receipt-types.js";
+import { findReceiptBoundChildIntent } from "./subagent-gateway-child-intent-binding.sqlite.js";
 
 function transitionReceiptInTransaction(
   database: DatabaseSync,
@@ -40,23 +41,19 @@ function transitionReceiptInTransaction(
   ) {
     return false;
   }
-  if (params.to === "dispatch_claimed" || params.to === "accepted") {
-    const child = executeSqliteQuerySync(
-      database,
-      stateDb
-        .selectFrom("subagent_child_intents")
-        .select(["state"])
-        .where("controller_session_key", "=", current.controllerSessionKey)
-        .where((eb) =>
-          eb.or([
-            eb("canonical_key", "=", current.intentId),
-            eb("intent_id", "=", current.intentId),
-          ]),
-        ),
-    ).rows[0];
+  if (["dispatch_claimed", "accepted", "start_authorized"].includes(params.to)) {
+    const match = findReceiptBoundChildIntent(database, stateDb, {
+      controllerSessionKey: current.controllerSessionKey,
+      acceptanceKey: params.acceptanceKey,
+      envelope: current.envelope,
+    });
     if (
-      child &&
-      ["cancelled_requested", "expired", "legacy_ambiguous", "terminal"].includes(child.state)
+      current.envelope.childIntentCanonicalKey &&
+      (match.ambiguous ||
+        !match.row ||
+        ["cancelled_requested", "expired", "legacy_ambiguous", "terminal"].includes(
+          match.row.state,
+        ))
     ) {
       return false;
     }

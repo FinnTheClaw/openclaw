@@ -18,6 +18,10 @@ import {
   type ReceiptRow,
 } from "./subagent-gateway-acceptance-receipt-read.sqlite.js";
 import type { GatewayAcceptanceReceiptLifecycle } from "./subagent-gateway-acceptance-receipt-types.js";
+import {
+  bindReceiptToChildIntentInTransaction,
+  findReceiptBoundChildIntent,
+} from "./subagent-gateway-child-intent-binding.sqlite.js";
 
 export type { GatewayAcceptanceReceiptLifecycle } from "./subagent-gateway-acceptance-receipt-types.js";
 export { readGatewayAcceptanceReceipt, readGatewayAcceptanceReceiptFromDatabase };
@@ -62,16 +66,17 @@ export function reserveGatewayAcceptanceReceipt(params: {
     const now = params.now ?? Date.now();
     // Child cancellation and receipt creation share this transaction. If the
     // intent fence won first, no receipt may be created or advanced behind it.
-    const childIntent = executeSqliteQuerySync(
-      db,
-      stateDb
-        .selectFrom("subagent_child_intents")
-        .select(["state"])
-        .where("controller_session_key", "=", params.controllerSessionKey)
-        .where((eb) =>
-          eb.or([eb("canonical_key", "=", params.intentId), eb("intent_id", "=", params.intentId)]),
-        ),
-    ).rows[0];
+    const childMatch = params.envelope
+      ? findReceiptBoundChildIntent(db, stateDb, {
+          controllerSessionKey: params.controllerSessionKey,
+          acceptanceKey: params.acceptanceKey,
+          envelope: params.envelope,
+        })
+      : { row: undefined, ambiguous: false };
+    const childIntent = childMatch.row;
+    if (childMatch.ambiguous) {
+      throw new Error("GOVERNOR_CHILD_INTENT_BINDING_AMBIGUOUS");
+    }
     if (
       childIntent &&
       ["cancelled_requested", "expired", "legacy_ambiguous", "terminal"].includes(childIntent.state)
@@ -145,6 +150,15 @@ export function reserveGatewayAcceptanceReceipt(params: {
         if (Number(updated.numAffectedRows ?? 0) !== 1) {
           throw new Error("GOVERNOR_GATEWAY_RECEIPT_RETRY_CAS_LOST");
         }
+        if (
+          !bindReceiptToChildIntentInTransaction(db, stateDb, {
+            controllerSessionKey: params.controllerSessionKey,
+            acceptanceKey: params.acceptanceKey,
+            envelope,
+          })
+        ) {
+          throw new Error("GOVERNOR_CHILD_INTENT_RECEIPT_BINDING_LOST");
+        }
         receipt = fromRow({
           ...existing,
           lifecycle: "preaccepted",
@@ -160,6 +174,16 @@ export function reserveGatewayAcceptanceReceipt(params: {
       }
       if (current.gatewayRunId !== params.gatewayRunId) {
         throw new Error("gateway receipt conflicts with an active attempt");
+      }
+      if (
+        params.envelope &&
+        !bindReceiptToChildIntentInTransaction(db, stateDb, {
+          controllerSessionKey: params.controllerSessionKey,
+          acceptanceKey: params.acceptanceKey,
+          envelope: params.envelope,
+        })
+      ) {
+        throw new Error("GOVERNOR_CHILD_INTENT_RECEIPT_BINDING_LOST");
       }
       receipt = current;
       return;
@@ -201,6 +225,15 @@ export function reserveGatewayAcceptanceReceipt(params: {
       db,
       stateDb.insertInto("subagent_gateway_acceptance_receipts").values(row),
     );
+    if (
+      !bindReceiptToChildIntentInTransaction(db, stateDb, {
+        controllerSessionKey: params.controllerSessionKey,
+        acceptanceKey: params.acceptanceKey,
+        envelope,
+      })
+    ) {
+      throw new Error("GOVERNOR_CHILD_INTENT_RECEIPT_BINDING_LOST");
+    }
     receipt = fromRow(row as ReceiptRow);
   });
   return receipt;

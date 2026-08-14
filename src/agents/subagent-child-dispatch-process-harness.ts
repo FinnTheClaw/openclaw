@@ -20,6 +20,7 @@ export type ChildDispatchProcessHandle = {
   stderrText: () => string;
   send: (value: Record<string, unknown>) => void;
   waitFor: (prefix: string, timeoutMs?: number) => Promise<string>;
+  waitForAny: (prefixes: readonly string[], timeoutMs?: number) => Promise<string>;
   terminate: () => Promise<void>;
   close: () => Promise<void>;
 };
@@ -86,6 +87,66 @@ function startWorker(params: {
       lines.on("line", onLine);
       child.once("exit", onExit);
     });
+  const waitForAny = (
+    prefixes: readonly string[],
+    timeoutMs = CHILD_DISPATCH_PROTOCOL_TIMEOUT_MS,
+  ) =>
+    new Promise<string>((resolve, reject) => {
+      const matches = () =>
+        stdout
+          .join("")
+          .split(/\r?\n/)
+          .find((line) => prefixes.some((prefix) => line.startsWith(prefix)));
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new Error(
+            `${params.worker} did not emit any of ${prefixes.join(", ")}: stdout=${stdout.join("")} stderr=${stderr.join("")}`,
+          ),
+        );
+      }, timeoutMs);
+      const onLine = (line: string) => {
+        if (!prefixes.some((prefix) => line.startsWith(prefix))) {
+          return;
+        }
+        cleanup();
+        resolve(line);
+      };
+      const onExit = (code: number | null) => {
+        cleanup();
+        reject(
+          new Error(
+            `${params.worker} exited ${String(code)}: stdout=${stdout.join("")} stderr=${stderr.join("")}`,
+          ),
+        );
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        lines.off("line", onLine);
+        child.off("exit", onExit);
+      };
+      const buffered = matches();
+      if (buffered !== undefined) {
+        cleanup();
+        resolve(buffered);
+        return;
+      }
+      lines.on("line", onLine);
+      child.once("exit", onExit);
+      if (child.exitCode !== null || child.signalCode !== null) {
+        const exitedLine = matches();
+        cleanup();
+        if (exitedLine !== undefined) {
+          resolve(exitedLine);
+        } else {
+          reject(
+            new Error(
+              `${params.worker} exited ${String(child.exitCode)}: stdout=${stdout.join("")} stderr=${stderr.join("")}`,
+            ),
+          );
+        }
+      }
+    });
   const send = (value: Record<string, unknown>) => {
     if (!child.stdin || child.stdin.destroyed) {
       throw new Error(`${params.worker} stdin closed`);
@@ -100,6 +161,7 @@ function startWorker(params: {
     stderrText: () => stderr.join(""),
     send,
     waitFor,
+    waitForAny,
     terminate: async () => {
       if (child.exitCode !== null || child.signalCode !== null) {
         return;

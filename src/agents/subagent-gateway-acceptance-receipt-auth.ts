@@ -12,6 +12,8 @@ export type GatewayAcceptanceReceiptEnvelope = Readonly<{
   controllerSessionKey: string;
   targetAgentId: string;
   childSessionKey: string;
+  childIntentCanonicalKey?: string;
+  childIntentOperationKey?: string;
   requestDigest: string;
   preparationDigest: string;
   resolvedDigest: string;
@@ -112,6 +114,13 @@ export function buildGatewayAcceptanceReceiptEnvelope(params: {
     controllerSessionKey: params.controllerSessionKey,
     targetAgentId: optionalString(request.agentId) ?? params.targetAgentId ?? "unknown",
     childSessionKey: params.childSessionKey,
+    ...(optionalString(request.childIntentCanonicalKey)
+      ? { childIntentCanonicalKey: optionalString(request.childIntentCanonicalKey) }
+      : {}),
+    ...(request.childIntentIdentityKind === "operation" &&
+    optionalString(request.childIntentIdentityValue)
+      ? { childIntentOperationKey: optionalString(request.childIntentIdentityValue) }
+      : {}),
     requestDigest: params.requestDigest,
     preparationDigest: params.preparationDigest ?? params.requestDigest,
     resolvedDigest: params.resolvedDigest,
