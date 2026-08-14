@@ -35,7 +35,12 @@ export function ensureGovernorAgentLoopExecuting(
   if (task.state === "READY") {
     task = controller.startExecution(taskId, now + 4);
   }
-  if (task.state !== "EXECUTING" && task.state !== "COMPLETED") {
+  if (
+    task.state !== "EXECUTING" &&
+    task.state !== "VERIFYING" &&
+    task.state !== "FINISH_CANDIDATE" &&
+    task.state !== "COMPLETED"
+  ) {
     throw new Error("GOVERNOR_AGENT_LOOP_TASK_STATE_INVALID");
   }
   return task;

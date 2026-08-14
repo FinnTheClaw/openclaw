@@ -162,6 +162,20 @@ export function recoverGovernorAgentLoopTransientFailure(params: {
   now: number;
 }): GovernorAgentLoopTransientFailureResult | undefined {
   const task = params.controller.store.loadTask(params.taskId);
+  if (task?.state === "PLANNING" && task.plan) {
+    const plan = task.plan;
+    const resumed = params.controller.preparePlan({
+      taskId: params.taskId,
+      plan,
+      now: params.now,
+    });
+    return {
+      kind: "replanned",
+      checkpointId: `gcheckpoint_resume_${governorDigest({ taskId: params.taskId, planVersion: resumed.planVersion }).slice(0, 32)}`,
+      fromPlanVersion: Math.max(0, resumed.planVersion - 1),
+      planVersion: resumed.planVersion,
+    };
+  }
   if (
     !task ||
     (task.state !== "EXECUTING" && task.state !== "REPLAN_REQUIRED" && task.state !== "READY")

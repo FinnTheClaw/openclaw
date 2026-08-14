@@ -57,6 +57,7 @@ export type GovernorEvidenceRecord = Omit<
   admissionKeyId: string;
   admissionVersion: number;
   admissionSignature: string;
+  sourceEvidenceId?: string;
 };
 
 export function isOpaqueEvidenceSourceRef(value: string): value is OpaqueEvidenceSourceRef {
@@ -117,6 +118,7 @@ export function governorEvidenceAdmissionPayload(
     invalidatedAt: evidence.invalidatedAt ?? null,
     admissionKeyId: evidence.admissionKeyId,
     admissionVersion: evidence.admissionVersion,
+    ...(evidence.sourceEvidenceId ? { sourceEvidenceId: evidence.sourceEvidenceId } : {}),
   };
 }
 

@@ -3,6 +3,10 @@ import type { GovernorController } from "../tasks/governor/controller.js";
 import type { GovernorTaskId } from "../tasks/governor/types.js";
 import type { GovernorAgentLoopConfiguration } from "./governor-agent-loop-config.js";
 import {
+  clearGovernorFinalResponsePending,
+  setGovernorFinalResponsePending,
+} from "./governor-agent-loop-final-response.js";
+import {
   buildGovernorAgentLoopProgress,
   formatGovernorAgentLoopProgress,
   type GovernorAgentLoopProgressSnapshot,
@@ -170,16 +174,10 @@ export function recordGovernorAgentLoopTurn(params: {
       }).accepted;
       if (ready) {
         state.finalResponsePending = true;
-        params.controller.recordRuntimeEvent({
+        setGovernorFinalResponsePending({
+          controller: params.controller,
           taskId: params.taskId,
-          eventType: "runtime_finish_proposed",
-          payload: {
-            finalResponsePending: true,
-            phase: "final_response",
-            planVersion: state.progress.planVersion,
-            progressDigest: state.progress.fingerprint,
-            turn: state.turns,
-          },
+          progressDigest: state.progress.fingerprint,
           now: turn.now + 2,
         });
         return {
@@ -210,7 +208,7 @@ export function recordGovernorAgentLoopTurn(params: {
       acceptedByEvidence: decision.accepted,
       responseDigestMatches,
       turn: state.turns,
-      ...(finalResponseTurn ? { finalResponsePending: false, phase: "final_response" } : {}),
+      ...(finalResponseTurn ? { phase: "final_response" } : {}),
     },
     now: turn.now + 2,
   });
@@ -227,6 +225,11 @@ export function recordGovernorAgentLoopTurn(params: {
     }
   }
   if (finalResponseTurn) {
+    clearGovernorFinalResponsePending({
+      controller: params.controller,
+      taskId: params.taskId,
+      now: turn.now + 5,
+    });
     state.finalResponsePending = false;
   }
   if (state.turns >= params.safetyBudget) {

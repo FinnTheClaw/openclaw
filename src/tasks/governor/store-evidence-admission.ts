@@ -176,6 +176,7 @@ export class GovernorEvidenceAdmissionStore {
     const unsigned: Omit<GovernorEvidenceRecord, "admissionSignature"> = {
       ...source,
       evidenceId,
+      sourceEvidenceId: params.source.evidenceId,
       taskVersion: params.source.taskVersion,
       objectiveRevision: params.task.objectiveRevision,
       planVersion: params.task.planVersion,

@@ -22,7 +22,7 @@ import {
   parseEventRow,
 } from "./store-codec.js";
 import { GovernorEvidenceAdmissionStore } from "./store-evidence-admission.js";
-import { loadGovernorEvidence, loadGovernorTask } from "./store-queries.js";
+import { loadGovernorTask } from "./store-queries.js";
 import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import type { GovernorTaskId } from "./types.js";
 
@@ -42,9 +42,14 @@ export function invalidateGovernorEvidence(params: {
     if (!task) {
       throw new Error("GOVERNOR_TASK_NOT_FOUND");
     }
-    const evidence = loadGovernorEvidence(db, params.taskId, params.evidenceId, (record) =>
-      params.admissions.verify(record),
-    );
+    const allEvidence = executeSqliteQuerySync(
+      db,
+      governorDb(db)
+        .selectFrom("governor_evidence")
+        .selectAll()
+        .where("task_id", "=", params.taskId),
+    ).rows.map((row) => parseEvidenceRow(row, (record) => params.admissions.verify(record)));
+    const evidence = allEvidence.find((record) => record.evidenceId === params.evidenceId);
     if (!evidence) {
       throw new Error("GOVERNOR_EVIDENCE_NOT_FOUND");
     }
@@ -87,7 +92,7 @@ export function invalidateGovernorEvidence(params: {
       receipt.observedAt < evidence.observedAt ||
       evidence.taskVersion > task.taskVersion ||
       evidence.objectiveRevision !== task.objectiveRevision ||
-      evidence.planVersion !== task.planVersion
+      receipt.planVersion !== task.planVersion
     ) {
       throw new Error("GOVERNOR_EVIDENCE_INVALIDATION_BINDING_INVALID");
     }
@@ -115,11 +120,34 @@ export function invalidateGovernorEvidence(params: {
       }
       throw new Error("GOVERNOR_EVIDENCE_INVALIDATION_CONFLICT");
     }
+    const hasCurrentDescendant = allEvidence.some((candidate) => {
+      const visited = new Set<string>();
+      let current = candidate;
+      while (current.sourceEvidenceId) {
+        if (visited.has(current.evidenceId)) {
+          throw new Error("GOVERNOR_EVIDENCE_LINEAGE_CYCLE");
+        }
+        visited.add(current.evidenceId);
+        if (current.sourceEvidenceId === evidence.evidenceId) {
+          return (
+            candidate.invalidatedAt === undefined &&
+            candidate.objectiveRevision === task.objectiveRevision &&
+            candidate.planVersion === task.planVersion
+          );
+        }
+        const parent = allEvidence.find((item) => item.evidenceId === current.sourceEvidenceId);
+        if (!parent) {
+          throw new Error("GOVERNOR_EVIDENCE_LINEAGE_SOURCE_MISMATCH");
+        }
+        current = parent;
+      }
+      return false;
+    });
     if (
       evidence.scopeKey !== task.scopeKey ||
       evidence.objectiveRevision !== task.objectiveRevision ||
-      evidence.planVersion !== task.planVersion ||
-      evidence.taskVersion > task.taskVersion
+      evidence.taskVersion > task.taskVersion ||
+      (evidence.planVersion !== task.planVersion && !hasCurrentDescendant)
     ) {
       throw new Error("GOVERNOR_EVIDENCE_NOT_CURRENT");
     }
@@ -174,107 +202,66 @@ export function invalidateGovernorEvidence(params: {
         );
       }
     }
-    const invalidated = params.admissions.invalidate(evidence, invalidationAt);
-    const update = executeSqliteQuerySync(
-      db,
-      governorDb(db)
-        .updateTable("governor_evidence")
-        .set(bindEvidence(invalidated, (record) => params.admissions.verify(record)))
-        .where("task_id", "=", params.taskId)
-        .where("evidence_id", "=", params.evidenceId)
-        .where("admission_signature", "=", evidence.admissionSignature)
-        .where("invalidated_at", "is", null),
-    );
-    if (update.numAffectedRows !== 1n) {
-      throw new Error("GOVERNOR_EVIDENCE_INVALIDATION_CONFLICT");
-    }
-    const event = createGovernorEventRecord({
-      task,
-      eventType: "evidence_invalidated",
-      payload: {
-        evidenceId: evidence.evidenceId,
-        evidenceDigest: evidence.evidenceDigest,
-        reasonCode: receipt.reasonCode,
-        receiptId: receipt.id,
-        provenanceDigest: receipt.provenanceDigest,
-      },
-      now: invalidationAt,
-    });
-    executeSqliteQuerySync(
-      db,
-      governorDb(db).insertInto("governor_events").values(bindEvent(event)),
-    );
-    const activeEvidence = new Map(
-      executeSqliteQuerySync(
+    const invalidatedIds = new Set<string>();
+    const invalidateRecord = (record: GovernorEvidenceRecord, derivedFromEvidenceId?: string) => {
+      const invalidatedRecord = params.admissions.invalidate(record, invalidationAt);
+      const update = executeSqliteQuerySync(
         db,
         governorDb(db)
-          .selectFrom("governor_evidence")
-          .selectAll()
+          .updateTable("governor_evidence")
+          .set(bindEvidence(invalidatedRecord, (candidate) => params.admissions.verify(candidate)))
           .where("task_id", "=", params.taskId)
+          .where("evidence_id", "=", record.evidenceId)
+          .where("admission_signature", "=", record.admissionSignature)
           .where("invalidated_at", "is", null),
-      ).rows.map((row) => {
-        const record = parseEvidenceRow(row, (candidate) => params.admissions.verify(candidate));
-        return [record.evidenceId, record] as const;
-      }),
-    );
-    const pendingCriteria = [
-      { criterionId: evidence.criterionId, evidenceId: evidence.evidenceId },
-    ];
-    while (pendingCriteria.length > 0) {
-      const pendingCriterion = pendingCriteria.shift();
-      if (!pendingCriterion) {
-        continue;
+      );
+      if (update.numAffectedRows !== 1n) {
+        throw new Error("GOVERNOR_EVIDENCE_INVALIDATION_CONFLICT");
       }
-      for (const dependent of activeEvidence.values()) {
+      const event = createGovernorEventRecord({
+        task,
+        eventType: "evidence_invalidated",
+        payload: {
+          evidenceId: record.evidenceId,
+          evidenceDigest: record.evidenceDigest,
+          reasonCode: receipt.reasonCode,
+          receiptId: receipt.id,
+          provenanceDigest: receipt.provenanceDigest,
+          ...(derivedFromEvidenceId ? { derivedFromEvidenceId } : {}),
+        },
+        now: invalidationAt,
+      });
+      executeSqliteQuerySync(
+        db,
+        governorDb(db).insertInto("governor_events").values(bindEvent(event)),
+      );
+      invalidatedIds.add(record.evidenceId);
+      return invalidatedRecord;
+    };
+    const invalidated = invalidateRecord(evidence);
+    const pending = [evidence.evidenceId];
+    while (pending.length > 0) {
+      const ancestorId = pending.shift()!;
+      for (const dependent of allEvidence) {
+        if (dependent.invalidatedAt !== undefined || invalidatedIds.has(dependent.evidenceId)) {
+          continue;
+        }
         const payload = dependent.payload;
-        const dependencies =
+        const ancestorCriterionId = allEvidence.find(
+          (item) => item.evidenceId === ancestorId,
+        )?.criterionId;
+        const dependsOnCriterion =
           typeof payload === "object" &&
           payload !== null &&
           !Array.isArray(payload) &&
-          Array.isArray(payload.dependsOnCriteria)
-            ? payload.dependsOnCriteria.filter(
-                (value): value is string => typeof value === "string",
-              )
-            : [];
-        if (!dependencies.includes(pendingCriterion.criterionId)) {
+          Array.isArray(payload.dependsOnCriteria) &&
+          typeof ancestorCriterionId === "string" &&
+          payload.dependsOnCriteria.some((value: unknown) => value === ancestorCriterionId);
+        if (dependent.sourceEvidenceId !== ancestorId && !dependsOnCriterion) {
           continue;
         }
-        activeEvidence.delete(dependent.evidenceId);
-        const dependentInvalidated = params.admissions.invalidate(dependent, invalidationAt);
-        const dependentUpdate = executeSqliteQuerySync(
-          db,
-          governorDb(db)
-            .updateTable("governor_evidence")
-            .set(bindEvidence(dependentInvalidated, (record) => params.admissions.verify(record)))
-            .where("task_id", "=", params.taskId)
-            .where("evidence_id", "=", dependent.evidenceId)
-            .where("admission_signature", "=", dependent.admissionSignature)
-            .where("invalidated_at", "is", null),
-        );
-        if (dependentUpdate.numAffectedRows !== 1n) {
-          throw new Error("GOVERNOR_EVIDENCE_INVALIDATION_CONFLICT");
-        }
-        const dependentEvent = createGovernorEventRecord({
-          task,
-          eventType: "evidence_invalidated",
-          payload: {
-            evidenceId: dependent.evidenceId,
-            evidenceDigest: dependent.evidenceDigest,
-            reasonCode: receipt.reasonCode,
-            receiptId: receipt.id,
-            provenanceDigest: receipt.provenanceDigest,
-            derivedFromEvidenceId: invalidated.evidenceId,
-          },
-          now: invalidationAt,
-        });
-        executeSqliteQuerySync(
-          db,
-          governorDb(db).insertInto("governor_events").values(bindEvent(dependentEvent)),
-        );
-        pendingCriteria.push({
-          criterionId: dependent.criterionId,
-          evidenceId: dependent.evidenceId,
-        });
+        invalidateRecord(dependent, ancestorId);
+        pending.push(dependent.evidenceId);
       }
     }
     return invalidated;

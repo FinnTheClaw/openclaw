@@ -3,9 +3,11 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
-import type { HostGovernorDeliveryHandle } from "../../security/governor-host-readonly.js";
-import type { HostDeliveryReceipt } from "../../security/governor-host-readonly.js";
-import type { HostGovernorEvidenceInvalidationReceiptId } from "../../security/governor-host-readonly.js";
+import type {
+  HostDeliveryReceipt,
+  HostGovernorDeliveryHandle,
+  HostGovernorEvidenceInvalidationReceiptId,
+} from "../../security/governor-host-readonly.js";
 import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
 import { bindGovernorActionIntent } from "./action-intent-codec.js";
 import { GovernorActionIntentStore } from "./action-intent-store.js";
@@ -45,6 +47,7 @@ import {
   type GovernorPendingEvidence,
 } from "./store-evidence-admission.js";
 import { invalidateGovernorEvidence } from "./store-evidence-invalidation.js";
+import { assertGovernorEvidenceLineage } from "./store-evidence-lineage.js";
 import { ingestGovernorTask, type GovernorIngressResult } from "./store-ingress.js";
 import { GovernorStoreLifecycle } from "./store-lifecycle.js";
 import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
@@ -181,6 +184,11 @@ export class GovernorSqliteStore {
     task: GovernorTaskProjection;
     now: number;
   }): GovernorPendingEvidence {
+    assertGovernorEvidenceLineage({
+      source: params.source,
+      task: params.task,
+      records: this.#queries.listAllEvidence(params.task.taskId),
+    });
     return this.#evidenceAdmissions.carryForward(params);
   }
 
@@ -484,6 +492,10 @@ export class GovernorSqliteStore {
 
   listEvidence(taskId: GovernorTaskId): GovernorEvidenceRecord[] {
     return this.#queries.listEvidence(taskId);
+  }
+
+  listAllEvidence(taskId: GovernorTaskId): GovernorEvidenceRecord[] {
+    return this.#queries.listAllEvidence(taskId);
   }
 
   listUnfinishedFanoutJobIds(task: GovernorTaskProjection): string[] {

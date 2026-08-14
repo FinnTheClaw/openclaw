@@ -15,7 +15,6 @@ import {
 // Orchestrates the feature-flagged governed task loop over durable state.
 import type { GovernorJsonValue } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
-import { assertValidGovernorPlan } from "./contracts.js";
 import {
   recordGovernorContradiction,
   resolveGovernorContradiction,
@@ -54,14 +53,13 @@ import {
   resolveGovernorMutation,
   type GovernorMutationResolution,
 } from "./mutation-reconciliation.js";
-import { prepareGovernorPlanReplacement } from "./plan-replacement.js";
+import { prepareGovernorPlan } from "./plan-preparation.js";
 import {
   createGovernorCheckpoint,
   type GovernorCheckpoint,
   type GovernorWorkProfile,
   type GovernorVerifiedCheckpointFact,
 } from "./planning-policy.js";
-import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { applyGovernorTransition, reclaimGovernorLease } from "./state-machine.js";
 import {
   GovernorSqliteStore,
@@ -176,51 +174,13 @@ export class GovernorController {
     plan: GovernorPlan;
     now: number;
   }): GovernorTaskProjection {
-    let task = this.#task(params.taskId);
-    const plan = assertGovernorBoundarySafe(
-      "session",
-      params.plan as unknown as GovernorJsonValue,
-    ) as unknown as GovernorPlan;
-    assertValidGovernorPlan(plan, task.contract);
-    if (task.state === "RECEIVED") {
-      task = this.#transition(task, "CONTRACTING", params.now);
-    }
-    if (task.state === "CONTRACTING" || task.state === "REPLAN_REQUIRED") {
-      task = this.#transition(task, "PLANNING", params.now + 1);
-    }
-    if (task.state !== "PLANNING") {
-      throw new Error("GOVERNOR_PLAN_STATE_INVALID");
-    }
-    const replacement = prepareGovernorPlanReplacement({
-      store: this.store,
-      task,
-      plan,
+    return prepareGovernorPlan({
+      task: this.#task(params.taskId),
+      plan: params.plan,
       now: params.now,
+      store: this.store,
+      transition: (task, to, now) => this.#transition(task, to, now),
     });
-    const event = createGovernorEventRecord({
-      task: replacement.task,
-      eventType: "plan_replaced",
-      payload: {
-        kind: plan.kind,
-        stepCount: plan.steps.length,
-        carriedForwardEvidenceCount: replacement.evidenceAdmissions.length,
-        carriedForwardEvidenceIds: replacement.evidenceAdmissions.map(
-          (item) => item.evidence.evidenceId,
-        ),
-      },
-      now: params.now + 2,
-    });
-    task = assertApplied(
-      this.store.commit({
-        current: task,
-        next: replacement.task,
-        event,
-        ...(replacement.evidenceAdmissions.length
-          ? { evidenceAdmissions: replacement.evidenceAdmissions }
-          : {}),
-      }),
-    );
-    return this.#transition(task, "READY", params.now + 3);
   }
   startExecution(taskId: GovernorTaskId, now: number): GovernorTaskProjection {
     return this.#transition(this.#task(taskId), "EXECUTING", now);

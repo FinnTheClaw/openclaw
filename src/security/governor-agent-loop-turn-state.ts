@@ -19,6 +19,19 @@ function reconstructFinalResponsePending(
   if (!task || task.state === "COMPLETED" || task.state === "BLOCKED") {
     return false;
   }
+  const recoverableState =
+    task.state === "EXECUTING" || task.state === "VERIFYING" || task.state === "FINISH_CANDIDATE";
+  if (task.finalResponsePhase) {
+    return (
+      recoverableState &&
+      task.finalResponsePhase.objectiveRevision === task.objectiveRevision &&
+      task.finalResponsePhase.planVersion === task.planVersion &&
+      task.finalResponsePhase.progressDigest === progressFingerprint
+    );
+  }
+  if (!recoverableState) {
+    return false;
+  }
   let pending:
     | {
         taskVersion: number;
@@ -57,7 +70,10 @@ function reconstructFinalResponsePending(
   ) {
     return false;
   }
-  return pending.taskVersion === task.taskVersion;
+  return (
+    pending.taskVersion <= task.taskVersion &&
+    (task.state === "EXECUTING" || task.taskVersion - pending.taskVersion <= 2)
+  );
 }
 
 export function createGovernorAgentLoopTurnState(params: {

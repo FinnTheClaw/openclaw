@@ -45,6 +45,8 @@ export function prepareGovernorPlanReplacement(params: {
   return {
     task: {
       ...replacementBase,
+      state: "READY",
+      finalResponsePhase: undefined,
       claims: params.task.claims.map((claim) => {
         if (claim.planVersion !== params.task.planVersion) {
           return claim;

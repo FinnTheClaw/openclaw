@@ -1,5 +1,8 @@
 import type { GovernorAgentLoopToolBinding } from "./governor-agent-loop-config.js";
-import { governorAgentLoopTopLevelString } from "./governor-agent-loop-values.js";
+import {
+  governorAgentLoopTopLevelString,
+  safeGovernorAgentLoopValue,
+} from "./governor-agent-loop-values.js";
 
 export function validateGovernorCriterionArguments(params: {
   binding: GovernorAgentLoopToolBinding;
@@ -10,7 +13,10 @@ export function validateGovernorCriterionArguments(params: {
     return undefined;
   }
   const allowed = Object.keys(binding.criteriaByValue);
-  const value = governorAgentLoopTopLevelString(args, binding.criterionArgument);
+  const value = governorAgentLoopTopLevelString(
+    safeGovernorAgentLoopValue(args),
+    binding.criterionArgument,
+  );
   if (!value) {
     return `GOVERNOR_TOOL_ARGUMENT_REQUIRED:${binding.criterionArgument};ALLOWED:${allowed.join(",")}`;
   }
