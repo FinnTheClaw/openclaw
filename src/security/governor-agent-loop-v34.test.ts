@@ -298,7 +298,7 @@ describe("V34 governed continuation", () => {
                   receiptId: receipt,
                 });
               }
-              if (turn <= 2) {
+              if (turn === 1 || turn === 3) {
                 return assistant([
                   {
                     type: "toolCall",
@@ -315,8 +315,8 @@ describe("V34 governed continuation", () => {
           const bridge = installGovernorLoopBridge({ agent, scope, now: () => ++timestamp });
           await agent.prompt("revalidate the fixture");
           bridge.assertTerminal();
-          expect(turn).toBe(3);
-          const evidence = runtime.adapter.controller.store.listEvidence(scope.taskId as never);
+          expect(turn).toBe(4);
+          const evidence = runtime.adapter.controller.store.listAllEvidence(scope.taskId as never);
           expect(evidence).toHaveLength(2);
           expect(
             runtime.adapter.controller.store

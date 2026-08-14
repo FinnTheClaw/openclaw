@@ -13,7 +13,6 @@ function recordPayload(payload: unknown): Record<string, unknown> | undefined {
 function reconstructFinalResponsePending(
   controller: GovernorController,
   taskId: GovernorTaskId,
-  progressFingerprint: string,
 ): boolean {
   const task = controller.store.loadTask(taskId);
   if (!task || task.state === "COMPLETED" || task.state === "BLOCKED") {
@@ -25,8 +24,7 @@ function reconstructFinalResponsePending(
     return (
       recoverableState &&
       task.finalResponsePhase.objectiveRevision === task.objectiveRevision &&
-      task.finalResponsePhase.planVersion === task.planVersion &&
-      task.finalResponsePhase.progressDigest === progressFingerprint
+      task.finalResponsePhase.planVersion === task.planVersion
     );
   }
   if (!recoverableState) {
@@ -64,10 +62,7 @@ function reconstructFinalResponsePending(
   if (!pending || pending.objectiveRevision !== task.objectiveRevision) {
     return false;
   }
-  if (
-    (pending.planVersion !== undefined && pending.planVersion !== task.planVersion) ||
-    pending.progressDigest !== progressFingerprint
-  ) {
+  if (pending.planVersion !== undefined && pending.planVersion !== task.planVersion) {
     return false;
   }
   return (
@@ -91,11 +86,7 @@ export function createGovernorAgentLoopTurnState(params: {
     replannedAfterStagnation: false,
     skipNextStagnationCheck: false,
     toolErrorObserved: false,
-    finalResponsePending: reconstructFinalResponsePending(
-      params.controller,
-      params.taskId,
-      progress.fingerprint,
-    ),
+    finalResponsePending: reconstructFinalResponsePending(params.controller, params.taskId),
     terminal: params.terminal,
   };
 }

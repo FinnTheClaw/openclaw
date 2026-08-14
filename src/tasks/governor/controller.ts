@@ -41,7 +41,10 @@ import {
   type GovernorFinishDecision,
   type GovernorRecoveryDirective,
 } from "./finish-gate.js";
-import { rejectPendingGovernorFinish } from "./finish-pending-rejection.js";
+import {
+  clearGovernorPendingFinishPhase,
+  rejectPendingGovernorFinish,
+} from "./finish-pending-rejection.js";
 import { admitGovernorMaterialClaims } from "./material-claim-admission.js";
 import {
   assertGovernorResponseDraft,
@@ -432,8 +435,9 @@ export class GovernorController {
       if (!transition.applied) {
         throw new Error("GOVERNOR_RECOVERY_TRANSITION_REJECTED");
       }
+      const next = clearGovernorPendingFinishPhase(transition.task);
       const event = createGovernorEventRecord({
-        task: transition.task,
+        task: next,
         eventType: "finish_rejected",
         payload: {
           unmetCriteria: [...decision.recovery.unmetCriteria],
@@ -445,9 +449,7 @@ export class GovernorController {
         },
         now: params.now + 1,
       });
-      const recovered = assertApplied(
-        this.store.commit({ current: task, next: transition.task, event }),
-      );
+      const recovered = assertApplied(this.store.commit({ current: task, next, event }));
       return { completed: false, task: recovered, recovery: decision.recovery };
     }
     const response = renderGovernorResponse({ task, draft: responseDraft });

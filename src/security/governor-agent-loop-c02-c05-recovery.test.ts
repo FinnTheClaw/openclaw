@@ -348,6 +348,39 @@ describe("C02/C05 restart recovery boundaries", () => {
     );
   });
 
+  it("durably replans when an ordinary final response fails validation", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-c02-normal-response-" },
+      async (state) => {
+        const runtime = start(state.stateDir, [{ criterionId: "alpha" }]);
+        const scope = resolveGovernorAgentLoopRunScope(inputs("normal-response"))!;
+        runTool(scope, 101);
+        expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 103 })).toMatchObject({
+          kind: "continue",
+          phase: "final_response",
+        });
+        const task = runtime.adapter.controller.store.loadTask(scope.taskId as never)!;
+        expect(task.state).toBe("EXECUTING");
+        expect(task.finalResponsePhase).toBeDefined();
+        expect(
+          scope.afterTurn({ assistantText: "wrong", toolCallCount: 0, now: 105 }),
+        ).toMatchObject({
+          kind: "continue",
+          phase: "actions",
+        });
+        expect(runtime.adapter.controller.store.loadTask(task.taskId)?.state).toBe(
+          "REPLAN_REQUIRED",
+        );
+        expect(
+          runtime.adapter.controller.store.loadTask(task.taskId)?.finalResponsePhase,
+        ).toBeUndefined();
+        expect(scope.turnPhase()).toBe("actions");
+        scope.dispose();
+        runtime.close();
+      },
+    );
+  });
+
   it("rejects carry-forward whose source was invalidated before the write transaction", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-c05-invalidation-race-" },

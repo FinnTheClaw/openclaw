@@ -18,6 +18,7 @@ import { closeGovernorAgentLoopHost } from "./governor-agent-loop-host-close.js"
 import { createGovernorAgentLoopHostReplayResolver } from "./governor-agent-loop-host-replay.js";
 import { installGovernorAgentLoopInertRegistry } from "./governor-agent-loop-inert-registry.js";
 import { createGovernorAgentLoopIngress } from "./governor-agent-loop-ingress.js";
+import { resolveGovernorAgentLoopTurnPhase } from "./governor-agent-loop-phase.js";
 import {
   buildGovernorAgentLoopProgress,
   formatGovernorAlreadySatisfiedReason,
@@ -377,12 +378,12 @@ function createScope(
       });
     },
     turnPhase() {
-      const progress = buildGovernorAgentLoopProgress(host.controller, taskId, host.config);
-      turnState.progress = progress;
-      if (turnState.finalResponsePending && progress.remainingCriteria.length > 0) {
-        turnState.finalResponsePending = false;
-      }
-      return turnState.finalResponsePending ? "final_response" : "actions";
+      return resolveGovernorAgentLoopTurnPhase({
+        controller: host.controller,
+        taskId,
+        config: host.config,
+        state: turnState,
+      });
     },
     interrupt(interruption) {
       for (const opaque of pendingTickets) {

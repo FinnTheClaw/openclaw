@@ -3,6 +3,16 @@ import { applyGovernorTransition } from "./state-machine.js";
 import type { GovernorSqliteStore } from "./store.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
+export function clearGovernorPendingFinishPhase(
+  task: GovernorTaskProjection,
+): GovernorTaskProjection {
+  if (!task.finalResponsePhase) {
+    return task;
+  }
+  const { finalResponsePhase: _phase, ...withoutPhase } = task;
+  return withoutPhase;
+}
+
 export function rejectPendingGovernorFinish(params: {
   store: GovernorSqliteStore;
   task: GovernorTaskProjection;
@@ -10,9 +20,14 @@ export function rejectPendingGovernorFinish(params: {
   now: number;
   pendingUserUpdate: string;
 }): GovernorTaskProjection {
+  if (params.task.state === "REPLAN_REQUIRED" && !params.task.finalResponsePhase) {
+    return params.task;
+  }
   if (
     params.task.taskId !== params.taskId ||
-    (params.task.state !== "VERIFYING" && params.task.state !== "FINISH_CANDIDATE")
+    (params.task.state !== "VERIFYING" &&
+      params.task.state !== "FINISH_CANDIDATE" &&
+      !(params.task.state === "EXECUTING" && params.task.finalResponsePhase))
   ) {
     throw new Error("GOVERNOR_PENDING_FINISH_STATE_INVALID");
   }
@@ -26,8 +41,9 @@ export function rejectPendingGovernorFinish(params: {
   if (!transition.applied) {
     throw new Error("GOVERNOR_PENDING_FINISH_REJECTED");
   }
+  const next = clearGovernorPendingFinishPhase(transition.task);
   const event = createGovernorEventRecord({
-    task: transition.task,
+    task: next,
     eventType: "finish_rejected",
     payload: {
       unmetCriteria: [],
@@ -39,7 +55,7 @@ export function rejectPendingGovernorFinish(params: {
     },
     now: params.now,
   });
-  const result = params.store.commit({ current: params.task, next: transition.task, event });
+  const result = params.store.commit({ current: params.task, next, event });
   if (!result.applied) {
     throw new Error("GOVERNOR_PENDING_FINISH_COMMIT_REJECTED");
   }

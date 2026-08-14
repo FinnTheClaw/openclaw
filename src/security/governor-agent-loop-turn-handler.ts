@@ -215,22 +215,24 @@ export function recordGovernorAgentLoopTurn(params: {
   const currentTask = params.controller.store.loadTask(params.taskId);
   const pendingFinish =
     currentTask?.state === "VERIFYING" || currentTask?.state === "FINISH_CANDIDATE";
-  if (pendingFinish) {
+  const rejectedFinalResponse = finalResponseTurn && (!decision.accepted || !responseDigestMatches);
+  if (pendingFinish || rejectedFinalResponse) {
     const finishRequest = {
       taskId: params.taskId,
       response: { framing: "none" as const, materialClaimIds: [] },
       now: turn.now + 4,
     };
-    const finished = responseDigestMatches
-      ? params.controller.resumePendingFinish(finishRequest)
-      : {
-          completed: false,
-          task: params.controller.rejectPendingFinish({
-            taskId: params.taskId,
-            now: turn.now + 4,
-            pendingUserUpdate: "Final response did not match the host-bound response contract.",
-          }),
-        };
+    const finished =
+      pendingFinish && responseDigestMatches
+        ? params.controller.resumePendingFinish(finishRequest)
+        : {
+            completed: false,
+            task: params.controller.rejectPendingFinish({
+              taskId: params.taskId,
+              now: turn.now + 4,
+              pendingUserUpdate: "Final response did not match the host-bound response contract.",
+            }),
+          };
     state.terminal = finished.completed;
     if (state.terminal) {
       return { kind: "complete" };
