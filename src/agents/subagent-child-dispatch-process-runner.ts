@@ -69,7 +69,7 @@ async function writeConfig(
             },
           },
         },
-        list: [{ id: "main", default: true }],
+        list: [{ id: "main", default: true }, { id: "other" }],
       },
     })}\n`,
     "utf8",
@@ -206,6 +206,226 @@ async function runScenario(params: {
   }
 }
 
+async function runGovernedEmbeddedSpawn(
+  harness: Awaited<ReturnType<typeof createChildDispatchHarness>>,
+  controller: ChildDispatchProcessHandle,
+  operationKey: string,
+  barriers: Record<string, unknown>[],
+  extra: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  controller.send({
+    op: "spawn",
+    governed: true,
+    model: "loopback-embedded/fake-model",
+    operationKey,
+    ...extra,
+  });
+  for (const point of [
+    "intent.reserved",
+    "receipt.preaccepted",
+    "receipt.runnable",
+    "receipt.dispatch_claimed",
+    "before.provider_start_cas",
+    "receipt.started",
+    "provider.completed",
+  ]) {
+    await allowNext(harness, point, barriers);
+  }
+  await allowNext(harness, "gateway_accepted.persisted_before_register", barriers);
+  return JSON.parse((await controller.waitFor("RESULT ")).slice(7)) as Record<string, unknown>;
+}
+
+async function runRecoveredEmbeddedSpawn(
+  harness: Awaited<ReturnType<typeof createChildDispatchHarness>>,
+  controller: ChildDispatchProcessHandle,
+  operationKey: string,
+  barriers: Record<string, unknown>[],
+): Promise<Record<string, unknown>> {
+  controller.send({
+    op: "spawn",
+    governed: true,
+    model: "loopback-embedded/fake-model",
+    operationKey,
+  });
+  await allowNext(harness, "intent.reserved", barriers);
+  return JSON.parse((await controller.waitFor("RESULT ")).slice(7)) as Record<string, unknown>;
+}
+
+async function runCrashAfterAcceptanceScenario(): Promise<Evidence> {
+  const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), "child-dispatch-crash-config-"));
+  const configPath = path.join(configRoot, "openclaw.json");
+  const harness = await createChildDispatchHarness({ configPath });
+  const barriers: Record<string, unknown>[] = [];
+  let first: ChildDispatchProcessHandle | undefined;
+  try {
+    const model = harness.startModel();
+    const modelReady = await model.ready;
+    await writeConfig(
+      configPath,
+      harness.root,
+      Number(modelReady.port),
+      "loopback-embedded/fake-model",
+    );
+    const gateway = harness.startGateway({ signer: true });
+    const gatewayReady = await gateway.ready;
+    first = harness.startController({ gatewayPort: Number(gatewayReady.port) });
+    await first.ready;
+    first.send({
+      op: "spawn",
+      governed: true,
+      model: "loopback-embedded/fake-model",
+      operationKey: "crash-before-register",
+    });
+    for (const point of [
+      "intent.reserved",
+      "receipt.preaccepted",
+      "receipt.runnable",
+      "receipt.dispatch_claimed",
+      "before.provider_start_cas",
+      "receipt.started",
+      "provider.completed",
+    ]) {
+      await allowNext(harness, point, barriers);
+    }
+    const accepted = await harness.next("gateway_accepted.persisted_before_register", 45_000);
+    barriers.push(accepted);
+    await first.terminate();
+    const recovery = harness.startController({ gatewayPort: Number(gatewayReady.port) });
+    await recovery.ready;
+    const recovered = await runRecoveredEmbeddedSpawn(
+      harness,
+      recovery,
+      "crash-before-register",
+      barriers,
+    );
+    const physicalStarts = await readPhysicalStarts(harness.physicalCounter);
+    assert.equal(recovered.status, "accepted");
+    assert.equal(recovered.runId, accepted.gatewayRunId);
+    assert.equal(physicalStarts.length, 0);
+    return {
+      version: 1,
+      scenario: "controller-crash-after-gateway-acceptance",
+      status: "passed",
+      result: recovered,
+      barriers,
+      modelRequests: await countLines(harness.modelCounter),
+      physicalStarts,
+    };
+  } catch (error) {
+    return {
+      version: 1,
+      scenario: "controller-crash-after-gateway-acceptance",
+      status: "failed",
+      barriers,
+      modelRequests: await countLines(harness.modelCounter),
+      physicalStarts: await readPhysicalStarts(harness.physicalCounter),
+      error: String(error),
+    };
+  } finally {
+    await harness.close();
+    await fs.rm(configRoot, { recursive: true, force: true });
+  }
+}
+
+async function runNamedIdentityScenario(): Promise<Evidence> {
+  const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), "child-dispatch-identity-config-"));
+  const configPath = path.join(configRoot, "openclaw.json");
+  const harness = await createChildDispatchHarness({ configPath });
+  const barriers: Record<string, unknown>[] = [];
+  try {
+    const model = harness.startModel();
+    const modelReady = await model.ready;
+    await writeConfig(
+      configPath,
+      harness.root,
+      Number(modelReady.port),
+      "loopback-embedded/fake-model",
+    );
+    const gateway = harness.startGateway({ signer: true });
+    const gatewayReady = await gateway.ready;
+    const firstController = harness.startController({ gatewayPort: Number(gatewayReady.port) });
+    await firstController.ready;
+    const first = await runGovernedEmbeddedSpawn(
+      harness,
+      firstController,
+      "named-slot-a",
+      barriers,
+    );
+    const secondController = harness.startController({ gatewayPort: Number(gatewayReady.port) });
+    await secondController.ready;
+    const second = await runGovernedEmbeddedSpawn(
+      harness,
+      secondController,
+      "named-slot-b",
+      barriers,
+    );
+    assert.equal(first.status, "accepted");
+    assert.equal(second.status, "accepted");
+    assert.notEqual(first.childSessionKey, second.childSessionKey);
+    assert.notEqual(first.runId, second.runId);
+
+    const modelMismatch = harness.startController({ gatewayPort: Number(gatewayReady.port) });
+    await modelMismatch.ready;
+    modelMismatch.send({
+      op: "spawn",
+      governed: true,
+      model: "fake-cli/fake-model",
+      operationKey: "named-slot-a",
+    });
+    const mismatch = JSON.parse((await modelMismatch.waitFor("RESULT ")).slice(7)) as Record<
+      string,
+      unknown
+    >;
+    assert.match(String(mismatch.error), /conflict|binding|digest|operation/u);
+
+    const targetMismatch = harness.startController({ gatewayPort: Number(gatewayReady.port) });
+    await targetMismatch.ready;
+    targetMismatch.send({
+      op: "spawn",
+      governed: true,
+      model: "loopback-embedded/fake-model",
+      operationKey: "named-slot-a",
+      agentId: "other",
+    });
+    const targetError = JSON.parse((await targetMismatch.waitFor("RESULT ")).slice(7)) as Record<
+      string,
+      unknown
+    >;
+    assert.match(
+      String(targetError.error),
+      /conflict|binding|digest|operation|not allowed|target/u,
+    );
+    assert.equal((await readPhysicalStarts(harness.physicalCounter)).length, 0);
+    return {
+      version: 1,
+      scenario: "named-slots-and-binding-conflicts",
+      status: "passed",
+      result: {
+        firstRunId: first.runId,
+        secondRunId: second.runId,
+        modelMismatch: mismatch.error,
+        targetMismatch: targetError.error,
+      },
+      barriers,
+      modelRequests: await countLines(harness.modelCounter),
+      physicalStarts: await readPhysicalStarts(harness.physicalCounter),
+    };
+  } catch (error) {
+    return {
+      version: 1,
+      scenario: "named-slots-and-binding-conflicts",
+      status: "failed",
+      barriers,
+      modelRequests: await countLines(harness.modelCounter),
+      physicalStarts: await readPhysicalStarts(harness.physicalCounter),
+      error: String(error),
+    };
+  } finally {
+    await harness.close();
+    await fs.rm(configRoot, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   const evidencePath =
     process.env.CHILD_DISPATCH_EVIDENCE ?? path.resolve("child-dispatch-evidence.json");
@@ -255,12 +475,21 @@ async function main(): Promise<void> {
   const selectedScenarios = requestedScenario
     ? scenarios.filter((scenario) => scenario.scenario === requestedScenario)
     : scenarios;
-  if (selectedScenarios.length === 0) {
-    throw new Error(`unknown child-dispatch scenario: ${requestedScenario}`);
-  }
   const results: Evidence[] = [];
-  for (const scenario of selectedScenarios) {
-    results.push(await runScenario(scenario));
+  if (requestedScenario === "controller-crash-after-gateway-acceptance") {
+    results.push(await runCrashAfterAcceptanceScenario());
+  } else if (requestedScenario === "named-slots-and-binding-conflicts") {
+    results.push(await runNamedIdentityScenario());
+  } else if (selectedScenarios.length === 0) {
+    throw new Error(`unknown child-dispatch scenario: ${requestedScenario}`);
+  } else {
+    for (const scenario of selectedScenarios) {
+      results.push(await runScenario(scenario));
+    }
+    if (!requestedScenario) {
+      results.push(await runCrashAfterAcceptanceScenario());
+      results.push(await runNamedIdentityScenario());
+    }
   }
   const evidence = {
     version: 1 as const,

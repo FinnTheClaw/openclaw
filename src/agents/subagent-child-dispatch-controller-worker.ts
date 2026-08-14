@@ -85,6 +85,8 @@ control.on("line", (line) => {
     task?: unknown;
     operationKey?: unknown;
     model?: unknown;
+    agentId?: unknown;
+    sessionKey?: unknown;
     governed?: unknown;
     childLifecycleMode?: unknown;
   };
@@ -106,6 +108,7 @@ control.on("line", (line) => {
       const result = await spawnSubagentDirect(
         {
           task: typeof command.task === "string" ? command.task : "process child probe",
+          ...(typeof command.agentId === "string" ? { agentId: command.agentId } : {}),
           model: typeof command.model === "string" ? command.model : undefined,
           mode: "run",
           subagentRole: "leaf",
@@ -117,7 +120,10 @@ control.on("line", (line) => {
             : {}),
         },
         {
-          agentSessionKey: "agent:main:main",
+          agentSessionKey:
+            typeof command.sessionKey === "string"
+              ? command.sessionKey
+              : (process.env.CHILD_DISPATCH_AGENT_SESSION_KEY ?? "agent:main:main"),
           gatewayPortOverride: Number(process.env.CHILD_DISPATCH_GATEWAY_PORT),
         },
       );
