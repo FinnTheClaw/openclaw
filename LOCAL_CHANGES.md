@@ -3,7 +3,7 @@
 This branch is the authoritative OpenClaw source base for Finn and Jake. The
 current promoted freeze revision is source commit
 `2f4e192f1df3d9922e140f8fec87eab835a403ff`, packaged as
-`2026.7.1-29-candidate.2f4e192f`. The prior frozen commit
+`2026.7.1-30`. The prior frozen commit
 `6b1ccfd1b2dfa4a95d1a250acc0eb53c7c427cb3` remains available at rollback ref
 `freeze-rollback-20260814-6b1ccfd`.
 
@@ -76,6 +76,28 @@ evidence only. They are not actual-Qwen, Alistar, or production certification.
 The remaining work is C02, C05, C07, C10, C12, final independent review, and the
 100x live campaign. The next gate is read-only provisioner preflight against this
 manifest; no Alistar mutation is implied by this freeze commit.
+
+## 2026-08-14 freeze compatibility correction: numeric runtime 2f4
+
+The first wrapper commit `1402eb7426621f9bec78785b86fd13726f265c64` used the
+unique suffix `2026.7.1-29-candidate.2f4e192f`. Frozen package hashing and
+provisioner resolution passed, but the installed product rejected its paired
+memory plugin because the plugin API gate compares the runtime prerelease form
+against `>=2026.7.1`. No gateway started and no live smoke ran. The corrective
+wrapper keeps the exact same source/build and uses the established numeric
+runtime form `2026.7.1-30`.
+
+- Corrective source: `2f4e192f1df3d9922e140f8fec87eab835a403ff` (unchanged).
+- Corrective core artifact SHA-256:
+  `00d9fda5125510b8762eb5e1946983098baeb87696767a769954a459d7db60a4`.
+- Corrective memory artifact SHA-256:
+  `3afe89d640c022a134315445cfd68c50a0ffa36a6fce9ab89c3aca77ac469bd7`.
+- Corrective runtime tree SHA-256:
+  `5807b2fc96f8a37bae5035df43d651853a8578f39c36589f2d15f3e306a2a7fe`.
+- Superseded wrapper: `1402eb7426621f9bec78785b86fd13726f265c64`; its artifact remains
+  outside the canonical path for audit and is not a deployable freeze.
+- The fresh install was stopped at plugin compatibility; no gateway/provider
+  process or live-model request was created.
 
 ## Ownership
 

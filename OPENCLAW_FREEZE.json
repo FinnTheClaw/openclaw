@@ -1,7 +1,7 @@
 {
   "kind": "finn-openclaw-source-freeze",
   "schema_version": 2,
-  "runtime_version": "2026.7.1-29-candidate.2f4e192f",
+  "runtime_version": "2026.7.1-30",
   "source_version": "2026.7.1",
   "source_commit": "2f4e192f1df3d9922e140f8fec87eab835a403ff",
   "frozen_source_commit": "2f4e192f1df3d9922e140f8fec87eab835a403ff",
@@ -13,30 +13,34 @@
   "overlay_directory": "local-overlay",
   "overlay_source_commit": "086da00d643c2afaf767ce8be6aca3b4149d3b7f",
   "behavior_contract": "turn-lifecycle-v54+durable-memory-v2+communication-identity-memory-v32+atomic-leaf-v1+restart-reconcile-v1+scoped-forget-v1+owner-delegated-tools-v1+masked-pairing-v1+lint-clean-v1+governed-child-intent-v1+durable-receipt-fencing-v1+provider-start-fence-v1",
-  "canonical_artifact": "/Users/aiapi/openclaw-artifacts/frozen/2026.7.1-29-candidate.2f4e192f/openclaw-2026.7.1-29-candidate.2f4e192f.tgz",
-  "canonical_artifact_sha256": "f379d622eb2a08fffde1b5112d5095e88e919948804203792e415f218867ab90",
-  "canonical_runtime_tree_sha256": "deede5de077e03f1420ca91634eeac11935f322c49e948f7f5f640506154a3fa",
-  "canonical_memory_plugin_artifact": "/Users/aiapi/openclaw-artifacts/frozen/2026.7.1-29-candidate.2f4e192f/openclaw-memory-lancedb-2f4e192f1df3.tgz",
+  "canonical_artifact": "/Users/aiapi/openclaw-artifacts/frozen/2026.7.1-30-2f4e192f/openclaw-2026.7.1-30.tgz",
+  "canonical_artifact_sha256": "00d9fda5125510b8762eb5e1946983098baeb87696767a769954a459d7db60a4",
+  "canonical_runtime_tree_sha256": "5807b2fc96f8a37bae5035df43d651853a8578f39c36589f2d15f3e306a2a7fe",
+  "canonical_memory_plugin_artifact": "/Users/aiapi/openclaw-artifacts/frozen/2026.7.1-30-2f4e192f/openclaw-memory-lancedb-2f4e192f1df3.tgz",
   "canonical_memory_plugin_artifact_sha256": "3afe89d640c022a134315445cfd68c50a0ffa36a6fce9ab89c3aca77ac469bd7",
   "paired_runtime_artifacts_required": true,
   "automatic_runtime_updates": false,
   "selected_upstream_changes_only": true,
   "created_at": "2026-07-26T05:35:00Z",
-  "updated_at": "2026-08-14T19:25:05Z",
+  "updated_at": "2026-08-14T19:38:54Z",
   "canonical_runtime_sha256": "4628c9fb44ddb933ead1630129d2582af24c019c75fa695f5a4376d0fdbd77f3",
-  "candidate_id": "20260814-2f4e192f",
+  "candidate_id": "20260814-2f4e192f-r2",
   "source_build_info": {
     "builtAt": "2026-08-14T19:20:05.813Z",
     "commit": "2f4e192f1df3d9922e140f8fec87eab835a403ff",
     "version": "2026.7.1"
   },
-  "previous_frozen_manifest_sha256": "c538c435df1b2610831b076a7da31b9f51a399ce34f86084bb766b66ad72339c",
+  "previous_frozen_manifest_sha256": "c32454e2670e56f0ca825feedbcae95add30072cb46941a50b04ac70e074e3f8",
   "previous_frozen_source_commit": "6b1ccfd1b2dfa4a95d1a250acc0eb53c7c427cb3",
   "rollback_ref": "freeze-rollback-20260814-6b1ccfd",
   "promotion_status": "pre-Alistar; live certification pending",
   "evidence_classification": [
     "Moira build and paired artifact hashes verified",
+    "Numeric runtime compatibility correction verified after install preflight",
     "Grond fake-provider/process evidence is supplemental only",
     "Alistar actual-Qwen smoke has not run"
-  ]
+  ],
+  "supersedes_freeze_commit": "1402eb7426621f9bec78785b86fd13726f265c64",
+  "superseded_runtime_version": "2026.7.1-29-candidate.2f4e192f",
+  "superseded_artifact_sha256": "f379d622eb2a08fffde1b5112d5095e88e919948804203792e415f218867ab90"
 }
