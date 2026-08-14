@@ -1,9 +1,81 @@
 # Finn OpenClaw frozen base
 
-This branch is the authoritative OpenClaw source base for Finn and Jake. It is
-frozen at source commit `0790d9f593ad30c940ed93b5872a8cf6d6f3cf8c`,
-corresponding to the `2026.7.1` source used by the installed
-`openclaw@2026.7.1-2` runtime.
+This branch is the authoritative OpenClaw source base for Finn and Jake. The
+current promoted freeze revision is source commit
+`2f4e192f1df3d9922e140f8fec87eab835a403ff`, packaged as
+`2026.7.1-29-candidate.2f4e192f`. The prior frozen commit
+`6b1ccfd1b2dfa4a95d1a250acc0eb53c7c427cb3` remains available at rollback ref
+`freeze-rollback-20260814-6b1ccfd`.
+
+## 2026-08-14 hardening freeze promotion: 2f4
+
+This is a canonical source/artifact revision only. Alistar has not been rebooted,
+provisioned, or used for live-model certification at this point.
+
+- Previous frozen source: `6b1ccfd1b2dfa4a95d1a250acc0eb53c7c427cb3`.
+- Promoted source: `2f4e192f1df3d9922e140f8fec87eab835a403ff`, an ancestry-preserving
+  fast-forward on `feature/hardening-governor-v1-20260810`.
+- Rollback ref: `freeze-rollback-20260814-6b1ccfd`.
+- Core artifact: `openclaw-2026.7.1-29-candidate.2f4e192f.tgz`, SHA-256
+  `f379d622eb2a08fffde1b5112d5095e88e919948804203792e415f218867ab90`.
+- Matching memory artifact: `openclaw-memory-lancedb-2f4e192f1df3.tgz`, SHA-256
+  `3afe89d640c022a134315445cfd68c50a0ffa36a6fce9ab89c3aca77ac469bd7`.
+- Runtime JS SHA-256: `4628c9fb44ddb933ead1630129d2582af24c019c75fa695f5a4376d0fdbd77f3`.
+- Runtime tree SHA-256: `deede5de077e03f1420ca91634eeac11935f322c49e948f7f5f640506154a3fa`.
+- Previous manifest SHA-256: `c538c435df1b2610831b076a7da31b9f51a399ce34f86084bb766b66ad72339c`.
+
+The promoted source includes the reviewed governor ingress/tool-authority,
+lifecycle, child-intent, receipt, cancellation, restart-fence, provider-start,
+compaction, and process-boundary changes represented by the pushed chain ending
+at 2f4. Exact pushed milestones included in or ancestral to the promoted source
+are:
+
+- `49af3661776534db4c7ad7977862e303321d4773` (spawn failure containment).
+- `1a3fea6708755af359bcd2286d31b1f3f512e71e` (production process-boundary harness).
+- `2d7d956920b7b5c60aeee48a10767a73d296dd6e` (governed child dispatch CLI lifecycle).
+- `2e2f960073a5900d525c5a168de0fc375059fa4f` (child crash/identity matrix).
+- `8e20c429950541c8057a023fe99db62a7a558a58` (Gateway restart fence matrix).
+- `28553b7283d7bc6152b7753982d1f58e9545035f` (receipt-bound cancellation).
+- `21cc9e5e02746801053cdeda9dc2367946393aff` (cancelled replay fencing).
+- `7f95c97c28b0af2c6f0d11f30d71c93c6aa7e567` (failed child provider-start fence).
+- `2f4e192f1df3d9922e140f8fec87eab835a403ff` (restart fences and compaction).
+
+The full source commit and artifact hashes are authoritative in the freeze
+manifest; Grond fake-provider/process evidence remains supplemental only.
+
+Bugs found and resolved in this promotion work included the need to fetch the
+exact approved source object into the canonical clone before ancestry checking,
+noninteractive dependency setup rejecting an initial node_modules symlink in the
+isolated candidate, and a metadata-only manifest writer type error. The latter
+did not alter the built artifacts; the final metadata and both package hashes
+were rechecked before promotion.
+
+### C01-C13 status at this freeze boundary
+
+The following status distinguishes source/deterministic implementation evidence
+from countable live certification:
+
+| Criterion | Status |
+| --- | --- |
+| C01 | Source/deterministic coverage present; live countability pending Alistar/Qwen smoke and review. |
+| C02 | Remaining: terminal final-response-only phase and campaign evidence. |
+| C03 | Source/deterministic coverage present; live countability pending. |
+| C04 | Source/deterministic coverage present; live countability pending. |
+| C05 | Remaining: durable retry plan/checkpoint semantics and campaign evidence. |
+| C06 | Source/deterministic coverage present; live countability pending. |
+| C07 | Remaining: real memory-backend adapter/invalidation/retention integration; synthetic store evidence is not countable. |
+| C08 | Source/deterministic coverage present; live countability pending. |
+| C09 | Source/deterministic coverage present; live countability pending. |
+| C10 | Remaining: authorized live integration/campaign evidence. |
+| C11 | Source/deterministic coverage present; live countability pending. |
+| C12 | Remaining: signed host close/abort receipt and restart/recovery evidence. |
+| C13 | Source/deterministic coverage present; live countability pending. |
+
+Grond fake-provider and process-boundary results remain supplemental prerequisite
+evidence only. They are not actual-Qwen, Alistar, or production certification.
+The remaining work is C02, C05, C07, C10, C12, final independent review, and the
+100x live campaign. The next gate is read-only provisioner preflight against this
+manifest; no Alistar mutation is implied by this freeze commit.
 
 ## Ownership
 
