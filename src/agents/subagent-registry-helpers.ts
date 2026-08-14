@@ -321,6 +321,11 @@ export function reconcileOrphanedRestoredRuns(params: {
   const now = Date.now();
   let changed = false;
   for (const [runId, entry] of params.runs.entries()) {
+    if (entry.spawnAdmission !== undefined && entry.spawnAdmission !== "dispatched") {
+      // A reservation intentionally precedes child-session creation. It is
+      // recovered by the next host admission attempt, not orphan-pruned.
+      continue;
+    }
     if (entry.killReconciliation) {
       // Provider completion may still repair this provisional kill. The
       // sweeper owns its bounded reconciliation even when the session vanished.

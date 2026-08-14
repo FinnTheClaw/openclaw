@@ -9,6 +9,13 @@ import {
 } from "./subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
+export {
+  expireSubagentReservationsAtomically,
+  removeSubagentReservationAtomically,
+  reserveSubagentRunAtomically,
+  transitionSubagentRunAdmissionAtomically,
+} from "./subagent-child-intent-store.sqlite.js";
+
 const SUBAGENT_RUNS_READ_CACHE_TTL_MS = 500;
 
 let persistedSubagentRunsReadCache:

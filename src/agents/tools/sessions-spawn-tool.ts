@@ -68,6 +68,7 @@ const UNSUPPORTED_SESSIONS_SPAWN_TIMEOUT_PARAM_KEYS = [
   "timeoutSeconds",
 ] as const;
 const INTERNAL_COMPLETION_GROUP_PARAM = "__completionGroup";
+const INTERNAL_CHILD_INTENT_DISCRIMINATOR = "__childIntentDiscriminator";
 
 type AcpSpawnModule = typeof import("../acp-spawn.js");
 
@@ -211,6 +212,9 @@ function createSessionsSpawnToolSchema(params: {
     task: Type.String({ description: taskDescription }),
     taskName: Type.Optional(Type.String({ description: taskNameDescription })),
     label: Type.Optional(Type.String()),
+    idempotencyKey: Type.Optional(
+      Type.String({ maxLength: 256, description: "Stable logical child operation key." }),
+    ),
     agentId: Type.Optional(Type.String()),
     model: Type.Optional(Type.String({ description: modelDescription })),
     modelRoute: Type.Optional(Type.String({ description: modelRouteDescription })),
@@ -244,6 +248,9 @@ function createSessionsSpawnToolSchema(params: {
     ),
     taskName: Type.Optional(Type.String({ description: taskNameDescription })),
     label: Type.Optional(Type.String()),
+    idempotencyKey: Type.Optional(
+      Type.String({ maxLength: 256, description: "Stable logical child operation key." }),
+    ),
     runtime: optionalStringEnum(
       params.acpAvailable ? SESSIONS_SPAWN_RUNTIMES : (["subagent"] as const),
     ),
@@ -402,6 +409,7 @@ export function createSessionsSpawnTool(
         delete sharedParams.tasks;
         delete sharedParams.taskName;
         delete sharedParams.label;
+        delete sharedParams.idempotencyKey;
         const completionGroupId = crypto.randomUUID();
         const batchResults: Array<Record<string, unknown>> = await Promise.all(
           batchTasks.map(async (rawTask, index): Promise<Record<string, unknown>> => {
@@ -421,6 +429,10 @@ export function createSessionsSpawnTool(
                 expectedSize: batchTasks.length,
                 finalized: false,
               } satisfies SubagentCompletionGroupState,
+              [INTERNAL_CHILD_INTENT_DISCRIMINATOR]: `batch-${index}`,
+              ...(typeof params.idempotencyKey === "string"
+                ? { idempotencyKey: `${params.idempotencyKey}:${index}` }
+                : {}),
             };
             try {
               const result = await tool.execute(`${toolCallId}:${index + 1}`, taskParams);
@@ -691,6 +703,11 @@ export function createSessionsSpawnTool(
           lightContext,
           expectsCompletionMessage,
           completionGroup,
+          idempotencyKey: readStringParam(params, "idempotencyKey"),
+          childIntentDiscriminator:
+            typeof params[INTERNAL_CHILD_INTENT_DISCRIMINATOR] === "string"
+              ? params[INTERNAL_CHILD_INTENT_DISCRIMINATOR]
+              : undefined,
           attachments,
           attachMountPath:
             params.attachAs && typeof params.attachAs === "object"

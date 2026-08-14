@@ -36,6 +36,10 @@ import { isAbortedAgentStopReason } from "./run-termination.js";
 import type { ensureRuntimePluginsLoaded as ensureRuntimePluginsLoadedFn } from "./runtime-plugins.js";
 import type { SubagentRunOutcome } from "./subagent-announce-output.js";
 import {
+  createSubagentChildIntentRegistry,
+  type SubagentChildIntentReservation,
+} from "./subagent-child-intent-registry.js";
+import {
   ensureCompletionState,
   ensureDeliveryState,
   getDeliveryAttemptCount,
@@ -88,7 +92,11 @@ import {
   getSubagentRunsSnapshotForRead,
   persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow,
+  expireSubagentReservationsAtomically,
+  removeSubagentReservationAtomically,
+  reserveSubagentRunAtomically,
   restoreSubagentRunsFromDisk,
+  transitionSubagentRunAdmissionAtomically,
 } from "./subagent-registry-state.js";
 import { configureSubagentRegistrySteerRuntime } from "./subagent-registry-steer-runtime.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
@@ -298,6 +306,18 @@ function persistSubagentRuns() {
 function persistSubagentRunsOrThrow() {
   subagentRegistryDeps.persistSubagentRunsToDiskOrThrow(subagentRuns);
 }
+
+const childIntentRegistry = createSubagentChildIntentRegistry({
+  getRuns: () => subagentRuns,
+  countActiveRunsForSession: (sessionKey) =>
+    countActiveRunsForSessionFromRuns(subagentRuns, sessionKey),
+  reservePersisted: reserveSubagentRunAtomically,
+  transitionPersisted: transitionSubagentRunAdmissionAtomically,
+  removePersisted: removeSubagentReservationAtomically,
+  expirePersisted: expireSubagentReservationsAtomically,
+  persistOrThrow: persistSubagentRunsOrThrow,
+  persist: persistSubagentRuns,
+});
 
 function findSubagentTaskForRun(entry: SubagentRunRecord) {
   const nextRunCreatedAt = findNextSubagentRunCreatedAt(entry);
@@ -723,6 +743,9 @@ function resumeSubagentRun(runId: string) {
     return;
   }
   const entry = subagentRuns.get(runId);
+  if (entry?.spawnAdmission && entry.spawnAdmission !== "dispatched") {
+    return;
+  }
   if (!entry) {
     return;
   }
@@ -841,7 +864,11 @@ function markRestoredRunsInterruptedByGatewayRestart(): boolean {
   const now = Date.now();
   let mutated = false;
   for (const [runId, entry] of subagentRuns) {
-    if (typeof entry.endedAt === "number" || getAgentRunContext(runId)) {
+    if (
+      (entry.spawnAdmission !== undefined && entry.spawnAdmission !== "dispatched") ||
+      typeof entry.endedAt === "number" ||
+      getAgentRunContext(runId)
+    ) {
       continue;
     }
     entry.execution = {
@@ -871,6 +898,7 @@ function restoreSubagentRunsOnce() {
     if (restoredCount === 0) {
       return;
     }
+    childIntentRegistry.expireStale();
     const reconciledRestoredRuns = reconcileOrphanedRestoredRuns({
       runs: subagentRuns,
       resumedRuns,
@@ -887,6 +915,10 @@ function restoreSubagentRunsOnce() {
     // Always start sweeper — session-mode runs (no archiveAtMs) also need TTL cleanup.
     startSweeper();
     for (const runId of subagentRuns.keys()) {
+      const admission = subagentRuns.get(runId)?.spawnAdmission;
+      if (admission !== undefined && admission !== "dispatched") {
+        continue;
+      }
       resumeSubagentRun(runId);
     }
 
@@ -1040,6 +1072,7 @@ async function sweepSubagentRuns() {
   }
   sweepInProgress = true;
   try {
+    childIntentRegistry.expireStale();
     const now = Date.now();
     const storeCache: SubagentSessionStoreCache = new Map();
     let mutated = false;
@@ -1066,6 +1099,9 @@ async function sweepSubagentRuns() {
       });
     }
     for (const [runId, entry] of subagentRuns.entries()) {
+      if (entry.spawnAdmission !== undefined && entry.spawnAdmission !== "dispatched") {
+        continue;
+      }
       if (isSuspendedPendingFinalDelivery(entry)) {
         const suspendedAgeMs = now - (entry.delivery?.suspendedAt ?? now);
         const expired = suspendedAgeMs >= resolveSuspendedDeliveryExpiryMs(entry);
@@ -1632,6 +1668,52 @@ export function clearSubagentRunSteerRestart(runId: string) {
   return subagentRunManager.clearSubagentRunSteerRestart(runId);
 }
 
+export type { SubagentChildIntentReservation } from "./subagent-child-intent-registry.js";
+
+export function reserveSubagentChildIntent(
+  params: Parameters<typeof childIntentRegistry.reserve>[0],
+): SubagentChildIntentReservation {
+  restoreSubagentRunsOnce();
+  childIntentRegistry.expireStale();
+  return childIntentRegistry.reserve(params);
+}
+
+export function releaseSubagentChildIntent(
+  params: Parameters<typeof childIntentRegistry.release>[0],
+) {
+  return childIntentRegistry.release(params);
+}
+
+export function markSubagentChildIntentDispatching(
+  params: Parameters<typeof childIntentRegistry.markDispatching>[0],
+) {
+  return childIntentRegistry.markDispatching(params);
+}
+
+export function markSubagentChildIntentUnknown(
+  params: Parameters<typeof childIntentRegistry.markUnknown>[0],
+) {
+  return childIntentRegistry.markUnknown(params);
+}
+
+export function cancelSubagentChildIntent(childIntentKey: string): boolean {
+  return childIntentRegistry.cancel(childIntentKey);
+}
+
+export function adoptSubagentChildIntent(params: {
+  childIntentKey: string;
+  reservationToken: string;
+}): boolean {
+  return childIntentRegistry.adopt(params);
+}
+
+export function abandonUnresolvedSubagentChildIntent(params: {
+  childIntentKey: string;
+  reservationToken: string;
+}): boolean {
+  return childIntentRegistry.abandonUnresolved(params);
+}
+
 export function replaceSubagentRunAfterSteer(params: {
   previousRunId: string;
   nextRunId: string;
@@ -1648,7 +1730,19 @@ export function replaceSubagentRunAfterSteer(params: {
 }
 
 export function registerSubagentRun(params: RegisterSubagentRunParams) {
-  subagentRunManager.registerSubagentRun(params);
+  childIntentRegistry.assertDispatchIdentityAvailable(
+    params.childIntentKey,
+    params.reservationToken,
+  );
+  const childIntentReservation = childIntentRegistry.takeForRegistration(params);
+  try {
+    subagentRunManager.registerSubagentRun(params);
+  } catch (error) {
+    if (childIntentReservation) {
+      childIntentRegistry.restoreAfterRegistrationFailure(childIntentReservation);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -1709,6 +1803,7 @@ export function finalizeSubagentCompletionGroup(params: {
 
 export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {
   clearScheduledResumeTimers();
+  childIntentRegistry.reset();
   for (const timer of resumeRetryTimers) {
     clearTimeout(timer);
   }
@@ -1849,6 +1944,20 @@ export function markSubagentRunTerminated(params: {
   reason?: string;
   suppressTaskDelivery?: boolean;
 }): number {
+  const targetKeys = new Set<string>();
+  for (const entry of subagentRuns.values()) {
+    if (
+      entry.childIntentKey &&
+      (entry.spawnAdmission === "reserved" || entry.spawnAdmission === "dispatching") &&
+      ((params.runId && entry.runId === params.runId) ||
+        (params.childSessionKey && entry.childSessionKey === params.childSessionKey))
+    ) {
+      targetKeys.add(entry.childIntentKey);
+    }
+  }
+  for (const childIntentKey of targetKeys) {
+    childIntentRegistry.cancel(childIntentKey);
+  }
   return subagentRunManager.markSubagentRunTerminated(params);
 }
 

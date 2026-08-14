@@ -141,6 +141,12 @@ export async function loadSubagentSpawnModuleForTest(params: {
   resolveParentForkDecisionMock?: MockFn;
   pruneLegacyStoreKeysMock?: MockFn;
   registerSubagentRunMock?: MockFn;
+  reserveSubagentChildIntentMock?: MockFn;
+  releaseSubagentChildIntentMock?: MockFn;
+  markSubagentChildIntentDispatchingMock?: MockFn;
+  markSubagentChildIntentUnknownMock?: MockFn;
+  adoptSubagentChildIntentMock?: MockFn;
+  abandonUnresolvedSubagentChildIntentMock?: MockFn;
   emitSessionLifecycleEventMock?: MockFn;
   hookRunner?: HookRunner;
   resolveAgentConfig?: (cfg: Record<string, unknown>, agentId: string) => unknown;
@@ -362,6 +368,39 @@ export async function loadSubagentSpawnModuleForTest(params: {
 
   vi.doMock("./subagent-registry.js", () => ({
     countActiveRunsForSession: params.countActiveRunsForSession ?? (() => 0),
+    reserveSubagentChildIntent:
+      params.reserveSubagentChildIntentMock ??
+      ((input: {
+        childIntentKey: string;
+        childSessionKey: string;
+        reservationRunId: string;
+        requesterSessionKey: string;
+        maxActiveChildren?: number;
+      }) => {
+        const activeChildren = params.countActiveRunsForSession?.(input.requesterSessionKey) ?? 0;
+        if (
+          typeof input.maxActiveChildren === "number" &&
+          activeChildren >= input.maxActiveChildren
+        ) {
+          throw new Error(
+            `sessions_spawn has reached max active children for this session (${activeChildren}/${input.maxActiveChildren})`,
+          );
+        }
+        return {
+          disposition: "owner",
+          childIntentKey: input.childIntentKey,
+          childSessionKey: input.childSessionKey,
+          reservationRunId: input.reservationRunId,
+          reservationToken: "test-reservation",
+        };
+      }),
+    releaseSubagentChildIntent: params.releaseSubagentChildIntentMock ?? (() => undefined),
+    markSubagentChildIntentDispatching:
+      params.markSubagentChildIntentDispatchingMock ?? (() => undefined),
+    markSubagentChildIntentUnknown: params.markSubagentChildIntentUnknownMock ?? (() => undefined),
+    adoptSubagentChildIntent: params.adoptSubagentChildIntentMock ?? (() => false),
+    abandonUnresolvedSubagentChildIntent:
+      params.abandonUnresolvedSubagentChildIntentMock ?? (() => false),
     registerSubagentRun:
       params.registerSubagentRunMock ?? vi.fn((_record: Record<string, unknown>) => undefined),
     resetSubagentRegistryForTests,

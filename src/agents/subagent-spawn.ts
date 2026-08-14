@@ -3,7 +3,6 @@
  *
  * Validates spawn requests, prepares child sessions, stages attachments, binds delivery context, and registers runs.
  */
-import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import { finiteSecondsToTimerSafeMilliseconds } from "@openclaw/normalization-core/number-coercion";
 import {
@@ -60,12 +59,26 @@ import {
   type SubagentAttachmentReceiptFile,
 } from "./subagent-attachments.js";
 import { resolveSubagentCapabilities } from "./subagent-capabilities.js";
+import { reconcileSubagentChildIntent } from "./subagent-child-intent-reconciliation.js";
+import { resolveSubagentChildIntentBehaviorDigest } from "./subagent-child-intent.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { buildSubagentInitialUserMessage } from "./subagent-initial-user-message.js";
-import { countActiveRunsForSession, registerSubagentRun } from "./subagent-registry.js";
+import {
+  abandonUnresolvedSubagentChildIntent,
+  adoptSubagentChildIntent,
+  markSubagentChildIntentDispatching,
+  markSubagentChildIntentUnknown,
+  registerSubagentRun,
+  releaseSubagentChildIntent,
+} from "./subagent-registry.js";
 import type { SubagentCompletionGroupState } from "./subagent-registry.types.js";
 import { resolveSubagentRunTimerDelayMs } from "./subagent-run-timeout.js";
 import { resolveSubagentSpawnAcceptedNote } from "./subagent-spawn-accepted-note.js";
+import {
+  admitSubagentSpawnChildIntent,
+  resolveSubagentSpawnChildIntentKey,
+  resolveSubagentSpawnChildSessionKey,
+} from "./subagent-spawn-child-intent.js";
 import { resolveSubagentSpawnOwnership } from "./subagent-spawn-ownership.js";
 import { resolveSubagentTargetPolicy } from "./subagent-target-policy.js";
 import { normalizeSubagentTaskName } from "./subagent-task-name.js";
@@ -190,6 +203,10 @@ type SpawnSubagentParams = {
     mimeType?: string;
   }>;
   attachMountPath?: string;
+  /** Stable operation identity; repeated provider proposals without it use the canonical request. */
+  idempotencyKey?: string;
+  /** Batch-only host discriminator for intentionally distinct same-shaped children. */
+  childIntentDiscriminator?: string;
 };
 
 type SpawnSubagentContext = {
@@ -1190,16 +1207,6 @@ export async function spawnSubagentDirect(
     };
   }
 
-  const maxChildren =
-    cfg.agents?.defaults?.subagents?.maxChildrenPerAgent ?? DEFAULT_SUBAGENT_MAX_CHILDREN_PER_AGENT;
-  const activeChildren = countActiveRunsForSession(requesterInternalKey);
-  if (activeChildren >= maxChildren) {
-    return {
-      status: "forbidden",
-      error: `sessions_spawn has reached max active children for this session (${activeChildren}/${maxChildren})`,
-    };
-  }
-
   const requesterAgentId = normalizeAgentId(
     ctx.requesterAgentIdOverride ?? parseAgentSessionKey(requesterInternalKey)?.agentId,
   );
@@ -1264,7 +1271,40 @@ export async function spawnSubagentDirect(
       error: targetPolicy.error,
     };
   }
-  const childSessionKey = `agent:${targetAgentId}:subagent:${crypto.randomUUID()}`;
+  const childDepth = callerDepth + 1;
+  const spawnedByKey = requesterInternalKey;
+  const childCapabilities = resolveSubagentCapabilities({
+    depth: childDepth,
+    maxSpawnDepth,
+    requestedRole: requestedSubagentRole,
+  });
+  const mountPathHint = sanitizeMountPathHint(params.attachMountPath);
+  const childIntentKey = resolveSubagentSpawnChildIntentKey({
+    requesterSessionKey: ownership.controllerSessionKey,
+    targetAgentId,
+    task,
+    taskName,
+    label,
+    model: modelOverride,
+    modelRoute,
+    subagentRole: childCapabilities.role,
+    mode: spawnMode,
+    cleanup,
+    sandbox: sandboxMode,
+    context: contextMode,
+    cwd: requestedCwd,
+    thread: requestThreadBinding,
+    operationKey: params.idempotencyKey,
+    discriminator: params.childIntentDiscriminator,
+    attachments: params.attachments,
+    thinking: thinkingOverrideRaw,
+    runTimeoutSeconds,
+    lightContext: params.lightContext,
+    expectsCompletionMessage,
+    attachMountPath: mountPathHint,
+    delivery: childSessionOrigin,
+  });
+  const childSessionKey = resolveSubagentSpawnChildSessionKey(targetAgentId, childIntentKey);
   const requesterRuntime = resolveSandboxRuntimeStatus({
     cfg,
     sessionKey: requesterInternalKey,
@@ -1297,13 +1337,6 @@ export async function spawnSubagentDirect(
         "cwd override is not supported for sandboxed subagent runs; omit cwd or use the target agent workspace as cwd",
     };
   }
-  const childDepth = callerDepth + 1;
-  const spawnedByKey = requesterInternalKey;
-  const childCapabilities = resolveSubagentCapabilities({
-    depth: childDepth,
-    maxSpawnDepth,
-    requestedRole: requestedSubagentRole,
-  });
   const targetAgentDir = resolveAgentDir(cfg, targetAgentId);
   const requesterAgentConfig = resolveAgentConfig(cfg, requesterAgentId);
   const targetAgentConfig = resolveAgentConfig(cfg, targetAgentId);
@@ -1337,6 +1370,157 @@ export async function spawnSubagentDirect(
   }
   const { resolvedModel, thinkingOverride, modelRoute: resolvedModelRoute } = plan;
   const resolvedModelMetadata = buildResolvedSubagentModelMetadata(resolvedModel);
+  const intentBehaviorDigest = resolveSubagentChildIntentBehaviorDigest({
+    resolvedModel,
+    resolvedModelRoute,
+    thinking: thinkingOverride,
+    runTimeoutSeconds,
+    lightContext: params.lightContext === true,
+    expectsCompletionMessage,
+    attachMountPath: mountPathHint,
+    delivery: childSessionOrigin,
+  });
+  const maxChildren =
+    cfg.agents?.defaults?.subagents?.maxChildrenPerAgent ?? DEFAULT_SUBAGENT_MAX_CHILDREN_PER_AGENT;
+  const childIntentAdmission = {
+    childIntentKey,
+    childSessionKey,
+    requesterSessionKey: ownership.controllerSessionKey,
+    targetAgentId,
+    task,
+    taskName,
+    label: label || undefined,
+    model: modelOverride,
+    modelRoute,
+    subagentRole: childCapabilities.role,
+    mode: spawnMode,
+    cleanup,
+    sandbox: sandboxMode,
+    context: contextMode,
+    cwd: requestedCwd,
+    thread: requestThreadBinding,
+    operationKey: params.idempotencyKey,
+    discriminator: params.childIntentDiscriminator,
+    attachments: params.attachments,
+    requesterDisplayKey: ownership.completionRequesterDisplayKey,
+    expectsCompletionMessage,
+    maxActiveChildren: maxChildren,
+    intentBehaviorDigest,
+  };
+  let childIntentReservation: ReturnType<typeof admitSubagentSpawnChildIntent>;
+  try {
+    childIntentReservation = admitSubagentSpawnChildIntent(childIntentAdmission);
+  } catch (error) {
+    const message = summarizeError(error);
+    if (message.startsWith("sessions_spawn has reached max active children")) {
+      return { status: "forbidden", error: message };
+    }
+    return { status: "error", error: message, childSessionKey };
+  }
+  if (childIntentReservation.disposition === "duplicate") {
+    const reconciliation = await reconcileSubagentChildIntent({
+      reservation: childIntentReservation,
+      waitForProvider: async () =>
+        await callSubagentGateway({
+          method: "agent.wait",
+          params: { runId: childIntentReservation.childIntentKey, timeoutMs: 0 },
+          timeoutMs: SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS,
+        }),
+      adopt: () =>
+        adoptSubagentChildIntent({
+          childIntentKey: childIntentReservation.childIntentKey,
+          reservationToken: childIntentReservation.reservationToken!,
+        }),
+      abandon: () =>
+        abandonUnresolvedSubagentChildIntent({
+          childIntentKey: childIntentReservation.childIntentKey,
+          reservationToken: childIntentReservation.reservationToken!,
+        }),
+    });
+    if (reconciliation === "retry") {
+      try {
+        childIntentReservation = admitSubagentSpawnChildIntent(childIntentAdmission);
+      } catch (error) {
+        return { status: "error", error: summarizeError(error), childSessionKey };
+      }
+    }
+    if (reconciliation === "adopt") {
+      const recoveredRunId = childIntentReservation.existingRunId ?? childIntentKey;
+      try {
+        registerSubagentRun({
+          runId: recoveredRunId,
+          childIntentKey,
+          reservationToken: childIntentReservation.reservationToken,
+          childSessionKey,
+          controllerSessionKey: ownership.controllerSessionKey,
+          requesterSessionKey: ownership.completionRequesterSessionKey,
+          requesterOrigin,
+          requesterDisplayKey: ownership.completionRequesterDisplayKey,
+          task,
+          taskName,
+          agentId: targetAgentId,
+          requesterAgentId,
+          cleanup,
+          label: label || undefined,
+          model: resolvedModel,
+          agentDir: targetAgentDir,
+          workspaceDir: spawnedWorkspaceDir,
+          runTimeoutSeconds,
+          expectsCompletionMessage,
+          completionGroup: params.completionGroup,
+          spawnMode,
+        });
+      } catch (error) {
+        return {
+          status: "error",
+          error: `Failed to adopt subagent run: ${summarizeError(error)}`,
+          childSessionKey,
+          runId: recoveredRunId,
+        };
+      }
+      return {
+        status: "accepted",
+        childSessionKey,
+        runId: recoveredRunId,
+        mode: spawnMode,
+        taskName,
+        subagentRole: childCapabilities.role === "main" ? undefined : childCapabilities.role,
+        modelRoute: resolvedModelRoute,
+        resolvedModel,
+        modelApplied: false,
+        note: "child intent reconciled with the existing gateway run",
+      };
+    }
+    if (reconciliation !== "retry" || childIntentReservation.disposition !== "owner") {
+      return {
+        status: "accepted",
+        childSessionKey: childIntentReservation.childSessionKey,
+        ...(childIntentReservation.existingRunId
+          ? { runId: childIntentReservation.existingRunId }
+          : {}),
+        mode: spawnMode,
+        taskName,
+        subagentRole: childCapabilities.role === "main" ? undefined : childCapabilities.role,
+        modelRoute: resolvedModelRoute,
+        resolvedModel,
+        modelApplied: false,
+        note: "child intent already admitted; returning the existing logical child",
+      };
+    }
+  }
+  const releaseChildIntentReservation = () => {
+    if (childIntentReservation.reservationToken) {
+      try {
+        releaseSubagentChildIntent({
+          childIntentKey,
+          reservationToken: childIntentReservation.reservationToken,
+        });
+      } catch {
+        // Keep the durable reservation on cleanup failure; this is fail-closed
+        // and prevents a retry from dispatching a second child.
+      }
+    }
+  };
   const patchChildSession = async (patch: Record<string, unknown>): Promise<string | undefined> => {
     try {
       const target = resolveGatewaySessionStoreTarget({
@@ -1372,6 +1556,7 @@ export async function spawnSubagentDirect(
 
   const initialPatchError = await patchChildSession(initialChildSessionPatch);
   if (initialPatchError) {
+    releaseChildIntentReservation();
     return {
       status: "error",
       error: initialPatchError,
@@ -1391,6 +1576,7 @@ export async function spawnSubagentDirect(
       emitLifecycleHooks: false,
       deleteTranscript: true,
     });
+    releaseChildIntentReservation();
     return {
       status: "error",
       error: preparedSpawnContext.error,
@@ -1413,6 +1599,7 @@ export async function spawnSubagentDirect(
       } catch {
         // Best-effort cleanup only.
       }
+      releaseChildIntentReservation();
       return {
         status: "error",
         error: runtimeModelPersistError,
@@ -1446,6 +1633,7 @@ export async function spawnSubagentDirect(
       } catch {
         // Best-effort cleanup only.
       }
+      releaseChildIntentReservation();
       return {
         status: "error",
         error: bindResult.error,
@@ -1457,8 +1645,6 @@ export async function spawnSubagentDirect(
     childSessionOrigin =
       mergeDeliveryContext(bindResult.deliveryOrigin, childSessionOrigin) ?? childSessionOrigin;
   }
-  const mountPathHint = sanitizeMountPathHint(params.attachMountPath);
-
   let childSystemPrompt = buildSubagentSystemPrompt({
     requesterSessionKey,
     requesterOrigin: childSessionOrigin,
@@ -1501,6 +1687,7 @@ export async function spawnSubagentDirect(
       emitLifecycleHooks: threadBindingReady,
       deleteTranscript: true,
     });
+    releaseChildIntentReservation();
     return {
       status: materializedAttachments.status,
       error: materializedAttachments.error,
@@ -1542,6 +1729,7 @@ export async function spawnSubagentDirect(
       emitLifecycleHooks: threadBindingReady,
       deleteTranscript: true,
     });
+    releaseChildIntentReservation();
     return {
       status: "error",
       error: spawnLineagePatchError,
@@ -1565,6 +1753,7 @@ export async function spawnSubagentDirect(
       emitLifecycleHooks: threadBindingReady,
       deleteTranscript: true,
     });
+    releaseChildIntentReservation();
     return {
       status: "error",
       error: contextEnginePrepareResult.error,
@@ -1573,14 +1762,18 @@ export async function spawnSubagentDirect(
   }
   const contextEnginePreparation = contextEnginePrepareResult.preparation;
 
-  const childIdem = crypto.randomUUID();
-  let childRunId: string = childIdem;
+  const childIdem = childIntentKey;
+  let childRunId: string = childIntentReservation.reservationRunId;
   const deliverInitialChildRunDirectly =
     requestThreadBinding && spawnMode === "session" && hasBoundThreadDeliveryOrigin;
   const shouldAnnounceCompletion = deliverInitialChildRunDirectly
     ? false
     : expectsCompletionMessage;
   try {
+    markSubagentChildIntentDispatching({
+      childIntentKey,
+      reservationToken: childIntentReservation.reservationToken!,
+    });
     const {
       spawnedBy: _spawnedBy,
       workspaceDir: _workspaceDir,
@@ -1676,6 +1869,16 @@ export async function spawnSubagentDirect(
       // Best-effort only.
     }
     const messageText = summarizeError(err);
+    try {
+      markSubagentChildIntentUnknown({
+        childIntentKey,
+        reservationToken: childIntentReservation.reservationToken!,
+        providerRunId: childRunId,
+      });
+    } catch {
+      // Preserve the primary provider error; an uncertain reservation remains
+      // durably fenced even when reconciliation itself cannot complete.
+    }
     return {
       status: "error",
       error: messageText,
@@ -1687,6 +1890,8 @@ export async function spawnSubagentDirect(
   try {
     registerSubagentRun({
       runId: childRunId,
+      childIntentKey,
+      reservationToken: childIntentReservation.reservationToken,
       childSessionKey,
       controllerSessionKey: ownership.controllerSessionKey,
       requesterSessionKey: ownership.completionRequesterSessionKey,
@@ -1730,6 +1935,15 @@ export async function spawnSubagentDirect(
       });
     } catch {
       // Best-effort cleanup only.
+    }
+    try {
+      markSubagentChildIntentUnknown({
+        childIntentKey,
+        reservationToken: childIntentReservation.reservationToken!,
+        providerRunId: childRunId,
+      });
+    } catch {
+      // Preserve the registration failure; uncertain admission remains closed.
     }
     return {
       status: "error",

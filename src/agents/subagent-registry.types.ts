@@ -111,6 +111,17 @@ type SubagentKillReconciliationState = {
 
 export type SubagentRunRecord = {
   runId: string;
+  /** Stable host-owned logical child identity, distinct from provider runId. */
+  childIntentKey?: string;
+  /** Durable admission state; unknown means provider acceptance is unresolved. */
+  spawnAdmission?: "reserved" | "dispatching" | "dispatched" | "unknown" | "cancelled" | "expired";
+  /** Host-owned behavior binding; a reused logical key with a changed value fails closed. */
+  childIntentBehaviorDigest?: string;
+  /** Durable reservation owner and lease, unlike the process-local registry token. */
+  reservationOwnerToken?: string;
+  reservationExpiresAt?: number;
+  /** Provider run id retained when registration failed after dispatch acceptance. */
+  providerRunId?: string;
   /** Detached task owner; steer/restart changes runId but continues the same task. */
   taskRunId?: string;
   childSessionKey: string;

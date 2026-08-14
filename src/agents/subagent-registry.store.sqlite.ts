@@ -27,9 +27,9 @@ import type {
 
 type SubagentRunsTable = OpenClawStateKyselyDatabase["subagent_runs"];
 type SubagentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "subagent_runs">;
-type SubagentRunSqliteRow = Selectable<SubagentRunsTable>;
-type SubagentRunSqliteInsert = Insertable<SubagentRunsTable>;
-type SubagentRunSqliteUpdate = Updateable<SubagentRunsTable>;
+export type SubagentRunSqliteRow = Selectable<SubagentRunsTable>;
+export type SubagentRunSqliteInsert = Insertable<SubagentRunsTable>;
+export type SubagentRunSqliteUpdate = Updateable<SubagentRunsTable>;
 
 /** Converts undefined to null so optional record fields round-trip through sqlite columns. */
 function jsonStringify(value: unknown): string | null {
@@ -105,7 +105,7 @@ function createDeliveryFromTypedColumns(
 }
 
 /** Rehydrates one sqlite row into the normalized subagent run record shape. */
-function rowToSubagentRunRecord(row: SubagentRunSqliteRow): SubagentRunRecord | null {
+export function rowToSubagentRunRecord(row: SubagentRunSqliteRow): SubagentRunRecord | null {
   const payload = (parseJson(row.payload_json) as Partial<SubagentRunRecord> | undefined) ?? {};
   const requesterOrigin =
     (parseJson(row.requester_origin_json) as SubagentRunRecord["requesterOrigin"] | undefined) ??
@@ -191,7 +191,7 @@ function rowToSubagentRunRecord(row: SubagentRunSqliteRow): SubagentRunRecord | 
 }
 
 /** Flattens a normalized subagent run into typed sqlite columns plus payload_json. */
-function subagentRunRecordToSqliteInsert(entry: SubagentRunRecord): SubagentRunSqliteInsert {
+export function subagentRunRecordToSqliteInsert(entry: SubagentRunRecord): SubagentRunSqliteInsert {
   const normalized = normalizeSubagentRunState(structuredClone(entry));
   const delivery = normalized.delivery;
   const completion = normalized.completion;
@@ -246,7 +246,9 @@ function subagentRunRecordToSqliteInsert(entry: SubagentRunRecord): SubagentRunS
   };
 }
 
-function subagentRunRecordToSqliteUpdate(values: SubagentRunSqliteInsert): SubagentRunSqliteUpdate {
+export function subagentRunRecordToSqliteUpdate(
+  values: SubagentRunSqliteInsert,
+): SubagentRunSqliteUpdate {
   const { run_id: _runId, ...update } = values;
   return update;
 }
