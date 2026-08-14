@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   governorAgentLoopAssistant as assistant,
   governorAgentLoopFixtureModel as model,
+  governorAgentLoopScriptedStream as scriptedStream,
 } from "../../test/helpers/governor-agent-loop.js";
 import { installGovernorLoopBridge } from "../agents/embedded-agent-runner/governor-loop-bridge.js";
 import { Agent } from "../agents/runtime/index.js";
@@ -156,7 +157,7 @@ const openRuntimes: ReturnType<typeof createGovernorHostRuntimeIfEnabled>[] = []
 
 afterEach(() => {
   for (const runtime of openRuntimes.splice(0).toReversed()) {
-    runtime.close();
+    runtime?.close();
   }
   closeOpenClawStateDatabase();
 });
@@ -190,10 +191,8 @@ describe("C02/C05 durable restart boundaries", () => {
         const second = start(state.stateDir, criteria);
         const resumed = resolveGovernorAgentLoopRunScope(inputs("phase"))!;
         const agent = new Agent({
-          initialState: { model, tools: resumed.governedTools() },
-          async *streamFn() {
-            yield assistant([{ type: "text", text: "done" }]);
-          },
+          initialState: { model, tools: [...resumed.governedTools()] },
+          streamFn: scriptedStream(() => assistant([{ type: "text", text: "done" }])),
         });
         const bridge = installGovernorLoopBridge({ agent, scope: resumed, now: () => 200 });
         expect(resumed.turnPhase()).toBe("final_response");
@@ -207,10 +206,8 @@ describe("C02/C05 durable restart boundaries", () => {
         const third = start(state.stateDir, criteria);
         const verifying = resolveGovernorAgentLoopRunScope(inputs("phase"))!;
         const verifyingAgent = new Agent({
-          initialState: { model, tools: verifying.governedTools() },
-          async *streamFn() {
-            yield assistant([{ type: "text", text: "done" }]);
-          },
+          initialState: { model, tools: [...verifying.governedTools()] },
+          streamFn: scriptedStream(() => assistant([{ type: "text", text: "done" }])),
         });
         const verifyingBridge = installGovernorLoopBridge({
           agent: verifyingAgent,
@@ -305,11 +302,18 @@ describe("C02/C05 durable restart boundaries", () => {
           evidenceId: source.evidenceId,
           receiptId: receipt,
         });
-        const alphaInvalidated = store
-          .listAllEvidence(scope.taskId as never)
-          .filter((item) => item.criterionId === "alpha")
-          .every((item) => item.invalidatedAt !== undefined);
-        expect([alphaInvalidated]).toStrictEqual([true]);
+        const invalidatedEvidence = store.listAllEvidence(scope.taskId as never);
+        const descendantIds = [
+          source.evidenceId,
+          firstDescendant.evidenceId,
+          secondDescendant.evidence.evidenceId,
+        ];
+        expect(
+          descendantIds.map(
+            (evidenceId) =>
+              invalidatedEvidence.find((item) => item.evidenceId === evidenceId)?.invalidatedAt,
+          ),
+        ).not.toContain(undefined);
         expect(() =>
           assertGovernorEvidenceLineage({
             source,
@@ -348,9 +352,11 @@ describe("C02/C05 durable restart boundaries", () => {
         const planEventsBeforeRestart = first.adapter.controller.store
           .listEvents(taskId as never)
           .filter((event) => event.eventType === "plan_replaced");
-        expect(planEventsBeforeRestart.map((event) => event.payload.planVersion)).toStrictEqual([
-          1, 2,
-        ]);
+        expect(
+          planEventsBeforeRestart.map(
+            (event) => (event.payload as unknown as { planVersion: number }).planVersion,
+          ),
+        ).toStrictEqual([1, 2]);
         scope.dispose();
         first.close();
         closeOpenClawStateDatabase();
@@ -362,9 +368,11 @@ describe("C02/C05 durable restart boundaries", () => {
           .listEvents(taskId as never)
           .filter((event) => event.eventType === "plan_replaced");
         expect(planEventsAfterRestart).toHaveLength(planEventsBeforeRestart.length);
-        expect(planEventsAfterRestart.map((event) => event.payload.planVersion)).toStrictEqual([
-          1, 2,
-        ]);
+        expect(
+          planEventsAfterRestart.map(
+            (event) => (event.payload as unknown as { planVersion: number }).planVersion,
+          ),
+        ).toStrictEqual([1, 2]);
         expect(
           resumed.beforeTool({
             toolCallId: "retry",

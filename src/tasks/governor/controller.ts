@@ -372,6 +372,18 @@ export class GovernorController {
     return assertApplied(this.store.commit({ current: task, ...admission }));
   }
 
+  resumePendingFinish(params: {
+    taskId: GovernorTaskId;
+    response: GovernorResponseDraft;
+    now: number;
+  }): GovernorFinishResult {
+    const state = this.#task(params.taskId).state;
+    if (state !== "VERIFYING" && state !== "FINISH_CANDIDATE") {
+      throw new Error("GOVERNOR_PENDING_FINISH_STATE_INVALID");
+    }
+    return this.proposeFinish(params);
+  }
+
   proposeFinish(params: {
     taskId: GovernorTaskId;
     response: GovernorResponseDraft;
@@ -379,10 +391,11 @@ export class GovernorController {
   }): GovernorFinishResult {
     let task = this.#task(params.taskId);
     const responseDraft = assertGovernorResponseDraft(params.response);
-    if (task.state !== "VERIFYING") {
+    if (task.state === "VERIFYING") {
+      task = this.#transition(task, "FINISH_CANDIDATE", params.now);
+    } else if (task.state !== "FINISH_CANDIDATE") {
       throw new Error("GOVERNOR_FINISH_STATE_INVALID");
     }
-    task = this.#transition(task, "FINISH_CANDIDATE", params.now);
     const runningActionIds = [
       ...this.store.actionIntents.listPendingIds(task.taskId, task.objectiveRevision, params.now),
       ...this.store.listUnfinishedFanoutJobIds(task),

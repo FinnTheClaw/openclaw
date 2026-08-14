@@ -48,6 +48,7 @@ import {
 } from "./store-evidence-admission.js";
 import { invalidateGovernorEvidence } from "./store-evidence-invalidation.js";
 import { assertGovernorEvidenceLineage } from "./store-evidence-lineage.js";
+import { assertCurrentGovernorEvidenceLineageInTransaction } from "./store-evidence-transaction.js";
 import { ingestGovernorTask, type GovernorIngressResult } from "./store-ingress.js";
 import { GovernorStoreLifecycle } from "./store-lifecycle.js";
 import { GovernorStoreQueries, loadGovernorTask } from "./store-queries.js";
@@ -431,6 +432,13 @@ export class GovernorSqliteStore {
           throw new Error("Governor evidence admission is stale or task-bound incorrectly");
         }
         this.#evidenceAdmissions.verify(evidence);
+        if (evidence.sourceEvidenceId) {
+          assertCurrentGovernorEvidenceLineageInTransaction({
+            db,
+            evidence,
+            verify: (item) => this.#evidenceAdmissions.verify(item),
+          });
+        }
         executeSqliteQuerySync(
           db,
           dbx

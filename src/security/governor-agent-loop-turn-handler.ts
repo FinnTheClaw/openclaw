@@ -213,12 +213,19 @@ export function recordGovernorAgentLoopTurn(params: {
     now: turn.now + 2,
   });
   if (decision.accepted && responseDigestMatches) {
-    params.controller.beginVerification(params.taskId, turn.now + 3);
-    const finished = params.controller.proposeFinish({
+    const finishRequest = {
       taskId: params.taskId,
-      response: { framing: "none", materialClaimIds: [] },
+      response: { framing: "none" as const, materialClaimIds: [] },
       now: turn.now + 4,
-    });
+    };
+    const currentTask = params.controller.store.loadTask(params.taskId);
+    let finished;
+    if (currentTask?.state === "VERIFYING" || currentTask?.state === "FINISH_CANDIDATE") {
+      finished = params.controller.resumePendingFinish(finishRequest);
+    } else {
+      params.controller.beginVerification(params.taskId, turn.now + 3);
+      finished = params.controller.proposeFinish(finishRequest);
+    }
     state.terminal = finished.completed;
     if (state.terminal) {
       return { kind: "complete" };
