@@ -45,18 +45,26 @@ export function commitSubagentRunRegistrationInTransaction(
     return false;
   }
   const receiptKey = row.gateway_receipt_id ?? row.canonical_key;
-  const receipt = readGatewayAcceptanceReceiptFromDatabase(db, receiptKey);
-  if (
-    !receipt ||
-    !["accepted", "started", "terminal"].includes(receipt.lifecycle) ||
-    receipt.intentId !== row.canonical_key ||
-    receipt.controllerSessionKey !== row.controller_session_key ||
-    receipt.childSessionKey !== row.child_session_key ||
-    receipt.requestDigest !== row.request_digest ||
-    receipt.resolvedDigest !== row.resolved_digest ||
-    receipt.gatewayRunId !== entry.runId ||
-    (row.provider_run_id !== null && row.provider_run_id !== entry.runId)
-  ) {
+  const receipt = row.gateway_receipt_id
+    ? readGatewayAcceptanceReceiptFromDatabase(db, receiptKey)
+    : undefined;
+  if (row.gateway_receipt_id) {
+    if (
+      !receipt ||
+      !["runnable", "dispatch_claimed", "accepted", "started", "terminal"].includes(
+        receipt.lifecycle,
+      ) ||
+      receipt.intentId !== row.canonical_key ||
+      receipt.controllerSessionKey !== row.controller_session_key ||
+      receipt.childSessionKey !== row.child_session_key ||
+      receipt.requestDigest !== row.request_digest ||
+      receipt.resolvedDigest !== row.resolved_digest ||
+      receipt.gatewayRunId !== entry.runId ||
+      (row.provider_run_id !== null && row.provider_run_id !== entry.runId)
+    ) {
+      return false;
+    }
+  } else if (row.provider_run_id !== null && row.provider_run_id !== entry.runId) {
     return false;
   }
   if (row.state === "registered" && row.registered_run_id === entry.runId) {
@@ -74,7 +82,7 @@ export function commitSubagentRunRegistrationInTransaction(
       generation: row.generation + 1,
       registered_run_id: entry.runId,
       provider_run_id: entry.runId,
-      gateway_receipt_id: receipt.acceptanceKey,
+      gateway_receipt_id: receipt?.acceptanceKey ?? null,
       updated_at: Date.now(),
       payload_json: JSON.stringify(entry),
     },
@@ -161,7 +169,7 @@ export function removeSubagentReservationAtomically(params: {
       );
       return Boolean(
         receipt &&
-        receipt.lifecycle === "not_accepted" &&
+        (receipt.lifecycle === "not_accepted" || receipt.lifecycle === "failed_before_start") &&
         receipt.intentId === row.canonical_key &&
         receipt.controllerSessionKey === row.controller_session_key &&
         receipt.childSessionKey === row.child_session_key &&
@@ -198,6 +206,7 @@ export function cancelSubagentChildIntentAtomically(params: {
   controllerSessionKey: string;
 }): boolean {
   let changed = false;
+  let receiptCancellationRepaired = false;
   let receiptToCancel: { acceptanceKey: string; gatewayRunId: string } | undefined;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
@@ -217,24 +226,29 @@ export function cancelSubagentChildIntentAtomically(params: {
         "gateway_accepted",
         "registered",
         "legacy_ambiguous",
+        "cancelled_requested",
       ].includes(row.state)
     ) {
       return;
     }
-    changed = updateRow(db, stateDb, row, {
-      state: "cancelled_requested",
-      generation: row.generation + 1,
-      cancel_requested_at: Date.now(),
-      updated_at: Date.now(),
-    });
-    if (changed) {
+    if (row.state === "cancelled_requested") {
       receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+    } else {
+      changed = updateRow(db, stateDb, row, {
+        state: "cancelled_requested",
+        generation: row.generation + 1,
+        cancel_requested_at: Date.now(),
+        updated_at: Date.now(),
+      });
+      if (changed) {
+        receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+      }
     }
   });
   if (receiptToCancel) {
-    requestGatewayAcceptanceCancel(receiptToCancel);
+    receiptCancellationRepaired = requestGatewayAcceptanceCancel(receiptToCancel);
   }
-  return changed;
+  return changed || receiptCancellationRepaired;
 }
 
 /** Cancels by durable run/session identity so restart does not depend on a local map. */
@@ -243,6 +257,7 @@ export function cancelSubagentChildIntentByRunOrSessionAtomically(params: {
   childSessionKey?: string;
 }): boolean {
   let changed = false;
+  let receiptCancellationRepaired = false;
   let receiptToCancel: { acceptanceKey: string; gatewayRunId: string } | undefined;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
@@ -268,24 +283,29 @@ export function cancelSubagentChildIntentByRunOrSessionAtomically(params: {
         "gateway_accepted",
         "registered",
         "legacy_ambiguous",
+        "cancelled_requested",
       ].includes(row.state)
     ) {
       return;
     }
-    changed = updateRow(db, stateDb, row, {
-      state: "cancelled_requested",
-      generation: row.generation + 1,
-      cancel_requested_at: Date.now(),
-      updated_at: Date.now(),
-    });
-    if (changed) {
+    if (row.state === "cancelled_requested") {
       receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+    } else {
+      changed = updateRow(db, stateDb, row, {
+        state: "cancelled_requested",
+        generation: row.generation + 1,
+        cancel_requested_at: Date.now(),
+        updated_at: Date.now(),
+      });
+      if (changed) {
+        receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+      }
     }
   });
   if (receiptToCancel) {
-    requestGatewayAcceptanceCancel(receiptToCancel);
+    receiptCancellationRepaired = requestGatewayAcceptanceCancel(receiptToCancel);
   }
-  return changed;
+  return changed || receiptCancellationRepaired;
 }
 
 export function releaseRegisteredSubagentChildIntent(runId: string): void {

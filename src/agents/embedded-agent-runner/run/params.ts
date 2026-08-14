@@ -219,6 +219,8 @@ export type RunEmbeddedAgentParams = {
   runId: string;
   abortSignal?: AbortSignal;
   onExecutionStarted?: (info?: { lifecycleGeneration?: string }) => void;
+  /** Host-only notification after the first provider stream starts. */
+  onProviderStarted?: (ctx: { provider: string; model: string }) => void;
   onExecutionPhase?: (info: {
     phase: EmbeddedAgentExecutionPhase;
     provider?: string;

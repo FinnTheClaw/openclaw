@@ -4,28 +4,21 @@ import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-syn
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import {
-  buildGatewayAcceptanceReceiptEnvelope,
   gatewayAcceptanceReceiptBindingDigest,
-  createGatewayAcceptanceReceiptProof,
   type GatewayAcceptanceReceiptEnvelope,
   type GatewayAcceptanceReceiptProof,
   verifyGatewayAcceptanceReceiptProof,
 } from "./subagent-gateway-acceptance-receipt-auth.js";
+import {
+  defaultReceiptEnvelope,
+  signedReceiptValues,
+} from "./subagent-gateway-acceptance-receipt-persistence-values.js";
+import type { GatewayAcceptanceReceiptLifecycle } from "./subagent-gateway-acceptance-receipt-types.js";
 
 type ReceiptRow = Selectable<DB["subagent_gateway_acceptance_receipts"]>;
 type ReceiptDb = Pick<DB, "subagent_gateway_acceptance_receipts">;
 
-export type GatewayAcceptanceReceiptLifecycle =
-  | "preaccepted"
-  | "runnable"
-  | "dispatch_claimed"
-  | "accepted"
-  | "started"
-  | "unknown"
-  | "not_accepted"
-  | "cancel_requested"
-  | "cancelled"
-  | "terminal";
+export type { GatewayAcceptanceReceiptLifecycle } from "./subagent-gateway-acceptance-receipt-types.js";
 
 export type GatewayAcceptanceReceipt = {
   acceptanceKey: string;
@@ -109,7 +102,20 @@ export function readGatewayAcceptanceReceiptFromDatabase(
   acceptanceKey: string,
 ): GatewayAcceptanceReceipt | undefined {
   const row = readRow(database, acceptanceKey);
-  return row ? fromRow(row) : undefined;
+  if (!row) {
+    return undefined;
+  }
+  if (row.lifecycle === "unknown") {
+    try {
+      const payload = JSON.parse(row.payload_json) as { quarantineReason?: unknown };
+      if (typeof payload.quarantineReason === "string") {
+        return undefined;
+      }
+    } catch {
+      // Fall through to the authenticated parser for ordinary unknown rows.
+    }
+  }
+  return fromRow(row);
 }
 
 function readRow(database: DatabaseSync, acceptanceKey: string): ReceiptRow | undefined {
@@ -120,44 +126,6 @@ function readRow(database: DatabaseSync, acceptanceKey: string): ReceiptRow | un
       .selectAll()
       .where("acceptance_key", "=", acceptanceKey),
   ).rows[0];
-}
-
-function signedValues(params: {
-  envelope: GatewayAcceptanceReceiptEnvelope;
-  lifecycle: GatewayAcceptanceReceiptLifecycle;
-  cancelEpoch: number;
-  nonce?: string;
-}) {
-  const proof = createGatewayAcceptanceReceiptProof({
-    envelope: params.envelope,
-    lifecycle: params.lifecycle,
-    cancelEpoch: params.cancelEpoch,
-    ...(params.nonce ? { nonce: params.nonce } : {}),
-  });
-  return {
-    envelope_digest: proof.envelopeDigest,
-    envelope_json: JSON.stringify(params.envelope),
-    key_id: proof.keyId,
-    nonce: proof.nonce,
-    signature: proof.signature,
-  };
-}
-
-function defaultEnvelope(params: {
-  acceptanceKey: string;
-  intentId: string;
-  controllerSessionKey: string;
-  requestDigest: string;
-  resolvedDigest: string;
-  gatewayRunId: string;
-  childSessionKey: string;
-  acceptanceEpoch: string;
-  receiptGeneration: number;
-}): GatewayAcceptanceReceiptEnvelope {
-  return buildGatewayAcceptanceReceiptEnvelope({
-    ...params,
-    request: {},
-  });
 }
 
 export function readGatewayAcceptanceReceipt(
@@ -209,7 +177,7 @@ export function reserveGatewayAcceptanceReceipt(params: {
       ) {
         throw new Error("gateway receipt conflicts with a different resolved binding");
       }
-      if (current.lifecycle === "not_accepted") {
+      if (current.lifecycle === "not_accepted" || current.lifecycle === "failed_before_start") {
         const nextGeneration = current.receiptGeneration + 1;
         const envelope = params.envelope
           ? {
@@ -217,7 +185,7 @@ export function reserveGatewayAcceptanceReceipt(params: {
               gatewayRunId: params.gatewayRunId,
               receiptGeneration: nextGeneration,
             }
-          : defaultEnvelope({
+          : defaultReceiptEnvelope({
               acceptanceKey: params.acceptanceKey,
               intentId: params.intentId,
               controllerSessionKey: params.controllerSessionKey,
@@ -228,7 +196,7 @@ export function reserveGatewayAcceptanceReceipt(params: {
               acceptanceEpoch: params.acceptanceEpoch ?? current.acceptanceEpoch,
               receiptGeneration: nextGeneration,
             });
-        const signed = signedValues({ envelope, lifecycle: "preaccepted", cancelEpoch: 0 });
+        const signed = signedReceiptValues({ envelope, lifecycle: "preaccepted", cancelEpoch: 0 });
         const updated = executeSqliteQuerySync(
           db,
           stateDb
@@ -239,12 +207,18 @@ export function reserveGatewayAcceptanceReceipt(params: {
               receipt_generation: nextGeneration,
               accepted_at: null,
               updated_at: now,
+              acceptance_epoch: envelope.acceptanceEpoch,
               cancel_epoch: 0,
               ...signed,
             })
             .where("acceptance_key", "=", params.acceptanceKey)
             .where("receipt_generation", "=", current.receiptGeneration)
-            .where("lifecycle", "=", "not_accepted"),
+            .where((eb) =>
+              eb.or([
+                eb("lifecycle", "=", "not_accepted"),
+                eb("lifecycle", "=", "failed_before_start"),
+              ]),
+            ),
         );
         if (Number(updated.numAffectedRows ?? 0) !== 1) {
           throw new Error("GOVERNOR_GATEWAY_RECEIPT_RETRY_CAS_LOST");
@@ -256,6 +230,7 @@ export function reserveGatewayAcceptanceReceipt(params: {
           receipt_generation: nextGeneration,
           accepted_at: null,
           updated_at: now,
+          acceptance_epoch: envelope.acceptanceEpoch,
           cancel_epoch: 0,
           ...signed,
         });
@@ -270,7 +245,7 @@ export function reserveGatewayAcceptanceReceipt(params: {
     const generation = 0;
     const envelope = params.envelope
       ? { ...params.envelope, gatewayRunId: params.gatewayRunId, receiptGeneration: generation }
-      : defaultEnvelope({
+      : defaultReceiptEnvelope({
           acceptanceKey: params.acceptanceKey,
           intentId: params.intentId,
           controllerSessionKey: params.controllerSessionKey,
@@ -281,7 +256,7 @@ export function reserveGatewayAcceptanceReceipt(params: {
           acceptanceEpoch: params.acceptanceEpoch ?? "gateway-startup",
           receiptGeneration: generation,
         });
-    const signed = signedValues({ envelope, lifecycle: "preaccepted", cancelEpoch: 0 });
+    const signed = signedReceiptValues({ envelope, lifecycle: "preaccepted", cancelEpoch: 0 });
     const row = {
       acceptance_key: params.acceptanceKey,
       intent_id: params.intentId,
@@ -338,7 +313,7 @@ function transitionReceipt(params: {
     }
     const cancelEpoch = params.cancelEpoch ?? current.cancelEpoch;
     const envelope = { ...current.envelope };
-    const signed = signedValues({
+    const signed = signedReceiptValues({
       envelope,
       lifecycle: params.to,
       cancelEpoch,
@@ -389,7 +364,7 @@ export function isGatewayAcceptanceDispatchAllowed(params: {
   return Boolean(
     receipt &&
     receipt.gatewayRunId === params.gatewayRunId &&
-    receipt.lifecycle === "dispatch_claimed",
+    (receipt.lifecycle === "dispatch_claimed" || receipt.lifecycle === "accepted"),
   );
 }
 
@@ -405,11 +380,41 @@ export function markGatewayAcceptanceAccepted(params: {
   });
 }
 
+/** Atomically wins the handoff race against cancellation. */
+export function claimGatewayAcceptanceForDispatch(params: {
+  acceptanceKey: string;
+  gatewayRunId: string;
+}): boolean {
+  return markGatewayAcceptanceAccepted(params);
+}
+
 export function markGatewayAcceptanceStarted(params: {
   acceptanceKey: string;
   gatewayRunId: string;
 }): boolean {
   return transitionReceipt({ ...params, from: "accepted", to: "started" });
+}
+
+export function markGatewayAcceptanceFailedBeforeStart(params: {
+  acceptanceKey: string;
+  gatewayRunId: string;
+}): boolean {
+  return transitionReceipt({
+    ...params,
+    from: ["accepted", "dispatch_claimed"],
+    to: "failed_before_start",
+  });
+}
+
+export function markGatewayAcceptanceFailedAfterStart(params: {
+  acceptanceKey: string;
+  gatewayRunId: string;
+}): boolean {
+  return transitionReceipt({
+    ...params,
+    from: ["accepted", "started"],
+    to: "failed_after_start",
+  });
 }
 
 export function markGatewayAcceptanceNotAccepted(params: {
@@ -453,7 +458,7 @@ export function markGatewayAcceptanceTerminal(params: {
 }): boolean {
   return transitionReceipt({
     ...params,
-    from: ["accepted", "started", "cancelled"],
+    from: ["started", "cancelled"],
     to: "terminal",
   });
 }

@@ -12,6 +12,68 @@ import {
   repairLegacyTaskDeliveryStatuses,
 } from "./openclaw-state-db-schema-utils.js";
 
+export function rebuildLegacyChildIntentUniqueness(db: DatabaseSync): void {
+  const indexes = db.prepare("PRAGMA index_list('subagent_child_intents')").all() as Array<{
+    name?: unknown;
+    origin?: unknown;
+  }>;
+  if (
+    !indexes.some(
+      (index) => index.origin === "u" && String(index.name).startsWith("sqlite_autoindex"),
+    )
+  ) {
+    return;
+  }
+  runSqliteImmediateTransactionSync(db, () => {
+    db.exec(`
+      CREATE TABLE subagent_child_intents_v2 (
+        intent_id TEXT NOT NULL PRIMARY KEY,
+        controller_session_key TEXT NOT NULL,
+        canonical_key TEXT NOT NULL,
+        operation_key TEXT,
+        request_digest TEXT NOT NULL,
+        preparation_digest TEXT NOT NULL DEFAULT '',
+        resolved_digest TEXT NOT NULL,
+        target_agent_id TEXT NOT NULL,
+        child_session_key TEXT NOT NULL,
+        reservation_run_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        lease_owner TEXT NOT NULL,
+        lease_expires_at INTEGER,
+        registered_run_id TEXT,
+        provider_run_id TEXT,
+        gateway_receipt_id TEXT,
+        cancel_requested_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL DEFAULT '{}'
+      );
+      INSERT INTO subagent_child_intents_v2
+        SELECT intent_id, controller_session_key, canonical_key, operation_key,
+          request_digest, preparation_digest, resolved_digest, target_agent_id,
+          child_session_key, reservation_run_id, state, generation, lease_owner,
+          lease_expires_at, registered_run_id, provider_run_id, gateway_receipt_id,
+          cancel_requested_at, created_at, updated_at, payload_json
+        FROM subagent_child_intents;
+      DROP TABLE subagent_child_intents;
+      ALTER TABLE subagent_child_intents_v2 RENAME TO subagent_child_intents;
+      CREATE INDEX idx_subagent_child_intents_active_controller
+        ON subagent_child_intents(controller_session_key, state, lease_expires_at);
+      CREATE INDEX idx_subagent_child_intents_controller_canonical
+        ON subagent_child_intents(controller_session_key, canonical_key);
+      CREATE INDEX idx_subagent_child_intents_registered_run
+        ON subagent_child_intents(registered_run_id);
+      CREATE UNIQUE INDEX uq_subagent_child_intents_controller_operation
+        ON subagent_child_intents(controller_session_key, operation_key)
+        WHERE operation_key IS NOT NULL;
+      CREATE UNIQUE INDEX uq_subagent_child_intents_controller_canonical
+        ON subagent_child_intents(controller_session_key, canonical_key)
+        WHERE operation_key IS NULL;
+    `);
+  });
+}
+
 export function ensureAdditiveStateColumns(db: DatabaseSync): void {
   const add = (table: string, column: string) => ensureStateColumn(db, table, column);
   add("node_pairing_pending", "client_id TEXT");
@@ -215,4 +277,5 @@ export function ensureAdditiveStateColumns(db: DatabaseSync): void {
   ]) {
     add("subagent_gateway_acceptance_receipts", column);
   }
+  rebuildLegacyChildIntentUniqueness(db);
 }

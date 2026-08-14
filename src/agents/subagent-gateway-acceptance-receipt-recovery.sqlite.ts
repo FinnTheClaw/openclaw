@@ -97,6 +97,30 @@ function readAuthenticatedReceipt(
   return receipt;
 }
 
+function quarantineUnauthenticatedReceipt(
+  database: DatabaseSync,
+  acceptanceKey: string,
+  lifecycle: string,
+): boolean {
+  const stateDb = getNodeSqliteKysely<ReceiptDb>(database);
+  const result = executeSqliteQuerySync(
+    database,
+    stateDb
+      .updateTable("subagent_gateway_acceptance_receipts")
+      .set({
+        lifecycle: "unknown",
+        updated_at: Date.now(),
+        payload_json: JSON.stringify({
+          quarantineReason: "GOVERNOR_GATEWAY_RECEIPT_AUTHENTICATION_UNAVAILABLE",
+          priorLifecycle: lifecycle,
+        }),
+      })
+      .where("acceptance_key", "=", acceptanceKey)
+      .where("lifecycle", "=", lifecycle),
+  );
+  return Number(result.numAffectedRows ?? 0) === 1;
+}
+
 /** Fence accepted work from an earlier gateway lifecycle without adopting it. */
 export function fencePriorGatewayAcceptanceReceipts(currentEpoch: string): number {
   let fenced = 0;
@@ -130,6 +154,9 @@ export function fencePriorGatewayAcceptanceReceipts(currentEpoch: string): numbe
           "cancel_requested",
         ].includes(current.lifecycle)
       ) {
+        if (!current) {
+          fenced += quarantineUnauthenticatedReceipt(db, row.acceptance_key, row.lifecycle) ? 1 : 0;
+        }
         continue;
       }
       const proof = createGatewayAcceptanceReceiptProof({

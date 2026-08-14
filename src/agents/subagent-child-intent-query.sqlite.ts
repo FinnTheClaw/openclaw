@@ -68,5 +68,8 @@ export function findSubagentChildIntentRow(
   if (canonicalRow && operationRow && canonicalRow.intent_id !== operationRow.intent_id) {
     throw new Error("child intent canonical and operation identities conflict");
   }
-  return operationRow ?? canonicalRow;
+  // An explicit operation key is a caller-owned identity. It must not
+  // silently collapse into an older anonymous canonical slot that happens
+  // to have the same request shape; distinct named slots are intentional.
+  return operationRow;
 }

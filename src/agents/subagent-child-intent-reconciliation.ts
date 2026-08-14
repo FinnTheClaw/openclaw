@@ -30,6 +30,8 @@ export async function reconcileSubagentChildIntent(params: {
           | "dispatch_claimed"
           | "accepted"
           | "started"
+          | "failed_before_start"
+          | "failed_after_start"
           | "unknown"
           | "not_accepted"
           | "cancel_requested"
@@ -45,7 +47,10 @@ export async function reconcileSubagentChildIntent(params: {
     return "duplicate";
   }
   const receipt = params.lookupAcceptance();
-  if (receipt && ["accepted", "started", "terminal"].includes(receipt.lifecycle)) {
+  if (
+    receipt &&
+    ["runnable", "dispatch_claimed", "accepted", "started", "terminal"].includes(receipt.lifecycle)
+  ) {
     // The durable gateway receipt, not the reservation placeholder, owns the
     // provider identity. This also covers a controller crash after the
     // gateway accepted the run but before the child row was updated.
@@ -54,11 +59,11 @@ export async function reconcileSubagentChildIntent(params: {
     }
     return params.adopt() ? "adopt" : "duplicate";
   }
-  if (receipt?.lifecycle === "not_accepted") {
+  if (receipt?.lifecycle === "not_accepted" || receipt?.lifecycle === "failed_before_start") {
     return params.abandon() ? "retry" : "duplicate";
   }
   if (receipt?.lifecycle !== undefined) {
-    // preaccepted, runnable, dispatch_claimed, and cancel_requested are
+    // preaccepted, failed_after_start, and cancellation/unknown states are
     // durable fences. They require host reconciliation and cannot be retried.
     return "duplicate";
   }

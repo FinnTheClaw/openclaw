@@ -2586,7 +2586,17 @@ async function runEmbeddedAgentInternal(
               params.deferTerminalLifecycle ?? params.deferTerminalLifecycleEnd,
             deferTerminalLifecycleEnd:
               params.deferTerminalLifecycle ?? params.deferTerminalLifecycleEnd,
-            onExecutionPhase: params.onExecutionPhase,
+            onExecutionPhase: (info) => {
+              if (
+                info.phase === "model_call_started" &&
+                info.firstModelCallStarted &&
+                info.provider &&
+                info.model
+              ) {
+                params.onProviderStarted?.({ provider: info.provider, model: info.model });
+              }
+              params.onExecutionPhase?.(info);
+            },
             extraSystemPrompt: params.extraSystemPrompt,
             sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
             inputProvenance: params.inputProvenance,

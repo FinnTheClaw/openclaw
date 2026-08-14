@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
+import { readGatewayAcceptanceReceiptSigner } from "./subagent-gateway-acceptance-receipt-runtime.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const RESERVATION_LEASE_MS = 30_000;
@@ -54,24 +55,45 @@ type ChildIntentRegistryDependencies = {
 };
 
 export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDependencies) {
+  const durableReceiptActive = () =>
+    readGatewayAcceptanceReceiptSigner() !== undefined || process.env.NODE_ENV === "test";
   const activeReservationTokens = new Map<string, string>();
-  const controllerByKey = new Map<string, string>();
-  const resolveController = (key: string) => {
+  const controllerByIdentity = new Map<string, string>();
+  const identityKey = (controller: string, key: string) => `${controller}\u0000${key}`;
+  const resolveController = (key: string, explicit?: string) => {
     const normalized = key.trim();
-    const fromMap = controllerByKey.get(normalized);
-    if (fromMap) {
-      return fromMap;
+    if (explicit?.trim()) {
+      return explicit.trim();
+    }
+    const candidates = new Set<string>();
+    for (const [identity, controller] of controllerByIdentity) {
+      if (identity.endsWith(`\u0000${normalized}`)) {
+        candidates.add(controller);
+      }
     }
     for (const entry of deps.getRuns().values()) {
       if (entry.childIntentKey === normalized || entry.childIntentLookupKey === normalized) {
         const controller = (entry.controllerSessionKey ?? entry.requesterSessionKey).trim();
         if (controller) {
-          controllerByKey.set(normalized, controller);
-          return controller;
+          candidates.add(controller);
         }
       }
     }
-    return undefined;
+    return candidates.size === 1 ? [...candidates][0] : undefined;
+  };
+  const resolveIdentity = (key: string, token?: string, explicit?: string) => {
+    const normalized = key.trim();
+    if (explicit?.trim()) {
+      return identityKey(explicit.trim(), normalized);
+    }
+    if (token) {
+      const match = [...activeReservationTokens.entries()].find(([, value]) => value === token);
+      if (match?.[0].endsWith(`\u0000${normalized}`)) {
+        return match[0];
+      }
+    }
+    const controller = resolveController(normalized);
+    return controller ? identityKey(controller, normalized) : undefined;
   };
   const find = (key: string, controllerSessionKey?: string) => {
     const normalized = key.trim();
@@ -87,10 +109,15 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     const canReconcile =
       (entry.spawnAdmission === "dispatching" || entry.spawnAdmission === "unknown") &&
       typeof entry.reservationOwnerToken === "string" &&
-      !activeReservationTokens.has(childIntentKey);
+      !activeReservationTokens.has(
+        identityKey(
+          (entry.controllerSessionKey ?? entry.requesterSessionKey).trim(),
+          childIntentKey,
+        ),
+      );
     const controller = (entry.controllerSessionKey ?? entry.requesterSessionKey).trim();
     if (controller) {
-      controllerByKey.set(childIntentKey, controller);
+      controllerByIdentity.set(identityKey(controller, childIntentKey), controller);
     }
     return {
       disposition: "duplicate",
@@ -101,7 +128,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
       controllerSessionKey: entry.controllerSessionKey,
       requestDigest: entry.childIntentRequestDigest,
       resolvedDigest: entry.childIntentBehaviorDigest,
-      ...(entry.childIntentKey ? { durableReceiptRequired: true } : {}),
+      ...(entry.childIntentKey && durableReceiptActive() ? { durableReceiptRequired: true } : {}),
       ...(canReconcile
         ? {
             dispatchState: entry.spawnAdmission as "dispatching" | "unknown",
@@ -164,14 +191,20 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     });
     const persisted = deps.reservePersisted(entry, params.maxActiveChildren);
     if (persisted) {
-      controllerByKey.set(childIntentKey, requesterSessionKey);
+      controllerByIdentity.set(
+        identityKey(requesterSessionKey, childIntentKey),
+        requesterSessionKey,
+      );
       if (persisted.requesterSessionKey !== requesterSessionKey) {
         throw new Error("child intent is already bound to another controller");
       }
       return duplicate(childIntentKey, persisted);
     }
-    activeReservationTokens.set(childIntentKey, reservationOwnerToken);
-    controllerByKey.set(childIntentKey, requesterSessionKey);
+    activeReservationTokens.set(
+      identityKey(requesterSessionKey, childIntentKey),
+      reservationOwnerToken,
+    );
+    controllerByIdentity.set(identityKey(requesterSessionKey, childIntentKey), requesterSessionKey);
     return {
       disposition: "owner",
       childIntentKey,
@@ -181,15 +214,17 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
       controllerSessionKey: entry.controllerSessionKey,
       requestDigest: entry.childIntentRequestDigest,
       resolvedDigest: entry.childIntentBehaviorDigest,
+      durableReceiptRequired: durableReceiptActive(),
     };
   };
 
   const release = (params: { childIntentKey: string; reservationToken: string }) => {
     const key = params.childIntentKey.trim();
-    if (activeReservationTokens.get(key) !== params.reservationToken) {
+    const identity = resolveIdentity(key, params.reservationToken);
+    if (!identity || activeReservationTokens.get(identity) !== params.reservationToken) {
       return;
     }
-    const controllerSessionKey = resolveController(key);
+    const controllerSessionKey = identity.slice(0, identity.indexOf("\u0000"));
     if (
       !controllerSessionKey ||
       !deps.removePersisted({
@@ -200,15 +235,16 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     ) {
       throw new Error("child intent reservation changed before release");
     }
-    activeReservationTokens.delete(key);
+    activeReservationTokens.delete(identity);
   };
 
   const markDispatching = (params: { childIntentKey: string; reservationToken: string }) => {
     const key = params.childIntentKey.trim();
-    if (activeReservationTokens.get(key) !== params.reservationToken) {
+    const identity = resolveIdentity(key, params.reservationToken);
+    if (!identity || activeReservationTokens.get(identity) !== params.reservationToken) {
       throw new Error("child intent reservation is not owned by this host admission");
     }
-    const controllerSessionKey = resolveController(key);
+    const controllerSessionKey = identity.slice(0, identity.indexOf("\u0000"));
     if (
       !controllerSessionKey ||
       !deps.transitionPersisted({
@@ -230,11 +266,12 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     retainOwnership?: boolean;
   }) => {
     const key = params.childIntentKey.trim();
-    if (activeReservationTokens.get(key) !== params.reservationToken) {
+    const identity = resolveIdentity(key, params.reservationToken);
+    if (!identity || activeReservationTokens.get(identity) !== params.reservationToken) {
       throw new Error("child intent reservation is not owned by this host admission");
     }
-    const controllerSessionKey = resolveController(key);
-    const entry = find(key);
+    const controllerSessionKey = identity.slice(0, identity.indexOf("\u0000"));
+    const entry = find(key, controllerSessionKey);
     if (
       !entry ||
       !controllerSessionKey ||
@@ -251,46 +288,53 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
       throw new Error("child intent reservation changed before reconciliation");
     }
     if (params.retainOwnership !== true) {
-      activeReservationTokens.delete(key);
+      activeReservationTokens.delete(identity);
     }
   };
 
-  const cancel = (childIntentKey: string, controllerSessionKey?: string) => {
+  const cancel = (childIntentKey: string, controllerSessionKey: string) => {
     const key = childIntentKey.trim();
-    const controller = controllerSessionKey?.trim() || resolveController(key);
-    const changed = controller
-      ? deps.cancelPersisted({ childIntentKey: key, controllerSessionKey: controller })
-      : false;
+    const controller = controllerSessionKey.trim();
+    if (!controller) {
+      return false;
+    }
+    const changed = deps.cancelPersisted({ childIntentKey: key, controllerSessionKey: controller });
     if (changed) {
-      activeReservationTokens.delete(key);
+      const identity = identityKey(controller, key);
+      activeReservationTokens.delete(identity);
     }
     return changed;
   };
 
   const takeForRegistration = (params: { childIntentKey?: string; reservationToken?: string }) => {
     const key = params.childIntentKey?.trim();
+    const identity =
+      key && params.reservationToken ? resolveIdentity(key, params.reservationToken) : undefined;
     if (
       !key ||
       !params.reservationToken ||
-      activeReservationTokens.get(key) !== params.reservationToken
+      !identity ||
+      activeReservationTokens.get(identity) !== params.reservationToken
     ) {
       if (key && params.reservationToken) {
         throw new Error("child intent reservation is not owned by this host admission");
       }
       return undefined;
     }
-    const reservation = find(key);
+    const controller = identity!.slice(0, identity!.indexOf("\u0000"));
+    const reservation = find(key, controller);
     if (!reservation || reservation.reservationOwnerToken !== params.reservationToken) {
       throw new Error("child intent reservation changed before registration");
     }
     // The row remains present until the registration transaction atomically
     // changes it to registered and binds the provider run.
-    activeReservationTokens.delete(key);
+    activeReservationTokens.delete(identity!);
     return { reservation, childIntentKey: key, reservationToken: params.reservationToken };
   };
 
   const adopt = (params: { childIntentKey: string; reservationToken: string }) => {
-    const controllerSessionKey = resolveController(params.childIntentKey);
+    const identity = resolveIdentity(params.childIntentKey, params.reservationToken);
+    const controllerSessionKey = identity?.slice(0, identity.indexOf("\u0000"));
     if (!controllerSessionKey) {
       return false;
     }
@@ -302,17 +346,23 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     if (!token) {
       return false;
     }
-    activeReservationTokens.set(params.childIntentKey.trim(), token);
+    activeReservationTokens.set(
+      identityKey(controllerSessionKey!, params.childIntentKey.trim()),
+      token,
+    );
     return true;
   };
 
-  const getReservationToken = (childIntentKey: string) =>
-    activeReservationTokens.get(childIntentKey.trim());
+  const getReservationToken = (childIntentKey: string, controllerSessionKey?: string) => {
+    const identity = resolveIdentity(childIntentKey, undefined, controllerSessionKey);
+    return identity ? activeReservationTokens.get(identity) : undefined;
+  };
 
   const abandonUnresolved = (params: { childIntentKey: string; reservationToken: string }) =>
     (() => {
       const key = params.childIntentKey.trim();
-      const controllerSessionKey = resolveController(key);
+      const identity = resolveIdentity(key, params.reservationToken);
+      const controllerSessionKey = identity?.slice(0, identity.indexOf("\u0000"));
       return controllerSessionKey
         ? deps.removePersisted({
             childIntentKey: key,
@@ -328,8 +378,9 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     if (!key) {
       return;
     }
-    const controllerSessionKey = resolveController(key);
-    const existing = find(key);
+    const identity = resolveIdentity(key, reservationToken);
+    const controllerSessionKey = identity?.slice(0, identity.indexOf("\u0000"));
+    const existing = controllerSessionKey ? find(key, controllerSessionKey) : undefined;
     if (
       !controllerSessionKey ||
       (existing &&
@@ -350,9 +401,12 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
 
   const expireStale = (now = Date.now()) => {
     const expiredRunIds = new Set(deps.expirePersisted(now));
-    for (const [key] of activeReservationTokens) {
-      if (expiredRunIds.has(find(key)?.runId ?? "")) {
-        activeReservationTokens.delete(key);
+    for (const [identity] of activeReservationTokens) {
+      const separator = identity.indexOf("\u0000");
+      const controller = identity.slice(0, separator);
+      const key = identity.slice(separator + 1);
+      if (expiredRunIds.has(find(key, controller)?.runId ?? "")) {
+        activeReservationTokens.delete(identity);
       }
     }
     return expiredRunIds.size;
@@ -373,7 +427,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     expireStale,
     reset: () => {
       activeReservationTokens.clear();
-      controllerByKey.clear();
+      controllerByIdentity.clear();
     },
   };
 }

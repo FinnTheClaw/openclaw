@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import { canonicalGovernorJson, governorDigest } from "../tasks/governor/canonical-json.js";
-import { readGatewayAcceptanceReceiptSigner } from "./subagent-gateway-acceptance-receipt-runtime.js";
+import {
+  readGatewayAcceptanceReceiptSigner,
+  readGatewayAcceptanceReceiptSigners,
+} from "./subagent-gateway-acceptance-receipt-runtime.js";
 
 export type GatewayAcceptanceReceiptEnvelope = Readonly<{
   schema: "openclaw.gateway.acceptance.v2";
@@ -187,6 +190,8 @@ export function gatewayAcceptanceReceiptBindingDigest(
   return gatewayAcceptanceReceiptEnvelopeDigest({
     ...envelope,
     gatewayRunId: "",
+    acceptanceEpoch: "",
+    signingKeyGeneration: "",
     receiptGeneration: 0,
   });
 }
@@ -275,23 +280,31 @@ export function verifyGatewayAcceptanceReceiptProof(params: {
   cancelEpoch: number;
 }): boolean {
   try {
-    const key = params.key ?? resolveSigningKey();
     const envelopeDigest = gatewayAcceptanceReceiptEnvelopeDigest(params.envelope);
-    const expected = signProof({
-      key,
-      envelopeDigest,
-      keyId: gatewayAcceptanceReceiptKeyId(key),
-      nonce: params.proof.nonce,
-      signatureGeneration: params.envelope.receiptGeneration,
-      lifecycle: params.lifecycle,
-      cancelEpoch: params.cancelEpoch,
+    const candidates = [
+      ...(params.key ? [{ signingKey: params.key }] : readGatewayAcceptanceReceiptSigners()),
+    ];
+    if (candidates.length === 0 && process.env.NODE_ENV === "test") {
+      candidates.push({ signingKey: "openclaw-test-gateway-acceptance-receipt-key" });
+    }
+    return candidates.some(({ signingKey }) => {
+      const keyId = gatewayAcceptanceReceiptKeyId(signingKey);
+      const expected = signProof({
+        key: signingKey,
+        envelopeDigest,
+        keyId,
+        nonce: params.proof.nonce,
+        signatureGeneration: params.envelope.receiptGeneration,
+        lifecycle: params.lifecycle,
+        cancelEpoch: params.cancelEpoch,
+      });
+      return (
+        params.proof.keyId === keyId &&
+        params.proof.envelopeDigest === envelopeDigest &&
+        params.proof.signature.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(params.proof.signature), Buffer.from(expected))
+      );
     });
-    return (
-      params.proof.keyId === gatewayAcceptanceReceiptKeyId(key) &&
-      params.proof.envelopeDigest === envelopeDigest &&
-      params.proof.signature.length === expected.length &&
-      crypto.timingSafeEqual(Buffer.from(params.proof.signature), Buffer.from(expected))
-    );
   } catch {
     return false;
   }

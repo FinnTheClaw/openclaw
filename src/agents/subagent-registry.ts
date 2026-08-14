@@ -1740,7 +1740,7 @@ export function assertSubagentChildIntentDispatchAvailable(params: {
 
 export function cancelSubagentChildIntent(
   childIntentKey: string,
-  controllerSessionKey?: string,
+  controllerSessionKey: string,
 ): boolean {
   return childIntentRegistry.cancel(childIntentKey, controllerSessionKey);
 }
@@ -1752,8 +1752,11 @@ export function adoptSubagentChildIntent(params: {
   return childIntentRegistry.adopt(params);
 }
 
-export function getSubagentChildIntentReservationToken(childIntentKey: string): string | undefined {
-  return childIntentRegistry.getReservationToken(childIntentKey);
+export function getSubagentChildIntentReservationToken(
+  childIntentKey: string,
+  controllerSessionKey?: string,
+): string | undefined {
+  return childIntentRegistry.getReservationToken(childIntentKey, controllerSessionKey);
 }
 
 export function abandonUnresolvedSubagentChildIntent(params: {
@@ -1996,7 +1999,6 @@ export function markSubagentRunTerminated(params: {
     runId: params.runId,
     childSessionKey: params.childSessionKey,
   });
-  const targetKeys = new Set<string>();
   for (const entry of subagentRuns.values()) {
     if (
       entry.childIntentKey &&
@@ -2004,11 +2006,11 @@ export function markSubagentRunTerminated(params: {
       ((params.runId && entry.runId === params.runId) ||
         (params.childSessionKey && entry.childSessionKey === params.childSessionKey))
     ) {
-      targetKeys.add(entry.childIntentKey);
+      const controller = (entry.controllerSessionKey ?? entry.requesterSessionKey).trim();
+      if (controller) {
+        childIntentRegistry.cancel(entry.childIntentKey, controller);
+      }
     }
-  }
-  for (const childIntentKey of targetKeys) {
-    childIntentRegistry.cancel(childIntentKey);
   }
   return subagentRunManager.markSubagentRunTerminated(params);
 }

@@ -886,6 +886,7 @@ export function runAgentAttempt(params: {
         params.onLifecycleGenerationChanged?.(info.lifecycleGeneration);
       }
     },
+    onProviderStarted: params.opts.onProviderStarted,
     onSessionIdChanged: params.opts.onSessionIdChanged,
     bootstrapPromptWarningSignaturesSeen,
     bootstrapPromptWarningSignature,

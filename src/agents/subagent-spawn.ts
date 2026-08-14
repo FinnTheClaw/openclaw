@@ -1464,8 +1464,10 @@ export async function spawnSubagentDirect(
           childIntentReservation = {
             ...childIntentReservation,
             reservationToken:
-              getSubagentChildIntentReservationToken(childIntentReservation.childIntentKey) ??
-              childIntentReservation.reservationToken,
+              getSubagentChildIntentReservationToken(
+                childIntentReservation.childIntentKey,
+                childIntentReservation.controllerSessionKey,
+              ) ?? childIntentReservation.reservationToken,
           };
         }
         return adoptedToken;

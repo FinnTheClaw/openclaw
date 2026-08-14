@@ -155,7 +155,7 @@ describe("durable child intent reservations", () => {
     };
     const first = reserveSubagentChildIntent(input);
     expect(first.disposition).toBe("owner");
-    expect(cancelSubagentChildIntent(first.childIntentKey)).toBe(true);
+    expect(cancelSubagentChildIntent(first.childIntentKey, first.controllerSessionKey!)).toBe(true);
     expect(() =>
       markSubagentChildIntentDispatching({
         childIntentKey: first.childIntentKey,
