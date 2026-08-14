@@ -88,6 +88,7 @@ type AgentCliOpts = {
   lane?: string;
   runId?: string;
   extraSystemPrompt?: string;
+  toolsAllow?: string[];
   local?: boolean;
 };
 type AgentDispatchOpts = Omit<AgentCliOpts, "messageFile"> & {
@@ -783,6 +784,7 @@ async function agentViaGatewayCommand(
             timeout: timeoutSeconds,
             lane: opts.lane,
             extraSystemPrompt: opts.extraSystemPrompt,
+            toolsAllow: opts.toolsAllow,
             cleanupBundleMcpOnRunEnd: true,
             idempotencyKey,
           },

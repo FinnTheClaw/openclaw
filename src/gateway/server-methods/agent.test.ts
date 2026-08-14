@@ -3452,6 +3452,21 @@ describe("gateway agent handler", () => {
     expect(call.cleanupBundleMcpOnRunEnd).toBe(true);
   });
 
+  it("forwards and normalizes a narrowing runtime tool allow-list", async () => {
+    primeMainAgentRun();
+    mocks.agentCommand.mockClear();
+
+    await invokeAgent({
+      message: "memory probe",
+      sessionKey: "agent:main:subagent:tool-allow-probe",
+      idempotencyKey: "test-idem-agent-tool-allow",
+      toolsAllow: [" memory_store ", "memory_store", "memory_recall"],
+    });
+
+    const call = await waitForAgentCommandCall();
+    expect(call.toolsAllow).toEqual(["memory_store", "memory_recall"]);
+  });
+
   it.each(
     (["channel", "replyChannel"] as const).flatMap((field) =>
       (["heartbeat", "cron", "webhook", "voice"] as const).map(
