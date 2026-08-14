@@ -29,12 +29,19 @@ export type GovernorRuntimeBlockReason =
   | "budget_exhausted"
   | "semantic_stagnation"
   | "tool_semantic_failure"
+  | "completion_only_violation"
   | "shadow_observed";
 
 export type GovernorRuntimeReplanGuidanceRequest = Readonly<{
   reasonCode: GovernorRuntimeReplanReason;
   progressDigest: string;
   sourceEffectId?: string;
+}>;
+export type GovernorRuntimeReplanMetadata = Readonly<{
+  sourceEffectId?: string;
+  actionFingerprint?: string;
+  checkpointId?: string;
+  fromPlanVersion?: number;
 }>;
 
 export type GovernorRuntimeFinishRequest = Readonly<{
@@ -95,6 +102,7 @@ export function requestGovernorRuntimeReplan(
   task: GovernorTaskProjection,
   now: number,
   reasonCode: GovernorRuntimeTransitionReason = "tool_semantic_failure",
+  metadata?: GovernorRuntimeReplanMetadata,
 ): GovernorTaskProjection {
   if (task.state !== "EXECUTING") {
     throw new Error("GOVERNOR_RUNTIME_REPLAN_STATE_INVALID");
@@ -112,7 +120,15 @@ export function requestGovernorRuntimeReplan(
   const event = createGovernorEventRecord({
     task: transition.task,
     eventType: "runtime_replan_requested",
-    payload: { reasonCode },
+    payload: {
+      reasonCode,
+      ...(metadata?.sourceEffectId ? { sourceEffectId: metadata.sourceEffectId } : {}),
+      ...(metadata?.actionFingerprint ? { actionFingerprint: metadata.actionFingerprint } : {}),
+      ...(metadata?.checkpointId ? { checkpointId: metadata.checkpointId } : {}),
+      ...(metadata?.fromPlanVersion !== undefined
+        ? { fromPlanVersion: metadata.fromPlanVersion }
+        : {}),
+    },
     now,
   });
   const committed = store.commit({ current: task, next: transition.task, event });

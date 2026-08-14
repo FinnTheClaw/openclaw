@@ -7,6 +7,7 @@ import {
   formatGovernorAgentLoopProgress,
   type GovernorAgentLoopProgressSnapshot,
 } from "./governor-agent-loop-progress.js";
+import { advanceGovernorAgentLoopTransientFailure } from "./governor-agent-loop-transient-failure.js";
 import type { GovernorAgentLoopTurnDecision } from "./governor-agent-loop-types.js";
 
 export type GovernorAgentLoopTurnState = {
@@ -17,6 +18,7 @@ export type GovernorAgentLoopTurnState = {
   skipNextStagnationCheck: boolean;
   toolErrorObserved: boolean;
   toolErrorEffectId?: string;
+  finalResponsePending: boolean;
   terminal: boolean;
   terminalReason?: string;
 };
@@ -49,16 +51,33 @@ export function recordGovernorAgentLoopTurn(params: {
     state.replannedAfterStagnation = false;
   }
   let stopAfterTurnReason: string | undefined;
+  let toolErrorRetryApplied = false;
+  let toolErrorRetryFailed = false;
   if (observedToolError && params.config.mode === "enforce") {
-    if (state.replannedAfterStagnation) {
+    const retry = observedToolErrorEffectId
+      ? advanceGovernorAgentLoopTransientFailure({
+          controller: params.controller,
+          taskId: params.taskId,
+          sourceEffectId: observedToolErrorEffectId,
+          now: turn.now + 1,
+        })
+      : { kind: "not_eligible" as const };
+    if (retry.kind === "retry_exhausted" || retry.kind === "not_eligible") {
+      state.terminalReason = "GOVERNOR_AGENT_LOOP_TOOL_REPLAN_FAILED";
+      toolErrorRetryFailed = true;
+    }
+    state.progress = buildGovernorAgentLoopProgress(
+      params.controller,
+      params.taskId,
+      params.config,
+    );
+    state.priorProgressFingerprint = state.progress.fingerprint;
+    state.replannedAfterStagnation = false;
+    state.finalResponsePending = false;
+    if (retry.kind === "already_replanned") {
       stopAfterTurnReason = "GOVERNOR_AGENT_LOOP_NO_PROGRESS";
-    } else {
-      params.controller.recordRuntimeReplanGuidance(params.taskId, turn.now + 1, {
-        reasonCode: "tool_semantic_failure",
-        progressDigest: state.progress.fingerprint,
-        ...(observedToolErrorEffectId ? { sourceEffectId: observedToolErrorEffectId } : {}),
-      });
-      state.replannedAfterStagnation = true;
+    } else if (turn.toolCallCount > 0) {
+      toolErrorRetryApplied = true;
     }
   }
   state.priorProgressFingerprint = state.progress.fingerprint;
@@ -89,12 +108,28 @@ export function recordGovernorAgentLoopTurn(params: {
     }
     return { kind: "complete" };
   }
+  if (toolErrorRetryFailed) {
+    params.controller.blockRuntime(params.taskId, turn.now + 1, "tool_semantic_failure");
+    return { kind: "stop", reasonCode: state.terminalReason! };
+  }
   if (turn.assistantStopReason === "error" || turn.assistantStopReason === "aborted") {
     return { kind: "interrupt", reasonCode: "GOVERNOR_AGENT_LOOP_PROVIDER_INTERRUPTED" };
   }
   if (stopAfterTurnReason) {
     state.terminalReason = stopAfterTurnReason;
     params.controller.blockRuntime(params.taskId, turn.now + 1, "tool_semantic_failure");
+    return { kind: "stop", reasonCode: state.terminalReason };
+  }
+  if (toolErrorRetryApplied) {
+    return {
+      kind: "continue",
+      phase: "actions",
+      message: formatGovernorAgentLoopProgress(state.progress),
+    };
+  }
+  if (state.finalResponsePending && turn.toolCallCount > 0) {
+    state.terminalReason = "GOVERNOR_AGENT_LOOP_FINAL_RESPONSE_ONLY";
+    params.controller.blockRuntime(params.taskId, turn.now + 1, "completion_only_violation");
     return { kind: "stop", reasonCode: state.terminalReason };
   }
   if (turn.toolCallCount > 0 && state.turns >= params.safetyBudget) {
@@ -121,11 +156,37 @@ export function recordGovernorAgentLoopTurn(params: {
     state.replannedAfterStagnation = true;
     return {
       kind: "continue",
+      phase: "actions",
       message: `${formatGovernorAgentLoopProgress(state.progress)} Progress stalled; the host issued one replan. Choose a different eligible action.`,
     };
   }
   if (turn.toolCallCount > 0) {
-    return { kind: "continue", message: formatGovernorAgentLoopProgress(state.progress) };
+    if (state.progress.remainingCriteria.length === 0) {
+      const ready = params.controller.assessFinish({
+        taskId: params.taskId,
+        response: { framing: "none", materialClaimIds: [] },
+        now: turn.now + 1,
+      }).accepted;
+      if (ready) {
+        state.finalResponsePending = true;
+        params.controller.recordRuntimeEvent({
+          taskId: params.taskId,
+          eventType: "runtime_finish_proposed",
+          payload: { finalResponsePending: true, phase: "final_response", turn: state.turns },
+          now: turn.now + 2,
+        });
+        return {
+          kind: "continue",
+          phase: "final_response",
+          message: "Host verified all mandatory evidence. Return the final answer without tools.",
+        };
+      }
+    }
+    return {
+      kind: "continue",
+      phase: "actions",
+      message: formatGovernorAgentLoopProgress(state.progress),
+    };
   }
   const responseDigestMatches =
     !params.config.expectedAssistantTextDigest ||
@@ -174,6 +235,7 @@ export function recordGovernorAgentLoopTurn(params: {
   state.replannedAfterStagnation = true;
   return {
     kind: "continue",
+    phase: "actions",
     message: `${formatGovernorAgentLoopProgress(state.progress)} Governor completion requires current admitted evidence and verification. The host issued one replan; choose an eligible action.`,
   };
 }

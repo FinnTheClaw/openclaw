@@ -23,7 +23,7 @@ export type GovernorAgentLoopToolDecision =
   | { kind: "block"; reasonCode: string };
 export type GovernorAgentLoopTurnDecision =
   | { kind: "complete" }
-  | { kind: "continue"; message: string }
+  | { kind: "continue"; phase: "actions" | "final_response"; message: string }
   | { kind: "stop"; reasonCode: string }
   | { kind: "interrupt"; reasonCode: string };
 
@@ -52,6 +52,7 @@ export type GovernorAgentLoopRunScope = Readonly<{
     toolCallCount: number;
     now: number;
   }): GovernorAgentLoopTurnDecision;
+  turnPhase(): "actions" | "final_response";
   interrupt(input: { now: number }): void;
   assertTerminal(): void;
   governedTools(): readonly AgentTool[];

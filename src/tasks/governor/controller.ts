@@ -32,6 +32,7 @@ import {
   type GovernorRuntimeEventRequest,
   type GovernorRuntimeFinishRequest,
   type GovernorRuntimeBlockReason,
+  type GovernorRuntimeReplanMetadata,
 } from "./controller-runtime.js";
 import { dispatchGovernorOutbox, type GovernorDispatchOutboxParams } from "./delivery-dispatch.js";
 import { createGovernorEventRecord } from "./events.js";
@@ -327,8 +328,9 @@ export class GovernorController {
     taskId: GovernorTaskId,
     now: number,
     reasonCode?: Parameters<typeof requestGovernorRuntimeReplan>[3],
+    metadata?: GovernorRuntimeReplanMetadata,
   ): GovernorTaskProjection {
-    return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now, reasonCode);
+    return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now, reasonCode, metadata);
   }
 
   recordRuntimeReplanGuidance(

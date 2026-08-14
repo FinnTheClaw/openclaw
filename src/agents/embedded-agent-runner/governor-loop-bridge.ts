@@ -50,11 +50,41 @@ export function installGovernorLoopBridge(params: {
   const priorShouldStop = params.agent.shouldStopAfterTurn;
   let toolInventoryLease: Readonly<{ restore(): void }> | undefined;
   const governedTools = new Map(params.scope.governedTools().map((tool) => [tool.name, tool]));
+  let governedInventory = params.agent.state.tools.slice();
+  let inventoryMasked = false;
   let stoppedReason: string | undefined;
   let terminalRequested = false;
+  const sameInventory = (left: readonly unknown[], right: readonly unknown[]) =>
+    left.length === right.length && left.every((tool, index) => tool === right[index]);
+  const maskTools = () => {
+    if (
+      !toolInventoryLease ||
+      inventoryMasked ||
+      !sameInventory(params.agent.state.tools, governedInventory)
+    ) {
+      return;
+    }
+    params.agent.state.tools = [];
+    inventoryMasked = true;
+  };
+  const restoreTools = () => {
+    if (!toolInventoryLease || !inventoryMasked || params.agent.state.tools.length !== 0) {
+      return;
+    }
+    params.agent.state.tools = governedInventory;
+    inventoryMasked = false;
+  };
+  const refreshToolPhase = () => {
+    const phase = params.scope.turnPhase();
+    if (phase === "actions") {
+      restoreTools();
+    }
+    return phase;
+  };
   const shouldStopAfterTurn = async (
     context: Parameters<NonNullable<Agent["shouldStopAfterTurn"]>>[0],
   ) => {
+    refreshToolPhase();
     if (terminalRequested) {
       return true;
     }
@@ -63,13 +93,12 @@ export function installGovernorLoopBridge(params: {
   const governorSteeringKey = "openclaw-governor-progress";
   if (params.scope.mode === "enforce") {
     const legacyTools = params.agent.state.tools.filter((tool) => !governedTools.has(tool.name));
-    toolInventoryLease = params.agent.installToolInventory([
-      ...legacyTools,
-      ...governedTools.values(),
-    ]);
+    governedInventory = [...legacyTools, ...governedTools.values()];
+    toolInventoryLease = params.agent.installToolInventory(governedInventory);
   }
 
   const beforeToolCall: NonNullable<Agent["beforeToolCall"]> = async (context, signal) => {
+    refreshToolPhase();
     const prior = await priorBefore?.(context, signal);
     if (prior?.block) {
       return prior;
@@ -165,6 +194,11 @@ export function installGovernorLoopBridge(params: {
         return;
       }
       if (decision.kind === "continue" && decision.message) {
+        if (decision.phase === "final_response") {
+          maskTools();
+        } else {
+          restoreTools();
+        }
         params.agent.steerKeyed(governorSteeringKey, {
           role: "user",
           content: [{ type: "text", text: decision.message }],
@@ -221,6 +255,7 @@ export function installGovernorLoopBridge(params: {
       if (params.agent.shouldStopAfterTurn === shouldStopAfterTurn) {
         params.agent.shouldStopAfterTurn = priorShouldStop;
       }
+      restoreTools();
       toolInventoryLease?.restore();
       tickets.clear();
       if (params.scope.mode === "enforce") {

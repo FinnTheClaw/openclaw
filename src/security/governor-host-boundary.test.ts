@@ -53,13 +53,16 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "gateway/behavior-governor-lifecycle.ts",
     "security/governor-agent-loop-completed-replay.ts",
     "security/governor-agent-loop-contract.ts",
+    "security/governor-agent-loop-criterion-arguments.ts",
     "security/governor-agent-loop-progress.ts",
     "security/governor-agent-loop-replay-lookup.ts",
+    "security/governor-agent-loop-scope-disposal.ts",
     "security/governor-agent-loop-types.ts",
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-ingress.ts",
     "security/governor-agent-loop-tool-bindings.ts",
     "security/governor-agent-loop-turn-handler.ts",
+    "security/governor-agent-loop-turn-state.ts",
     "security/governor-host-bootstrap.ts",
   ],
   "governor-agent-loop-host-replay": ["security/governor-agent-loop-host.ts"],
@@ -68,6 +71,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   "governor-agent-loop-progress": [
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-turn-handler.ts",
+    "security/governor-agent-loop-turn-state.ts",
   ],
   "governor-agent-loop-task": ["security/governor-agent-loop-host.ts"],
   "governor-agent-loop-tools": [
@@ -89,6 +93,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-agent-loop-turn-handler.ts",
   ],
   "governor-agent-loop-values": [
+    "security/governor-agent-loop-criterion-arguments.ts",
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-task.ts",
   ],

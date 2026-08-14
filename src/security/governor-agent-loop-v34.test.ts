@@ -129,7 +129,7 @@ function streamFor(next: () => ReturnType<typeof assistant>, seen?: string[][]):
 afterEach(() => closeOpenClawStateDatabase());
 
 describe("V34 governed continuation", () => {
-  it("steers evidence-derived progress before the next model response", async () => {
+  it("steers a verified completion-only response after the last action", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v34-steer-" },
       async (state) => {
@@ -161,11 +161,10 @@ describe("V34 governed continuation", () => {
           const bridge = installGovernorLoopBridge({ agent, scope, now: () => ++timestamp });
           await agent.prompt("complete the fixture");
           bridge.assertTerminal();
-          expect(seen[1]?.some((text) => text.includes("Host progress (verified)"))).toBe(true);
-          expect(seen[1]?.some((text) => text.includes("satisfied=[alpha]"))).toBe(true);
-          expect(agent.state.tools.find((tool) => tool.name === "observe")?.description).toContain(
-            "Verify alpha",
-          );
+          expect(
+            seen.flat().some((text) => text.includes("Host verified all mandatory evidence")),
+          ).toBe(true);
+          expect(agent.state.tools).toEqual([]);
           bridge.dispose();
         } finally {
           runtime.close();
@@ -241,8 +240,8 @@ describe("V34 governed continuation", () => {
           let timestamp = 0;
           const bridge = installGovernorLoopBridge({ agent, scope, now: () => ++timestamp });
           await agent.prompt("repeat the fixture");
-          expect(() => bridge.assertTerminal()).toThrow("GOVERNOR_AGENT_LOOP_NO_PROGRESS");
-          expect(turn).toBe(3);
+          expect(() => bridge.assertTerminal()).toThrow("GOVERNOR_AGENT_LOOP_FINAL_RESPONSE_ONLY");
+          expect(turn).toBe(2);
           expect(runtime.adapter.controller.store.listEffects(scope.taskId as never)).toHaveLength(
             1,
           );
@@ -447,9 +446,15 @@ describe("V34 governed continuation", () => {
           .filter((event) => event.eventType === "runtime_replan_requested");
         expect(guidance).toHaveLength(1);
         expect(guidance[0]?.payload).toMatchObject({
-          guidanceOnly: true,
           reasonCode: "tool_semantic_failure",
+          sourceEffectId: expect.any(String),
+          actionFingerprint: expect.any(String),
+          checkpointId: expect.any(String),
+          fromPlanVersion: 1,
         });
+        expect(
+          restarted.adapter.controller.store.loadTask(recovered.taskId as never)?.planVersion,
+        ).toBe(2);
 
         const retry = recovered.beforeTool({
           toolCallId: "failed-retry",
@@ -472,7 +477,7 @@ describe("V34 governed continuation", () => {
         });
         expect(recovered.afterTurn({ assistantText: "", toolCallCount: 1, now: 203 })).toEqual({
           kind: "stop",
-          reasonCode: "GOVERNOR_AGENT_LOOP_NO_PROGRESS",
+          reasonCode: "GOVERNOR_AGENT_LOOP_TOOL_REPLAN_FAILED",
         });
         expect(
           restarted.adapter.controller.store

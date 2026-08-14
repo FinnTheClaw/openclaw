@@ -2,6 +2,7 @@ import type { GovernorActionIntent } from "../tasks/governor/action-intent.js";
 import { governorDigest, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import type { GovernorController } from "../tasks/governor/controller.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "../tasks/governor/types.js";
+import { buildGovernorAgentLoopPlan } from "./governor-agent-loop-plan.js";
 import { safeGovernorAgentLoopValue } from "./governor-agent-loop-values.js";
 import type { HostGovernorCapabilities } from "./governor-host-contracts.js";
 
@@ -15,33 +16,6 @@ export type GovernorAgentLoopTicketState = Readonly<{
   observationKey?: string;
 }>;
 
-function planFor(task: GovernorTaskProjection) {
-  const criterionStep = new Map(
-    task.contract.completionCriteria.map((criterion, index) => [
-      criterion.criterionId,
-      `runtime-step-${index + 1}`,
-    ]),
-  );
-  const hasDependencies = task.contract.completionCriteria.some(
-    (criterion) => (criterion.dependsOnCriteria?.length ?? 0) > 0,
-  );
-  return {
-    kind: hasDependencies ? ("dag" as const) : ("ordered" as const),
-    steps: task.contract.completionCriteria.map((criterion, index) => ({
-      stepId: `runtime-step-${index + 1}`,
-      description: `Satisfy ${criterion.criterionId}`,
-      criterionIds: [criterion.criterionId],
-      dependsOn: criterion.dependsOnCriteria?.length
-        ? criterion.dependsOnCriteria.map((id) => criterionStep.get(id)!).toSorted()
-        : hasDependencies
-          ? []
-          : index === 0
-            ? []
-            : [`runtime-step-${index}`],
-    })),
-  };
-}
-
 export function ensureGovernorAgentLoopExecuting(
   controller: GovernorController,
   taskId: GovernorTaskId,
@@ -52,7 +26,11 @@ export function ensureGovernorAgentLoopExecuting(
     throw new Error("GOVERNOR_AGENT_LOOP_TASK_UNAVAILABLE");
   }
   if (["RECEIVED", "CONTRACTING", "PLANNING", "REPLAN_REQUIRED"].includes(task.state)) {
-    task = controller.preparePlan({ taskId, plan: planFor(task), now });
+    task = controller.preparePlan({
+      taskId,
+      plan: buildGovernorAgentLoopPlan(task),
+      now,
+    });
   }
   if (task.state === "READY") {
     task = controller.startExecution(taskId, now + 4);
