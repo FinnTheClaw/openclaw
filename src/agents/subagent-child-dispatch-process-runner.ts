@@ -10,6 +10,10 @@ import {
   runFailedBeforeStartScenario,
 } from "./subagent-child-dispatch-process-failure.js";
 import {
+  runTerminalCompactionScenario,
+  runUnknownFenceBatch,
+} from "./subagent-child-dispatch-process-fence.js";
+import {
   type ChildDispatchProcessHandle,
   createChildDispatchHarness,
   readPhysicalStarts,
@@ -373,6 +377,10 @@ async function main(): Promise<void> {
   } else if (requestedScenario === "failure-matrix") {
     results.push(await runFailedBeforeStartScenario());
     results.push(await runFailedAfterStartScenario());
+  } else if (requestedScenario === "unknown-fence") {
+    results.push(...(await runUnknownFenceBatch()));
+  } else if (requestedScenario === "terminal-compaction") {
+    results.push(await runTerminalCompactionScenario());
   } else if (selectedScenarios.length === 0) {
     throw new Error(`unknown child-dispatch scenario: ${requestedScenario}`);
   } else {

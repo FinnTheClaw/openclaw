@@ -12,6 +12,7 @@ import {
 } from "./subagent-child-operation-identity.js";
 import { installGatewayAcceptanceReceiptSigner } from "./subagent-gateway-acceptance-receipt-runtime.js";
 import { readGatewayAcceptanceReceipt } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
+import { releaseSubagentRun } from "./subagent-registry.js";
 import { spawnSubagentDirect } from "./subagent-spawn.js";
 
 const protocolPath = process.env.CHILD_DISPATCH_PROTOCOL;
@@ -94,6 +95,7 @@ control.on("line", (line) => {
     sessionKey?: unknown;
     governed?: unknown;
     childLifecycleMode?: unknown;
+    releaseAfterResult?: unknown;
   };
   if (command.op === "cancel" && running && activeChildIdentity) {
     const changed = cancelSubagentChildIntentAtomically(activeChildIdentity);
@@ -143,6 +145,9 @@ control.on("line", (line) => {
           gatewayPortOverride: Number(process.env.CHILD_DISPATCH_GATEWAY_PORT),
         },
       );
+      if (command.releaseAfterResult === true && typeof result.runId === "string") {
+        releaseSubagentRun(result.runId);
+      }
       await emitControllerEvent("controller.spawn.result", result as Record<string, unknown>);
       process.stdout.write(`RESULT ${JSON.stringify(result)}\n`);
     } catch (error: unknown) {
