@@ -140,6 +140,22 @@ describe("agent command registration", () => {
     expect(deps).toBeUndefined();
   });
 
+  it("normalizes a per-run tool allow-list", async () => {
+    await runCli([
+      "agent",
+      "--message",
+      "store the fixture",
+      "--tools",
+      "memory_store, memory_recall memory_store",
+    ]);
+
+    const [options] = commandCall(agentCliCommandMock);
+    expect((options as { toolsAllow?: string[] }).toolsAllow).toEqual([
+      "memory_store",
+      "memory_recall",
+    ]);
+  });
+
   it("forwards an explicit session key to the agent command", async () => {
     await runCli(["agent", "--message", "hi", "--session-key", "agent:ops:incident-42"]);
 
