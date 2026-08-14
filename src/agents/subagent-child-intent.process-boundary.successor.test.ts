@@ -106,9 +106,14 @@ function startGatewayProcess(params: {
   stateDir: string;
   token: string;
   physicalCounter: string;
+  installReceiptSigner?: boolean;
 }): LineProcess<GatewayReady> {
   const script = `
     import { createInterface } from "node:readline";
+    if (process.env.INSTALL_RECEIPT_SIGNER === "1") {
+      const receiptRuntime = await import("./src/agents/subagent-gateway-acceptance-receipt-runtime.ts");
+      receiptRuntime.installGatewayAcceptanceReceiptSigner({ signingKey: "process-boundary-receipt-key", generation: "process-boundary-generation" });
+    }
     import { startGatewayServer } from "./src/gateway/server.ts";
     const gateway = await startGatewayServer(0, {
       bind: "loopback",
@@ -141,6 +146,7 @@ function startGatewayProcess(params: {
       OPENCLAW_GATEWAY_TOKEN: params.token,
       GATEWAY_TOKEN: params.token,
       PHYSICAL_COUNTER: params.physicalCounter,
+      INSTALL_RECEIPT_SIGNER: params.installReceiptSigner === false ? "0" : "1",
       OPENCLAW_SKIP_CHANNELS: "1",
       OPENCLAW_SKIP_PROVIDERS: "1",
       OPENCLAW_SKIP_CRON: "1",
@@ -207,6 +213,8 @@ function startControllerProcess(params: {
 }): LineProcess<ControllerResult> {
   const script = `
     import { createInterface } from "node:readline";
+    const receiptRuntime = await import("./src/agents/subagent-gateway-acceptance-receipt-runtime.ts");
+    receiptRuntime.installGatewayAcceptanceReceiptSigner({ signingKey: "process-boundary-receipt-key", generation: "process-boundary-generation" });
     import { spawnSubagentDirect } from "./src/agents/subagent-spawn.ts";
     const control = createInterface({ input: process.stdin });
     control.on("line", async (line) => {
@@ -360,6 +368,7 @@ processBoundary("child intent production process boundary", () => {
       token,
       physicalCounter,
     });
+    let noSignerGateway: LineProcess<GatewayReady> | undefined;
     try {
       const ready = await gateway.ready;
       const embedded = startControllerProcess({
@@ -369,6 +378,7 @@ processBoundary("child intent production process boundary", () => {
         token,
         model: "loopback-embedded/fake-model",
         operationKey: "embedded-boundary",
+        governed: true,
       });
       embedded.child.stdin?.write("START\\n");
       expect((await embedded.ready).status).toBe("accepted");
@@ -381,6 +391,7 @@ processBoundary("child intent production process boundary", () => {
           token,
           model: "fake-cli/fake-model",
           operationKey: "cli-boundary-same-operation",
+          governed: true,
         }),
       );
       for (const controller of cliControllers) {
@@ -395,10 +406,20 @@ processBoundary("child intent production process boundary", () => {
         (await fs.readFile(modelCounter, "utf8")).trim().split("\n").length,
       ).toBeGreaterThanOrEqual(1);
       expect((await fs.readFile(physicalCounter, "utf8")).trim().split("\n")).toHaveLength(1);
+      const noSignerStateDir = path.join(stateDir, "without-signer");
+      await fs.mkdir(noSignerStateDir, { recursive: true });
+      noSignerGateway = startGatewayProcess({
+        configPath,
+        stateDir: noSignerStateDir,
+        token,
+        physicalCounter,
+        installReceiptSigner: false,
+      });
+      const noSignerGatewayReady = await noSignerGateway.ready;
       const missingSigner = startControllerProcess({
         configPath,
         stateDir,
-        gatewayPort: ready.gatewayPort,
+        gatewayPort: noSignerGatewayReady.gatewayPort,
         token,
         model: "loopback-embedded/fake-model",
         operationKey: "governed-without-signer",
@@ -410,9 +431,15 @@ processBoundary("child intent production process boundary", () => {
       expect((await fs.readFile(physicalCounter, "utf8")).trim().split("\n")).toHaveLength(1);
     } finally {
       try {
-        await gateway.close();
+        if (noSignerGateway) {
+          await noSignerGateway.close();
+        }
       } finally {
-        await model.close();
+        try {
+          await gateway.close();
+        } finally {
+          await model.close();
+        }
       }
       if (previousConfig === undefined) {
         delete process.env.OPENCLAW_CONFIG_PATH;

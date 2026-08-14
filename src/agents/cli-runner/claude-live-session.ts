@@ -1428,7 +1428,16 @@ export async function runClaudeLiveSessionTurn(params: {
       abort();
     } else {
       try {
-        await Promise.race([writeTurnInput(liveSession, params.prompt), outputPromise]);
+        const submitTurn = async () => {
+          if (cleanupTurnArtifacts) {
+            if (params.authorizeProviderStart && !(await params.authorizeProviderStart())) {
+              throw new Error("provider start authorization denied before Claude live prompt");
+            }
+            params.onProviderStarted?.();
+          }
+          await writeTurnInput(liveSession, params.prompt);
+        };
+        await Promise.race([submitTurn(), outputPromise]);
       } catch (error) {
         closeLiveSession(liveSession, "abort", error);
       }

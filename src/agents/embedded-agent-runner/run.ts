@@ -2506,6 +2506,7 @@ async function runEmbeddedAgentInternal(
                 }
               : {}),
             governorAgentLoopScope,
+            onBeforeProviderStart: params.onBeforeProviderStart,
             runtimePlan,
             model: applyAuthHeaderOverride(
               applyLocalNoAuthHeaderOverride(effectiveModel, apiKeyInfo),

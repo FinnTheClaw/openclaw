@@ -74,7 +74,7 @@ describe("AgentParamsSchema", () => {
     ).toBe(false);
   });
 
-  it("accepts the typed internal child-intent transport fields", () => {
+  it("rejects private child-dispatch fields on public agent RPC", () => {
     expect(
       Value.Check(AgentParamsSchema, {
         message: "run the child task",
@@ -82,10 +82,13 @@ describe("AgentParamsSchema", () => {
         childIntentRequestDigest: "request-digest",
         childIntentResolvedDigest: "resolved-digest",
         childIntentControllerSessionKey: "agent:main:main",
+        childIntentCanonicalKey: "canonical-child",
+        childIntentIdentityKind: "canonical",
+        childIntentIdentityValue: "canonical-child",
         childIntentReceiptMode: "governed",
         childIntentCapability: "sessions_spawn",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("accepts generated music attachments on internal completion events", () => {

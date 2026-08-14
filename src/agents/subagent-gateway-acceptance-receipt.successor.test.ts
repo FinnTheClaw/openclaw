@@ -8,6 +8,10 @@ import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { reconcileSubagentChildIntent } from "./subagent-child-intent-reconciliation.js";
 import { buildGatewayAcceptanceReceiptEnvelope } from "./subagent-gateway-acceptance-receipt-auth.js";
 import {
+  clearGatewayAcceptanceReceiptSigner,
+  installGatewayAcceptanceReceiptSigner,
+} from "./subagent-gateway-acceptance-receipt-runtime.js";
+import {
   claimGatewayAcceptanceForDispatch,
   fencePriorGatewayAcceptanceReceipts,
   isGatewayAcceptanceDispatchAllowed,
@@ -16,6 +20,7 @@ import {
   markGatewayAcceptanceFailedAfterStart,
   markGatewayAcceptanceFailedBeforeStart,
   markGatewayAcceptanceRunnable,
+  markGatewayAcceptanceStartAuthorized,
   markGatewayAcceptanceStarted,
   readGatewayAcceptanceReceipt,
   requestGatewayAcceptanceCancel,
@@ -36,12 +41,17 @@ describe("successor gateway receipt invariants", () => {
     stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-receipt-successor-"));
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
     setTestEnvValue("NODE_ENV", "test");
+    installGatewayAcceptanceReceiptSigner({
+      signingKey: "fixture-gateway-receipt-key",
+      generation: "fixture-generation",
+    });
     resetSubagentRegistryForTests({ persist: false });
   });
 
   afterEach(async () => {
     resetSubagentRegistryForTests({ persist: false });
     closeOpenClawStateDatabaseForTest();
+    clearGatewayAcceptanceReceiptSigner();
     env.restore();
     await fs.rm(stateDir, { recursive: true, force: true });
   });
@@ -95,6 +105,18 @@ describe("successor gateway receipt invariants", () => {
     expect(next.receiptGeneration).toBe(1);
     expect(next.gatewayRunId).toBe("gateway-run-b");
     expect(next.acceptanceEpoch).toBe("gateway-epoch-b");
+  });
+
+  it("requires the durable start authorization CAS immediately before provider start", () => {
+    const value = input("start-authorized", "gateway-epoch", "gateway-run");
+    const receipt = reserveGatewayAcceptanceReceipt(value);
+    expect(markGatewayAcceptanceRunnable(receipt)).toBe(true);
+    expect(markGatewayAcceptanceDispatchClaimed(receipt)).toBe(true);
+    expect(claimGatewayAcceptanceForDispatch(receipt)).toBe(true);
+    expect(markGatewayAcceptanceStartAuthorized(receipt)).toBe(true);
+    expect(readGatewayAcceptanceReceipt(value.acceptanceKey)?.lifecycle).toBe("start_authorized");
+    expect(markGatewayAcceptanceStartAuthorized(receipt)).toBe(false);
+    expect(markGatewayAcceptanceStarted(receipt)).toBe(true);
   });
 
   it("retires the matching child row for a proven failed-before-start retry", () => {
@@ -161,6 +183,7 @@ describe("successor gateway receipt invariants", () => {
     ["runnable", true],
     ["dispatch_claimed", true],
     ["accepted", true],
+    ["start_authorized", true],
     ["started", true],
     ["unknown", true],
     ["not_accepted", false],

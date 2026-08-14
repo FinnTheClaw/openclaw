@@ -10,12 +10,26 @@ export type AgentRuntimeIdentity = {
   kind: "agentRuntime";
   agentId: string;
   sessionKey: string;
+  childAdmission?: AgentRuntimeChildAdmission;
 };
+
+export type AgentRuntimeChildAdmission = Readonly<{
+  controllerSessionKey: string;
+  identityKind: "operation" | "canonical";
+  identityValue: string;
+  requestDigest: string;
+  resolvedDigest: string;
+  targetAgentId: string;
+  gatewayGeneration: string;
+  expiresAtMs: number;
+  nonce: string;
+}>;
 
 type AgentRuntimeIdentityTokenPayload = {
   kind: typeof AGENT_RUNTIME_IDENTITY_TOKEN_KIND;
   agentId: string;
   sessionKey: string;
+  childAdmission?: AgentRuntimeChildAdmission;
 };
 
 function readSharedAgentRuntimeIdentitySecret(): string | null {
@@ -60,6 +74,7 @@ function decodePayload(value: string): AgentRuntimeIdentityTokenPayload | undefi
       kind?: unknown;
       agentId?: unknown;
       sessionKey?: unknown;
+      childAdmission?: unknown;
     };
     if (
       raw.kind !== AGENT_RUNTIME_IDENTITY_TOKEN_KIND ||
@@ -73,7 +88,58 @@ function decodePayload(value: string): AgentRuntimeIdentityTokenPayload | undefi
     if (!agentId || !sessionKey) {
       return undefined;
     }
-    return { kind: AGENT_RUNTIME_IDENTITY_TOKEN_KIND, agentId, sessionKey };
+    const child = raw.childAdmission;
+    let childAdmission: AgentRuntimeChildAdmission | undefined;
+    if (child !== undefined) {
+      if (!child || typeof child !== "object" || Array.isArray(child)) {
+        return undefined;
+      }
+      const candidate = child as Record<string, unknown>;
+      const identityKind = candidate.identityKind;
+      const expiresAtMs = candidate.expiresAtMs;
+      if (
+        typeof candidate.controllerSessionKey !== "string" ||
+        (identityKind !== "operation" && identityKind !== "canonical") ||
+        typeof candidate.identityValue !== "string" ||
+        typeof candidate.requestDigest !== "string" ||
+        typeof candidate.resolvedDigest !== "string" ||
+        typeof candidate.targetAgentId !== "string" ||
+        typeof candidate.gatewayGeneration !== "string" ||
+        typeof expiresAtMs !== "number" ||
+        !Number.isSafeInteger(expiresAtMs) ||
+        typeof candidate.nonce !== "string"
+      ) {
+        return undefined;
+      }
+      childAdmission = {
+        controllerSessionKey: candidate.controllerSessionKey.trim(),
+        identityKind,
+        identityValue: candidate.identityValue.trim(),
+        requestDigest: candidate.requestDigest.trim(),
+        resolvedDigest: candidate.resolvedDigest.trim(),
+        targetAgentId: normalizeAgentId(candidate.targetAgentId),
+        gatewayGeneration: candidate.gatewayGeneration.trim(),
+        expiresAtMs,
+        nonce: candidate.nonce.trim(),
+      };
+      if (
+        !childAdmission.controllerSessionKey ||
+        !childAdmission.identityValue ||
+        !childAdmission.requestDigest ||
+        !childAdmission.resolvedDigest ||
+        !childAdmission.targetAgentId ||
+        !childAdmission.gatewayGeneration ||
+        childAdmission.nonce.length < 32
+      ) {
+        return undefined;
+      }
+    }
+    return {
+      kind: AGENT_RUNTIME_IDENTITY_TOKEN_KIND,
+      agentId,
+      sessionKey,
+      ...(childAdmission ? { childAdmission } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -83,11 +149,13 @@ function decodePayload(value: string): AgentRuntimeIdentityTokenPayload | undefi
 export function mintAgentRuntimeIdentityToken(params: {
   agentId: string;
   sessionKey: string;
+  childAdmission?: AgentRuntimeChildAdmission;
 }): string {
   const payload = encodePayload({
     kind: AGENT_RUNTIME_IDENTITY_TOKEN_KIND,
     agentId: normalizeAgentId(params.agentId),
     sessionKey: params.sessionKey.trim(),
+    ...(params.childAdmission ? { childAdmission: params.childAdmission } : {}),
   });
   const signature = signPayload(requireSharedAgentRuntimeIdentitySecret(), payload);
   return `${payload}.${signature}`;
@@ -117,5 +185,6 @@ export function verifyAgentRuntimeIdentityToken(
     kind: "agentRuntime",
     agentId: payload.agentId,
     sessionKey: payload.sessionKey,
+    ...(payload.childAdmission ? { childAdmission: payload.childAdmission } : {}),
   };
 }

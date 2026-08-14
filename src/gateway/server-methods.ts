@@ -66,6 +66,10 @@ const loadAgentHandlers = lazyHandlerModule(
   () => import("./server-methods/agent.js"),
   (module) => module.agentHandlers,
 );
+const loadChildDispatchHandlers = lazyHandlerModule(
+  () => import("./server-methods/child-dispatch.js"),
+  (module) => module.childDispatchHandlers,
+);
 const loadAgentsHandlers = lazyHandlerModule(
   () => import("./server-methods/agents.js"),
   (module) => module.agentsHandlers,
@@ -651,6 +655,10 @@ export const coreGatewayHandlers: GatewayRequestHandlers = {
   ...createLazyCoreHandlers({
     methods: ["agent", "agent.identity.get", "agent.wait"],
     loadHandlers: loadAgentHandlers,
+  }),
+  ...createLazyCoreHandlers({
+    methods: ["child.dispatch", "child.dispatch.prepare"],
+    loadHandlers: loadChildDispatchHandlers,
   }),
   ...createLazyCoreHandlers({
     methods: [

@@ -27,6 +27,7 @@ import type { PluginRuntime, RuntimeGatewayRequestOptions } from "../plugins/run
 import type { PluginLogger, PluginOrigin } from "../plugins/types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { resolveSafeTimeoutDelayMs } from "../utils/timer-delay.js";
+import type { AgentRuntimeIdentity } from "./agent-runtime-identity-token.js";
 import { ADMIN_SCOPE, APPROVALS_SCOPE, WRITE_SCOPE } from "./method-scopes.js";
 import { normalizeOperatorScopeList, type OperatorScope } from "./operator-scopes.js";
 import type {
@@ -251,6 +252,7 @@ function createSyntheticOperatorClient(params?: {
   agentRunTracking?: "plugin_subagent";
   pluginRuntimeOwnerId?: string;
   scopes?: string[];
+  agentRuntimeIdentity?: AgentRuntimeIdentity;
 }): GatewayRequestOptions["client"] {
   const pluginRuntimeOwnerId =
     typeof params?.pluginRuntimeOwnerId === "string" && params.pluginRuntimeOwnerId.trim()
@@ -274,6 +276,9 @@ function createSyntheticOperatorClient(params?: {
       ...(params?.agentRunTracking ? { agentRunTracking: params.agentRunTracking } : {}),
       ...(params?.scopes?.includes(APPROVALS_SCOPE) ? { approvalRuntime: true } : {}),
       ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
+      ...(params?.agentRuntimeIdentity
+        ? { agentRuntimeIdentity: params.agentRuntimeIdentity }
+        : {}),
     },
   };
 }
@@ -343,6 +348,7 @@ type DispatchGatewayMethodInProcessOptions = {
   pluginRuntimeOwnerId?: string;
   requireScopedClient?: boolean;
   syntheticScopes?: string[];
+  agentRuntimeIdentity?: AgentRuntimeIdentity;
   timeoutMs?: number;
 };
 
@@ -453,6 +459,7 @@ export async function dispatchGatewayMethodInProcessRaw(
     agentRunTracking: options?.agentRunTracking,
     ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
     scopes: options?.syntheticScopes,
+    agentRuntimeIdentity: options?.agentRuntimeIdentity,
   });
   const scopedClient = mergeGatewayClientInternal(
     scope?.client,

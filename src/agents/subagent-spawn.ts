@@ -91,7 +91,21 @@ export {
   SUBAGENT_SPAWN_ACCEPTED_NOTE,
   SUBAGENT_SPAWN_SESSION_ACCEPTED_NOTE,
 } from "./subagent-spawn-accepted-note.js";
+import {
+  GATEWAY_CLIENT_MODES,
+  GATEWAY_CLIENT_NAMES,
+} from "../../packages/gateway-protocol/src/client-info.js";
+import {
+  mintAgentRuntimeIdentityToken,
+  type AgentRuntimeIdentity,
+  verifyAgentRuntimeIdentityToken,
+} from "../gateway/agent-runtime-identity-token.js";
 import { resolveRequesterOriginForChild } from "./spawn-requester-origin.js";
+import { awaitChildDispatchBarrier } from "./subagent-child-dispatch-test-hooks.js";
+import {
+  resolveSubagentChildOperationAcceptanceKey,
+  resolveSubagentChildOperationIdentity,
+} from "./subagent-child-operation-identity.js";
 import {
   resolveConfiguredSubagentRunTimeoutSeconds,
   resolveSubagentModelAndThinkingPlan,
@@ -218,6 +232,8 @@ type SpawnSubagentParams = {
 
 type SpawnSubagentContext = {
   agentSessionKey?: string;
+  /** Host-owned loopback port for a separate trusted Gateway process. */
+  gatewayPortOverride?: number;
   /** Separate key used only for completion routing, not sandbox policy. */
   completionOwnerKey?: string;
   agentChannel?: string;
@@ -268,7 +284,9 @@ async function updateSubagentSessionStore(
 }
 
 async function callSubagentGateway(
-  params: Parameters<typeof callGateway>[0],
+  params: Parameters<typeof callGateway>[0] & {
+    trustedAgentRuntimeIdentity?: AgentRuntimeIdentity;
+  },
 ): Promise<Awaited<ReturnType<typeof callGateway>>> {
   // Subagent lifecycle requires methods spanning multiple scope tiers
   // (sessions.patch / sessions.delete → admin, agent → write).  When each call
@@ -306,10 +324,23 @@ async function callSubagentGateway(
         ...(scopes != null ? { forceSyntheticClient: true } : {}),
         ...(typeof request.timeoutMs === "number" ? { timeoutMs: request.timeoutMs } : {}),
         ...(scopes != null ? { syntheticScopes: scopes } : {}),
+        ...(params.trustedAgentRuntimeIdentity
+          ? { agentRuntimeIdentity: params.trustedAgentRuntimeIdentity }
+          : {}),
       },
     );
   }
-  return await subagentSpawnDeps.callGateway(request);
+  const { trustedAgentRuntimeIdentity: _trusted, ...gatewayRequest } = request;
+  return await subagentSpawnDeps.callGateway({
+    ...gatewayRequest,
+    ...(params.trustedAgentRuntimeIdentity
+      ? {
+          clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+          mode: GATEWAY_CLIENT_MODES.BACKEND,
+          requireLocalBackendSharedAuth: true,
+        }
+      : {}),
+  });
 }
 
 function readGatewayRunId(response: Awaited<ReturnType<typeof callGateway>>): string | undefined {
@@ -1434,15 +1465,35 @@ export async function spawnSubagentDirect(
     }
     return { status: "error", error: message, childSessionKey };
   }
+  const childOperationIdentity = resolveSubagentChildOperationIdentity({
+    controllerSessionKey: ownership.controllerSessionKey,
+    canonicalKey: childIntentReservation.childIntentKey,
+    operationKey: childIntentReservation.operationKey,
+  });
+  if (
+    (await awaitChildDispatchBarrier({
+      point: "intent.reserved",
+      childIntentKey: childIntentReservation.childIntentKey,
+      childSessionKey: childIntentReservation.childSessionKey,
+      controllerSessionKey: childIntentReservation.controllerSessionKey,
+      operationKey: childIntentReservation.operationKey,
+    })) === "deny"
+  ) {
+    return {
+      status: "error",
+      error: "child dispatch reservation was denied by the test barrier",
+      childSessionKey,
+    };
+  }
+  const childAcceptanceKey = resolveSubagentChildOperationAcceptanceKey(childOperationIdentity);
   if (childIntentReservation.disposition === "duplicate") {
     const reconciliation = await reconcileSubagentChildIntent({
       reservation: childIntentReservation,
       lookupAcceptance: () => {
-        const receipt = readGatewayAcceptanceReceipt(childIntentReservation.childIntentKey);
+        const receipt = readGatewayAcceptanceReceipt(childAcceptanceKey);
         if (
           !receipt ||
-          receipt.acceptanceKey !== childIntentReservation.childIntentKey ||
-          receipt.intentId !== childIntentReservation.childIntentKey ||
+          receipt.intentId !== childAcceptanceKey ||
           receipt.childSessionKey !== childIntentReservation.childSessionKey ||
           receipt.controllerSessionKey !== childIntentReservation.controllerSessionKey ||
           receipt.requestDigest !== childIntentReservation.requestDigest ||
@@ -1455,7 +1506,13 @@ export async function spawnSubagentDirect(
       waitForProvider: async () =>
         await callSubagentGateway({
           method: "agent.wait",
-          params: { runId: childIntentReservation.childIntentKey, timeoutMs: 0 },
+          ...(ctx.gatewayPortOverride !== undefined
+            ? { localPortOverride: ctx.gatewayPortOverride }
+            : {}),
+          params: {
+            runId: childIntentReservation.existingRunId ?? childIntentReservation.childIntentKey,
+            timeoutMs: 0,
+          },
           timeoutMs: SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS,
         }),
       adopt: () => {
@@ -1645,6 +1702,9 @@ export async function spawnSubagentDirect(
       try {
         await callSubagentGateway({
           method: "sessions.delete",
+          ...(ctx.gatewayPortOverride !== undefined
+            ? { localPortOverride: ctx.gatewayPortOverride }
+            : {}),
           params: { key: childSessionKey, emitLifecycleHooks: false },
           timeoutMs: SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS,
         });
@@ -1679,6 +1739,9 @@ export async function spawnSubagentDirect(
       try {
         await callSubagentGateway({
           method: "sessions.delete",
+          ...(ctx.gatewayPortOverride !== undefined
+            ? { localPortOverride: ctx.gatewayPortOverride }
+            : {}),
           params: { key: childSessionKey, deleteTranscript: true, emitLifecycleHooks: false },
           timeoutMs: SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS,
         });
@@ -1847,13 +1910,23 @@ export async function spawnSubagentDirect(
   });
   childIntentReservation.resolvedDigest = finalIntentBehaviorDigest;
 
-  const childIdem = childIntentKey;
+  const childIdem = childAcceptanceKey;
   let childRunId: string | undefined;
   const deliverInitialChildRunDirectly =
     requestThreadBinding && spawnMode === "session" && hasBoundThreadDeliveryOrigin;
   const shouldAnnounceCompletion = deliverInitialChildRunDirectly
     ? false
     : expectsCompletionMessage;
+  const trustedAgentRuntimeIdentity = childIntentReservation.durableReceiptRequired
+    ? ({
+        kind: "agentRuntime" as const,
+        agentId: targetAgentId,
+        sessionKey: ownership.controllerSessionKey,
+      } satisfies AgentRuntimeIdentity)
+    : undefined;
+  const trustedAgentRuntimeIdentityToken = trustedAgentRuntimeIdentity
+    ? mintAgentRuntimeIdentityToken(trustedAgentRuntimeIdentity)
+    : undefined;
   try {
     markSubagentChildIntentDispatching({
       childIntentKey,
@@ -1865,13 +1938,56 @@ export async function spawnSubagentDirect(
       childIntentKey,
       reservationToken: childIntentReservation.reservationToken!,
     });
+    let governedDispatchIdentity = trustedAgentRuntimeIdentity;
+    let governedDispatchToken = trustedAgentRuntimeIdentityToken;
+    if (childIntentReservation.durableReceiptRequired && governedDispatchToken) {
+      const prepared = await callSubagentGateway({
+        method: "child.dispatch.prepare",
+        ...(ctx.gatewayPortOverride !== undefined
+          ? { localPortOverride: ctx.gatewayPortOverride }
+          : {}),
+        params: {
+          agentId: targetAgentId,
+          sessionKey: childSessionKey,
+          childIntentRequestDigest: childIntentReservation.requestDigest,
+          childIntentResolvedDigest: finalIntentBehaviorDigest,
+          childIntentControllerSessionKey: childIntentReservation.controllerSessionKey,
+          childIntentCanonicalKey: childIntentKey,
+          childIntentIdentityKind: childOperationIdentity.identityKind,
+          childIntentIdentityValue: childOperationIdentity.identityValue,
+          childIntentReceiptMode: "governed" as const,
+          childIntentCapability: "sessions_spawn" as const,
+        },
+        ...(governedDispatchToken ? { agentRuntimeIdentityToken: governedDispatchToken } : {}),
+        ...(governedDispatchIdentity
+          ? { trustedAgentRuntimeIdentity: governedDispatchIdentity }
+          : {}),
+        timeoutMs: SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS,
+      });
+      const issuedToken =
+        typeof prepared === "object" &&
+        prepared !== null &&
+        typeof (prepared as { agentRuntimeIdentityToken?: unknown }).agentRuntimeIdentityToken ===
+          "string"
+          ? (prepared as { agentRuntimeIdentityToken: string }).agentRuntimeIdentityToken
+          : undefined;
+      const issuedIdentity = issuedToken ? verifyAgentRuntimeIdentityToken(issuedToken) : undefined;
+      if (!issuedToken || !issuedIdentity?.childAdmission) {
+        throw new Error("child dispatch preparation did not return a governed capability");
+      }
+      governedDispatchToken = issuedToken;
+      governedDispatchIdentity = issuedIdentity;
+    }
     const {
       spawnedBy: _spawnedBy,
       workspaceDir: _workspaceDir,
       ...publicSpawnedMetadata
     } = spawnedMetadata;
     const response = await callSubagentGateway({
-      method: "agent",
+      method: childIntentReservation.durableReceiptRequired ? "child.dispatch" : "agent",
+      ...(ctx.gatewayPortOverride !== undefined
+        ? { localPortOverride: ctx.gatewayPortOverride }
+        : {}),
       params: {
         message: childTaskMessage,
         sessionKey: childSessionKey,
@@ -1886,11 +2002,15 @@ export async function spawnSubagentDirect(
         deliver: deliverInitialChildRunDirectly,
         lane: AGENT_LANE_SUBAGENT,
         disableMessageTool: true,
-        childIntentRequestDigest: childIntentReservation.requestDigest,
-        childIntentResolvedDigest: finalIntentBehaviorDigest,
-        childIntentControllerSessionKey: childIntentReservation.controllerSessionKey,
         ...(childIntentReservation.durableReceiptRequired
           ? {
+              agentId: targetAgentId,
+              childIntentRequestDigest: childIntentReservation.requestDigest,
+              childIntentResolvedDigest: finalIntentBehaviorDigest,
+              childIntentControllerSessionKey: childIntentReservation.controllerSessionKey,
+              childIntentCanonicalKey: childIntentKey,
+              childIntentIdentityKind: childOperationIdentity.identityKind,
+              childIntentIdentityValue: childOperationIdentity.identityValue,
               childIntentReceiptMode: "governed" as const,
               childIntentCapability: "sessions_spawn" as const,
             }
@@ -1908,11 +2028,24 @@ export async function spawnSubagentDirect(
           : {}),
         ...publicSpawnedMetadata,
       },
+      ...(governedDispatchToken ? { agentRuntimeIdentityToken: governedDispatchToken } : {}),
+      ...(governedDispatchIdentity
+        ? { trustedAgentRuntimeIdentity: governedDispatchIdentity }
+        : {}),
       timeoutMs: resolveSubagentAgentGatewayTimeoutMs(runTimeoutSeconds),
     });
     const runId = readGatewayRunId(response);
     if (!runId) {
       throw new Error("Gateway acceptance did not return an authoritative run identity");
+    }
+    if (
+      (await awaitChildDispatchBarrier({
+        point: "gateway_accepted.persisted_before_register",
+        gatewayRunId: runId,
+        childSessionKey,
+      })) === "deny"
+    ) {
+      throw new Error("child dispatch controller registration was interrupted by the test barrier");
     }
     childRunId = runId;
   } catch (err) {
@@ -1958,6 +2091,7 @@ export async function spawnSubagentDirect(
       providerRunId: childRunId,
       retainOwnership: true,
       durableReceiptRequired: childIntentReservation.durableReceiptRequired,
+      gatewayReceiptId: childAcceptanceKey,
     });
   } catch (error) {
     await rollbackPreparedContextEngine(contextEnginePreparation);

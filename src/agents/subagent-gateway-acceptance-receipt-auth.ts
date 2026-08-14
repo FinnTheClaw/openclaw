@@ -205,9 +205,6 @@ function resolveSigningKey(): string {
   if (active) {
     return active;
   }
-  if (process.env.NODE_ENV === "test") {
-    return "openclaw-test-gateway-acceptance-receipt-key";
-  }
   throw new Error("GOVERNOR_GATEWAY_RECEIPT_SIGNING_KEY_UNAVAILABLE");
 }
 
@@ -288,9 +285,6 @@ export function verifyGatewayAcceptanceReceiptProof(params: {
     const candidates = [
       ...(params.key ? [{ signingKey: params.key }] : readGatewayAcceptanceReceiptSigners()),
     ];
-    if (candidates.length === 0 && process.env.NODE_ENV === "test") {
-      candidates.push({ signingKey: "openclaw-test-gateway-acceptance-receipt-key" });
-    }
     return candidates.some(({ signingKey }) => {
       const keyId = gatewayAcceptanceReceiptKeyId(signingKey);
       const expected = signProof({

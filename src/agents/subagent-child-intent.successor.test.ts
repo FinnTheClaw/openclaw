@@ -10,6 +10,10 @@ import {
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { compactSubagentChildIntentPayload } from "./subagent-child-intent-compaction.js";
 import { expireSubagentReservationsAtomically } from "./subagent-child-intent-store-lifecycle.sqlite.js";
+import {
+  clearGatewayAcceptanceReceiptSigner,
+  installGatewayAcceptanceReceiptSigner,
+} from "./subagent-gateway-acceptance-receipt-runtime.js";
 import { reserveGatewayAcceptanceReceipt } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
 import {
   cancelSubagentChildIntent,
@@ -25,12 +29,17 @@ describe("child-intent successor authority boundaries", () => {
     stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-child-successor-"));
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
     setTestEnvValue("NODE_ENV", "test");
+    installGatewayAcceptanceReceiptSigner({
+      signingKey: "fixture-gateway-receipt-key",
+      generation: "fixture-generation",
+    });
     resetSubagentRegistryForTests({ persist: false });
   });
 
   afterEach(async () => {
     resetSubagentRegistryForTests({ persist: false });
     closeOpenClawStateDatabaseForTest();
+    clearGatewayAcceptanceReceiptSigner();
     envSnapshot.restore();
     await fs.rm(stateDir, { recursive: true, force: true });
   });

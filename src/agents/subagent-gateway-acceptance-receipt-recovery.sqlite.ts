@@ -137,6 +137,7 @@ export function fencePriorGatewayAcceptanceReceipts(currentEpoch: string): numbe
           "runnable",
           "dispatch_claimed",
           "accepted",
+          "start_authorized",
           "started",
           "cancel_requested",
         ]),
@@ -150,6 +151,7 @@ export function fencePriorGatewayAcceptanceReceipts(currentEpoch: string): numbe
           "runnable",
           "dispatch_claimed",
           "accepted",
+          "start_authorized",
           "started",
           "cancel_requested",
         ].includes(current.lifecycle)

@@ -13,6 +13,10 @@ import {
   resolveSubagentChildIntentKey,
 } from "./subagent-child-intent.js";
 import {
+  clearGatewayAcceptanceReceiptSigner,
+  installGatewayAcceptanceReceiptSigner,
+} from "./subagent-gateway-acceptance-receipt-runtime.js";
+import {
   markGatewayAcceptanceAccepted,
   markGatewayAcceptanceDispatchClaimed,
   markGatewayAcceptanceNotAccepted,
@@ -53,12 +57,17 @@ describe("child-intent authority boundaries", () => {
   beforeEach(async () => {
     stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-child-authority-"));
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+    installGatewayAcceptanceReceiptSigner({
+      signingKey: "fixture-gateway-receipt-key",
+      generation: "fixture-generation",
+    });
     resetSubagentRegistryForTests({ persist: false });
   });
 
   afterEach(async () => {
     resetSubagentRegistryForTests({ persist: false });
     closeOpenClawStateDatabaseForTest();
+    clearGatewayAcceptanceReceiptSigner();
     envSnapshot.restore();
     await fs.rm(stateDir, { recursive: true, force: true });
   });
@@ -359,7 +368,7 @@ describe("child-intent authority boundaries", () => {
     });
     expect(duplicate.disposition).toBe("duplicate");
     expect(duplicate.dispatchState).toBe("unknown");
-    expect(duplicate.durableReceiptRequired).toBe(true);
+    expect(duplicate.durableReceiptRequired).toBeUndefined();
   });
 
   it("retains the accepted receipt across restart and rejects conflicts", () => {

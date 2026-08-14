@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
-import { readGatewayAcceptanceReceiptSigner } from "./subagent-gateway-acceptance-receipt-runtime.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const RESERVATION_LEASE_MS = 30_000;
@@ -64,8 +63,6 @@ type ChildIntentRegistryDependencies = {
 };
 
 export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDependencies) {
-  const durableReceiptActive = () =>
-    readGatewayAcceptanceReceiptSigner() !== undefined || process.env.NODE_ENV === "test";
   const activeReservationTokens = new Map<string, string>();
   const controllerByIdentity = new Map<string, string>();
   const identityKey = (controller: string, key: string, operationKey?: string) =>
@@ -159,9 +156,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
       operationKey: entry.childIntentOperationKey,
       requestDigest: entry.childIntentRequestDigest,
       resolvedDigest: entry.childIntentBehaviorDigest,
-      ...((durableReceiptRequired || durableReceiptActive()) && entry.childIntentKey
-        ? { durableReceiptRequired: true }
-        : {}),
+      ...(durableReceiptRequired && entry.childIntentKey ? { durableReceiptRequired: true } : {}),
       ...(canReconcile
         ? {
             dispatchState: entry.spawnAdmission as "dispatching" | "unknown",
@@ -252,7 +247,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
       requestDigest: entry.childIntentRequestDigest,
       resolvedDigest: entry.childIntentBehaviorDigest,
       operationKey: entry.childIntentOperationKey,
-      durableReceiptRequired: params.durableReceiptRequired === true || durableReceiptActive(),
+      durableReceiptRequired: params.durableReceiptRequired === true,
     };
   };
 
@@ -308,6 +303,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     retainOwnership?: boolean;
     durableReceiptRequired?: boolean;
     operationKey?: string;
+    gatewayReceiptId?: string;
   }) => {
     const key = params.childIntentKey.trim();
     const identity = resolveIdentity(key, params.reservationToken);
@@ -328,8 +324,8 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
         from: entry.spawnAdmission === "dispatching" ? "dispatching" : "reserved",
         to: "unknown",
         providerRunId: params.providerRunId,
-        ...((params.durableReceiptRequired ?? durableReceiptActive())
-          ? { gatewayReceiptId: params.childIntentKey }
+        ...(params.durableReceiptRequired
+          ? { gatewayReceiptId: params.gatewayReceiptId ?? params.childIntentKey }
           : {}),
       })
     ) {
@@ -387,22 +383,22 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
 
   const adopt = (params: { childIntentKey: string; reservationToken: string }) => {
     const identity = resolveIdentity(params.childIntentKey, params.reservationToken);
-    const controllerSessionKey = identity?.slice(0, identity.indexOf("\u0000"));
-    if (!controllerSessionKey) {
+    if (!identity) {
       return false;
     }
+    const controllerSessionKey = identity.slice(0, identity.indexOf("\u0000"));
+    const { operationKey } = identityParts(identity);
     const token = deps.claimPersisted({
       childIntentKey: params.childIntentKey,
       controllerSessionKey,
-      operationKey: identityParts(identity).operationKey,
+      operationKey,
       reservationOwnerToken: params.reservationToken,
     });
     if (!token) {
       return false;
     }
-    const { operationKey } = identityParts(identity);
     activeReservationTokens.set(
-      identityKey(controllerSessionKey!, params.childIntentKey.trim(), operationKey),
+      identityKey(controllerSessionKey, params.childIntentKey.trim(), operationKey),
       token,
     );
     return true;
@@ -421,7 +417,10 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     (() => {
       const key = params.childIntentKey.trim();
       const identity = resolveIdentity(key, params.reservationToken);
-      const controllerSessionKey = identity?.slice(0, identity.indexOf("\u0000"));
+      if (!identity) {
+        return false;
+      }
+      const controllerSessionKey = identity.slice(0, identity.indexOf("\u0000"));
       return controllerSessionKey
         ? deps.removePersisted({
             childIntentKey: key,

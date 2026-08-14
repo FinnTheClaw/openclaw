@@ -56,10 +56,15 @@ export function commitSubagentRunRegistrationInTransaction(
   if (row.gateway_receipt_id) {
     if (
       !receipt ||
-      !["runnable", "dispatch_claimed", "accepted", "started", "terminal"].includes(
-        receipt.lifecycle,
-      ) ||
-      receipt.intentId !== row.canonical_key ||
+      ![
+        "runnable",
+        "dispatch_claimed",
+        "accepted",
+        "start_authorized",
+        "started",
+        "terminal",
+      ].includes(receipt.lifecycle) ||
+      receipt.intentId !== (row.gateway_receipt_id ?? row.canonical_key) ||
       receipt.controllerSessionKey !== row.controller_session_key ||
       receipt.childSessionKey !== row.child_session_key ||
       receipt.requestDigest !== row.request_digest ||

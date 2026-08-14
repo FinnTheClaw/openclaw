@@ -10,6 +10,10 @@ import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js"
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { reconcileSubagentChildIntent } from "./subagent-child-intent-reconciliation.js";
 import {
+  clearGatewayAcceptanceReceiptSigner,
+  installGatewayAcceptanceReceiptSigner,
+} from "./subagent-gateway-acceptance-receipt-runtime.js";
+import {
   fencePriorGatewayAcceptanceReceipts,
   markGatewayAcceptanceAccepted,
   markGatewayAcceptanceCancelled,
@@ -41,10 +45,15 @@ describe("durable gateway acceptance receipts", () => {
     stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-receipt-lifecycle-"));
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
     setTestEnvValue("NODE_ENV", "test");
+    installGatewayAcceptanceReceiptSigner({
+      signingKey: "fixture-gateway-receipt-key",
+      generation: "fixture-generation",
+    });
   });
 
   afterEach(async () => {
     closeOpenClawStateDatabaseForTest();
+    clearGatewayAcceptanceReceiptSigner();
     envSnapshot.restore();
     await fs.rm(stateDir, { recursive: true, force: true });
   });
@@ -204,6 +213,8 @@ describe("durable gateway acceptance receipts", () => {
     const counter = path.join(stateDir, "physical-dispatches");
     const script = `
       import fs from "node:fs";
+      const runtime = await import("./src/agents/subagent-gateway-acceptance-receipt-runtime.ts");
+      runtime.installGatewayAcceptanceReceiptSigner({ signingKey: "fixture-gateway-receipt-key", generation: "fixture-generation" });
       const store = await import("./src/agents/subagent-gateway-acceptance-receipt-store.sqlite.ts");
       const state = await import("./src/state/openclaw-state-db.ts");
       state.openOpenClawStateDatabase();
@@ -277,6 +288,8 @@ describe("durable gateway acceptance receipts", () => {
     const script = `
       import fs from "node:fs";
       const role = process.env.RECEIPT_ROLE;
+      const runtime = await import("./src/agents/subagent-gateway-acceptance-receipt-runtime.ts");
+      runtime.installGatewayAcceptanceReceiptSigner({ signingKey: "fixture-gateway-receipt-key", generation: "fixture-generation" });
       const store = await import("./src/agents/subagent-gateway-acceptance-receipt-store.sqlite.ts");
       const state = await import("./src/state/openclaw-state-db.ts");
       state.openOpenClawStateDatabase();

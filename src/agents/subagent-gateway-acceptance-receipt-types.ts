@@ -3,6 +3,7 @@ export type GatewayAcceptanceReceiptLifecycle =
   | "runnable"
   | "dispatch_claimed"
   | "accepted"
+  | "start_authorized"
   | "started"
   | "failed_before_start"
   | "failed_after_start"

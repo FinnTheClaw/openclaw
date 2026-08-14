@@ -28,6 +28,7 @@ export function expireSubagentChildIntentAfterFailedBeforeStartInDatabase(
       .where((eb) =>
         eb.or([
           eb("canonical_key", "=", params.childIntentKey),
+          eb("canonical_key", "=", params.receiptKey),
           eb("intent_id", "=", params.childIntentKey),
           eb("gateway_receipt_id", "=", params.receiptKey),
         ]),

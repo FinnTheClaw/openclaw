@@ -7,6 +7,10 @@ import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { resolveSubagentChildIntentBehaviorDigest } from "./subagent-child-intent.js";
 import {
+  clearGatewayAcceptanceReceiptSigner,
+  installGatewayAcceptanceReceiptSigner,
+} from "./subagent-gateway-acceptance-receipt-runtime.js";
+import {
   markGatewayAcceptanceNotAccepted,
   reserveGatewayAcceptanceReceipt,
 } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
@@ -28,12 +32,17 @@ describe("durable child intent reservations", () => {
   beforeEach(async () => {
     stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-child-intent-"));
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+    installGatewayAcceptanceReceiptSigner({
+      signingKey: "fixture-gateway-receipt-key",
+      generation: "fixture-generation",
+    });
     resetSubagentRegistryForTests({ persist: false });
   });
 
   afterEach(async () => {
     resetSubagentRegistryForTests({ persist: false });
     closeOpenClawStateDatabaseForTest();
+    clearGatewayAcceptanceReceiptSigner();
     envSnapshot.restore();
     await fs.rm(stateDir, { recursive: true, force: true });
   });

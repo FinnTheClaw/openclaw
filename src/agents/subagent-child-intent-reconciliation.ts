@@ -29,6 +29,7 @@ export async function reconcileSubagentChildIntent(params: {
           | "runnable"
           | "dispatch_claimed"
           | "accepted"
+          | "start_authorized"
           | "started"
           | "failed_before_start"
           | "failed_after_start"
@@ -49,7 +50,14 @@ export async function reconcileSubagentChildIntent(params: {
   const receipt = params.lookupAcceptance();
   if (
     receipt &&
-    ["runnable", "dispatch_claimed", "accepted", "started", "terminal"].includes(receipt.lifecycle)
+    [
+      "runnable",
+      "dispatch_claimed",
+      "accepted",
+      "start_authorized",
+      "started",
+      "terminal",
+    ].includes(receipt.lifecycle)
   ) {
     // The durable gateway receipt, not the reservation placeholder, owns the
     // provider identity. This also covers a controller crash after the
