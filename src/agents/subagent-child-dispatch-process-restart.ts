@@ -174,6 +174,89 @@ async function runRestartAt(point: string): Promise<ChildDispatchProcessEvidence
   }
 }
 
+async function runRestartAtCancelRequested(): Promise<ChildDispatchProcessEvidence> {
+  const configRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), "child-dispatch-cancel-restart-config-"),
+  );
+  const configPath = path.join(configRoot, "openclaw.json");
+  const harness = await createChildDispatchHarness({ configPath });
+  const barriers: Record<string, unknown>[] = [];
+  try {
+    const model = harness.startModel();
+    const modelReady = await model.ready;
+    await writeConfig(configPath, harness.root, Number(modelReady.port));
+    const gateway = harness.startGateway({ signer: true });
+    const gatewayReady = await gateway.ready;
+    const controller = harness.startController({ gatewayPort: Number(gatewayReady.port) });
+    await controller.ready;
+    const operationKey = "gateway-restart-cancel-requested";
+    controller.send({
+      op: "spawn",
+      governed: true,
+      model: "loopback-embedded/fake-model",
+      operationKey,
+    });
+    for (const point of [
+      "intent.reserved",
+      "receipt.preaccepted",
+      "receipt.runnable",
+      "receipt.dispatch_claimed",
+    ]) {
+      await allow(harness, point, barriers);
+    }
+    const held = await harness.next("before.provider_start_cas", 45_000);
+    barriers.push(held);
+    controller.send({ op: "cancel" });
+    const cancelResult = await harness.next("controller.cancel.result", 45_000);
+    barriers.push(cancelResult);
+    assert.equal(cancelResult.changed, true);
+    assert.equal(cancelResult.receiptLifecycle, "cancel_requested");
+    await gateway.terminate();
+    await controller.terminate();
+
+    const restartedGateway = harness.startGateway({ signer: true });
+    const restartedReady = await restartedGateway.ready;
+    const replay = harness.startController({ gatewayPort: Number(restartedReady.port) });
+    await replay.ready;
+    replay.send({
+      op: "spawn",
+      governed: true,
+      model: "loopback-embedded/fake-model",
+      operationKey,
+    });
+    await allow(harness, "intent.reserved", barriers);
+    const terminal = await replay.waitForAny(["RESULT ", "ERROR "], 45_000);
+    const result = terminal.startsWith("RESULT ")
+      ? (JSON.parse(terminal.slice(7)) as Record<string, unknown>)
+      : { status: "error", error: JSON.parse(terminal.slice(6)) };
+    const physicalStarts = await readPhysicalStarts(harness.physicalCounter);
+    assert.equal(physicalStarts.length, 0);
+    assert.notEqual(result.status, "accepted");
+    return {
+      version: 1,
+      scenario: "gateway-restart-cancel-requested",
+      status: "passed",
+      result,
+      barriers,
+      modelRequests: await countLines(harness.modelCounter),
+      physicalStarts,
+    };
+  } catch (error) {
+    return {
+      version: 1,
+      scenario: "gateway-restart-cancel-requested",
+      status: "failed",
+      barriers,
+      modelRequests: await countLines(harness.modelCounter),
+      physicalStarts: await readPhysicalStarts(harness.physicalCounter),
+      error: String(error),
+    };
+  } finally {
+    await harness.close();
+    await fs.rm(configRoot, { recursive: true, force: true });
+  }
+}
+
 export async function runGatewayRestartFenceBatch(): Promise<ChildDispatchProcessEvidence[]> {
   const points = [
     "receipt.preaccepted",
@@ -186,5 +269,6 @@ export async function runGatewayRestartFenceBatch(): Promise<ChildDispatchProces
   for (const point of points) {
     results.push(await runRestartAt(point));
   }
+  results.push(await runRestartAtCancelRequested());
   return results;
 }

@@ -33,6 +33,7 @@ const NON_REPLAYABLE_RECEIPT_LIFECYCLES = new Set<GatewayAcceptanceReceiptLifecy
   "failed_before_start",
   "terminal",
   "cancelled",
+  "cancel_requested",
 ]);
 
 /**

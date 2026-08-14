@@ -6,7 +6,12 @@ import {
 } from "./subagent-child-dispatch-process-protocol.js";
 import { installChildDispatchTestHooksForProcess } from "./subagent-child-dispatch-test-hooks.js";
 import { cancelSubagentChildIntentAtomically } from "./subagent-child-intent-store-lifecycle.sqlite.js";
+import {
+  resolveSubagentChildOperationAcceptanceKey,
+  resolveSubagentChildOperationIdentity,
+} from "./subagent-child-operation-identity.js";
 import { installGatewayAcceptanceReceiptSigner } from "./subagent-gateway-acceptance-receipt-runtime.js";
+import { readGatewayAcceptanceReceipt } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
 import { spawnSubagentDirect } from "./subagent-spawn.js";
 
 const protocolPath = process.env.CHILD_DISPATCH_PROTOCOL;
@@ -92,7 +97,18 @@ control.on("line", (line) => {
   };
   if (command.op === "cancel" && running && activeChildIdentity) {
     const changed = cancelSubagentChildIntentAtomically(activeChildIdentity);
-    void emitControllerEvent("controller.cancel.result", { changed });
+    const identity = resolveSubagentChildOperationIdentity({
+      controllerSessionKey: activeChildIdentity.controllerSessionKey,
+      canonicalKey: activeChildIdentity.childIntentKey,
+      operationKey: activeChildIdentity.operationKey,
+    });
+    const acceptanceKey = resolveSubagentChildOperationAcceptanceKey(identity);
+    const receipt = readGatewayAcceptanceReceipt(acceptanceKey);
+    void emitControllerEvent("controller.cancel.result", {
+      changed,
+      acceptanceKey,
+      receiptLifecycle: receipt?.lifecycle,
+    });
     return;
   }
   if (running) {

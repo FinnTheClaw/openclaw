@@ -1600,6 +1600,26 @@ export async function spawnSubagentDirect(
         note: "child intent reconciled with the existing gateway run",
       };
     }
+    const receipt = childIntentReservation.durableReceiptRequired
+      ? readGatewayAcceptanceReceipt(childAcceptanceKey)
+      : undefined;
+    if (
+      reconciliation !== "retry" &&
+      childIntentReservation.durableReceiptRequired &&
+      (!receipt ||
+        ["cancel_requested", "cancelled", "unknown", "failed_after_start"].includes(
+          receipt.lifecycle,
+        ))
+    ) {
+      return {
+        status: "error",
+        error: receipt
+          ? `child intent remains durably fenced in ${receipt.lifecycle} state`
+          : "child intent receipt is unavailable for governed recovery",
+        childSessionKey,
+        ...(receipt?.gatewayRunId ? { runId: receipt.gatewayRunId } : {}),
+      };
+    }
     if (reconciliation !== "retry" || childIntentReservation.disposition !== "owner") {
       return {
         status: "accepted",

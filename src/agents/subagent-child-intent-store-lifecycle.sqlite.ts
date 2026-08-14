@@ -188,7 +188,7 @@ export function removeSubagentReservationAtomically(params: {
       return Boolean(
         receipt &&
         (receipt.lifecycle === "not_accepted" || receipt.lifecycle === "failed_before_start") &&
-        receipt.intentId === row.canonical_key &&
+        receipt.intentId === (row.gateway_receipt_id ?? row.canonical_key) &&
         receipt.controllerSessionKey === row.controller_session_key &&
         receipt.childSessionKey === row.child_session_key &&
         (row.provider_run_id === null || receipt.gatewayRunId === row.provider_run_id),

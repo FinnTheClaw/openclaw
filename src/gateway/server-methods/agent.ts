@@ -1682,7 +1682,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         if (
           durableReceipt.requestDigest !== childRequestDigest ||
           durableReceipt.resolvedDigest !== childResolvedDigest ||
-          durableReceipt.intentId !== idem ||
+          durableReceipt.intentId !== receiptIntentId ||
           durableReceipt.controllerSessionKey !== childControllerSessionKey ||
           durableReceipt.gatewayRunId !== runId ||
           (request.sessionKey !== undefined &&
