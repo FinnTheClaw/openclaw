@@ -106,7 +106,7 @@ export async function createGatewayRuntimeState(params: {
   httpServer: HttpServer;
   httpServers: HttpServer[];
   httpBindHosts: string[];
-  startListening: () => Promise<void>;
+  startListening: () => Promise<number>;
   wss: WebSocketServer;
   preauthConnectionBudget: PreauthConnectionBudget;
   clients: Set<GatewayWsClient>;
@@ -292,11 +292,10 @@ export async function createGatewayRuntimeState(params: {
     if (!httpServer) {
       throw new Error("Gateway HTTP server failed to start");
     }
-    let startListeningPromise: Promise<void> | null = null;
-    const startListening = async (): Promise<void> => {
+    let startListeningPromise: Promise<number> | null = null;
+    const startListening = async (): Promise<number> => {
       if (startListeningPromise) {
-        await startListeningPromise;
-        return;
+        return await startListeningPromise;
       }
       // Listening is idempotent for callers racing startup; reset the promise only on failure so
       // a transient bind error can be retried after the caller handles it.
@@ -325,9 +324,14 @@ export async function createGatewayRuntimeState(params: {
         if (httpBindHosts.length === 0) {
           throw new Error("Gateway HTTP server failed to start");
         }
+        const address = httpServers[0]?.address();
+        if (!address || typeof address === "string") {
+          throw new Error("Gateway HTTP server did not expose a bound port");
+        }
+        return address.port;
       })();
       try {
-        await startListeningPromise;
+        return await startListeningPromise;
       } catch (err) {
         startListeningPromise = null;
         throw err;

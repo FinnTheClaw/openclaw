@@ -1,4 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { Selectable } from "kysely";
+import { compactSubagentChildIntentPayload } from "../agents/subagent-child-intent-compaction.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import {
   backfillCronJobsFromJobJson,
@@ -11,6 +13,38 @@ import {
   repairLegacyTaskAgentAttribution,
   repairLegacyTaskDeliveryStatuses,
 } from "./openclaw-state-db-schema-utils.js";
+import type { DB } from "./openclaw-state-db.generated.js";
+
+type ChildIntentRow = Selectable<DB["subagent_child_intents"]>;
+
+/** Compact historic closed rows during upgrade, not only rows closed today. */
+function compactHistoricChildIntentTerminalPayloads(db: DatabaseSync): void {
+  const table = db
+    .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get("subagent_child_intents") as { present?: number } | undefined;
+  if (!table?.present) {
+    return;
+  }
+  const rows = db
+    .prepare(
+      `SELECT * FROM subagent_child_intents
+       WHERE state IN ('terminal', 'expired', 'cancelled_requested', 'legacy_ambiguous')`,
+    )
+    .all() as unknown as ChildIntentRow[];
+  for (const row of rows) {
+    db.prepare(
+      `UPDATE subagent_child_intents
+       SET payload_json = ?, updated_at = MAX(updated_at, ?)
+       WHERE intent_id = ? AND generation = ? AND state = ?`,
+    ).run(
+      compactSubagentChildIntentPayload(row),
+      row.updated_at,
+      row.intent_id,
+      row.generation,
+      row.state,
+    );
+  }
+}
 
 export function rebuildLegacyChildIntentUniqueness(db: DatabaseSync): void {
   const indexes = db.prepare("PRAGMA index_list('subagent_child_intents')").all() as Array<{
@@ -278,4 +312,7 @@ export function ensureAdditiveStateColumns(db: DatabaseSync): void {
     add("subagent_gateway_acceptance_receipts", column);
   }
   rebuildLegacyChildIntentUniqueness(db);
+  runSqliteImmediateTransactionSync(db, () => {
+    compactHistoricChildIntentTerminalPayloads(db);
+  });
 }

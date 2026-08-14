@@ -78,6 +78,8 @@ type SpawnBaseInput = {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   noOutputTimeoutMs?: number;
+  /** Host-owned veto checked after validation and immediately before spawn. */
+  beforeStart?: () => Promise<boolean>;
   /**
    * When false, stdout/stderr are streamed via callbacks only and not retained in RunExit payload.
    */

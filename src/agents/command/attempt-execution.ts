@@ -753,6 +753,7 @@ export function runAgentAttempt(params: {
         cleanupCliLiveSessionOnRunEnd: params.opts.cleanupCliLiveSessionOnRunEnd,
         oneShotCliRun: params.opts.oneShotCliRun,
         onProviderStarted: params.opts.onProviderStarted,
+        authorizeProviderStart: params.opts.onBeforeProviderStart,
         userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
         suppressNextUserMessagePersistence: params.suppressPromptPersistenceOnRetry === true,
         ...(mutableCliSessionStore
@@ -888,6 +889,7 @@ export function runAgentAttempt(params: {
       }
     },
     onProviderStarted: params.opts.onProviderStarted,
+    onBeforeProviderStart: params.opts.onBeforeProviderStart,
     onSessionIdChanged: params.opts.onSessionIdChanged,
     bootstrapPromptWarningSignaturesSeen,
     bootstrapPromptWarningSignature,

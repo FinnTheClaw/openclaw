@@ -184,6 +184,9 @@ export function createProcessSupervisor(): ProcessSupervisor {
       if (input.mode === "child" && input.argv.length === 0) {
         throw new Error("spawn argv cannot be empty");
       }
+      if (input.beforeStart && !(await input.beforeStart())) {
+        throw new Error("process start was denied by the host lifecycle fence");
+      }
       const adapter =
         input.mode === "pty"
           ? await (async () => {

@@ -3356,6 +3356,7 @@ export async function runEmbeddedAttempt(
               firstModelCallStarted: true,
             });
           },
+          onBeforeProviderStart: params.onBeforeProviderStart,
         },
       );
 

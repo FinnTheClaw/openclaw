@@ -64,7 +64,7 @@ import {
 } from "../../agents/spawned-context.js";
 import {
   buildGatewayAcceptanceReceiptEnvelope,
-  gatewayAcceptanceReceiptEnvelopeDigest,
+  gatewayAcceptanceReceiptBindingDigest,
 } from "../../agents/subagent-gateway-acceptance-receipt-auth.js";
 import { readGatewayAcceptanceReceiptSigner } from "../../agents/subagent-gateway-acceptance-receipt-runtime.js";
 import {
@@ -1009,15 +1009,14 @@ function dispatchAgentRunFromGateway(params: {
   taskTrackingMode: Exclude<GatewayAgentTaskTrackingMode, "plugin_subagent">;
 }) {
   let providerStartedObserved = false;
-  const recordProviderStarted = (ctx: { provider: string; model: string }) => {
-    providerStartedObserved = true;
+  const authorizeProviderStart = async (): Promise<boolean> => {
     if (!params.acceptanceKey) {
-      return;
+      return true;
     }
     try {
       const receipt = readGatewayAcceptanceReceipt(params.acceptanceKey);
       if (!receipt || receipt.gatewayRunId !== params.runId) {
-        return;
+        return false;
       }
       if (receipt.lifecycle === "cancel_requested") {
         params.abortController.abort(new Error("governed child dispatch cancelled"));
@@ -1025,18 +1024,29 @@ function dispatchAgentRunFromGateway(params: {
           acceptanceKey: params.acceptanceKey,
           gatewayRunId: params.runId,
         });
-        return;
+        return false;
       }
-      if (receipt.lifecycle === "accepted") {
-        markGatewayAcceptanceStarted({
-          acceptanceKey: params.acceptanceKey,
-          gatewayRunId: params.runId,
-        });
+      if (receipt.lifecycle === "started") {
+        providerStartedObserved = true;
+        return true;
       }
+      if (receipt.lifecycle !== "accepted") {
+        return false;
+      }
+      const started = markGatewayAcceptanceStarted({
+        acceptanceKey: params.acceptanceKey,
+        gatewayRunId: params.runId,
+      });
+      if (started) {
+        providerStartedObserved = true;
+      }
+      return started;
     } catch {
-      // Receipt observation is fail-closed and must not throw through the
-      // provider callback. The durable receipt remains non-adoptable.
+      return false;
     }
+  };
+  const recordProviderStarted = (ctx: { provider: string; model: string }) => {
+    providerStartedObserved = true;
     void ctx;
   };
   const settleDurableReceipt = (outcome: "success" | "failure") => {
@@ -1128,6 +1138,7 @@ function dispatchAgentRunFromGateway(params: {
         : agentCommandFromIngress(
             {
               ...params.ingressOpts,
+              onBeforeProviderStart: authorizeProviderStart,
               onProviderStarted: recordProviderStarted,
             },
             defaultRuntime,
@@ -1313,6 +1324,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       childIntentResolvedDigest?: string;
       childIntentControllerSessionKey?: string;
       childIntentReceiptMode?: "governed";
+      childIntentCapability?: "sessions_spawn";
     };
     if (request.cwd && !path.isAbsolute(request.cwd)) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "cwd must be absolute"));
@@ -1361,7 +1373,7 @@ export const agentHandlers: GatewayRequestHandlers = {
     const modelOverride = allowModelOverride ? request.model : undefined;
     const cfg = context.getRuntimeConfig();
     const idem = request.idempotencyKey;
-    const runId = idem;
+    let runId = idem;
     const gatewayRequestDigest = createHash("sha256")
       .update(
         JSON.stringify({
@@ -1400,6 +1412,27 @@ export const agentHandlers: GatewayRequestHandlers = {
       typeof request.childIntentControllerSessionKey === "string"
         ? request.childIntentControllerSessionKey
         : (request.sessionKey ?? "");
+    const childIntentBindingCount = [
+      request.childIntentRequestDigest,
+      request.childIntentResolvedDigest,
+      request.childIntentControllerSessionKey,
+    ].filter((value) => typeof value === "string").length;
+    if (
+      (childIntentBindingCount > 0 && childIntentBindingCount < 3) ||
+      (request.childIntentReceiptMode === "governed" &&
+        (childIntentBindingCount !== 3 || request.childIntentCapability !== "sessions_spawn")) ||
+      (request.childIntentCapability !== undefined && request.childIntentReceiptMode !== "governed")
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "governed child intent bindings require request, resolved, controller, and sessions_spawn capability",
+        ),
+      );
+      return;
+    }
     const receiptAuthorityActive =
       readGatewayAcceptanceReceiptSigner() !== undefined || process.env.NODE_ENV === "test";
     const durableChildReceiptRequired =
@@ -1407,6 +1440,20 @@ export const agentHandlers: GatewayRequestHandlers = {
       typeof request.childIntentResolvedDigest === "string" &&
       typeof request.childIntentControllerSessionKey === "string" &&
       (request.childIntentReceiptMode === "governed" || receiptAuthorityActive);
+    if (durableChildReceiptRequired) {
+      try {
+        const priorReceipt = readGatewayAcceptanceReceipt(idem);
+        runId =
+          priorReceipt && isGatewayAcceptanceReceiptActiveForReplay(priorReceipt.lifecycle)
+            ? priorReceipt.gatewayRunId
+            : randomUUID();
+      } catch {
+        // The existing durable-read path below remains authoritative. Keep
+        // the logical id only as a provisional value until that path proves
+        // whether this attempt is new or durably fenced.
+        runId = idem;
+      }
+    }
     const gatewayReceiptEnvelope = buildGatewayAcceptanceReceiptEnvelope({
       acceptanceKey: idem,
       intentId: idem,
@@ -1528,12 +1575,11 @@ export const agentHandlers: GatewayRequestHandlers = {
           durableReceipt.gatewayRunId !== runId ||
           (request.sessionKey !== undefined &&
             durableReceipt.childSessionKey !== request.sessionKey) ||
-          durableReceipt.envelopeDigest !==
-            gatewayAcceptanceReceiptEnvelopeDigest({
-              ...gatewayReceiptEnvelope,
-              childSessionKey: durableReceipt.childSessionKey,
-              targetAgentId: durableReceipt.envelope.targetAgentId,
-            })
+          gatewayAcceptanceReceiptBindingDigest({
+            ...gatewayReceiptEnvelope,
+            childSessionKey: durableReceipt.childSessionKey,
+            targetAgentId: durableReceipt.envelope.targetAgentId,
+          }) !== gatewayAcceptanceReceiptBindingDigest(durableReceipt.envelope)
         ) {
           respond(
             false,

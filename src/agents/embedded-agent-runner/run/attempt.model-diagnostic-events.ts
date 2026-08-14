@@ -53,6 +53,7 @@ type ModelCallDiagnosticContext = {
   contentCapture?: DiagnosticModelContentCapturePolicy;
   nextCallId: () => string;
   onStarted?: () => void;
+  onBeforeProviderStart?: () => Promise<boolean>;
 };
 
 type ModelCallEventBase = Omit<
@@ -860,30 +861,42 @@ export function wrapStreamFnWithDiagnosticModelCallEvents(
     const eventBase = baseModelCallEvent(ctx, callId, trace, promptStats);
     const modelContent = streamContextModelContentFields(ctx.contentCapture, streamContext);
     emitModelCallStarted(eventBase, modelContent);
-    ctx.onStarted?.();
-    const startedAt = Date.now();
-    const state: ModelCallObservationState = {
-      responseStreamBytes: 0,
-      modelContent,
-      contentCapture: ctx.contentCapture,
-    };
-    const propagatedOptions = withDiagnosticTraceparentHeader(options, trace, state);
+    const startStream = () => {
+      ctx.onStarted?.();
+      const startedAt = Date.now();
+      const state: ModelCallObservationState = {
+        responseStreamBytes: 0,
+        modelContent,
+        contentCapture: ctx.contentCapture,
+      };
+      const propagatedOptions = withDiagnosticTraceparentHeader(options, trace, state);
 
-    try {
-      const result = streamFn(model, streamContext, propagatedOptions);
-      if (isPromiseLike(result)) {
-        return result.then(
-          (resolved) => observeModelCallResult(resolved, eventBase, startedAt, state),
-          (err: unknown) => {
-            emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
-            throw err;
-          },
-        );
+      try {
+        const result = streamFn(model, streamContext, propagatedOptions);
+        if (isPromiseLike(result)) {
+          return result.then(
+            (resolved) => observeModelCallResult(resolved, eventBase, startedAt, state),
+            (err: unknown) => {
+              emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+              throw err;
+            },
+          );
+        }
+        return observeModelCallResult(result, eventBase, startedAt, state);
+      } catch (err) {
+        emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+        throw err;
       }
-      return observeModelCallResult(result, eventBase, startedAt, state);
-    } catch (err) {
-      emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
-      throw err;
+    };
+    const authorization = ctx.onBeforeProviderStart?.();
+    if (authorization) {
+      return authorization.then((allowed) => {
+        if (!allowed) {
+          throw new Error("provider start was denied by the host lifecycle fence");
+        }
+        return startStream();
+      });
     }
+    return startStream();
   }) as StreamFn;
 }

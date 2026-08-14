@@ -1500,6 +1500,7 @@ export async function executePreparedCliRun(
             onMcpCaptureReady: beginGatewayCapture,
             onProviderStarted: () =>
               params.onProviderStarted?.({ provider: params.provider, model: context.modelId }),
+            authorizeProviderStart: params.authorizeProviderStart,
             cleanup: async () => {
               await fallbackClaudeSkillsPlugin?.cleanup();
             },
@@ -1566,6 +1567,9 @@ export async function executePreparedCliRun(
             env,
             input: stdinPayload,
             captureOutput: false,
+            ...(params.authorizeProviderStart
+              ? { beforeStart: params.authorizeProviderStart }
+              : {}),
             onStdout: (chunk: string) => {
               stdoutBytes += Buffer.byteLength(chunk);
               stdoutHash.update(chunk);

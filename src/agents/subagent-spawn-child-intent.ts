@@ -42,6 +42,7 @@ type SpawnChildIntentInput = {
   };
   intentBehaviorDigest?: string;
   intentRequestDigest?: string;
+  durableReceiptRequired?: boolean;
   requesterDisplayKey: string;
   maxActiveChildren: number;
 };
@@ -121,6 +122,7 @@ export function admitSubagentSpawnChildIntent(
       }),
     targetAgentId: params.targetAgentId,
     operationKey: params.operationKey,
+    durableReceiptRequired: params.durableReceiptRequired,
   });
 }
 

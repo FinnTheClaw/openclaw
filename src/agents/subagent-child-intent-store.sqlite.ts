@@ -28,6 +28,8 @@ export {
   removeSubagentReservationAtomically,
 } from "./subagent-child-intent-store-lifecycle.sqlite.js";
 
+export { expireSubagentChildIntentAfterFailedBeforeStartInDatabase } from "./subagent-child-intent-failed-before-start.sqlite.js";
+
 export type { ChildIntentState } from "./subagent-child-intent-types.js";
 
 const ACTIVE_STATES: readonly ChildIntentState[] = [

@@ -382,4 +382,24 @@ describe("process supervisor", () => {
     expect(exit.stdout.endsWith("stdout-tail")).toBe(true);
     expect(exit.stderr.endsWith("stderr-tail")).toBe(true);
   });
+
+  it("vetoes a physical child spawn before adapter creation", async () => {
+    createChildAdapterMock.mockResolvedValue(createStubChildAdapter());
+    const supervisor = createProcessSupervisor();
+    const authorize = vi.fn(async () => false);
+
+    await expect(
+      supervisor.spawn({
+        sessionId: "s-before-start",
+        backendId: "test",
+        mode: "child",
+        argv: createWriteStdoutArgv("must-not-run"),
+        timeoutMs: 1_000,
+        stdinMode: "pipe-closed",
+        beforeStart: authorize,
+      }),
+    ).rejects.toThrow("process start was denied");
+    expect(authorize).toHaveBeenCalledOnce();
+    expect(createChildAdapterMock).not.toHaveBeenCalled();
+  });
 });

@@ -163,6 +163,8 @@ export type AgentCommandOpts = {
   onActiveModelSelected?: (ctx: { provider: string; model: string }) => void;
   /** Host-only notification after the provider stream has actually started. */
   onProviderStarted?: (ctx: { provider: string; model: string }) => void;
+  /** Host-owned authorization immediately before the provider is invoked. */
+  onBeforeProviderStart?: () => Promise<boolean>;
   /** Called when compaction rotates the active run onto a successor session. */
   onSessionIdChanged?: (sessionId: string) => void;
   /** Internal one-shot model probe mode: no tools, no workspace/chat prompt policy. */

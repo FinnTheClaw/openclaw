@@ -21,6 +21,12 @@ import {
   requestGatewayAcceptanceCancel,
   reserveGatewayAcceptanceReceipt,
 } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
+import {
+  markSubagentChildIntentDispatching,
+  markSubagentChildIntentUnknown,
+  reserveSubagentChildIntent,
+  resetSubagentRegistryForTests,
+} from "./subagent-registry.js";
 
 describe("successor gateway receipt invariants", () => {
   const env = captureEnv(["OPENCLAW_STATE_DIR", "NODE_ENV"]);
@@ -30,9 +36,11 @@ describe("successor gateway receipt invariants", () => {
     stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-receipt-successor-"));
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
     setTestEnvValue("NODE_ENV", "test");
+    resetSubagentRegistryForTests({ persist: false });
   });
 
   afterEach(async () => {
+    resetSubagentRegistryForTests({ persist: false });
     closeOpenClawStateDatabaseForTest();
     env.restore();
     await fs.rm(stateDir, { recursive: true, force: true });
@@ -87,6 +95,65 @@ describe("successor gateway receipt invariants", () => {
     expect(next.receiptGeneration).toBe(1);
     expect(next.gatewayRunId).toBe("gateway-run-b");
     expect(next.acceptanceEpoch).toBe("gateway-epoch-b");
+  });
+
+  it("retires the matching child row for a proven failed-before-start retry", () => {
+    const value = input("failed-child", "gateway-epoch-a", "gateway-run-a");
+    const reservation = reserveSubagentChildIntent({
+      childIntentKey: value.acceptanceKey,
+      childSessionKey: value.childSessionKey,
+      reservationRunId: "reservation-failed-child",
+      requesterSessionKey: value.controllerSessionKey,
+      requesterDisplayKey: value.controllerSessionKey,
+      task: "private failed child task",
+      cleanup: "keep",
+      operationKey: "failed-child",
+      intentRequestDigest: value.requestDigest,
+      intentBehaviorDigest: value.requestDigest,
+    });
+    expect(reservation.disposition).toBe("owner");
+    expect(reserveGatewayAcceptanceReceipt(value).lifecycle).toBe("preaccepted");
+    markSubagentChildIntentDispatching({
+      childIntentKey: value.acceptanceKey,
+      reservationToken: reservation.reservationToken!,
+    });
+    markSubagentChildIntentUnknown({
+      childIntentKey: value.acceptanceKey,
+      reservationToken: reservation.reservationToken!,
+      providerRunId: value.gatewayRunId,
+      retainOwnership: true,
+    });
+    expect(markGatewayAcceptanceRunnable(value)).toBe(true);
+    expect(markGatewayAcceptanceDispatchClaimed(value)).toBe(true);
+    expect(claimGatewayAcceptanceForDispatch(value)).toBe(true);
+    expect(markGatewayAcceptanceFailedBeforeStart(value)).toBe(true);
+
+    runOpenClawStateWriteTransaction(({ db }) => {
+      const row = db
+        .prepare(
+          "SELECT state, generation, payload_json FROM subagent_child_intents WHERE canonical_key = ?",
+        )
+        .get(value.acceptanceKey) as
+        | { state?: string; generation?: number; payload_json?: string }
+        | undefined;
+      expect(row?.state).toBe("expired");
+      expect(row?.generation).toBe(3);
+      expect(row?.payload_json).not.toContain("private failed child task");
+    });
+    expect(
+      reserveSubagentChildIntent({
+        childIntentKey: value.acceptanceKey,
+        childSessionKey: value.childSessionKey,
+        reservationRunId: "reservation-failed-child-retry",
+        requesterSessionKey: value.controllerSessionKey,
+        requesterDisplayKey: value.controllerSessionKey,
+        task: "private failed child task",
+        cleanup: "keep",
+        operationKey: "failed-child",
+        intentRequestDigest: value.requestDigest,
+        intentBehaviorDigest: value.requestDigest,
+      }).disposition,
+    ).toBe("owner");
   });
 
   it.each([

@@ -237,6 +237,13 @@ export const AgentParamsSchema = Type.Object(
     ),
     disableMessageTool: Type.Optional(Type.Boolean()),
     voiceWakeTrigger: Type.Optional(Type.String()),
+    // Host-issued child-intent bindings are transported only by the trusted
+    // sessions_spawn path. They are not model/tool policy controls.
+    childIntentRequestDigest: Type.Optional(NonEmptyString),
+    childIntentResolvedDigest: Type.Optional(NonEmptyString),
+    childIntentControllerSessionKey: Type.Optional(NonEmptyString),
+    childIntentReceiptMode: Type.Optional(Type.Literal("governed")),
+    childIntentCapability: Type.Optional(Type.Literal("sessions_spawn")),
     idempotencyKey: NonEmptyString,
     label: Type.Optional(SessionLabelString),
   },

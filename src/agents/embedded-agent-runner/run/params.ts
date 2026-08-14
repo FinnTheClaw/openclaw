@@ -221,6 +221,8 @@ export type RunEmbeddedAgentParams = {
   onExecutionStarted?: (info?: { lifecycleGeneration?: string }) => void;
   /** Host-only notification after the first provider stream starts. */
   onProviderStarted?: (ctx: { provider: string; model: string }) => void;
+  /** Host-owned authorization immediately before the provider stream is invoked. */
+  onBeforeProviderStart?: () => Promise<boolean>;
   onExecutionPhase?: (info: {
     phase: EmbeddedAgentExecutionPhase;
     provider?: string;

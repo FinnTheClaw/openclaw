@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
-import { rebuildLegacyChildIntentUniqueness } from "./openclaw-state-db-additive.js";
+import {
+  ensureAdditiveStateColumns,
+  rebuildLegacyChildIntentUniqueness,
+} from "./openclaw-state-db-additive.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -130,6 +133,69 @@ describe("child intent uniqueness migration", () => {
           partial: 1,
         }),
       ]),
+    );
+  });
+
+  it("compacts historic named and tombstone payloads while retaining replay identity", () => {
+    const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: stateDir } });
+    const db = database.db;
+    const insert = db.prepare(
+      `INSERT INTO subagent_child_intents
+       (intent_id, controller_session_key, canonical_key, operation_key,
+        request_digest, preparation_digest, resolved_digest, target_agent_id,
+        child_session_key, reservation_run_id, state, generation, lease_owner,
+        created_at, updated_at, payload_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const [intentId, state, operationKey] of [
+      ["historic-terminal", "terminal", "named-slot"],
+      ["historic-cancelled", "cancelled_requested", "named-cancel"],
+      ["historic-expired", "expired", null],
+    ] as const) {
+      insert.run(
+        intentId,
+        "migration-controller",
+        intentId,
+        operationKey,
+        `${intentId}-request`,
+        `${intentId}-prepare`,
+        `${intentId}-resolved`,
+        "target",
+        `${intentId}-session`,
+        `${intentId}-run`,
+        state,
+        4,
+        `${intentId}-lease`,
+        Date.now(),
+        Date.now(),
+        JSON.stringify({ task: "private historic task", large: "x".repeat(1000) }),
+      );
+    }
+
+    ensureAdditiveStateColumns(db);
+
+    const rows = db
+      .prepare(
+        `SELECT intent_id, operation_key, generation, payload_json
+         FROM subagent_child_intents WHERE intent_id LIKE 'historic-%' ORDER BY intent_id`,
+      )
+      .all() as Array<{
+      intent_id: string;
+      operation_key: string | null;
+      generation: number;
+      payload_json: string;
+    }>;
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row.payload_json).not.toContain("private historic task");
+      expect(JSON.parse(row.payload_json)).toMatchObject({
+        schema: "openclaw.child-intent.terminal.v1",
+        intentId: row.intent_id,
+        generation: row.generation,
+      });
+    }
+    expect(rows.find((row) => row.intent_id === "historic-terminal")?.operation_key).toBe(
+      "named-slot",
     );
   });
 });

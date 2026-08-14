@@ -263,6 +263,10 @@ export function cancelSubagentChildIntentAtomically(params: {
         generation: row.generation + 1,
         cancel_requested_at: Date.now(),
         updated_at: Date.now(),
+        payload_json: compactSubagentChildIntentPayload({
+          ...row,
+          generation: row.generation + 1,
+        }),
       });
       if (changed) {
         receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
@@ -326,6 +330,10 @@ export function cancelSubagentChildIntentByRunOrSessionAtomically(params: {
         generation: row.generation + 1,
         cancel_requested_at: Date.now(),
         updated_at: Date.now(),
+        payload_json: compactSubagentChildIntentPayload({
+          ...row,
+          generation: row.generation + 1,
+        }),
       });
       if (changed) {
         receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
@@ -351,7 +359,7 @@ export function releaseRegisteredSubagentChildIntent(runId: string): void {
         .selectAll()
         .where("registered_run_id", "=", runId),
     ).rows[0];
-    if (!row || row.state !== "registered") {
+    if (!row || !["registered", "cancelled_requested"].includes(row.state)) {
       return;
     }
     updateRow(
@@ -367,7 +375,7 @@ export function releaseRegisteredSubagentChildIntent(runId: string): void {
           generation: row.generation + 1,
         }),
       },
-      "registered",
+      row.state as ChildIntentState,
     );
   });
 }
@@ -394,6 +402,10 @@ export function expireSubagentReservationsAtomically(now = Date.now()): string[]
             state: "expired",
             generation: row.generation + 1,
             updated_at: now,
+            payload_json: compactSubagentChildIntentPayload({
+              ...row,
+              generation: row.generation + 1,
+            }),
           },
           "reserved",
         )
@@ -411,7 +423,7 @@ export function expireSubagentReservationsAtomically(now = Date.now()): string[]
       stateDb
         .selectFrom("subagent_child_intents")
         .select(["intent_id", "generation"])
-        .where("state", "=", "terminal")
+        .where("state", "in", ["terminal", "expired"])
         .where("operation_key", "is", null)
         .where("updated_at", "<=", cutoff)
         .orderBy("updated_at", "asc")
@@ -424,7 +436,7 @@ export function expireSubagentReservationsAtomically(now = Date.now()): string[]
           .deleteFrom("subagent_child_intents")
           .where("intent_id", "=", row.intent_id)
           .where("generation", "=", row.generation)
-          .where("state", "=", "terminal")
+          .where("state", "in", ["terminal", "expired"])
           .where("operation_key", "is", null),
       );
     }

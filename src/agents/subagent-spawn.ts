@@ -212,6 +212,8 @@ type SpawnSubagentParams = {
   idempotencyKey?: string;
   /** Batch-only host discriminator for intentionally distinct same-shaped children. */
   childIntentDiscriminator?: string;
+  /** Explicit host-owned lifecycle mode; never supplied by model/tool text. */
+  childLifecycleMode?: "governed";
 };
 
 type SpawnSubagentContext = {
@@ -1420,6 +1422,7 @@ export async function spawnSubagentDirect(
     expectsCompletionMessage,
     maxActiveChildren: maxChildren,
     intentBehaviorDigest,
+    durableReceiptRequired: params.childLifecycleMode === "governed",
   };
   let childIntentReservation: ReturnType<typeof admitSubagentSpawnChildIntent>;
   try {
@@ -1886,6 +1889,12 @@ export async function spawnSubagentDirect(
         childIntentRequestDigest: childIntentReservation.requestDigest,
         childIntentResolvedDigest: finalIntentBehaviorDigest,
         childIntentControllerSessionKey: childIntentReservation.controllerSessionKey,
+        ...(childIntentReservation.durableReceiptRequired
+          ? {
+              childIntentReceiptMode: "governed" as const,
+              childIntentCapability: "sessions_spawn" as const,
+            }
+          : {}),
         cleanupBundleMcpOnRunEnd: spawnMode !== "session",
         extraSystemPrompt: childSystemPrompt,
         thinking: thinkingOverride,

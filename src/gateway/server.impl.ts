@@ -469,6 +469,8 @@ export type GatewayCloseOptions = {
 
 export type GatewayServer = {
   close: (opts?: GatewayCloseOptions) => Promise<void>;
+  /** Actual listener port; present for ephemeral-port test/process harnesses. */
+  port?: number;
 };
 
 export type GatewayServerOptions = {
@@ -543,6 +545,7 @@ export async function startGatewayServer(
   opts: GatewayServerOptions = {},
 ): Promise<GatewayServer> {
   normalizeStateDirEnv(process.env);
+  let boundPort!: number;
   // runGatewayLoop calls this after closing the previous server on both fresh
   // and in-process restarts, making retired plugin generations safe to remove.
   try {
@@ -1719,7 +1722,7 @@ export async function startGatewayServer(
         context: gatewayRequestContext,
       }),
     );
-    await startupTrace.measure("http.listen", () => startListening());
+    boundPort = await startupTrace.measure("http.listen", () => startListening());
     startupTrace.mark("http.bound");
     const sessionDeliveryRecoveryMaxEnqueuedAt = Date.now();
     let postAttachRuntimeReturned = false;
@@ -2045,6 +2048,7 @@ export async function startGatewayServer(
   };
 
   return {
+    port: boundPort,
     close: async (optsLocal) => {
       try {
         await closeGatewayResources(optsLocal);

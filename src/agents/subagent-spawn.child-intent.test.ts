@@ -25,7 +25,12 @@ let resetSubagentRegistryForTests: () => void;
 function setupReservationMock() {
   const reservations = new Map<
     string,
-    { childSessionKey: string; runId: string; requesterSessionKey: string }
+    {
+      childSessionKey: string;
+      runId: string;
+      requesterSessionKey: string;
+      durableReceiptRequired?: boolean;
+    }
   >();
   hoisted.reserveChildIntentMock.mockImplementation(
     (input: {
@@ -34,6 +39,7 @@ function setupReservationMock() {
       reservationRunId: string;
       requesterSessionKey: string;
       maxActiveChildren?: number;
+      durableReceiptRequired?: boolean;
     }) => {
       const existing = reservations.get(input.childIntentKey);
       if (existing) {
@@ -43,6 +49,7 @@ function setupReservationMock() {
           childSessionKey: existing.childSessionKey,
           reservationRunId: existing.runId,
           existingRunId: existing.runId,
+          durableReceiptRequired: existing.durableReceiptRequired,
         };
       }
       const active = [...reservations.values()].filter(
@@ -57,6 +64,7 @@ function setupReservationMock() {
         childSessionKey: input.childSessionKey,
         runId: "run-1",
         requesterSessionKey: input.requesterSessionKey,
+        durableReceiptRequired: input.durableReceiptRequired,
       });
       return {
         disposition: "owner",
@@ -64,6 +72,7 @@ function setupReservationMock() {
         childSessionKey: input.childSessionKey,
         reservationRunId: input.reservationRunId,
         reservationToken: "reservation-token",
+        durableReceiptRequired: input.durableReceiptRequired,
       };
     },
   );
@@ -152,6 +161,27 @@ describe("host-owned child intent admission", () => {
       hoisted.callGatewayMock.mock.calls.filter(([call]) => call.method === "agent"),
     ).toHaveLength(2);
     expect(hoisted.registerSubagentRunMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("carries explicit governed mode and capability through the real child RPC envelope", async () => {
+    const result = await spawnSubagentDirect(
+      {
+        task: "governed child transport",
+        idempotencyKey: "governed-child-transport",
+        childLifecycleMode: "governed",
+      },
+      { agentSessionKey: "agent:main:main" },
+    );
+
+    expect(result.status).toBe("accepted");
+    const agentCall = hoisted.callGatewayMock.mock.calls.find(([call]) => call.method === "agent");
+    expect(agentCall?.[0].params).toMatchObject({
+      childIntentReceiptMode: "governed",
+      childIntentCapability: "sessions_spawn",
+    });
+    expect(hoisted.reserveChildIntentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ durableReceiptRequired: true }),
+    );
   });
 
   it("counts proxy-owned children against the controller max, not completion aliases", async () => {

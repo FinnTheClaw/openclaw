@@ -1,58 +1,26 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
-import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { describe, expect, it } from "vitest";
 
-type GatewayReady = { gatewayPort: number; modelPort: number };
+type GatewayReady = { gatewayPort: number };
+type ModelReady = { modelPort: number };
 
-type GatewayProcess = {
+type LineProcess<T> = {
   child: ChildProcess;
-  ready: Promise<GatewayReady>;
+  ready: Promise<T>;
   waitFor: (prefix: string) => Promise<string>;
   close: () => Promise<void>;
 };
 
-async function getFreePort(): Promise<number> {
-  const probe = createServer();
-  await new Promise<void>((resolve, reject) => {
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", resolve);
-  });
-  const address = probe.address();
-  if (!address || typeof address === "string") {
-    throw new Error("free-port probe did not return an address");
-  }
-  const port = address.port;
-  await new Promise<void>((resolve, reject) => {
-    probe.close((error) => {
-      if (error) {
-        reject(error);
-      } else {
-        resolve();
-      }
-    });
-  });
-  return port;
-}
-
-function startGatewayProcess(params: {
-  configPath: string;
-  stateDir: string;
-  token: string;
-  gatewayPort: number;
-  embeddedCounter: string;
-  physicalCounter: string;
-}): GatewayProcess {
+function startModelProcess(params: { counterPath: string }): LineProcess<ModelReady> {
   const script = `
     import fs from "node:fs";
     import http from "node:http";
     import { createInterface } from "node:readline";
-    import { startGatewayServer } from "./src/gateway/server.ts";
-
     const modelServer = http.createServer((request, response) => {
       if (request.method === "GET") {
         response.writeHead(200, { "content-type": "application/json" });
@@ -61,7 +29,7 @@ function startGatewayProcess(params: {
       }
       request.resume();
       request.once("end", () => {
-        fs.appendFileSync(process.env.EMBEDDED_COUNTER, "request\\n");
+        fs.appendFileSync(process.env.MODEL_COUNTER, "request\\n");
         response.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache",
@@ -76,12 +44,73 @@ function startGatewayProcess(params: {
       modelServer.once("error", reject);
       modelServer.listen(0, "127.0.0.1", resolve);
     });
-    const modelAddress = modelServer.address();
-    if (!modelAddress || typeof modelAddress === "string") throw new Error("model server address missing");
-    const config = JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
-    config.models.providers["loopback-embedded"].baseUrl = "http://127.0.0.1:" + modelAddress.port + "/v1";
-    fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH, JSON.stringify(config) + "\\n");
-    const gateway = await startGatewayServer(Number(process.env.GATEWAY_PORT), {
+    const address = modelServer.address();
+    if (!address || typeof address === "string") throw new Error("model server address missing");
+    process.stdout.write("READY " + JSON.stringify({ modelPort: address.port }) + "\\n");
+    const control = createInterface({ input: process.stdin });
+    control.on("line", async (line) => {
+      if (line !== "CLOSE") return;
+      await new Promise((resolve, reject) => modelServer.close((error) => error ? reject(error) : resolve()));
+      process.stdout.write("CLOSED\\n");
+      control.close();
+      process.exit(0);
+    });
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      NODE_ENV: "production",
+      MODEL_COUNTER: params.counterPath,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const lines = createInterface({ input: child.stdout! });
+  const stderr: string[] = [];
+  child.stderr?.on("data", (chunk) => stderr.push(String(chunk)));
+  const waitFor = (prefix: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const onLine = (line: string) => {
+        if (!line.startsWith(prefix)) {
+          return;
+        }
+        cleanup();
+        resolve(line);
+      };
+      const onExit = (code: number | null) => {
+        cleanup();
+        reject(new Error(`model process exited ${String(code)}: ${stderr.join("")}`));
+      };
+      const cleanup = () => {
+        lines.off("line", onLine);
+        child.off("exit", onExit);
+      };
+      lines.on("line", onLine);
+      child.once("exit", onExit);
+    });
+  return {
+    child,
+    ready: waitFor("READY ").then((line) => JSON.parse(line.slice(6)) as ModelReady),
+    waitFor,
+    close: async () => {
+      child.stdin?.write("CLOSE\\n");
+      await waitFor("CLOSED");
+      await once(child, "close");
+      lines.close();
+    },
+  };
+}
+
+function startGatewayProcess(params: {
+  configPath: string;
+  stateDir: string;
+  token: string;
+  physicalCounter: string;
+}): LineProcess<GatewayReady> {
+  const script = `
+    import { createInterface } from "node:readline";
+    import { startGatewayServer } from "./src/gateway/server.ts";
+    const gateway = await startGatewayServer(0, {
       bind: "loopback",
       host: "127.0.0.1",
       auth: { mode: "token", token: process.env.GATEWAY_TOKEN },
@@ -90,14 +119,13 @@ function startGatewayProcess(params: {
       openResponsesEnabled: false,
       sidecarStartup: "defer",
     });
-    process.stdout.write("READY " + JSON.stringify({ gatewayPort: Number(process.env.GATEWAY_PORT), modelPort: modelAddress.port }) + "\\n");
+    process.stdout.write("READY " + JSON.stringify({ gatewayPort: gateway.port }) + "\\n");
     const control = createInterface({ input: process.stdin });
     control.on("line", async (line) => {
       if (line !== "CLOSE") {
         return;
       }
       await gateway.close({ reason: "process-boundary-test" });
-      await new Promise((resolve, reject) => modelServer.close((error) => error ? reject(error) : resolve()));
       process.stdout.write("CLOSED\\n");
       control.close();
       process.exit(0);
@@ -111,9 +139,7 @@ function startGatewayProcess(params: {
       OPENCLAW_CONFIG_PATH: params.configPath,
       OPENCLAW_STATE_DIR: params.stateDir,
       OPENCLAW_GATEWAY_TOKEN: params.token,
-      GATEWAY_PORT: String(params.gatewayPort),
       GATEWAY_TOKEN: params.token,
-      EMBEDDED_COUNTER: params.embeddedCounter,
       PHYSICAL_COUNTER: params.physicalCounter,
       OPENCLAW_SKIP_CHANNELS: "1",
       OPENCLAW_SKIP_PROVIDERS: "1",
@@ -163,16 +189,112 @@ function startGatewayProcess(params: {
   };
 }
 
+type ControllerResult = {
+  status: string;
+  childSessionKey?: string;
+  runId?: string;
+  error?: string;
+};
+
+function startControllerProcess(params: {
+  configPath: string;
+  stateDir: string;
+  gatewayPort: number;
+  token: string;
+  model: string;
+  operationKey: string;
+  governed?: boolean;
+}): LineProcess<ControllerResult> {
+  const script = `
+    import { createInterface } from "node:readline";
+    import { spawnSubagentDirect } from "./src/agents/subagent-spawn.ts";
+    const control = createInterface({ input: process.stdin });
+    control.on("line", async (line) => {
+      if (line !== "START") {
+        return;
+      }
+      const result = await spawnSubagentDirect({
+        task: "process-boundary child intent probe",
+        model: process.env.CHILD_MODEL,
+        mode: "run",
+        subagentRole: "leaf",
+        idempotencyKey: process.env.CHILD_OPERATION,
+        expectsCompletionMessage: false,
+        ...(process.env.CHILD_GOVERNED === "1" ? { childLifecycleMode: "governed" } : {}),
+      }, { agentSessionKey: "agent:main:main" });
+      process.stdout.write("RESULT " + JSON.stringify(result) + "\\n");
+      control.close();
+      process.exit(0);
+    });
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      NODE_ENV: "production",
+      OPENCLAW_CONFIG_PATH: params.configPath,
+      OPENCLAW_STATE_DIR: params.stateDir,
+      OPENCLAW_GATEWAY_URL: `ws://127.0.0.1:${params.gatewayPort}`,
+      OPENCLAW_GATEWAY_TOKEN: params.token,
+      CHILD_MODEL: params.model,
+      CHILD_OPERATION: params.operationKey,
+      CHILD_GOVERNED: params.governed ? "1" : "0",
+      OPENCLAW_SKIP_CHANNELS: "1",
+      OPENCLAW_SKIP_PROVIDERS: "1",
+      OPENCLAW_SKIP_CRON: "1",
+      OPENCLAW_SKIP_CANVAS_HOST: "1",
+      OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
+      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const lines = createInterface({ input: child.stdout! });
+  const stderr: string[] = [];
+  child.stderr?.on("data", (chunk) => stderr.push(String(chunk)));
+  const waitFor = (prefix: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const onLine = (line: string) => {
+        if (!line.startsWith(prefix)) {
+          return;
+        }
+        cleanup();
+        resolve(line);
+      };
+      const onExit = (code: number | null) => {
+        cleanup();
+        reject(new Error(`controller process exited ${String(code)}: ${stderr.join("")}`));
+      };
+      const cleanup = () => {
+        lines.off("line", onLine);
+        child.off("exit", onExit);
+      };
+      lines.on("line", onLine);
+      child.once("exit", onExit);
+    });
+  const ready = waitFor("RESULT ").then(
+    (line) => JSON.parse(line.slice("RESULT ".length)) as ControllerResult,
+  );
+  return {
+    child,
+    ready,
+    waitFor,
+    close: async () => {
+      await ready;
+      await once(child, "close");
+      lines.close();
+    },
+  };
+}
+
 const processBoundary = process.platform === "win32" ? describe.skip : describe;
 
 processBoundary("child intent production process boundary", () => {
-  it("uses controller RPC, production Gateway bootstrap, agentCommand, embedded model, and CLI child probe", async () => {
+  it("uses separate controllers, spawnSubagentDirect, Gateway RPC, and one physical child", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-child-boundary-"));
     const configPath = path.join(stateDir, "openclaw.json");
-    const embeddedCounter = path.join(stateDir, "embedded-requests");
+    const modelCounter = path.join(stateDir, "model-requests");
     const physicalCounter = path.join(stateDir, "physical-starts");
     const token = "process-boundary-token";
-    const gatewayPort = await getFreePort();
     const cliScript =
       "const fs=require('node:fs');fs.appendFileSync(process.env.PHYSICAL_COUNTER,'start\\n');process.stdout.write('CLI-PROBE\\n');";
     await fs.writeFile(
@@ -220,6 +342,14 @@ processBoundary("child intent production process boundary", () => {
       }) + "\n",
       "utf8",
     );
+    const model = startModelProcess({ counterPath: modelCounter });
+    const modelReady = await model.ready;
+    const configured = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      models: { providers: { "loopback-embedded": { baseUrl: string } } };
+    };
+    configured.models.providers["loopback-embedded"].baseUrl =
+      `http://127.0.0.1:${modelReady.modelPort}/v1`;
+    await fs.writeFile(configPath, JSON.stringify(configured) + "\n", "utf8");
     const previousConfig = process.env.OPENCLAW_CONFIG_PATH;
     const previousState = process.env.OPENCLAW_STATE_DIR;
     process.env.OPENCLAW_CONFIG_PATH = configPath;
@@ -228,38 +358,62 @@ processBoundary("child intent production process boundary", () => {
       configPath,
       stateDir,
       token,
-      gatewayPort,
-      embeddedCounter,
       physicalCounter,
     });
     try {
       const ready = await gateway.ready;
-      const { callGateway } = await import("../gateway/call.js");
-      const call = (model: string, key: string) =>
-        callGateway<{ status?: string }>({
-          url: `ws://127.0.0.1:${ready.gatewayPort}`,
+      const embedded = startControllerProcess({
+        configPath,
+        stateDir,
+        gatewayPort: ready.gatewayPort,
+        token,
+        model: "loopback-embedded/fake-model",
+        operationKey: "embedded-boundary",
+      });
+      embedded.child.stdin?.write("START\\n");
+      expect((await embedded.ready).status).toBe("accepted");
+      await embedded.close();
+      const cliControllers = [0, 1].map(() =>
+        startControllerProcess({
+          configPath,
+          stateDir,
+          gatewayPort: ready.gatewayPort,
           token,
-          method: "agent",
-          mode: "backend",
-          scopes: ["operator.admin"],
-          expectFinal: true,
-          timeoutMs: 120_000,
-          params: {
-            message: "Reply with the fixed probe token.",
-            model,
-            sessionKey: `agent:main:${key}`,
-            idempotencyKey: key,
-            deliver: false,
-          },
-        });
-      expect((await call("loopback-embedded/fake-model", "embedded-boundary")).status).toBe("ok");
-      expect((await call("fake-cli/fake-model", "cli-boundary")).status).toBe("ok");
+          model: "fake-cli/fake-model",
+          operationKey: "cli-boundary-same-operation",
+        }),
+      );
+      for (const controller of cliControllers) {
+        controller.child.stdin?.write("START\\n");
+      }
+      const cliResults = await Promise.all(cliControllers.map((controller) => controller.ready));
+      expect(cliResults.every((result) => result.status === "accepted")).toBe(true);
+      for (const controller of cliControllers) {
+        await controller.close();
+      }
       expect(
-        (await fs.readFile(embeddedCounter, "utf8")).trim().split("\n").length,
+        (await fs.readFile(modelCounter, "utf8")).trim().split("\n").length,
       ).toBeGreaterThanOrEqual(1);
       expect((await fs.readFile(physicalCounter, "utf8")).trim().split("\n")).toHaveLength(1);
+      const missingSigner = startControllerProcess({
+        configPath,
+        stateDir,
+        gatewayPort: ready.gatewayPort,
+        token,
+        model: "loopback-embedded/fake-model",
+        operationKey: "governed-without-signer",
+        governed: true,
+      });
+      missingSigner.child.stdin?.write("START\n");
+      expect((await missingSigner.ready).status).toBe("error");
+      await missingSigner.close();
+      expect((await fs.readFile(physicalCounter, "utf8")).trim().split("\n")).toHaveLength(1);
     } finally {
-      await gateway.close();
+      try {
+        await gateway.close();
+      } finally {
+        await model.close();
+      }
       if (previousConfig === undefined) {
         delete process.env.OPENCLAW_CONFIG_PATH;
       } else {

@@ -74,6 +74,20 @@ describe("AgentParamsSchema", () => {
     ).toBe(false);
   });
 
+  it("accepts the typed internal child-intent transport fields", () => {
+    expect(
+      Value.Check(AgentParamsSchema, {
+        message: "run the child task",
+        idempotencyKey: "child-intent-schema",
+        childIntentRequestDigest: "request-digest",
+        childIntentResolvedDigest: "resolved-digest",
+        childIntentControllerSessionKey: "agent:main:main",
+        childIntentReceiptMode: "governed",
+        childIntentCapability: "sessions_spawn",
+      }),
+    ).toBe(true);
+  });
+
   it("accepts generated music attachments on internal completion events", () => {
     const params = makeAgentParamsWithInternalEvent(musicCompletionEvent);
 

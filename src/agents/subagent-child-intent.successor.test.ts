@@ -3,9 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import "./subagent-registry.mocks.shared.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { compactSubagentChildIntentPayload } from "./subagent-child-intent-compaction.js";
+import { expireSubagentReservationsAtomically } from "./subagent-child-intent-store-lifecycle.sqlite.js";
 import { reserveGatewayAcceptanceReceipt } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
 import {
   cancelSubagentChildIntent,
@@ -117,6 +121,41 @@ describe("child-intent successor authority boundaries", () => {
       operationKey: "named-compact",
       generation: 3,
       resolvedDigest: "resolved-compact",
+    });
+  });
+
+  it("compacts cancellation and expiry tombstones while retaining their identity rows", () => {
+    const cancelled = reserveSubagentChildIntent(input("cancel-payload", "cancel-payload"));
+    expect(
+      cancelSubagentChildIntent(
+        cancelled.childIntentKey,
+        cancelled.controllerSessionKey!,
+        cancelled.operationKey,
+      ),
+    ).toBe(true);
+    runOpenClawStateWriteTransaction(({ db }) => {
+      const row = db
+        .prepare("SELECT state, payload_json FROM subagent_child_intents WHERE operation_key = ?")
+        .get("cancel-payload") as { state?: string; payload_json?: string } | undefined;
+      expect(row?.state).toBe("cancelled_requested");
+      expect(row?.payload_json).not.toContain("same canonical shape");
+    });
+
+    const expiring = reserveSubagentChildIntent({
+      ...input("", "expiry-payload"),
+      childIntentKey: "expiry-canonical",
+      operationKey: undefined,
+    });
+    expect(expiring.disposition).toBe("owner");
+    expect(expireSubagentReservationsAtomically(Date.now() + 31_000)).toContain(
+      expiring.reservationRunId,
+    );
+    runOpenClawStateWriteTransaction(({ db }) => {
+      const row = db
+        .prepare("SELECT state, payload_json FROM subagent_child_intents WHERE canonical_key = ?")
+        .get("expiry-canonical") as { state?: string; payload_json?: string } | undefined;
+      expect(row?.state).toBe("expired");
+      expect(row?.payload_json).not.toContain("same canonical shape");
     });
   });
 });

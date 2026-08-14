@@ -1060,6 +1060,7 @@ async function createClaudeLiveSession(params: {
   noOutputTimeoutMs: number;
   supervisor: ProcessSupervisor;
   onProviderStarted?: () => void;
+  authorizeProviderStart?: () => Promise<boolean>;
   cleanup: () => Promise<void>;
 }): Promise<ClaudeLiveSession> {
   let session: ClaudeLiveSession | null = null;
@@ -1082,6 +1083,7 @@ async function createClaudeLiveSession(params: {
       env: mcpCaptureAttempt.env ?? params.env,
       stdinMode: "pipe-open",
       captureOutput: false,
+      ...(params.authorizeProviderStart ? { beforeStart: params.authorizeProviderStart } : {}),
       onStdout: (chunk) => {
         if (session) {
           handleClaudeStdout(session, chunk);
@@ -1270,6 +1272,7 @@ export async function runClaudeLiveSessionTurn(params: {
   onCommentaryText?: (text: string) => void;
   onMcpCaptureReady?: (captureKey: string) => void;
   onProviderStarted?: () => void;
+  authorizeProviderStart?: () => Promise<boolean>;
   cleanup: () => Promise<void>;
 }): Promise<ClaudeLiveRunResult> {
   const key = buildClaudeLiveKey(params.context);
@@ -1346,6 +1349,7 @@ export async function runClaudeLiveSessionTurn(params: {
         noOutputTimeoutMs: params.noOutputTimeoutMs,
         supervisor: params.getProcessSupervisor(),
         onProviderStarted: params.onProviderStarted,
+        authorizeProviderStart: params.authorizeProviderStart,
         cleanup,
       }).finally(() => {
         if (liveSessionCreates.get(key) === createSession) {

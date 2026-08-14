@@ -128,6 +128,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
   const duplicate = (
     childIntentKey: string,
     entry: SubagentRunRecord,
+    durableReceiptRequired = false,
   ): SubagentChildIntentReservation => {
     const existingRunId = entry.providerRunId ?? entry.runId;
     const canReconcile =
@@ -158,7 +159,9 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
       operationKey: entry.childIntentOperationKey,
       requestDigest: entry.childIntentRequestDigest,
       resolvedDigest: entry.childIntentBehaviorDigest,
-      ...(entry.childIntentKey && durableReceiptActive() ? { durableReceiptRequired: true } : {}),
+      ...((durableReceiptRequired || durableReceiptActive()) && entry.childIntentKey
+        ? { durableReceiptRequired: true }
+        : {}),
       ...(canReconcile
         ? {
             dispatchState: entry.spawnAdmission as "dispatching" | "unknown",
@@ -185,6 +188,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     intentRequestDigest?: string;
     targetAgentId?: string;
     operationKey?: string;
+    durableReceiptRequired?: boolean;
   }): SubagentChildIntentReservation => {
     const childIntentKey = params.childIntentKey.trim();
     const requesterSessionKey = params.requesterSessionKey.trim();
@@ -228,7 +232,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
       if (persisted.requesterSessionKey !== requesterSessionKey) {
         throw new Error("child intent is already bound to another controller");
       }
-      return duplicate(childIntentKey, persisted);
+      return duplicate(childIntentKey, persisted, params.durableReceiptRequired === true);
     }
     activeReservationTokens.set(
       identityKey(requesterSessionKey, childIntentKey, params.operationKey),
@@ -248,7 +252,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
       requestDigest: entry.childIntentRequestDigest,
       resolvedDigest: entry.childIntentBehaviorDigest,
       operationKey: entry.childIntentOperationKey,
-      durableReceiptRequired: durableReceiptActive(),
+      durableReceiptRequired: params.durableReceiptRequired === true || durableReceiptActive(),
     };
   };
 

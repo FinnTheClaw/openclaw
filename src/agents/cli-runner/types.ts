@@ -150,6 +150,8 @@ export type RunCliAgentParams = {
   }) => void;
   /** Called only after the CLI provider process has been accepted by the host supervisor. */
   onProviderStarted?: (ctx: { provider: string; model: string }) => void;
+  /** Host-owned authorization immediately before the CLI process is spawned. */
+  authorizeProviderStart?: () => Promise<boolean>;
   replyOperation?: ReplyOperation;
   emitCommentaryText?: boolean;
   /**

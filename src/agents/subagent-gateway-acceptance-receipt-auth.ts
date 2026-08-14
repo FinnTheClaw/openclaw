@@ -31,6 +31,7 @@ export type GatewayAcceptanceReceiptEnvelope = Readonly<{
   attachmentDigest: string;
   materializationDigest: string;
   completionDigest: string;
+  capability?: "sessions_spawn";
   channel?: string;
   accountId?: string;
   to?: string;
@@ -149,6 +150,9 @@ export function buildGatewayAcceptanceReceiptEnvelope(params: {
       finalTo: request.to,
       finalThreadId: request.threadId,
     }),
+    ...(request.childIntentCapability === "sessions_spawn"
+      ? { capability: "sessions_spawn" as const }
+      : {}),
     ...(optionalString(request.channel) ? { channel: optionalString(request.channel) } : {}),
     ...(optionalString(request.accountId) ? { accountId: optionalString(request.accountId) } : {}),
     ...(optionalString(request.to) ? { to: optionalString(request.to) } : {}),
