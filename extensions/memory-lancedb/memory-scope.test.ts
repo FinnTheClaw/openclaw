@@ -75,4 +75,22 @@ describe("trusted memory scope", () => {
       }),
     ).toThrow("without a canonical session identity");
   });
+
+  it("treats the Gateway webchat transport as a local operator session", () => {
+    const sessionKey = "agent:person-owner:agent-agentic-suite-memory";
+    const viaGateway = resolveTrustedMemoryScope({
+      agentId: "person-owner",
+      workspaceDir: "/srv/openclaw/workspaces/person-owner",
+      channel: "webchat",
+      sessionKey,
+    });
+    const embedded = resolveTrustedMemoryScope({
+      agentId: "person-owner",
+      workspaceDir: "/srv/openclaw/workspaces/person-owner",
+      sessionKey,
+    });
+
+    expect(viaGateway.channel).toBe("local");
+    expect(viaGateway).toEqual(embedded);
+  });
 });

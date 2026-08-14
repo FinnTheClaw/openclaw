@@ -214,7 +214,7 @@ function resolveAutoCaptureStartIndex(
 const TABLE_NAME = "memories";
 const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 15_000;
 const DEFAULT_TOOL_RECALL_TIMEOUT_MS = 15_000;
-const DEFAULT_TOOL_RECALL_COOLDOWN_MS = 60_000;
+const DEFAULT_AUTO_RECALL_COOLDOWN_MS = 5_000;
 const DEFAULT_TOOL_RECALL_OVERFETCH_EXTRA = 10;
 
 // Auto-recall over-fetches from the vector store, then filters envelope sludge
@@ -1696,7 +1696,7 @@ export default definePluginEntry({
     let durableRetryTimer: ReturnType<typeof setInterval> | undefined;
     let durableCloseTimer: ReturnType<typeof setTimeout> | undefined;
     const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
-    let memoryRecallCooldown: { until: number; error: string } | undefined;
+    let autoRecallCooldown: { until: number; error: string } | undefined;
     let durableConfigDriftWarned = false;
     const resolveCurrentHookConfig = () => {
       const runtimePluginConfig = resolveLivePluginConfigObject(
@@ -1813,19 +1813,19 @@ export default definePluginEntry({
         options.limit,
       );
     };
-    const readMemoryRecallCooldown = (): { error: string } | undefined => {
-      if (!memoryRecallCooldown) {
+    const readAutoRecallCooldown = (): { error: string } | undefined => {
+      if (!autoRecallCooldown) {
         return undefined;
       }
-      if (memoryRecallCooldown.until <= Date.now()) {
-        memoryRecallCooldown = undefined;
+      if (autoRecallCooldown.until <= Date.now()) {
+        autoRecallCooldown = undefined;
         return undefined;
       }
-      return { error: memoryRecallCooldown.error };
+      return { error: autoRecallCooldown.error };
     };
-    const recordMemoryRecallCooldown = (error: string): void => {
-      memoryRecallCooldown = {
-        until: Date.now() + DEFAULT_TOOL_RECALL_COOLDOWN_MS,
+    const recordAutoRecallCooldown = (error: string): void => {
+      autoRecallCooldown = {
+        until: Date.now() + DEFAULT_AUTO_RECALL_COOLDOWN_MS,
         error,
       };
     };
@@ -1864,12 +1864,15 @@ export default definePluginEntry({
           if (durableDrift) {
             return buildMemoryRecallUnavailableResult(durableDrift);
           }
-          const cooldown = readMemoryRecallCooldown();
-          if (cooldown) {
-            return buildMemoryRecallUnavailableResult(cooldown.error);
-          }
           if (durableRuntime) {
             const normalizedQuery = normalizeRecallQuery(query, currentCfg.recallMaxChars);
+            // An explicit recall is user-requested work, so it probes the
+            // backend independently of the short optional auto-recall
+            // cooldown and receives a tool-appropriate timeout budget.
+            const toolRecallTimeoutMs = Math.max(
+              currentCfg.durableMemory.recallTimeoutMs,
+              DEFAULT_TOOL_RECALL_TIMEOUT_MS,
+            );
             let durableRecall: Awaited<
               ReturnType<typeof runWithTimeout<HybridMemorySearchResult[]>>
             >;
@@ -1884,10 +1887,10 @@ export default definePluginEntry({
                 conversationId: toolContext.deliveryContext?.to ?? toolContext.requesterSenderId,
               });
               durableRecall = await runWithTimeout({
-                timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
+                timeoutMs: toolRecallTimeoutMs,
                 task: async () => {
                   const vector = await embeddings.embed(normalizedQuery, {
-                    timeoutMs: currentCfg.durableMemory.recallTimeoutMs,
+                    timeoutMs: toolRecallTimeoutMs,
                   });
                   return await searchScopedMemory({
                     scope,
@@ -1899,18 +1902,18 @@ export default definePluginEntry({
               });
             } catch (error) {
               const message = formatMemoryRecallError(error);
-              recordMemoryRecallCooldown(message);
+              recordAutoRecallCooldown(message);
               api.logger.warn?.(
-                `memory-v2: memory_recall failed: ${message}; opening the recall circuit`,
+                `memory-v2: memory_recall failed: ${message}; optional auto-recall will cool down briefly`,
               );
               return buildMemoryRecallUnavailableResult(message);
             }
             if (durableRecall.status === "timeout") {
-              const message = `memory_recall timed out after ${currentCfg.durableMemory.recallTimeoutMs}ms`;
-              recordMemoryRecallCooldown(message);
+              const message = `memory_recall timed out after ${toolRecallTimeoutMs}ms`;
+              recordAutoRecallCooldown(message);
               return buildMemoryRecallUnavailableResult(message);
             }
-            memoryRecallCooldown = undefined;
+            autoRecallCooldown = undefined;
             if (durableRecall.value.length === 0) {
               return {
                 content: [{ type: "text", text: "No relevant memories found." }],
@@ -1971,7 +1974,7 @@ export default definePluginEntry({
               throw error;
             }
             const message = formatMemoryRecallError(error.originalError);
-            recordMemoryRecallCooldown(message);
+            recordAutoRecallCooldown(message);
             api.logger.warn?.(
               `memory-lancedb: memory_recall failed: ${message}; returning unavailable memory result`,
             );
@@ -1979,12 +1982,13 @@ export default definePluginEntry({
           }
           if (recall.status === "timeout") {
             const message = `memory_recall timed out after ${Math.round(DEFAULT_TOOL_RECALL_TIMEOUT_MS / 1000)}s`;
-            recordMemoryRecallCooldown(message);
+            recordAutoRecallCooldown(message);
             api.logger.warn?.(
               `memory-lancedb: memory_recall timed out after ${DEFAULT_TOOL_RECALL_TIMEOUT_MS}ms; returning unavailable memory result`,
             );
             return buildMemoryRecallUnavailableResult(message);
           }
+          autoRecallCooldown = undefined;
           const results = cleanMemorySearchResults(recall.value).slice(0, limit);
 
           if (results.length === 0) {
@@ -2309,7 +2313,7 @@ export default definePluginEntry({
                   semanticAbsent,
                 },
               });
-              memoryRecallCooldown = undefined;
+              autoRecallCooldown = undefined;
               return {
                 content: [
                   {
@@ -3014,7 +3018,7 @@ export default definePluginEntry({
       if (readDurableConfigDrift(currentCfg)) {
         return undefined;
       }
-      if (readMemoryRecallCooldown()) {
+      if (readAutoRecallCooldown()) {
         return undefined;
       }
 
@@ -3049,15 +3053,15 @@ export default definePluginEntry({
             },
           });
           if (recall.status === "timeout") {
-            recordMemoryRecallCooldown(
+            recordAutoRecallCooldown(
               `bounded recall timed out after ${currentCfg.durableMemory.recallTimeoutMs}ms`,
             );
             api.logger.warn?.(
-              `memory-v2: bounded recall timed out after ${currentCfg.durableMemory.recallTimeoutMs}ms; opening the recall circuit and continuing without memory`,
+              `memory-v2: bounded recall timed out after ${currentCfg.durableMemory.recallTimeoutMs}ms; cooling optional auto-recall for ${DEFAULT_AUTO_RECALL_COOLDOWN_MS}ms and continuing without memory`,
             );
             return undefined;
           }
-          memoryRecallCooldown = undefined;
+          autoRecallCooldown = undefined;
           const context = formatBoundedDurableMemoryContext(
             recall.value,
             currentCfg.durableMemory.recallBudgetChars,
@@ -3082,7 +3086,7 @@ export default definePluginEntry({
           },
         });
         if (recall.status === "timeout") {
-          recordMemoryRecallCooldown(
+          recordAutoRecallCooldown(
             `auto-recall timed out after ${DEFAULT_AUTO_RECALL_TIMEOUT_MS}ms`,
           );
           api.logger.warn?.(
@@ -3090,7 +3094,7 @@ export default definePluginEntry({
           );
           return undefined;
         }
-        memoryRecallCooldown = undefined;
+        autoRecallCooldown = undefined;
 
         // Filter contaminated memories, then cap at the prompt-budget bound.
         const cleanResults = cleanMemorySearchResults(recall.value)
@@ -3112,7 +3116,7 @@ export default definePluginEntry({
           prependContext: context,
         };
       } catch (err) {
-        recordMemoryRecallCooldown(formatMemoryRecallError(err));
+        recordAutoRecallCooldown(formatMemoryRecallError(err));
         api.logger.warn(`memory-lancedb: recall failed: ${String(err)}`);
       }
       return undefined;
