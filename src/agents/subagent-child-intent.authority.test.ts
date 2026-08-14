@@ -19,6 +19,7 @@ import {
 } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
 import { releaseRegisteredSubagentChildIntent } from "./subagent-registry-state.js";
 import {
+  bindSubagentChildIntentResolvedDigest,
   cancelSubagentChildIntent,
   markSubagentChildIntentDispatching,
   markSubagentChildIntentUnknown,
@@ -152,7 +153,7 @@ describe("child-intent authority boundaries", () => {
         });
       }
       resetSubagentRegistryForTests({ persist: false });
-      expect(cancelSubagentChildIntent(first.childIntentKey)).toBe(true);
+      expect(cancelSubagentChildIntent(first.childIntentKey, input.requesterSessionKey)).toBe(true);
       expect(reserveSubagentChildIntent(input).disposition).toBe("duplicate");
     }
   });
@@ -217,6 +218,117 @@ describe("child-intent authority boundaries", () => {
     });
   });
 
+  it("does not let an equal-generation stale projection overwrite newer lifecycle state", () => {
+    const stale = {
+      runId: "projection-stale-payload",
+      childSessionKey: "agent:main:subagent:projection-stale-payload",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "agent:main:main",
+      controllerSessionKey: "agent:main:main",
+      task: "projection payload CAS",
+      cleanup: "keep" as const,
+      createdAt: Date.now(),
+      generation: 1,
+      execution: { status: "running" as const },
+      delivery: { status: "pending" as const },
+    };
+    saveSubagentRegistryToSqlite(new Map([[stale.runId, stale]]));
+    saveSubagentRegistryToSqlite(
+      new Map([[stale.runId, { ...stale, delivery: { status: "failed" as const } }]]),
+    );
+    saveSubagentRegistryToSqlite(new Map([[stale.runId, stale]]));
+    expect(loadSubagentRegistryFromSqlite().get(stale.runId)?.delivery?.status).toBe("failed");
+  });
+
+  it("replays an intent after its final resolved digest is bound", () => {
+    const input = {
+      childIntentKey: "child_intent_final-binding-replay",
+      childSessionKey: "agent:main:subagent:final-binding-replay",
+      reservationRunId: "child_reservation_final-binding-replay",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "agent:main:main",
+      task: "final binding replay",
+      cleanup: "keep" as const,
+      maxActiveChildren: 3,
+      intentRequestDigest: "requested-final-binding",
+      intentBehaviorDigest: "preparation-digest",
+    };
+    const first = reserveSubagentChildIntent(input);
+    expect(first.disposition).toBe("owner");
+    bindSubagentChildIntentResolvedDigest({
+      childIntentKey: first.childIntentKey,
+      controllerSessionKey: input.requesterSessionKey,
+      reservationToken: first.reservationToken!,
+      resolvedDigest: "resolved-after-preparation",
+    });
+    resetSubagentRegistryForTests({ persist: false });
+    expect(reserveSubagentChildIntent(input).disposition).toBe("duplicate");
+  });
+
+  it("backfills legacy registered rows into capacity and dedupe authority", () => {
+    const legacy = {
+      runId: "legacy-registered-run",
+      childIntentKey: "legacy-registered-intent",
+      childSessionKey: "agent:main:subagent:legacy-registered",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "agent:main:main",
+      controllerSessionKey: "agent:main:main",
+      task: "legacy registered child",
+      cleanup: "keep" as const,
+      spawnAdmission: "dispatched" as const,
+      providerRunId: "legacy-provider-run",
+      createdAt: Date.now(),
+      execution: { status: "running" as const },
+    };
+    saveSubagentRegistryToSqlite(new Map([[legacy.runId, legacy]]));
+    closeOpenClawStateDatabaseForTest();
+    resetSubagentRegistryForTests({ persist: false });
+    const duplicate = reserveSubagentChildIntent({
+      childIntentKey: legacy.childIntentKey,
+      childSessionKey: legacy.childSessionKey,
+      reservationRunId: "new-reservation",
+      requesterSessionKey: legacy.requesterSessionKey,
+      requesterDisplayKey: legacy.requesterDisplayKey,
+      task: legacy.task,
+      cleanup: "keep",
+      maxActiveChildren: 1,
+    });
+    expect(duplicate.disposition).toBe("duplicate");
+    expect(duplicate.existingRunId).toBe(legacy.providerRunId);
+  });
+
+  it("backfills dispatching legacy rows as ambiguous and non-retryable", () => {
+    const legacy = {
+      runId: "legacy-ambiguous-run",
+      childIntentKey: "legacy-ambiguous-intent",
+      childSessionKey: "agent:main:subagent:legacy-ambiguous",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "agent:main:main",
+      controllerSessionKey: "agent:main:main",
+      task: "legacy ambiguous child",
+      cleanup: "keep" as const,
+      spawnAdmission: "dispatching" as const,
+      createdAt: Date.now(),
+      execution: { status: "running" as const },
+    };
+    saveSubagentRegistryToSqlite(new Map([[legacy.runId, legacy]]));
+    closeOpenClawStateDatabaseForTest();
+    resetSubagentRegistryForTests({ persist: false });
+    const duplicate = reserveSubagentChildIntent({
+      childIntentKey: legacy.childIntentKey,
+      childSessionKey: legacy.childSessionKey,
+      reservationRunId: "new-ambiguous-reservation",
+      requesterSessionKey: legacy.requesterSessionKey,
+      requesterDisplayKey: legacy.requesterDisplayKey,
+      task: legacy.task,
+      cleanup: "keep",
+      maxActiveChildren: 1,
+    });
+    expect(duplicate.disposition).toBe("duplicate");
+    expect(duplicate.dispatchState).toBe("unknown");
+    expect(duplicate.durableReceiptRequired).toBe(true);
+  });
+
   it("retains the accepted receipt across restart and rejects conflicts", () => {
     const input = {
       acceptanceKey: "child_intent_receipt-restart",
@@ -240,6 +352,12 @@ describe("child-intent authority boundaries", () => {
       }),
     ).toBe(true);
     expect(readGatewayAcceptanceReceipt(input.acceptanceKey)?.lifecycle).toBe("not_accepted");
+    const retry = reserveGatewayAcceptanceReceipt({
+      ...input,
+      gatewayRunId: "gateway-run-retry",
+    });
+    expect(retry.receiptGeneration).toBe(1);
+    expect(retry.lifecycle).toBe("preaccepted");
   });
 
   it("linearizes one reservation across two independent sqlite processes", async () => {

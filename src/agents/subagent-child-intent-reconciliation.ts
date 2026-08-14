@@ -35,7 +35,9 @@ function isProviderPresent(response: unknown): boolean {
 export async function reconcileSubagentChildIntent(params: {
   reservation: SubagentChildIntentReservation;
   waitForProvider: () => Promise<unknown>;
-  lookupAcceptance: () => { lifecycle: "accepted" | "not_accepted" | "cancelled" } | undefined;
+  lookupAcceptance: () =>
+    | { lifecycle: "preaccepted" | "accepted" | "not_accepted" | "cancelled" }
+    | undefined;
   adopt: () => boolean;
   abandon: () => boolean;
 }): Promise<ChildIntentReconciliation> {

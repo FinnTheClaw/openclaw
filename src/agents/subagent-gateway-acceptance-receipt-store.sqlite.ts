@@ -14,7 +14,7 @@ export type GatewayAcceptanceReceipt = {
   resolvedDigest: string;
   gatewayRunId: string;
   childSessionKey: string;
-  lifecycle: "accepted" | "not_accepted" | "cancelled";
+  lifecycle: "preaccepted" | "accepted" | "not_accepted" | "cancelled";
   receiptGeneration: number;
   acceptedAt?: number;
 };
@@ -78,9 +78,44 @@ export function reserveGatewayAcceptanceReceipt(params: {
       if (
         current.requestDigest !== params.requestDigest ||
         current.intentId !== params.intentId ||
+        current.controllerSessionKey !== params.controllerSessionKey ||
+        current.resolvedDigest !== params.resolvedDigest ||
         current.childSessionKey !== params.childSessionKey
       ) {
         throw new Error("gateway acceptance key conflicts with a different child request");
+      }
+      if (current.lifecycle === "not_accepted") {
+        const now = params.now ?? Date.now();
+        const nextGeneration = current.receiptGeneration + 1;
+        const updated = executeSqliteQuerySync(
+          db,
+          stateDb
+            .updateTable("subagent_gateway_acceptance_receipts")
+            .set({
+              lifecycle: "preaccepted",
+              gateway_run_id: params.gatewayRunId,
+              receipt_generation: nextGeneration,
+              accepted_at: now,
+              updated_at: now,
+            })
+            .where("acceptance_key", "=", params.acceptanceKey)
+            .where("receipt_generation", "=", current.receiptGeneration)
+            .where("lifecycle", "=", "not_accepted"),
+        );
+        if (Number(updated.numAffectedRows ?? 0) !== 1) {
+          throw new Error("gateway acceptance retry lost its durable CAS");
+        }
+        receipt = {
+          ...current,
+          gatewayRunId: params.gatewayRunId,
+          lifecycle: "preaccepted",
+          receiptGeneration: nextGeneration,
+          acceptedAt: now,
+        };
+        return;
+      }
+      if (current.gatewayRunId !== params.gatewayRunId) {
+        throw new Error("gateway acceptance key conflicts with an active attempt");
       }
       receipt = current;
       return;
@@ -94,7 +129,7 @@ export function reserveGatewayAcceptanceReceipt(params: {
       resolved_digest: params.resolvedDigest,
       gateway_run_id: params.gatewayRunId,
       child_session_key: params.childSessionKey,
-      lifecycle: "accepted",
+      lifecycle: "preaccepted",
       receipt_generation: 0,
       accepted_at: now,
       updated_at: now,
@@ -107,6 +142,28 @@ export function reserveGatewayAcceptanceReceipt(params: {
     receipt = fromRow(row as ReceiptRow);
   });
   return receipt;
+}
+
+/** Moves a pre-accepted receipt to accepted only after the runner is admitted. */
+export function markGatewayAcceptanceAccepted(params: {
+  acceptanceKey: string;
+  gatewayRunId: string;
+}): boolean {
+  let changed = false;
+  runOpenClawStateWriteTransaction(({ db }) => {
+    const stateDb = getNodeSqliteKysely<ReceiptDb>(db);
+    const result = executeSqliteQuerySync(
+      db,
+      stateDb
+        .updateTable("subagent_gateway_acceptance_receipts")
+        .set({ lifecycle: "accepted", updated_at: Date.now() })
+        .where("acceptance_key", "=", params.acceptanceKey)
+        .where("gateway_run_id", "=", params.gatewayRunId)
+        .where("lifecycle", "=", "preaccepted"),
+    );
+    changed = Number(result.numAffectedRows ?? 0) === 1;
+  });
+  return changed;
 }
 
 export function markGatewayAcceptanceNotAccepted(params: {
@@ -123,7 +180,7 @@ export function markGatewayAcceptanceNotAccepted(params: {
         .set({ lifecycle: "not_accepted", updated_at: Date.now() })
         .where("acceptance_key", "=", params.acceptanceKey)
         .where("gateway_run_id", "=", params.gatewayRunId)
-        .where("lifecycle", "=", "accepted"),
+        .where("lifecycle", "in", ["preaccepted", "accepted"]),
     );
     changed = Number(result.numAffectedRows ?? 0) === 1;
   });

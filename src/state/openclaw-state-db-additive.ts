@@ -201,4 +201,6 @@ export function ensureAdditiveStateColumns(db: DatabaseSync): void {
     repairLegacyTaskDeliveryStatuses(db);
   });
   add("subagent_runs", "task_name TEXT");
+  add("subagent_runs", "projection_revision INTEGER NOT NULL DEFAULT 0");
+  add("subagent_child_intents", "preparation_digest TEXT NOT NULL DEFAULT ''");
 }

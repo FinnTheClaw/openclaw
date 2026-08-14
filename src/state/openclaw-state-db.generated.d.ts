@@ -1281,6 +1281,7 @@ export interface SubagentChildIntents {
   lease_owner: string;
   operation_key: string | null;
   payload_json: Generated<string>;
+  preparation_digest: Generated<string>;
   provider_run_id: string | null;
   registered_run_id: string | null;
   request_digest: string;
@@ -1339,6 +1340,7 @@ export interface SubagentRuns {
   pending_final_delivery_last_attempt_at: number | null;
   pending_final_delivery_last_error: string | null;
   pending_final_delivery_payload_json: string | null;
+  projection_revision: Generated<number>;
   requester_display_key: string;
   requester_origin_json: string | null;
   requester_session_key: string;

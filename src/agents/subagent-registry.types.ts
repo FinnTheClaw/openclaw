@@ -117,6 +117,8 @@ export type SubagentRunRecord = {
   spawnAdmission?: "reserved" | "dispatching" | "dispatched" | "unknown" | "cancelled" | "expired";
   /** Host-owned behavior binding; a reused logical key with a changed value fails closed. */
   childIntentBehaviorDigest?: string;
+  /** Immutable pre-dispatch preparation binding; distinct from final resolution. */
+  childIntentPreparationDigest?: string;
   /** Stable caller request binding, distinct from the resolved execution digest. */
   childIntentRequestDigest?: string;
   /** Explicit operation identity is stable and is not part of the behavior digest. */
@@ -154,6 +156,8 @@ export type SubagentRunRecord = {
   spawnMode?: SpawnSubagentMode;
   /** Monotonic ownership generation within one child session. */
   generation?: number;
+  /** SQLite-owned projection CAS revision. */
+  projectionRevision?: number;
   createdAt: number;
   startedAt?: number;
   sessionStartedAt?: number;

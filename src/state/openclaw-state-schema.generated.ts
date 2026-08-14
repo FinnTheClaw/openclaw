@@ -1205,7 +1205,8 @@ CREATE TABLE IF NOT EXISTS subagent_runs (
   pending_final_delivery_last_error TEXT,
   pending_final_delivery_payload_json TEXT,
   completion_announced_at INTEGER,
-  payload_json TEXT NOT NULL DEFAULT '{}'
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  projection_revision INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_subagent_runs_child_session_key
@@ -1228,6 +1229,7 @@ CREATE TABLE IF NOT EXISTS subagent_child_intents (
   canonical_key TEXT NOT NULL,
   operation_key TEXT,
   request_digest TEXT NOT NULL,
+  preparation_digest TEXT NOT NULL DEFAULT '',
   resolved_digest TEXT NOT NULL,
   target_agent_id TEXT NOT NULL,
   child_session_key TEXT NOT NULL,

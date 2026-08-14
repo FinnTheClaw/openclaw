@@ -91,6 +91,7 @@ import {
   clearSubagentRunsReadCacheForTest,
   bindSubagentChildIntentResolvedDigestAtomically,
   cancelSubagentChildIntentAtomically,
+  cancelSubagentChildIntentByRunOrSessionAtomically,
   claimSubagentChildIntentAtomically,
   findSubagentChildIntent,
   getSubagentRunsSnapshotForRead,
@@ -1058,6 +1059,9 @@ async function discardSuspendedPendingFinalDelivery(
 async function retireSupersededSubagentRun(runId: string, entry: SubagentRunRecord): Promise<void> {
   const transcriptFile = entry.execution?.transcriptFile;
   clearPendingLifecycleError(runId);
+  if (entry.childIntentKey) {
+    releaseRegisteredSubagentChildIntent(runId);
+  }
   subagentRuns.delete(runId);
   const transcriptStillOwned = Array.from(subagentRuns.values()).some(
     (candidate) => candidate.execution?.transcriptFile === transcriptFile,
@@ -1430,6 +1434,9 @@ async function sweepSubagentRuns() {
             agentDir: entry.agentDir,
             workspaceDir: entry.workspaceDir,
           });
+          if (entry.childIntentKey) {
+            releaseRegisteredSubagentChildIntent(runId);
+          }
           subagentRuns.delete(runId);
           mutated = true;
           if (!entry.retainAttachmentsOnKeep) {
@@ -1461,6 +1468,9 @@ async function sweepSubagentRuns() {
         continue;
       }
       subagentRuns.delete(runId);
+      if (entry.childIntentKey) {
+        releaseRegisteredSubagentChildIntent(runId);
+      }
       mutated = true;
       // Archive/purge is terminal for the run record; remove any retained attachments too.
       await safeRemoveAttachmentsDir(entry);
@@ -1696,12 +1706,14 @@ export function markSubagentChildIntentDispatching(
 
 export function bindSubagentChildIntentResolvedDigest(params: {
   childIntentKey: string;
+  controllerSessionKey: string;
   reservationToken: string;
   resolvedDigest: string;
 }) {
   if (
     !bindSubagentChildIntentResolvedDigestAtomically({
       childIntentKey: params.childIntentKey,
+      controllerSessionKey: params.controllerSessionKey,
       reservationOwnerToken: params.reservationToken,
       resolvedDigest: params.resolvedDigest,
     })
@@ -1726,8 +1738,11 @@ export function assertSubagentChildIntentDispatchAvailable(params: {
   );
 }
 
-export function cancelSubagentChildIntent(childIntentKey: string): boolean {
-  return childIntentRegistry.cancel(childIntentKey);
+export function cancelSubagentChildIntent(
+  childIntentKey: string,
+  controllerSessionKey?: string,
+): boolean {
+  return childIntentRegistry.cancel(childIntentKey, controllerSessionKey);
 }
 
 export function adoptSubagentChildIntent(params: {
@@ -1977,6 +1992,10 @@ export function markSubagentRunTerminated(params: {
   reason?: string;
   suppressTaskDelivery?: boolean;
 }): number {
+  cancelSubagentChildIntentByRunOrSessionAtomically({
+    runId: params.runId,
+    childSessionKey: params.childSessionKey,
+  });
   const targetKeys = new Set<string>();
   for (const entry of subagentRuns.values()) {
     if (

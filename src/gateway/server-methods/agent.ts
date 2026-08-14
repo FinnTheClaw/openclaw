@@ -63,6 +63,7 @@ import {
   resolveIngressWorkspaceOverrideForSpawnedRun,
 } from "../../agents/spawned-context.js";
 import {
+  markGatewayAcceptanceAccepted,
   markGatewayAcceptanceNotAccepted,
   readGatewayAcceptanceReceipt,
   reserveGatewayAcceptanceReceipt,
@@ -1189,6 +1190,9 @@ export const agentHandlers: GatewayRequestHandlers = {
       inputProvenance?: InputProvenance;
       workspaceDir?: string;
       voiceWakeTrigger?: string;
+      childIntentRequestDigest?: string;
+      childIntentResolvedDigest?: string;
+      childIntentControllerSessionKey?: string;
     };
     if (request.cwd && !path.isAbsolute(request.cwd)) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "cwd must be absolute"));
@@ -1241,6 +1245,10 @@ export const agentHandlers: GatewayRequestHandlers = {
     const gatewayRequestDigest = createHash("sha256")
       .update(
         JSON.stringify({
+          // Bind the complete validated request envelope. Named fields alone
+          // previously let attachments, workspace/delivery controls, and
+          // internal lane/label inputs alias the same acceptance key.
+          request,
           message: request.message ?? "",
           sessionKey: request.sessionKey,
           sessionId: request.sessionId,
@@ -1260,6 +1268,18 @@ export const agentHandlers: GatewayRequestHandlers = {
       )
       .digest("hex");
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
+    const childRequestDigest =
+      typeof request.childIntentRequestDigest === "string"
+        ? request.childIntentRequestDigest
+        : gatewayRequestDigest;
+    const childResolvedDigest =
+      typeof request.childIntentResolvedDigest === "string"
+        ? request.childIntentResolvedDigest
+        : gatewayRequestDigest;
+    const childControllerSessionKey =
+      typeof request.childIntentControllerSessionKey === "string"
+        ? request.childIntentControllerSessionKey
+        : (request.sessionKey ?? "");
     const execApprovalFollowupApprovalId = parseExecApprovalFollowupApprovalId(idem);
     if (execApprovalFollowupApprovalId && !canUseInternalRuntimeHandoff) {
       respond(
@@ -1334,8 +1354,13 @@ export const agentHandlers: GatewayRequestHandlers = {
     }
     try {
       const durableReceipt = readGatewayAcceptanceReceipt(idem);
-      if (durableReceipt?.lifecycle === "accepted") {
-        if (durableReceipt.requestDigest !== gatewayRequestDigest) {
+      if (durableReceipt?.lifecycle === "accepted" || durableReceipt?.lifecycle === "preaccepted") {
+        if (
+          durableReceipt.requestDigest !== childRequestDigest ||
+          durableReceipt.resolvedDigest !== childResolvedDigest ||
+          durableReceipt.controllerSessionKey !== childControllerSessionKey ||
+          durableReceipt.gatewayRunId !== runId
+        ) {
           respond(
             false,
             undefined,
@@ -1389,9 +1414,9 @@ export const agentHandlers: GatewayRequestHandlers = {
         reserveGatewayAcceptanceReceipt({
           acceptanceKey: idem,
           intentId: idem,
-          controllerSessionKey: sessionKey,
-          requestDigest: gatewayRequestDigest,
-          resolvedDigest: gatewayRequestDigest,
+          controllerSessionKey: childControllerSessionKey,
+          requestDigest: childRequestDigest,
+          resolvedDigest: childResolvedDigest,
           gatewayRunId: runId,
           childSessionKey: sessionKey,
           now: acceptedAt,
@@ -3286,9 +3311,14 @@ export const agentHandlers: GatewayRequestHandlers = {
       gatewayAdmissionTransferred = true;
       void activeGatewayWorkAdmission.run(async () => {
         await yieldAfterAgentAcceptedAck();
-
         let dispatched = false;
         try {
+          if (
+            resolvedSessionKey &&
+            !markGatewayAcceptanceAccepted({ acceptanceKey: idem, gatewayRunId: runId })
+          ) {
+            throw new Error("durable gateway acceptance changed before runner admission");
+          }
           if (activeRunAbort.controller.signal.aborted) {
             const stopReason = resolveAbortedAgentStopReason(activeRunAbort.entry);
             setAbortedAgentDedupeEntries({

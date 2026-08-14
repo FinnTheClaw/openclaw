@@ -12,6 +12,7 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
+import { backfillLegacyChildIntents } from "./subagent-child-intent-legacy.sqlite.js";
 import { commitSubagentRunRegistrationInTransaction } from "./subagent-child-intent-store.sqlite.js";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
 import {
@@ -184,6 +185,7 @@ export function rowToSubagentRunRecord(row: SubagentRunSqliteRow): SubagentRunRe
     ...(sqliteBool(row.wake_on_descendant_settle) !== undefined
       ? { wakeOnDescendantSettle: sqliteBool(row.wake_on_descendant_settle) }
       : {}),
+    projectionRevision: row.projection_revision,
     ...(execution ? { execution } : {}),
     completion,
     ...(row.ended_hook_emitted_at !== null
@@ -247,6 +249,7 @@ export function subagentRunRecordToSqliteInsert(entry: SubagentRunRecord): Subag
     pending_final_delivery_payload_json: jsonStringify(delivery?.payload),
     completion_announced_at: delivery?.announcedAt ?? null,
     payload_json: JSON.stringify(normalized),
+    projection_revision: normalized.projectionRevision ?? 0,
   };
 }
 
@@ -288,6 +291,7 @@ function loadSubagentRegistryFromSqliteOnly(): Map<string, SubagentRunRecord> {
       runs.set(entry.runId, entry);
     }
   }
+  backfillLegacyChildIntents(runs.values());
   return runs;
 }
 
@@ -321,6 +325,11 @@ export function saveSubagentRegistryToSqlite(runs: Map<string, SubagentRunRecord
           stateDb
             .selectFrom("subagent_child_intents")
             .select("state")
+            .where(
+              "controller_session_key",
+              "=",
+              (entry.controllerSessionKey ?? entry.requesterSessionKey).trim(),
+            )
             .where("canonical_key", "=", entry.childIntentKey),
         ).rows[0];
         if (
@@ -347,6 +356,7 @@ export function saveSubagentRegistryToSqlite(runs: Map<string, SubagentRunRecord
           entry.generation < current.generation) ||
           (current.endedAt !== undefined && entry.endedAt === undefined) ||
           (current.execution?.status === "terminal" && entry.execution?.status === "running") ||
+          (current.delivery?.status === "failed" && entry.delivery?.status !== "failed") ||
           (current.delivery?.status === "delivered" && entry.delivery?.status !== "delivered"))
       ) {
         // subagent_runs is a projection, but it must not visibly regress when
@@ -355,15 +365,38 @@ export function saveSubagentRegistryToSqlite(runs: Map<string, SubagentRunRecord
         continue;
       }
       const values = subagentRunRecordToSqliteInsert(entry);
-      executeSqliteQuerySync(
-        db,
-        stateDb
-          .insertInto("subagent_runs")
-          .values(values)
-          .onConflict((conflict) =>
-            conflict.column("run_id").doUpdateSet(subagentRunRecordToSqliteUpdate(values)),
-          ),
-      );
+      if (currentRow && entry.projectionRevision === undefined) {
+        // A stale pre-revision snapshot cannot safely overwrite a newer row.
+        continue;
+      }
+      const expectedProjectionRevision = entry.projectionRevision ?? 0;
+      const projectionWritten = currentRow
+        ? Number(
+            executeSqliteQuerySync(
+              db,
+              stateDb
+                .updateTable("subagent_runs")
+                .set({
+                  ...subagentRunRecordToSqliteUpdate(values),
+                  projection_revision: expectedProjectionRevision + 1,
+                })
+                .where("run_id", "=", entry.runId)
+                .where("projection_revision", "=", expectedProjectionRevision),
+            ).numAffectedRows ?? 0,
+          ) === 1
+        : Number(
+            executeSqliteQuerySync(
+              db,
+              stateDb
+                .insertInto("subagent_runs")
+                .values(values)
+                .onConflict((conflict) => conflict.column("run_id").doNothing()),
+            ).numAffectedRows ?? 0,
+          ) === 1;
+      if (!projectionWritten) {
+        continue;
+      }
+      entry.projectionRevision = currentRow ? expectedProjectionRevision + 1 : 0;
       if (
         entry.reservationOwnerToken &&
         entry.childIntentKey &&

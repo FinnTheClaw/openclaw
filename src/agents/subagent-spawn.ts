@@ -1440,7 +1440,11 @@ export async function spawnSubagentDirect(
           !receipt ||
           receipt.acceptanceKey !== childIntentReservation.childIntentKey ||
           receipt.intentId !== childIntentReservation.childIntentKey ||
-          receipt.childSessionKey !== childIntentReservation.childSessionKey
+          receipt.childSessionKey !== childIntentReservation.childSessionKey ||
+          receipt.controllerSessionKey !== childIntentReservation.controllerSessionKey ||
+          receipt.requestDigest !== childIntentReservation.requestDigest ||
+          receipt.resolvedDigest !== childIntentReservation.resolvedDigest ||
+          receipt.gatewayRunId !== childIntentReservation.existingRunId
         ) {
           return undefined;
         }
@@ -1824,9 +1828,11 @@ export async function spawnSubagentDirect(
   });
   bindSubagentChildIntentResolvedDigest({
     childIntentKey,
+    controllerSessionKey: ownership.controllerSessionKey,
     reservationToken: childIntentReservation.reservationToken!,
     resolvedDigest: finalIntentBehaviorDigest,
   });
+  childIntentReservation.resolvedDigest = finalIntentBehaviorDigest;
 
   const childIdem = childIntentKey;
   let childRunId: string = childIntentReservation.reservationRunId;
@@ -1867,6 +1873,9 @@ export async function spawnSubagentDirect(
         deliver: deliverInitialChildRunDirectly,
         lane: AGENT_LANE_SUBAGENT,
         disableMessageTool: true,
+        childIntentRequestDigest: childIntentReservation.requestDigest,
+        childIntentResolvedDigest: finalIntentBehaviorDigest,
+        childIntentControllerSessionKey: childIntentReservation.controllerSessionKey,
         cleanupBundleMcpOnRunEnd: spawnMode !== "session",
         extraSystemPrompt: childSystemPrompt,
         thinking: thinkingOverride,

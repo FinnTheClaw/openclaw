@@ -4,19 +4,21 @@ import type { Insertable, Kysely, Selectable, Updateable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import {
+  findSubagentChildIntentRow,
+  subagentChildIntentStateFromRecord,
+  type ChildIntentDatabase,
+} from "./subagent-child-intent-query.sqlite.js";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 type ChildIntentTable = OpenClawStateKyselyDatabase["subagent_child_intents"];
 type ChildIntentRow = Selectable<ChildIntentTable>;
 type ChildIntentUpdate = Updateable<ChildIntentTable>;
-type ChildIntentDatabase = Pick<
-  OpenClawStateKyselyDatabase,
-  "subagent_child_intents" | "subagent_runs"
->;
 
 export {
   cancelSubagentChildIntentAtomically,
+  cancelSubagentChildIntentByRunOrSessionAtomically,
   expireSubagentReservationsAtomically,
   releaseRegisteredSubagentChildIntent,
   removeSubagentReservationAtomically,
@@ -29,6 +31,7 @@ export type ChildIntentState =
   | "registered"
   | "cancelled_requested"
   | "expired"
+  | "legacy_ambiguous"
   | "terminal";
 
 const ACTIVE_STATES: readonly ChildIntentState[] = [
@@ -36,6 +39,7 @@ const ACTIVE_STATES: readonly ChildIntentState[] = [
   "dispatch_claimed",
   "gateway_accepted",
   "registered",
+  "legacy_ambiguous",
 ];
 
 function parsePayload(raw: string): SubagentRunRecord | undefined {
@@ -63,13 +67,16 @@ function rowToRecord(row: ChildIntentRow): SubagentRunRecord | undefined {
             ? "cancelled"
             : row.state === "expired"
               ? "expired"
-              : "reserved";
+              : row.state === "legacy_ambiguous"
+                ? "unknown"
+                : "reserved";
   return normalizeSubagentRunState({
     ...payload,
     runId: row.reservation_run_id,
     childIntentKey: row.canonical_key,
     childIntentLookupKey: row.canonical_key,
     childIntentRequestDigest: row.request_digest,
+    childIntentPreparationDigest: row.preparation_digest,
     childIntentBehaviorDigest: row.resolved_digest,
     childIntentTargetAgentId: row.target_agent_id,
     reservationOwnerToken: row.lease_owner,
@@ -78,45 +85,6 @@ function rowToRecord(row: ChildIntentRow): SubagentRunRecord | undefined {
     gatewayReceiptId: row.gateway_receipt_id ?? undefined,
     spawnAdmission,
   });
-}
-
-function findRow(
-  database: DatabaseSync,
-  db: Kysely<ChildIntentDatabase>,
-  controllerSessionKey: string,
-  canonicalKey: string,
-  operationKey?: string,
-): ChildIntentRow | undefined {
-  return executeSqliteQuerySync(
-    database,
-    db
-      .selectFrom("subagent_child_intents")
-      .selectAll()
-      .where("controller_session_key", "=", controllerSessionKey)
-      .where((eb) =>
-        eb.or([
-          eb("canonical_key", "=", canonicalKey),
-          ...(operationKey ? [eb("operation_key", "=", operationKey)] : []),
-        ]),
-      ),
-  ).rows[0];
-}
-
-function stateFromRecord(entry: SubagentRunRecord): ChildIntentState {
-  switch (entry.spawnAdmission) {
-    case "dispatching":
-      return "dispatch_claimed";
-    case "unknown":
-      return "gateway_accepted";
-    case "dispatched":
-      return "registered";
-    case "cancelled":
-      return "cancelled_requested";
-    case "expired":
-      return "expired";
-    default:
-      return "reserved";
-  }
 }
 
 function createRow(entry: SubagentRunRecord, now: number): Insertable<ChildIntentTable> {
@@ -131,11 +99,13 @@ function createRow(entry: SubagentRunRecord, now: number): Insertable<ChildInten
     canonical_key: canonicalKey,
     operation_key: entry.childIntentOperationKey ?? null,
     request_digest: entry.childIntentRequestDigest ?? canonicalKey,
+    preparation_digest:
+      entry.childIntentPreparationDigest ?? entry.childIntentBehaviorDigest ?? canonicalKey,
     resolved_digest: entry.childIntentBehaviorDigest ?? canonicalKey,
     target_agent_id: entry.childIntentTargetAgentId ?? "unknown",
     child_session_key: entry.childSessionKey,
     reservation_run_id: entry.runId,
-    state: stateFromRecord(entry),
+    state: subagentChildIntentStateFromRecord(entry),
     generation: 0,
     lease_owner: entry.reservationOwnerToken,
     lease_expires_at: entry.reservationExpiresAt ?? null,
@@ -186,15 +156,25 @@ export function reserveSubagentRunAtomically(
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
     const controller = (entry.controllerSessionKey ?? entry.requesterSessionKey).trim();
     const canonicalKey = (entry.childIntentLookupKey ?? entry.childIntentKey ?? "").trim();
-    const current = findRow(db, stateDb, controller, canonicalKey, entry.childIntentOperationKey);
+    const current = findSubagentChildIntentRow(
+      db,
+      stateDb,
+      controller,
+      canonicalKey,
+      entry.childIntentOperationKey,
+    );
     if (current) {
       const currentRecord = rowToRecord(current);
       if (!currentRecord) {
         throw new Error("child intent authority row is corrupt");
       }
+      // The requested/preparation digest is the admission identity. The
+      // resolved digest is bound only after final execution preparation and
+      // therefore must not be compared with the preliminary replay input.
       if (
         current.request_digest !== (entry.childIntentRequestDigest ?? canonicalKey) ||
-        current.resolved_digest !== (entry.childIntentBehaviorDigest ?? canonicalKey)
+        current.preparation_digest !==
+          (entry.childIntentPreparationDigest ?? entry.childIntentBehaviorDigest ?? canonicalKey)
       ) {
         throw new Error("child intent conflicts with an existing behavior binding");
       }
@@ -212,6 +192,7 @@ export function reserveSubagentRunAtomically(
           {
             operation_key: replacement.operation_key,
             request_digest: replacement.request_digest,
+            preparation_digest: replacement.preparation_digest,
             resolved_digest: replacement.resolved_digest,
             target_agent_id: replacement.target_agent_id,
             child_session_key: replacement.child_session_key,
@@ -265,7 +246,13 @@ export function reserveSubagentRunAtomically(
     if (Number(inserted.numAffectedRows ?? 0) === 1) {
       return;
     }
-    const committed = findRow(db, stateDb, controller, canonicalKey, entry.childIntentOperationKey);
+    const committed = findSubagentChildIntentRow(
+      db,
+      stateDb,
+      controller,
+      canonicalKey,
+      entry.childIntentOperationKey,
+    );
     if (!committed) {
       throw new Error("child intent reservation did not commit");
     }
@@ -274,17 +261,14 @@ export function reserveSubagentRunAtomically(
   return winner;
 }
 
-export function findSubagentChildIntent(childIntentKey: string): SubagentRunRecord | undefined {
+export function findSubagentChildIntent(
+  childIntentKey: string,
+  controllerSessionKey: string,
+): SubagentRunRecord | undefined {
   let result: SubagentRunRecord | undefined;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
-    const row = executeSqliteQuerySync(
-      db,
-      stateDb
-        .selectFrom("subagent_child_intents")
-        .selectAll()
-        .where("canonical_key", "=", childIntentKey),
-    ).rows[0];
+    const row = findSubagentChildIntentRow(db, stateDb, controllerSessionKey, childIntentKey);
     result = row ? rowToRecord(row) : undefined;
   });
   return result;
@@ -293,6 +277,7 @@ export function findSubagentChildIntent(childIntentKey: string): SubagentRunReco
 /** Row-CAS transition used for dispatch, acceptance, cancellation, and recovery. */
 export function transitionSubagentRunAdmissionAtomically(params: {
   childIntentKey: string;
+  controllerSessionKey: string;
   reservationOwnerToken: string;
   from: "reserved" | "dispatching" | "unknown";
   to: "dispatching" | "unknown" | "cancelled";
@@ -307,6 +292,7 @@ export function transitionSubagentRunAdmissionAtomically(params: {
       stateDb
         .selectFrom("subagent_child_intents")
         .selectAll()
+        .where("controller_session_key", "=", params.controllerSessionKey)
         .where("canonical_key", "=", params.childIntentKey),
     ).rows[0];
     if (!row || row.lease_owner !== params.reservationOwnerToken) {
@@ -369,6 +355,7 @@ export function transitionSubagentRunAdmissionAtomically(params: {
 
 export function bindSubagentChildIntentResolvedDigestAtomically(params: {
   childIntentKey: string;
+  controllerSessionKey: string;
   reservationOwnerToken: string;
   resolvedDigest: string;
 }): boolean {
@@ -380,6 +367,7 @@ export function bindSubagentChildIntentResolvedDigestAtomically(params: {
       stateDb
         .selectFrom("subagent_child_intents")
         .selectAll()
+        .where("controller_session_key", "=", params.controllerSessionKey)
         .where("canonical_key", "=", params.childIntentKey),
     ).rows[0];
     if (!row || row.lease_owner !== params.reservationOwnerToken || row.state !== "reserved") {
@@ -387,6 +375,11 @@ export function bindSubagentChildIntentResolvedDigestAtomically(params: {
     }
     if (row.resolved_digest === params.resolvedDigest) {
       bound = true;
+      return;
+    }
+    if (row.resolved_digest !== row.preparation_digest) {
+      // A final execution digest is write-once.  A different resolved value
+      // must not replace an already authenticated binding.
       return;
     }
     const result = setRow(
@@ -407,6 +400,7 @@ export function bindSubagentChildIntentResolvedDigestAtomically(params: {
 
 export function claimSubagentChildIntentAtomically(params: {
   childIntentKey: string;
+  controllerSessionKey: string;
   reservationOwnerToken: string;
 }): string | false {
   let token: string | false = false;
@@ -417,6 +411,7 @@ export function claimSubagentChildIntentAtomically(params: {
       stateDb
         .selectFrom("subagent_child_intents")
         .selectAll()
+        .where("controller_session_key", "=", params.controllerSessionKey)
         .where("canonical_key", "=", params.childIntentKey),
     ).rows[0];
     if (
@@ -458,6 +453,11 @@ export function commitSubagentRunRegistrationInTransaction(
     stateDb
       .selectFrom("subagent_child_intents")
       .selectAll()
+      .where(
+        "controller_session_key",
+        "=",
+        (entry.controllerSessionKey ?? entry.requesterSessionKey).trim(),
+      )
       .where("canonical_key", "=", entry.childIntentKey!),
   ).rows[0];
   if (!row || row.lease_owner !== entry.reservationOwnerToken) {
