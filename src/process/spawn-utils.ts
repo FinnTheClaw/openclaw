@@ -73,12 +73,6 @@ async function spawnAndWaitForSpawn(
     };
     child.once("error", onError);
     child.once("spawn", onSpawn);
-    // Ensure mocked spawns that never emit "spawn" don't stall.
-    process.nextTick(() => {
-      if (typeof child.pid === "number") {
-        finishResolve();
-      }
-    });
   });
 }
 

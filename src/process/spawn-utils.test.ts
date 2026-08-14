@@ -19,6 +19,15 @@ function createStubChild() {
   return child;
 }
 
+function createAsyncSpawnErrorChild(error: NodeJS.ErrnoException) {
+  const child = new EventEmitter() as ChildProcess;
+  Object.defineProperty(child, "pid", { value: 1234, configurable: true });
+  queueMicrotask(() => {
+    child.emit("error", error);
+  });
+  return child;
+}
+
 function spawnOptionsAt(
   spawnMock: { mock: { calls: readonly unknown[][] } },
   callIndex: number,
@@ -75,5 +84,23 @@ describe("spawnWithFallback", () => {
       }),
     ).rejects.toThrow(/ENOENT/);
     expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces an asynchronous EAGAIN without an unhandled child error", async () => {
+    const error = Object.assign(new Error("spawn EAGAIN"), {
+      code: "EAGAIN",
+      errno: -11,
+      syscall: "spawn",
+    }) as NodeJS.ErrnoException;
+    const spawnMock = vi.fn().mockReturnValue(createAsyncSpawnErrorChild(error));
+
+    await expect(
+      spawnWithFallback({
+        argv: ["workspace-backup"],
+        options: { stdio: ["pipe", "pipe", "pipe"] },
+        spawnImpl: spawnMock,
+      }),
+    ).rejects.toMatchObject({ code: "EAGAIN", errno: -11, syscall: "spawn" });
+    expect(spawnMock).toHaveBeenCalledOnce();
   });
 });
