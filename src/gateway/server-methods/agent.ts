@@ -78,6 +78,7 @@ import {
   markGatewayAcceptanceStarted,
   markGatewayAcceptanceTerminal,
   isGatewayAcceptanceDispatchAllowed,
+  isGatewayAcceptanceReceiptActiveForReplay,
   readGatewayAcceptanceReceipt,
   reserveGatewayAcceptanceReceipt,
 } from "../../agents/subagent-gateway-acceptance-receipt-store.sqlite.js";
@@ -1518,12 +1519,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       const durableReceipt = durableChildReceiptRequired
         ? readGatewayAcceptanceReceipt(idem)
         : undefined;
-      if (
-        durableReceipt &&
-        durableReceipt.lifecycle !== "not_accepted" &&
-        durableReceipt.lifecycle !== "terminal" &&
-        durableReceipt.lifecycle !== "cancelled"
-      ) {
+      if (durableReceipt && isGatewayAcceptanceReceiptActiveForReplay(durableReceipt.lifecycle)) {
         if (
           durableReceipt.requestDigest !== childRequestDigest ||
           durableReceipt.resolvedDigest !== childResolvedDigest ||

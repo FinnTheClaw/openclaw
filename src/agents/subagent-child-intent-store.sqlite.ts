@@ -10,6 +10,7 @@ import {
   type ChildIntentDatabase,
 } from "./subagent-child-intent-query.sqlite.js";
 import type { ChildIntentState } from "./subagent-child-intent-types.js";
+import { resolveSubagentChildIntentIdentityId } from "./subagent-child-intent.js";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -51,6 +52,21 @@ function rowToRecord(row: ChildIntentRow): SubagentRunRecord | undefined {
   if (!payload) {
     return undefined;
   }
+  const compacted =
+    (payload as { schema?: unknown }).schema === "openclaw.child-intent.terminal.v1";
+  const recordBase = compacted
+    ? {
+        runId: row.reservation_run_id,
+        childSessionKey: row.child_session_key,
+        requesterSessionKey: row.controller_session_key,
+        requesterDisplayKey: row.controller_session_key,
+        controllerSessionKey: row.controller_session_key,
+        task: "[terminal child intent compacted]",
+        cleanup: "keep" as const,
+        createdAt: row.created_at,
+        execution: { status: "terminal" as const },
+      }
+    : payload;
   const spawnAdmission =
     row.state === "dispatch_claimed"
       ? "dispatching"
@@ -66,10 +82,11 @@ function rowToRecord(row: ChildIntentRow): SubagentRunRecord | undefined {
                 ? "unknown"
                 : "reserved";
   return normalizeSubagentRunState({
-    ...payload,
+    ...recordBase,
     runId: row.reservation_run_id,
     childIntentKey: row.canonical_key,
     childIntentLookupKey: row.canonical_key,
+    childIntentOperationKey: row.operation_key ?? undefined,
     childIntentRequestDigest: row.request_digest,
     childIntentPreparationDigest: row.preparation_digest,
     childIntentBehaviorDigest: row.resolved_digest,
@@ -89,7 +106,11 @@ function createRow(entry: SubagentRunRecord, now: number): Insertable<ChildInten
     throw new Error("child intent admission requires a durable owner binding");
   }
   return {
-    intent_id: `${controller}:${canonicalKey}`,
+    intent_id: resolveSubagentChildIntentIdentityId({
+      controllerSessionKey: controller,
+      canonicalKey,
+      operationKey: entry.childIntentOperationKey,
+    }),
     controller_session_key: controller,
     canonical_key: canonicalKey,
     operation_key: entry.childIntentOperationKey ?? null,
@@ -259,11 +280,18 @@ export function reserveSubagentRunAtomically(
 export function findSubagentChildIntent(
   childIntentKey: string,
   controllerSessionKey: string,
+  operationKey?: string,
 ): SubagentRunRecord | undefined {
   let result: SubagentRunRecord | undefined;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
-    const row = findSubagentChildIntentRow(db, stateDb, controllerSessionKey, childIntentKey);
+    const row = findSubagentChildIntentRow(
+      db,
+      stateDb,
+      controllerSessionKey,
+      childIntentKey,
+      operationKey,
+    );
     result = row ? rowToRecord(row) : undefined;
   });
   return result;
@@ -273,6 +301,7 @@ export function findSubagentChildIntent(
 export function transitionSubagentRunAdmissionAtomically(params: {
   childIntentKey: string;
   controllerSessionKey: string;
+  operationKey?: string;
   reservationOwnerToken: string;
   from: "reserved" | "dispatching" | "unknown";
   to: "dispatching" | "unknown" | "cancelled";
@@ -282,14 +311,20 @@ export function transitionSubagentRunAdmissionAtomically(params: {
   let updated: SubagentRunRecord | null = null;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
-    const row = executeSqliteQuerySync(
-      db,
-      stateDb
-        .selectFrom("subagent_child_intents")
-        .selectAll()
-        .where("controller_session_key", "=", params.controllerSessionKey)
-        .where("canonical_key", "=", params.childIntentKey),
-    ).rows[0];
+    const rowQuery = stateDb
+      .selectFrom("subagent_child_intents")
+      .selectAll()
+      .where("controller_session_key", "=", params.controllerSessionKey)
+      .where("canonical_key", "=", params.childIntentKey)
+      .$if(params.operationKey !== undefined, (query) =>
+        query.where("operation_key", "=", params.operationKey!),
+      )
+      .where("lease_owner", "=", params.reservationOwnerToken);
+    const rows = executeSqliteQuerySync(db, rowQuery).rows;
+    if (params.operationKey === undefined && rows.length > 1) {
+      throw new Error("child intent transition requires an explicit operation identity");
+    }
+    const row = rows[0];
     if (!row || row.lease_owner !== params.reservationOwnerToken) {
       return;
     }
@@ -351,20 +386,29 @@ export function transitionSubagentRunAdmissionAtomically(params: {
 export function bindSubagentChildIntentResolvedDigestAtomically(params: {
   childIntentKey: string;
   controllerSessionKey: string;
+  operationKey?: string;
   reservationOwnerToken: string;
   resolvedDigest: string;
 }): boolean {
   let bound = false;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
-    const row = executeSqliteQuerySync(
+    const rows = executeSqliteQuerySync(
       db,
       stateDb
         .selectFrom("subagent_child_intents")
         .selectAll()
         .where("controller_session_key", "=", params.controllerSessionKey)
-        .where("canonical_key", "=", params.childIntentKey),
-    ).rows[0];
+        .where("canonical_key", "=", params.childIntentKey)
+        .$if(params.operationKey !== undefined, (query) =>
+          query.where("operation_key", "=", params.operationKey!),
+        )
+        .where("lease_owner", "=", params.reservationOwnerToken),
+    ).rows;
+    if (params.operationKey === undefined && rows.length > 1) {
+      throw new Error("child intent binding requires an explicit operation identity");
+    }
+    const row = rows[0];
     if (!row || row.lease_owner !== params.reservationOwnerToken || row.state !== "reserved") {
       return;
     }
@@ -396,19 +440,28 @@ export function bindSubagentChildIntentResolvedDigestAtomically(params: {
 export function claimSubagentChildIntentAtomically(params: {
   childIntentKey: string;
   controllerSessionKey: string;
+  operationKey?: string;
   reservationOwnerToken: string;
 }): string | false {
   let token: string | false = false;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
-    const row = executeSqliteQuerySync(
+    const rows = executeSqliteQuerySync(
       db,
       stateDb
         .selectFrom("subagent_child_intents")
         .selectAll()
         .where("controller_session_key", "=", params.controllerSessionKey)
-        .where("canonical_key", "=", params.childIntentKey),
-    ).rows[0];
+        .where("canonical_key", "=", params.childIntentKey)
+        .$if(params.operationKey !== undefined, (query) =>
+          query.where("operation_key", "=", params.operationKey!),
+        )
+        .where("lease_owner", "=", params.reservationOwnerToken),
+    ).rows;
+    if (params.operationKey === undefined && rows.length > 1) {
+      throw new Error("child intent adoption requires an explicit operation identity");
+    }
+    const row = rows[0];
     if (
       !row ||
       !["dispatch_claimed", "gateway_accepted"].includes(row.state) ||

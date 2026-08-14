@@ -1498,6 +1498,8 @@ export async function executePreparedCliRun(
                 ? emitCliCommentaryText
                 : undefined,
             onMcpCaptureReady: beginGatewayCapture,
+            onProviderStarted: () =>
+              params.onProviderStarted?.({ provider: params.provider, model: context.modelId }),
             cleanup: async () => {
               await fallbackClaudeSkillsPlugin?.cleanup();
             },
@@ -1586,6 +1588,7 @@ export async function executePreparedCliRun(
               }
             },
           });
+          params.onProviderStarted?.({ provider: params.provider, model: context.modelId });
           let replyBackendCompleted = false;
           const replyBackendHandle = params.replyOperation
             ? {

@@ -255,6 +255,20 @@ isolated SQLite state.
     observational, including terminal/replay paths: it may record private bounded observations but
     cannot suppress a normal OpenClaw retry, steer, stop, interrupt, alter tools, or alter replies.
 
+42. Child admission and lifecycle use one controller-scoped durable child-intent identity. Named
+    requests are keyed by the normalized operation key; unnamed requests use the canonical request
+    digest. The child-intent row is the CAS authority for reservation, dispatch, cancellation,
+    registration, terminal state, attempt generation, and compact replay high-water. Gateway
+    acceptance data is bound to that row and its exact request/resolved/delivery digests in the
+    same state-database transaction; process-local maps are only caches. `subagent_runs` remains a
+    projection and cannot prune or overwrite another lifecycle row. Explicit operation-key reuse
+    with changed behavior is a conflict, while distinct named slots remain distinct. Terminal rows
+    retain only bounded identity, binding, generation, and outcome proof; raw task payload is
+    compacted. Ambiguous dispatch is adopted or fenced from a durable receipt and is never retried
+    from timeout or missing in-memory state; only a proven pre-acceptance failure can allocate a
+    successor attempt. Governor OFF retains the legacy child path and has no receipt or signer
+    dependency.
+
 ## Consequences
 
 This adds durable state and explicit lifecycle code, but avoids a second execution engine. Existing

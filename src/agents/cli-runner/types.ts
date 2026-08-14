@@ -148,6 +148,8 @@ export type RunCliAgentParams = {
     source?: string;
     firstModelCallStarted?: boolean;
   }) => void;
+  /** Called only after the CLI provider process has been accepted by the host supervisor. */
+  onProviderStarted?: (ctx: { provider: string; model: string }) => void;
   replyOperation?: ReplyOperation;
   emitCommentaryText?: boolean;
   /**

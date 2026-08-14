@@ -3,10 +3,11 @@ import type { Kysely, Selectable, Updateable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import { compactSubagentChildIntentPayload } from "./subagent-child-intent-compaction.js";
 import type { ChildIntentState } from "./subagent-child-intent-types.js";
 import {
   readGatewayAcceptanceReceiptFromDatabase,
-  requestGatewayAcceptanceCancel,
+  requestGatewayAcceptanceCancelInDatabase,
 } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -39,7 +40,11 @@ export function commitSubagentRunRegistrationInTransaction(
         "=",
         (entry.controllerSessionKey ?? entry.requesterSessionKey).trim(),
       )
-      .where("canonical_key", "=", entry.childIntentKey),
+      .where("canonical_key", "=", entry.childIntentKey)
+      .$if(entry.childIntentOperationKey !== undefined, (query) =>
+        query.where("operation_key", "=", entry.childIntentOperationKey!),
+      )
+      .where("lease_owner", "=", entry.reservationOwnerToken),
   ).rows[0];
   if (!row || row.lease_owner !== entry.reservationOwnerToken) {
     return false;
@@ -141,6 +146,7 @@ function resolveReceiptToCancel(
 export function removeSubagentReservationAtomically(params: {
   childIntentKey: string;
   controllerSessionKey: string;
+  operationKey?: string;
   reservationOwnerToken?: string;
   onlyExpired?: boolean;
   allowUnknown?: boolean;
@@ -148,14 +154,21 @@ export function removeSubagentReservationAtomically(params: {
   let removed = false;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
-    const row = executeSqliteQuerySync(
+    const rows = executeSqliteQuerySync(
       db,
       stateDb
         .selectFrom("subagent_child_intents")
         .selectAll()
         .where("controller_session_key", "=", params.controllerSessionKey)
-        .where("canonical_key", "=", params.childIntentKey),
-    ).rows[0];
+        .where("canonical_key", "=", params.childIntentKey)
+        .$if(params.operationKey !== undefined, (query) =>
+          query.where("operation_key", "=", params.operationKey!),
+        ),
+    ).rows;
+    if (params.operationKey === undefined && rows.length > 1) {
+      throw new Error("child intent cancellation/removal requires operationKey");
+    }
+    const row = rows[0];
     if (!row) {
       return;
     }
@@ -204,20 +217,28 @@ export function removeSubagentReservationAtomically(params: {
 export function cancelSubagentChildIntentAtomically(params: {
   childIntentKey: string;
   controllerSessionKey: string;
+  operationKey?: string;
 }): boolean {
   let changed = false;
   let receiptCancellationRepaired = false;
   let receiptToCancel: { acceptanceKey: string; gatewayRunId: string } | undefined;
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<ChildIntentDatabase>(db);
-    const row = executeSqliteQuerySync(
+    const rows = executeSqliteQuerySync(
       db,
       stateDb
         .selectFrom("subagent_child_intents")
         .selectAll()
         .where("controller_session_key", "=", params.controllerSessionKey)
-        .where("canonical_key", "=", params.childIntentKey),
-    ).rows[0];
+        .where("canonical_key", "=", params.childIntentKey)
+        .$if(params.operationKey !== undefined, (query) =>
+          query.where("operation_key", "=", params.operationKey!),
+        ),
+    ).rows;
+    if (params.operationKey === undefined && rows.length > 1) {
+      throw new Error("child intent cancellation requires operationKey");
+    }
+    const row = rows[0];
     if (
       !row ||
       ![
@@ -233,6 +254,9 @@ export function cancelSubagentChildIntentAtomically(params: {
     }
     if (row.state === "cancelled_requested") {
       receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+      if (receiptToCancel) {
+        receiptCancellationRepaired = requestGatewayAcceptanceCancelInDatabase(db, receiptToCancel);
+      }
     } else {
       changed = updateRow(db, stateDb, row, {
         state: "cancelled_requested",
@@ -242,12 +266,15 @@ export function cancelSubagentChildIntentAtomically(params: {
       });
       if (changed) {
         receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+        if (receiptToCancel) {
+          receiptCancellationRepaired = requestGatewayAcceptanceCancelInDatabase(
+            db,
+            receiptToCancel,
+          );
+        }
       }
     }
   });
-  if (receiptToCancel) {
-    receiptCancellationRepaired = requestGatewayAcceptanceCancel(receiptToCancel);
-  }
   return changed || receiptCancellationRepaired;
 }
 
@@ -290,6 +317,9 @@ export function cancelSubagentChildIntentByRunOrSessionAtomically(params: {
     }
     if (row.state === "cancelled_requested") {
       receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+      if (receiptToCancel) {
+        receiptCancellationRepaired = requestGatewayAcceptanceCancelInDatabase(db, receiptToCancel);
+      }
     } else {
       changed = updateRow(db, stateDb, row, {
         state: "cancelled_requested",
@@ -299,12 +329,15 @@ export function cancelSubagentChildIntentByRunOrSessionAtomically(params: {
       });
       if (changed) {
         receiptToCancel = resolveReceiptToCancel(db, stateDb, row);
+        if (receiptToCancel) {
+          receiptCancellationRepaired = requestGatewayAcceptanceCancelInDatabase(
+            db,
+            receiptToCancel,
+          );
+        }
       }
     }
   });
-  if (receiptToCancel) {
-    receiptCancellationRepaired = requestGatewayAcceptanceCancel(receiptToCancel);
-  }
   return changed || receiptCancellationRepaired;
 }
 
@@ -329,6 +362,10 @@ export function releaseRegisteredSubagentChildIntent(runId: string): void {
         state: "terminal",
         generation: row.generation + 1,
         updated_at: Date.now(),
+        payload_json: compactSubagentChildIntentPayload({
+          ...row,
+          generation: row.generation + 1,
+        }),
       },
       "registered",
     );

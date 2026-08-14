@@ -1467,6 +1467,7 @@ export async function spawnSubagentDirect(
               getSubagentChildIntentReservationToken(
                 childIntentReservation.childIntentKey,
                 childIntentReservation.controllerSessionKey,
+                childIntentReservation.operationKey,
               ) ?? childIntentReservation.reservationToken,
           };
         }
@@ -1837,6 +1838,7 @@ export async function spawnSubagentDirect(
   bindSubagentChildIntentResolvedDigest({
     childIntentKey,
     controllerSessionKey: ownership.controllerSessionKey,
+    operationKey: childIntentReservation.operationKey,
     reservationToken: childIntentReservation.reservationToken!,
     resolvedDigest: finalIntentBehaviorDigest,
   });
@@ -1920,6 +1922,8 @@ export async function spawnSubagentDirect(
       markSubagentChildIntentUnknown({
         childIntentKey,
         reservationToken: childIntentReservation.reservationToken!,
+        operationKey: childIntentReservation.operationKey,
+        durableReceiptRequired: childIntentReservation.durableReceiptRequired,
         ...(childRunId ? { providerRunId: childRunId } : {}),
       });
     } catch {
@@ -1941,8 +1945,10 @@ export async function spawnSubagentDirect(
     markSubagentChildIntentUnknown({
       childIntentKey,
       reservationToken: childIntentReservation.reservationToken!,
+      operationKey: childIntentReservation.operationKey,
       providerRunId: childRunId,
       retainOwnership: true,
+      durableReceiptRequired: childIntentReservation.durableReceiptRequired,
     });
   } catch (error) {
     await rollbackPreparedContextEngine(contextEnginePreparation);
@@ -1996,7 +2002,9 @@ export async function spawnSubagentDirect(
       markSubagentChildIntentUnknown({
         childIntentKey,
         reservationToken: childIntentReservation.reservationToken!,
+        operationKey: childIntentReservation.operationKey,
         providerRunId: childRunId,
+        durableReceiptRequired: childIntentReservation.durableReceiptRequired,
       });
     } catch {
       // Preserve the registration failure; uncertain admission remains closed.

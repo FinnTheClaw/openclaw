@@ -44,17 +44,24 @@ export function findSubagentChildIntentRow(
   if (!controller) {
     return undefined;
   }
-  const canonicalRow = executeSqliteQuerySync(
+  const canonicalRows = executeSqliteQuerySync(
     database,
     db
       .selectFrom("subagent_child_intents")
       .selectAll()
       .where("controller_session_key", "=", controller)
       .where("canonical_key", "=", canonicalKey)
-      .where("operation_key", "is", null),
-  ).rows[0];
+      .orderBy("updated_at", "desc"),
+  ).rows;
+  const canonicalRow = canonicalRows.find((row) => row.operation_key === null);
   if (!operationKey) {
-    return canonicalRow;
+    if (canonicalRows.length > 1) {
+      throw new Error("child intent lookup requires an explicit operation identity");
+    }
+    // A caller that has only the canonical lookup key may still be recovering
+    // a named operation after restart.  Return it only when the composite
+    // controller+canonical lookup is unambiguous; never cross controllers.
+    return canonicalRows[0];
   }
   const operationRow = executeSqliteQuerySync(
     database,

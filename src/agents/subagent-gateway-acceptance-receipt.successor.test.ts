@@ -11,6 +11,7 @@ import {
   claimGatewayAcceptanceForDispatch,
   fencePriorGatewayAcceptanceReceipts,
   isGatewayAcceptanceDispatchAllowed,
+  isGatewayAcceptanceReceiptActiveForReplay,
   markGatewayAcceptanceDispatchClaimed,
   markGatewayAcceptanceFailedAfterStart,
   markGatewayAcceptanceFailedBeforeStart,
@@ -75,12 +76,34 @@ describe("successor gateway receipt invariants", () => {
     expect(markGatewayAcceptanceDispatchClaimed(first)).toBe(true);
     expect(claimGatewayAcceptanceForDispatch(first)).toBe(true);
     expect(markGatewayAcceptanceFailedBeforeStart(first)).toBe(true);
+    expect(
+      isGatewayAcceptanceReceiptActiveForReplay(
+        readGatewayAcceptanceReceipt(first.acceptanceKey)!.lifecycle,
+      ),
+    ).toBe(false);
     closeOpenClawStateDatabaseForTest();
     const retry = input("epoch-retry", "gateway-epoch-b", "gateway-run-b");
     const next = reserveGatewayAcceptanceReceipt(retry);
     expect(next.receiptGeneration).toBe(1);
     expect(next.gatewayRunId).toBe("gateway-run-b");
     expect(next.acceptanceEpoch).toBe("gateway-epoch-b");
+  });
+
+  it.each([
+    ["preaccepted", true],
+    ["runnable", true],
+    ["dispatch_claimed", true],
+    ["accepted", true],
+    ["started", true],
+    ["unknown", true],
+    ["not_accepted", false],
+    ["failed_before_start", false],
+    ["failed_after_start", true],
+    ["cancel_requested", true],
+    ["cancelled", false],
+    ["terminal", false],
+  ] as const)("uses the signed replay lifecycle fence for %s", (lifecycle, active) => {
+    expect(isGatewayAcceptanceReceiptActiveForReplay(lifecycle)).toBe(active);
   });
 
   it("does not adopt a failure after provider start", async () => {

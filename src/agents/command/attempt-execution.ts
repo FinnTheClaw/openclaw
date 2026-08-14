@@ -752,6 +752,7 @@ export function runAgentAttempt(params: {
         cleanupBundleMcpOnRunEnd: params.opts.cleanupBundleMcpOnRunEnd,
         cleanupCliLiveSessionOnRunEnd: params.opts.cleanupCliLiveSessionOnRunEnd,
         oneShotCliRun: params.opts.oneShotCliRun,
+        onProviderStarted: params.opts.onProviderStarted,
         userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
         suppressNextUserMessagePersistence: params.suppressPromptPersistenceOnRetry === true,
         ...(mutableCliSessionStore

@@ -1707,6 +1707,7 @@ export function markSubagentChildIntentDispatching(
 export function bindSubagentChildIntentResolvedDigest(params: {
   childIntentKey: string;
   controllerSessionKey: string;
+  operationKey?: string;
   reservationToken: string;
   resolvedDigest: string;
 }) {
@@ -1714,6 +1715,7 @@ export function bindSubagentChildIntentResolvedDigest(params: {
     !bindSubagentChildIntentResolvedDigestAtomically({
       childIntentKey: params.childIntentKey,
       controllerSessionKey: params.controllerSessionKey,
+      operationKey: params.operationKey,
       reservationOwnerToken: params.reservationToken,
       resolvedDigest: params.resolvedDigest,
     })
@@ -1741,8 +1743,9 @@ export function assertSubagentChildIntentDispatchAvailable(params: {
 export function cancelSubagentChildIntent(
   childIntentKey: string,
   controllerSessionKey: string,
+  operationKey?: string,
 ): boolean {
-  return childIntentRegistry.cancel(childIntentKey, controllerSessionKey);
+  return childIntentRegistry.cancel(childIntentKey, controllerSessionKey, operationKey);
 }
 
 export function adoptSubagentChildIntent(params: {
@@ -1755,8 +1758,13 @@ export function adoptSubagentChildIntent(params: {
 export function getSubagentChildIntentReservationToken(
   childIntentKey: string,
   controllerSessionKey?: string,
+  operationKey?: string,
 ): string | undefined {
-  return childIntentRegistry.getReservationToken(childIntentKey, controllerSessionKey);
+  return childIntentRegistry.getReservationToken(
+    childIntentKey,
+    controllerSessionKey,
+    operationKey,
+  );
 }
 
 export function abandonUnresolvedSubagentChildIntent(params: {
@@ -2008,7 +2016,7 @@ export function markSubagentRunTerminated(params: {
     ) {
       const controller = (entry.controllerSessionKey ?? entry.requesterSessionKey).trim();
       if (controller) {
-        childIntentRegistry.cancel(entry.childIntentKey, controller);
+        childIntentRegistry.cancel(entry.childIntentKey, controller, entry.childIntentOperationKey);
       }
     }
   }

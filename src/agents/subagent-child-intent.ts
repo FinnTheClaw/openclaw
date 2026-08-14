@@ -108,6 +108,24 @@ export function resolveSubagentChildIntentKey(input: SubagentChildIntentInput): 
   return `child_intent_${digestValue(canonical).slice(0, 48)}`;
 }
 
+/**
+ * Durable row identity keeps explicit caller operation slots distinct from the
+ * anonymous canonical slot. The operation key is deliberately not folded into
+ * the behavior digest: changing behavior under the same named operation must
+ * conflict, while two named slots may share the same request shape.
+ */
+export function resolveSubagentChildIntentIdentityId(params: {
+  controllerSessionKey: string;
+  canonicalKey: string;
+  operationKey?: string;
+}): string {
+  const controller = params.controllerSessionKey.trim();
+  const canonical = params.canonicalKey.trim();
+  const operation = params.operationKey?.trim();
+  const identity = operation ? `operation:${operation}` : `canonical:${canonical}`;
+  return `${controller}:${identity}`;
+}
+
 /** Binds the complete caller request separately from the no-operation identity. */
 export function resolveSubagentChildIntentRequestDigest(input: SubagentChildIntentInput): string {
   return digestValue({
