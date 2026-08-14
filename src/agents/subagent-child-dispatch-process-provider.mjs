@@ -50,6 +50,10 @@ if (process.env.CLAUDE_LIVE === "1") {
   });
 } else {
   record("cli-start");
-  emit("physical.start", { kind: "cli" });
-  process.stdout.write("CLI-PROBE\n");
+  emit("physical.start", { kind: "cli", pid: process.pid });
+  if (process.env.CHILD_DISPATCH_PROVIDER_FAILURE === "after-start") {
+    setInterval(() => {}, 1000);
+  } else {
+    process.stdout.write("CLI-PROBE\n");
+  }
 }

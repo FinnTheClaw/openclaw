@@ -206,9 +206,13 @@ export async function createChildDispatchHarness(params: { configPath: string })
   physicalCounter: string;
   stderrPaths: Readonly<{ gateway: string; controller: string; model: string }>;
   startModel: () => ChildDispatchProcessHandle;
-  startGateway: (params?: { signer?: boolean }) => ChildDispatchProcessHandle;
+  startGateway: (params?: {
+    signer?: boolean;
+    providerFailure?: "after-start";
+  }) => ChildDispatchProcessHandle;
   startController: (params: { gatewayPort: number }) => ChildDispatchProcessHandle;
   allow: (eventId: string) => Promise<void>;
+  deny: (eventId: string) => Promise<void>;
   next: (point: string, timeoutMs?: number) => Promise<Record<string, unknown>>;
   nextAny: (points: readonly string[], timeoutMs?: number) => Promise<Record<string, unknown>>;
   close: () => Promise<void>;
@@ -280,6 +284,9 @@ export async function createChildDispatchHarness(params: { configPath: string })
           ...(gatewayOptions?.signer === false
             ? { INSTALL_RECEIPT_SIGNER: "0" }
             : { INSTALL_RECEIPT_SIGNER: "1" }),
+          ...(gatewayOptions?.providerFailure
+            ? { CHILD_DISPATCH_PROVIDER_FAILURE: gatewayOptions.providerFailure }
+            : {}),
         },
         stderrPath: stderrPaths.gateway,
       });
@@ -300,6 +307,8 @@ export async function createChildDispatchHarness(params: { configPath: string })
       return controller;
     },
     allow: (eventId) => releaseChildDispatchProtocolBarrier({ path: protocolPath, id: eventId }),
+    deny: (eventId) =>
+      releaseChildDispatchProtocolBarrier({ path: protocolPath, id: eventId, action: "deny" }),
     next: async (point, timeoutMs) => {
       return await nextMatching((record) => record.point === point, timeoutMs);
     },

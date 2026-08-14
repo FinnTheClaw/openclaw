@@ -1230,14 +1230,15 @@ function dispatchAgentRunFromGateway(params: {
       // Send a second res frame (same id) so TS clients with expectFinal can wait.
       // Swift clients will typically treat the first res as the result and ignore this.
       params.respond(true, payload, undefined, { runId: params.runId });
-      if (
-        params.acceptanceKey &&
-        !providerStartedObserved &&
-        result?.meta?.providerStarted === true
-      ) {
+      const providerStarted = providerStartedObserved || result?.meta?.providerStarted === true;
+      if (params.acceptanceKey && !providerStartedObserved && providerStarted) {
         recordProviderStarted({ provider: "unknown", model: "unknown" });
       }
-      await settleDurableReceipt("success");
+      // A governed command can resolve with a structured result after the
+      // host denied the final start authorization (for example, an embedded
+      // fallback exhaustion result). Treat that as a proven pre-start
+      // failure; never certify it as a successful provider run.
+      await settleDurableReceipt(params.acceptanceKey && !providerStarted ? "failure" : "success");
     })
     .catch(async (err: unknown) => {
       const aborted = isGatewayAgentAbortRejection(err, params.abortController.signal);

@@ -164,6 +164,10 @@ export function markSubagentRunPausedAfterYield(params: {
 export type RegisterSubagentRunParams = {
   runId: string;
   childIntentKey?: string;
+  childIntentOperationKey?: string;
+  childIntentRequestDigest?: string;
+  childIntentBehaviorDigest?: string;
+  childIntentTargetAgentId?: string;
   reservationToken?: string;
   childSessionKey: string;
   controllerSessionKey?: string;
@@ -763,6 +767,10 @@ export function createSubagentRunManager(params: {
     const entry: SubagentRunRecord = normalizeSubagentRunState({
       runId,
       childIntentKey: registerParams.childIntentKey,
+      childIntentOperationKey: registerParams.childIntentOperationKey,
+      childIntentRequestDigest: registerParams.childIntentRequestDigest,
+      childIntentBehaviorDigest: registerParams.childIntentBehaviorDigest,
+      childIntentTargetAgentId: registerParams.childIntentTargetAgentId,
       reservationOwnerToken: registerParams.reservationToken,
       spawnAdmission: "dispatched",
       taskRunId: runId,

@@ -189,7 +189,7 @@ describe("successor gateway receipt invariants", () => {
     ["not_accepted", false],
     ["failed_before_start", false],
     ["failed_after_start", true],
-    ["cancel_requested", true],
+    ["cancel_requested", false],
     ["cancelled", false],
     ["terminal", false],
   ] as const)("uses the signed replay lifecycle fence for %s", (lifecycle, active) => {

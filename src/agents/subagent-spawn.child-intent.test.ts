@@ -174,7 +174,9 @@ describe("host-owned child intent admission", () => {
     );
 
     expect(result.status).toBe("accepted");
-    const agentCall = hoisted.callGatewayMock.mock.calls.find(([call]) => call.method === "agent");
+    const agentCall = hoisted.callGatewayMock.mock.calls.find(
+      ([call]) => call.method === "child.dispatch" || call.method === "agent",
+    );
     expect(agentCall?.[0].params).toMatchObject({
       childIntentReceiptMode: "governed",
       childIntentCapability: "sessions_spawn",

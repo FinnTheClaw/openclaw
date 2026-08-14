@@ -1559,6 +1559,10 @@ export async function spawnSubagentDirect(
         registerSubagentRun({
           runId: recoveredRunId,
           childIntentKey,
+          childIntentOperationKey: childIntentReservation.operationKey,
+          childIntentRequestDigest: childIntentReservation.requestDigest,
+          childIntentBehaviorDigest: childIntentReservation.resolvedDigest,
+          childIntentTargetAgentId: targetAgentId,
           reservationToken: childIntentReservation.reservationToken,
           childSessionKey,
           controllerSessionKey: ownership.controllerSessionKey,
@@ -2127,6 +2131,10 @@ export async function spawnSubagentDirect(
     registerSubagentRun({
       runId: childRunId,
       childIntentKey,
+      childIntentOperationKey: childIntentReservation.operationKey,
+      childIntentRequestDigest: childIntentReservation.requestDigest,
+      childIntentBehaviorDigest: childIntentReservation.resolvedDigest,
+      childIntentTargetAgentId: targetAgentId,
       reservationToken: childIntentReservation.reservationToken,
       childSessionKey,
       controllerSessionKey: ownership.controllerSessionKey,

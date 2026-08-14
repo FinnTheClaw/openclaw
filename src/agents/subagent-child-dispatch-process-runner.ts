@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { runChildDispatchScenario } from "./subagent-child-dispatch-process-base.js";
 import { runCancellationBatch } from "./subagent-child-dispatch-process-cancellation.js";
 import {
+  runFailedAfterStartScenario,
+  runFailedBeforeStartScenario,
+} from "./subagent-child-dispatch-process-failure.js";
+import {
   type ChildDispatchProcessHandle,
   createChildDispatchHarness,
   readPhysicalStarts,
@@ -366,6 +370,9 @@ async function main(): Promise<void> {
     results.push(...(await runGatewayRestartFenceBatch()));
   } else if (requestedScenario === "cancellation-matrix") {
     results.push(...(await runCancellationBatch()));
+  } else if (requestedScenario === "failure-matrix") {
+    results.push(await runFailedBeforeStartScenario());
+    results.push(await runFailedAfterStartScenario());
   } else if (selectedScenarios.length === 0) {
     throw new Error(`unknown child-dispatch scenario: ${requestedScenario}`);
   } else {
