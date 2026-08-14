@@ -251,4 +251,215 @@ describe("C02/C05 governor continuation", () => {
       },
     );
   });
+
+  it("retains prior verified evidence across a different criterion retry", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-c05-carry-forward-" },
+      async (state) => {
+        const runtime = start(state.stateDir, [
+          { criterionId: "alpha" },
+          { criterionId: "beta" },
+          { criterionId: "aggregate", dependsOnCriteria: ["alpha", "beta"] },
+        ]);
+        try {
+          const scope = resolveGovernorAgentLoopRunScope(inputs("carry-forward"))!;
+          const run = (toolName: string, args: Record<string, string>, id: string, now: number) => {
+            const decision = scope.beforeTool({
+              toolCallId: id,
+              toolName,
+              args,
+              tool: scope.governedTools().find((item) => item.name === toolName),
+              now,
+            });
+            expect(decision.kind).toBe("allow");
+            if (decision.kind !== "allow" || !decision.ticket) {
+              throw new Error(`missing ticket for ${id}`);
+            }
+            return decision.ticket;
+          };
+          const alphaTicket = run("observe", { key: "alpha" }, "alpha", 101);
+          scope.afterTool({
+            ticket: alphaTicket,
+            toolCallId: "alpha",
+            toolName: "observe",
+            result: { content: [{ type: "text", text: "alpha" }], details: null },
+            isError: false,
+            now: 102,
+          });
+          expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 103 })).toMatchObject({
+            kind: "continue",
+            phase: "actions",
+          });
+          const betaTicket = run("observe", { key: "beta" }, "beta-failed", 104);
+          scope.afterTool({
+            ticket: betaTicket,
+            toolCallId: "beta-failed",
+            toolName: "observe",
+            result: { content: [], details: null },
+            isError: true,
+            now: 105,
+          });
+          expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 106 })).toMatchObject({
+            kind: "continue",
+            phase: "actions",
+          });
+          const afterReplan = runtime.adapter.controller.store.loadTask(scope.taskId as never)!;
+          expect(afterReplan.planVersion).toBe(2);
+          expect(
+            runtime.adapter.controller.store
+              .listEvidence(scope.taskId as never)
+              .some((item) => item.criterionId === "alpha"),
+          ).toBe(true);
+          const betaRetry = run("observe", { key: "beta" }, "beta-retry", 107);
+          scope.afterTool({
+            ticket: betaRetry,
+            toolCallId: "beta-retry",
+            toolName: "observe",
+            result: { content: [{ type: "text", text: "beta" }], details: null },
+            isError: false,
+            now: 108,
+          });
+          expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 109 })).toMatchObject({
+            kind: "continue",
+            phase: "actions",
+          });
+          scope.dispose();
+        } finally {
+          runtime.close();
+        }
+      },
+    );
+  });
+
+  it("reconstructs final-response masking after restart and restores actions after invalidation", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-c02-final-restart-" },
+      async (state) => {
+        const criteria = [
+          { criterionId: "alpha" },
+          { criterionId: "beta" },
+          { criterionId: "aggregate", dependsOnCriteria: ["alpha", "beta"] },
+        ] as const;
+        const execute = (
+          scope: ReturnType<typeof resolveGovernorAgentLoopRunScope> & object,
+          toolName: string,
+          args: Record<string, string>,
+          id: string,
+          now: number,
+        ) => {
+          const tool = scope.governedTools().find((item) => item.name === toolName);
+          const decision = scope.beforeTool({
+            toolCallId: id,
+            toolName,
+            args,
+            tool,
+            now,
+          });
+          expect(decision.kind).toBe("allow");
+          if (decision.kind !== "allow" || !decision.ticket) {
+            throw new Error(`missing ticket for ${id}`);
+          }
+          scope.afterTool({
+            ticket: decision.ticket,
+            toolCallId: id,
+            toolName,
+            result: { key: args.key ?? "aggregate", value: id },
+            isError: false,
+            now: now + 1,
+          });
+        };
+        const runtime = start(state.stateDir, criteria);
+        const scope = resolveGovernorAgentLoopRunScope(inputs("simple"))!;
+        try {
+          execute(scope, "observe", { key: "alpha" }, "alpha", 101);
+          expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 102 })).toMatchObject({
+            kind: "continue",
+            phase: "actions",
+          });
+          execute(scope, "observe", { key: "beta" }, "beta", 103);
+          expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 104 })).toMatchObject({
+            kind: "continue",
+            phase: "actions",
+          });
+          execute(scope, "aggregate", {}, "aggregate", 105);
+          expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 106 })).toMatchObject({
+            kind: "continue",
+            phase: "final_response",
+          });
+          const taskId = scope.taskId;
+          const pendingEvents = runtime.adapter.controller.store
+            .listEvents(taskId as never)
+            .filter((event) => event.eventType === "runtime_finish_proposed")
+            .filter((event) => {
+              const payload = event.payload;
+              return (
+                typeof payload === "object" &&
+                payload !== null &&
+                !Array.isArray(payload) &&
+                (payload as Record<string, unknown>).finalResponsePending === true
+              );
+            });
+          expect(pendingEvents).toHaveLength(1);
+          expect(pendingEvents[0]?.payload).toMatchObject({
+            phase: "final_response",
+            progressDigest: expect.any(String),
+          });
+          scope.dispose();
+          runtime.close();
+          closeOpenClawStateDatabase();
+
+          const restarted = start(state.stateDir, criteria);
+          try {
+            const resumed = resolveGovernorAgentLoopRunScope(inputs("simple"))!;
+            const agent = new Agent({
+              initialState: { model, tools: [] },
+              streamFn: scriptedStream(() => assistant([{ type: "text", text: "done" }])),
+            });
+            const bridge = installGovernorLoopBridge({ agent, scope: resumed, now: () => 200 });
+            expect(resumed.taskId).toBe(taskId);
+            expect(resumed.turnPhase()).toBe("final_response");
+            expect(agent.state.tools).toEqual([]);
+
+            const evidence = restarted.adapter.controller.store
+              .listEvidence(taskId as never)
+              .find((item) => item.criterionId === "alpha")!;
+            const task = restarted.adapter.controller.store.loadTask(taskId as never)!;
+            const receipt = restarted.owners.evidence.submitEvidenceInvalidation({
+              scopeKey: task.scopeKey,
+              taskId: task.taskId,
+              taskVersion: task.taskVersion,
+              objectiveRevision: task.objectiveRevision,
+              planVersion: task.planVersion,
+              evidenceId: evidence.evidenceId,
+              evidenceDigest: evidence.evidenceDigest,
+              reasonCode: "contradicted_by_newer_evidence",
+              provenance: {
+                kind: "newer_evidence",
+                sourceEvidenceId: "restart-alpha-correction",
+                sourceEvidenceDigest: "b".repeat(64),
+                sourceObservedAt: 250,
+                sourceScopeKey: task.scopeKey,
+                confidence: "high",
+                authority: "authenticated_host",
+              },
+              observedAt: 300,
+            });
+            restarted.adapter.controller.invalidateEvidence({
+              taskId: task.taskId,
+              evidenceId: evidence.evidenceId,
+              receiptId: receipt,
+            });
+            await agent.shouldStopAfterTurn?.({} as never);
+            expect(resumed.turnPhase()).toBe("actions");
+            expect(agent.state.tools.map((item) => item.name)).toEqual(["observe", "aggregate"]);
+            bridge.dispose();
+          } finally {
+            restarted.close();
+          }
+        } finally {
+          closeOpenClawStateDatabase();
+        }
+      },
+    );
+  });
 });

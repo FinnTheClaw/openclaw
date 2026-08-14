@@ -54,6 +54,7 @@ import {
   resolveGovernorMutation,
   type GovernorMutationResolution,
 } from "./mutation-reconciliation.js";
+import { prepareGovernorPlanReplacement } from "./plan-replacement.js";
 import {
   createGovernorCheckpoint,
   type GovernorCheckpoint,
@@ -190,20 +191,35 @@ export class GovernorController {
     if (task.state !== "PLANNING") {
       throw new Error("GOVERNOR_PLAN_STATE_INVALID");
     }
-    const planned: GovernorTaskProjection = {
-      ...task,
+    const replacement = prepareGovernorPlanReplacement({
+      store: this.store,
+      task,
       plan,
-      planVersion: task.planVersion + 1,
-      taskVersion: task.taskVersion + 1,
-      updatedAt: params.now + 2,
-    };
+      now: params.now,
+    });
     const event = createGovernorEventRecord({
-      task: planned,
+      task: replacement.task,
       eventType: "plan_replaced",
-      payload: { kind: plan.kind, stepCount: plan.steps.length },
+      payload: {
+        kind: plan.kind,
+        stepCount: plan.steps.length,
+        carriedForwardEvidenceCount: replacement.evidenceAdmissions.length,
+        carriedForwardEvidenceIds: replacement.evidenceAdmissions.map(
+          (item) => item.evidence.evidenceId,
+        ),
+      },
       now: params.now + 2,
     });
-    task = assertApplied(this.store.commit({ current: task, next: planned, event }));
+    task = assertApplied(
+      this.store.commit({
+        current: task,
+        next: replacement.task,
+        event,
+        ...(replacement.evidenceAdmissions.length
+          ? { evidenceAdmissions: replacement.evidenceAdmissions }
+          : {}),
+      }),
+    );
     return this.#transition(task, "READY", params.now + 3);
   }
   startExecution(taskId: GovernorTaskId, now: number): GovernorTaskProjection {

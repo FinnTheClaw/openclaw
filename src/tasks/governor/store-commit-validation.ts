@@ -28,6 +28,7 @@ export type GovernorCommitPayload = {
   actionIntentUpdates?: readonly GovernorActionIntentUpdate[];
   checkpoints?: readonly GovernorCheckpoint[];
   evidenceAdmission?: GovernorPendingEvidence;
+  evidenceAdmissions?: readonly GovernorPendingEvidence[];
   outbox?: readonly GovernorOutboxRecord[];
 };
 
@@ -50,7 +51,10 @@ export function validateGovernorCommitPayload(
     actionIntents: [...(params.actionIntents ?? [])],
     actionIntentUpdates: [...(params.actionIntentUpdates ?? [])],
     checkpoints: [...(params.checkpoints ?? [])],
-    evidence: params.evidenceAdmission?.evidence ?? null,
+    evidence: [
+      ...(params.evidenceAdmissions ?? []),
+      ...(params.evidenceAdmission ? [params.evidenceAdmission] : []),
+    ].map((item) => item.evidence),
     outbox: [...(params.outbox ?? [])],
   });
   assertSameGovernorScope(params.current, params.current);
@@ -149,9 +153,13 @@ export function validateGovernorCommitPayload(
     bindEffect(update.current);
     bindEffect(update.next);
   }
-  if (params.evidenceAdmission) {
-    const evidence = params.evidenceAdmission.evidence;
-    if (!validators.ownsEvidence(params.evidenceAdmission)) {
+  const evidenceAdmissions = [
+    ...(params.evidenceAdmissions ?? []),
+    ...(params.evidenceAdmission ? [params.evidenceAdmission] : []),
+  ];
+  for (const evidenceAdmission of evidenceAdmissions) {
+    const evidence = evidenceAdmission.evidence;
+    if (!validators.ownsEvidence(evidenceAdmission)) {
       throw new Error("GOVERNOR_EVIDENCE_ADMISSION_UNTRUSTED");
     }
     if (

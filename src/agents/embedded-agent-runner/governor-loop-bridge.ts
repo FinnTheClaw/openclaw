@@ -95,6 +95,9 @@ export function installGovernorLoopBridge(params: {
     const legacyTools = params.agent.state.tools.filter((tool) => !governedTools.has(tool.name));
     governedInventory = [...legacyTools, ...governedTools.values()];
     toolInventoryLease = params.agent.installToolInventory(governedInventory);
+    if (params.scope.turnPhase() === "final_response") {
+      maskTools();
+    }
   }
 
   const beforeToolCall: NonNullable<Agent["beforeToolCall"]> = async (context, signal) => {

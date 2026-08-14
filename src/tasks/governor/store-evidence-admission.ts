@@ -148,6 +148,47 @@ export class GovernorEvidenceAdmissionStore {
     return pending;
   }
 
+  carryForward(params: {
+    source: GovernorEvidenceRecord;
+    task: GovernorTaskProjection;
+    now: number;
+  }): GovernorPendingEvidence {
+    this.verify(params.source);
+    if (
+      params.source.invalidatedAt !== undefined ||
+      params.source.taskId !== params.task.taskId ||
+      params.source.scopeKey !== params.task.scopeKey ||
+      params.source.objectiveRevision !== params.task.objectiveRevision ||
+      params.source.planVersion >= params.task.planVersion
+    ) {
+      throw new Error("GOVERNOR_EVIDENCE_CARRY_FORWARD_INVALID");
+    }
+    const {
+      admissionSignature: _ignored,
+      invalidatedAt: _invalidatedAt,
+      ...source
+    } = params.source;
+    const evidenceId = `evidence_carry_${governorDigest({
+      sourceEvidenceId: params.source.evidenceId,
+      taskId: params.task.taskId,
+      planVersion: params.task.planVersion,
+    }).slice(0, 48)}`;
+    const unsigned: Omit<GovernorEvidenceRecord, "admissionSignature"> = {
+      ...source,
+      evidenceId,
+      taskVersion: params.source.taskVersion,
+      objectiveRevision: params.task.objectiveRevision,
+      planVersion: params.task.planVersion,
+      createdAt: params.now,
+      admissionKeyId: this.#keyId,
+      admissionVersion: 1,
+    };
+    const evidence = Object.freeze({ ...unsigned, admissionSignature: this.#sign(unsigned) });
+    const pending = Object.freeze({ evidence }) as GovernorPendingEvidence;
+    this.#pending.add(pending);
+    return pending;
+  }
+
   invalidate(evidence: GovernorEvidenceRecord, now: number): GovernorEvidenceRecord {
     this.verify(evidence);
     if (evidence.invalidatedAt !== undefined) {

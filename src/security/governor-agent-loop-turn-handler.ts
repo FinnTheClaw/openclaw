@@ -127,6 +127,7 @@ export function recordGovernorAgentLoopTurn(params: {
       message: formatGovernorAgentLoopProgress(state.progress),
     };
   }
+  const finalResponseTurn = state.finalResponsePending && turn.toolCallCount === 0;
   if (state.finalResponsePending && turn.toolCallCount > 0) {
     state.terminalReason = "GOVERNOR_AGENT_LOOP_FINAL_RESPONSE_ONLY";
     params.controller.blockRuntime(params.taskId, turn.now + 1, "completion_only_violation");
@@ -172,7 +173,13 @@ export function recordGovernorAgentLoopTurn(params: {
         params.controller.recordRuntimeEvent({
           taskId: params.taskId,
           eventType: "runtime_finish_proposed",
-          payload: { finalResponsePending: true, phase: "final_response", turn: state.turns },
+          payload: {
+            finalResponsePending: true,
+            phase: "final_response",
+            planVersion: state.progress.planVersion,
+            progressDigest: state.progress.fingerprint,
+            turn: state.turns,
+          },
           now: turn.now + 2,
         });
         return {
@@ -203,6 +210,7 @@ export function recordGovernorAgentLoopTurn(params: {
       acceptedByEvidence: decision.accepted,
       responseDigestMatches,
       turn: state.turns,
+      ...(finalResponseTurn ? { finalResponsePending: false, phase: "final_response" } : {}),
     },
     now: turn.now + 2,
   });
@@ -217,6 +225,9 @@ export function recordGovernorAgentLoopTurn(params: {
     if (state.terminal) {
       return { kind: "complete" };
     }
+  }
+  if (finalResponseTurn) {
+    state.finalResponsePending = false;
   }
   if (state.turns >= params.safetyBudget) {
     state.terminalReason = "GOVERNOR_AGENT_LOOP_BUDGET_EXHAUSTED";

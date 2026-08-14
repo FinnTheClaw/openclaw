@@ -4,6 +4,62 @@ import type { GovernorAgentLoopConfiguration } from "./governor-agent-loop-confi
 import { buildGovernorAgentLoopProgress } from "./governor-agent-loop-progress.js";
 import type { GovernorAgentLoopTurnState } from "./governor-agent-loop-turn-handler.js";
 
+function recordPayload(payload: unknown): Record<string, unknown> | undefined {
+  return typeof payload === "object" && payload !== null && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : undefined;
+}
+
+function reconstructFinalResponsePending(
+  controller: GovernorController,
+  taskId: GovernorTaskId,
+  progressFingerprint: string,
+): boolean {
+  const task = controller.store.loadTask(taskId);
+  if (!task || task.state === "COMPLETED" || task.state === "BLOCKED") {
+    return false;
+  }
+  let pending:
+    | {
+        taskVersion: number;
+        objectiveRevision: number;
+        planVersion?: number;
+        progressDigest?: string;
+      }
+    | undefined;
+  for (const event of controller.store.listEvents(taskId)) {
+    if (event.eventType !== "runtime_finish_proposed") {
+      continue;
+    }
+    const payload = recordPayload(event.payload);
+    if (payload?.phase !== "final_response") {
+      continue;
+    }
+    if (payload.finalResponsePending !== true) {
+      pending = undefined;
+      continue;
+    }
+    pending = {
+      taskVersion: event.taskVersion,
+      objectiveRevision: event.objectiveRevision,
+      ...(typeof payload.planVersion === "number" ? { planVersion: payload.planVersion } : {}),
+      ...(typeof payload.progressDigest === "string"
+        ? { progressDigest: payload.progressDigest }
+        : {}),
+    };
+  }
+  if (!pending || pending.objectiveRevision !== task.objectiveRevision) {
+    return false;
+  }
+  if (
+    (pending.planVersion !== undefined && pending.planVersion !== task.planVersion) ||
+    pending.progressDigest !== progressFingerprint
+  ) {
+    return false;
+  }
+  return pending.taskVersion === task.taskVersion;
+}
+
 export function createGovernorAgentLoopTurnState(params: {
   controller: GovernorController;
   taskId: GovernorTaskId;
@@ -19,7 +75,11 @@ export function createGovernorAgentLoopTurnState(params: {
     replannedAfterStagnation: false,
     skipNextStagnationCheck: false,
     toolErrorObserved: false,
-    finalResponsePending: false,
+    finalResponsePending: reconstructFinalResponsePending(
+      params.controller,
+      params.taskId,
+      progress.fingerprint,
+    ),
     terminal: params.terminal,
   };
 }

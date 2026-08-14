@@ -176,6 +176,14 @@ export class GovernorSqliteStore {
     return this.#evidenceAdmissions.admit(params);
   }
 
+  carryForwardEvidence(params: {
+    source: GovernorEvidenceRecord;
+    task: GovernorTaskProjection;
+    now: number;
+  }): GovernorPendingEvidence {
+    return this.#evidenceAdmissions.carryForward(params);
+  }
+
   invalidateEvidenceWithReceipt(params: {
     taskId: GovernorTaskId;
     evidenceId: string;
@@ -396,11 +404,15 @@ export class GovernorSqliteStore {
           throw new Error("GOVERNOR_EFFECT_UPDATE_CONFLICT");
         }
       }
-      if (params.evidenceAdmission) {
-        if (!this.#evidenceAdmissions.owns(params.evidenceAdmission)) {
+      const evidenceAdmissions = [
+        ...(params.evidenceAdmissions ?? []),
+        ...(params.evidenceAdmission ? [params.evidenceAdmission] : []),
+      ];
+      for (const evidenceAdmission of evidenceAdmissions) {
+        if (!this.#evidenceAdmissions.owns(evidenceAdmission)) {
           throw new Error("Governor evidence admission was not created by this store");
         }
-        const evidence = params.evidenceAdmission.evidence;
+        const evidence = evidenceAdmission.evidence;
         if (
           evidence.taskId !== params.current.taskId ||
           evidence.scopeKey !== params.current.scopeKey ||
