@@ -1,6 +1,6 @@
 // Gateway agent methods implement agent.run, agent.wait, agent.reset, identity,
 // and related session-aware RPC handlers used by UI and operator clients.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
@@ -62,6 +62,11 @@ import {
   normalizeSpawnedRunMetadata,
   resolveIngressWorkspaceOverrideForSpawnedRun,
 } from "../../agents/spawned-context.js";
+import {
+  markGatewayAcceptanceNotAccepted,
+  readGatewayAcceptanceReceipt,
+  reserveGatewayAcceptanceReceipt,
+} from "../../agents/subagent-gateway-acceptance-receipt-store.sqlite.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { agentCommandFromIngress } from "../../commands/agent.js";
 import {
@@ -910,6 +915,14 @@ function setAbortedAgentDedupeEntries(params: {
       },
     },
   });
+  const acceptanceKey = params.keys.find((key) => key.startsWith("agent:"))?.slice("agent:".length);
+  if (acceptanceKey) {
+    try {
+      markGatewayAcceptanceNotAccepted({ acceptanceKey, gatewayRunId: params.runId });
+    } catch {
+      // Keep the accepted receipt fenced when durable abort attribution is unavailable.
+    }
+  }
 }
 
 function readAgentRunTimeoutAttribution(meta: unknown) {
@@ -1225,6 +1238,27 @@ export const agentHandlers: GatewayRequestHandlers = {
     const cfg = context.getRuntimeConfig();
     const idem = request.idempotencyKey;
     const runId = idem;
+    const gatewayRequestDigest = createHash("sha256")
+      .update(
+        JSON.stringify({
+          message: request.message ?? "",
+          sessionKey: request.sessionKey,
+          sessionId: request.sessionId,
+          agentId: request.agentId,
+          provider: request.provider,
+          model: request.model,
+          channel: request.channel,
+          accountId: request.accountId,
+          to: request.to,
+          threadId: request.threadId,
+          thinking: request.thinking,
+          timeout: request.timeout,
+          deliver: request.deliver,
+          cleanupBundleMcpOnRunEnd: request.cleanupBundleMcpOnRunEnd,
+          extraSystemPrompt: request.extraSystemPrompt,
+        }),
+      )
+      .digest("hex");
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const execApprovalFollowupApprovalId = parseExecApprovalFollowupApprovalId(idem);
     if (execApprovalFollowupApprovalId && !canUseInternalRuntimeHandoff) {
@@ -1298,6 +1332,36 @@ export const agentHandlers: GatewayRequestHandlers = {
       });
       return;
     }
+    try {
+      const durableReceipt = readGatewayAcceptanceReceipt(idem);
+      if (durableReceipt?.lifecycle === "accepted") {
+        if (durableReceipt.requestDigest !== gatewayRequestDigest) {
+          respond(
+            false,
+            undefined,
+            errorShape(
+              ErrorCodes.INVALID_REQUEST,
+              "idempotency key conflicts with an accepted request",
+            ),
+          );
+          return;
+        }
+        respond(
+          true,
+          {
+            runId: durableReceipt.gatewayRunId,
+            status: "in_flight" as const,
+            sessionKey: durableReceipt.childSessionKey,
+          },
+          undefined,
+          { cached: true, runId: durableReceipt.gatewayRunId },
+        );
+        return;
+      }
+    } catch {
+      // An unavailable durable receipt is ambiguous; the request remains fenced
+      // by the normal gateway admission path rather than being retried blindly.
+    }
     let agentDedupeReserved = false;
     let agentRunAccepted = false;
     const agentReservationId = randomUUID();
@@ -1321,6 +1385,18 @@ export const agentHandlers: GatewayRequestHandlers = {
         ? resolveSessionStoreKey({ cfg, sessionKey }) === "global"
         : false;
       const acceptedAt = Date.now();
+      if (sessionKey) {
+        reserveGatewayAcceptanceReceipt({
+          acceptanceKey: idem,
+          intentId: idem,
+          controllerSessionKey: sessionKey,
+          requestDigest: gatewayRequestDigest,
+          resolvedDigest: gatewayRequestDigest,
+          gatewayRunId: runId,
+          childSessionKey: sessionKey,
+          now: acceptedAt,
+        });
+      }
       const pendingTimeoutMs = resolveAgentTimeoutMs({
         cfg,
         overrideSeconds: typeof request.timeout === "number" ? request.timeout : undefined,
@@ -1380,6 +1456,11 @@ export const agentHandlers: GatewayRequestHandlers = {
         dedupe: context.dedupe,
         keys: agentDedupeKeys,
       });
+      try {
+        markGatewayAcceptanceNotAccepted({ acceptanceKey: idem, gatewayRunId: runId });
+      } catch {
+        // An uncertain durable receipt remains fenced and cannot be retried.
+      }
       agentDedupeReserved = false;
     };
     const abortForLifecycleRotation = (target?: {

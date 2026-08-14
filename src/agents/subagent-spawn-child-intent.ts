@@ -1,5 +1,6 @@
 import {
   resolveSubagentChildIntentKey,
+  resolveSubagentChildIntentRequestDigest,
   resolveSubagentChildSessionKey,
   resolveSubagentReservationRunId,
 } from "./subagent-child-intent.js";
@@ -40,6 +41,7 @@ type SpawnChildIntentInput = {
     threadId?: string | number;
   };
   intentBehaviorDigest?: string;
+  intentRequestDigest?: string;
   requesterDisplayKey: string;
   maxActiveChildren: number;
 };
@@ -90,6 +92,35 @@ export function admitSubagentSpawnChildIntent(
     spawnMode: params.mode,
     maxActiveChildren: params.maxActiveChildren,
     intentBehaviorDigest: params.intentBehaviorDigest,
+    intentRequestDigest:
+      params.intentRequestDigest ??
+      resolveSubagentChildIntentRequestDigest({
+        requesterSessionKey: params.requesterSessionKey,
+        targetAgentId: params.targetAgentId,
+        task: params.task,
+        taskName: params.taskName,
+        label: params.label,
+        model: params.model,
+        modelRoute: params.modelRoute,
+        subagentRole: params.subagentRole,
+        mode: params.mode,
+        cleanup: params.cleanup,
+        sandbox: params.sandbox,
+        context: params.context,
+        cwd: params.cwd,
+        thread: params.thread,
+        operationKey: params.operationKey,
+        discriminator: params.discriminator,
+        attachments: params.attachments,
+        thinking: params.thinking,
+        runTimeoutSeconds: params.runTimeoutSeconds,
+        lightContext: params.lightContext,
+        expectsCompletionMessage: params.expectsCompletionMessage,
+        attachMountPath: params.attachMountPath,
+        delivery: params.delivery,
+      }),
+    targetAgentId: params.targetAgentId,
+    operationKey: params.operationKey,
   });
 }
 

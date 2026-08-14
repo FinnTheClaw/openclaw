@@ -117,11 +117,19 @@ export type SubagentRunRecord = {
   spawnAdmission?: "reserved" | "dispatching" | "dispatched" | "unknown" | "cancelled" | "expired";
   /** Host-owned behavior binding; a reused logical key with a changed value fails closed. */
   childIntentBehaviorDigest?: string;
+  /** Stable caller request binding, distinct from the resolved execution digest. */
+  childIntentRequestDigest?: string;
+  /** Explicit operation identity is stable and is not part of the behavior digest. */
+  childIntentOperationKey?: string;
+  childIntentLookupKey?: string;
+  childIntentTargetAgentId?: string;
   /** Durable reservation owner and lease, unlike the process-local registry token. */
   reservationOwnerToken?: string;
   reservationExpiresAt?: number;
   /** Provider run id retained when registration failed after dispatch acceptance. */
   providerRunId?: string;
+  /** Durable gateway acceptance receipt bound before child registration. */
+  gatewayReceiptId?: string;
   /** Detached task owner; steer/restart changes runId but continues the same task. */
   taskRunId?: string;
   childSessionKey: string;

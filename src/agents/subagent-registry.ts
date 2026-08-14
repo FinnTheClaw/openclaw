@@ -89,9 +89,14 @@ import {
 } from "./subagent-registry-run-manager.js";
 import {
   clearSubagentRunsReadCacheForTest,
+  bindSubagentChildIntentResolvedDigestAtomically,
+  cancelSubagentChildIntentAtomically,
+  claimSubagentChildIntentAtomically,
+  findSubagentChildIntent,
   getSubagentRunsSnapshotForRead,
   persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow,
+  releaseRegisteredSubagentChildIntent,
   expireSubagentReservationsAtomically,
   removeSubagentReservationAtomically,
   reserveSubagentRunAtomically,
@@ -309,14 +314,13 @@ function persistSubagentRunsOrThrow() {
 
 const childIntentRegistry = createSubagentChildIntentRegistry({
   getRuns: () => subagentRuns,
-  countActiveRunsForSession: (sessionKey) =>
-    countActiveRunsForSessionFromRuns(subagentRuns, sessionKey),
   reservePersisted: reserveSubagentRunAtomically,
+  findPersisted: findSubagentChildIntent,
   transitionPersisted: transitionSubagentRunAdmissionAtomically,
+  claimPersisted: claimSubagentChildIntentAtomically,
+  cancelPersisted: cancelSubagentChildIntentAtomically,
   removePersisted: removeSubagentReservationAtomically,
   expirePersisted: expireSubagentReservationsAtomically,
-  persistOrThrow: persistSubagentRunsOrThrow,
-  persist: persistSubagentRuns,
 });
 
 function findSubagentTaskForRun(entry: SubagentRunRecord) {
@@ -1690,10 +1694,36 @@ export function markSubagentChildIntentDispatching(
   return childIntentRegistry.markDispatching(params);
 }
 
+export function bindSubagentChildIntentResolvedDigest(params: {
+  childIntentKey: string;
+  reservationToken: string;
+  resolvedDigest: string;
+}) {
+  if (
+    !bindSubagentChildIntentResolvedDigestAtomically({
+      childIntentKey: params.childIntentKey,
+      reservationOwnerToken: params.reservationToken,
+      resolvedDigest: params.resolvedDigest,
+    })
+  ) {
+    throw new Error("child intent resolved binding changed before dispatch");
+  }
+}
+
 export function markSubagentChildIntentUnknown(
   params: Parameters<typeof childIntentRegistry.markUnknown>[0],
 ) {
   return childIntentRegistry.markUnknown(params);
+}
+
+export function assertSubagentChildIntentDispatchAvailable(params: {
+  childIntentKey: string;
+  reservationToken?: string;
+}) {
+  return childIntentRegistry.assertDispatchIdentityAvailable(
+    params.childIntentKey,
+    params.reservationToken,
+  );
 }
 
 export function cancelSubagentChildIntent(childIntentKey: string): boolean {
@@ -1705,6 +1735,10 @@ export function adoptSubagentChildIntent(params: {
   reservationToken: string;
 }): boolean {
   return childIntentRegistry.adopt(params);
+}
+
+export function getSubagentChildIntentReservationToken(childIntentKey: string): string | undefined {
+  return childIntentRegistry.getReservationToken(childIntentKey);
 }
 
 export function abandonUnresolvedSubagentChildIntent(params: {
@@ -1734,15 +1768,10 @@ export function registerSubagentRun(params: RegisterSubagentRunParams) {
     params.childIntentKey,
     params.reservationToken,
   );
-  const childIntentReservation = childIntentRegistry.takeForRegistration(params);
-  try {
-    subagentRunManager.registerSubagentRun(params);
-  } catch (error) {
-    if (childIntentReservation) {
-      childIntentRegistry.restoreAfterRegistrationFailure(childIntentReservation);
-    }
-    throw error;
-  }
+  childIntentRegistry.takeForRegistration(params);
+  // The durable intent row remains dispatch/acceptance-fenced. Never restore
+  // it through a process-local snapshot after a failed transaction.
+  subagentRunManager.registerSubagentRun(params);
 }
 
 /**
@@ -1854,6 +1883,10 @@ export function addSubagentRunForTests(entry: SubagentRunRecord) {
 }
 
 export function releaseSubagentRun(runId: string) {
+  const entry = subagentRuns.get(runId);
+  if (entry?.childIntentKey) {
+    releaseRegisteredSubagentChildIntent(runId);
+  }
   subagentRunManager.releaseSubagentRun(runId);
 }
 

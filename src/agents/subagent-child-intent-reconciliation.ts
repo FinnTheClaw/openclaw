@@ -35,10 +35,27 @@ function isProviderPresent(response: unknown): boolean {
 export async function reconcileSubagentChildIntent(params: {
   reservation: SubagentChildIntentReservation;
   waitForProvider: () => Promise<unknown>;
+  lookupAcceptance: () => { lifecycle: "accepted" | "not_accepted" | "cancelled" } | undefined;
   adopt: () => boolean;
   abandon: () => boolean;
 }): Promise<ChildIntentReconciliation> {
   if (!params.reservation.dispatchState || !params.reservation.reservationToken) {
+    return "duplicate";
+  }
+  const receipt = params.lookupAcceptance();
+  if (receipt?.lifecycle === "accepted") {
+    return params.adopt() ? "adopt" : "duplicate";
+  }
+  if (receipt?.lifecycle !== "not_accepted") {
+    if (!receipt && params.reservation.durableReceiptRequired !== true) {
+      // Legacy test/in-process adapters do not expose the durable receipt
+      // seam; retain their provider-presence behavior. Real persisted rows
+      // always set durableReceiptRequired and remain fenced when absent.
+      const legacyResponse = await params.waitForProvider();
+      return isProviderPresent(legacyResponse) && params.adopt() ? "adopt" : "duplicate";
+    }
+    // A missing or unavailable receipt is ambiguous after a gateway restart.
+    // agent.wait cannot prove that an accepted request did not exist.
     return "duplicate";
   }
   let response: unknown;

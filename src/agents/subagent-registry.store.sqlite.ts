@@ -12,6 +12,7 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
+import { commitSubagentRunRegistrationInTransaction } from "./subagent-child-intent-store.sqlite.js";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
 import {
   loadSubagentRegistryFromDisk,
@@ -26,7 +27,10 @@ import type {
 } from "./subagent-registry.types.js";
 
 type SubagentRunsTable = OpenClawStateKyselyDatabase["subagent_runs"];
-type SubagentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "subagent_runs">;
+type SubagentRegistryDatabase = Pick<
+  OpenClawStateKyselyDatabase,
+  "subagent_runs" | "subagent_child_intents"
+>;
 export type SubagentRunSqliteRow = Selectable<SubagentRunsTable>;
 export type SubagentRunSqliteInsert = Insertable<SubagentRunsTable>;
 export type SubagentRunSqliteUpdate = Updateable<SubagentRunsTable>;
@@ -302,14 +306,55 @@ export function loadSubagentRegistryFromSqlite(): Map<string, SubagentRunRecord>
   return loadSubagentRegistryFromSqliteOnly();
 }
 
-/** Saves the complete subagent run snapshot to sqlite and prunes rows not in the snapshot. */
+/**
+ * Saves only keyed projection rows.  This is deliberately upsert-only: a stale
+ * process must never delete another process's registered child or admission
+ * row. Child-intent registration is committed in this same SQLite transaction.
+ */
 export function saveSubagentRegistryToSqlite(runs: Map<string, SubagentRunRecord>): void {
   runOpenClawStateWriteTransaction(({ db }) => {
     const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(db);
-    const runIds: string[] = [];
     for (const entry of runs.values()) {
+      if (entry.childIntentKey) {
+        const intent = executeSqliteQuerySync(
+          db,
+          stateDb
+            .selectFrom("subagent_child_intents")
+            .select("state")
+            .where("canonical_key", "=", entry.childIntentKey),
+        ).rows[0];
+        if (
+          intent &&
+          (intent.state === "terminal" || intent.state === "cancelled_requested") &&
+          entry.execution?.status !== "terminal" &&
+          entry.endedAt === undefined
+        ) {
+          // Child-intent state is the admission/terminal authority. A stale
+          // registry snapshot cannot resurrect its projection after the
+          // authoritative row has reached a terminal or cancellation fence.
+          continue;
+        }
+      }
+      const currentRow = executeSqliteQuerySync(
+        db,
+        stateDb.selectFrom("subagent_runs").selectAll().where("run_id", "=", entry.runId),
+      ).rows[0];
+      const current = currentRow ? rowToSubagentRunRecord(currentRow) : undefined;
+      if (
+        current &&
+        ((typeof current.generation === "number" &&
+          typeof entry.generation === "number" &&
+          entry.generation < current.generation) ||
+          (current.endedAt !== undefined && entry.endedAt === undefined) ||
+          (current.execution?.status === "terminal" && entry.execution?.status === "running") ||
+          (current.delivery?.status === "delivered" && entry.delivery?.status !== "delivered"))
+      ) {
+        // subagent_runs is a projection, but it must not visibly regress when
+        // a stale worker flushes after a newer worker has committed terminal
+        // state. The child-intent/receipt rows remain authoritative.
+        continue;
+      }
       const values = subagentRunRecordToSqliteInsert(entry);
-      runIds.push(values.run_id);
       executeSqliteQuerySync(
         db,
         stateDb
@@ -319,11 +364,13 @@ export function saveSubagentRegistryToSqlite(runs: Map<string, SubagentRunRecord
             conflict.column("run_id").doUpdateSet(subagentRunRecordToSqliteUpdate(values)),
           ),
       );
+      if (
+        entry.reservationOwnerToken &&
+        entry.childIntentKey &&
+        !commitSubagentRunRegistrationInTransaction(db, entry)
+      ) {
+        throw new Error("child intent registration lost its durable CAS before projection commit");
+      }
     }
-    const deleteQuery =
-      runIds.length === 0
-        ? stateDb.deleteFrom("subagent_runs")
-        : stateDb.deleteFrom("subagent_runs").where("run_id", "not in", runIds);
-    executeSqliteQuerySync(db, deleteQuery);
   });
 }

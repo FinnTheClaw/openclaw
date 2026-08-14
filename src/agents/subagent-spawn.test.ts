@@ -1,6 +1,7 @@
 // Subagent spawn tests cover target policy, session patching, runtime model
 // persistence, registry registration, and lifecycle event emission.
 import os from "node:os";
+import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSubagentSpawnTestConfig,
@@ -351,7 +352,7 @@ describe("spawnSubagentDirect seam flow", () => {
     );
   });
 
-  it("keeps admin-scoped cleanup on in-process spawn failure", async () => {
+  it("does not delete an ambiguous in-process spawn failure", async () => {
     hoisted.hasInProcessGatewayContextMock.mockReturnValue(true);
     hoisted.callGatewayMock.mockRejectedValue(new Error("unexpected websocket gateway call"));
     hoisted.dispatchGatewayMethodInProcessMock.mockImplementation(async (method: string) => {
@@ -373,17 +374,10 @@ describe("spawnSubagentDirect seam flow", () => {
     expect(result.status).toBe("error");
     expect(result.error).toContain("spawn failed");
     expect(hoisted.callGatewayMock).not.toHaveBeenCalled();
-    expect(hoisted.dispatchGatewayMethodInProcessMock).toHaveBeenCalledWith(
+    expect(hoisted.dispatchGatewayMethodInProcessMock).not.toHaveBeenCalledWith(
       "sessions.delete",
-      expect.objectContaining({
-        key: result.childSessionKey,
-        deleteTranscript: true,
-      }),
-      expect.objectContaining({
-        forceSyntheticClient: true,
-        syntheticScopes: ["operator.admin"],
-        timeoutMs: 60_000,
-      }),
+      expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -882,7 +876,7 @@ describe("spawnSubagentDirect seam flow", () => {
     const childSessionKey = result.childSessionKey as string;
     const childEntry = persistedStore?.[childSessionKey];
     expect(childEntry?.spawnedWorkspaceDir).toBe("/tmp/requester-workspace");
-    expect(childEntry?.spawnedCwd).toBe("/tmp/task-repo");
+    expect(childEntry?.spawnedCwd).toBe(path.resolve("/tmp/task-repo"));
 
     const agentRequest = gatewayRequest("agent");
     const agentParams = requireRecord(agentRequest.params);

@@ -763,6 +763,7 @@ export function createSubagentRunManager(params: {
     const entry: SubagentRunRecord = normalizeSubagentRunState({
       runId,
       childIntentKey: registerParams.childIntentKey,
+      reservationOwnerToken: registerParams.reservationToken,
       spawnAdmission: "dispatched",
       taskRunId: runId,
       childSessionKey,

@@ -1268,6 +1268,44 @@ export interface StateLeases {
   updated_at: number;
 }
 
+export interface SubagentChildIntents {
+  cancel_requested_at: number | null;
+  canonical_key: string;
+  child_session_key: string;
+  controller_session_key: string;
+  created_at: number;
+  gateway_receipt_id: string | null;
+  generation: number;
+  intent_id: string;
+  lease_expires_at: number | null;
+  lease_owner: string;
+  operation_key: string | null;
+  payload_json: Generated<string>;
+  provider_run_id: string | null;
+  registered_run_id: string | null;
+  request_digest: string;
+  reservation_run_id: string;
+  resolved_digest: string;
+  state: string;
+  target_agent_id: string;
+  updated_at: number;
+}
+
+export interface SubagentGatewayAcceptanceReceipts {
+  acceptance_key: string;
+  accepted_at: number | null;
+  child_session_key: string;
+  controller_session_key: string;
+  gateway_run_id: string;
+  intent_id: string;
+  lifecycle: string;
+  payload_json: Generated<string>;
+  receipt_generation: number;
+  request_digest: string;
+  resolved_digest: string;
+  updated_at: number;
+}
+
 export interface SubagentRuns {
   accumulated_runtime_ms: number | null;
   agent_dir: string | null;
@@ -1527,6 +1565,8 @@ export interface DB {
   skill_uploads: SkillUploads;
   skill_usage: SkillUsage;
   state_leases: StateLeases;
+  subagent_child_intents: SubagentChildIntents;
+  subagent_gateway_acceptance_receipts: SubagentGatewayAcceptanceReceipts;
   subagent_runs: SubagentRuns;
   task_delivery_state: TaskDeliveryState;
   task_runs: TaskRuns;

@@ -144,8 +144,11 @@ export async function loadSubagentSpawnModuleForTest(params: {
   reserveSubagentChildIntentMock?: MockFn;
   releaseSubagentChildIntentMock?: MockFn;
   markSubagentChildIntentDispatchingMock?: MockFn;
+  bindSubagentChildIntentResolvedDigestMock?: MockFn;
   markSubagentChildIntentUnknownMock?: MockFn;
+  assertSubagentChildIntentDispatchAvailableMock?: MockFn;
   adoptSubagentChildIntentMock?: MockFn;
+  getSubagentChildIntentReservationTokenMock?: MockFn;
   abandonUnresolvedSubagentChildIntentMock?: MockFn;
   emitSessionLifecycleEventMock?: MockFn;
   hookRunner?: HookRunner;
@@ -397,8 +400,14 @@ export async function loadSubagentSpawnModuleForTest(params: {
     releaseSubagentChildIntent: params.releaseSubagentChildIntentMock ?? (() => undefined),
     markSubagentChildIntentDispatching:
       params.markSubagentChildIntentDispatchingMock ?? (() => undefined),
+    bindSubagentChildIntentResolvedDigest:
+      params.bindSubagentChildIntentResolvedDigestMock ?? (() => undefined),
     markSubagentChildIntentUnknown: params.markSubagentChildIntentUnknownMock ?? (() => undefined),
+    assertSubagentChildIntentDispatchAvailable:
+      params.assertSubagentChildIntentDispatchAvailableMock ?? (() => undefined),
     adoptSubagentChildIntent: params.adoptSubagentChildIntentMock ?? (() => false),
+    getSubagentChildIntentReservationToken:
+      params.getSubagentChildIntentReservationTokenMock ?? (() => undefined),
     abandonUnresolvedSubagentChildIntent:
       params.abandonUnresolvedSubagentChildIntentMock ?? (() => false),
     registerSubagentRun:

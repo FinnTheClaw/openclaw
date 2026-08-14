@@ -1219,6 +1219,58 @@ CREATE INDEX IF NOT EXISTS idx_subagent_runs_archive_at
 CREATE INDEX IF NOT EXISTS idx_subagent_runs_ended_cleanup
   ON subagent_runs(ended_at, cleanup_handled, run_id);
 
+-- Child-intent admission is a row-authoritative state machine.  It is kept
+-- separate from the subagent_runs projection so snapshot persistence cannot
+-- delete another process's reservation or dispatch claim.
+CREATE TABLE IF NOT EXISTS subagent_child_intents (
+  intent_id TEXT NOT NULL PRIMARY KEY,
+  controller_session_key TEXT NOT NULL,
+  canonical_key TEXT NOT NULL,
+  operation_key TEXT,
+  request_digest TEXT NOT NULL,
+  resolved_digest TEXT NOT NULL,
+  target_agent_id TEXT NOT NULL,
+  child_session_key TEXT NOT NULL,
+  reservation_run_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  lease_owner TEXT NOT NULL,
+  lease_expires_at INTEGER,
+  registered_run_id TEXT,
+  provider_run_id TEXT,
+  gateway_receipt_id TEXT,
+  cancel_requested_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(controller_session_key, canonical_key),
+  UNIQUE(controller_session_key, operation_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subagent_child_intents_active_controller
+  ON subagent_child_intents(controller_session_key, state, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_subagent_child_intents_registered_run
+  ON subagent_child_intents(registered_run_id);
+
+CREATE TABLE IF NOT EXISTS subagent_gateway_acceptance_receipts (
+  acceptance_key TEXT NOT NULL PRIMARY KEY,
+  intent_id TEXT NOT NULL,
+  controller_session_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  resolved_digest TEXT NOT NULL,
+  gateway_run_id TEXT NOT NULL,
+  child_session_key TEXT NOT NULL,
+  lifecycle TEXT NOT NULL,
+  receipt_generation INTEGER NOT NULL,
+  accepted_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(intent_id, receipt_generation)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subagent_gateway_receipts_intent
+  ON subagent_gateway_acceptance_receipts(intent_id, lifecycle, updated_at);
+
 CREATE TABLE IF NOT EXISTS current_conversation_bindings (
   binding_key TEXT NOT NULL PRIMARY KEY,
   binding_id TEXT NOT NULL,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 /**
  * Subagent spawn executor.
  *
@@ -62,10 +63,14 @@ import { resolveSubagentCapabilities } from "./subagent-capabilities.js";
 import { reconcileSubagentChildIntent } from "./subagent-child-intent-reconciliation.js";
 import { resolveSubagentChildIntentBehaviorDigest } from "./subagent-child-intent.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
+import { readGatewayAcceptanceReceipt } from "./subagent-gateway-acceptance-receipt-store.sqlite.js";
 import { buildSubagentInitialUserMessage } from "./subagent-initial-user-message.js";
 import {
   abandonUnresolvedSubagentChildIntent,
   adoptSubagentChildIntent,
+  assertSubagentChildIntentDispatchAvailable,
+  bindSubagentChildIntentResolvedDigest,
+  getSubagentChildIntentReservationToken,
   markSubagentChildIntentDispatching,
   markSubagentChildIntentUnknown,
   registerSubagentRun,
@@ -1302,7 +1307,6 @@ export async function spawnSubagentDirect(
     lightContext: params.lightContext,
     expectsCompletionMessage,
     attachMountPath: mountPathHint,
-    delivery: childSessionOrigin,
   });
   const childSessionKey = resolveSubagentSpawnChildSessionKey(targetAgentId, childIntentKey);
   const requesterRuntime = resolveSandboxRuntimeStatus({
@@ -1378,6 +1382,16 @@ export async function spawnSubagentDirect(
     lightContext: params.lightContext === true,
     expectsCompletionMessage,
     attachMountPath: mountPathHint,
+    mode: spawnMode,
+    cleanup,
+    sandbox: sandboxMode,
+    context: contextMode,
+    role: childCapabilities.role,
+    depth: childDepth,
+    cwd: requestedCwd,
+    workspaceDir: spawnedWorkspaceDir,
+    attachments: params.attachments,
+    completionGroup: params.completionGroup,
     delivery: childSessionOrigin,
   });
   const maxChildren =
@@ -1420,17 +1434,39 @@ export async function spawnSubagentDirect(
   if (childIntentReservation.disposition === "duplicate") {
     const reconciliation = await reconcileSubagentChildIntent({
       reservation: childIntentReservation,
+      lookupAcceptance: () => {
+        const receipt = readGatewayAcceptanceReceipt(childIntentReservation.childIntentKey);
+        if (
+          !receipt ||
+          receipt.acceptanceKey !== childIntentReservation.childIntentKey ||
+          receipt.intentId !== childIntentReservation.childIntentKey ||
+          receipt.childSessionKey !== childIntentReservation.childSessionKey
+        ) {
+          return undefined;
+        }
+        return { lifecycle: receipt.lifecycle };
+      },
       waitForProvider: async () =>
         await callSubagentGateway({
           method: "agent.wait",
           params: { runId: childIntentReservation.childIntentKey, timeoutMs: 0 },
           timeoutMs: SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS,
         }),
-      adopt: () =>
-        adoptSubagentChildIntent({
+      adopt: () => {
+        const adoptedToken = adoptSubagentChildIntent({
           childIntentKey: childIntentReservation.childIntentKey,
           reservationToken: childIntentReservation.reservationToken!,
-        }),
+        });
+        if (adoptedToken) {
+          childIntentReservation = {
+            ...childIntentReservation,
+            reservationToken:
+              getSubagentChildIntentReservationToken(childIntentReservation.childIntentKey) ??
+              childIntentReservation.reservationToken,
+          };
+        }
+        return adoptedToken;
+      },
       abandon: () =>
         abandonUnresolvedSubagentChildIntent({
           childIntentKey: childIntentReservation.childIntentKey,
@@ -1762,6 +1798,36 @@ export async function spawnSubagentDirect(
   }
   const contextEnginePreparation = contextEnginePrepareResult.preparation;
 
+  const finalIntentBehaviorDigest = resolveSubagentChildIntentBehaviorDigest({
+    resolvedModel,
+    resolvedModelRoute,
+    thinking: thinkingOverride,
+    runTimeoutSeconds,
+    lightContext: params.lightContext === true,
+    expectsCompletionMessage,
+    attachMountPath: mountPathHint,
+    mode: spawnMode,
+    cleanup,
+    sandbox: sandboxMode,
+    context: contextMode,
+    role: childCapabilities.role,
+    depth: childDepth,
+    cwd: requestedCwd,
+    workspaceDir: spawnedWorkspaceDir,
+    bootstrapContextMode,
+    systemPromptDigest: createHash("sha256").update(childSystemPrompt).digest("hex"),
+    attachmentReceipt: attachmentsReceipt,
+    executionMetadata: spawnedMetadata,
+    attachments: params.attachments,
+    completionGroup: params.completionGroup,
+    delivery: childSessionOrigin,
+  });
+  bindSubagentChildIntentResolvedDigest({
+    childIntentKey,
+    reservationToken: childIntentReservation.reservationToken!,
+    resolvedDigest: finalIntentBehaviorDigest,
+  });
+
   const childIdem = childIntentKey;
   let childRunId: string = childIntentReservation.reservationRunId;
   const deliverInitialChildRunDirectly =
@@ -1771,6 +1837,12 @@ export async function spawnSubagentDirect(
     : expectsCompletionMessage;
   try {
     markSubagentChildIntentDispatching({
+      childIntentKey,
+      reservationToken: childIntentReservation.reservationToken!,
+    });
+    // Cancellation is a durable fence; re-read it immediately before the
+    // irreversible gateway submission and never rely on the local token map.
+    assertSubagentChildIntentDispatchAvailable({
       childIntentKey,
       reservationToken: childIntentReservation.reservationToken!,
     });
@@ -1823,51 +1895,8 @@ export async function spawnSubagentDirect(
         // Best-effort cleanup only.
       }
     }
-    let emitLifecycleHooks = false;
-    if (threadBindingReady) {
-      const hasEndedHook = hookRunner?.hasHooks("subagent_ended") === true;
-      let endedHookEmitted = false;
-      if (hasEndedHook) {
-        try {
-          await hookRunner?.runSubagentEnded(
-            {
-              targetSessionKey: childSessionKey,
-              targetKind: "subagent",
-              reason: "spawn-failed",
-              sendFarewell: true,
-              accountId: childSessionOrigin?.accountId,
-              runId: childRunId,
-              outcome: "error",
-              error: "Session failed to start",
-            },
-            {
-              runId: childRunId,
-              childSessionKey,
-              requesterSessionKey: requesterInternalKey,
-            },
-          );
-          endedHookEmitted = true;
-        } catch {
-          // Spawn should still return an actionable error even if cleanup hooks fail.
-        }
-      }
-      emitLifecycleHooks = !endedHookEmitted;
-    }
-    // Always delete the provisional child session after a failed spawn attempt.
-    // If we already emitted subagent_ended above, suppress a duplicate lifecycle hook.
-    try {
-      await callSubagentGateway({
-        method: "sessions.delete",
-        params: {
-          key: childSessionKey,
-          deleteTranscript: true,
-          emitLifecycleHooks,
-        },
-        timeoutMs: SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS,
-      });
-    } catch {
-      // Best-effort only.
-    }
+    // The gateway call may have been accepted before transport failure. Do
+    // not delete an ambiguous child; durable receipt reconciliation owns it.
     const messageText = summarizeError(err);
     try {
       markSubagentChildIntentUnknown({
@@ -1882,6 +1911,26 @@ export async function spawnSubagentDirect(
     return {
       status: "error",
       error: messageText,
+      childSessionKey,
+      runId: childRunId,
+    };
+  }
+
+  // A successful gateway response is an authenticated acceptance receipt
+  // boundary. Keep the durable child intent in gateway_accepted until the
+  // projection registration transaction binds the provider run.
+  try {
+    markSubagentChildIntentUnknown({
+      childIntentKey,
+      reservationToken: childIntentReservation.reservationToken!,
+      providerRunId: childRunId,
+      retainOwnership: true,
+    });
+  } catch (error) {
+    await rollbackPreparedContextEngine(contextEnginePreparation);
+    return {
+      status: "error",
+      error: `Failed to record durable gateway acceptance: ${summarizeError(error)}`,
       childSessionKey,
       runId: childRunId,
     };
@@ -1923,19 +1972,8 @@ export async function spawnSubagentDirect(
         // Best-effort cleanup only.
       }
     }
-    try {
-      await callSubagentGateway({
-        method: "sessions.delete",
-        params: {
-          key: childSessionKey,
-          deleteTranscript: true,
-          emitLifecycleHooks: threadBindingReady,
-        },
-        timeoutMs: SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS,
-      });
-    } catch {
-      // Best-effort cleanup only.
-    }
+    // Registration failed after an accepted response. Preserve the child and
+    // receipt for adoption; deletion could race an executing provider run.
     try {
       markSubagentChildIntentUnknown({
         childIntentKey,

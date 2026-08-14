@@ -11,75 +11,66 @@ export type SubagentChildIntentReservation = {
   reservationRunId: string;
   reservationToken?: string;
   existingRunId?: string;
-  /** Present only when a fresh host must reconcile an accepted dispatch. */
   dispatchState?: "dispatching" | "unknown";
+  durableReceiptRequired?: boolean;
 };
 
 type ChildIntentRegistryDependencies = {
   getRuns: () => Map<string, SubagentRunRecord>;
-  countActiveRunsForSession: (sessionKey: string) => number;
   reservePersisted: (
     entry: SubagentRunRecord,
     maxActiveChildren?: number,
   ) => SubagentRunRecord | null;
+  findPersisted: (childIntentKey: string) => SubagentRunRecord | undefined;
   transitionPersisted: (params: {
-    runId: string;
     childIntentKey: string;
     reservationOwnerToken: string;
     from: "reserved" | "dispatching" | "unknown";
     to: "dispatching" | "unknown" | "cancelled";
     providerRunId?: string;
+    gatewayReceiptId?: string;
   }) => SubagentRunRecord | null;
+  claimPersisted: (params: {
+    childIntentKey: string;
+    reservationOwnerToken: string;
+  }) => string | false;
+  cancelPersisted: (childIntentKey: string) => boolean;
   removePersisted: (params: {
-    runId: string;
     childIntentKey: string;
     reservationOwnerToken?: string;
     onlyExpired?: boolean;
     allowUnknown?: boolean;
   }) => boolean;
   expirePersisted: (now: number) => string[];
-  persistOrThrow: () => void;
-  persist: () => void;
 };
 
 export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDependencies) {
   const activeReservationTokens = new Map<string, string>();
-
-  const findAny = (childIntentKey: string) =>
-    [...deps.getRuns().values()].find((entry) => entry.childIntentKey === childIntentKey);
-  const findReservation = (childIntentKey: string) => {
-    const entry = findAny(childIntentKey);
-    return entry?.spawnAdmission === "reserved" ||
-      entry?.spawnAdmission === "dispatching" ||
-      entry?.spawnAdmission === "unknown"
-      ? entry
-      : undefined;
-  };
+  const find = (key: string) => deps.findPersisted(key.trim());
 
   const duplicate = (
     childIntentKey: string,
     entry: SubagentRunRecord,
   ): SubagentChildIntentReservation => {
-    const runId = entry.providerRunId ?? entry.childIntentKey ?? entry.runId;
+    const existingRunId = entry.providerRunId ?? entry.runId;
     const canReconcile =
-      !activeReservationTokens.has(childIntentKey) &&
       (entry.spawnAdmission === "dispatching" || entry.spawnAdmission === "unknown") &&
-      typeof entry.reservationOwnerToken === "string";
-    const base: SubagentChildIntentReservation = {
+      typeof entry.reservationOwnerToken === "string" &&
+      !activeReservationTokens.has(childIntentKey);
+    return {
       disposition: "duplicate",
       childIntentKey,
       childSessionKey: entry.childSessionKey,
-      reservationRunId: runId,
-      existingRunId: runId,
+      reservationRunId: childIntentKey,
+      existingRunId,
+      ...(entry.childIntentKey ? { durableReceiptRequired: true } : {}),
+      ...(canReconcile
+        ? {
+            dispatchState: entry.spawnAdmission as "dispatching" | "unknown",
+            reservationToken: entry.reservationOwnerToken,
+          }
+        : {}),
     };
-    if (canReconcile) {
-      return {
-        ...base,
-        dispatchState: entry.spawnAdmission as "dispatching" | "unknown",
-        reservationToken: entry.reservationOwnerToken,
-      };
-    }
-    return base;
   };
 
   const reserve = (params: {
@@ -96,6 +87,9 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     spawnMode?: "run" | "session";
     maxActiveChildren?: number;
     intentBehaviorDigest?: string;
+    intentRequestDigest?: string;
+    targetAgentId?: string;
+    operationKey?: string;
   }): SubagentChildIntentReservation => {
     const childIntentKey = params.childIntentKey.trim();
     const requesterSessionKey = params.requesterSessionKey.trim();
@@ -103,51 +97,20 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
       throw new Error("child intent admission requires a host identity");
     }
     const now = Date.now();
-    const existing = findAny(childIntentKey);
-    if (existing && existing.requesterSessionKey === requesterSessionKey) {
-      if (existing.childIntentBehaviorDigest !== params.intentBehaviorDigest) {
-        throw new Error("child intent conflicts with an existing behavior binding");
-      }
-      if (
-        existing.spawnAdmission === "reserved" &&
-        typeof existing.reservationExpiresAt === "number" &&
-        existing.reservationExpiresAt <= now
-      ) {
-        deps.removePersisted({
-          runId: existing.runId,
-          childIntentKey,
-          onlyExpired: true,
-        });
-        deps.getRuns().delete(existing.runId);
-        activeReservationTokens.delete(childIntentKey);
-      } else {
-        return duplicate(childIntentKey, existing);
-      }
-    } else if (existing) {
-      throw new Error("child intent is already bound to another controller");
-    }
-
-    const activeChildren = deps.countActiveRunsForSession(requesterSessionKey);
-    if (
-      typeof params.maxActiveChildren === "number" &&
-      Number.isSafeInteger(params.maxActiveChildren) &&
-      activeChildren >= params.maxActiveChildren
-    ) {
-      throw new Error(
-        `sessions_spawn has reached max active children for this session (${activeChildren}/${params.maxActiveChildren})`,
-      );
-    }
-
-    const reservationRunId = params.reservationRunId.trim();
     const reservationOwnerToken = crypto.randomUUID();
     const entry = normalizeSubagentRunState({
-      runId: reservationRunId,
+      runId: params.reservationRunId.trim(),
       childIntentKey,
+      childIntentLookupKey: childIntentKey,
+      childIntentRequestDigest: params.intentRequestDigest ?? childIntentKey,
+      childIntentOperationKey: params.operationKey,
+      childIntentTargetAgentId: params.targetAgentId,
       spawnAdmission: "reserved",
-      childIntentBehaviorDigest: params.intentBehaviorDigest,
+      childIntentBehaviorDigest: params.intentBehaviorDigest ?? childIntentKey,
       reservationOwnerToken,
       reservationExpiresAt: now + RESERVATION_LEASE_MS,
       childSessionKey: params.childSessionKey.trim(),
+      controllerSessionKey: requesterSessionKey,
       requesterSessionKey,
       requesterDisplayKey: params.requesterDisplayKey,
       task: params.task,
@@ -162,15 +125,17 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     });
     const persisted = deps.reservePersisted(entry, params.maxActiveChildren);
     if (persisted) {
+      if (persisted.requesterSessionKey !== requesterSessionKey) {
+        throw new Error("child intent is already bound to another controller");
+      }
       return duplicate(childIntentKey, persisted);
     }
-    deps.getRuns().set(reservationRunId, entry);
     activeReservationTokens.set(childIntentKey, reservationOwnerToken);
     return {
       disposition: "owner",
       childIntentKey,
       childSessionKey: entry.childSessionKey,
-      reservationRunId,
+      reservationRunId: entry.runId,
       reservationToken: reservationOwnerToken,
     };
   };
@@ -180,175 +145,118 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     if (activeReservationTokens.get(key) !== params.reservationToken) {
       return;
     }
-    const entry = findReservation(key);
-    if (!entry || entry.reservationOwnerToken !== params.reservationToken) {
-      activeReservationTokens.delete(key);
-      return;
-    }
     if (
-      !deps.removePersisted({
-        runId: entry.runId,
-        childIntentKey: key,
-        reservationOwnerToken: params.reservationToken,
-      })
+      !deps.removePersisted({ childIntentKey: key, reservationOwnerToken: params.reservationToken })
     ) {
       throw new Error("child intent reservation changed before release");
     }
-    deps.getRuns().delete(entry.runId);
     activeReservationTokens.delete(key);
   };
 
   const markDispatching = (params: { childIntentKey: string; reservationToken: string }) => {
     const key = params.childIntentKey.trim();
-    const entry = findReservation(key);
-    if (!entry || activeReservationTokens.get(key) !== params.reservationToken) {
+    if (activeReservationTokens.get(key) !== params.reservationToken) {
       throw new Error("child intent reservation is not owned by this host admission");
     }
-    const updated = deps.transitionPersisted({
-      runId: entry.runId,
-      childIntentKey: key,
-      reservationOwnerToken: params.reservationToken,
-      from: "reserved",
-      to: "dispatching",
-    });
-    if (!updated) {
+    if (
+      !deps.transitionPersisted({
+        childIntentKey: key,
+        reservationOwnerToken: params.reservationToken,
+        from: "reserved",
+        to: "dispatching",
+      })
+    ) {
       throw new Error("child intent reservation was cancelled or expired");
     }
-    Object.assign(entry, updated);
   };
 
   const markUnknown = (params: {
     childIntentKey: string;
     reservationToken: string;
     providerRunId?: string;
+    retainOwnership?: boolean;
   }) => {
     const key = params.childIntentKey.trim();
-    const entry = findReservation(key);
-    if (!entry || activeReservationTokens.get(key) !== params.reservationToken) {
+    if (activeReservationTokens.get(key) !== params.reservationToken) {
       throw new Error("child intent reservation is not owned by this host admission");
     }
-    const updated = deps.transitionPersisted({
-      runId: entry.runId,
-      childIntentKey: key,
-      reservationOwnerToken: params.reservationToken,
-      from: entry.spawnAdmission === "dispatching" ? "dispatching" : "reserved",
-      to: "unknown",
-      providerRunId: params.providerRunId,
-    });
-    if (!updated) {
+    const entry = find(key);
+    if (
+      !entry ||
+      !deps.transitionPersisted({
+        childIntentKey: key,
+        reservationOwnerToken: params.reservationToken,
+        from: entry.spawnAdmission === "dispatching" ? "dispatching" : "reserved",
+        to: "unknown",
+        providerRunId: params.providerRunId,
+        gatewayReceiptId: params.childIntentKey,
+      })
+    ) {
       throw new Error("child intent reservation changed before reconciliation");
     }
-    Object.assign(entry, updated);
-    activeReservationTokens.delete(key);
+    if (params.retainOwnership !== true) {
+      activeReservationTokens.delete(key);
+    }
   };
 
   const cancel = (childIntentKey: string) => {
-    const key = childIntentKey.trim();
-    const entry = findReservation(key);
-    if (!entry) {
-      return false;
+    const changed = deps.cancelPersisted(childIntentKey.trim());
+    if (changed) {
+      activeReservationTokens.delete(childIntentKey.trim());
     }
-    const token = entry.reservationOwnerToken;
-    if (!token) {
-      return false;
-    }
-    const updated = deps.transitionPersisted({
-      runId: entry.runId,
-      childIntentKey: key,
-      reservationOwnerToken: token,
-      from:
-        entry.spawnAdmission === "dispatching"
-          ? "dispatching"
-          : entry.spawnAdmission === "unknown"
-            ? "unknown"
-            : "reserved",
-      to: "cancelled",
-    });
-    if (!updated) {
-      return false;
-    }
-    Object.assign(entry, updated);
-    activeReservationTokens.delete(key);
-    return true;
+    return changed;
   };
 
   const takeForRegistration = (params: { childIntentKey?: string; reservationToken?: string }) => {
     const key = params.childIntentKey?.trim();
-    if (!key) {
-      return undefined;
-    }
-    const reservation = findReservation(key);
-    if (!reservation) {
-      return undefined;
-    }
     if (
+      !key ||
       !params.reservationToken ||
-      activeReservationTokens.get(key) !== params.reservationToken ||
-      reservation.reservationOwnerToken !== params.reservationToken
+      activeReservationTokens.get(key) !== params.reservationToken
     ) {
-      throw new Error("child intent reservation is not owned by this host admission");
+      if (key && params.reservationToken) {
+        throw new Error("child intent reservation is not owned by this host admission");
+      }
+      return undefined;
     }
-    if (
-      !deps.removePersisted({
-        runId: reservation.runId,
-        childIntentKey: key,
-        reservationOwnerToken: params.reservationToken,
-        onlyExpired: false,
-      })
-    ) {
-      throw new Error("child intent dispatch reservation changed before registration");
+    const reservation = find(key);
+    if (!reservation || reservation.reservationOwnerToken !== params.reservationToken) {
+      throw new Error("child intent reservation changed before registration");
     }
-    deps.getRuns().delete(reservation.runId);
+    // The row remains present until the registration transaction atomically
+    // changes it to registered and binds the provider run.
     activeReservationTokens.delete(key);
     return { reservation, childIntentKey: key, reservationToken: params.reservationToken };
   };
 
   const adopt = (params: { childIntentKey: string; reservationToken: string }) => {
-    const key = params.childIntentKey.trim();
-    const entry = findReservation(key);
-    if (
-      !entry ||
-      (entry.spawnAdmission !== "dispatching" && entry.spawnAdmission !== "unknown") ||
-      entry.reservationOwnerToken !== params.reservationToken ||
-      activeReservationTokens.has(key)
-    ) {
+    const token = deps.claimPersisted({
+      childIntentKey: params.childIntentKey,
+      reservationOwnerToken: params.reservationToken,
+    });
+    if (!token) {
       return false;
     }
-    activeReservationTokens.set(key, params.reservationToken);
+    activeReservationTokens.set(params.childIntentKey.trim(), token);
     return true;
   };
 
-  const abandonUnresolved = (params: { childIntentKey: string; reservationToken: string }) => {
-    const key = params.childIntentKey.trim();
-    const entry = findReservation(key);
-    if (
-      !entry ||
-      (entry.spawnAdmission !== "dispatching" && entry.spawnAdmission !== "unknown") ||
-      entry.reservationOwnerToken !== params.reservationToken
-    ) {
-      return false;
-    }
-    if (
-      !deps.removePersisted({
-        runId: entry.runId,
-        childIntentKey: key,
-        reservationOwnerToken: params.reservationToken,
-        allowUnknown: true,
-      })
-    ) {
-      return false;
-    }
-    deps.getRuns().delete(entry.runId);
-    activeReservationTokens.delete(key);
-    return true;
-  };
+  const getReservationToken = (childIntentKey: string) =>
+    activeReservationTokens.get(childIntentKey.trim());
+
+  const abandonUnresolved = (params: { childIntentKey: string; reservationToken: string }) =>
+    deps.removePersisted({
+      childIntentKey: params.childIntentKey.trim(),
+      reservationOwnerToken: params.reservationToken,
+      allowUnknown: true,
+    });
 
   const assertDispatchIdentityAvailable = (childIntentKey?: string, reservationToken?: string) => {
     const key = childIntentKey?.trim();
     if (!key) {
       return;
     }
-    const existing = findAny(key);
+    const existing = find(key);
     if (
       existing &&
       (existing.spawnAdmission === "dispatched" ||
@@ -361,24 +269,16 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     }
   };
 
-  const restoreAfterRegistrationFailure = (params: {
-    reservation: SubagentRunRecord;
-    childIntentKey: string;
-    reservationToken: string;
-  }) => {
-    deps.getRuns().set(params.reservation.runId, params.reservation);
-    activeReservationTokens.set(params.childIntentKey, params.reservationToken);
-    deps.persistOrThrow();
+  const restoreAfterRegistrationFailure = () => {
+    // The durable row was never removed. Its dispatch/acceptance state remains
+    // fenced and can be reconciled by a later host.
   };
 
   const expireStale = (now = Date.now()) => {
     const expiredRunIds = new Set(deps.expirePersisted(now));
-    for (const [runId, entry] of deps.getRuns()) {
-      if (expiredRunIds.has(runId)) {
-        deps.getRuns().delete(runId);
-        if (entry.childIntentKey) {
-          activeReservationTokens.delete(entry.childIntentKey);
-        }
+    for (const [key] of activeReservationTokens) {
+      if (expiredRunIds.has(find(key)?.runId ?? "")) {
+        activeReservationTokens.delete(key);
       }
     }
     return expiredRunIds.size;
@@ -391,6 +291,7 @@ export function createSubagentChildIntentRegistry(deps: ChildIntentRegistryDepen
     markUnknown,
     cancel,
     adopt,
+    getReservationToken,
     abandonUnresolved,
     takeForRegistration,
     assertDispatchIdentityAvailable,

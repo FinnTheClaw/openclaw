@@ -10,7 +10,14 @@ import {
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 export {
+  cancelSubagentChildIntentAtomically,
+  bindSubagentChildIntentResolvedDigestAtomically,
+  claimSubagentChildIntentAtomically,
+  commitSubagentRunRegistrationAtomically,
+  commitSubagentRunRegistrationInTransaction,
+  findSubagentChildIntent,
   expireSubagentReservationsAtomically,
+  releaseRegisteredSubagentChildIntent,
   removeSubagentReservationAtomically,
   reserveSubagentRunAtomically,
   transitionSubagentRunAdmissionAtomically,
