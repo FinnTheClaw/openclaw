@@ -104,6 +104,19 @@ export type GatewayStartupConfigSnapshotLoadResult = {
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
 };
 
+/** Keeps OFF/shadow on the lean path while fencing C07 before secret preparation. */
+export async function assertC07ArchitectureReadyBeforeSecrets(
+  config: OpenClawConfig,
+): Promise<void> {
+  const governor = config.experimental?.behaviorGovernor;
+  if (governor?.enabled !== true || governor.mode !== "enforce") {
+    return;
+  }
+  const { assertC07ArchitectureReady } =
+    await import("../config/behavior-governor-c07-interlock.js");
+  assertC07ArchitectureReady(config);
+}
+
 /** Load and validate the config snapshot, applying runtime-only plugin auto-enable changes. */
 export async function loadGatewayStartupConfigSnapshot(params: {
   minimalTestGateway: boolean;
@@ -268,6 +281,7 @@ export function createRuntimeSecretsActivator(params: {
 
   const activateRuntimeSecrets = (async (config, activationParams) =>
     await runWithSecretsActivationLock(async () => {
+      await assertC07ArchitectureReadyBeforeSecrets(config);
       try {
         const startupPreflight =
           activationParams.reason === "startup" || activationParams.reason === "restart-check";
@@ -397,6 +411,7 @@ export function createRuntimeSecretsActivator(params: {
 
   activateRuntimeSecrets.activatePreparedSnapshot = async (snapshot, activationParams) =>
     await runWithSecretsActivationLock(async () => {
+      await assertC07ArchitectureReadyBeforeSecrets(snapshot.sourceConfig);
       try {
         return await finishPreparedSnapshot(snapshot, activationParams);
       } catch (err) {

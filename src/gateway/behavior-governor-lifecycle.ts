@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { assertC07ArchitectureReady } from "../config/behavior-governor-c07-interlock.js";
 import { resolveStateDir } from "../config/paths.js";
 import type {
   BehaviorGovernorConfig,
@@ -8,9 +9,6 @@ import type {
 } from "../config/types.behavior-governor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef } from "../config/types.secrets.js";
-import { isOwnedGovernorMemoryBackend } from "../plugins/memory-governor-capability.js";
-import { createRegisteredGovernorMemoryBackend } from "../plugins/memory-governor-private.js";
-import { createInertMemoryGovernorBackend } from "../plugins/memory-state.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import type {
   GovernorHostIntegrationConfiguration,
@@ -158,7 +156,6 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
         key: string;
         runtime: GovernorHostRuntime;
         hostClose?: () => void | Promise<void>;
-        memoryClose?: () => void | Promise<void>;
         closeFailure?: AggregateError;
       }
     | undefined;
@@ -188,11 +185,6 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     } catch (error) {
       errors.push(error);
     }
-    try {
-      await current.memoryClose?.();
-    } catch (error) {
-      errors.push(error);
-    }
     if (errors.length > 0) {
       current.closeFailure = new AggregateError(errors, "GOVERNOR_GATEWAY_CLOSE_FAILED");
       throw current.closeFailure;
@@ -216,6 +208,7 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       initialized = true;
       return;
     }
+    assertC07ArchitectureReady(config);
     const governor = secretSnapshot.sourceConfig;
     if (
       !isDeepStrictEqual(
@@ -277,7 +270,6 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     }
     let host: Awaited<ReturnType<NonNullable<typeof params.hostFactory>>> | undefined;
     let runtime: GovernorHostRuntime | null = null;
-    let memoryClose: (() => void | Promise<void>) | undefined;
     try {
       host = await params.hostFactory({
         config: factoryConfig,
@@ -286,26 +278,6 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       });
       const { createGovernorHostRuntimeIfEnabled } =
         await import("../security/governor-host-bootstrap.js");
-      const suppliedMemory = host.integrations.memory;
-      const registeredMemory =
-        governor.mode === "enforce"
-          ? createRegisteredGovernorMemoryBackend({
-              mode: "enforce",
-              authorityBindingKey: resolved.secrets.ledgerSigningKey,
-            })
-          : undefined;
-      const memory =
-        governor.mode === "shadow"
-          ? createInertMemoryGovernorBackend()
-          : suppliedMemory
-            ? undefined
-            : registeredMemory;
-      if (governor.mode === "enforce" && (!memory || !isOwnedGovernorMemoryBackend(memory))) {
-        throw new Error("GOVERNOR_GATEWAY_MEMORY_CAPABILITY_REQUIRED");
-      }
-      if (memory && memory === registeredMemory && memory.close) {
-        memoryClose = () => memory.close?.();
-      }
       runtime = createGovernorHostRuntimeIfEnabled({
         enabled: true,
         env: { ...resolved.env, OPENCLAW_STATE_DIR: stateDir },
@@ -313,14 +285,14 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
         capabilities: host.capabilities,
         integrations: {
           ...host.integrations,
-          ...(memory ? { memory } : {}),
+          memory: undefined,
           agentLoop: loopConfig(governor) as GovernorAgentLoopConfiguration,
         },
       });
       if (!runtime) {
         throw new Error("GOVERNOR_GATEWAY_RUNTIME_NOT_CREATED");
       }
-      active = { key, runtime, hostClose: host.close, memoryClose };
+      active = { key, runtime, hostClose: host.close };
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try {
@@ -334,11 +306,6 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       }
       try {
         await host?.close?.();
-      } catch (cleanupError) {
-        cleanupErrors.push(cleanupError);
-      }
-      try {
-        await memoryClose?.();
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }

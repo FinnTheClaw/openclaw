@@ -1,7 +1,7 @@
 # ADR: C07 memory authority and projection isolation
 
-Status: proposed; implementation is blocked until a fresh Sol High design review returns GO with
-zero P0/P1 findings.
+Status: accepted for dependency-ordered implementation after independent Sol High design GO at
+`e4cc9c4286d6eac5f482cb0dab1d912fbe9e5c52` (zero P0/P1 findings).
 
 Normative companions:
 

@@ -3,12 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { BehaviorGovernorConfig } from "../config/types.behavior-governor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  clearMemoryPluginState,
-  createInertMemoryGovernorBackend,
-  getMemoryCapabilityRegistration,
-  registerMemoryCapability,
-} from "../plugins/memory-state.js";
+import type { MemoryGovernorBackend } from "../plugins/memory-state.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayBehaviorGovernorLifecycle } from "./behavior-governor-lifecycle.js";
@@ -202,52 +197,62 @@ describe("gateway behavior governor prepared snapshot binding", () => {
     );
   });
 
-  it("fails closed when enforce has no registered real memory capability", async () => {
-    const previous = getMemoryCapabilityRegistration();
-    clearMemoryPluginState();
-    try {
-      await withOpenClawTestState(
-        { layout: "state-only", prefix: "governor-lifecycle-enforce-memory-" },
-        async (state) => {
-          const enforceGovernor = {
-            ...sourceGovernor,
-            mode: "enforce" as const,
-          };
-          const lifecycle = createGatewayBehaviorGovernorLifecycle({
-            hostFactory: () => ({ capabilities: [capability], integrations: integrations() }),
-          });
-          await expect(
-            lifecycle.apply(
-              configFor(enforceGovernor),
-              snapshotFor(state.stateDir, enforceGovernor),
-            ),
-          ).rejects.toThrow("GOVERNOR_GATEWAY_MEMORY_CAPABILITY_REQUIRED");
-          expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(false);
-        },
-      );
-    } finally {
-      clearMemoryPluginState();
-      if (previous) {
-        registerMemoryCapability(previous.pluginId, previous.capability);
-      }
-    }
-  });
-
-  it("rejects a host-supplied inert backend in enforce mode", async () => {
+  it("rejects enforce before host allocation or governor state access", async () => {
     await withOpenClawTestState(
-      { layout: "state-only", prefix: "governor-lifecycle-inert-memory-" },
+      { layout: "state-only", prefix: "governor-lifecycle-c07-interlock-" },
       async (state) => {
         const enforceGovernor = { ...sourceGovernor, mode: "enforce" as const };
+        let factoryCalls = 0;
         const lifecycle = createGatewayBehaviorGovernorLifecycle({
-          hostFactory: () => ({
-            capabilities: [capability],
-            integrations: { ...integrations(), memory: createInertMemoryGovernorBackend() },
-          }),
+          hostFactory: () => {
+            factoryCalls += 1;
+            return { capabilities: [capability], integrations: integrations() };
+          },
         });
         await expect(
           lifecycle.apply(configFor(enforceGovernor), snapshotFor(state.stateDir, enforceGovernor)),
-        ).rejects.toThrow("GOVERNOR_GATEWAY_MEMORY_CAPABILITY_REQUIRED");
+        ).rejects.toThrow("C07_ARCHITECTURE_NOT_READY");
+        expect(factoryCalls).toBe(0);
         expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(false);
+      },
+    );
+  });
+
+  it("keeps shadow observational when a host attempts to supply a memory backend", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-lifecycle-shadow-memory-" },
+      async (state) => {
+        const calls: string[] = [];
+        const memory = {
+          admit: async () => {
+            calls.push("admit");
+            return { status: "rejected" as const, reason: "unexpected" };
+          },
+          recall: async () => {
+            calls.push("recall");
+            return [];
+          },
+          invalidate: async () => {
+            calls.push("invalidate");
+            throw new Error("unexpected");
+          },
+          compact: async () => {
+            calls.push("compact");
+            return { compacted: 0, retainedHighWater: 0 };
+          },
+          close: () => {
+            calls.push("close");
+          },
+        } satisfies MemoryGovernorBackend;
+        const lifecycle = createGatewayBehaviorGovernorLifecycle({
+          hostFactory: () => ({
+            capabilities: [capability],
+            integrations: { ...integrations(), memory },
+          }),
+        });
+        await lifecycle.apply(configFor(sourceGovernor), snapshotFor(state.stateDir));
+        await lifecycle.close();
+        expect(calls).toEqual([]);
       },
     );
   });

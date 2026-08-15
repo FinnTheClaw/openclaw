@@ -1,7 +1,7 @@
 # C07 normative authority protocol
 
-Status: proposed companion to `ADR-C07-memory-authority-redesign.md`. Both documents require design
-GO before implementation.
+Status: accepted companion to `ADR-C07-memory-authority-redesign.md` after independent Sol High
+design GO at `e4cc9c4286d6eac5f482cb0dab1d912fbe9e5c52`.
 
 This document closes the process, principal, lifecycle, reconciliation, projection, state-machine,
 confidentiality, and activation details that are normative for C07.
@@ -267,6 +267,14 @@ event or growing without bound.
 
 The first implementation slice removes/blocks every C07 activation entry and installs an
 unconditional architecture-version gate. No intermediate slice can enable enforce.
+
+Slice 1 deliberately leaves the implemented architecture version below the required version.
+Enforce is rejected before secret preparation, state allocation, or heavyweight host loading. The
+former same-process memory factory registration is removed; shadow installs no memory backend. A
+Unix supervisor bootstrap now clears supplementary groups, drops to a distinct plugin UID/GID, and
+attests the bounded IPC child before loading plugin code. It carries no memory-authority operation.
+`scripts/test-c07-plugin-process-boundary.mjs` is the production-build OS/ACL proof; it requires a
+root-owned disposable Linux or macOS test host and an explicitly supplied non-root test UID/GID.
 
 The final runtime accepts enforce only when a signed, generated readiness manifest and runtime
 attestation agree on:

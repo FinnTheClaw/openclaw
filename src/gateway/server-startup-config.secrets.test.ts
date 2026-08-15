@@ -327,6 +327,33 @@ describe("gateway startup config secret preflight", () => {
     }
   });
 
+  it("rejects C07 enforce before preparing or activating any secret snapshot", async () => {
+    const prepareRuntimeSecretsSnapshot = vi.fn(async ({ config }) => preparedSnapshot(config));
+    const activateRuntimeSecretsSnapshot = vi.fn();
+    const activateRuntimeSecrets = runtimeSecretsActivatorForTest({
+      prepareRuntimeSecretsSnapshot,
+      activateRuntimeSecretsSnapshot,
+    });
+    const enforce = asConfig({
+      experimental: { behaviorGovernor: { enabled: true, mode: "enforce" } },
+    });
+
+    await expect(
+      activateRuntimeSecrets(enforce, { reason: "startup", activate: true }),
+    ).rejects.toThrow("C07_ARCHITECTURE_NOT_READY");
+    expect(prepareRuntimeSecretsSnapshot).not.toHaveBeenCalled();
+    expect(activateRuntimeSecretsSnapshot).not.toHaveBeenCalled();
+
+    await expect(
+      activateRuntimeSecrets.activatePreparedSnapshot?.(preparedSnapshot(enforce), {
+        reason: "startup",
+        activate: true,
+      }),
+    ).rejects.toThrow("C07_ARCHITECTURE_NOT_READY");
+    expect(prepareRuntimeSecretsSnapshot).not.toHaveBeenCalled();
+    expect(activateRuntimeSecretsSnapshot).not.toHaveBeenCalled();
+  });
+
   it("measures startup auth subphases", async () => {
     const prepareRuntimeSecretsSnapshot = vi.fn(async ({ config }) => preparedSnapshot(config));
     const measured: string[] = [];

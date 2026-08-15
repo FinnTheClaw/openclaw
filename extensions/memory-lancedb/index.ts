@@ -21,7 +21,6 @@ import { BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES } from "openclaw/plugin-sdk/chat
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import type { MemoryEmbeddingProvider } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
-import type { MemoryGovernorBackend } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveMemoryDreamingWorkspaces } from "openclaw/plugin-sdk/memory-core-host-status";
 import { MESSAGE_TOOL_DELIVERY_HINTS } from "openclaw/plugin-sdk/message-tool-delivery-hints";
 import {
@@ -63,17 +62,6 @@ import {
   resolveTrustedMemoryScope,
   type TrustedMemoryScope,
 } from "./memory-scope.js";
-
-type BundledGovernorMemoryRegistrationHost = Readonly<{
-  register(
-    factory: (
-      params: Readonly<{
-        mode: "enforce";
-        authorityBindingKey: string;
-      }>,
-    ) => MemoryGovernorBackend,
-  ): void;
-}>;
 import {
   OpenAICompatibleFactExtractor,
   OpenAICompatibleMemorySummarizer,
@@ -1630,7 +1618,7 @@ export default definePluginEntry({
   kind: "memory" as const,
   configSchema: memoryConfigSchema,
 
-  register(api: OpenClawPluginApi, privateHost?: BundledGovernorMemoryRegistrationHost) {
+  register(api: OpenClawPluginApi) {
     let cfg: MemoryConfig;
     try {
       cfg = memoryConfigSchema.parse(api.pluginConfig);
@@ -1851,19 +1839,6 @@ export default definePluginEntry({
         },
       },
     });
-    if (durableRuntime) {
-      privateHost?.register(({ mode, authorityBindingKey }) =>
-        durableRuntime.createGovernorMemoryBackend({
-          mode,
-          authorityBindingKey,
-          refreshDerived: async () => {
-            scheduleDurableWorkers();
-            await durableRuntime.flush(20_000);
-          },
-        }),
-      );
-    }
-
     // ========================================================================
     // Tools
     // ========================================================================

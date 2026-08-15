@@ -1,7 +1,7 @@
 # C07 normative migration, rollback, and acceptance plan
 
-Status: proposed companion to `ADR-C07-memory-authority-redesign.md`. Implementation remains blocked
-until all C07 design records receive an independent GO.
+Status: accepted companion to `ADR-C07-memory-authority-redesign.md` after independent Sol High
+design GO. It is not a live-run authorization.
 
 ## Source-of-content rule
 

@@ -1,4 +1,5 @@
 import type { MemoryGovernorBackend } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import { assertC07MemoryBackendUnavailable } from "../config/behavior-governor-c07-interlock.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
@@ -335,6 +336,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   if (!params.integrations) {
     throw new Error("Authenticated governor integration owners are required");
   }
+  assertC07MemoryBackendUnavailable(params.integrations.memory);
   const agentLoop = params.integrations.agentLoop
     ? validateGovernorAgentLoopConfiguration(params.integrations.agentLoop, params.capabilities)
     : undefined;

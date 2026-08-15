@@ -1,3 +1,4 @@
+import { assertC07MemoryBackendUnavailable } from "../../config/behavior-governor-c07-interlock.js";
 import type { MemoryGovernorBackend } from "../../plugins/memory-state.js";
 import type {
   GovernorTrustedApprovalResolver,
@@ -57,6 +58,7 @@ export function createGovernorControllerIfEnabled(params: {
       "Governor host runtime bindings are required when the behavior governor is enabled",
     );
   }
+  assertC07MemoryBackendUnavailable(params.hostBindings.memoryBackend);
   assertSafeGovernorPolicyBundle({
     policyId: GOVERNOR_POLICY_ID,
     version: GOVERNOR_POLICY_VERSION,

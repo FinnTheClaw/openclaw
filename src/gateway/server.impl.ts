@@ -616,7 +616,8 @@ export async function startGatewayServer(
       contextKey: code,
     });
   };
-  const { createRuntimeSecretsActivator } = await startupConfigModulePromise;
+  const { createRuntimeSecretsActivator, assertC07ArchitectureReadyBeforeSecrets } =
+    await startupConfigModulePromise;
   const activateRuntimeSecrets = createRuntimeSecretsActivator({
     logSecrets,
     emitStateEvent: emitSecretsStateEvent,
@@ -1020,6 +1021,7 @@ export async function startGatewayServer(
     if (!enabled && !behaviorGovernorLifecycle) {
       return;
     }
+    await assertC07ArchitectureReadyBeforeSecrets(config);
     if (!behaviorGovernorLifecycle) {
       const { createGatewayBehaviorGovernorLifecycle } =
         await import("./behavior-governor-lifecycle.js");

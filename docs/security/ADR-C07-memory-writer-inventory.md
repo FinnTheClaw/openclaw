@@ -1,7 +1,7 @@
 # C07 legacy memory writer elimination inventory
 
-Status: proposed normative companion to `ADR-C07-memory-authority-redesign.md`. Implementation is
-blocked until the complete C07 design receives an independent Sol High GO.
+Status: accepted normative companion to `ADR-C07-memory-authority-redesign.md` after independent Sol
+High design GO at `e4cc9c4286d6eac5f482cb0dab1d912fbe9e5c52`.
 
 This inventory is exhaustive for the `68a28d` C07 memory surface. Each named writer is deleted or
 reduced to a projection-only operation. A generated architecture inventory must fail readiness if
