@@ -1,0 +1,25 @@
+{
+  "accepted": [
+    {
+      "value": "A🙂 fact",
+      "quote": "🙂",
+      "startUtf16": 1,
+      "endUtf16": 3,
+      "startByte": 1,
+      "endByte": 5
+    },
+    {
+      "value": "café",
+      "quote": "é",
+      "startUtf16": 3,
+      "endUtf16": 4,
+      "startByte": 3,
+      "endByte": 5
+    }
+  ],
+  "rejected": [
+    { "name": "decomposed", "value": "café" },
+    { "name": "carriage-return", "value": "bad\rcontrol" },
+    { "name": "unpaired-surrogate", "value": "bad\ud800surrogate" }
+  ]
+}

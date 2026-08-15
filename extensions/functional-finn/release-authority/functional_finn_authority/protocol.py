@@ -156,6 +156,7 @@ def _text(value: Any, label: str, *, maximum: int) -> str:
         or not value
         or len(value) > maximum
         or unicodedata.normalize("NFC", value) != value
+        or any(0xD800 <= ord(char) <= 0xDFFF for char in value)
         or any(ord(char) < 0x20 and char not in "\n\t" for char in value)
     ):
         raise ProtocolError(f"{label} is invalid")

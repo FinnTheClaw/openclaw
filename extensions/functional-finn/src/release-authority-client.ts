@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import net from "node:net";
+import { isFunctionalFinnCanonicalText } from "./canonical-text.js";
 
 const SCHEMA = "functional-finn.release-ipc.v1" as const;
 const MAX_PACKET_BYTES = 256 * 1024;
@@ -35,7 +36,13 @@ export type ExternalCandidateResult = {
 };
 
 function canonicalize(value: unknown): Json {
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
+  if (value === null || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    if (!isFunctionalFinnCanonicalText(value, { maximumScalars: MAX_PACKET_BYTES })) {
+      throw new Error("Functional Finn IPC string is not canonical");
+    }
     return value;
   }
   if (typeof value === "number") {

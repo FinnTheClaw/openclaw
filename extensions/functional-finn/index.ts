@@ -43,8 +43,8 @@ export default definePluginEntry({
       evidence,
       verify: async (request) => {
         const result = await requestFunctionalFinnVerifier({
-          socketPath: config.verifierSocketPath,
-          timeoutMs: config.verifierTimeoutMs,
+          socketPath: config.semanticSupportSocketPath,
+          timeoutMs: config.semanticSupportTimeoutMs,
           request,
         });
         return result.ok;
@@ -80,26 +80,6 @@ export default definePluginEntry({
         return { appendSystemContext: FUNCTIONAL_FINN_ENVELOPE_PROMPT };
       }
       return undefined;
-    });
-
-    api.on("after_tool_call", (event, context) => {
-      if (
-        context.agentId &&
-        context.runId &&
-        context.toolCallId &&
-        config.agentIds.includes(context.agentId) &&
-        context.channelId &&
-        config.channels.includes(context.channelId)
-      ) {
-        evidence.recordToolObservation({
-          agentId: context.agentId,
-          runId: context.runId,
-          toolCallId: context.toolCallId,
-          toolName: event.toolName,
-          result: event.error ? { error: event.error } : event.result,
-          observedAt: Date.now(),
-        });
-      }
     });
 
     api.on("agent_turn_prepare", (_event, context) => {

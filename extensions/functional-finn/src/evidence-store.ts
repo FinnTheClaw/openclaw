@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FunctionalFinnEvidence } from "./answer-envelope.js";
-import {
-  clipBoundedFunctionalFinnEvidenceText,
-  serializeBoundedFunctionalFinnEvidence,
-} from "./bounded-evidence.js";
+import { clipBoundedFunctionalFinnEvidenceText } from "./bounded-evidence.js";
 
 export type FunctionalFinnStoredEvidence = FunctionalFinnEvidence & {
   runId: string;
@@ -19,40 +16,6 @@ type SyncStore<T> = {
 
 export class FunctionalFinnEvidenceStore {
   constructor(private readonly store: SyncStore<FunctionalFinnStoredEvidence>) {}
-
-  recordToolObservation(params: {
-    agentId: string;
-    runId: string;
-    toolCallId: string;
-    toolName: string;
-    result: unknown;
-    observedAt: number;
-    freshnessMs?: number;
-  }): FunctionalFinnStoredEvidence {
-    const content = serializeBoundedFunctionalFinnEvidence(params.result);
-    const digest = createHash("sha256").update(content).digest("hex").slice(0, 16);
-    const evidenceId = `tool:${params.runId}:${params.toolCallId}:${digest}`;
-    const value: FunctionalFinnStoredEvidence = {
-      evidenceId,
-      agentId: params.agentId,
-      runId: params.runId,
-      toolCallId: params.toolCallId,
-      toolName: params.toolName,
-      content,
-      observedAt: params.observedAt,
-      freshnessUntil: params.observedAt + (params.freshnessMs ?? 10 * 60 * 1_000),
-      sourceKind: "tool_observation",
-      state: "current",
-    };
-    if (!this.store.registerIfAbsent(evidenceId, value, { ttlMs: 24 * 60 * 60 * 1_000 })) {
-      const existing = this.store.lookup(evidenceId);
-      if (!existing || existing.content !== content || existing.agentId !== params.agentId) {
-        throw new Error("evidence identity conflict");
-      }
-      return existing;
-    }
-    return value;
-  }
 
   recordUserConfirmation(params: {
     agentId: string;
@@ -85,7 +48,7 @@ export class FunctionalFinnEvidenceStore {
     return value;
   }
 
-  lookup(evidenceId: string): FunctionalFinnEvidence | undefined {
+  lookup(evidenceId: string): FunctionalFinnStoredEvidence | undefined {
     return this.store.lookup(evidenceId);
   }
 

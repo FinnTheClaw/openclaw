@@ -1,33 +1,19 @@
 import net from "node:net";
-import type { FunctionalFinnAnswerEnvelope, FunctionalFinnEvidence } from "./answer-envelope.js";
+import type { FunctionalFinnEvidence } from "./answer-envelope.js";
 
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
-export type FunctionalFinnVerifierRequest =
-  | {
-      operation: "validate" | "authorize";
-      agentId: string;
-      sessionKey: string;
-      runId: string;
-      accountId?: string;
-      target?: string;
-      revision?: 0 | 1;
-      envelope: FunctionalFinnAnswerEnvelope;
-      evidence: FunctionalFinnEvidence[];
-    }
-  | {
-      operation: "verify_memory";
-      agentId: string;
-      claim: string;
-      evidence: FunctionalFinnEvidence;
-      sourceStart: number;
-      sourceEnd: number;
-      sourceQuote: string;
-    };
+export type FunctionalFinnVerifierRequest = {
+  operation: "verify_memory";
+  agentId: string;
+  claim: string;
+  evidence: FunctionalFinnEvidence;
+  sourceStartByte: number;
+  sourceEndByte: number;
+  sourceQuote: string;
+};
 
-export type FunctionalFinnVerifierResponse =
-  | { ok: true; authorization?: Record<string, unknown> }
-  | { ok: false; code: string };
+export type FunctionalFinnVerifierResponse = { ok: true } | { ok: false; code: string };
 
 export async function requestFunctionalFinnVerifier(params: {
   socketPath: string;

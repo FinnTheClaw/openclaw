@@ -9,6 +9,8 @@ from pathlib import Path
 from .authority_policy import SocketPolicy
 from .peer_credentials import assert_socket_path
 
+DEFAULT_SOCKET_TIMEOUT_SECONDS = 5.0
+
 
 def require_service_uid(expected_uid: int) -> None:
     if os.getuid() != expected_uid or os.geteuid() != expected_uid:
@@ -27,9 +29,14 @@ def attest_launchd_listener(listener: socket.socket, policy: SocketPolicy, servi
     )
 
 
-def connect_unix(path: Path) -> socket.socket:
+def connect_unix(
+    path: Path, *, timeout_seconds: float = DEFAULT_SOCKET_TIMEOUT_SECONDS
+) -> socket.socket:
+    if timeout_seconds <= 0:
+        raise ValueError("Unix socket timeout must be positive")
     value = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
+        value.settimeout(timeout_seconds)
         value.connect(str(path))
         return value
     except BaseException:

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
+from functools import wraps
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -24,6 +26,16 @@ class SenderState(str, Enum):
 
 class SenderLedgerError(RuntimeError):
     pass
+
+
+def _serialized(method: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(method)
+    def locked(self: "SenderLedger", *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            self._require_open()
+            return method(self, *args, **kwargs)
+
+    return locked
 
 
 @dataclass(frozen=True)
@@ -48,7 +60,9 @@ class PhysicalSender(Protocol):
 class SenderLedger:
     def __init__(self, path: Path, *, max_records: int = 10_000) -> None:
         self._max_records = max_records
-        self._db = sqlite3.connect(path, isolation_level=None)
+        self._lock = threading.RLock()
+        self._closed = False
+        self._db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
@@ -68,7 +82,17 @@ class SenderLedger:
         )
 
     def close(self) -> None:
-        self._db.close()
+        with self._lock:
+            if self._closed:
+                return
+            try:
+                self._db.close()
+            finally:
+                self._closed = True
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise SenderLedgerError("sender ledger is closed")
 
     @staticmethod
     def _record(row: sqlite3.Row) -> SenderRecord:
@@ -81,12 +105,14 @@ class SenderLedger:
             message_id=row["message_id"],
         )
 
+    @_serialized
     def lookup(self, frame_id: str) -> SenderRecord | None:
         row = self._db.execute(
             "SELECT * FROM sender_deliveries WHERE frame_id = ?", (frame_id,)
         ).fetchone()
         return None if row is None else self._record(row)
 
+    @_serialized
     def receive(
         self,
         signed: SignedFrame,
@@ -143,6 +169,7 @@ class SenderLedger:
                 self._db.execute("ROLLBACK")
             raise
 
+    @_serialized
     def begin_attempt(self, frame_id: str, *, now: int) -> SenderRecord | None:
         self._db.execute("BEGIN IMMEDIATE")
         try:
@@ -172,14 +199,17 @@ class SenderLedger:
                 self._db.execute("ROLLBACK")
             raise
 
+    @_serialized
     def mark_delivered(self, frame_id: str, *, message_id: str, now: int) -> SenderRecord:
         if not message_id:
             raise SenderLedgerError("delivered sender result requires a message identity")
         return self._settle(frame_id, SenderState.DELIVERED, message_id, now)
 
+    @_serialized
     def mark_unknown(self, frame_id: str, *, now: int) -> SenderRecord:
         return self._settle(frame_id, SenderState.UNKNOWN, None, now)
 
+    @_serialized
     def recover_after_restart(self, *, now: int) -> int:
         self._db.execute("BEGIN IMMEDIATE")
         try:

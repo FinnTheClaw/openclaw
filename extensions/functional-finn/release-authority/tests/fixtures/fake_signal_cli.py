@@ -35,6 +35,8 @@ for line in sys.stdin:
     if mode == "error":
         emit({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -1, "message": "no"}})
         continue
+    if mode == "hang":
+        continue
     record = json.dumps(request["params"], separators=(",", ":")) + "\n"
     with (config / "physical-send.log").open("a", encoding="utf-8") as stream:
         stream.write(record)

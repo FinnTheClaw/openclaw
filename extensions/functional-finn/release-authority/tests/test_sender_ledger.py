@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -96,6 +97,39 @@ class SenderLedgerTest(unittest.TestCase):
         with self.assertRaisesRegex(SenderLedgerError, "capacity"):
             self.ledger.receive(third, public_key=third_signer.public_key(), now=102)
         self.assertIsNotNone(self.ledger.lookup("frame-001"))
+
+    def test_main_thread_construction_serializes_worker_requests_and_close(self) -> None:
+        barrier = threading.Barrier(9)
+        records: list[object] = []
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                barrier.wait()
+                records.append(
+                    self.ledger.receive(
+                        self.signed,
+                        public_key=self.signer.public_key(),
+                        now=100,
+                    )
+                )
+            except BaseException as error:
+                errors.append(error)
+
+        workers = [threading.Thread(target=run) for _ in range(8)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=2)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(records), 8)
+        self.assertTrue(all(record == records[0] for record in records))
+        self.ledger.close()
+        self.ledger.close()
+        with self.assertRaisesRegex(SenderLedgerError, "closed"):
+            self.ledger.lookup("frame-001")
 
 
 if __name__ == "__main__":

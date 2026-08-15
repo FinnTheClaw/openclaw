@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 import hashlib
 from pathlib import Path
@@ -115,6 +116,33 @@ class ReleaseLedgerTest(unittest.TestCase):
                 binding(candidate_id="candidate-3", turn_ticket="turn-3")
             )
         self.assertIsNotNone(self.ledger.lookup("candidate-1"))
+
+    def test_main_thread_construction_serializes_worker_requests_and_close(self) -> None:
+        barrier = threading.Barrier(9)
+        records: list[object] = []
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                barrier.wait()
+                records.append(self.ledger.accept(binding()))
+            except BaseException as error:
+                errors.append(error)
+
+        workers = [threading.Thread(target=run) for _ in range(8)]
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=2)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(records), 8)
+        self.assertTrue(all(record == records[0] for record in records))
+        self.ledger.close()
+        self.ledger.close()
+        with self.assertRaisesRegex(ReleaseLedgerError, "closed"):
+            self.ledger.lookup("candidate-1")
 
 
 if __name__ == "__main__":

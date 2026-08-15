@@ -1,8 +1,8 @@
 export type FunctionalFinnConfig = {
   agentIds: readonly string[];
   channels: readonly string[];
-  verifierSocketPath: string;
-  verifierTimeoutMs: number;
+  semanticSupportSocketPath: string;
+  semanticSupportTimeoutMs: number;
 };
 
 function readStringSet(value: unknown, name: string): readonly string[] {
@@ -28,29 +28,31 @@ export function readFunctionalFinnConfig(value: unknown): FunctionalFinnConfig {
     (key) =>
       key !== "agentIds" &&
       key !== "channels" &&
-      key !== "verifierSocketPath" &&
-      key !== "verifierTimeoutMs",
+      key !== "semanticSupportSocketPath" &&
+      key !== "semanticSupportTimeoutMs",
   );
   if (unknown.length > 0) {
     throw new Error(`unknown Functional Finn config key: ${unknown[0]}`);
   }
-  const verifierSocketPath =
-    typeof record.verifierSocketPath === "string" ? record.verifierSocketPath.trim() : "";
-  const verifierTimeoutMs = record.verifierTimeoutMs ?? 2_000;
-  if (!verifierSocketPath) {
-    throw new Error("verifierSocketPath must be a non-empty string");
+  const semanticSupportSocketPath =
+    typeof record.semanticSupportSocketPath === "string"
+      ? record.semanticSupportSocketPath.trim()
+      : "";
+  const semanticSupportTimeoutMs = record.semanticSupportTimeoutMs ?? 2_000;
+  if (!semanticSupportSocketPath) {
+    throw new Error("semanticSupportSocketPath must be a non-empty string");
   }
   if (
-    !Number.isSafeInteger(verifierTimeoutMs) ||
-    (verifierTimeoutMs as number) < 100 ||
-    (verifierTimeoutMs as number) > 5_000
+    !Number.isSafeInteger(semanticSupportTimeoutMs) ||
+    (semanticSupportTimeoutMs as number) < 100 ||
+    (semanticSupportTimeoutMs as number) > 5_000
   ) {
-    throw new Error("verifierTimeoutMs must be between 100 and 5000");
+    throw new Error("semanticSupportTimeoutMs must be between 100 and 5000");
   }
   return Object.freeze({
     agentIds: readStringSet(record.agentIds, "agentIds"),
     channels: readStringSet(record.channels, "channels"),
-    verifierSocketPath,
-    verifierTimeoutMs: verifierTimeoutMs as number,
+    semanticSupportSocketPath,
+    semanticSupportTimeoutMs: semanticSupportTimeoutMs as number,
   });
 }

@@ -1,3 +1,4 @@
+import { resolveFunctionalFinnUtf8Span } from "./canonical-text.js";
 import type { FunctionalFinnEvidenceStore } from "./evidence-store.js";
 import type { FunctionalFinnMemoryLedger, FunctionalFinnMemoryRecord } from "./memory-ledger.js";
 
@@ -39,16 +40,19 @@ export async function admitFunctionalFinnMemory(params: {
   if (source.agentId !== params.agentId) {
     throw new Error("memory source evidence belongs to another agent");
   }
+  if (source.sourceKind === "tool_observation") {
+    throw new Error("tool observation requires an external host receipt");
+  }
   if (source.observedAt > params.now || source.freshnessUntil < params.now) {
     throw new Error("memory source evidence is stale");
   }
   if (
-    !Number.isSafeInteger(params.input.sourceStart) ||
-    !Number.isSafeInteger(params.input.sourceEnd) ||
-    params.input.sourceStart < 0 ||
-    params.input.sourceEnd <= params.input.sourceStart ||
-    source.content.slice(params.input.sourceStart, params.input.sourceEnd) !==
-      params.input.sourceQuote
+    !resolveFunctionalFinnUtf8Span({
+      content: source.content,
+      start: params.input.sourceStart,
+      end: params.input.sourceEnd,
+      quote: params.input.sourceQuote,
+    })
   ) {
     throw new Error("memory source span does not match host evidence");
   }

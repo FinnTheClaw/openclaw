@@ -4,6 +4,8 @@ import errno
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -128,6 +130,34 @@ class SignalCliTransportTest(unittest.TestCase):
         with self.assertRaisesRegex(SignalCliTransportError, "closed"):
             transport.send_text(self.target(kind="group"), "Again.")
         self.assertEqual(MAX_CHILD_LINE_BYTES, 1024 * 1024)
+
+    def test_timeout_wakes_request_without_deadlock_or_worker_residue(self) -> None:
+        (self.config / "mode").write_text("hang", encoding="utf-8")
+        transport = self.transport(request_timeout_seconds=0.05)
+        failures: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                transport.send_text(self.target(), "Exact answer.")
+            except BaseException as error:
+                failures.append(error)
+
+        started = time.monotonic()
+        caller = threading.Thread(target=run, name="signal-timeout-caller")
+        caller.start()
+        caller.join(timeout=1)
+        self.assertFalse(caller.is_alive())
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], SignalCliTransportError)
+        transport.close()
+        self.assertFalse(
+            any(
+                thread.is_alive() and thread.name.startswith("finnsig-signal-")
+                for thread in threading.enumerate()
+            )
+        )
+        self.assertFalse((self.config / "physical-send.log").exists())
 
     def test_crash_after_physical_attempt_is_unknown_and_never_retried(self) -> None:
         view = self.ledger.ingest(observation())

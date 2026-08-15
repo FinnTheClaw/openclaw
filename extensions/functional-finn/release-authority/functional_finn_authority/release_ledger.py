@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
+from functools import wraps
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Any, Callable
 
 from .canonical_frame import decode_release_frame
 from .signing import SignedFrame
@@ -26,6 +29,16 @@ class ReleaseState(str, Enum):
 
 class ReleaseLedgerError(RuntimeError):
     pass
+
+
+def _serialized(method: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(method)
+    def locked(self: "ReleaseLedger", *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            self._require_open()
+            return method(self, *args, **kwargs)
+
+    return locked
 
 
 @dataclass(frozen=True)
@@ -61,7 +74,9 @@ class ReleaseLedger:
         if max_records < 1:
             raise ValueError("max_records must be positive")
         self._max_records = max_records
-        self._db = sqlite3.connect(path, isolation_level=None)
+        self._lock = threading.RLock()
+        self._closed = False
+        self._db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
@@ -100,10 +115,17 @@ class ReleaseLedger:
         )
 
     def close(self) -> None:
-        self._db.close()
+        with self._lock:
+            if self._closed:
+                return
+            try:
+                self._db.close()
+            finally:
+                self._closed = True
 
-    def _transaction(self):
-        return self._db
+    def _require_open(self) -> None:
+        if self._closed:
+            raise ReleaseLedgerError("release ledger is closed")
 
     def _row(self, candidate_id: str) -> sqlite3.Row | None:
         return self._db.execute(
@@ -128,10 +150,12 @@ class ReleaseLedger:
             message_id=row["message_id"],
         )
 
+    @_serialized
     def lookup(self, candidate_id: str) -> ReleaseRecord | None:
         row = self._row(candidate_id)
         return None if row is None else self._record(row)
 
+    @_serialized
     def lookup_turn_revision(self, turn_ticket: str, revision: int) -> ReleaseRecord | None:
         row = self._db.execute(
             "SELECT * FROM release_attempts WHERE turn_ticket = ? AND revision = ?",
@@ -139,6 +163,7 @@ class ReleaseLedger:
         ).fetchone()
         return None if row is None else self._record(row)
 
+    @_serialized
     def accept(self, binding: CandidateBinding) -> ReleaseRecord:
         if binding.revision not in (0, 1):
             raise ReleaseLedgerError("candidate revision must be zero or one")
@@ -201,15 +226,19 @@ class ReleaseLedger:
                 self._db.execute("ROLLBACK")
             raise
 
+    @_serialized
     def require_revision(self, candidate_id: str, *, now: int) -> ReleaseRecord:
         return self._transition(candidate_id, ReleaseState.RECEIVED, ReleaseState.REVISION_REQUIRED, now)
 
+    @_serialized
     def record_abstained(self, candidate_id: str, *, now: int) -> ReleaseRecord:
         return self._transition(candidate_id, ReleaseState.RECEIVED, ReleaseState.ABSTAINED, now)
 
+    @_serialized
     def record_denied(self, candidate_id: str, *, now: int) -> ReleaseRecord:
         return self._transition(candidate_id, ReleaseState.RECEIVED, ReleaseState.DENIED, now)
 
+    @_serialized
     def record_validated(
         self,
         candidate_id: str,
@@ -251,6 +280,7 @@ class ReleaseLedger:
                 self._db.execute("ROLLBACK")
             raise
 
+    @_serialized
     def commit_signed_frame(
         self,
         candidate_id: str,
@@ -320,6 +350,7 @@ class ReleaseLedger:
                 self._db.execute("ROLLBACK")
             raise
 
+    @_serialized
     def record_sender_outcome(
         self,
         candidate_id: str,

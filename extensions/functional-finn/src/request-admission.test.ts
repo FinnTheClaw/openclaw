@@ -4,8 +4,8 @@ import { createFunctionalFinnAdmission } from "./request-admission.js";
 const config = {
   agentIds: ["finn"],
   channels: ["signal"],
-  verifierSocketPath: "/tmp/verifier.sock",
-  verifierTimeoutMs: 500,
+  semanticSupportSocketPath: "/tmp/semantic-support.sock",
+  semanticSupportTimeoutMs: 500,
 } as const;
 
 describe("Functional Finn Goal admission", () => {

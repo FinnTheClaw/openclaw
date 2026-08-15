@@ -50,11 +50,11 @@ const request = {
     content: "healthy",
     observedAt: 1,
     freshnessUntil: 2,
-    sourceKind: "tool_observation" as const,
+    sourceKind: "user_confirmed" as const,
     state: "current" as const,
   },
-  sourceStart: 0,
-  sourceEnd: 7,
+  sourceStartByte: 0,
+  sourceEndByte: 7,
   sourceQuote: "healthy",
 };
 

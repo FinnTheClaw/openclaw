@@ -195,5 +195,38 @@ describe("Functional Finn answer envelope", () => {
         claims: [],
       }),
     ).toBeUndefined();
+    for (const text of ["cafe\u0301", "bad\rcontrol", "bad\ud800surrogate"]) {
+      expect(
+        parseFunctionalFinnAnswerEnvelope({
+          ...factual(),
+          answerText: text,
+          claims: [{ ...factual().claims[0]!, text }],
+        }),
+      ).toBeUndefined();
+    }
+  });
+
+  it("accepts an exact UTF-16 span around a supplementary character", async () => {
+    const astralEvidence = { ...evidence, content: "state=🙂 healthy" };
+    const envelope: FunctionalFinnAnswerEnvelope = {
+      ...factual(),
+      answerText: "🙂",
+      claims: [
+        {
+          ...factual().claims[0]!,
+          text: "🙂",
+          sources: [{ evidenceId: "tool:1", start: 6, end: 8, quote: "🙂" }],
+        },
+      ],
+    };
+    await expect(
+      validateFunctionalFinnAnswer({
+        envelope,
+        agentId: "finn",
+        now: 150,
+        lookupEvidence: () => astralEvidence,
+        supportScore: async () => 1,
+      }),
+    ).resolves.toEqual({ ok: true });
   });
 });

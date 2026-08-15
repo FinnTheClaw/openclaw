@@ -114,6 +114,31 @@ class ProtocolTest(unittest.TestCase):
         parsed = parse_request(document)
         self.assertEqual(parsed.claims[0].evidence[0].kind, "tool_observation")  # type: ignore[union-attr]
 
+    def test_unicode_rules_and_utf8_span_fields_match_typescript(self) -> None:
+        fixture = json.loads(
+            (Path(__file__).parents[4] / "test/fixtures/functional-finn-canonical-text.json").read_text()
+        )
+        for accepted in fixture["accepted"]:
+            document = request_document(candidate())
+            claim = document["candidate"]["claims"][0]
+            claim["text"] = accepted["value"]
+            document["candidate"]["message"] = accepted["value"]
+            claim["evidence"][0].update({
+                "startByte": accepted["startByte"],
+                "endByte": accepted["endByte"],
+                "quote": accepted["quote"],
+            })
+            parsed = parse_request(document)
+            with self.subTest(accepted=accepted["value"]):
+                self.assertEqual(parsed.claims[0].evidence[0].start_byte, accepted["startByte"])  # type: ignore[union-attr]
+                self.assertEqual(parsed.claims[0].evidence[0].end_byte, accepted["endByte"])  # type: ignore[union-attr]
+
+        for rejected in fixture["rejected"]:
+            changed = request_document(candidate())
+            changed["candidate"]["message"] = rejected["value"]
+            with self.subTest(rejected=rejected["name"]), self.assertRaises(ProtocolError):
+                parse_request(changed)
+
 
 if __name__ == "__main__":
     unittest.main()

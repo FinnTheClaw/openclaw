@@ -207,6 +207,8 @@ class SignalCliJsonRpcTransport:
             thread.start()
 
     def close(self, timeout_seconds: float = 2.0) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("signal-cli close timeout must be positive")
         with self._lock:
             if self._closed:
                 return
@@ -220,10 +222,13 @@ class SignalCliJsonRpcTransport:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=timeout_seconds)
+        self._close_pipes(process)
+        deadline = time.monotonic() + timeout_seconds
         for thread in self._threads:
             if thread is not threading.current_thread():
-                thread.join(timeout=timeout_seconds)
-        self._close_pipes(process)
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in self._threads):
+            raise SignalCliTransportError("signal-cli transport worker did not close")
 
     def send_text(self, target: BoundDelivery, message: str) -> SendResult:
         if target.account_id != self._account_id:
@@ -356,13 +361,18 @@ class SignalCliJsonRpcTransport:
             if self._fatal is None:
                 self._fatal = error
             process = self._process
-        self._fail_all(error)
+            pending = tuple(self._pending.values())
+        self._signal_failures(pending, error)
         if process is not None and process.poll() is None:
             process.terminate()
 
     def _fail_all(self, error: BaseException) -> None:
         with self._lock:
             pending = tuple(self._pending.values())
+        self._signal_failures(pending, error)
+
+    @staticmethod
+    def _signal_failures(pending: tuple[_Pending, ...], error: BaseException) -> None:
         for item in pending:
             item.error = error
             item.event.set()

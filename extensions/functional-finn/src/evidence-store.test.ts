@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import { describe, expect, it, vi } from "vitest";
 import { serializeBoundedFunctionalFinnEvidence } from "./bounded-evidence.js";
 import {
@@ -22,22 +21,6 @@ function memoryStore() {
 }
 
 describe("Functional Finn bounded transient evidence", () => {
-  it("clips giant strings by UTF-8 bytes before transient storage", () => {
-    const store = new FunctionalFinnEvidenceStore(memoryStore());
-    const raw = `${"🙂".repeat(100_000)}PRIVATE_TAIL`;
-    const observed = store.recordToolObservation({
-      agentId: "finn",
-      runId: "run",
-      toolCallId: "tool",
-      toolName: "read",
-      result: raw,
-      observedAt: 1,
-    });
-    expect(Buffer.byteLength(observed.content, "utf8")).toBeLessThanOrEqual(64 * 1024);
-    expect(observed.content).not.toContain("PRIVATE_TAIL");
-    expect(observed.content).toContain("[Truncated]");
-  });
-
   it("bounds giant object item traversal and never calls toJSON or getters", () => {
     const toJSON = vi.fn(() => {
       throw new Error("must not run");
@@ -87,5 +70,10 @@ describe("Functional Finn bounded transient evidence", () => {
       observedAt: 1,
     });
     expect(observed.content).toBe("The deployment is complete.");
+  });
+
+  it("has no same-process after-tool observation admission surface", () => {
+    const store = new FunctionalFinnEvidenceStore(memoryStore());
+    expect("recordToolObservation" in store).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import type { OpenClawPluginApi } from "../api.js";
+import { resolveFunctionalFinnUtf8Span } from "./canonical-text.js";
 import type { FunctionalFinnConfig } from "./config.js";
 import type { FunctionalFinnEvidenceStore } from "./evidence-store.js";
 import { admitFunctionalFinnMemory } from "./memory-admission.js";
@@ -129,16 +130,26 @@ export function registerFunctionalFinnMemoryTool(params: {
             now: Date.now(),
             evidence: params.evidence,
             ledger,
-            verifySupport: ({ claim, evidence: source, sourceStart, sourceEnd, sourceQuote }) =>
-              params.verify({
+            verifySupport: ({ claim, evidence: source, sourceStart, sourceEnd, sourceQuote }) => {
+              const span = resolveFunctionalFinnUtf8Span({
+                content: source.content,
+                start: sourceStart,
+                end: sourceEnd,
+                quote: sourceQuote,
+              });
+              if (!span) {
+                return Promise.resolve(false);
+              }
+              return params.verify({
                 operation: "verify_memory",
                 agentId,
                 claim,
                 evidence: source,
-                sourceStart,
-                sourceEnd,
+                sourceStartByte: span.startByte,
+                sourceEndByte: span.endByte,
                 sourceQuote,
-              }),
+              });
+            },
             reconcile: () => projectionService.reconcileAgent(agentId),
           });
           return {

@@ -62,7 +62,6 @@ import {
   maybeResolveSignalApprovalReaction,
   resolveSignalApprovalConversationKey,
 } from "../approval-reactions.js";
-import { createSignalHostControlDelivery } from "../functional-finn-release.js";
 import {
   formatSignalPairingIdLine,
   formatSignalSenderDisplay,
@@ -966,7 +965,6 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
             account: deps.account,
             maxBytes: deps.mediaMaxBytes,
             accountId: deps.accountId,
-            functionalFinnDelivery: createSignalHostControlDelivery(),
           });
         },
         log: logVerbose,

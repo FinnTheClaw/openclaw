@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseFunctionalFinnAnswerEnvelope } from "./answer-envelope.js";
+import { isFunctionalFinnCanonicalText, resolveFunctionalFinnUtf8Span } from "./canonical-text.js";
 import {
   digestFunctionalFinnCandidate,
   validateFunctionalFinnCandidate,
@@ -66,7 +67,9 @@ export function readTrustedFunctionalFinnIngress(
     readString(item.accountId),
     readString(item.sourceId),
     readString(item.contentDigest),
-    readString(item.content),
+    isFunctionalFinnCanonicalText(item.content, { maximumScalars: 64 * 1024 })
+      ? item.content
+      : undefined,
   ];
   if (
     item.schema !== 1 ||
@@ -99,10 +102,6 @@ function stableId(prefix: string, value: string): string {
   return `${prefix}:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-function utf8Offset(content: string, offset: number): number {
-  return Buffer.byteLength(content.slice(0, offset), "utf8");
-}
-
 function buildCandidate(params: {
   text: string;
   sessionKey: string;
@@ -116,17 +115,20 @@ function buildCandidate(params: {
   }
   const claims = envelope.claims.map((claim) => {
     const evidence = claim.sources.map((source) => {
-      if (
-        source.evidenceId !== params.ingress.ingressId ||
-        params.ingress.content.slice(source.start, source.end) !== source.quote
-      ) {
+      const span = resolveFunctionalFinnUtf8Span({
+        content: params.ingress.content,
+        start: source.start,
+        end: source.end,
+        quote: source.quote,
+      });
+      if (source.evidenceId !== params.ingress.ingressId || !span) {
         return undefined;
       }
       return {
         kind: "signal_ingress" as const,
         ingressId: params.ingress.ingressId,
-        startByte: utf8Offset(params.ingress.content, source.start),
-        endByte: utf8Offset(params.ingress.content, source.end),
+        startByte: span.startByte,
+        endByte: span.endByte,
         quote: source.quote,
         receiptId: null,
       };

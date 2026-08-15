@@ -14,9 +14,24 @@ type Fixture = {
   releaseCanonical: string;
 };
 
+type CanonicalTextFixture = {
+  accepted: Array<{
+    value: string;
+    quote: string;
+    startUtf16: number;
+    endUtf16: number;
+    startByte: number;
+    endByte: number;
+  }>;
+  rejected: Array<{ name: string; value: string }>;
+};
+
 const fixture = JSON.parse(
   readFileSync("test/fixtures/functional-finn-release-ipc.json", "utf8"),
 ) as Fixture;
+const canonicalText = JSON.parse(
+  readFileSync("test/fixtures/functional-finn-canonical-text.json", "utf8"),
+) as CanonicalTextFixture;
 
 function body(packet: Buffer): string {
   const length = packet.readUInt32BE(0);
@@ -53,4 +68,47 @@ describe("Functional Finn release authority canonical client", () => {
       }),
     ).toThrow(/integer/);
   });
+
+  it.each(canonicalText.rejected)(
+    "rejects shared non-canonical IPC text $name before opening a socket",
+    ({ value: message }) => {
+      expect(() =>
+        encodeFunctionalFinnCandidateValidation({
+          requestId: "request-1",
+          candidate: { ...fixture.candidate, message },
+        }),
+      ).toThrow(/canonical/);
+    },
+  );
+
+  it.each(canonicalText.accepted)(
+    "preserves canonical $value with shared UTF-8 byte spans",
+    ({ value, quote, startByte, endByte }) => {
+      const candidate: ExternalCandidate = {
+        ...fixture.candidate,
+        message: value,
+        claims: [
+          {
+            claimId: "claim-unicode",
+            text: value,
+            evidence: [
+              {
+                kind: "signal_ingress",
+                ingressId: "ingress-001",
+                startByte,
+                endByte,
+                quote,
+                receiptId: null,
+              },
+            ],
+          },
+        ],
+      };
+      const encoded = body(
+        encodeFunctionalFinnCandidateValidation({ requestId: "unicode-1", candidate }),
+      );
+      expect(encoded).toContain(`"startByte":${startByte}`);
+      expect(encoded).toContain(`"endByte":${endByte}`);
+    },
+  );
 });

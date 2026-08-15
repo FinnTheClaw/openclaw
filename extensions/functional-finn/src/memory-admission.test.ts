@@ -31,6 +31,7 @@ function stores() {
   });
   return {
     evidence: new FunctionalFinnEvidenceStore(atomic(evidenceValues)),
+    evidenceValues,
     ledger: new FunctionalFinnMemoryLedger(atomic(memoryValues)),
   };
 }
@@ -134,6 +135,45 @@ describe("Functional Finn memory admission", () => {
         reconcile: async () => undefined,
       }),
     ).rejects.toThrow("not supported");
+    expect(ledger.recall({ agentId: "finn", now: 101 })).toEqual([]);
+  });
+
+  it("rejects an unattested tool observation before support scoring or projection", async () => {
+    const { evidence, evidenceValues, ledger } = stores();
+    evidenceValues.set("tool:unattested", {
+      evidenceId: "tool:unattested",
+      agentId: "finn",
+      runId: "r",
+      toolCallId: "call-1",
+      toolName: "read",
+      content: "service is healthy",
+      observedAt: 100,
+      freshnessUntil: 200,
+      sourceKind: "tool_observation",
+      state: "current",
+    });
+    const verifySupport = vi.fn(async () => true);
+    const reconcile = vi.fn(async () => undefined);
+    await expect(
+      admitFunctionalFinnMemory({
+        input: {
+          factKey: "service.state",
+          claim: "The service is healthy.",
+          sourceEvidenceId: "tool:unattested",
+          sourceStart: 11,
+          sourceEnd: 18,
+          sourceQuote: "healthy",
+        },
+        agentId: "finn",
+        now: 101,
+        evidence,
+        ledger,
+        verifySupport,
+        reconcile,
+      }),
+    ).rejects.toThrow("external host receipt");
+    expect(verifySupport).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
     expect(ledger.recall({ agentId: "finn", now: 101 })).toEqual([]);
   });
 });

@@ -27,7 +27,6 @@ import {
   resolveSignalApprovalTargetAuthorKeys,
   unregisterSignalApprovalReactionTarget,
 } from "./approval-reactions.js";
-import { createSignalHostControlDelivery } from "./functional-finn-release.js";
 import { normalizeSignalMessagingTarget } from "./normalize.js";
 import { sendMessageSignal, sendTypingSignal } from "./send.js";
 
@@ -177,7 +176,6 @@ export const signalApprovalNativeRuntime = createChannelApprovalNativeRuntimeAda
       const result = await sendMessageSignal(preparedTarget.to, payload.text ?? "", {
         cfg,
         accountId: preparedTarget.accountId,
-        functionalFinnDelivery: createSignalHostControlDelivery(),
         ...(preparedTarget.baseUrl ? { baseUrl: preparedTarget.baseUrl } : {}),
         ...(preparedTarget.account ? { account: preparedTarget.account } : {}),
         textMode: "plain",
@@ -204,7 +202,6 @@ export const signalApprovalNativeRuntime = createChannelApprovalNativeRuntimeAda
       await sendMessageSignal(entry.to, payload.text, {
         cfg,
         accountId: entry.accountId,
-        functionalFinnDelivery: createSignalHostControlDelivery(),
         ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}),
         ...(entry.account ? { account: entry.account } : {}),
         textMode: "plain",

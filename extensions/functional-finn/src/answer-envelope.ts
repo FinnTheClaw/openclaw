@@ -64,14 +64,13 @@ function parseSource(value: unknown): FunctionalFinnClaim["sources"][number] | u
   }
   const { evidenceId, start, end, quote } = value;
   if (
-    typeof evidenceId !== "string" ||
-    !evidenceId.trim() ||
+    !isFunctionalFinnCanonicalText(evidenceId, { maximumScalars: 512 }) ||
+    evidenceId !== evidenceId.trim() ||
     !Number.isSafeInteger(start) ||
     !Number.isSafeInteger(end) ||
     (start as number) < 0 ||
     (end as number) <= (start as number) ||
-    typeof quote !== "string" ||
-    !quote
+    !isFunctionalFinnCanonicalText(quote, { maximumScalars: 4_096 })
   ) {
     return undefined;
   }
@@ -84,11 +83,9 @@ function parseClaim(value: unknown): FunctionalFinnClaim | undefined {
   }
   const sources = value.sources.map(parseSource);
   if (
-    typeof value.claimId !== "string" ||
-    !value.claimId.trim() ||
+    !isFunctionalFinnCanonicalText(value.claimId, { maximumScalars: 128 }) ||
     value.claimId !== value.claimId.trim() ||
-    typeof value.text !== "string" ||
-    !value.text.trim() ||
+    !isFunctionalFinnCanonicalText(value.text, { maximumScalars: 2_000 }) ||
     value.text !== value.text.trim() ||
     (value.classification !== "observed" && value.classification !== "inferred") ||
     typeof value.confidence !== "number" ||
@@ -128,9 +125,8 @@ export function parseFunctionalFinnAnswerEnvelope(
   if (
     raw.schemaVersion !== 1 ||
     (raw.responseClass !== "non_factual_ack" && raw.responseClass !== "factual") ||
-    typeof raw.answerText !== "string" ||
+    !isFunctionalFinnCanonicalText(raw.answerText, { maximumScalars: 3_500 }) ||
     !raw.answerText.trim() ||
-    raw.answerText.length > 3_500 ||
     typeof raw.abstain !== "boolean" ||
     claims.length > 20 ||
     claims.some((claim) => !claim)
@@ -216,7 +212,14 @@ export async function validateFunctionalFinnAnswer(params: {
       if (evidence.observedAt > params.now || evidence.freshnessUntil < params.now) {
         return { ok: false, failure: { code: "STALE_EVIDENCE", claimId: claim.claimId } };
       }
-      if (evidence.content.slice(source.start, source.end) !== source.quote) {
+      if (
+        !resolveFunctionalFinnUtf8Span({
+          content: evidence.content,
+          start: source.start,
+          end: source.end,
+          quote: source.quote,
+        })
+      ) {
         return { ok: false, failure: { code: "UNSUPPORTED_CLAIM", claimId: claim.claimId } };
       }
       support.push(source.quote);
@@ -228,3 +231,4 @@ export async function validateFunctionalFinnAnswer(params: {
   }
   return { ok: true };
 }
+import { isFunctionalFinnCanonicalText, resolveFunctionalFinnUtf8Span } from "./canonical-text.js";

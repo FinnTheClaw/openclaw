@@ -24,6 +24,7 @@ from .raw_framing import encode_packet, read_packet
 from .signing import SignedFrame
 
 ExpectedResponse = TypeVar("ExpectedResponse", bound=Response)
+DEFAULT_EXCHANGE_TIMEOUT_SECONDS = 5.0
 
 
 class AuthorityClientError(RuntimeError):
@@ -31,13 +32,23 @@ class AuthorityClientError(RuntimeError):
 
 
 class AttestedProtocolClient:
-    def __init__(self, connect: Callable[[], socket.socket], *, expected_peer_uid: int) -> None:
+    def __init__(
+        self,
+        connect: Callable[[], socket.socket],
+        *,
+        expected_peer_uid: int,
+        timeout_seconds: float = DEFAULT_EXCHANGE_TIMEOUT_SECONDS,
+    ) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("authority exchange timeout must be positive")
         self._connect = connect
         self._peer_policy = PeerUidPolicy(expected_peer_uid)
+        self._timeout = timeout_seconds
 
     def exchange(self, request: Request, expected_type: type[ExpectedResponse]) -> ExpectedResponse:
         connection = self._connect()
         try:
+            connection.settimeout(self._timeout)
             self._peer_policy.attest(connection)
             connection.sendall(encode_packet(request_document(request)))
             with connection.makefile("rb", buffering=0) as reader:
