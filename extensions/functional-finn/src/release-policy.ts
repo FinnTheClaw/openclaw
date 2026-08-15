@@ -14,7 +14,7 @@ type SyncStore<T> = {
 };
 
 export type FunctionalFinnVerifier = (
-  request: Extract<FunctionalFinnVerifierRequest, { operation: "validate" | "verify_and_sign" }>,
+  request: Extract<FunctionalFinnVerifierRequest, { operation: "validate" | "authorize" }>,
 ) => Promise<FunctionalFinnVerifierResponse>;
 
 export function createFunctionalFinnReleasePolicy(params: {
@@ -34,14 +34,15 @@ export function createFunctionalFinnReleasePolicy(params: {
   };
 
   const verifierRequest = (input: {
-    operation: "validate" | "verify_and_sign";
+    operation: "validate" | "authorize";
     text: string;
     sessionKey: string;
     runId: string;
     accountId?: string;
     target?: string;
+    revision?: 0 | 1;
   }):
-    | Extract<FunctionalFinnVerifierRequest, { operation: "validate" | "verify_and_sign" }>
+    | Extract<FunctionalFinnVerifierRequest, { operation: "validate" | "authorize" }>
     | undefined => {
     const binding = params.sessions.lookup(input.sessionKey);
     const envelope = parseFunctionalFinnAnswerEnvelope(input.text);
@@ -55,6 +56,7 @@ export function createFunctionalFinnReleasePolicy(params: {
       runId: input.runId,
       accountId: input.accountId,
       target: input.target,
+      revision: input.revision,
       envelope,
       evidence: params.evidence.listRun(input.runId),
     };
@@ -136,7 +138,11 @@ export function createFunctionalFinnReleasePolicy(params: {
       target?: string;
     }): Promise<
       | { cancel: true; reason: string }
-      | { text: string; receipt: Record<string, unknown> }
+      | {
+          text: string;
+          authorization: Record<string, unknown>;
+          verifier: { socketPath: string; timeoutMs: number };
+        }
       | undefined
     > {
       if (!isProtected(input.sessionKey, input.channel)) {
@@ -146,22 +152,30 @@ export function createFunctionalFinnReleasePolicy(params: {
         return { cancel: true, reason: "Functional Finn release identity is incomplete" };
       }
       const request = verifierRequest({
-        operation: "verify_and_sign",
+        operation: "authorize",
         text: input.text,
         sessionKey: input.sessionKey,
         runId: input.runId,
         accountId: input.accountId,
         target: input.target,
+        revision: params.revisions.lookup(`${input.sessionKey}:${input.runId}`) ? 1 : 0,
       });
       if (!request) {
         return { cancel: true, reason: "Functional Finn answer envelope is invalid" };
       }
       try {
         const result = await params.verify(request);
-        if (!result.ok || !result.receipt) {
+        if (!result.ok || !result.authorization) {
           return { cancel: true, reason: "Functional Finn answer is unsupported" };
         }
-        return { text: request.envelope.answerText, receipt: result.receipt };
+        return {
+          text: request.envelope.answerText,
+          authorization: result.authorization,
+          verifier: {
+            socketPath: params.config.verifierSocketPath,
+            timeoutMs: params.config.verifierTimeoutMs,
+          },
+        };
       } catch {
         return { cancel: true, reason: "Functional Finn verifier is unavailable" };
       }

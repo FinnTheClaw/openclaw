@@ -26,9 +26,13 @@ function fixture(
     ok: false as const,
     code: "UNSUPPORTED",
   })),
+  stores?: {
+    sessions: ReturnType<typeof memoryStore<{ agentId: string; channel: string }>>;
+    revisions: ReturnType<typeof memoryStore<{ requested: true }>>;
+  },
 ) {
-  const sessions = memoryStore<{ agentId: string; channel: string }>();
-  const revisions = memoryStore<{ requested: true }>();
+  const sessions = stores?.sessions ?? memoryStore<{ agentId: string; channel: string }>();
+  const revisions = stores?.revisions ?? memoryStore<{ requested: true }>();
   const evidence = new FunctionalFinnEvidenceStore(memoryStore());
   const policy = createFunctionalFinnReleasePolicy({
     config: {
@@ -43,7 +47,7 @@ function fixture(
     verify,
   });
   policy.bindSession({ sessionKey: "s", agentId: "finn", channel: "signal" });
-  return { policy, evidence, verify };
+  return { policy, evidence, verify, stores: { sessions, revisions } };
 }
 
 describe("Functional Finn release policy", () => {
@@ -67,7 +71,10 @@ describe("Functional Finn release policy", () => {
   });
 
   it("attaches a receipt only after exact evidence-bound verification", async () => {
-    const verify = vi.fn(async () => ({ ok: true as const, receipt: { receiptId: "rr" } }));
+    const verify = vi.fn(async () => ({
+      ok: true as const,
+      authorization: { authorizationId: "aa" },
+    }));
     const { policy, evidence } = fixture(verify);
     const observed = evidence.recordToolObservation({
       agentId: "finn",
@@ -100,8 +107,55 @@ describe("Functional Finn release policy", () => {
       accountId: "a",
       target: "+1",
     });
-    expect(result).toEqual({ text: "The service is healthy.", receipt: { receiptId: "rr" } });
-    expect(verify).toHaveBeenCalledWith(expect.objectContaining({ evidence: [observed] }));
+    expect(result).toEqual({
+      text: "The service is healthy.",
+      authorization: { authorizationId: "aa" },
+      verifier: { socketPath: "/tmp/verifier.sock", timeoutMs: 500 },
+    });
+    expect(verify).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "authorize", evidence: [observed], revision: 0 }),
+    );
+  });
+
+  it("persists exactly one revision and reports revision one after policy reconstruction", async () => {
+    const verify = vi
+      .fn<FunctionalFinnVerifier>()
+      .mockResolvedValueOnce({ ok: false, code: "UNSUPPORTED" })
+      .mockResolvedValueOnce({ ok: false, code: "UNSUPPORTED" })
+      .mockResolvedValueOnce({ ok: true, authorization: { authorizationId: "revised" } });
+    const first = fixture(verify);
+    await expect(
+      first.policy.beforeFinalize({ text: "bad", sessionKey: "s", runId: "r" }),
+    ).resolves.toMatchObject({ action: "revise", retry: { maxAttempts: 1 } });
+
+    const reconstructed = fixture(verify, first.stores);
+    await expect(
+      reconstructed.policy.beforeFinalize({ text: "still bad", sessionKey: "s", runId: "r" }),
+    ).resolves.toBeUndefined();
+    const revisedText = JSON.stringify({
+      schemaVersion: 1,
+      responseClass: "factual",
+      answerText: "The service is healthy.",
+      abstain: false,
+      claims: [
+        {
+          claimId: "c1",
+          text: "The service is healthy.",
+          classification: "observed",
+          confidence: 0.95,
+          sources: [{ evidenceId: "missing", start: 0, end: 1, quote: "x" }],
+        },
+      ],
+    });
+    await reconstructed.policy.prepareReply({
+      text: revisedText,
+      sessionKey: "s",
+      runId: "r",
+      channel: "signal",
+      accountId: "a",
+      target: "+1",
+    });
+    expect(verify).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 1 }));
   });
 
   it("does not govern unbound sessions", async () => {

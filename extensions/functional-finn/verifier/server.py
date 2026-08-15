@@ -19,6 +19,7 @@ from typing import Any
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 ACK = re.compile(r"^(?:ok(?:ay)?|thanks|thank you|got it|understood|noted|sounds good|you're welcome)[!. ]*$", re.I)
+ABSTENTION = "I don't have enough verified evidence to answer."
 
 
 def _digest(value: str) -> str:
@@ -27,6 +28,10 @@ def _digest(value: str) -> str:
 
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _canonical_frame(value: Any) -> bytes:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, sort_keys=True).encode("utf-8")
 
 
 def _english_bounded(value: str, limit: int) -> bool:
@@ -112,24 +117,53 @@ class FunctionalFinnVerifier:
         if not isinstance(answer, str) or not _english_bounded(answer, 3_500) or not isinstance(claims, list):
             return False, "INVALID_ENVELOPE"
         if envelope.get("responseClass") == "non_factual_ack":
-            return (True, "OK") if not claims and not envelope.get("abstain") and ACK.fullmatch(answer.strip()) else (False, "INVALID_ACK")
+            return (
+                (True, "OK")
+                if not claims and not envelope.get("abstain") and answer == answer.strip() and ACK.fullmatch(answer)
+                else (False, "INVALID_ACK")
+            )
         if envelope.get("responseClass") != "factual" or len(claims) > 20:
             return False, "INVALID_ENVELOPE"
         if envelope.get("abstain"):
-            return (True, "OK") if not claims else (False, "INVALID_ABSTENTION")
+            return (True, "OK") if not claims and answer == ABSTENTION else (False, "INVALID_ABSTENTION")
+        if not claims:
+            return False, "INVALID_ENVELOPE"
+        rendered: list[str] = []
+        claim_ids: set[str] = set()
         for claim in claims:
             if not isinstance(claim, dict) or not _english_bounded(claim.get("text", ""), 2_000):
                 return False, "INVALID_CLAIM"
+            claim_id = claim.get("claimId")
+            claim_text = claim.get("text")
+            confidence = claim.get("confidence")
+            if (
+                not isinstance(claim_id, str)
+                or not claim_id
+                or claim_id != claim_id.strip()
+                or claim_id in claim_ids
+                or not isinstance(claim_text, str)
+                or claim_text != claim_text.strip()
+                or claim.get("classification") != "observed"
+                or not isinstance(confidence, (int, float))
+                or isinstance(confidence, bool)
+                or confidence < 0.8
+                or confidence > 1
+            ):
+                return False, "INELIGIBLE_CLAIM"
+            claim_ids.add(claim_id)
+            rendered.append(claim_text)
             valid, code = self._validate_evidence(request, claim, now)
             if not valid:
                 return False, code
+        if answer != "\n".join(rendered):
+            return False, "NON_CANONICAL_ANSWER"
         return True, "OK"
 
-    def _sign(self, request: dict[str, Any], now: int) -> dict[str, Any]:
+    def _sign_authorization(self, request: dict[str, Any], now: int) -> dict[str, Any]:
         evidence_digest = _digest(_canonical(request.get("evidence", [])).decode("utf-8"))
-        receipt = {
+        authorization = {
             "schemaVersion": 1,
-            "receiptId": str(uuid.uuid4()),
+            "authorizationId": str(uuid.uuid4()),
             "keyId": self._key_id,
             "nonce": secrets.token_urlsafe(24),
             "agentId": request["agentId"],
@@ -140,18 +174,93 @@ class FunctionalFinnVerifier:
             "targetDigest": _digest(request["target"].strip().lower()),
             "payloadDigest": _digest(request["envelope"]["answerText"]),
             "evidenceDigest": evidence_digest,
-            "revision": 0,
+            "revision": request["revision"],
             "issuedAt": now,
             "expiresAt": now + 60_000,
         }
         serialized = _canonical([
-            receipt["schemaVersion"], receipt["receiptId"], receipt["keyId"], receipt["nonce"],
-            receipt["agentId"], receipt["sessionKeyDigest"], receipt["runId"], receipt["channel"],
-            receipt["accountId"], receipt["targetDigest"], receipt["payloadDigest"],
-            receipt["evidenceDigest"], receipt["revision"], receipt["issuedAt"], receipt["expiresAt"],
+            authorization["schemaVersion"], authorization["authorizationId"], authorization["keyId"],
+            authorization["nonce"], authorization["agentId"], authorization["sessionKeyDigest"],
+            authorization["runId"], authorization["channel"], authorization["accountId"],
+            authorization["targetDigest"], authorization["payloadDigest"], authorization["evidenceDigest"],
+            authorization["revision"], authorization["issuedAt"], authorization["expiresAt"],
         ])
         signature = self._private_key.sign(serialized)
-        receipt["signature"] = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+        authorization["signature"] = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+        return authorization
+
+    def _verify_authorization(self, value: Any, now: int) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        required_strings = (
+            "authorizationId", "keyId", "nonce", "agentId", "sessionKeyDigest", "runId",
+            "channel", "accountId", "targetDigest", "payloadDigest", "evidenceDigest", "signature",
+        )
+        if (
+            value.get("schemaVersion") != 1
+            or value.get("keyId") != self._key_id
+            or value.get("channel") != "signal"
+            or value.get("revision") not in (0, 1)
+            or not all(isinstance(value.get(field), str) and value[field] for field in required_strings)
+            or not isinstance(value.get("issuedAt"), int)
+            or not isinstance(value.get("expiresAt"), int)
+            or value["issuedAt"] > now
+            or value["expiresAt"] < now
+            or value["expiresAt"] - value["issuedAt"] > 60_000
+        ):
+            return None
+        serialized = _canonical([
+            value["schemaVersion"], value["authorizationId"], value["keyId"], value["nonce"],
+            value["agentId"], value["sessionKeyDigest"], value["runId"], value["channel"],
+            value["accountId"], value["targetDigest"], value["payloadDigest"], value["evidenceDigest"],
+            value["revision"], value["issuedAt"], value["expiresAt"],
+        ])
+        try:
+            signature = base64.urlsafe_b64decode(value["signature"] + "=" * (-len(value["signature"]) % 4))
+            self._private_key.public_key().verify(signature, serialized)
+        except Exception:
+            return None
+        return value
+
+    def _sign_frame(self, request: dict[str, Any], now: int) -> dict[str, Any] | None:
+        authorization = self._verify_authorization(request.get("authorization"), now)
+        frame = request.get("frame")
+        candidate = request.get("candidateText")
+        if (
+            not authorization
+            or not isinstance(candidate, str)
+            or _digest(candidate) != authorization["payloadDigest"]
+            or not isinstance(frame, dict)
+            or frame.get("schemaVersion") != 1
+            or frame.get("method") != "send"
+            or frame.get("accountId") != authorization["accountId"]
+            or frame.get("targetDigest") != authorization["targetDigest"]
+            or not isinstance(frame.get("params"), dict)
+            or not isinstance(frame["params"].get("message"), str)
+        ):
+            return None
+        destinations = [field for field in ("recipient", "groupId", "username") if field in frame["params"]]
+        if len(destinations) != 1:
+            return None
+        frame_digest = _digest(_canonical_frame(frame).decode("utf-8"))
+        receipt = {
+            **{key: authorization[key] for key in (
+                "schemaVersion", "keyId", "agentId", "sessionKeyDigest", "runId", "channel", "accountId",
+                "targetDigest", "payloadDigest", "evidenceDigest", "revision",
+            )},
+            "receiptId": str(uuid.uuid4()),
+            "nonce": secrets.token_urlsafe(24),
+            "frameDigest": frame_digest,
+            "issuedAt": now,
+            "expiresAt": min(authorization["expiresAt"], now + 60_000),
+        }
+        serialized = _canonical([
+            receipt["schemaVersion"], receipt["receiptId"], receipt["keyId"], receipt["nonce"],
+            receipt["agentId"], receipt["sessionKeyDigest"], receipt["runId"], receipt["channel"],
+            receipt["accountId"], receipt["targetDigest"], receipt["payloadDigest"], receipt["frameDigest"],
+            receipt["evidenceDigest"], receipt["revision"], receipt["issuedAt"], receipt["expiresAt"],
+        ])
+        receipt["signature"] = base64.urlsafe_b64encode(self._private_key.sign(serialized)).decode("ascii").rstrip("=")
         return receipt
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -181,7 +290,10 @@ class FunctionalFinnVerifier:
                 now,
             )
             return {"ok": valid, **({} if valid else {"code": code})}
-        if request.get("operation") not in ("validate", "verify_and_sign"):
+        if request.get("operation") == "bind_frame":
+            receipt = self._sign_frame(request, now)
+            return {"ok": True, "receipt": receipt} if receipt else {"ok": False, "code": "INVALID_FRAME_BINDING"}
+        if request.get("operation") not in ("validate", "authorize"):
             return {"ok": False, "code": "INVALID_OPERATION"}
         valid, code = self._validate_answer(request, now)
         if not valid:
@@ -191,7 +303,9 @@ class FunctionalFinnVerifier:
         for field in ("agentId", "sessionKey", "runId", "accountId", "target"):
             if not isinstance(request.get(field), str) or not request[field]:
                 return {"ok": False, "code": "MISSING_RELEASE_BINDING"}
-        return {"ok": True, "receipt": self._sign(request, now)}
+        if request.get("revision") not in (0, 1):
+            return {"ok": False, "code": "INVALID_REVISION"}
+        return {"ok": True, "authorization": self._sign_authorization(request, now)}
 
 
 def _serve(socket_path: Path) -> None:

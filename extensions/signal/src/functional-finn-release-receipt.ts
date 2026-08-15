@@ -12,6 +12,7 @@ export type FunctionalFinnReleaseReceiptUnsigned = {
   accountId: string;
   targetDigest: string;
   payloadDigest: string;
+  frameDigest: string;
   evidenceDigest: string;
   revision: 0 | 1;
   issuedAt: number;
@@ -19,6 +20,14 @@ export type FunctionalFinnReleaseReceiptUnsigned = {
 };
 
 export type FunctionalFinnReleaseReceipt = FunctionalFinnReleaseReceiptUnsigned & {
+  signature: string;
+};
+
+export type FunctionalFinnReleaseAuthorization = Omit<
+  FunctionalFinnReleaseReceiptUnsigned,
+  "receiptId" | "frameDigest"
+> & {
+  authorizationId: string;
   signature: string;
 };
 
@@ -30,6 +39,28 @@ export const digestFunctionalFinnPayload = digest;
 export const digestFunctionalFinnSessionKey = digest;
 export const digestFunctionalFinnTarget = (target: string): string =>
   digest(target.trim().toLowerCase());
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .toSorted(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalize(item)]),
+    );
+  }
+  return value;
+}
+
+export function canonicalFunctionalFinnFrame(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
+}
+
+export const digestFunctionalFinnFrame = (value: unknown): string =>
+  digest(canonicalFunctionalFinnFrame(value));
 
 export function serializeFunctionalFinnReceipt(
   receipt: FunctionalFinnReleaseReceiptUnsigned,
@@ -47,6 +78,7 @@ export function serializeFunctionalFinnReceipt(
       receipt.accountId,
       receipt.targetDigest,
       receipt.payloadDigest,
+      receipt.frameDigest,
       receipt.evidenceDigest,
       receipt.revision,
       receipt.issuedAt,
@@ -77,6 +109,7 @@ export function parseFunctionalFinnReleaseReceipt(
   const accountId = stringField(record, "accountId");
   const targetDigest = stringField(record, "targetDigest");
   const payloadDigest = stringField(record, "payloadDigest");
+  const frameDigest = stringField(record, "frameDigest");
   const evidenceDigest = stringField(record, "evidenceDigest");
   const signature = stringField(record, "signature");
   if (
@@ -96,6 +129,7 @@ export function parseFunctionalFinnReleaseReceipt(
     !accountId ||
     !targetDigest ||
     !payloadDigest ||
+    !frameDigest ||
     !evidenceDigest ||
     !signature
   ) {
@@ -113,6 +147,7 @@ export function parseFunctionalFinnReleaseReceipt(
     accountId,
     targetDigest,
     payloadDigest,
+    frameDigest,
     evidenceDigest,
     revision: record.revision,
     issuedAt: record.issuedAt,
@@ -127,7 +162,7 @@ export function verifyFunctionalFinnReleaseReceipt(params: {
   expectedKeyId: string;
   expected: Pick<
     FunctionalFinnReleaseReceiptUnsigned,
-    "accountId" | "targetDigest" | "payloadDigest"
+    "accountId" | "targetDigest" | "payloadDigest" | "frameDigest"
   >;
   now: number;
   maxLifetimeMs: number;
@@ -138,6 +173,7 @@ export function verifyFunctionalFinnReleaseReceipt(params: {
     receipt.accountId !== params.expected.accountId ||
     receipt.targetDigest !== params.expected.targetDigest ||
     receipt.payloadDigest !== params.expected.payloadDigest ||
+    receipt.frameDigest !== params.expected.frameDigest ||
     receipt.issuedAt > params.now ||
     receipt.expiresAt < params.now ||
     receipt.expiresAt - receipt.issuedAt > params.maxLifetimeMs

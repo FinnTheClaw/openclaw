@@ -21,12 +21,13 @@ import {
 } from "./approval-reactions.js";
 import { signalRpcRequest } from "./client-adapter.js";
 import { markdownToSignalText, type SignalTextStyleRange } from "./format.js";
-import { settleFunctionalFinnSignalRelease } from "./functional-finn-release-store.js";
+import { rejectFunctionalFinnSignalQuote } from "./functional-finn-release-store.js";
 import {
-  authorizeFunctionalFinnSignalSend,
+  preflightFunctionalFinnSignalSend,
   type FunctionalFinnVerifiedDelivery,
   type SignalHostControlDelivery,
 } from "./functional-finn-release.js";
+import { sendFunctionalFinnAuthorizedFrame } from "./functional-finn-send-frame.js";
 import { resolveSignalRpcContext } from "./rpc-context.js";
 
 export type SignalSendOpts = {
@@ -256,24 +257,13 @@ export async function sendMessageSignal(
   });
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
   const target = parseTarget(to);
-  const release = await authorizeFunctionalFinnSignalSend({
+  preflightFunctionalFinnSignalSend({
     cfg,
     accountId: accountInfo.accountId,
-    to,
-    text,
+    sourceText: text,
     hasMedia: Boolean(opts.mediaUrl?.trim()),
     delivery: opts.functionalFinnDelivery,
   });
-  if (release.protected && release.replayed) {
-    return {
-      ...release.replayed,
-      receipt: createSignalSendReceipt({
-        ...release.replayed,
-        target,
-        kind: "text",
-      }),
-    };
-  }
   const targetAuthor = normalizeOptionalString(account);
   const targetAuthorUuid = normalizeOptionalString(accountInfo.config.accountUuid);
   const outboundText = appendSignalApprovalReactionHintForOutboundMessage({
@@ -366,35 +356,60 @@ export async function sendMessageSignal(
     apiMode,
     maxAttachmentBytes: maxBytes,
   };
+  const sendFrame = async (rpcParams: Record<string, unknown>) => {
+    return await sendFunctionalFinnAuthorizedFrame({
+      cfg,
+      accountId: accountInfo.accountId,
+      to,
+      sourceText: text,
+      rpcParams,
+      delivery: opts.functionalFinnDelivery,
+      send: async () => await signalRpcRequest<{ timestamp?: number }>("send", rpcParams, sendOpts),
+    });
+  };
   let nativeReplyStatus: "sent" | "fallback" | undefined;
   let result: { timestamp?: number } | undefined;
+  let replayed: { messageId: string; timestamp?: number } | undefined;
   if (quote) {
     try {
-      result = await signalRpcRequest<{ timestamp?: number }>(
-        "send",
-        { ...params, ...quote.params },
-        sendOpts,
-      );
+      const quoted = await sendFrame({ ...params, ...quote.params });
+      if ("quoteRejected" in quoted) {
+        throw new Error("Functional Finn durable quote rejection");
+      }
+      replayed = "replayed" in quoted ? quoted.replayed : undefined;
+      result = "result" in quoted ? quoted.result : undefined;
       nativeReplyStatus = "sent";
     } catch (error) {
-      if (!isSignalQuoteMetadataRejection(error)) {
+      const durableRejection =
+        error instanceof Error && error.message === "Functional Finn durable quote rejection";
+      if (!durableRejection && !isSignalQuoteMetadataRejection(error)) {
         throw error;
       }
-      result = await signalRpcRequest<{ timestamp?: number }>("send", params, sendOpts);
+      if (!durableRejection) {
+        const logicalId = (error as Error & { functionalFinnLogicalId?: string })
+          .functionalFinnLogicalId;
+        if (logicalId) {
+          rejectFunctionalFinnSignalQuote(logicalId);
+        }
+      }
+      const fallback = await sendFrame(params);
+      if ("quoteRejected" in fallback) {
+        throw new Error("Functional Finn rejected an unquoted Signal frame", { cause: error });
+      }
+      replayed = "replayed" in fallback ? fallback.replayed : undefined;
+      result = "result" in fallback ? fallback.result : undefined;
       nativeReplyStatus = "fallback";
     }
   } else {
-    result = await signalRpcRequest<{ timestamp?: number }>("send", params, sendOpts);
+    const sent = await sendFrame(params);
+    if ("quoteRejected" in sent) {
+      throw new Error("Functional Finn rejected an unquoted Signal frame");
+    }
+    replayed = "replayed" in sent ? sent.replayed : undefined;
+    result = "result" in sent ? sent.result : undefined;
   }
-  const timestamp = result?.timestamp;
-  const messageId = timestamp ? String(timestamp) : "unknown";
-  if (release.protected && release.receiptId) {
-    settleFunctionalFinnSignalRelease({
-      receiptId: release.receiptId,
-      messageId,
-      ...(timestamp != null ? { timestamp } : {}),
-    });
-  }
+  const timestamp = replayed?.timestamp ?? result?.timestamp;
+  const messageId = replayed?.messageId ?? (timestamp ? String(timestamp) : "unknown");
   registerSignalApprovalReactionTargetForOutboundMessage({
     cfg,
     accountId: accountInfo.accountId,

@@ -71,7 +71,7 @@ describe("Functional Finn verified memory ledger", () => {
     expect(ledger.recall({ agentId: "finn", now: 160, factKey: first.factKey })).toEqual([
       replacement,
     ]);
-    const rendered = renderFunctionalFinnMemory([replacement]);
+    const rendered = renderFunctionalFinnMemory([replacement], "finn");
     expect(rendered).toContain("endpoint is beta");
     expect(rendered).not.toContain("endpoint is alpha");
     expect(old.revisionDigest).not.toBe(replacement.revisionDigest);
@@ -117,5 +117,21 @@ describe("Functional Finn verified memory ledger", () => {
     }).record;
     expect(tombstone.state).toBe("tombstone");
     expect(ledger.recall({ agentId: "finn", now: 170 })).toEqual([]);
+  });
+
+  it("bounds retained revision history", () => {
+    const { store } = memoryStore();
+    const ledger = new FunctionalFinnMemoryLedger(store);
+    for (let generation = 1; generation <= 20; generation += 1) {
+      ledger.admit({
+        ...first,
+        evidenceId: `tool:${generation}`,
+        observedAt: 100 + generation,
+        freshnessUntil: 300,
+      });
+    }
+    const current = ledger.lookup("finn", first.factKey);
+    expect(current?.history).toHaveLength(16);
+    expect(current?.history[0]?.generation).toBe(4);
   });
 });

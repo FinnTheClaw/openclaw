@@ -159,7 +159,8 @@ export default definePluginEntry({
             functionalFinnRelease: {
               kind: "verified_candidate",
               candidateText: prepared.text,
-              receipt: prepared.receipt,
+              authorization: prepared.authorization,
+              verifier: prepared.verifier,
             },
           },
         },

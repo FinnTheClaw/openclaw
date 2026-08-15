@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  FUNCTIONAL_FINN_ABSTENTION_TEXT,
   parseFunctionalFinnAnswerEnvelope,
   validateFunctionalFinnAnswer,
   type FunctionalFinnAnswerEnvelope,
@@ -78,6 +79,66 @@ describe("Functional Finn answer envelope", () => {
     ).resolves.toMatchObject({ ok: false, failure: { code: "SEMANTIC_SUPPORT_FAILED" } });
   });
 
+  it.each([
+    ["zero claims", { ...factual(), claims: [] }, "INVALID_ENVELOPE"],
+    [
+      "unsupported tail",
+      { ...factual(), answerText: "The service is healthy.\nIt will stay healthy." },
+      "NON_CANONICAL_ANSWER",
+    ],
+    [
+      "model inference",
+      {
+        ...factual(),
+        claims: [{ ...factual().claims[0]!, classification: "inferred" as const }],
+      },
+      "INELIGIBLE_CLAIM",
+    ],
+    [
+      "low confidence",
+      { ...factual(), claims: [{ ...factual().claims[0]!, confidence: 0.79 }] },
+      "INELIGIBLE_CLAIM",
+    ],
+  ])("rejects factual coverage violation: %s", async (_name, envelope, code) => {
+    await expect(
+      validateFunctionalFinnAnswer({
+        envelope,
+        agentId: "finn",
+        now: 150,
+        lookupEvidence: () => evidence,
+        supportScore: async () => 1,
+      }),
+    ).resolves.toMatchObject({ ok: false, failure: { code } });
+  });
+
+  it("permits only the fixed non-assertive abstention", async () => {
+    const abstention = (answerText: string): FunctionalFinnAnswerEnvelope => ({
+      schemaVersion: 1,
+      responseClass: "factual",
+      answerText,
+      abstain: true,
+      claims: [],
+    });
+    await expect(
+      validateFunctionalFinnAnswer({
+        envelope: abstention(FUNCTIONAL_FINN_ABSTENTION_TEXT),
+        agentId: "finn",
+        now: 150,
+        lookupEvidence: () => evidence,
+        supportScore: async () => 1,
+      }),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      validateFunctionalFinnAnswer({
+        envelope: abstention("The service is probably down, so I cannot answer."),
+        agentId: "finn",
+        now: 150,
+        lookupEvidence: () => evidence,
+        supportScore: async () => 1,
+      }),
+    ).resolves.toMatchObject({ ok: false, failure: { code: "INVALID_ABSTENTION" } });
+  });
+
   it("allows only mechanically bounded non-factual acknowledgements", async () => {
     const acknowledgement = (answerText: string): FunctionalFinnAnswerEnvelope => ({
       schemaVersion: 1,
@@ -112,5 +173,27 @@ describe("Functional Finn answer envelope", () => {
     expect(parseFunctionalFinnAnswerEnvelope(JSON.stringify(factual()))).toEqual(factual());
     expect(parseFunctionalFinnAnswerEnvelope("not json")).toBeUndefined();
     expect(parseFunctionalFinnAnswerEnvelope({ ...factual(), schemaVersion: 2 })).toBeUndefined();
+    expect(parseFunctionalFinnAnswerEnvelope({ ...factual(), claims: [] })).toBeUndefined();
+    expect(
+      parseFunctionalFinnAnswerEnvelope({
+        ...factual(),
+        answerText: "The service is healthy.\nUnsupported tail.",
+      }),
+    ).toBeUndefined();
+    expect(
+      parseFunctionalFinnAnswerEnvelope({
+        ...factual(),
+        claims: [{ ...factual().claims[0]!, classification: "inferred" }],
+      }),
+    ).toBeUndefined();
+    expect(
+      parseFunctionalFinnAnswerEnvelope({
+        schemaVersion: 1,
+        responseClass: "factual",
+        answerText: "The service is down, so I cannot answer.",
+        abstain: true,
+        claims: [],
+      }),
+    ).toBeUndefined();
   });
 });

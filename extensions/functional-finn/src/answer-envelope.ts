@@ -31,12 +31,28 @@ export type FunctionalFinnEnvelopeFailure = {
     | "UNSUPPORTED_CLAIM"
     | "STALE_EVIDENCE"
     | "WRONG_SCOPE"
-    | "SEMANTIC_SUPPORT_FAILED";
+    | "SEMANTIC_SUPPORT_FAILED"
+    | "NON_CANONICAL_ANSWER"
+    | "INVALID_ABSTENTION"
+    | "INELIGIBLE_CLAIM";
   claimId?: string;
 };
 
 const ACKNOWLEDGEMENT =
   /^(?:ok(?:ay)?|thanks|thank you|got it|understood|noted|sounds good|you're welcome)[!. ]*$/iu;
+
+export const FUNCTIONAL_FINN_ABSTENTION_TEXT = "I don't have enough verified evidence to answer.";
+
+/** The only releasable factual prose is this mechanical rendering of atomic claims. */
+export function renderFunctionalFinnAnswer(envelope: FunctionalFinnAnswerEnvelope): string {
+  if (envelope.responseClass === "non_factual_ack") {
+    return envelope.answerText.trim();
+  }
+  if (envelope.abstain) {
+    return FUNCTIONAL_FINN_ABSTENTION_TEXT;
+  }
+  return envelope.claims.map((claim) => claim.text).join("\n");
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -70,8 +86,10 @@ function parseClaim(value: unknown): FunctionalFinnClaim | undefined {
   if (
     typeof value.claimId !== "string" ||
     !value.claimId.trim() ||
+    value.claimId !== value.claimId.trim() ||
     typeof value.text !== "string" ||
     !value.text.trim() ||
+    value.text !== value.text.trim() ||
     (value.classification !== "observed" && value.classification !== "inferred") ||
     typeof value.confidence !== "number" ||
     !Number.isFinite(value.confidence) ||
@@ -119,13 +137,32 @@ export function parseFunctionalFinnAnswerEnvelope(
   ) {
     return undefined;
   }
-  return {
+  const envelope: FunctionalFinnAnswerEnvelope = {
     schemaVersion: 1,
     responseClass: raw.responseClass,
     answerText: raw.answerText,
     abstain: raw.abstain,
     claims: claims as FunctionalFinnClaim[],
   };
+  if (envelope.responseClass === "non_factual_ack") {
+    return !envelope.abstain &&
+      envelope.claims.length === 0 &&
+      envelope.answerText === envelope.answerText.trim() &&
+      ACKNOWLEDGEMENT.test(envelope.answerText)
+      ? envelope
+      : undefined;
+  }
+  if (envelope.abstain) {
+    return envelope.claims.length === 0 && envelope.answerText === FUNCTIONAL_FINN_ABSTENTION_TEXT
+      ? envelope
+      : undefined;
+  }
+  return envelope.claims.length > 0 &&
+    new Set(envelope.claims.map((claim) => claim.claimId)).size === envelope.claims.length &&
+    envelope.answerText === renderFunctionalFinnAnswer(envelope) &&
+    envelope.claims.every((claim) => claim.classification === "observed" && claim.confidence >= 0.8)
+    ? envelope
+    : undefined;
 }
 
 export async function validateFunctionalFinnAnswer(params: {
@@ -139,14 +176,32 @@ export async function validateFunctionalFinnAnswer(params: {
   if (envelope.responseClass === "non_factual_ack") {
     return !envelope.abstain &&
       envelope.claims.length === 0 &&
-      ACKNOWLEDGEMENT.test(envelope.answerText.trim())
+      envelope.answerText === envelope.answerText.trim() &&
+      ACKNOWLEDGEMENT.test(envelope.answerText)
       ? { ok: true }
       : { ok: false, failure: { code: "INVALID_ACKNOWLEDGEMENT" } };
   }
   if (envelope.abstain) {
-    return envelope.claims.length === 0
+    return envelope.claims.length === 0 && envelope.answerText === FUNCTIONAL_FINN_ABSTENTION_TEXT
       ? { ok: true }
-      : { ok: false, failure: { code: "INVALID_ENVELOPE" } };
+      : { ok: false, failure: { code: "INVALID_ABSTENTION" } };
+  }
+  if (envelope.claims.length === 0) {
+    return { ok: false, failure: { code: "INVALID_ENVELOPE" } };
+  }
+  if (envelope.answerText !== renderFunctionalFinnAnswer(envelope)) {
+    return { ok: false, failure: { code: "NON_CANONICAL_ANSWER" } };
+  }
+  const claimIds = new Set<string>();
+  for (const claim of envelope.claims) {
+    if (
+      claimIds.has(claim.claimId) ||
+      claim.classification !== "observed" ||
+      claim.confidence < 0.8
+    ) {
+      return { ok: false, failure: { code: "INELIGIBLE_CLAIM", claimId: claim.claimId } };
+    }
+    claimIds.add(claim.claimId);
   }
   for (const claim of envelope.claims) {
     const support: string[] = [];

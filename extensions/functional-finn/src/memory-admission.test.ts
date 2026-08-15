@@ -44,7 +44,17 @@ describe("Functional Finn memory admission", () => {
       content: "My timezone is Chicago.",
       observedAt: 100,
     });
-    const materialize = vi.fn(async () => undefined);
+    const reconcile = vi.fn(async () => {
+      const record = ledger.lookup("finn", "user.timezone");
+      if (record) {
+        ledger.markRemediated({
+          agentId: record.agentId,
+          factKey: record.factKey,
+          revisionDigest: record.revisionDigest,
+          attemptId: "projection-1",
+        });
+      }
+    });
     const result = await admitFunctionalFinnMemory({
       input: {
         factKey: "user.timezone",
@@ -59,10 +69,10 @@ describe("Functional Finn memory admission", () => {
       evidence,
       ledger,
       verifySupport: async () => true,
-      materialize,
+      reconcile,
     });
-    expect(result.remediation).toBe("applied");
-    expect(materialize).toHaveBeenCalledOnce();
+    expect(result.remediation).toEqual({ state: "applied", attemptId: "projection-1" });
+    expect(reconcile).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -76,7 +86,7 @@ describe("Functional Finn memory admission", () => {
       content: "My timezone is Chicago.",
       observedAt: 100,
     });
-    const materialize = vi.fn(async () => undefined);
+    const reconcile = vi.fn(async () => undefined);
     await expect(
       admitFunctionalFinnMemory({
         input: {
@@ -92,10 +102,10 @@ describe("Functional Finn memory admission", () => {
         evidence,
         ledger,
         verifySupport: async () => true,
-        materialize,
+        reconcile,
       }),
     ).rejects.toThrow();
-    expect(materialize).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
   });
 
   it("rejects an unsupported model-proposed claim before durable admission", async () => {
@@ -121,7 +131,7 @@ describe("Functional Finn memory admission", () => {
         evidence,
         ledger,
         verifySupport: async () => false,
-        materialize: async () => undefined,
+        reconcile: async () => undefined,
       }),
     ).rejects.toThrow("not supported");
     expect(ledger.recall({ agentId: "finn", now: 101 })).toEqual([]);

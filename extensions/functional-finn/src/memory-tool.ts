@@ -3,8 +3,16 @@ import type { OpenClawPluginApi } from "../api.js";
 import type { FunctionalFinnConfig } from "./config.js";
 import type { FunctionalFinnEvidenceStore } from "./evidence-store.js";
 import { admitFunctionalFinnMemory } from "./memory-admission.js";
-import { FunctionalFinnMemoryLedger, type FunctionalFinnMemoryRecord } from "./memory-ledger.js";
-import { materializeFunctionalFinnMemory } from "./memory-materializer.js";
+import {
+  FUNCTIONAL_FINN_MEMORY_MAX_RECORDS,
+  FunctionalFinnMemoryLedger,
+  type FunctionalFinnMemoryRecord,
+} from "./memory-ledger.js";
+import {
+  FunctionalFinnMemoryProjector,
+  FunctionalFinnMemoryProjectionService,
+  type FunctionalFinnMemoryProjectionState,
+} from "./memory-materializer.js";
 import type { FunctionalFinnVerifierRequest } from "./verifier-client.js";
 
 export function registerFunctionalFinnMemoryTool(params: {
@@ -17,7 +25,7 @@ export function registerFunctionalFinnMemoryTool(params: {
 }): void {
   const store = params.api.runtime.state.openSyncKeyedStore<FunctionalFinnMemoryRecord>({
     namespace: "functional-finn-memory",
-    maxEntries: 2_000,
+    maxEntries: FUNCTIONAL_FINN_MEMORY_MAX_RECORDS,
     overflowPolicy: "reject-new",
   });
   if (!store.update) {
@@ -27,6 +35,42 @@ export function registerFunctionalFinnMemoryTool(params: {
     update: (key, mutate) => store.update?.(key, mutate) ?? false,
     lookup: (key) => store.lookup(key),
     entries: () => store.entries(),
+  });
+  const projectionStore =
+    params.api.runtime.state.openSyncKeyedStore<FunctionalFinnMemoryProjectionState>({
+      namespace: "functional-finn-memory-projection",
+      maxEntries: FUNCTIONAL_FINN_MEMORY_MAX_RECORDS,
+      overflowPolicy: "reject-new",
+    });
+  if (!projectionStore.update) {
+    throw new Error("Functional Finn requires atomic projection state updates");
+  }
+  const projector = new FunctionalFinnMemoryProjector(
+    ledger,
+    {
+      update: (key, mutate) => projectionStore.update?.(key, mutate) ?? false,
+      lookup: (key) => projectionStore.lookup(key),
+    },
+    (agentId) => params.api.runtime.agent.resolveAgentWorkspaceDir(params.api.config, agentId),
+  );
+  const projectionService = new FunctionalFinnMemoryProjectionService(
+    projector,
+    params.config.agentIds,
+    (agentId, error) =>
+      params.api.logger.error(
+        `Functional Finn memory reconciliation failed for ${agentId}: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+  );
+  params.api.registerService({
+    id: "functional-finn-memory-projection",
+    start: () => projectionService.start(),
+    stop: () => projectionService.stop(),
+  });
+
+  params.api.on("before_agent_run", async (_event, context) => {
+    if (context.agentId && params.config.agentIds.includes(context.agentId)) {
+      await projector.reconcileAgent(context.agentId);
+    }
   });
 
   params.api.registerTool(
@@ -57,6 +101,7 @@ export function registerFunctionalFinnMemoryTool(params: {
           if (!workspaceDir) {
             throw new Error("verified memory requires an agent workspace");
           }
+          await projector.reconcileAgent(agentId);
           const input = raw as {
             factKey: string;
             claim: string;
@@ -82,11 +127,7 @@ export function registerFunctionalFinnMemoryTool(params: {
                 sourceEnd,
                 sourceQuote,
               }),
-            materialize: () =>
-              materializeFunctionalFinnMemory({
-                workspaceDir,
-                loadRecords: () => ledger.recall({ agentId, now: Date.now(), limit: 50 }),
-              }),
+            reconcile: () => projector.reconcileAgent(agentId),
           });
           return {
             content: [

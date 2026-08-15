@@ -30,7 +30,7 @@ export async function admitFunctionalFinnMemory(params: {
     sourceEnd: number;
     sourceQuote: string;
   }) => Promise<boolean>;
-  materialize: () => Promise<unknown>;
+  reconcile: () => Promise<unknown>;
 }): Promise<FunctionalFinnMemoryRecord> {
   const source = params.evidence.lookup(params.input.sourceEvidenceId);
   if (!source || source.state !== "current") {
@@ -76,11 +76,14 @@ export async function admitFunctionalFinnMemory(params: {
     authority: AUTHORITY[source.sourceKind],
     tombstone: params.input.tombstone,
   });
-  await params.materialize();
-  params.ledger.markRemediated({
-    agentId: params.agentId,
-    factKey: params.input.factKey,
-    revisionDigest: result.record.revisionDigest,
-  });
-  return { ...result.record, remediation: "applied" };
+  await params.reconcile();
+  const reconciled = params.ledger.lookup(params.agentId, params.input.factKey);
+  if (
+    !reconciled ||
+    reconciled.revisionDigest !== result.record.revisionDigest ||
+    reconciled.remediation.state !== "applied"
+  ) {
+    throw new Error("memory projection did not acknowledge the admitted revision");
+  }
+  return reconciled;
 }

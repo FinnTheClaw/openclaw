@@ -5,12 +5,13 @@ const MAX_RESPONSE_BYTES = 256 * 1024;
 
 export type FunctionalFinnVerifierRequest =
   | {
-      operation: "validate" | "verify_and_sign";
+      operation: "validate" | "authorize";
       agentId: string;
       sessionKey: string;
       runId: string;
       accountId?: string;
       target?: string;
+      revision?: 0 | 1;
       envelope: FunctionalFinnAnswerEnvelope;
       evidence: FunctionalFinnEvidence[];
     }
@@ -25,7 +26,7 @@ export type FunctionalFinnVerifierRequest =
     };
 
 export type FunctionalFinnVerifierResponse =
-  | { ok: true; receipt?: Record<string, unknown> }
+  | { ok: true; authorization?: Record<string, unknown> }
   | { ok: false; code: string };
 
 export async function requestFunctionalFinnVerifier(params: {

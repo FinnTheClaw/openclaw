@@ -3,8 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { markdownToSignalText, type SignalTextStyleRange } from "./format.js";
 import {
   digestFunctionalFinnPayload,
+  digestFunctionalFinnFrame,
   digestFunctionalFinnTarget,
   serializeFunctionalFinnReceipt,
   type FunctionalFinnReleaseReceiptUnsigned,
@@ -64,7 +66,22 @@ function config() {
   } as never;
 }
 
-function signed(text: string, target: string) {
+function signed(
+  text: string,
+  target: string,
+  rpcParams: Record<string, unknown> = {
+    message: text,
+    account: "+15550001111",
+    recipient: [target],
+  },
+) {
+  const frame = {
+    schemaVersion: 1,
+    method: "send",
+    accountId: "default",
+    targetDigest: digestFunctionalFinnTarget(target),
+    params: rpcParams,
+  };
   const unsigned: FunctionalFinnReleaseReceiptUnsigned = {
     schemaVersion: 1,
     receiptId: randomUUID(),
@@ -77,6 +94,7 @@ function signed(text: string, target: string) {
     accountId: "default",
     targetDigest: digestFunctionalFinnTarget(target),
     payloadDigest: digestFunctionalFinnPayload(text),
+    frameDigest: digestFunctionalFinnFrame(frame),
     evidenceDigest: "evidence",
     revision: 0,
     issuedAt: Date.now() - 100,
@@ -127,5 +145,72 @@ describe("sendMessageSignal Functional Finn enforcement", () => {
       messageId: "123",
     });
     expect(signalRpcRequestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("binds receipts to the exact markdown, table, and explicit-style RPC frames", async () => {
+    const target = "+15551234567";
+    const cases: Array<{
+      text: string;
+      expectedMessage: string;
+      styles: SignalTextStyleRange[];
+      opts?: { textMode: "plain"; textStyles: SignalTextStyleRange[] };
+      tableMode?: "code";
+    }> = [];
+    const markdown = markdownToSignalText("**bold**");
+    cases.push({ text: "**bold**", expectedMessage: markdown.text, styles: markdown.styles });
+    const tableText = "| A | B |\n|---|---|\n| 1 | 2 |";
+    const table = markdownToSignalText(tableText, { tableMode: "code" });
+    cases.push({
+      text: tableText,
+      expectedMessage: table.text,
+      styles: table.styles,
+      tableMode: "code",
+    });
+    const explicitStyles: SignalTextStyleRange[] = [
+      { start: 0, length: 6, style: "ITALIC" },
+      { start: 0, length: 6, style: "SPOILER" },
+    ];
+    cases.push({
+      text: "styled",
+      expectedMessage: "styled",
+      styles: explicitStyles,
+      opts: { textMode: "plain", textStyles: explicitStyles },
+    });
+
+    for (const [index, candidate] of cases.entries()) {
+      const cfg = config();
+      const mutableConfig = cfg as unknown as {
+        channels: { signal: { markdown?: { tables?: "code" } } };
+      };
+      if (candidate.tableMode) {
+        mutableConfig.channels.signal.markdown = { tables: candidate.tableMode };
+      }
+      const rpcParams: Record<string, unknown> = {
+        message: candidate.expectedMessage,
+        account: "+15550001111",
+        recipient: [target],
+      };
+      if (candidate.styles.length > 0) {
+        rpcParams["text-style"] = candidate.styles.map(
+          (style) => `${style.start}:${style.length}:${style.style}`,
+        );
+      }
+      const receipt = signed(candidate.text, target, rpcParams);
+      await sendMessageSignal(target, candidate.text, {
+        cfg,
+        ...candidate.opts,
+        functionalFinnDelivery: {
+          kind: "verified_candidate",
+          candidateText: candidate.text,
+          receipt,
+        },
+      });
+      expect(signalRpcRequestMock).toHaveBeenNthCalledWith(
+        index + 1,
+        "send",
+        rpcParams,
+        expect.any(Object),
+      );
+    }
   });
 });

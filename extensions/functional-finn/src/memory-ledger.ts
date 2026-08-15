@@ -30,7 +30,10 @@ export type FunctionalFinnMemoryRecord = {
   confidence: number;
   authority: number;
   revisionDigest: string;
-  remediation: "pending" | "applied";
+  remediation: {
+    state: "pending" | "applied";
+    attemptId: string;
+  };
   history: FunctionalFinnMemoryRevision[];
 };
 
@@ -54,7 +57,8 @@ export type AdmitFunctionalFinnMemory = {
   tombstone?: boolean;
 };
 
-const MAX_HISTORY = 16;
+export const FUNCTIONAL_FINN_MEMORY_MAX_RECORDS = 2_000;
+export const FUNCTIONAL_FINN_MEMORY_MAX_HISTORY = 16;
 
 function keyOf(agentId: string, factKey: string): string {
   return `${encodeURIComponent(agentId.trim())}:${createHash("sha256").update(factKey.trim()).digest("hex")}`;
@@ -110,11 +114,12 @@ function toRecord(
     confidence: input.confidence,
     authority: input.authority,
   };
+  const revisionDigest = digestRecord(base);
   return {
     ...base,
-    revisionDigest: digestRecord(base),
-    remediation: "pending",
-    history: history.slice(-MAX_HISTORY),
+    revisionDigest,
+    remediation: { state: "pending", attemptId: revisionDigest },
+    history: history.slice(-FUNCTIONAL_FINN_MEMORY_MAX_HISTORY),
   };
 }
 
@@ -187,12 +192,47 @@ export class FunctionalFinnMemoryLedger {
       .slice(0, limit);
   }
 
-  markRemediated(params: { agentId: string; factKey: string; revisionDigest: string }): boolean {
+  recordsForAgent(agentId: string): FunctionalFinnMemoryRecord[] {
+    return this.store
+      .entries()
+      .map((entry) => entry.value)
+      .filter((record) => record.agentId === agentId)
+      .toSorted((a, b) => a.factKey.localeCompare(b.factKey));
+  }
+
+  projectionRecords(agentId: string, now: number): FunctionalFinnMemoryRecord[] {
+    return this.recordsForAgent(agentId).filter(
+      (record) =>
+        record.state === "verified_current" &&
+        Boolean(record.claim) &&
+        record.freshnessUntil >= now,
+    );
+  }
+
+  lookup(agentId: string, factKey: string): FunctionalFinnMemoryRecord | undefined {
+    return this.store.lookup(keyOf(agentId, factKey));
+  }
+
+  markRemediated(params: {
+    agentId: string;
+    factKey: string;
+    revisionDigest: string;
+    attemptId: string;
+  }): boolean {
     return this.store.update(keyOf(params.agentId, params.factKey), (current) => {
       if (!current || current.revisionDigest !== params.revisionDigest) {
         throw new Error("stale remediation receipt");
       }
-      return current.remediation === "applied" ? current : { ...current, remediation: "applied" };
+      if (
+        current.remediation.state === "applied" &&
+        current.remediation.attemptId === params.attemptId
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        remediation: { state: "applied", attemptId: params.attemptId },
+      };
     });
   }
 }
