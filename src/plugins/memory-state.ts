@@ -6,6 +6,9 @@ import type { MemorySearchManager } from "../memory-host-sdk/host/types.js";
 
 const log = createSubsystemLogger("plugins/memory-state");
 
+/** Closed implementation identity required for enforce-mode authority. */
+export const GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION = "memory-lancedb-governor" as const;
+
 export type MemoryPromptSectionBuilder = (params: {
   availableTools: Set<string>;
   citationsMode?: MemoryCitationsMode;
@@ -42,6 +45,7 @@ export type MemoryGovernorFact = Readonly<{
   contentDigest: string;
   category?: string;
   status: "verified" | "tombstone";
+  sensitivity: "normal" | "sensitive";
   sourceKind: MemoryGovernorSourceKind;
   sourceIdentity: string;
   sourceRank: number;
@@ -86,6 +90,7 @@ export type MemoryGovernorRecall = Readonly<{
 }>;
 
 export type MemoryGovernorBackend = Readonly<{
+  implementationId?: typeof GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION;
   admit(params: {
     fact: MemoryGovernorFact;
     now: number;
@@ -120,6 +125,19 @@ export type MemoryGovernorBackend = Readonly<{
     replacementMemoryId?: string;
     remediationId: string;
   }>;
+  retire?(params: {
+    agentId: string;
+    scope: string;
+    scopeKey?: string;
+    factKey: string;
+    staleMemoryId: string;
+    reason: "freshness_expired" | "operator_requested";
+    now: number;
+  }): Promise<{
+    status: "retired" | "duplicate";
+    staleMemoryId: string;
+    remediationId: string;
+  }>;
   compact(params: { agentId?: string; now: number; retentionMs: number }): Promise<{
     compacted: number;
     retainedHighWater: number;
@@ -128,6 +146,7 @@ export type MemoryGovernorBackend = Readonly<{
 }>;
 
 export type MemoryGovernorCapability = Readonly<{
+  implementationId?: typeof GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION;
   createBackend(params: { mode: "shadow" | "enforce" }): MemoryGovernorBackend;
 }>;
 

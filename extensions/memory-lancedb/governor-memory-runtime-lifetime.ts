@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { MemoryGovernorFact } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { DurableMemoryRuntime } from "./durable-memory-runtime.js";
+import { governorMemoryFact } from "./governor-memory-fact-fixture.js";
 
 let embeddingCalls = 0;
 const embedding = {
@@ -18,68 +17,18 @@ const embedding = {
   },
 };
 
-function digest(...values: unknown[]): string {
-  return createHash("sha256")
-    .update(
-      values
-        .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
-        .join("\u0000"),
-    )
-    .digest("hex");
-}
-
-function jsonDigest(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function fact(id: string, observedAt: number, replacement = false): MemoryGovernorFact {
-  const scopeKey = "scope-a";
+function fact(id: string, observedAt: number, replacement = false) {
   const object = replacement ? "premium" : "standard";
-  const content = { object };
-  const sourceEvidenceId = `evidence-${id}`;
-  const sourceEvidenceDigest = `digest-${id}`;
-  const sourceEvidenceSemanticDigest = `semantic-${sourceEvidenceDigest}`;
-  return {
+  return governorMemoryFact({
     memoryId: id,
-    agentId: "agent-a",
-    scope: "scope-a",
-    scopeKey,
-    scopeEpoch: 0,
-    factKey: "account.plan",
-    subject: "account",
-    predicate: "plan",
     object,
     text: `The account uses the ${replacement ? "premium" : "standard"} plan.`,
-    content,
-    contentDigest: jsonDigest(content),
-    status: "verified",
-    sourceKind: "structured_external",
-    sourceRank: 600,
-    generation: 1,
-    confidence: 0.95,
-    authority: 0.9,
+    content: { object },
     observedAt,
     sourceIdentity: id,
-    sourceEvidenceId,
-    sourceEvidenceDigest,
-    sourceEvidenceSemanticDigest,
-    authorityBindingDigest: digest(
-      "authority",
-      scopeKey,
-      "account.plan",
-      sourceEvidenceId,
-      sourceEvidenceDigest,
-      sourceEvidenceSemanticDigest,
-    ),
-    provenance: {
-      sourceRef: id,
-      observedAt,
-      recordedAt: observedAt,
-      scopeKey,
-      confidence: 0.95,
-      sensitivity: "normal",
-    },
-  };
+    sourceEvidenceId: `evidence-${id}`,
+    sourceEvidenceDigest: `digest-${id}`,
+  });
 }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-c07-runtime-lifetime-"));

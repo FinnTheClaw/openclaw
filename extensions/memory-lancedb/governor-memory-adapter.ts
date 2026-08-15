@@ -1,3 +1,4 @@
+import { GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type {
   MemoryGovernorBackend,
   MemoryGovernorFact,
@@ -48,6 +49,7 @@ function resultFact(fact: MemoryGovernorFact): MemoryGovernorRecall {
  * can be returned, including during projection lag or after a restart.
  */
 export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
+  readonly implementationId = GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION;
   readonly #ledger: GovernorMemoryLedger;
   readonly #index: HybridMemoryIndex;
   readonly #embeddings: DurableMemoryEmbedding;
@@ -152,6 +154,36 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
     }
     await this.#refreshDerived?.();
     this.#ledger.markRemediationCompleted(result.remediationId, params.now);
+    return result;
+  }
+
+  async retire(params: {
+    agentId: string;
+    scope: string;
+    scopeKey?: string;
+    factKey: string;
+    staleMemoryId: string;
+    reason: "freshness_expired" | "operator_requested";
+    now: number;
+  }) {
+    this.assertOpen();
+    await this.#replayPending(params.now);
+    if (this.#observeOnly) {
+      throw new Error("GOVERNOR_MEMORY_SHADOW_MUTATION");
+    }
+    const result = this.#ledger.retire({
+      agentId: GOVERNOR_LEDGER_OWNER,
+      scopeKey: params.scopeKey ?? params.scope,
+      factKey: params.factKey,
+      staleMemoryId: params.staleMemoryId,
+      reason: params.reason,
+      now: params.now,
+    });
+    if (result.status === "retired") {
+      await this.#index.delete(result.staleMemoryId);
+      await this.#refreshDerived?.();
+      this.#ledger.markRemediationCompleted(result.remediationId, params.now);
+    }
     return result;
   }
 

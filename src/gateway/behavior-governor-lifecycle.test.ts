@@ -5,6 +5,7 @@ import type { BehaviorGovernorConfig } from "../config/types.behavior-governor.j
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   clearMemoryPluginState,
+  createInertMemoryGovernorBackend,
   getMemoryCapabilityRegistration,
   registerMemoryCapability,
 } from "../plugins/memory-state.js";
@@ -230,6 +231,25 @@ describe("gateway behavior governor prepared snapshot binding", () => {
         registerMemoryCapability(previous.pluginId, previous.capability);
       }
     }
+  });
+
+  it("rejects a host-supplied inert backend in enforce mode", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-lifecycle-inert-memory-" },
+      async (state) => {
+        const enforceGovernor = { ...sourceGovernor, mode: "enforce" as const };
+        const lifecycle = createGatewayBehaviorGovernorLifecycle({
+          hostFactory: () => ({
+            capabilities: [capability],
+            integrations: { ...integrations(), memory: createInertMemoryGovernorBackend() },
+          }),
+        });
+        await expect(
+          lifecycle.apply(configFor(enforceGovernor), snapshotFor(state.stateDir, enforceGovernor)),
+        ).rejects.toThrow("GOVERNOR_GATEWAY_MEMORY_CAPABILITY_REQUIRED");
+        expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(false);
+      },
+    );
   });
 
   it.each([

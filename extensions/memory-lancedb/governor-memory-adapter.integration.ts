@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { MemoryGovernorFact } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { DurableMemoryRuntime } from "./durable-memory-runtime.js";
 import { GovernorMemoryLanceDbAdapter } from "./governor-memory-adapter.js";
+import { governorMemoryFact } from "./governor-memory-fact-fixture.js";
 import { HybridMemoryIndex } from "./hybrid-memory-index.js";
 import { TemporalMemoryLedger } from "./temporal-ledger.js";
 
@@ -22,83 +21,8 @@ const embedding = {
   },
 };
 
+const fact = governorMemoryFact;
 const compareStrings = (left: string, right: string): number => left.localeCompare(right);
-
-function digest(...values: unknown[]): string {
-  return createHash("sha256")
-    .update(
-      values
-        .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
-        .join("\u0000"),
-    )
-    .digest("hex");
-}
-
-function jsonDigest(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function fact(overrides: Partial<MemoryGovernorFact> = {}): MemoryGovernorFact {
-  const base = {
-    memoryId: "memory-a",
-    agentId: "agent-a",
-    scope: "scope-a",
-    scopeKey: "scope-a",
-    scopeEpoch: 0,
-    factKey: "account.plan",
-    subject: "account",
-    predicate: "plan",
-    object: "standard",
-    text: "The account uses the standard plan.",
-    category: "fact",
-    confidence: 0.95,
-    authority: 0.9,
-    observedAt: 100,
-    sourceIdentity: "host-evidence-a",
-    sourceEvidenceId: "evidence-a",
-    sourceEvidenceDigest: "digest-a",
-  } satisfies Partial<MemoryGovernorFact>;
-  const merged = { ...base, ...overrides };
-  const scopeKey = overrides.scopeKey ?? merged.scope;
-  const content = merged.content ?? { object: merged.object };
-  const sourceKind = merged.sourceKind ?? "structured_external";
-  const sourceEvidenceSemanticDigest = `semantic-${merged.sourceEvidenceDigest}`;
-  return {
-    ...merged,
-    scopeKey,
-    scopeEpoch: merged.scopeEpoch ?? 0,
-    generation: merged.generation ?? 1,
-    status: "verified",
-    sourceKind,
-    sourceRank:
-      sourceKind === "structured_external"
-        ? 600
-        : sourceKind === "authenticated_user"
-          ? 500
-          : sourceKind === "tool"
-            ? 400
-            : 200,
-    content,
-    contentDigest: jsonDigest(content),
-    sourceEvidenceSemanticDigest,
-    provenance: {
-      sourceRef: merged.sourceIdentity,
-      observedAt: merged.observedAt,
-      recordedAt: merged.provenance?.recordedAt ?? merged.observedAt,
-      scopeKey,
-      confidence: merged.confidence,
-      sensitivity: merged.provenance?.sensitivity ?? "normal",
-    },
-    authorityBindingDigest: digest(
-      "authority",
-      scopeKey,
-      merged.factKey,
-      merged.sourceEvidenceId,
-      merged.sourceEvidenceDigest,
-      sourceEvidenceSemanticDigest,
-    ),
-  };
-}
 
 type Context = {
   root: string;

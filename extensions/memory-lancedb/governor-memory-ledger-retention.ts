@@ -66,9 +66,9 @@ export function compactGovernorMemoryLedger(
         String(row.remediation_id),
       );
     }
-    db.prepare(
-      "DELETE FROM memory_governor_high_water WHERE updated_at < ? AND revision_id IS NULL",
-    ).run(cutoff);
+    // Keep one compact anti-rollback summary per canonical identity.  This is
+    // bounded by identity cardinality and is the durable fence that prevents
+    // an old source from returning after payload compaction and restart.
     db.exec("COMMIT");
     const highWater = db
       .prepare("SELECT COUNT(*) AS count FROM memory_governor_high_water")

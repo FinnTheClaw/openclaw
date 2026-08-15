@@ -45,6 +45,7 @@ export type {
   MemoryPluginRuntime,
   MemoryPromptSectionBuilder,
 } from "../plugins/memory-state.js";
+export { GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION } from "../plugins/memory-state.js";
 export {
   buildMemoryPromptSection as buildActiveMemoryPromptSection,
   clearMemoryPluginState,

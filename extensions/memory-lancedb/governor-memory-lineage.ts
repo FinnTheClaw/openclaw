@@ -43,18 +43,21 @@ export function findGovernorLineageDescendants(
   const descendants = new Set<string>();
   let frontier = [memoryId];
   let pendingSourceEvidenceIds = [...new Set(sourceEvidenceIds.filter(Boolean))];
-  while (frontier.length > 0 && descendants.size < max) {
+  while (frontier.length > 0) {
     const placeholders = frontier.map(() => "?").join(", ");
     const evidencePlaceholders = pendingSourceEvidenceIds.map(() => "?").join(", ");
     const rows = db
       .prepare(
-        `SELECT memory_id, source_evidence_id FROM memory_governor_lineage WHERE scope_key = ? AND ((relation_kind = 'memory' AND source_memory_id IN (${placeholders})) OR (relation_kind = 'evidence' AND ${evidencePlaceholders ? `source_evidence_id IN (${evidencePlaceholders})` : "0"})) LIMIT ${max}`,
+        `SELECT memory_id, source_evidence_id FROM memory_governor_lineage WHERE scope_key = ? AND ((relation_kind = 'memory' AND source_memory_id IN (${placeholders})) OR (relation_kind = 'evidence' AND ${evidencePlaceholders ? `source_evidence_id IN (${evidencePlaceholders})` : "0"})) LIMIT ${max + 1}`,
       )
       .all(scopeKey, ...frontier, ...pendingSourceEvidenceIds) as SqlRow[];
     frontier = [];
     for (const row of rows) {
       const child = String(row.memory_id);
       if (child !== memoryId && !descendants.has(child)) {
+        if (descendants.size >= max) {
+          throw new Error("GOVERNOR_MEMORY_LINEAGE_TOO_LARGE");
+        }
         descendants.add(child);
         frontier.push(child);
       }

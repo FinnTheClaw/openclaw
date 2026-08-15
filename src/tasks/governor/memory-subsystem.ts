@@ -84,6 +84,26 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     }
   }
 
+  #queueBackendRetirement(memory: GovernorMemoryRecord, now: number, force = false): void {
+    if (
+      !this.backend?.retire ||
+      (!force && (memory.status === "verified" || memory.status === "candidate"))
+    ) {
+      return;
+    }
+    this.#enqueueBackend(async () => {
+      await this.backend!.retire!({
+        agentId: "governor",
+        scope: memory.scopeKey,
+        scopeKey: memory.scopeKey,
+        factKey: memory.factKey,
+        staleMemoryId: memory.memoryId,
+        reason: "operator_requested",
+        now,
+      });
+    });
+  }
+
   async recallBackend(params: {
     scope: GovernorTaskScope;
     query: string;
@@ -106,12 +126,45 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
   }
 
   override promoteVerified(params: Parameters<GovernorMemoryStore["promoteVerified"]>[0]) {
+    if (this.#backendError !== undefined) {
+      throw toErrorObject(this.#backendError, "Governor memory backend failed");
+    }
     const result = super.promoteVerified(params);
     if (result.stored && this.backend) {
       const fact = toGovernorBackendFact(result.memory);
       this.#enqueueBackend(async () => {
         await this.backend!.admit({ fact, now: params.now });
       });
+    }
+    return result;
+  }
+
+  override quarantine(params: Parameters<GovernorMemoryStore["quarantine"]>[0]) {
+    const before = super
+      .retrieveAudit({ scope: params.scope })
+      .find((memory) => memory.memoryId === params.memoryId);
+    const result = super.quarantine(params);
+    if (result && before) {
+      this.#queueBackendRetirement(before, params.now, true);
+    }
+    return result;
+  }
+
+  override retrieveAudit(params: Parameters<GovernorMemoryStore["retrieveAudit"]>[0]) {
+    const records = super.retrieveAudit(params);
+    for (const memory of records) {
+      this.#queueBackendRetirement(memory, memory.updatedAt);
+    }
+    return records;
+  }
+
+  override forget(params: Parameters<GovernorMemoryStore["forget"]>[0]) {
+    const before = super
+      .retrieveAudit({ scope: params.scope })
+      .find((memory) => memory.memoryId === params.memoryId);
+    const result = super.forget(params);
+    if (result.status === "deleted" && before) {
+      this.#queueBackendRetirement(before, params.now, true);
     }
     return result;
   }
@@ -253,18 +306,15 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
   }
 
   override retrieve(params: { scope: GovernorTaskScope; now: number }): GovernorMemoryRecord[] {
+    if (this.#backendError !== undefined) {
+      throw toErrorObject(this.#backendError, "Governor memory backend failed");
+    }
     const records = super.retrieve(params);
-    const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
-    this.#enqueueBackend(async () => {
-      await this.backend?.recall({
-        agentId: "governor",
-        scopes: [scopeKey],
-        scopeKeys: [scopeKey],
-        query: "governor-memory-recall",
-        limit: 50,
-        now: params.now,
-      });
-    });
+    if (this.backend?.retire) {
+      for (const memory of super.retrieveAudit({ scope: params.scope })) {
+        this.#queueBackendRetirement(memory, params.now);
+      }
+    }
     return records;
   }
 

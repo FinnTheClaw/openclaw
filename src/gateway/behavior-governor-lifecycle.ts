@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { getMemoryCapabilityRegistration } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import {
+  GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION,
+  getMemoryCapabilityRegistration,
+} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveStateDir } from "../config/paths.js";
 import type {
   BehaviorGovernorConfig,
@@ -286,15 +289,30 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       const { createGovernorHostRuntimeIfEnabled } =
         await import("../security/governor-host-bootstrap.js");
       const suppliedMemory = host.integrations.memory;
-      const memoryCapability = getMemoryCapabilityRegistration()?.capability.governorMemory;
+      const registration = getMemoryCapabilityRegistration();
+      const memoryCapability =
+        registration?.pluginId === "memory-lancedb" &&
+        registration.capability.governorMemory?.implementationId ===
+          GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION
+          ? registration.capability.governorMemory
+          : undefined;
+      const registeredMemory =
+        governor.mode === "enforce"
+          ? memoryCapability?.createBackend({ mode: "enforce" })
+          : undefined;
       const memory =
         governor.mode === "shadow"
           ? createInertMemoryGovernorBackend()
-          : (suppliedMemory ?? memoryCapability?.createBackend({ mode: "enforce" }));
-      if (governor.mode === "enforce" && !memory) {
+          : suppliedMemory?.implementationId === GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION
+            ? suppliedMemory
+            : registeredMemory;
+      if (
+        governor.mode === "enforce" &&
+        (!memory || memory.implementationId !== GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION)
+      ) {
         throw new Error("GOVERNOR_GATEWAY_MEMORY_CAPABILITY_REQUIRED");
       }
-      if (memory && !suppliedMemory && memory.close) {
+      if (memory && memory === registeredMemory && memory.close) {
         memoryClose = () => memory.close?.();
       }
       runtime = createGovernorHostRuntimeIfEnabled({
