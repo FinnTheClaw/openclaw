@@ -2,6 +2,11 @@
 
 Status: accepted for feature-flagged implementation; production activation is out of scope.
 
+The C07 memory integration is separately blocked on the proposed
+[`ADR-C07-memory-authority-redesign`](../../../docs/security/ADR-C07-memory-authority-redesign.md).
+The same-process factory/dual-ledger design through `68a28d` is not approved for implementation or
+activation.
+
 ## Context
 
 OpenClaw already has durable `task_runs`, `flow_runs`, and delivery queues. They track execution,
