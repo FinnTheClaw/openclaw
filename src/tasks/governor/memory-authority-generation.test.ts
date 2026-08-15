@@ -4,7 +4,7 @@ import {
   createGovernorMemoryAuthority,
   type GovernorMemoryAuthorityBinding,
 } from "../../security/governor-host-memory-authority.js";
-import { governorDigest } from "./canonical-json.js";
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 
 const SIGNING_KEY = "memory-authority-generation-fixture-key";
 
@@ -74,7 +74,11 @@ describe("governor memory authority generation binding", () => {
       const decision = authority.advance(source);
       expect(decision).toMatchObject({ accepted: true, state: { generation: next } });
       expect(decision.accepted && decision.state.bindingDigest).toBe(
-        governorDigest({ kind: "memory-current", ...source, generation: next }),
+        governorDigest({
+          kind: "memory-current",
+          ...source,
+          generation: next,
+        } as unknown as GovernorJsonValue),
       );
     }
   });

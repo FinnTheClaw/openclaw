@@ -83,7 +83,10 @@ function configFor(governor: Extract<BehaviorGovernorConfig, { enabled: true }>)
   } as unknown as OpenClawConfig;
 }
 
-function snapshotFor(stateDir: string, sourceConfig = sourceGovernor) {
+function snapshotFor(
+  stateDir: string,
+  sourceConfig: Extract<BehaviorGovernorConfig, { enabled: true }> = sourceGovernor,
+) {
   return {
     sourceConfig,
     config: { secretRefs: { ...resolvedGovernor.secretRefs } },
