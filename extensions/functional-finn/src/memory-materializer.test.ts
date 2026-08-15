@@ -5,11 +5,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FunctionalFinnMemoryLedger, type FunctionalFinnMemoryRecord } from "./memory-ledger.js";
 import {
   FunctionalFinnMemoryProjector,
-  FunctionalFinnMemoryProjectionService,
   materializeFunctionalFinnMemory,
   type FunctionalFinnMaterializerFileSystem,
   type FunctionalFinnMemoryProjectionState,
 } from "./memory-materializer.js";
+import { resolveFunctionalFinnProjectionPaths } from "./memory-projection-path.js";
+import { FunctionalFinnMemoryProjectionService } from "./memory-projection-service.js";
 
 const directories: string[] = [];
 
@@ -80,7 +81,11 @@ function projectionFixture(params: {
   const projector = new FunctionalFinnMemoryProjector(
     ledger,
     atomicStore(states),
-    (agentId) => params.workspaces[agentId] ?? "",
+    (agentId) =>
+      resolveFunctionalFinnProjectionPaths({
+        agentId,
+        workspaceDir: params.workspaces[agentId] ?? "",
+      }),
     params.now,
     params.materialize,
   );
@@ -88,19 +93,22 @@ function projectionFixture(params: {
 }
 
 function projectionPath(workspaceDir: string): string {
-  return path.join(workspaceDir, "memory", "verified", "functional-finn.md");
+  return path.join(workspaceDir, "memory", "functional-finn-verified.md");
 }
 
 function failingMaterializer(operation: "write" | "rename") {
   return (params: Parameters<typeof materializeFunctionalFinnMemory>[0]) => {
     const fileSystem: FunctionalFinnMaterializerFileSystem = {
       chmod: (target, mode) => fs.chmod(target, mode),
+      lstat: (target) => fs.lstat(target),
       mkdir: (target, options) => fs.mkdir(target, options),
+      readFile: (target, encoding) => fs.readFile(target, encoding),
       rename: (source, target) =>
         operation === "rename"
           ? Promise.reject(new Error("injected rename failure"))
           : fs.rename(source, target),
       rm: (target, options) => fs.rm(target, options),
+      rmdir: (target) => fs.rmdir(target),
       writeFile: (target, content, options) =>
         operation === "write"
           ? Promise.reject(new Error("injected write failure"))
@@ -322,6 +330,32 @@ describe("Functional Finn memory projection reconciliation", () => {
     await restarted.projector.reconcileAgent("finn", { force: true });
     expect(await fs.readFile(projectionPath(workspaceDir), "utf8")).toBe(firstContent);
     expect(writes).toBe(2);
+  });
+
+  it("migrates an old applied projection instead of accepting split recall state", async () => {
+    const workspaceDir = await workspace("applied-migration");
+    const fixture = projectionFixture({ workspaces: { finn: workspaceDir }, now: () => 100 });
+    const record = admit(fixture.ledger, {
+      factKey: "migration.fact",
+      claim: "The migrated fact is current.",
+      evidenceId: "migration",
+      observedAt: 100,
+    });
+    await fixture.projector.reconcileAgent("finn");
+    await fs.rm(projectionPath(workspaceDir));
+    const legacy = path.join(workspaceDir, "memory", "verified", "functional-finn.md");
+    await fs.mkdir(path.dirname(legacy), { recursive: true });
+    await fs.writeFile(
+      legacy,
+      `# Verified memory\n\n- ${record.claim} <!-- functional-finn:${record.revisionDigest}; observedAt=${record.observedAt}; freshnessUntil=${record.freshnessUntil} -->\n`,
+      "utf8",
+    );
+
+    await fixture.projector.reconcileAgent("finn");
+    await expect(fs.readFile(projectionPath(workspaceDir), "utf8")).resolves.toContain(
+      "The migrated fact is current.",
+    );
+    await expect(fs.access(legacy)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps projections agent-scoped and never resurrects stale evidence", async () => {

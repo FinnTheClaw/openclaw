@@ -1,0 +1,31 @@
+{
+  "candidate": {
+    "candidateId": "candidate-1",
+    "turnTicket": "turn-1",
+    "revision": 0,
+    "ingressId": "ingress-001",
+    "bindingId": "binding-001",
+    "responseClass": "factual",
+    "message": "Observed fact.",
+    "claims": [
+      {
+        "claimId": "claim-1",
+        "text": "Observed fact.",
+        "evidence": [
+          {
+            "kind": "signal_ingress",
+            "ingressId": "ingress-001",
+            "startByte": 0,
+            "endByte": 14,
+            "quote": "Observed fact.",
+            "receiptId": null
+          }
+        ]
+      }
+    ]
+  },
+  "candidateDigest": "61a04f9c71bdc99f51d75afd518be0821339b68f3576313286a8882f669be40a",
+  "validationCanonical": "{\"candidate\":{\"bindingId\":\"binding-001\",\"candidateId\":\"candidate-1\",\"claims\":[{\"claimId\":\"claim-1\",\"evidence\":[{\"endByte\":14,\"ingressId\":\"ingress-001\",\"kind\":\"signal_ingress\",\"quote\":\"Observed fact.\",\"receiptId\":null,\"startByte\":0}],\"text\":\"Observed fact.\"}],\"ingressId\":\"ingress-001\",\"message\":\"Observed fact.\",\"responseClass\":\"factual\",\"revision\":0,\"turnTicket\":\"turn-1\"},\"op\":\"candidate.validate\",\"requestId\":\"request-1\",\"schema\":\"functional-finn.release-ipc.v1\"}",
+  "releaseCanonical": "{\"candidateDigest\":\"61a04f9c71bdc99f51d75afd518be0821339b68f3576313286a8882f669be40a\",\"candidateId\":\"candidate-1\",\"message\":\"Observed fact.\",\"op\":\"candidate.release\",\"requestId\":\"release-1\",\"revision\":0,\"schema\":\"functional-finn.release-ipc.v1\",\"turnTicket\":\"turn-1\"}",
+  "ingressPullCanonical": "{\"afterOrdinal\":7,\"limit\":20,\"op\":\"ingress.pull\",\"requestId\":\"pull-1\",\"schema\":\"functional-finn.release-ipc.v1\"}"
+}

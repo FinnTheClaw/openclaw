@@ -12,12 +12,19 @@ import secrets
 import socket
 import sys
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any
 
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_SAFE_INTEGER = 9_007_199_254_740_991
+SIGNAL_FRAME_SCHEMA = "functional-finn.signal.send.v1"
+SIGNAL_FRAME_KEYS = frozenset({
+    "schema", "method", "accountId", "account", "targetKind", "targetValue",
+    "message", "textStyle", "quoteTimestamp", "quoteAuthor", "quoteMessage",
+})
 ACK = re.compile(r"^(?:ok(?:ay)?|thanks|thank you|got it|understood|noted|sounds good|you're welcome)[!. ]*$", re.I)
 ABSTENTION = "I don't have enough verified evidence to answer."
 
@@ -30,8 +37,54 @@ def _canonical(value: Any) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _canonical_frame(value: Any) -> bytes:
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, sort_keys=True).encode("utf-8")
+def _canonical_string(value: Any, allow_empty: bool = False) -> str:
+    if (
+        not isinstance(value, str)
+        or (not allow_empty and not value)
+        or unicodedata.normalize("NFC", value) != value
+        or any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+    ):
+        raise ValueError("noncanonical Signal frame string")
+    return value
+
+
+def _encode_signal_frame(value: Any) -> bytes:
+    if not isinstance(value, dict) or set(value) != SIGNAL_FRAME_KEYS:
+        raise ValueError("unknown or missing Signal frame fields")
+    if value["schema"] != SIGNAL_FRAME_SCHEMA or value["method"] != "send":
+        raise ValueError("invalid Signal frame schema")
+    target_kind = value["targetKind"]
+    if target_kind not in ("recipient", "group", "username"):
+        raise ValueError("invalid Signal frame target")
+    styles = value["textStyle"]
+    if not isinstance(styles, list):
+        raise ValueError("invalid Signal frame text-style")
+    timestamp = value["quoteTimestamp"]
+    quote_absent = timestamp is None and value["quoteAuthor"] is None and value["quoteMessage"] is None
+    quote_present = (
+        isinstance(timestamp, int)
+        and not isinstance(timestamp, bool)
+        and 0 < timestamp <= MAX_SAFE_INTEGER
+        and isinstance(value["quoteAuthor"], str)
+        and isinstance(value["quoteMessage"], str)
+    )
+    if not quote_absent and not quote_present:
+        raise ValueError("incomplete or noncanonical Signal frame quote")
+    account = value["account"]
+    ordered = [
+        SIGNAL_FRAME_SCHEMA,
+        "send",
+        _canonical_string(value["accountId"]),
+        None if account is None else _canonical_string(account),
+        target_kind,
+        _canonical_string(value["targetValue"]),
+        _canonical_string(value["message"]),
+        [_canonical_string(style) for style in styles],
+        timestamp,
+        None if value["quoteAuthor"] is None else _canonical_string(value["quoteAuthor"]),
+        None if value["quoteMessage"] is None else _canonical_string(value["quoteMessage"], True),
+    ]
+    return json.dumps(ordered, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def _english_bounded(value: str, limit: int) -> bool:
@@ -230,19 +283,15 @@ class FunctionalFinnVerifier:
             not authorization
             or not isinstance(candidate, str)
             or _digest(candidate) != authorization["payloadDigest"]
-            or not isinstance(frame, dict)
-            or frame.get("schemaVersion") != 1
-            or frame.get("method") != "send"
-            or frame.get("accountId") != authorization["accountId"]
-            or frame.get("targetDigest") != authorization["targetDigest"]
-            or not isinstance(frame.get("params"), dict)
-            or not isinstance(frame["params"].get("message"), str)
         ):
             return None
-        destinations = [field for field in ("recipient", "groupId", "username") if field in frame["params"]]
-        if len(destinations) != 1:
+        try:
+            encoded_frame = _encode_signal_frame(frame)
+        except (TypeError, ValueError, UnicodeError):
             return None
-        frame_digest = _digest(_canonical_frame(frame).decode("utf-8"))
+        if frame["accountId"] != authorization["accountId"]:
+            return None
+        frame_digest = hashlib.sha256(encoded_frame).hexdigest()
         receipt = {
             **{key: authorization[key] for key in (
                 "schemaVersion", "keyId", "agentId", "sessionKeyDigest", "runId", "channel", "accountId",

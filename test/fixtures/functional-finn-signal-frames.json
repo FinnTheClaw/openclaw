@@ -1,0 +1,74 @@
+[
+  {
+    "name": "recipient case punctuation unicode and styles",
+    "frame": {
+      "schema": "functional-finn.signal.send.v1",
+      "method": "send",
+      "accountId": "Default-A",
+      "account": "+15550001111",
+      "targetKind": "recipient",
+      "targetValue": "+15551234567",
+      "message": "Case Aa! café/東京 😀",
+      "textStyle": ["0:4:BOLD", "5:2:ITALIC"],
+      "quoteTimestamp": null,
+      "quoteAuthor": null,
+      "quoteMessage": null
+    },
+    "encodedHex": "5b2266756e6374696f6e616c2d66696e6e2e7369676e616c2e73656e642e7631222c2273656e64222c2244656661756c742d41222c222b3135353530303031313131222c22726563697069656e74222c222b3135353531323334353637222c22436173652041612120636166c3a92fe69db1e4baac20f09f9880222c5b22303a343a424f4c44222c22353a323a4954414c4943225d2c6e756c6c2c6e756c6c2c6e756c6c5d",
+    "digest": "4b3e8fa86a528713c605abff6d15097bf4af15fa30c2af2899e846529eff87ef"
+  },
+  {
+    "name": "group punctuation newline and absent account",
+    "frame": {
+      "schema": "functional-finn.signal.send.v1",
+      "method": "send",
+      "accountId": "group.work",
+      "account": null,
+      "targetKind": "group",
+      "targetValue": "Group:ABC-123",
+      "message": "Punctuation: []{}; quote!?\nSecond line.",
+      "textStyle": [],
+      "quoteTimestamp": null,
+      "quoteAuthor": null,
+      "quoteMessage": null
+    },
+    "encodedHex": "5b2266756e6374696f6e616c2d66696e6e2e7369676e616c2e73656e642e7631222c2273656e64222c2267726f75702e776f726b222c6e756c6c2c2267726f7570222c2247726f75703a4142432d313233222c2250756e6374756174696f6e3a205b5d7b7d3b2071756f7465213f5c6e5365636f6e64206c696e652e222c5b5d2c6e756c6c2c6e756c6c2c6e756c6c5d",
+    "digest": "bc98a124f22040c576655cfb8c041730ba54e80646ebbf8a3c94cac7ee255568"
+  },
+  {
+    "name": "username quote unicode and maximum safe timestamp",
+    "frame": {
+      "schema": "functional-finn.signal.send.v1",
+      "method": "send",
+      "accountId": "Work",
+      "account": "+15550001111",
+      "targetKind": "username",
+      "targetValue": "u:Alice.Punct+Tag",
+      "message": "Reply — “Yes?” 🧪",
+      "textStyle": ["0:5:SPOILER"],
+      "quoteTimestamp": 9007199254740991,
+      "quoteAuthor": "+15550002222",
+      "quoteMessage": "Original\nLine №2"
+    },
+    "encodedHex": "5b2266756e6374696f6e616c2d66696e6e2e7369676e616c2e73656e642e7631222c2273656e64222c22576f726b222c222b3135353530303031313131222c22757365726e616d65222c22753a416c6963652e50756e63742b546167222c225265706c7920e2809420e2809c5965733fe2809d20f09fa7aa222c5b22303a353a53504f494c4552225d2c393030373139393235343734303939312c222b3135353530303032323232222c224f726967696e616c5c6e4c696e6520e2849632225d",
+    "digest": "469922a8daddbff5341d347e14eff45b417003570736d2bc5fc34d5171e7c20b"
+  },
+  {
+    "name": "supplementary Unicode scalars",
+    "frame": {
+      "schema": "functional-finn.signal.send.v1",
+      "method": "send",
+      "accountId": "supplementary",
+      "account": "+15550001111",
+      "targetKind": "recipient",
+      "targetValue": "+15551234567",
+      "message": "Supplementary: 𠀀 😀",
+      "textStyle": [],
+      "quoteTimestamp": null,
+      "quoteAuthor": null,
+      "quoteMessage": null
+    },
+    "encodedHex": "5b2266756e6374696f6e616c2d66696e6e2e7369676e616c2e73656e642e7631222c2273656e64222c22737570706c656d656e74617279222c222b3135353530303031313131222c22726563697069656e74222c222b3135353531323334353637222c22537570706c656d656e746172793a20f0a0808020f09f9880222c5b5d2c6e756c6c2c6e756c6c2c6e756c6c5d",
+    "digest": "78c4d737cf7f043db339896c4fcbfe2869c203ac8466800624f0846a39f0a9e8"
+  }
+]

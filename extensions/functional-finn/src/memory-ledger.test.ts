@@ -71,7 +71,11 @@ describe("Functional Finn verified memory ledger", () => {
     expect(ledger.recall({ agentId: "finn", now: 160, factKey: first.factKey })).toEqual([
       replacement,
     ]);
-    const rendered = renderFunctionalFinnMemory([replacement], "finn");
+    const rendered = renderFunctionalFinnMemory(
+      [replacement],
+      "finn",
+      "<!-- functional-finn:test-owner -->",
+    );
     expect(rendered).toContain("endpoint is beta");
     expect(rendered).not.toContain("endpoint is alpha");
     expect(old.revisionDigest).not.toBe(replacement.revisionDigest);

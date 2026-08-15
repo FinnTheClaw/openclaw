@@ -5,12 +5,15 @@ import {
   type FunctionalFinnVerifier,
 } from "./release-policy.js";
 
-function memoryStore<T>() {
+function memoryStore<T>(maxEntries = Number.POSITIVE_INFINITY) {
   const values = new Map<string, T>();
   return {
     register: (key: string, value: T) => void values.set(key, value),
     registerIfAbsent: (key: string, value: T) => {
       if (values.has(key)) {
+        return false;
+      }
+      if (values.size >= maxEntries) {
         return false;
       }
       values.set(key, value);
@@ -156,6 +159,60 @@ describe("Functional Finn release policy", () => {
       target: "+1",
     });
     expect(verify).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 1 }));
+  });
+
+  it("rejects overflow without losing the oldest revision across reconstruction", async () => {
+    const verify = vi.fn<FunctionalFinnVerifier>().mockResolvedValue({
+      ok: false,
+      code: "UNSUPPORTED",
+    });
+    const stores = {
+      sessions: memoryStore<{ agentId: string; channel: string }>(),
+      revisions: memoryStore<{ requested: true }>(1),
+    };
+    const first = fixture(verify, stores);
+    await expect(
+      first.policy.beforeFinalize({ text: "bad", sessionKey: "s", runId: "oldest" }),
+    ).resolves.toMatchObject({ action: "revise" });
+
+    const reconstructed = fixture(verify, stores);
+    await expect(
+      reconstructed.policy.beforeFinalize({
+        text: "still bad",
+        sessionKey: "s",
+        runId: "oldest",
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      reconstructed.policy.beforeFinalize({ text: "bad", sessionKey: "s", runId: "new" }),
+    ).rejects.toThrow(/capacity exhausted/);
+    expect(stores.revisions.entries()).toEqual([{ key: "s:oldest", value: { requested: true } }]);
+
+    const revisedText = JSON.stringify({
+      schemaVersion: 1,
+      responseClass: "factual",
+      answerText: "The service is healthy.",
+      abstain: false,
+      claims: [
+        {
+          claimId: "c1",
+          text: "The service is healthy.",
+          classification: "observed",
+          confidence: 0.95,
+          sources: [{ evidenceId: "missing", start: 0, end: 1, quote: "x" }],
+        },
+      ],
+    });
+    await reconstructed.policy.prepareReply({
+      text: revisedText,
+      sessionKey: "s",
+      runId: "oldest",
+      channel: "signal",
+      accountId: "a",
+      target: "+1",
+    });
+    expect(verify).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 1 }));
+    expect(stores.revisions.entries()).toHaveLength(1);
   });
 
   it("does not govern unbound sessions", async () => {

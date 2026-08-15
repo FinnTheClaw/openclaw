@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   digestFunctionalFinnPayload,
   digestFunctionalFinnTarget,
@@ -17,7 +18,6 @@ import {
   digestFunctionalFinnSignalFrame,
   type FunctionalFinnSignalFrame,
 } from "./functional-finn-signal-frame.js";
-import type { OpenClawConfig } from "./runtime-api.js";
 
 type FunctionalFinnVerifierEndpoint = { socketPath: string; timeoutMs: number };
 
@@ -260,7 +260,6 @@ export async function authorizeFunctionalFinnSignalSend(params: {
   const payloadDigest = digestFunctionalFinnPayload(params.sourceText);
   if (
     params.frame.accountId !== params.accountId ||
-    params.frame.targetDigest !== targetDigest ||
     identity.accountId !== params.accountId ||
     identity.targetDigest !== targetDigest ||
     identity.payloadDigest !== payloadDigest

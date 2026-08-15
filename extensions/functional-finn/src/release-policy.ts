@@ -12,6 +12,10 @@ type SyncStore<T> = {
   register: (key: string, value: T, options?: { ttlMs?: number }) => void;
   lookup: (key: string) => T | undefined;
 };
+type RevisionStore = {
+  registerIfAbsent: (key: string, value: { requested: true }) => boolean;
+  lookup: (key: string) => { requested: true } | undefined;
+};
 
 export type FunctionalFinnVerifier = (
   request: Extract<FunctionalFinnVerifierRequest, { operation: "validate" | "authorize" }>,
@@ -20,7 +24,7 @@ export type FunctionalFinnVerifier = (
 export function createFunctionalFinnReleasePolicy(params: {
   config: FunctionalFinnConfig;
   sessions: SyncStore<SessionBinding>;
-  revisions: SyncStore<{ requested: true }>;
+  revisions: RevisionStore;
   evidence: FunctionalFinnEvidenceStore;
   verify: FunctionalFinnVerifier;
 }) {
@@ -116,7 +120,14 @@ export function createFunctionalFinnReleasePolicy(params: {
       if (valid || params.revisions.lookup(key)) {
         return undefined;
       }
-      params.revisions.register(key, { requested: true }, { ttlMs: 24 * 60 * 60 * 1_000 });
+      // A revision marker is run authority: losing it can authorize another revision.
+      // Reject a new run when the durable store is full; never evict or expire an older marker.
+      if (!params.revisions.registerIfAbsent(key, { requested: true })) {
+        if (params.revisions.lookup(key)) {
+          return undefined;
+        }
+        throw new Error("Functional Finn revision marker store capacity exhausted");
+      }
       return {
         action: "revise",
         reason: "Functional Finn evidence verification failed",

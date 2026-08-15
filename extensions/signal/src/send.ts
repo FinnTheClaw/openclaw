@@ -21,6 +21,7 @@ import {
 } from "./approval-reactions.js";
 import { signalRpcRequest } from "./client-adapter.js";
 import { markdownToSignalText, type SignalTextStyleRange } from "./format.js";
+import { assertSignalDirectTransportAllowed } from "./functional-finn-external-config.js";
 import { rejectFunctionalFinnSignalQuote } from "./functional-finn-release-store.js";
 import {
   preflightFunctionalFinnSignalSend,
@@ -255,9 +256,14 @@ export async function sendMessageSignal(
     cfg,
     accountId: opts.accountId,
   });
+  assertSignalDirectTransportAllowed({
+    cfg,
+    accountId: accountInfo.accountId,
+    operation: "direct send",
+  });
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
   const target = parseTarget(to);
-  preflightFunctionalFinnSignalSend({
+  const functionalFinnReleaseMode = preflightFunctionalFinnSignalSend({
     cfg,
     accountId: accountInfo.accountId,
     sourceText: text,
@@ -382,12 +388,17 @@ export async function sendMessageSignal(
     } catch (error) {
       const durableRejection =
         error instanceof Error && error.message === "Functional Finn durable quote rejection";
-      if (!durableRejection && !isSignalQuoteMetadataRejection(error)) {
-        throw error;
-      }
       if (!durableRejection) {
+        if (!isSignalQuoteMetadataRejection(error)) {
+          throw error;
+        }
         const logicalId = (error as Error & { functionalFinnLogicalId?: string })
           .functionalFinnLogicalId;
+        // Only the physical quoted RPC carries a logical id. A quote-like verifier/store
+        // error must not consume that frame or unlock the separately bound fallback.
+        if (!logicalId && functionalFinnReleaseMode === "verified_candidate") {
+          throw error;
+        }
         if (logicalId) {
           rejectFunctionalFinnSignalQuote(logicalId);
         }
@@ -438,6 +449,11 @@ export async function sendTypingSignal(
 ): Promise<boolean> {
   const accountInfo = await resolveSignalRpcAccountInfo(opts);
   const cfg = requireRuntimeConfig(opts.cfg, "Signal typing");
+  assertSignalDirectTransportAllowed({
+    cfg,
+    accountId: accountInfo?.accountId ?? opts.accountId,
+    operation: "typing",
+  });
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
   const targetParams = buildTargetParams(parseTarget(to), {
     recipient: true,
@@ -471,6 +487,11 @@ export async function sendReadReceiptSignal(
   }
   const accountInfo = await resolveSignalRpcAccountInfo(opts);
   const cfg = requireRuntimeConfig(opts.cfg, "Signal read receipt");
+  assertSignalDirectTransportAllowed({
+    cfg,
+    accountId: accountInfo?.accountId ?? opts.accountId,
+    operation: "read receipt",
+  });
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
   const targetParams = buildTargetParams(parseTarget(to), {
     recipient: true,

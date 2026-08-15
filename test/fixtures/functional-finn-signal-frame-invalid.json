@@ -1,0 +1,34 @@
+[
+  {
+    "name": "lone high surrogate",
+    "frame": {
+      "schema": "functional-finn.signal.send.v1",
+      "method": "send",
+      "accountId": "default",
+      "account": "+15550001111",
+      "targetKind": "recipient",
+      "targetValue": "+15551234567",
+      "message": "\ud800",
+      "textStyle": [],
+      "quoteTimestamp": null,
+      "quoteAuthor": null,
+      "quoteMessage": null
+    }
+  },
+  {
+    "name": "lone low surrogate",
+    "frame": {
+      "schema": "functional-finn.signal.send.v1",
+      "method": "send",
+      "accountId": "default",
+      "account": "+15550001111",
+      "targetKind": "recipient",
+      "targetValue": "+15551234567",
+      "message": "\udfff",
+      "textStyle": [],
+      "quoteTimestamp": null,
+      "quoteAuthor": null,
+      "quoteMessage": null
+    }
+  }
+]

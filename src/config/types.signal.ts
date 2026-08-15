@@ -7,6 +7,15 @@ export type SignalReactionNotificationMode = "off" | "own" | "all" | "allowlist"
 export type SignalReactionLevel = "off" | "ack" | "minimal" | "extensive";
 export type SignalApiMode = "auto" | "native" | "container";
 
+export type SignalFunctionalFinnExternalAuthorityConfig = {
+  enabled: true;
+  agentId: string;
+  candidateSocketPath: string;
+  ingressSocketPath: string;
+  timeoutMs?: number;
+  protectedTransport: true;
+};
+
 export type SignalGroupConfig = {
   requireMention?: boolean;
   /** Emit internal message hooks for mention-skipped group messages. */
@@ -16,6 +25,8 @@ export type SignalGroupConfig = {
 };
 
 export type SignalAccountConfig = CommonChannelMessagingConfig & {
+  /** External two-service release authority. Protected accounts never use direct Signal transport. */
+  functionalFinnExternalAuthority?: SignalFunctionalFinnExternalAuthorityConfig;
   /** Optional explicit E.164 account for signal-cli. */
   account?: string;
   /** Optional account UUID for signal-cli (used for loop protection). */

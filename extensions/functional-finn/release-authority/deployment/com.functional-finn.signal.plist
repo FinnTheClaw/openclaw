@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.functional-finn.signal</string>
+  <key>UserName</key><string>_finnsig</string>
+  <key>GroupName</key><string>_finnsig</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/FunctionalFinn/releases/RELEASE_ID/bin/finnsig</string>
+    <string>serve</string>
+    <string>--policy</string>
+    <string>/Library/FunctionalFinn/policy/authority-policy.json</string>
+  </array>
+  <key>WorkingDirectory</key><string>/var/empty</string>
+  <key>Umask</key><integer>63</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>EnableTransactions</key><true/>
+  <key>Sockets</key>
+  <dict>
+    <key>ReleaseSocket</key>
+    <dict>
+      <key>SockPathName</key><string>/var/run/functional-finn/signal-release/release.sock</string>
+      <key>SockPathOwner</key><string>_finnsig</string>
+      <key>SockPathGroup</key><string>_finnrelease</string>
+      <key>SockPathMode</key><integer>432</integer>
+    </dict>
+    <key>IngressSocket</key>
+    <dict>
+      <key>SockPathName</key><string>/var/run/functional-finn/signal-ingress/ingress.sock</string>
+      <key>SockPathOwner</key><string>_finnsig</string>
+      <key>SockPathGroup</key><string>_finningress</string>
+      <key>SockPathMode</key><integer>432</integer>
+    </dict>
+  </dict>
+  <key>StandardOutPath</key><string>/var/log/functional-finn/signal.log</string>
+  <key>StandardErrorPath</key><string>/var/log/functional-finn/signal.err.log</string>
+</dict>
+</plist>

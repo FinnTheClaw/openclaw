@@ -49,10 +49,7 @@ import {
 } from "./approval-reactions.js";
 import { signalRpcRequest, signalCheck } from "./client-adapter.js";
 import { formatSignalDaemonExit, spawnSignalDaemon, type SignalDaemonHandle } from "./daemon.js";
-import {
-  createSignalHostControlDelivery,
-  readFunctionalFinnVerifiedDelivery,
-} from "./functional-finn-release.js";
+import { readFunctionalFinnVerifiedDelivery } from "./functional-finn-release.js";
 import { isSignalSenderAllowed, type resolveSignalSender } from "./identity.js";
 import { createSignalEventHandler } from "./monitor/event-handler.js";
 import type {
@@ -414,13 +411,7 @@ export async function deliverReplies(params: {
         targetAuthor: account,
         targetAuthorUuid: accountUuid,
       }) ?? payload;
-    const functionalFinnDelivery =
-      readFunctionalFinnVerifiedDelivery(deliveredPayload.channelData) ??
-      (deliveredPayload.isStatusNotice ||
-      deliveredPayload.isCompactionNotice ||
-      deliveredPayload.isFallbackNotice
-        ? createSignalHostControlDelivery()
-        : undefined);
+    const functionalFinnDelivery = readFunctionalFinnVerifiedDelivery(deliveredPayload.channelData);
     const reply = resolveSendableOutboundReplyParts(deliveredPayload);
     const nextNativeReply = createSignalNativeReplyResolver({
       payload: deliveredPayload,
@@ -446,7 +437,9 @@ export async function deliverReplies(params: {
     const delivered = await deliverTextOrMediaReply({
       payload: deliveredPayload,
       text: reply.text,
-      chunkText: (value) => chunkTextWithMode(value, textLimit, chunkMode),
+      // A verifier authorization binds one physical frame. Never fan it out across chunks.
+      chunkText: (value) =>
+        functionalFinnDelivery ? [value] : chunkTextWithMode(value, textLimit, chunkMode),
       sendText: async (chunk) => {
         recordDeliveryResult(
           await sendMessageSignal(target, chunk, {

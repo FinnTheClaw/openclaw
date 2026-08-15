@@ -40,28 +40,6 @@ export const digestFunctionalFinnSessionKey = digest;
 export const digestFunctionalFinnTarget = (target: string): string =>
   digest(target.trim().toLowerCase());
 
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(canonicalize);
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([, item]) => item !== undefined)
-        .toSorted(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, canonicalize(item)]),
-    );
-  }
-  return value;
-}
-
-export function canonicalFunctionalFinnFrame(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
-}
-
-export const digestFunctionalFinnFrame = (value: unknown): string =>
-  digest(canonicalFunctionalFinnFrame(value));
-
 export function serializeFunctionalFinnReceipt(
   receipt: FunctionalFinnReleaseReceiptUnsigned,
 ): Buffer {

@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import path from "node:path";
 import type { FunctionalFinnMemoryLedger, FunctionalFinnMemoryRecord } from "./memory-ledger.js";
+import {
+  inspectFunctionalFinnProjectionOwnership,
+  retireFunctionalFinnLegacyProjection,
+  type FunctionalFinnProjectionPaths,
+} from "./memory-projection-path.js";
 
-const RECONCILE_INTERVAL_MS = 60_000;
 const MAX_RECONCILE_PASSES = 4;
 
 export type FunctionalFinnMemoryProjectionState = {
@@ -28,9 +31,16 @@ export type FunctionalFinnProjectionStateStore = {
 
 export type FunctionalFinnMaterializerFileSystem = {
   chmod: (target: string, mode: number) => Promise<unknown>;
+  lstat: (target: string) => Promise<{
+    isDirectory: () => boolean;
+    isFile: () => boolean;
+    isSymbolicLink: () => boolean;
+  }>;
   mkdir: (target: string, options: { recursive: true; mode: number }) => Promise<unknown>;
+  readFile: (target: string, encoding: "utf8") => Promise<string>;
   rename: (source: string, target: string) => Promise<unknown>;
   rm: (target: string, options: { force: true }) => Promise<unknown>;
+  rmdir: (target: string) => Promise<unknown>;
   writeFile: (
     target: string,
     content: string,
@@ -38,27 +48,12 @@ export type FunctionalFinnMaterializerFileSystem = {
   ) => Promise<unknown>;
 };
 
-type IntervalScheduler = {
-  set: (callback: () => void, intervalMs: number) => unknown;
-  clear: (handle: unknown) => void;
-};
-
-const defaultScheduler: IntervalScheduler = {
-  set(callback, intervalMs) {
-    const handle = setInterval(callback, intervalMs);
-    handle.unref?.();
-    return handle;
-  },
-  clear(handle) {
-    clearInterval(handle as NodeJS.Timeout);
-  },
-};
-
 const materializationQueues = new Map<string, Promise<void>>();
 
 export function renderFunctionalFinnMemory(
   records: FunctionalFinnMemoryRecord[],
   agentId: string,
+  ownerHeader: string,
 ): string {
   if (records.some((record) => record.agentId !== agentId)) {
     throw new Error("cross-agent memory projection refused");
@@ -70,34 +65,44 @@ export function renderFunctionalFinnMemory(
       (record) =>
         `- ${record.claim} <!-- functional-finn:${record.revisionDigest}; observedAt=${record.observedAt}; freshnessUntil=${record.freshnessUntil} -->`,
     );
-  return ["# Verified memory", "", ...rows, ""].join("\n");
+  return [ownerHeader, "# Verified memory", "", ...rows, ""].join("\n");
 }
 
 export async function materializeFunctionalFinnMemory(params: {
-  workspaceDir: string;
+  paths: FunctionalFinnProjectionPaths;
   agentId: string;
   records: FunctionalFinnMemoryRecord[];
   attemptId: string;
   fileSystem?: FunctionalFinnMaterializerFileSystem;
 }): Promise<string> {
   const fileSystem = params.fileSystem ?? fs;
-  const directory = path.join(params.workspaceDir, "memory", "verified");
-  const target = path.join(directory, "functional-finn.md");
+  const { memoryDir: directory, target } = params.paths;
   const previous = materializationQueues.get(target) ?? Promise.resolve();
   const current = previous
     .catch(() => undefined)
     .then(async () => {
       const temporary = `${target}.${process.pid}.${params.attemptId.slice(0, 16)}.${randomUUID()}.tmp`;
+      await inspectFunctionalFinnProjectionOwnership({
+        paths: params.paths,
+        fileSystem,
+      });
       await fileSystem.mkdir(directory, { recursive: true, mode: 0o700 });
+      const ownership = await inspectFunctionalFinnProjectionOwnership({
+        paths: params.paths,
+        fileSystem,
+      });
       await fileSystem.chmod(directory, 0o700);
       try {
         await fileSystem.writeFile(
           temporary,
-          renderFunctionalFinnMemory(params.records, params.agentId),
+          renderFunctionalFinnMemory(params.records, params.agentId, params.paths.ownerHeader),
           { encoding: "utf8", flag: "wx", mode: 0o600 },
         );
         await fileSystem.rename(temporary, target);
         await fileSystem.chmod(target, 0o600);
+        if (ownership.legacyPresent) {
+          await retireFunctionalFinnLegacyProjection({ paths: params.paths, fileSystem });
+        }
       } finally {
         await fileSystem.rm(temporary, { force: true }).catch(() => undefined);
       }
@@ -141,7 +146,7 @@ export class FunctionalFinnMemoryProjector {
   constructor(
     private readonly ledger: FunctionalFinnMemoryLedger,
     private readonly states: FunctionalFinnProjectionStateStore,
-    private readonly workspaceForAgent: (agentId: string) => string,
+    private readonly pathsForAgent: (agentId: string) => FunctionalFinnProjectionPaths,
     private readonly now: () => number = Date.now,
     private readonly materialize: typeof materializeFunctionalFinnMemory = materializeFunctionalFinnMemory,
   ) {}
@@ -166,8 +171,12 @@ export class FunctionalFinnMemoryProjector {
     agentId: string,
     force: boolean,
   ): Promise<FunctionalFinnMemoryProjectionState> {
-    const workspaceDir = this.workspaceForAgent(agentId);
+    const paths = this.pathsForAgent(agentId);
+    const ownership = await inspectFunctionalFinnProjectionOwnership({ paths });
     let mustWrite = force;
+    if (!ownership.canonicalPresent || ownership.legacyPresent) {
+      mustWrite = true;
+    }
     for (let pass = 0; pass < MAX_RECONCILE_PASSES; pass += 1) {
       const attemptedAt = this.now();
       const currentSnapshot = snapshot({ agentId, ledger: this.ledger, now: attemptedAt });
@@ -198,7 +207,7 @@ export class FunctionalFinnMemoryProjector {
         throw new Error("memory projection remediation did not persist");
       }
       await this.materialize({
-        workspaceDir,
+        paths,
         agentId,
         records: currentSnapshot.eligible,
         attemptId: currentSnapshot.attemptId,
@@ -239,54 +248,5 @@ export class FunctionalFinnMemoryProjector {
       return applied;
     }
     throw new Error("memory projection changed during every bounded reconciliation pass");
-  }
-}
-
-export class FunctionalFinnMemoryProjectionService {
-  private timer: unknown;
-  private queued = Promise.resolve();
-
-  constructor(
-    private readonly projector: FunctionalFinnMemoryProjector,
-    private readonly agentIds: readonly string[],
-    private readonly onError: (agentId: string, error: unknown) => void,
-    private readonly scheduler: IntervalScheduler = defaultScheduler,
-    private readonly intervalMs = RECONCILE_INTERVAL_MS,
-  ) {}
-
-  async start(): Promise<void> {
-    if (this.timer !== undefined) {
-      return;
-    }
-    await this.run(true);
-    this.timer = this.scheduler.set(() => void this.run(false), this.intervalMs);
-  }
-
-  runExpiryReconciliation(): Promise<void> {
-    return this.run(false);
-  }
-
-  async stop(): Promise<void> {
-    if (this.timer !== undefined) {
-      this.scheduler.clear(this.timer);
-      this.timer = undefined;
-    }
-    await this.queued;
-  }
-
-  private run(force: boolean): Promise<void> {
-    const next = this.queued
-      .catch(() => undefined)
-      .then(async () => {
-        for (const agentId of this.agentIds) {
-          try {
-            await this.projector.reconcileAgent(agentId, { force });
-          } catch (error) {
-            this.onError(agentId, error);
-          }
-        }
-      });
-    this.queued = next;
-    return next;
   }
 }

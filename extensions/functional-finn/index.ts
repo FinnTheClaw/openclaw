@@ -1,12 +1,15 @@
 import { definePluginEntry } from "./api.js";
 import { readFunctionalFinnConfig } from "./src/config.js";
 import { FunctionalFinnEvidenceStore } from "./src/evidence-store.js";
+import {
+  createFunctionalFinnExternalReleasePolicy,
+  type FunctionalFinnExternalCandidateRecord,
+} from "./src/external-release-policy.js";
 import { registerFunctionalFinnMemoryTool } from "./src/memory-tool.js";
 import {
   formatFunctionalFinnEvidenceContext,
   FUNCTIONAL_FINN_ENVELOPE_PROMPT,
 } from "./src/prompt-contract.js";
-import { createFunctionalFinnReleasePolicy } from "./src/release-policy.js";
 import { createFunctionalFinnAdmission } from "./src/request-admission.js";
 import { classifyFunctionalFinnRequest } from "./src/request-classifier.js";
 import { FunctionalFinnTransientStore } from "./src/transient-store.js";
@@ -18,29 +21,18 @@ export default definePluginEntry({
   description: "Bounded Goal admission, verified memory, and fail-closed answer release.",
   register(api) {
     const config = readFunctionalFinnConfig(api.pluginConfig);
-    const sessions = api.runtime.state.openSyncKeyedStore<{ agentId: string; channel: string }>({
-      namespace: "functional-finn-sessions",
-      maxEntries: 2_000,
-      overflowPolicy: "evict-oldest",
-    });
     const revisions = api.runtime.state.openSyncKeyedStore<{ requested: true }>({
       namespace: "functional-finn-revisions",
       maxEntries: 2_000,
-      overflowPolicy: "evict-oldest",
+      overflowPolicy: "reject-new",
+    });
+    const candidates = api.runtime.state.openSyncKeyedStore<FunctionalFinnExternalCandidateRecord>({
+      namespace: "functional-finn-external-candidates",
+      maxEntries: 2_000,
+      overflowPolicy: "reject-new",
     });
     const evidence = new FunctionalFinnEvidenceStore(new FunctionalFinnTransientStore(10_000));
-    const policy = createFunctionalFinnReleasePolicy({
-      config,
-      sessions,
-      revisions,
-      evidence,
-      verify: (request) =>
-        requestFunctionalFinnVerifier({
-          socketPath: config.verifierSocketPath,
-          timeoutMs: config.verifierTimeoutMs,
-          request,
-        }),
-    });
+    const externalRelease = createFunctionalFinnExternalReleasePolicy({ candidates, revisions });
     const admission = createFunctionalFinnAdmission({
       config,
       ensureGoal: (params) => api.runtime.goals.ensure(params),
@@ -60,11 +52,7 @@ export default definePluginEntry({
     });
 
     api.on("before_agent_run", async (event, context) => {
-      policy.bindSession({
-        sessionKey: context.sessionKey,
-        agentId: context.agentId,
-        channel: context.channel ?? event.channelId,
-      });
+      externalRelease.bindRun(context.runId, context.channelContext);
       if (
         context.agentId &&
         context.runId &&
@@ -119,52 +107,53 @@ export default definePluginEntry({
         return undefined;
       }
       const appendContext = formatFunctionalFinnEvidenceContext(evidence.listRun(context.runId));
-      return appendContext ? { appendContext } : undefined;
+      const ingress = externalRelease.evidenceForRun(context.runId);
+      const externalContext = ingress
+        ? `[${ingress.ingressId}] observedAt=${ingress.receivedAt}\n${ingress.content}`
+        : undefined;
+      const combined = externalContext ?? appendContext;
+      return combined ? { appendContext: combined } : undefined;
     });
 
     api.on("before_agent_finalize", (event, context) =>
-      policy.beforeFinalize({
+      externalRelease.beforeFinalize({
         text: event.lastAssistantMessage,
         sessionKey: event.sessionKey ?? context.sessionKey,
         runId: event.runId ?? context.runId,
-        channel: context.channel,
+        channelContext: context.channelContext,
       }),
     );
 
     api.on("reply_payload_sending", async (event, context) => {
-      const existingRelease = event.payload.channelData?.functionalFinnRelease;
-      if (existingRelease && typeof existingRelease === "object") {
+      const existingEscrow = event.payload.channelData?.functionalFinnExternalEscrow;
+      if (existingEscrow && typeof existingEscrow === "object") {
         return undefined;
       }
-      const prepared = await policy.prepareReply({
+      const prepared = externalRelease.prepareReply({
         text: event.payload.text,
         sessionKey: event.sessionKey ?? context.sessionKey,
         runId: event.runId ?? context.runId,
-        channel: event.channel ?? context.channelId,
-        accountId: context.accountId,
-        target: context.conversationId,
       });
       if (!prepared) {
         return undefined;
       }
-      if ("cancel" in prepared) {
-        return prepared;
+      if ("blocked" in prepared) {
+        return { cancel: true, reason: "Functional Finn external escrow is not releaseable" };
       }
       return {
         payload: {
           ...event.payload,
-          text: prepared.text,
+          text: prepared.escrow.candidate.message,
           channelData: {
             ...event.payload.channelData,
-            functionalFinnRelease: {
-              kind: "verified_candidate",
-              candidateText: prepared.text,
-              authorization: prepared.authorization,
-              verifier: prepared.verifier,
-            },
+            functionalFinnExternalEscrow: prepared.escrow,
           },
         },
       };
+    });
+
+    api.on("agent_end", (event, context) => {
+      externalRelease.clearRun(event.runId ?? context.runId);
     });
   },
 });

@@ -79,6 +79,21 @@ export type SignalReceivePayload = {
   exception?: { message?: string } | null;
 };
 
+export type SignalTrustedFunctionalFinnIngress = {
+  schema: 1;
+  agentId: string;
+  ingressId: string;
+  bindingId: string;
+  accountId: string;
+  sourceId: string;
+  contentDigest: string;
+  content: string;
+  receivedAt: number;
+  sequence: number;
+  candidateSocketPath: string;
+  timeoutMs: number;
+};
+
 export type SignalNativeReplyContext = {
   replyToId?: string;
   author?: string;
@@ -109,6 +124,7 @@ export type SignalEventHandlerDeps = {
   ignoreAttachments: boolean;
   sendReadReceipts: boolean;
   readReceiptsViaDaemon: boolean;
+  transportFeedbackEnabled?: boolean;
   fetchAttachment: (params: {
     baseUrl: string;
     account?: string;

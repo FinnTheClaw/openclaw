@@ -1,0 +1,33 @@
+{
+  "schema": "functional-finn.authority-policy.v2",
+  "finnrel": {
+    "uid": 470,
+    "openclawUid": 469,
+    "keyPath": "/var/db/functional-finn/release/release-ed25519.pem",
+    "keyId": "REPLACE_WITH_PINNED_KEY_ID",
+    "ledgerPath": "/var/db/functional-finn/release/release.sqlite",
+    "candidateSocket": {"path": "/var/run/functional-finn/release-candidate/candidate.sock", "groupGid": 570},
+    "finnsigSocket": {"path": "/var/run/functional-finn/signal-release/release.sock", "groupGid": 571},
+    "finnsigUid": 471,
+    "hhemPython": "/Library/FunctionalFinn/releases/RELEASE_ID/hhem-venv/bin/python3",
+    "hhemWorker": "/Library/FunctionalFinn/releases/RELEASE_ID/lib/hhem_worker.py",
+    "hhemBundle": "/Library/FunctionalFinn/models/hhem-2.1-open/8e4a2e6e96c708cc76c2344f7e4757df2515292c",
+    "flanBundle": "/Library/FunctionalFinn/models/flan-t5-base/7bcac572ce56db69c1ea7c8af255c5d7c9672fc2",
+    "hhemTimeoutMs": 1500
+  },
+  "finnsig": {
+    "uid": 471,
+    "openclawUid": 469,
+    "finnrelUid": 470,
+    "releasePublicKeyPath": "/Library/FunctionalFinn/policy/release-ed25519.pub.pem",
+    "releaseKeyId": "REPLACE_WITH_PINNED_KEY_ID",
+    "senderLedgerPath": "/var/db/functional-finn/signal/sender.sqlite",
+    "ingressLedgerPath": "/var/db/functional-finn/signal/ingress.sqlite",
+    "releaseSocket": {"path": "/var/run/functional-finn/signal-release/release.sock", "groupGid": 571},
+    "ingressSocket": {"path": "/var/run/functional-finn/signal-ingress/ingress.sock", "groupGid": 572},
+    "signalCliPath": "/Library/FunctionalFinn/releases/RELEASE_ID/bin/signal-cli",
+    "signalStorePath": "/var/db/functional-finn/signal/signal-store",
+    "signalAccount": "REPLACE_WITH_SIGNAL_ACCOUNT",
+    "accountId": "finn-signal"
+  }
+}

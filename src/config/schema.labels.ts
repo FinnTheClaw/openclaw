@@ -2,6 +2,13 @@
 import { MEDIA_AUDIO_FIELD_LABELS } from "./media-audio-field-metadata.js";
 
 export const FIELD_LABELS: Record<string, string> = {
+  "channels.signal.functionalFinnExternalAuthority": "Functional Finn External Authority",
+  "channels.signal.functionalFinnExternalAuthority.enabled": "External Authority Enabled",
+  "channels.signal.functionalFinnExternalAuthority.agentId": "Protected Agent ID",
+  "channels.signal.functionalFinnExternalAuthority.candidateSocketPath": "Candidate Socket Path",
+  "channels.signal.functionalFinnExternalAuthority.ingressSocketPath": "Ingress Socket Path",
+  "channels.signal.functionalFinnExternalAuthority.timeoutMs": "Authority Timeout (ms)",
+  "channels.signal.functionalFinnExternalAuthority.protectedTransport": "Protected Transport",
   meta: "Metadata",
   "meta.lastTouchedVersion": "Config Last Touched Version",
   "meta.lastTouchedAt": "Config Last Touched At",

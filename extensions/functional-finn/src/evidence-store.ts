@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type { FunctionalFinnEvidence } from "./answer-envelope.js";
+import {
+  clipBoundedFunctionalFinnEvidenceText,
+  serializeBoundedFunctionalFinnEvidence,
+} from "./bounded-evidence.js";
 
 export type FunctionalFinnStoredEvidence = FunctionalFinnEvidence & {
   runId: string;
@@ -13,16 +17,6 @@ type SyncStore<T> = {
   entries: () => Array<{ key: string; value: T }>;
 };
 
-function serializeResult(result: unknown): string {
-  const text =
-    typeof result === "string"
-      ? result
-      : JSON.stringify(result, (_key, value) =>
-          typeof value === "bigint" ? value.toString() : value,
-        );
-  return (text ?? String(result)).slice(0, 64 * 1024);
-}
-
 export class FunctionalFinnEvidenceStore {
   constructor(private readonly store: SyncStore<FunctionalFinnStoredEvidence>) {}
 
@@ -35,7 +29,7 @@ export class FunctionalFinnEvidenceStore {
     observedAt: number;
     freshnessMs?: number;
   }): FunctionalFinnStoredEvidence {
-    const content = serializeResult(params.result);
+    const content = serializeBoundedFunctionalFinnEvidence(params.result);
     const digest = createHash("sha256").update(content).digest("hex").slice(0, 16);
     const evidenceId = `tool:${params.runId}:${params.toolCallId}:${digest}`;
     const value: FunctionalFinnStoredEvidence = {
@@ -66,7 +60,7 @@ export class FunctionalFinnEvidenceStore {
     content: string;
     observedAt: number;
   }): FunctionalFinnStoredEvidence {
-    const content = params.content.slice(0, 64 * 1024);
+    const content = clipBoundedFunctionalFinnEvidenceText(params.content);
     const digest = createHash("sha256").update(content).digest("hex").slice(0, 16);
     const evidenceId = `user:${params.runId}:${digest}`;
     const value: FunctionalFinnStoredEvidence = {

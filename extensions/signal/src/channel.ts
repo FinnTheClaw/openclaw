@@ -35,7 +35,7 @@ import {
   signalApprovalCapability,
 } from "./approval-native.js";
 import { markdownToSignalTextChunks } from "./format.js";
-import { createSignalHostControlDelivery } from "./functional-finn-release.js";
+import { resolveFunctionalFinnExternalAuthority } from "./functional-finn-external-config.js";
 import { signalMessageActions } from "./message-actions.js";
 import { looksLikeSignalTargetId, normalizeSignalMessagingTarget } from "./normalize.js";
 import { resolveSignalOutboundTarget } from "./outbound-session.js";
@@ -53,9 +53,17 @@ type SignalProbe = import("./probe.js").SignalProbe;
 
 const loadSignalMonitorModule = createLazyRuntimeModule(() => import("./monitor.js"));
 
+const loadProtectedSignalMonitorModule = createLazyRuntimeModule(
+  () => import("./monitor-protected.js"),
+);
+
 const loadSignalProbeModule = createLazyRuntimeModule(() => import("./probe.js"));
 
 const loadSignalSendRuntime = createLazyRuntimeModule(() => import("./send.runtime.js"));
+
+const loadProtectedSignalSendModule = createLazyRuntimeModule(
+  () => import("./functional-finn-external-send.js"),
+);
 
 const loadSignalApprovalReactionsModule = createLazyRuntimeModule(
   () => import("./approval-reactions.js"),
@@ -99,9 +107,23 @@ async function sendSignalOutbound(params: {
   mediaUrl?: string;
   mediaLocalRoots?: readonly string[];
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
+  channelData?: Record<string, unknown>;
   accountId?: string;
   deps?: { [channelId: string]: unknown };
 }) {
+  if (resolveFunctionalFinnExternalAuthority({ cfg: params.cfg, accountId: params.accountId })) {
+    if (params.mediaUrl) {
+      throw new Error("Protected Signal external authority accepts text payloads only");
+    }
+    return await (
+      await loadProtectedSignalSendModule()
+    ).sendProtectedFunctionalFinnSignal({
+      cfg: params.cfg,
+      accountId: params.accountId,
+      text: params.text,
+      channelData: params.channelData,
+    });
+  }
   const { send, maxBytes } = await resolveSignalSendContext(params);
   const to = resolveSignalSendTarget(params);
   return await send(to, params.text, {
@@ -132,7 +154,7 @@ function attachSignalVisibleText<T extends object>(result: T, visibleText: strin
   };
 }
 
-const signalMessageAdapter = defineChannelMessageAdapter({
+export const signalMessageAdapter = defineChannelMessageAdapter({
   id: "signal",
   durableFinal: {
     capabilities: {
@@ -157,6 +179,18 @@ const signalMessageAdapter = defineChannelMessageAdapter({
         mediaUrl: ctx.mediaUrl,
         mediaLocalRoots: ctx.mediaLocalRoots,
         mediaReadFile: ctx.mediaReadFile,
+        accountId: ctx.accountId ?? undefined,
+        deps: (ctx as typeof ctx & SignalMessageContextExtras).deps,
+      }),
+    payload: async (ctx) =>
+      await sendSignalOutbound({
+        cfg: ctx.cfg,
+        to: ctx.to,
+        text: ctx.text,
+        mediaUrl: ctx.mediaUrl,
+        mediaLocalRoots: ctx.mediaLocalRoots,
+        mediaReadFile: ctx.mediaReadFile,
+        channelData: ctx.payload.channelData,
         accountId: ctx.accountId ?? undefined,
         deps: (ctx as typeof ctx & SignalMessageContextExtras).deps,
       }),
@@ -447,6 +481,9 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
       },
       heartbeat: {
         sendTyping: async ({ cfg, to, accountId }) => {
+          if (resolveFunctionalFinnExternalAuthority({ cfg, accountId })) {
+            throw new Error("Protected Signal transport does not expose typing capability");
+          }
           await (
             await loadSignalSendRuntime()
           ).sendTypingSignal(to, {
@@ -455,6 +492,9 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
           });
         },
         clearTyping: async ({ cfg, to, accountId }) => {
+          if (resolveFunctionalFinnExternalAuthority({ cfg, accountId })) {
+            throw new Error("Protected Signal transport does not expose typing capability");
+          }
           await (
             await loadSignalSendRuntime()
           ).sendTypingSignal(to, {
@@ -474,6 +514,15 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
             lastProbeAt: snapshot.lastProbeAt ?? null,
           }),
         probeAccount: async ({ account, timeoutMs }) => {
+          if (account.config.functionalFinnExternalAuthority?.enabled === true) {
+            return {
+              ok: true,
+              status: null,
+              error: null,
+              elapsedMs: 0,
+              version: "functional-finn-external",
+            };
+          }
           const baseUrl = account.baseUrl;
           const { probeSignal } = await loadSignalProbeModule();
           return await probeSignal(baseUrl, timeoutMs, {
@@ -500,6 +549,21 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
             baseUrl: account.baseUrl,
           });
           ctx.log?.info(`[${account.accountId}] starting provider (${account.baseUrl})`);
+          if (
+            resolveFunctionalFinnExternalAuthority({
+              cfg: ctx.cfg,
+              accountId: account.accountId,
+            })
+          ) {
+            const { monitorProtectedFunctionalFinnSignal } =
+              await loadProtectedSignalMonitorModule();
+            return await monitorProtectedFunctionalFinnSignal({
+              accountId: account.accountId,
+              config: ctx.cfg,
+              runtime: ctx.runtime,
+              abortSignal: ctx.abortSignal,
+            });
+          }
           const { monitorSignalProvider } = await loadSignalMonitorModule();
           return await monitorSignalProvider({
             accountId: account.accountId,
@@ -519,11 +583,13 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
         message: PAIRING_APPROVED_MESSAGE,
         normalizeAllowEntry: createPairingPrefixStripper(/^signal:/i),
         notify: async ({ cfg, id, message }) => {
+          if (resolveFunctionalFinnExternalAuthority({ cfg })) {
+            throw new Error("Protected Signal transport denies direct pairing notices");
+          }
           await (
             await loadSignalSendRuntime()
           ).sendMessageSignal(id, message, {
             cfg,
-            functionalFinnDelivery: createSignalHostControlDelivery(),
           });
         },
       },

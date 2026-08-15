@@ -1,6 +1,6 @@
+import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import type { FunctionalFinnReleaseReceipt } from "./functional-finn-release-receipt.js";
-import type { PluginRuntime } from "./runtime-api.js";
 
 type ReleaseDeliveryRecord = {
   state: "pending" | "sent" | "quote_rejected";
@@ -19,8 +19,7 @@ export function configureFunctionalFinnSignalReleaseStore(runtime: PluginRuntime
   store = runtime.state.openSyncKeyedStore<ReleaseDeliveryRecord>({
     namespace: "functional-finn-release-delivery-v2",
     maxEntries: 10_000,
-    overflowPolicy: "evict-oldest",
-    defaultTtlMs: 7 * 24 * 60 * 60 * 1_000,
+    overflowPolicy: "reject-new",
   });
 }
 
@@ -55,19 +54,23 @@ export function lookupFunctionalFinnSignalRelease(params: {
   | undefined
   | { state: "pending" }
   | { state: "quote_rejected" }
-  | { state: "sent"; replayed: { messageId: string; timestamp?: number } } {
+  | { state: "sent"; replayed: { messageId: string; timestamp: number } } {
   const existing = requireStore().lookup(params.logicalId);
   if (!existing) {
     return undefined;
   }
   assertBinding(existing, params);
   if (existing.state === "sent") {
-    if (!existing.messageId) {
+    if (
+      !existing.messageId ||
+      !Number.isSafeInteger(existing.timestamp) ||
+      (existing.timestamp as number) <= 0
+    ) {
       throw new Error("Functional Finn sent release is missing its durable message identity");
     }
     return {
       state: "sent",
-      replayed: { messageId: existing.messageId, timestamp: existing.timestamp },
+      replayed: { messageId: existing.messageId, timestamp: existing.timestamp as number },
     };
   }
   return existing.state === "quote_rejected" ? { state: "quote_rejected" } : { state: "pending" };
@@ -99,7 +102,7 @@ export function reserveFunctionalFinnSignalRelease(params: {
   ) {
     const existing = lookupFunctionalFinnSignalRelease(params);
     if (!existing) {
-      throw new Error("Functional Finn release reservation race was not durable");
+      throw new Error("Functional Finn release delivery store capacity exhausted");
     }
     return { created: false, existing };
   }
@@ -124,7 +127,7 @@ function updateRelease(
 export function settleFunctionalFinnSignalRelease(params: {
   logicalId: string;
   messageId: string;
-  timestamp?: number;
+  timestamp: number;
 }): void {
   updateRelease(params.logicalId, (current) => ({
     ...current,

@@ -7,6 +7,7 @@ import { requireRuntimeConfig } from "openclaw/plugin-sdk/plugin-config-runtime"
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveSignalAccount } from "./accounts.js";
 import { signalRpcRequest } from "./client-adapter.js";
+import { assertSignalDirectTransportAllowed } from "./functional-finn-external-config.js";
 import { resolveSignalRpcContext } from "./rpc-context.js";
 
 export type SignalReactionOpts = {
@@ -83,6 +84,11 @@ async function sendReactionSignalCore(params: {
   const accountInfo = resolveSignalAccount({
     cfg,
     accountId: params.opts.accountId,
+  });
+  assertSignalDirectTransportAllowed({
+    cfg,
+    accountId: accountInfo.accountId,
+    operation: "reaction",
   });
   const { baseUrl, account } = resolveSignalRpcContext(params.opts, accountInfo);
 

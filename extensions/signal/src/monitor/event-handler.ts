@@ -87,6 +87,7 @@ import type {
   SignalEventHandlerDeps,
   SignalReactionMessage,
   SignalReceivePayload,
+  SignalTrustedFunctionalFinnIngress,
 } from "./event-handler.types.js";
 import { resolveSignalQuoteContext } from "./inbound-context.js";
 import { renderSignalMentions } from "./mentions.js";
@@ -225,6 +226,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     replyToBody?: string;
     replyToSender?: string;
     replyToIsQuote?: boolean;
+    trustedIngress?: SignalTrustedFunctionalFinnIngress;
   };
 
   async function handleSignalInboundMessage(entry: SignalInboundEntry) {
@@ -243,6 +245,9 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       groupId: entry.groupId,
       senderPeerId: entry.senderPeerId,
     });
+    if (entry.trustedIngress && route.agentId !== entry.trustedIngress.agentId) {
+      throw new Error("Functional Finn protected ingress resolved to the wrong agent");
+    }
     const storePath = resolveStorePath(deps.cfg.session?.store, {
       agentId: route.agentId,
     });
@@ -367,6 +372,15 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         },
       },
       media,
+      channelContext: entry.trustedIngress
+        ? {
+            sender: {
+              id: entry.trustedIngress.sourceId,
+              functionalFinnIngress: entry.trustedIngress,
+            },
+            chat: { id: entry.trustedIngress.ingressId },
+          }
+        : undefined,
       extra: {
         GroupSubject: entry.isGroup ? (entry.groupName ?? undefined) : undefined,
         ReplyThreading: replyThreading,
@@ -418,6 +432,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     const statusReactionRecipient = entry.isGroup ? "" : entry.senderRecipient;
     let currentStatusReactionEmoji = ackReaction;
     const statusReactionController =
+      deps.transportFeedbackEnabled !== false &&
       statusReactionsConfig?.enabled === true &&
       signalReactionLevel.level !== "off" &&
       shouldSendStatusReaction &&
@@ -476,7 +491,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         accountId: route.accountId,
         typing: {
           start: async () => {
-            if (!ctxPayload.To) {
+            if (!ctxPayload.To || deps.transportFeedbackEnabled === false) {
               return;
             }
             await sendTypingSignal(ctxPayload.To, {
@@ -669,6 +684,9 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       return `signal:${deps.accountId}:${conversationId}:${entry.senderPeerId}`;
     },
     shouldDebounce: (entry) => {
+      if (entry.trustedIngress) {
+        return false;
+      }
       return shouldDebounceTextInbound({
         text: entry.commandBody,
         cfg: deps.cfg,
@@ -807,7 +825,11 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     return true;
   }
 
-  return async (event: { event?: string; data?: string }) => {
+  return async (event: {
+    event?: string;
+    data?: string;
+    trustedIngress?: SignalTrustedFunctionalFinnIngress;
+  }) => {
     if (event.event !== "receive" || !event.data) {
       return;
     }
@@ -935,6 +957,9 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         senderName: envelope.sourceName ?? undefined,
         accountId: deps.accountId,
         sendPairingReply: async (text) => {
+          if (deps.transportFeedbackEnabled === false) {
+            throw new Error("Protected Signal ingress cannot send pairing replies directly");
+          }
           await sendMessageSignal(`signal:${senderRecipient}`, text, {
             cfg: deps.cfg,
             baseUrl: deps.baseUrl,
@@ -1166,7 +1191,13 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       typeof envelope.editMessage?.targetSentTimestamp === "number"
         ? envelope.editMessage.targetSentTimestamp
         : inboundTimestamp;
-    if (deps.sendReadReceipts && !deps.readReceiptsViaDaemon && !isGroup && inboundTimestamp) {
+    if (
+      deps.transportFeedbackEnabled !== false &&
+      deps.sendReadReceipts &&
+      !deps.readReceiptsViaDaemon &&
+      !isGroup &&
+      inboundTimestamp
+    ) {
       try {
         await sendReadReceiptSignal(`signal:${senderRecipient}`, inboundTimestamp, {
           cfg: deps.cfg,
@@ -1178,6 +1209,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         logVerbose(`signal read receipt failed for ${senderDisplay}: ${String(err)}`);
       }
     } else if (
+      deps.transportFeedbackEnabled !== false &&
       deps.sendReadReceipts &&
       !deps.readReceiptsViaDaemon &&
       !isGroup &&
@@ -1187,11 +1219,14 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     }
 
     const senderName = envelope.sourceName ?? senderDisplay;
-    const messageId = typeof inboundTimestamp === "number" ? String(inboundTimestamp) : undefined;
+    const messageId =
+      event.trustedIngress?.ingressId ??
+      (typeof inboundTimestamp === "number" ? String(inboundTimestamp) : undefined);
     const replyToId =
-      typeof nativeReplyTargetTimestamp === "number"
+      event.trustedIngress?.ingressId ??
+      (typeof nativeReplyTargetTimestamp === "number"
         ? String(nativeReplyTargetTimestamp)
-        : undefined;
+        : undefined);
     await inboundDebouncer.enqueue({
       senderName,
       senderDisplay,
@@ -1216,6 +1251,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       replyToBody: visibleQuoteText || undefined,
       replyToSender: visibleQuoteSender,
       replyToIsQuote: visibleQuoteText ? true : undefined,
+      trustedIngress: event.trustedIngress,
     });
   };
 }

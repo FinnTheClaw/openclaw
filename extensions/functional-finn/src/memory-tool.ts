@@ -10,9 +10,10 @@ import {
 } from "./memory-ledger.js";
 import {
   FunctionalFinnMemoryProjector,
-  FunctionalFinnMemoryProjectionService,
   type FunctionalFinnMemoryProjectionState,
 } from "./memory-materializer.js";
+import { createFunctionalFinnProjectionPathRegistry } from "./memory-projection-path.js";
+import { FunctionalFinnMemoryProjectionService } from "./memory-projection-service.js";
 import type { FunctionalFinnVerifierRequest } from "./verifier-client.js";
 
 export function registerFunctionalFinnMemoryTool(params: {
@@ -45,13 +46,24 @@ export function registerFunctionalFinnMemoryTool(params: {
   if (!projectionStore.update) {
     throw new Error("Functional Finn requires atomic projection state updates");
   }
+  const projectionPaths = createFunctionalFinnProjectionPathRegistry({
+    agentIds: params.config.agentIds,
+    workspaceForAgent: (agentId) =>
+      params.api.runtime.agent.resolveAgentWorkspaceDir(params.api.config, agentId),
+  });
   const projector = new FunctionalFinnMemoryProjector(
     ledger,
     {
       update: (key, mutate) => projectionStore.update?.(key, mutate) ?? false,
       lookup: (key) => projectionStore.lookup(key),
     },
-    (agentId) => params.api.runtime.agent.resolveAgentWorkspaceDir(params.api.config, agentId),
+    (agentId) => {
+      const paths = projectionPaths.get(agentId);
+      if (!paths) {
+        throw new Error(`Functional Finn has no projection owner for agent ${agentId}`);
+      }
+      return paths;
+    },
   );
   const projectionService = new FunctionalFinnMemoryProjectionService(
     projector,
@@ -69,7 +81,7 @@ export function registerFunctionalFinnMemoryTool(params: {
 
   params.api.on("before_agent_run", async (_event, context) => {
     if (context.agentId && params.config.agentIds.includes(context.agentId)) {
-      await projector.reconcileAgent(context.agentId);
+      await projectionService.reconcileAgent(context.agentId);
     }
   });
 
@@ -101,7 +113,7 @@ export function registerFunctionalFinnMemoryTool(params: {
           if (!workspaceDir) {
             throw new Error("verified memory requires an agent workspace");
           }
-          await projector.reconcileAgent(agentId);
+          await projectionService.reconcileAgent(agentId);
           const input = raw as {
             factKey: string;
             claim: string;
@@ -127,7 +139,7 @@ export function registerFunctionalFinnMemoryTool(params: {
                 sourceEnd,
                 sourceQuote,
               }),
-            reconcile: () => projector.reconcileAgent(agentId),
+            reconcile: () => projectionService.reconcileAgent(agentId),
           });
           return {
             content: [

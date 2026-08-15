@@ -2,10 +2,11 @@ import hashlib
 import json
 import time
 import unittest
+from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from server import ABSTENTION, FunctionalFinnVerifier
+from server import ABSTENTION, FunctionalFinnVerifier, _encode_signal_frame
 
 
 class _Support:
@@ -87,18 +88,18 @@ class FunctionalFinnVerifierTest(unittest.TestCase):
         request = self.request(self.envelope(), "authorize")
         request["revision"] = 1
         authorization = self.verifier.handle(request)["authorization"]
-        target_digest = hashlib.sha256(b"+15551234567").hexdigest()
         frame = {
-            "schemaVersion": 1,
+            "schema": "functional-finn.signal.send.v1",
             "method": "send",
             "accountId": "default",
-            "targetDigest": target_digest,
-            "params": {
-                "message": "The service is healthy.",
-                "text-style": ["0:3:BOLD"],
-                "account": "+15550001111",
-                "recipient": ["+15551234567"],
-            },
+            "account": "+15550001111",
+            "targetKind": "recipient",
+            "targetValue": "+15551234567",
+            "message": "The service is healthy.",
+            "textStyle": ["0:3:BOLD"],
+            "quoteTimestamp": None,
+            "quoteAuthor": None,
+            "quoteMessage": None,
         }
         result = self.verifier.handle({
             "schemaVersion": 1,
@@ -109,10 +110,11 @@ class FunctionalFinnVerifierTest(unittest.TestCase):
         })
         self.assertTrue(result["ok"])
         self.assertEqual(result["receipt"]["revision"], 1)
-        canonical = json.dumps(frame, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
-        self.assertEqual(result["receipt"]["frameDigest"], hashlib.sha256(canonical.encode()).hexdigest())
+        self.assertEqual(
+            result["receipt"]["frameDigest"], hashlib.sha256(_encode_signal_frame(frame)).hexdigest()
+        )
 
-        changed = {**frame, "params": {**frame["params"], "message": "altered"}}
+        changed = {**frame, "message": "altered"}
         self.assertTrue(self.verifier.handle({
             "schemaVersion": 1,
             "operation": "bind_frame",
@@ -132,6 +134,36 @@ class FunctionalFinnVerifierTest(unittest.TestCase):
             "frame": {},
         })
         self.assertEqual(result, {"ok": False, "code": "INVALID_FRAME_BINDING"})
+
+    def test_signal_frame_fixtures_match_typescript_bytes(self) -> None:
+        fixture_path = Path(__file__).parents[3] / "test/fixtures/functional-finn-signal-frames.json"
+        fixtures = json.loads(fixture_path.read_text(encoding="utf-8"))
+        for fixture in fixtures:
+            with self.subTest(fixture["name"]):
+                encoded = _encode_signal_frame(fixture["frame"])
+                self.assertEqual(encoded.hex(), fixture["encodedHex"])
+                self.assertEqual(hashlib.sha256(encoded).hexdigest(), fixture["digest"])
+
+    def test_signal_frame_rejects_shared_malformed_unicode_fixtures(self) -> None:
+        fixture_path = Path(__file__).parents[3] / "test/fixtures/functional-finn-signal-frame-invalid.json"
+        fixtures = json.loads(fixture_path.read_text(encoding="utf-8"))
+        for fixture in fixtures:
+            with self.subTest(fixture["name"]), self.assertRaises(ValueError):
+                _encode_signal_frame(fixture["frame"])
+
+    def test_signal_frame_rejects_unknown_nested_numeric_and_unicode_values(self) -> None:
+        fixture_path = Path(__file__).parents[3] / "test/fixtures/functional-finn-signal-frames.json"
+        frame = json.loads(fixture_path.read_text(encoding="utf-8"))[0]["frame"]
+        invalid = (
+            {**frame, "extra": True},
+            {"schema": 1, "method": "send", "params": {}},
+            {**frame, "quoteTimestamp": float("nan")},
+            {**frame, "quoteTimestamp": 9_007_199_254_740_992},
+            {**frame, "message": "cafe\u0301"},
+        )
+        for value in invalid:
+            with self.assertRaises(ValueError):
+                _encode_signal_frame(value)
 
 
 if __name__ == "__main__":

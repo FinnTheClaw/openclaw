@@ -1,5 +1,4 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { digestFunctionalFinnTarget } from "./functional-finn-release-receipt.js";
 import { settleFunctionalFinnSignalRelease } from "./functional-finn-release-store.js";
 import { authorizeFunctionalFinnSignalSend } from "./functional-finn-release.js";
 import type {
@@ -24,7 +23,6 @@ export async function sendFunctionalFinnAuthorizedFrame(params: {
     sourceText: params.sourceText,
     frame: buildFunctionalFinnSignalFrame({
       accountId: params.accountId,
-      targetDigest: digestFunctionalFinnTarget(params.to),
       rpcParams: params.rpcParams,
     }),
     delivery: params.delivery,
@@ -49,10 +47,13 @@ export async function sendFunctionalFinnAuthorizedFrame(params: {
   }
   if (release.protected && "logicalId" in release) {
     const timestamp = result?.timestamp;
+    if (!Number.isSafeInteger(timestamp) || (timestamp as number) <= 0) {
+      throw new Error("Functional Finn Signal RPC returned no durable message identity");
+    }
     settleFunctionalFinnSignalRelease({
       logicalId: release.logicalId,
-      messageId: timestamp ? String(timestamp) : "unknown",
-      ...(timestamp != null ? { timestamp } : {}),
+      messageId: String(timestamp),
+      timestamp: timestamp as number,
     });
   }
   return { result } as const;

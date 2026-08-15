@@ -6,7 +6,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   digestFunctionalFinnPayload,
-  digestFunctionalFinnFrame,
   digestFunctionalFinnTarget,
   serializeFunctionalFinnReceipt,
   type FunctionalFinnReleaseReceipt,
@@ -21,7 +20,10 @@ import {
   createSignalHostControlDelivery,
   preflightFunctionalFinnSignalSend,
 } from "./functional-finn-release.js";
-import { buildFunctionalFinnSignalFrame } from "./functional-finn-signal-frame.js";
+import {
+  buildFunctionalFinnSignalFrame,
+  digestFunctionalFinnSignalFrame,
+} from "./functional-finn-signal-frame.js";
 
 const records = new Map<string, unknown>();
 const runtime = {
@@ -70,7 +72,6 @@ function config() {
 function frame(target: string, message = "verified answer") {
   return buildFunctionalFinnSignalFrame({
     accountId: "default",
-    targetDigest: digestFunctionalFinnTarget(target),
     rpcParams: { message, account: "+15550001111", recipient: [target] },
   });
 }
@@ -93,7 +94,7 @@ function receipt(
     accountId: "default",
     targetDigest: digestFunctionalFinnTarget(target),
     payloadDigest: digestFunctionalFinnPayload(text),
-    frameDigest: digestFunctionalFinnFrame(releaseFrame),
+    frameDigest: digestFunctionalFinnSignalFrame(releaseFrame),
     evidenceDigest: "evidence",
     revision,
     issuedAt: 100,
@@ -164,7 +165,11 @@ describe("Functional Finn Signal release gate", () => {
     if (!("logicalId" in first)) {
       throw new Error("expected logical release identity");
     }
-    settleFunctionalFinnSignalRelease({ logicalId: first.logicalId, messageId: "message-1" });
+    settleFunctionalFinnSignalRelease({
+      logicalId: first.logicalId,
+      messageId: "message-1",
+      timestamp: 101,
+    });
     configureFunctionalFinnSignalReleaseStore(runtime);
     await expect(
       authorizeFunctionalFinnSignalSend({
@@ -255,7 +260,11 @@ describe("Functional Finn Signal release gate", () => {
     if (!("logicalId" in first)) {
       throw new Error("expected logical release identity");
     }
-    settleFunctionalFinnSignalRelease({ logicalId: first.logicalId, messageId: "sent-once" });
+    settleFunctionalFinnSignalRelease({
+      logicalId: first.logicalId,
+      messageId: "sent-once",
+      timestamp: 102,
+    });
     await expect(
       authorizeFunctionalFinnSignalSend({
         cfg: config(),
@@ -336,7 +345,11 @@ describe("Functional Finn Signal release gate", () => {
       if (!("logicalId" in first)) {
         throw new Error("expected logical release identity");
       }
-      settleFunctionalFinnSignalRelease({ logicalId: first.logicalId, messageId: "sent" });
+      settleFunctionalFinnSignalRelease({
+        logicalId: first.logicalId,
+        messageId: "sent",
+        timestamp: 103,
+      });
       configureFunctionalFinnSignalReleaseStore(runtime);
       await expect(
         authorizeFunctionalFinnSignalSend({

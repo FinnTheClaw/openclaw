@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.functional-finn.release</string>
+  <key>UserName</key><string>_finnrel</string>
+  <key>GroupName</key><string>_finnrel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/FunctionalFinn/releases/RELEASE_ID/bin/finnrel</string>
+    <string>serve</string>
+    <string>--policy</string>
+    <string>/Library/FunctionalFinn/policy/authority-policy.json</string>
+  </array>
+  <key>WorkingDirectory</key><string>/var/empty</string>
+  <key>Umask</key><integer>63</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>EnableTransactions</key><true/>
+  <key>Sockets</key>
+  <dict>
+    <key>CandidateSocket</key>
+    <dict>
+      <key>SockPathName</key><string>/var/run/functional-finn/release-candidate/candidate.sock</string>
+      <key>SockPathOwner</key><string>_finnrel</string>
+      <key>SockPathGroup</key><string>_finnsubmit</string>
+      <key>SockPathMode</key><integer>432</integer>
+    </dict>
+  </dict>
+  <key>StandardOutPath</key><string>/var/log/functional-finn/release.log</string>
+  <key>StandardErrorPath</key><string>/var/log/functional-finn/release.err.log</string>
+</dict>
+</plist>

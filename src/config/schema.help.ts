@@ -3,6 +3,20 @@ import { MEDIA_AUDIO_FIELD_HELP } from "./media-audio-field-metadata.js";
 import { describeTalkSilenceTimeoutDefaults } from "./talk-defaults.js";
 
 export const FIELD_HELP: Record<string, string> = {
+  "channels.signal.functionalFinnExternalAuthority":
+    "Routes one selected Functional Finn Signal account through the external release and ingress authorities. When absent, Signal keeps its legacy transport behavior.",
+  "channels.signal.functionalFinnExternalAuthority.enabled":
+    "Explicitly enables the external Functional Finn authority for this Signal account.",
+  "channels.signal.functionalFinnExternalAuthority.agentId":
+    "Exact Functional Finn agent allowed to consume protected ingress for this account.",
+  "channels.signal.functionalFinnExternalAuthority.candidateSocketPath":
+    "Absolute Unix socket path for submitting untrusted response candidates to the external release authority.",
+  "channels.signal.functionalFinnExternalAuthority.ingressSocketPath":
+    "Absolute Unix socket path for pulling normalized Signal ingress from the protected Signal authority.",
+  "channels.signal.functionalFinnExternalAuthority.timeoutMs":
+    "Bounded timeout for external authority requests. Timeout fails closed and never falls back to direct Signal transport.",
+  "channels.signal.functionalFinnExternalAuthority.protectedTransport":
+    "Immutable acknowledgement that Signal credentials and physical delivery remain outside OpenClaw.",
   meta: "Metadata fields automatically maintained by OpenClaw to record write/version history for this config file. Keep these values system-managed and avoid manual edits unless debugging migration history.",
   "meta.lastTouchedVersion": "Auto-set when OpenClaw writes the config.",
   "meta.lastTouchedAt": "ISO timestamp of the last config write (auto-set).",
