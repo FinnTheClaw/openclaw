@@ -1,3 +1,4 @@
+import type { MemoryGovernorBackend } from "../../plugins/memory-state.js";
 import type { GovernorTrustedMemoryAuthority } from "../../security/governor-host-readonly.js";
 // Joins scoped memory records to store-verified contradiction and repair evidence.
 import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
@@ -23,6 +24,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
   readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
   readonly #queries: GovernorStoreQueries;
   readonly #identity: GovernorIdentityContext;
+  readonly backend?: MemoryGovernorBackend;
 
   constructor(params: {
     options: OpenClawStateDatabaseOptions;
@@ -31,6 +33,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     queries: GovernorStoreQueries;
     memoryAuthority: GovernorTrustedMemoryAuthority;
     taskAuthority: GovernorTaskAuthorityStore;
+    backend?: MemoryGovernorBackend;
   }) {
     super({
       options: params.options,
@@ -41,6 +44,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       taskAuthority: params.taskAuthority,
     });
     this.#identity = params.identity;
+    this.backend = params.backend;
     this.#evidenceAdmissions = params.evidenceAdmissions;
     this.#queries = params.queries;
     this.#contradictions = new GovernorMemoryContradictionStore({

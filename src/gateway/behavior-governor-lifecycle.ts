@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { getMemoryCapabilityRegistration } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveStateDir } from "../config/paths.js";
 import type {
   BehaviorGovernorConfig,
@@ -155,6 +156,7 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
         key: string;
         runtime: GovernorHostRuntime;
         hostClose?: () => void | Promise<void>;
+        memoryClose?: () => void | Promise<void>;
         closeFailure?: AggregateError;
       }
     | undefined;
@@ -177,6 +179,11 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     }
     try {
       await current.hostClose?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await current.memoryClose?.();
     } catch (error) {
       errors.push(error);
     }
@@ -264,6 +271,7 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     }
     let host: Awaited<ReturnType<NonNullable<typeof params.hostFactory>>> | undefined;
     let runtime: GovernorHostRuntime | null = null;
+    let memoryClose: (() => void | Promise<void>) | undefined;
     try {
       host = await params.hostFactory({
         config: factoryConfig,
@@ -272,6 +280,12 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       });
       const { createGovernorHostRuntimeIfEnabled } =
         await import("../security/governor-host-bootstrap.js");
+      const suppliedMemory = host.integrations.memory;
+      const memoryCapability = getMemoryCapabilityRegistration()?.capability.governorMemory;
+      const memory = suppliedMemory ?? memoryCapability?.createBackend({ mode: governor.mode });
+      if (memory && !suppliedMemory && memory.close) {
+        memoryClose = () => memory.close?.();
+      }
       runtime = createGovernorHostRuntimeIfEnabled({
         enabled: true,
         env: { ...resolved.env, OPENCLAW_STATE_DIR: stateDir },
@@ -279,13 +293,14 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
         capabilities: host.capabilities,
         integrations: {
           ...host.integrations,
+          ...(memory ? { memory } : {}),
           agentLoop: loopConfig(governor) as GovernorAgentLoopConfiguration,
         },
       });
       if (!runtime) {
         throw new Error("GOVERNOR_GATEWAY_RUNTIME_NOT_CREATED");
       }
-      active = { key, runtime, hostClose: host.close };
+      active = { key, runtime, hostClose: host.close, memoryClose };
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try {
@@ -295,6 +310,11 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       }
       try {
         await host?.close?.();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      try {
+        await memoryClose?.();
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }

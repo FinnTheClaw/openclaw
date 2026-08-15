@@ -321,6 +321,8 @@ export class HybridMemoryIndex {
   private initPromise: Promise<void> | null = null;
   private writeTail: Promise<void> = Promise.resolve();
   private ftsReady = false;
+  private closing = false;
+  private closed = false;
 
   constructor(
     readonly dbPath: string,
@@ -333,6 +335,9 @@ export class HybridMemoryIndex {
   }
 
   private async ensureInitialized(): Promise<void> {
+    if (this.closed || this.closing) {
+      throw new Error("memory index is closed");
+    }
     if (this.table) {
       return;
     }
@@ -594,6 +599,11 @@ export class HybridMemoryIndex {
   }
 
   close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closing = true;
+    this.closed = true;
     this.table?.close();
     this.db?.close();
     this.table = null;
@@ -601,5 +611,15 @@ export class HybridMemoryIndex {
     this.module = null;
     this.initPromise = null;
     this.ftsReady = false;
+  }
+
+  async closeAsync(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    this.closing = true;
+    await this.initPromise?.catch(() => undefined);
+    await this.writeTail;
+    this.close();
   }
 }

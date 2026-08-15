@@ -11,6 +11,92 @@ export type MemoryPromptSectionBuilder = (params: {
   citationsMode?: MemoryCitationsMode;
 }) => string[];
 
+/**
+ * Host-owned memory authority exposed by a selected memory plugin.
+ *
+ * The contract carries only opaque scope/evidence bindings and bounded fact
+ * fields. A plugin may create the backend lazily, so the governor OFF path
+ * does not open a ledger, resolve embeddings, or mutate a memory projection.
+ */
+export type MemoryGovernorFact = Readonly<{
+  memoryId: string;
+  agentId: string;
+  scope: string;
+  factKey: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  text: string;
+  category?: string;
+  confidence: number;
+  authority: number;
+  generation?: number;
+  observedAt: number;
+  freshnessExpiresAt?: number;
+  sourceIdentity: string;
+  sourceEvidenceId: string;
+  sourceEvidenceDigest: string;
+  sourceEvidenceSemanticDigest?: string;
+  sourceEvidenceLineage?: readonly string[];
+  sourceMemoryLineage?: readonly string[];
+}>;
+
+export type MemoryGovernorRecall = Readonly<{
+  memoryId: string;
+  agentId: string;
+  scope: string;
+  factKey: string;
+  text: string;
+  confidence: number;
+  authority: number;
+  observedAt: number;
+  sourceEvidenceDigest: string;
+}>;
+
+export type MemoryGovernorBackend = Readonly<{
+  admit(params: {
+    fact: MemoryGovernorFact;
+    now: number;
+  }): Promise<
+    | { status: "admitted"; fact: MemoryGovernorFact; remediationId: string }
+    | { status: "duplicate"; fact: MemoryGovernorFact; remediationId: string }
+    | { status: "rejected"; reason: string }
+  >;
+  recall(params: {
+    agentId: string;
+    scopes: readonly string[];
+    query: string;
+    limit: number;
+    now: number;
+  }): Promise<readonly MemoryGovernorRecall[]>;
+  invalidate(params: {
+    agentId: string;
+    scope: string;
+    factKey: string;
+    staleMemoryId: string;
+    sourceEvidenceId: string;
+    sourceEvidenceDigest: string;
+    sourceObservedAt: number;
+    reason: "contradicted_by_newer_evidence" | "freshness_expired" | "operator_requested";
+    replacement?: MemoryGovernorFact;
+    now: number;
+  }): Promise<{
+    status: "retired" | "duplicate" | "tombstoned";
+    staleMemoryId: string;
+    replacementMemoryId?: string;
+    remediationId: string;
+  }>;
+  compact(params: { agentId?: string; now: number; retentionMs: number }): Promise<{
+    compacted: number;
+    retainedHighWater: number;
+  }>;
+  close?(): Promise<void> | void;
+}>;
+
+export type MemoryGovernorCapability = Readonly<{
+  createBackend(params: { mode: "shadow" | "enforce" }): MemoryGovernorBackend;
+}>;
+
 export type MemoryCorpusSearchResult = {
   corpus: string;
   path: string;
@@ -150,6 +236,7 @@ export type MemoryPluginCapability = {
   flushPlanResolver?: MemoryFlushPlanResolver;
   runtime?: MemoryPluginRuntime;
   publicArtifacts?: MemoryPluginPublicArtifactsProvider;
+  governorMemory?: MemoryGovernorCapability;
 };
 
 export type MemoryPluginCapabilityRegistration = {

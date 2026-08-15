@@ -1838,6 +1838,20 @@ export default definePluginEntry({
           return await listMemoryHostPublicArtifacts(params);
         },
       },
+      ...(durableRuntime
+        ? {
+            governorMemory: {
+              createBackend: ({ mode }: { mode: "shadow" | "enforce" }) =>
+                durableRuntime.createGovernorMemoryBackend({
+                  mode,
+                  refreshDerived: async () => {
+                    scheduleDurableWorkers();
+                    await durableRuntime.flush(20_000);
+                  },
+                }),
+            },
+          }
+        : {}),
     });
 
     // ========================================================================

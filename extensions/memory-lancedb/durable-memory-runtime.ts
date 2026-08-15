@@ -3,7 +3,13 @@ import { createReadStream } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import type { MemoryGovernorBackend } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
+import {
+  createShadowGovernorMemoryBackend,
+  GovernorMemoryLanceDbAdapter,
+} from "./governor-memory-adapter.js";
+import { governorMemoryProjection } from "./governor-memory-projection.js";
 import { HybridMemoryIndex, type MemoryProjectionInput } from "./hybrid-memory-index.js";
 import { assertMemoryContentSafe, MemorySensitiveContentError } from "./memory-content-guard.js";
 import type { DurableMemoryEmbedding } from "./memory-embedding.js";
@@ -326,6 +332,23 @@ export class DurableMemoryRuntime {
       Math.max(1, Math.floor(options.projectionConcurrency ?? DEFAULT_PROJECTION_CONCURRENCY)),
     );
     this.embeddingTimeoutMs = Math.max(1_000, Math.floor(options.embeddingTimeoutMs ?? 15_000));
+  }
+
+  /** Create the real governed backend only after an enabled host requests it. */
+  createGovernorMemoryBackend(params: {
+    mode: "shadow" | "enforce";
+    refreshDerived?: () => Promise<void>;
+  }): MemoryGovernorBackend {
+    if (params.mode === "shadow") {
+      return createShadowGovernorMemoryBackend();
+    }
+    return new GovernorMemoryLanceDbAdapter({
+      ledgerPath: this.options.ledgerPath,
+      index: this.index,
+      embeddings: this.options.embeddings,
+      refreshDerived: params.refreshDerived,
+      enqueueProjection: true,
+    });
   }
 
   captureInbound(options: {
@@ -911,10 +934,31 @@ export class DurableMemoryRuntime {
       return;
     }
     this.stopped = true;
-    await this.flush(5_000).catch(() => false);
-    this.index.close();
-    this.ledger.checkpoint("TRUNCATE");
-    this.ledger.close();
+    const errors: unknown[] = [];
+    try {
+      await this.flush(5_000);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await this.index.closeAsync();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      this.ledger.checkpoint("TRUNCATE");
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      try {
+        this.ledger.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "MEMORY_RUNTIME_CLOSE_FAILED");
+    }
   }
 
   private async drainProjection(): Promise<void> {
@@ -1068,6 +1112,10 @@ export class DurableMemoryRuntime {
   }
 
   private projectionForEvent(event: ProjectionLease, vector: number[]): MemoryProjectionInput {
+    const governorProjection = governorMemoryProjection(event, vector);
+    if (governorProjection) {
+      return governorProjection;
+    }
     const memoryScope =
       typeof event.metadata.memoryScope === "string" ? event.metadata.memoryScope : "global";
     const retrievalStatus = event.metadata.retrievalStatus === "active" ? "active" : "retracted";

@@ -1,3 +1,4 @@
+import type { MemoryGovernorBackend } from "../../plugins/memory-state.js";
 import type { HostGovernorEvidenceInvalidationReceiptId } from "../../security/governor-host-readonly.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import {
@@ -104,6 +105,7 @@ function nextTaskVersion(task: GovernorTaskProjection, now: number): GovernorTas
 export class GovernorController {
   readonly actions: GovernorActionRuntime;
   readonly memoryRemediation: GovernorMemoryRemediationRuntime;
+  readonly memoryBackend?: MemoryGovernorBackend;
 
   constructor(
     readonly store: GovernorSqliteStore,
@@ -114,6 +116,7 @@ export class GovernorController {
     }
     this.actions = new GovernorActionRuntime(store, capabilities);
     this.memoryRemediation = new GovernorMemoryRemediationRuntime(store, this.actions);
+    this.memoryBackend = store.memory.backend;
   }
   close(): void {
     this.store.close();

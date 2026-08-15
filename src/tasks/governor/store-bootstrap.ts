@@ -1,3 +1,4 @@
+import type { MemoryGovernorBackend } from "../../plugins/memory-state.js";
 // Constructs the explicit, feature-enabled governor store dependency graph.
 import {
   createGovernorTestHostBindings,
@@ -51,6 +52,7 @@ export type GovernorSqliteStoreParams = {
   stateEnv?: NodeJS.ProcessEnv;
   capabilities?: GovernorCapabilityRegistry;
   lifecycle?: GovernorStoreLifecycle;
+  memoryBackend?: MemoryGovernorBackend;
 };
 
 export function createGovernorStoreDependencies(params: GovernorSqliteStoreParams) {
@@ -138,6 +140,7 @@ export function createGovernorStoreDependencies(params: GovernorSqliteStoreParam
       queries,
       memoryAuthority,
       taskAuthority: tasks,
+      backend: params.memoryBackend,
     }),
     capabilities,
     actionIntents: new GovernorActionIntentStore({

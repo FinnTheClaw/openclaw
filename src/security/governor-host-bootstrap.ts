@@ -1,3 +1,4 @@
+import type { MemoryGovernorBackend } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
@@ -31,6 +32,7 @@ export type GovernorHostIntegrationConfiguration = Readonly<{
   childOwnerId: string;
   ownerIngressBindings: readonly GovernorOwnerIngressBinding[];
   agentLoop?: GovernorAgentLoopConfiguration;
+  memory?: MemoryGovernorBackend;
   channelConfig?: OpenClawConfig;
   deliveries: readonly Readonly<{
     implementationId: string;
@@ -92,6 +94,7 @@ export type GovernorHostRuntime = Readonly<{
   >[];
   freeze: () => void;
   close: () => void;
+  memory?: MemoryGovernorBackend;
 }>;
 
 function assertOwner(value: string, label: string): void {
@@ -353,6 +356,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
         physicalExecutionCoordinator: bindings.physicalExecutionCoordinator,
         memoryAuthority: bindings.memoryAuthority,
         taskAuthority: bindings.taskAuthority,
+        memoryBackend: params.integrations?.memory,
         secrets: bindings.secrets,
         stateEnv: env,
         lifecycle: bindings.lifecycle,
@@ -466,6 +470,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   }
   return Object.freeze({
     adapter,
+    memory: params.integrations?.memory,
     owners: bindings.owners,
     deliveryHandles: bindings.deliveryHandles,
     freeze: () => {
