@@ -274,6 +274,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "plugins/hook-runner-global": "src/plugins/hook-runner-global.ts",
     "plugins/memory-state": "src/plugins/memory-state.ts",
     "plugins/synthetic-auth.runtime": "src/plugins/synthetic-auth.runtime.ts",
+    "security/governor-memory-plugin-process": "src/security/governor-memory-plugin-process.ts",
+    "security/governor-memory-plugin-worker": "src/security/governor-memory-plugin-worker.ts",
     "subagent-registry.runtime": "src/agents/subagent-registry.runtime.ts",
     "task-registry-control.runtime": "src/tasks/task-registry-control.runtime.ts",
     "link-understanding/apply.runtime": "src/link-understanding/apply.runtime.ts",
