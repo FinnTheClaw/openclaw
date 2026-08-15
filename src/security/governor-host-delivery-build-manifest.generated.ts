@@ -1019,7 +1019,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/memory-host-sdk/src/host/openclaw-runtime-memory.ts",
-      sha256: "c1e7f2808a433bcd2a1a4694a65d638b7b270b759e2d9749a6635a0f75c49e88",
+      sha256: "102728864e085407e4d518e431e2e2d662a0ccb0a13478559f24aa3c854f1e24",
     },
     {
       path: "packages/memory-host-sdk/src/host/openclaw-runtime-session.ts",
@@ -1027,7 +1027,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/memory-host-sdk/src/host/openclaw-runtime.ts",
-      sha256: "53b4a50da77c05119123715592c37064c674c3c4ad283c41a462ce41315f926f",
+      sha256: "e961ab84983fcdcecbaf6345fa390729a658cdfc41fe94da0d64bd4fc211e064",
     },
     {
       path: "packages/memory-host-sdk/src/host/qmd-process.ts",
@@ -17748,4 +17748,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "21656cd5dbcf96ab4f1e278a63a56022cf412264ac74289bd641eadcba91fcb0";
+  "960f40385047e654239d3eab6f7226e6fd0e4a1e527cddd63c28b238b9c4278c";

@@ -24,7 +24,6 @@ export type {
   MemoryFlushPlan,
   MemoryFlushPlanResolver,
   MemoryGovernorBackend,
-  MemoryGovernorCapability,
   MemoryGovernorFact,
   MemoryGovernorRecall,
   MemoryPluginCapability,
