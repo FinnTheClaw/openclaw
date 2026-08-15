@@ -229,17 +229,24 @@ export function verifyGovernorMemoryFact(fact: MemoryGovernorFact, key: string):
 }
 
 const OWNED_BACKENDS = new WeakSet<object>();
+const OWNED_CAPABILITIES = new WeakSet<object>();
 
 export function ownGovernorMemoryCapability(
   capability: MemoryGovernorCapability,
 ): MemoryGovernorCapability {
-  return Object.freeze({
+  const owned = Object.freeze({
     createBackend(params) {
       const backend = capability.createBackend(params);
       OWNED_BACKENDS.add(backend);
       return backend;
     },
   });
+  OWNED_CAPABILITIES.add(owned);
+  return owned;
+}
+
+export function isOwnedGovernorMemoryCapability(value: unknown): value is MemoryGovernorCapability {
+  return Boolean(value && typeof value === "object" && OWNED_CAPABILITIES.has(value));
 }
 
 export function isOwnedGovernorMemoryBackend(value: unknown): value is MemoryGovernorBackend {

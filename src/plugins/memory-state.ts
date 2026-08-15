@@ -11,8 +11,6 @@ export {
   governorMemoryAuthorityBindingDigest,
   governorMemoryContentDigest,
   governorMemoryFactMac,
-  isOwnedGovernorMemoryBackend,
-  ownGovernorMemoryCapability,
   verifyGovernorMemoryFact,
   type MemoryGovernorBackend,
   type MemoryGovernorCapability,
@@ -20,6 +18,11 @@ export {
   type MemoryGovernorRecall,
   type MemoryGovernorSourceKind,
 } from "./memory-governor-capability.js";
+
+export type MemoryCapabilityProvenance = Readonly<{
+  origin: string;
+  source: string;
+}>;
 
 const log = createSubsystemLogger("plugins/memory-state");
 
@@ -203,10 +206,32 @@ export function registerMemoryCapability(
   pluginId: string,
   capability: MemoryPluginCapability,
 ): void {
+  registerMemoryCapabilityInternal(pluginId, capability);
+}
+
+/** Called only by the loader after it has attached verified plugin provenance. */
+export function registerTrustedMemoryCapability(
+  pluginId: string,
+  capability: MemoryPluginCapability,
+  provenance: MemoryCapabilityProvenance,
+): void {
+  registerMemoryCapabilityInternal(
+    pluginId,
+    capability,
+    provenance.origin === "bundled" && provenance.source.trim().length > 0,
+  );
+}
+
+function registerMemoryCapabilityInternal(
+  pluginId: string,
+  capability: MemoryPluginCapability,
+  bundledProvenance = false,
+): void {
   const governorMemory =
-    pluginId === "memory-lancedb" && capability.governorMemory
+    pluginId === "memory-lancedb" && bundledProvenance && capability.governorMemory
       ? ownGovernorMemoryCapability(capability.governorMemory)
-      : capability.governorMemory;
+      : undefined;
+  const { governorMemory: _untrustedGovernorMemory, ...capabilityWithoutGovernor } = capability;
   const existingCapability = memoryPluginState.capability?.capability;
   // A selected memory plugin can add bridge artifacts while memory-core owns sidecar runtime hooks.
   const shouldPreserveExisting =
@@ -219,7 +244,7 @@ export function registerMemoryCapability(
     pluginId,
     capability: {
       ...(shouldPreserveExisting ? existingCapability : {}),
-      ...capability,
+      ...capabilityWithoutGovernor,
       ...(governorMemory ? { governorMemory } : {}),
     },
   };

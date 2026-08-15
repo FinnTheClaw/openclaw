@@ -10,9 +10,10 @@ import type {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef } from "../config/types.secrets.js";
 import {
-  createInertMemoryGovernorBackend,
   isOwnedGovernorMemoryBackend,
-} from "../plugins/memory-state.js";
+  isOwnedGovernorMemoryCapability,
+} from "../plugins/memory-governor-capability.js";
+import { createInertMemoryGovernorBackend } from "../plugins/memory-state.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import type {
   GovernorHostIntegrationConfiguration,
@@ -291,7 +292,9 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       const suppliedMemory = host.integrations.memory;
       const registration = getMemoryCapabilityRegistration();
       const memoryCapability =
-        registration?.pluginId === "memory-lancedb" && registration.capability.governorMemory
+        registration?.pluginId === "memory-lancedb" &&
+        registration.capability.governorMemory &&
+        isOwnedGovernorMemoryCapability(registration.capability.governorMemory)
           ? registration.capability.governorMemory
           : undefined;
       const registeredMemory =

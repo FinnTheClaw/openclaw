@@ -144,10 +144,12 @@ export function createGovernorMemoryAuthority(
   const authority: GovernorTrustedMemoryAuthority = Object.freeze({
     advance: (binding) => {
       assertOpen();
-      const digest = authorityBinding(binding);
       const key = authorityKey(binding.scopeKey, binding.factKey);
       const current = ledger.state("memory", key);
-      if (current?.status === "memory_current" && current.bindingDigest === digest) {
+      if (
+        current?.status === "memory_current" &&
+        current.bindingDigest === authorityBinding(binding)
+      ) {
         return { accepted: true, state: toState(current) as GovernorMemoryAuthorityState };
       }
       if (current) {
@@ -156,12 +158,14 @@ export function createGovernorMemoryAuthority(
           return rejection;
         }
       }
+      const generation = (current?.generation ?? 0) + 1;
+      const finalBinding = { ...binding, generation };
       const next = ledger.append({
         kind: "memory",
         key,
-        generation: (current?.generation ?? 0) + 1,
+        generation,
         status: "memory_current",
-        bindingDigest: digest,
+        bindingDigest: authorityBinding(finalBinding),
         ordering: binding.ordering,
       });
       afterLedgerAppend?.();

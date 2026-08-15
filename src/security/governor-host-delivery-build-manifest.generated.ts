@@ -9943,7 +9943,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/behavior-governor-lifecycle.ts",
-      sha256: "8305606bb899ef76a610ae6e1b9129d5c4fdce5a6d62316ae881b74928096903",
+      sha256: "c30ef2a4583203dcf2813ea74b08c6480e5bc6adb86aa0e14212bf841a5db775",
     },
     {
       path: "src/gateway/boot-echo-guard.ts",
@@ -13955,7 +13955,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/plugin-sdk/memory-core-host-runtime-core.ts",
-      sha256: "9bc4214a3fd29d818db2b652652d6516260f39fe76ceb469bf4bded50700f1b7",
+      sha256: "7502ee3fca51b0156761de0c80b6c079962add63a48a4ae934c61c53c4233098",
     },
     {
       path: "src/plugin-sdk/message-tool-delivery-hints.ts",
@@ -14807,7 +14807,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/plugins/memory-governor-capability.ts",
-      sha256: "83edb0791b30257c2511e0abaa515a637d318421b1bbd54235dfcfba4aa1db43",
+      sha256: "7ba6c51c258099adba33cff0cb024ad145e7f08f1510bc5605c438b279ac74a4",
     },
     {
       path: "src/plugins/memory-runtime.ts",
@@ -14815,7 +14815,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/plugins/memory-state.ts",
-      sha256: "e7fce8a567eb91b42b0a4fedc06fa2e06266b860f12d6e94b67486d9c9cf3ba0",
+      sha256: "49620a20b0f0f392f682821e1f0348aaa121243761b4007211495a9a5c63545f",
     },
     {
       path: "src/plugins/migration-provider-runtime.ts",
@@ -15127,7 +15127,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/plugins/registry.ts",
-      sha256: "dbea89d7d6160eb3f7463e7b571e734f686e1cb9b09055f17f2614ca4df28e98",
+      sha256: "4c5036e277be4649f59fe76499b27345cdaecb36aa3aa1652598fb973c5f4715",
     },
     {
       path: "src/plugins/roots.ts",
@@ -15963,7 +15963,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-memory-authority.ts",
-      sha256: "b97c5f14e8e72175777917780be9af25bb3b4125e943daf88b699050437a2de9",
+      sha256: "a962a35b57845bb16fa39465422e7a70f2159a3bf3717275725ea92b5f8419bb",
     },
     {
       path: "src/security/governor-host-owner-ingress-persistence.ts",
@@ -17756,4 +17756,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "76522dd029e5d2438536484b01982aea117d730f4e9de43ea552e8e91b1df443";
+  "035ce50037a18a169c705ca43569aca1e42b8cf59a48f7a87b0b24883f41f749";

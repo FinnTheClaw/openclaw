@@ -115,7 +115,7 @@ import {
   registerMemoryEmbeddingProvider,
 } from "./memory-embedding-providers.js";
 import {
-  registerMemoryCapability,
+  registerTrustedMemoryCapability,
   registerMemoryCorpusSupplement,
   registerMemoryFlushPlanResolverForPlugin,
   registerMemoryPromptSupplement,
@@ -3151,7 +3151,10 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
                   });
                   return;
                 }
-                registerMemoryCapability(record.id, capability);
+                registerTrustedMemoryCapability(record.id, capability, {
+                  origin: record.origin,
+                  source: record.source,
+                });
               },
               registerMemoryPromptSection: (builder) => {
                 if (!hasKind(record.kind, "memory")) {
