@@ -15863,7 +15863,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-transient-failure.ts",
-      sha256: "525e11333e9fa1779a18de9c74d3eb469db99adf717bc8d9b58eb1b6bb82eed1",
+      sha256: "150c77d06193288e20ac2d73476cea2a309fcb0f81d43e82b3b45f0f454e6526",
     },
     {
       path: "src/security/governor-agent-loop-turn-handler.ts",
@@ -17728,4 +17728,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "431dd703a623aaba1641bde2cbabee70c118def0991cfd5dff5fd43fbf332b8b";
+  "b0243f887fe5aa7ea66b236c0566f9be0399525f6fee4a401e32aa0dd2d51e83";

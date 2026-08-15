@@ -46,15 +46,20 @@ function hasCurrentEvidence(
   if (!criterionId) {
     return false;
   }
-  return controller.store
-    .listEvidence(taskId as never)
-    .some(
-      (evidence) =>
-        evidence.planVersion === planVersion &&
-        evidence.criterionId === criterionId &&
-        evidence.admissibility === "admitted" &&
-        evidence.invalidatedAt === undefined,
-    );
+  return controller.store.listEvidence(taskId as never).some((evidence) => {
+    if (
+      evidence.planVersion !== planVersion ||
+      evidence.criterionId !== criterionId ||
+      evidence.admissibility !== "admitted" ||
+      evidence.invalidatedAt !== undefined
+    ) {
+      return false;
+    }
+    const payload = payloadRecord(evidence.payload);
+    const effectId = typeof payload?.effectId === "string" ? payload.effectId : undefined;
+    const effect = effectId ? controller.store.loadEffect(taskId as never, effectId) : undefined;
+    return effect?.outcome.transport === "completed" && effect.outcome.semantic === "success";
+  });
 }
 
 function priorCause(

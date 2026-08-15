@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   governorAgentLoopAssistant as assistant,
   governorAgentLoopFixtureModel as model,
@@ -236,6 +236,66 @@ describe("C02/C05 durable restart boundaries", () => {
       },
     );
   });
+
+  it.each(["before_begin_verification", "after_begin_verification"] as const)(
+    "reconstructs pending final response after %s without exposing tools",
+    async (boundary) => {
+      await withOpenClawTestState(
+        { layout: "state-only", prefix: `governor-c02-verification-${boundary}-` },
+        async (state) => {
+          const first = start(state.stateDir, [{ criterionId: "alpha" }]);
+          const scope = resolveGovernorAgentLoopRunScope(inputs(`verification-${boundary}`))!;
+          runTool(scope, "observe", "alpha", "verification-alpha", 101);
+          expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 103 })).toMatchObject({
+            phase: "final_response",
+          });
+          const taskId = scope.taskId;
+          const controller = first.adapter.controller;
+          const originalBeginVerification = controller.beginVerification.bind(controller);
+          vi.spyOn(controller, "beginVerification").mockImplementation((id, now) => {
+            if (boundary === "before_begin_verification") {
+              throw new Error("verification boundary crash");
+            }
+            originalBeginVerification(id, now);
+            throw new Error("verification boundary crash");
+          });
+          expect(() =>
+            scope.afterTurn({ assistantText: "done", toolCallCount: 0, now: 105 }),
+          ).toThrow("verification boundary crash");
+          vi.restoreAllMocks();
+          const interrupted = controller.store.loadTask(taskId as never)!;
+          expect(interrupted.state).toBe(
+            boundary === "after_begin_verification" ? "VERIFYING" : "EXECUTING",
+          );
+          expect(interrupted.finalResponsePhase).toBeDefined();
+          scope.dispose();
+          first.close();
+          closeOpenClawStateDatabase();
+
+          const second = start(state.stateDir, [{ criterionId: "alpha" }]);
+          const resumed = resolveGovernorAgentLoopRunScope(inputs(`verification-${boundary}`))!;
+          const agent = new Agent({
+            initialState: { model, tools: [...resumed.governedTools()] },
+            streamFn: scriptedStream(() => assistant([{ type: "text", text: "done" }])),
+          });
+          const bridge = installGovernorLoopBridge({ agent, scope: resumed, now: () => 200 });
+          expect(resumed.turnPhase()).toBe("final_response");
+          expect(agent.state.tools).toStrictEqual([]);
+          expect(
+            resumed.afterTurn({ assistantText: "done", toolCallCount: 0, now: 205 }),
+          ).toMatchObject({
+            kind: "complete",
+          });
+          const completed = second.adapter.controller.store.loadTask(taskId as never)!;
+          expect(completed.state).toBe("COMPLETED");
+          expect(completed.finalResponsePhase).toBeUndefined();
+          bridge.dispose();
+          resumed.dispose();
+          second.close();
+        },
+      );
+    },
+  );
 
   it("records immutable carry-forward lineage and invalidates every descendant transactionally", async () => {
     await withOpenClawTestState(
