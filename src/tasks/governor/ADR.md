@@ -241,6 +241,10 @@ isolated SQLite state.
     verification and pre-dispatch child admission/terminal integration exist. This slice therefore
     authorizes only a read-only disposable live-model canary, not production rollout.
 
+    C07 memory shadow is a stricter exception: it may compute bounded ephemeral in-memory
+    diagnostics only. It persists no decision, observation, metric, receipt, failure, authority, or
+    projection state and changes no continuation, result, reply, or tool behavior.
+
 41. The gateway integration is lifecycle-owned and restart-only. An absent or disabled
     `experimental.behaviorGovernor` value does not load heavyweight host/bootstrap/state modules,
     resolve governor secrets, open governor state, or install the process-global host; a tiny
@@ -256,9 +260,10 @@ isolated SQLite state.
     key is applied because no hot-refresh callback is claimed here.
     Shutdown drains that generation's scopes before revoking authorities and closing its dedicated
     `<stateRoot>/governor` persistence. Close is serialized, idempotent, failure-aggregating, and
-    never reopens a closed database or permits retained owner capabilities to write. Shadow is
-    observational, including terminal/replay paths: it may record private bounded observations but
-    cannot suppress a normal OpenClaw retry, steer, stop, interrupt, alter tools, or alter replies.
+    never reopens a closed database or permits retained owner capabilities to write. General shadow
+    is observational, including terminal/replay paths: it may record private bounded observations
+    but cannot suppress a normal OpenClaw retry, steer, stop, interrupt, alter tools, or alter replies.
+    C07 memory uses the stricter ephemeral-only rule in invariant 40.
 
 42. Child admission and lifecycle use one controller-scoped durable child-intent identity. Named
     requests are keyed by the normalized operation key; unnamed requests use the canonical request
@@ -290,9 +295,10 @@ The governor remains disabled by default. A future production rollout must first
 `OPENCLAW_GOVERNOR_DEPLOYMENT_ID`, configure authenticated evidence, approval, delivery,
 owner-ingress, and child-lifecycle integration owners, bind each owner
 channel/account/gateway/principal/action/scope tuple,
-register/certify at least one compiled host-owned channel implementation, and install concrete
-cache/index/embedding invalidation adapters for every governed memory backend. Until then, this is
-a synthetic-testable control plane rather than a live message-path replacement.
+register/certify at least one compiled host-owned channel implementation. C07 additionally
+requires the separately reviewed process-isolated authority/projection architecture, migration,
+and readiness manifest in the C07 ADR set; a same-process memory adapter cannot satisfy it. Until
+then, this is a synthetic-testable control plane rather than a live message-path replacement.
 
 ## Host-authority boundary
 
@@ -301,21 +307,24 @@ may propose a candidate, request approval, reference an opaque grant or delivery
 result. They may not mint receipts, sign evidence or grants, advance revocation epochs, register an
 adapter, replace a sender, or obtain a secret. This is an object-capability boundary within one
 OpenClaw process; it deliberately does **not** claim to protect against a compromised operating
-system or process that can read memory or host secrets.
+system or process that can read memory or host secrets. That same-process boundary remains normative
+for non-C07 authorities only. C07 memory requires the separate OS/process boundary in the C07 ADR
+set and cannot activate through these in-process capabilities.
 
 `src/security/governor-host-bootstrap.ts`, `governor-host-broker.ts`,
 `governor-host-delivery-broker.ts`, `governor-host-delivery-implementations.ts`,
 `governor-host-delivery-persistence.ts`, the generated delivery build manifest,
 `governor-host-channel-delivery.ts`, `governor-host-owner-ingress.ts`,
 `governor-host-persistence.ts`, `governor-host-owner-ingress-persistence.ts`,
-`governor-host-memory-authority.ts`, `governor-host-task-authority.ts`,
+the legacy `governor-host-memory-authority.ts`, `governor-host-task-authority.ts`,
 `governor-host-secrets.ts`, and the anti-rollback ledger codec/storage form the private host
 boundary. They are
 not in the package export map. A whole-source allowlist permits only the explicit trusted bootstrap
 and host-internal dependency edges. Governor, task, model, and plugin code may
 consume read-only resolvers from `governor-host-readonly.ts`, but must not import the broker or a
 capability constructor. The static boundary test enforces that edge. Test-only synthetic bindings
-are rejected unless `NODE_ENV=test`; they are never a production fallback.
+are rejected unless `NODE_ENV=test`; they are never a production fallback. The legacy memory module
+is migration input only for C07 and is not an approved enforce boundary.
 
 The host ledger sidecars are private and store only opaque stream keys, digests, generations,
 signed task fences, and signatures. The append-only journal and independently signed full-state

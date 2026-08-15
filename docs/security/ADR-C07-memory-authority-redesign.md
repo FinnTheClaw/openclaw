@@ -3,6 +3,13 @@
 Status: proposed; implementation is blocked until a fresh Sol High design review returns GO with
 zero P0/P1 findings.
 
+Normative companions:
+
+- `ADR-C07-memory-authority-protocol.md` owns principal, lifecycle, anti-rollback, state-machine,
+  confidentiality, checkpoint, and readiness details.
+- `ADR-C07-memory-migration-acceptance.md` owns migration, rollback, deterministic prerequisites,
+  and exact live-Qwen acceptance.
+
 Supersedes: the C07 same-process trusted-factory and dual-ledger design through
 `68a28d83ed2be604a737a66fb0e9eda654da5b12`.
 
@@ -70,7 +77,9 @@ Non-goals:
 - evidence provenance, confidence/rank, source lineage, and scope epoch;
 - the signed transition chain and anti-rollback head;
 - projection outbox state and idempotent projection receipts; and
-- the memory-authority signing key and database.
+- the memory-authority signing key and database; and
+- memory values, canonical text, summaries, embeddings, encrypted payload envelopes, migration
+  inputs/backups, and recall associations.
 
 ### Adversaries
 
@@ -93,12 +102,11 @@ The trusted supervisor and plugin host run under different OS identities.
   equivalent filesystem and local-socket ACL separation.
 - The supervisor never passes authority keys, database handles, projection handles, factory
   objects, module paths, or arbitrary callbacks to the plugin host.
-- The plugin RPC accepts bounded proposals and public recall requests. The server derives caller,
-  agent, session, scope, and capability identity from its authenticated connection and current
-  runtime state; those fields are not caller authority.
+- The plugin host has no C07 RPC. The trusted supervisor retains invocation/session context and
+  treats a plugin response only as untrusted data for one pending invocation. Recall and admission
+  remain trusted-core operations.
 - The plugin host cannot open the supervisor authority RPC, control ledger, LanceDB projection, or
-  signing-key path. A second local socket exposed to the plugin identity implements only the public
-  proposal/recall contract.
+  signing-key path.
 - Enforce startup proves distinct peer credentials and path confinement before loading C07. If the
   platform cannot establish them, C07 enforce is unavailable.
 
@@ -106,13 +114,17 @@ This boundary prevents same-process impersonation by removing untrusted plugins 
 process. A same-UID helper, bearer token in the gateway process, hidden export, or deep-import ban is
 insufficient and is explicitly rejected.
 
+The normative per-principal channel, sequencing, replay, and revocation protocol is in
+`ADR-C07-memory-authority-protocol.md`.
+
 ### Security properties
 
 1. Exactly one ledger row owns the current state of each exact scoped fact.
 2. Every state change allocates its generation and semantic cutoff inside one SQLite write
    transaction before signing.
-3. The event, current projection, lineage edges, anti-rollback intent, and outbox row commit
-   atomically.
+3. The event, current projection, lineage edges, encrypted payload, and outbox row commit in one
+   SQLite transaction. The separate anti-rollback ledger surrounds it with the companion's
+   fail-closed external-intent/current reconciliation protocol.
 4. Projection events contain the already allocated values; projection code cannot substitute or
    derive them.
 5. Unknown, missing, stale, unsigned, legacy, wrong-scope, wrong-lineage, or wrong-generation data
@@ -168,25 +180,28 @@ States:
 - `CURRENT`: one verified fact is eligible.
 - `REVIEW_REQUIRED`: conflicting evidence is insufficient to choose a replacement.
 - `QUARANTINED`: current content is ineligible pending authenticated replacement or operator action.
+- `QUARANTINED_UNTRUSTED`: tamper/legacy state has no trusted cutoff and requires an authenticated
+  authority-epoch recovery before a new observation can be considered.
 - `EXPIRED`: the previous generation is ineligible; a strictly newer verified observation may enter.
-- `FORGOTTEN`: irrevocably fenced for the authority epoch and scope epoch.
+- `FORGOTTEN`: irrevocably fenced across every future authority and scope epoch.
 - `TOMBSTONED`: replaced or superseded content is retained as bounded audit identity only.
 - `LEGACY_UNPROVEN`: migrated data lacks complete proof and is permanently ineligible.
 
 Transitions:
 
-| Transition           | Allowed source                              | Required authority                                                 | Target and cutoff rule                                                       |
-| -------------------- | ------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| `ADMIT`              | `ABSENT`, `EXPIRED`                         | Current exact-scope admitted evidence                              | `CURRENT`; cutoff is the signed observation/freshness boundary               |
-| `REPLACE`            | `CURRENT`, `QUARANTINED`, `REVIEW_REQUIRED` | Qualified newer same-scope contradiction with sufficient authority | prior becomes `TOMBSTONED`; replacement becomes `CURRENT` in one transaction |
-| `EXPIRE`             | `CURRENT`                                   | Trusted clock plus stored signed expiry                            | `EXPIRED`; cutoff is exactly the stored expiry                               |
-| `FORGET`             | any non-legacy state                        | Authenticated operator receipt bound to fact/scope/epoch           | `FORGOTTEN`; advances scope/fact revocation high-water                       |
-| `CONTRADICT`         | `CURRENT`                                   | Qualified evidence                                                 | `REPLACE` if decisive, otherwise `REVIEW_REQUIRED`; never silent deletion    |
-| `TAMPER`             | any materialized state                      | Failed signature/binding/rollback verification                     | `QUARANTINED`; no reactivation without authenticated replacement             |
-| `SUPERSEDE`          | `CURRENT`                                   | Newer higher-authority verified fact with exact identity           | atomic `REPLACE`; old lineage remains auditable                              |
-| `INVALIDATE_SOURCE`  | any lineage descendant                      | Authenticated source-evidence invalidation                         | transitive descendants become `QUARANTINED` in the same transaction          |
-| `MIGRATE_REBUILD`    | legacy input                                | Complete verifiable historical authority                           | new authority epoch `CURRENT`; values copied only from proved records        |
-| `MIGRATE_QUARANTINE` | legacy input                                | Migration owner                                                    | `LEGACY_UNPROVEN`; no inferred reason, generation, or cutoff                 |
+| Transition                | Allowed source                                     | Required authority                                                 | Target and cutoff rule                                                                |
+| ------------------------- | -------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `ADMIT`                   | `ABSENT`, `EXPIRED`                                | Current exact-scope admitted evidence                              | `CURRENT`; cutoff is the signed observation/freshness boundary                        |
+| `REPLACE`                 | `CURRENT`, `QUARANTINED`, `REVIEW_REQUIRED`        | Qualified newer same-scope contradiction with sufficient authority | prior becomes `TOMBSTONED`; replacement becomes `CURRENT` in one transaction          |
+| `EXPIRE`                  | `CURRENT`                                          | Trusted clock plus stored signed expiry                            | `EXPIRED`; cutoff is exactly the stored expiry                                        |
+| `FORGET`                  | any non-legacy state                               | Authenticated operator receipt bound to fact/scope/epoch           | `FORGOTTEN`; advances scope/fact revocation high-water                                |
+| `CONTRADICT`              | `CURRENT`                                          | Qualified evidence                                                 | `REPLACE` if decisive, otherwise `REVIEW_REQUIRED`; never silent deletion             |
+| `TAMPER`                  | any materialized state                             | Failed signature/binding/rollback verification                     | `QUARANTINED`; no reactivation without authenticated replacement                      |
+| `SUPERSEDE`               | `CURRENT`                                          | Newer higher-authority verified fact with exact identity           | atomic `REPLACE`; old lineage remains auditable                                       |
+| `INVALIDATE_SOURCE`       | any lineage descendant                             | Authenticated source-evidence invalidation                         | transitive descendants become `QUARANTINED` in the same transaction                   |
+| `MIGRATE_REBUILD`         | legacy input                                       | Complete verifiable historical authority                           | new authority epoch `CURRENT`; values copied only from proved records                 |
+| `MIGRATE_QUARANTINE`      | legacy input                                       | Migration owner                                                    | `LEGACY_UNPROVEN`; no inferred reason, generation, or cutoff                          |
+| `ADVANCE_AUTHORITY_EPOCH` | `QUARANTINED_UNTRUSTED` or recovery-required scope | Authenticated host-operator recovery receipt                       | advances the epoch without reactivation; a later new verified observation is required |
 
 Every transition is a compare-and-swap on current event ID, generation, scope epoch, and authority
 epoch. A duplicate exact event returns the committed result. Any binding conflict fails closed.
@@ -199,11 +214,14 @@ control-plane transaction computes it once by this closed table:
 | `ADMIT`, `MIGRATE_REBUILD`                          | authenticated observation time of the admitted fact                                                                                                       |
 | `EXPIRE`                                            | previously signed `freshnessExpiresAt`                                                                                                                    |
 | decisive `CONTRADICT`, `REPLACE`, `SUPERSEDE`       | authenticated observation time of the replacement, which must already be strictly newer than the prior cutoff                                             |
-| `FORGET`                                            | authenticated operator-receipt server time, plus an irrevocable authority/scope-epoch fence                                                               |
-| `TAMPER`, `INVALIDATE_SOURCE`, `MIGRATE_QUARANTINE` | prior trusted cutoff if one exists; otherwise no numeric trust is invented and reactivation requires a new authority epoch plus authenticated replacement |
+| `FORGET`                                            | `max(priorTrustedCutoff, authenticated operator-receipt server time)`, plus a permanent fact-revocation high-water                                        |
+| `TAMPER`, `INVALIDATE_SOURCE`, `MIGRATE_QUARANTINE` | prior trusted cutoff if one exists; otherwise no numeric trust is invented and `ADVANCE_AUTHORITY_EPOCH` plus a new authenticated observation is required |
 
 Projection code receives this field and stores it verbatim. It does not inspect timestamps to choose
 another value.
+
+The normative monotonic tuple, quarantine recovery, permanent forget, and lineage-cardinality rules
+are in `ADR-C07-memory-authority-protocol.md`.
 
 ## Elimination inventory for `68a28d` alternate mutation paths
 
@@ -230,9 +248,13 @@ The authoritative transaction writes:
 
 1. the immutable signed transition event;
 2. the authoritative current row and lineage changes;
-3. the anti-rollback intent/current marker;
-4. one outbox row keyed by event ID and target projection generation; and
-5. bounded audit/migration metadata.
+3. one encrypted payload envelope and outbox row keyed by event ID and target projection generation;
+   and
+4. bounded audit/migration metadata.
+
+The external anti-rollback intent is fsynced before this transaction and its current marker after
+the commit. Reads remain unavailable between mismatched phases. Exact crash reconciliation and lock
+order are normative in `ADR-C07-memory-authority-protocol.md`.
 
 Outbox states are `PENDING -> CLAIMED -> APPLIED` or `PENDING|CLAIMED -> QUARANTINED`. Claims are
 leased and generation-fenced. A crash after apply but before acknowledgement replays the same event
@@ -284,7 +306,9 @@ Shadow:
 
 ## Legacy migration and rollback
 
-Migration is offline, restart-required, idempotent, and single-owner.
+Migration is offline, restart-required, idempotent, and single-owner. The normative source-of-bytes,
+phase, cutover, abort, roll-forward, key/backup, and downgrade rules are in
+`ADR-C07-memory-migration-acceptance.md`.
 
 1. Freeze memory writes and create verified backups of the old control DB, LanceDB directory, and
    anti-rollback ledger.
@@ -304,7 +328,8 @@ Migration is offline, restart-required, idempotent, and single-owner.
    events.
 5. Verify row counts, identity counts, signatures, authority heads, outbox convergence, and absence
    of eligible legacy rows before enabling reads.
-6. Atomically mark cutover complete and make the old schema read-only.
+6. Commit cutover through the external-intent -> target-SQLite -> external-current protocol. The
+   ordinary legacy store remains untouched for OFF; enforce uses only the new authority.
 
 A quarantined legacy identity may become current only through a new post-cutover authenticated
 observation and an explicit replacement transition. Migration does not invent a freshness cutoff.
@@ -320,8 +345,8 @@ Projection rollback triggers replay/rebuild; it never changes eligibility.
 ## Retention and capacity
 
 - Current rows are one per exact scoped fact.
-- Transition events and projection receipts use bounded hot retention plus signed compact
-  checkpoints preserving generation/event high-water and lineage/tombstone digests.
+- Transition events and projection receipts use bounded hot retention plus signed encrypted
+  projection checkpoints containing complete rebuild envelopes and permanent fences.
 - Named forget and tamper fences survive event compaction in scalar high-water rows.
 - Candidate/review rows have per-scope and global quotas, TTLs, pagination, and deterministic oldest
   eligible archival.
@@ -332,10 +357,12 @@ Projection rollback triggers replay/rebuild; it never changes eligibility.
 
 ## Implementation slices after design GO
 
-No slice starts before this ADR receives design GO.
+No slice starts before all three C07 design records receive design GO.
 
-1. **Trust boundary:** add the supervisor/plugin-host process contract, distinct-identity bootstrap,
-   peer-credential validation, path ACL checks, and OFF gating. No memory behavior change.
+1. **Activation interlock and trust boundary:** first remove/block every C07 activation entry, then
+   add the signed readiness/version gate, supervisor/plugin-host process contract, distinct-identity
+   bootstrap, principal protocol, path ACL checks, and OFF gating. No memory behavior change and no
+   intermediate commit can enable C07.
 2. **Control ledger:** add bounded contract/state-machine modules, schema, signatures,
    anti-rollback binding, lineage CAS, and transactional outbox.
 3. **Projection worker:** move C07 LanceDB ownership into trusted core; replace mutation APIs with one
@@ -404,18 +431,11 @@ deterministic final authority/projection state.
 
 ## Exact 100x live-Qwen acceptance mapping
 
-Live tests remain blocked until implementation, deterministic tests, immutable review, freeze, and a
-separate authorization are complete. Fake-provider results are supplemental only.
-
-| Gate                           | Exact 100x campaign                                                                                                                              | Countable pass condition                                                                                                                                                                                                                             |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C07a replacement reuse         | For each of 100 isolated scopes, Qwen receives one stale operational fact, one qualified correction, then 99 equivalent recall opportunities     | exactly one authority replacement and one backend remediation per scope; opportunities 2-100 return/reuse only the replacement or tombstone; zero stale recalls and zero repeated source reproof                                                     |
-| C07b scope/poisoning isolation | 100 seeded paired-scope trials covering weak, equal, forged, candidate, wrong-scope, and unrelated-same-source cases                             | scope A changes only on qualified evidence; scope B and independent facts remain byte/digest stable; zero unauthorized retirements; unrelated allowed tools remain usable                                                                            |
-| C07c recovery/convergence      | 100 deterministic fault-schedule trials distributed across commit/outbox/apply/receipt/restart/compaction/rollback/expiry/scope-epoch boundaries | one final authority chain, at most one logical remediation, zero stale recall, zero duplicate reinvestigation; invalidation/rollback/expiry/scope-epoch creates exactly one justified re-observation; active/unknown work is never reported complete |
-
-Sanitized scoring stores only opaque run/scope/fact IDs, event/receipt digests, generations, cutoffs,
-counts, timings, model/backend attestation, process exits, and resource observations. It stores no
-prompts, responses, transcripts, memory values, credentials, or private source content.
+The normative campaigns and denominators are in
+`ADR-C07-memory-migration-acceptance.md`: C07a, C07b, and C07c each contain exactly 100 countable
+production-mode Qwen calls, for 300 total. Deterministic fault actions are prerequisite evidence and
+are not misreported as model calls. Live work remains blocked until implementation, deterministic
+tests, immutable review, freeze, and separate authorization are complete.
 
 ## Release gates
 
