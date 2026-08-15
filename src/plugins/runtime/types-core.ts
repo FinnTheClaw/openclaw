@@ -8,6 +8,7 @@ import type {
   TextToSpeechStream,
   TextToSpeechTelephony,
 } from "../../plugin-sdk/tts-runtime.types.js";
+import type { PluginRuntimeGoals } from "./runtime-goal.types.js";
 import type { PluginRuntimeTaskFlows, PluginRuntimeTaskRuns } from "./runtime-tasks.types.js";
 
 export type { HeartbeatRunResult };
@@ -398,6 +399,7 @@ export type PluginRuntimeCore = {
       TCompletedMetadata
     >;
   };
+  goals: PluginRuntimeGoals;
   tasks: {
     runs: PluginRuntimeTaskRuns;
     flows: PluginRuntimeTaskFlows;

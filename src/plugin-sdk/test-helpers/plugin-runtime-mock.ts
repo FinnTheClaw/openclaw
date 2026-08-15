@@ -784,6 +784,9 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
         throw new Error("openChannelIngressQueue mock is not configured");
       }) as unknown as PluginRuntime["state"]["openChannelIngressQueue"],
     },
+    goals: {
+      ensure: vi.fn() as unknown as PluginRuntime["goals"]["ensure"],
+    },
     tasks: {
       runs: {
         bindSession: vi.fn(),

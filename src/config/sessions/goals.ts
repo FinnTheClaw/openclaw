@@ -23,6 +23,11 @@ type CreateSessionGoalOptions = SessionGoalStoreOptions & {
   tokenBudget?: number;
 };
 
+export type EnsureSessionGoalResult = {
+  goal: SessionGoal;
+  disposition: "created" | "reused" | "replaced_completed";
+};
+
 type UpdateSessionGoalStatusOptions = SessionGoalStoreOptions & {
   status: Extract<SessionGoalStatus, "active" | "paused" | "blocked" | "complete">;
   note?: string;
@@ -61,6 +66,29 @@ function normalizeTokenBudget(value: number | undefined): number | undefined {
 
 function cloneGoal(goal: SessionGoal): SessionGoal {
   return { ...goal };
+}
+
+function buildSessionGoal(params: {
+  entry: Pick<SessionEntry, "totalTokens" | "totalTokensFresh">;
+  objective: string;
+  tokenBudget?: number;
+  now: number;
+}): SessionGoal {
+  const tokenBudget = normalizeTokenBudget(params.tokenBudget);
+  const tokenStartFresh = resolveEntryFreshTotalTokens(params.entry) !== undefined;
+  return {
+    schemaVersion: 1,
+    id: crypto.randomUUID(),
+    objective: params.objective,
+    status: "active",
+    createdAt: params.now,
+    updatedAt: params.now,
+    tokenStart: resolveEntryGoalStartTokens(params.entry),
+    tokenStartFresh,
+    tokensUsed: 0,
+    ...(tokenBudget ? { tokenBudget } : {}),
+    continuationTurns: 0,
+  };
 }
 
 export function resolveSessionGoalDisplayState(
@@ -201,21 +229,12 @@ export async function createSessionGoal(options: CreateSessionGoalOptions): Prom
       if (entry.goal) {
         throw new Error("goal already exists");
       }
-      const tokenBudget = normalizeTokenBudget(options.tokenBudget);
-      const tokenStartFresh = resolveEntryFreshTotalTokens(entry) !== undefined;
-      created = {
-        schemaVersion: 1,
-        id: crypto.randomUUID(),
+      created = buildSessionGoal({
+        entry,
         objective,
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-        tokenStart: resolveEntryGoalStartTokens(entry),
-        tokenStartFresh,
-        tokensUsed: 0,
-        ...(tokenBudget ? { tokenBudget } : {}),
-        continuationTurns: 0,
-      };
+        tokenBudget: options.tokenBudget,
+        now,
+      });
       return { goal: created };
     },
     { fallbackEntry: options.fallbackEntry },
@@ -224,6 +243,44 @@ export async function createSessionGoal(options: CreateSessionGoalOptions): Prom
     throw new Error("session not found");
   }
   return cloneGoal(created);
+}
+
+/** Atomically reuses the current non-terminal goal or creates the next one. */
+export async function ensureSessionGoal(
+  options: CreateSessionGoalOptions,
+): Promise<EnsureSessionGoalResult> {
+  const objective = options.objective.trim();
+  if (!objective) {
+    throw new Error("objective required");
+  }
+  const now = nowMs(options.now);
+  let ensured: EnsureSessionGoalResult | undefined;
+  const result = await patchSessionEntry(
+    { sessionKey: options.sessionKey, storePath: options.storePath },
+    (entry) => {
+      const current = accountGoalUsage(entry, now);
+      if (current && !TERMINAL_GOAL_STATUSES.has(current.status)) {
+        ensured = { goal: cloneGoal(current), disposition: "reused" };
+        return goalsEqual(current, entry.goal) ? null : { goal: current };
+      }
+      const goal = buildSessionGoal({
+        entry,
+        objective,
+        tokenBudget: options.tokenBudget,
+        now,
+      });
+      ensured = {
+        goal: cloneGoal(goal),
+        disposition: current ? "replaced_completed" : "created",
+      };
+      return { goal };
+    },
+    { fallbackEntry: options.fallbackEntry },
+  );
+  if (!result || !ensured) {
+    throw new Error("session not found");
+  }
+  return ensured;
 }
 
 export async function updateSessionGoalStatus(

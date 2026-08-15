@@ -35,6 +35,7 @@ import {
   signalApprovalCapability,
 } from "./approval-native.js";
 import { markdownToSignalTextChunks } from "./format.js";
+import { createSignalHostControlDelivery } from "./functional-finn-release.js";
 import { signalMessageActions } from "./message-actions.js";
 import { looksLikeSignalTargetId, normalizeSignalMessagingTarget } from "./normalize.js";
 import { resolveSignalOutboundTarget } from "./outbound-session.js";
@@ -522,6 +523,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
             await loadSignalSendRuntime()
           ).sendMessageSignal(id, message, {
             cfg,
+            functionalFinnDelivery: createSignalHostControlDelivery(),
           });
         },
       },

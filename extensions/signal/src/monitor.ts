@@ -49,6 +49,10 @@ import {
 } from "./approval-reactions.js";
 import { signalRpcRequest, signalCheck } from "./client-adapter.js";
 import { formatSignalDaemonExit, spawnSignalDaemon, type SignalDaemonHandle } from "./daemon.js";
+import {
+  createSignalHostControlDelivery,
+  readFunctionalFinnVerifiedDelivery,
+} from "./functional-finn-release.js";
 import { isSignalSenderAllowed, type resolveSignalSender } from "./identity.js";
 import { createSignalEventHandler } from "./monitor/event-handler.js";
 import type {
@@ -410,6 +414,13 @@ export async function deliverReplies(params: {
         targetAuthor: account,
         targetAuthorUuid: accountUuid,
       }) ?? payload;
+    const functionalFinnDelivery =
+      readFunctionalFinnVerifiedDelivery(deliveredPayload.channelData) ??
+      (deliveredPayload.isStatusNotice ||
+      deliveredPayload.isCompactionNotice ||
+      deliveredPayload.isFallbackNotice
+        ? createSignalHostControlDelivery()
+        : undefined);
     const reply = resolveSendableOutboundReplyParts(deliveredPayload);
     const nextNativeReply = createSignalNativeReplyResolver({
       payload: deliveredPayload,
@@ -444,6 +455,7 @@ export async function deliverReplies(params: {
             account,
             maxBytes,
             accountId,
+            functionalFinnDelivery,
             ...nextNativeReply(),
           }),
           chunk,
@@ -459,6 +471,7 @@ export async function deliverReplies(params: {
             mediaUrl,
             maxBytes,
             accountId,
+            functionalFinnDelivery,
             ...nextNativeReply(),
           }),
           visibleText,

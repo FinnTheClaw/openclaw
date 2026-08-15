@@ -28,6 +28,7 @@ import { defineCachedValue } from "./runtime-cache.js";
 import { createRuntimeChannel } from "./runtime-channel.js";
 import { createRuntimeConfig } from "./runtime-config.js";
 import { createRuntimeEvents } from "./runtime-events.js";
+import { createRuntimeGoals } from "./runtime-goal.js";
 import { createRuntimeLogging } from "./runtime-logging.js";
 import { createRuntimeMedia } from "./runtime-media.js";
 import { createRuntimeSystem } from "./runtime-system.js";
@@ -301,6 +302,7 @@ export function createPluginRuntime(_options: CreatePluginRuntimeOptions = {}): 
         );
       },
     },
+    goals: createRuntimeGoals(),
     tasks,
     taskFlow,
   } satisfies Omit<

@@ -1230,6 +1230,15 @@ export const SignalAccountSchemaBase = z
     heartbeat: ChannelHeartbeatVisibilitySchema,
     healthMonitor: ChannelHealthMonitorSchema,
     responsePrefix: z.string().optional(),
+    functionalFinnRelease: z
+      .object({
+        enabled: z.boolean().optional(),
+        publicKeyFile: z.string().min(1),
+        keyId: z.string().min(1).max(128),
+        maxLifetimeMs: z.number().int().min(1_000).max(120_000).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

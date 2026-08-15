@@ -805,6 +805,18 @@ importers:
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
 
+  extensions/functional-finn:
+    devDependencies:
+      '@openclaw/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+      typebox:
+        specifier: 1.3.3
+        version: 1.3.3
+
   extensions/github-copilot:
     dependencies:
       '@clack/prompts':

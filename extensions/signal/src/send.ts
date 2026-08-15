@@ -21,6 +21,12 @@ import {
 } from "./approval-reactions.js";
 import { signalRpcRequest } from "./client-adapter.js";
 import { markdownToSignalText, type SignalTextStyleRange } from "./format.js";
+import { settleFunctionalFinnSignalRelease } from "./functional-finn-release-store.js";
+import {
+  authorizeFunctionalFinnSignalSend,
+  type FunctionalFinnVerifiedDelivery,
+  type SignalHostControlDelivery,
+} from "./functional-finn-release.js";
 import { resolveSignalRpcContext } from "./rpc-context.js";
 
 export type SignalSendOpts = {
@@ -42,6 +48,7 @@ export type SignalSendOpts = {
   replyToId?: string | null;
   replyToAuthor?: string | null;
   replyToBody?: string | null;
+  functionalFinnDelivery?: FunctionalFinnVerifiedDelivery | SignalHostControlDelivery;
 };
 
 export type SignalSendResult = {
@@ -249,6 +256,24 @@ export async function sendMessageSignal(
   });
   const { baseUrl, account } = resolveSignalRpcContext(opts, accountInfo);
   const target = parseTarget(to);
+  const release = await authorizeFunctionalFinnSignalSend({
+    cfg,
+    accountId: accountInfo.accountId,
+    to,
+    text,
+    hasMedia: Boolean(opts.mediaUrl?.trim()),
+    delivery: opts.functionalFinnDelivery,
+  });
+  if (release.protected && release.replayed) {
+    return {
+      ...release.replayed,
+      receipt: createSignalSendReceipt({
+        ...release.replayed,
+        target,
+        kind: "text",
+      }),
+    };
+  }
   const targetAuthor = normalizeOptionalString(account);
   const targetAuthorUuid = normalizeOptionalString(accountInfo.config.accountUuid);
   const outboundText = appendSignalApprovalReactionHintForOutboundMessage({
@@ -363,6 +388,13 @@ export async function sendMessageSignal(
   }
   const timestamp = result?.timestamp;
   const messageId = timestamp ? String(timestamp) : "unknown";
+  if (release.protected && release.receiptId) {
+    settleFunctionalFinnSignalRelease({
+      receiptId: release.receiptId,
+      messageId,
+      ...(timestamp != null ? { timestamp } : {}),
+    });
+  }
   registerSignalApprovalReactionTargetForOutboundMessage({
     cfg,
     accountId: accountInfo.accountId,
