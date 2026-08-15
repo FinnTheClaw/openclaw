@@ -60,6 +60,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-agent-loop-types.ts",
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-ingress.ts",
+    "security/governor-agent-loop-phase.ts",
     "security/governor-agent-loop-tool-bindings.ts",
     "security/governor-agent-loop-turn-handler.ts",
     "security/governor-agent-loop-turn-state.ts",
@@ -70,10 +71,14 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   "governor-agent-loop-host": ["security/governor-host-bootstrap.ts"],
   "governor-agent-loop-progress": [
     "security/governor-agent-loop-host.ts",
+    "security/governor-agent-loop-phase.ts",
     "security/governor-agent-loop-turn-handler.ts",
     "security/governor-agent-loop-turn-state.ts",
   ],
-  "governor-agent-loop-task": ["security/governor-agent-loop-host.ts"],
+  "governor-agent-loop-task": [
+    "security/governor-agent-loop-host.ts",
+    "security/governor-agent-loop-phase.ts",
+  ],
   "governor-agent-loop-tools": [
     "security/governor-agent-loop-config.ts",
     "security/governor-agent-loop-host.ts",

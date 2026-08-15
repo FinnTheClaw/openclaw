@@ -217,8 +217,15 @@ async function runFinishCandidateRecovery(
           },
         );
       } else if (failureBoundary === "terminal_commit") {
-        vi.spyOn(second.adapter.controller.store, "commit").mockImplementationOnce(() => {
-          throw new Error("simulated terminal commit crash");
+        const originalCommit = second.adapter.controller.store.commit.bind(
+          second.adapter.controller.store,
+        );
+        vi.spyOn(second.adapter.controller.store, "commit").mockImplementation((params) => {
+          const committed = originalCommit(params);
+          if (params.event.eventType === "completion_certified") {
+            throw new Error("simulated terminal commit crash");
+          }
+          return committed;
         });
       }
       if (failureBoundary === "decision" || failureBoundary === "terminal_commit") {
@@ -238,6 +245,28 @@ async function runFinishCandidateRecovery(
         failureBoundary === "candidate" || failureBoundary === "verification"
           ? resumed
           : resolveGovernorAgentLoopRunScope(inputs(`c02-${failureBoundary}`))!;
+      if (failureBoundary === "terminal_commit") {
+        expect(retry.disposition).toBe("completed_replay");
+        expect(retry.governedTools()).toHaveLength(0);
+        expect(
+          retry.beforeTool({
+            toolCallId: "post-commit-replay-tool",
+            toolName: "observe",
+            args: { key: "alpha" },
+            tool: undefined,
+            now: 107,
+          }),
+        ).toMatchObject({ kind: "block" });
+        expect(
+          retry.afterTurn({ assistantText: "done", toolCallCount: 0, now: 108 }),
+        ).toMatchObject({
+          kind: "complete",
+        });
+        expect(third.adapter.controller.store.loadTask(taskId as never)?.state).toBe("COMPLETED");
+        retry.dispose();
+        third.close();
+        return;
+      }
       expect(retry.turnPhase()).toBe("final_response");
       expect(retry.afterTurn({ assistantText: "done", toolCallCount: 0, now: 106 })).toMatchObject({
         kind: "complete",
