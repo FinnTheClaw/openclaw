@@ -1,8 +1,10 @@
+import { toErrorObject } from "../../infra/errors.js";
 import type { MemoryGovernorBackend } from "../../plugins/memory-state.js";
 import type { GovernorTrustedMemoryAuthority } from "../../security/governor-host-readonly.js";
 // Joins scoped memory records to store-verified contradiction and repair evidence.
 import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
 import { loadCurrentGovernorEvidence } from "./current-evidence.js";
+import { toGovernorBackendFact } from "./memory-backend-binding.js";
 import { normalizeGovernorFactKey } from "./memory-contradiction-policy.js";
 import { GovernorMemoryContradictionStore } from "./memory-contradiction-store.js";
 import { GovernorMemoryStore, type GovernorMemoryRecord } from "./memory-integrity.js";
@@ -25,6 +27,8 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
   readonly #queries: GovernorStoreQueries;
   readonly #identity: GovernorIdentityContext;
   readonly backend?: MemoryGovernorBackend;
+  #backendTail: Promise<void> = Promise.resolve();
+  #backendError: unknown;
 
   constructor(params: {
     options: OpenClawStateDatabaseOptions;
@@ -64,6 +68,54 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     });
   }
 
+  #enqueueBackend(work: () => Promise<void>): void {
+    if (!this.backend) {
+      return;
+    }
+    this.#backendTail = this.#backendTail.then(work).catch((error: unknown) => {
+      this.#backendError ??= error;
+    });
+  }
+
+  async flushBackend(): Promise<void> {
+    await this.#backendTail;
+    if (this.#backendError !== undefined) {
+      throw toErrorObject(this.#backendError, "Governor memory backend failed");
+    }
+  }
+
+  async recallBackend(params: {
+    scope: GovernorTaskScope;
+    query: string;
+    limit: number;
+    now: number;
+  }) {
+    await this.flushBackend();
+    if (!this.backend) {
+      return [];
+    }
+    const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
+    return this.backend.recall({
+      agentId: "governor",
+      scopes: [scopeKey],
+      scopeKeys: [scopeKey],
+      query: params.query,
+      limit: params.limit,
+      now: params.now,
+    });
+  }
+
+  override promoteVerified(params: Parameters<GovernorMemoryStore["promoteVerified"]>[0]) {
+    const result = super.promoteVerified(params);
+    if (result.stored && this.backend) {
+      const fact = toGovernorBackendFact(result.memory);
+      this.#enqueueBackend(async () => {
+        await this.backend!.admit({ fact, now: params.now });
+      });
+    }
+    return result;
+  }
+
   resolveContradiction(params: {
     taskId: GovernorTaskId;
     evidenceId: string;
@@ -73,7 +125,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     freshnessExpiresAt?: number;
     now: number;
   }) {
-    return this.#contradictions.resolve({
+    const resolution = this.#contradictions.resolve({
       taskId: params.taskId,
       evidenceId: params.evidenceId,
       staleMemoryId: params.staleMemoryId,
@@ -84,6 +136,25 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
         : { freshnessExpiresAt: params.freshnessExpiresAt }),
       now: params.now,
     });
+    if ((resolution.kind === "retired" || resolution.kind === "duplicate") && this.backend) {
+      const replacement = toGovernorBackendFact(resolution.replacement);
+      this.#enqueueBackend(async () => {
+        await this.backend!.invalidate({
+          agentId: "governor",
+          scope: resolution.retired.scopeKey,
+          scopeKey: resolution.retired.scopeKey,
+          factKey: resolution.retired.factKey,
+          staleMemoryId: resolution.retired.memoryId,
+          sourceEvidenceId: replacement.sourceEvidenceId,
+          sourceEvidenceDigest: replacement.sourceEvidenceDigest,
+          sourceObservedAt: replacement.observedAt,
+          reason: "contradicted_by_newer_evidence",
+          replacement,
+          now: params.now,
+        });
+      });
+    }
+    return resolution;
   }
 
   loadRemediation(fingerprint: string): GovernorMemoryRemediation | null {
@@ -179,6 +250,22 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       now: params.now,
       guard: params.guard,
     });
+  }
+
+  override retrieve(params: { scope: GovernorTaskScope; now: number }): GovernorMemoryRecord[] {
+    const records = super.retrieve(params);
+    const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
+    this.#enqueueBackend(async () => {
+      await this.backend?.recall({
+        agentId: "governor",
+        scopes: [scopeKey],
+        scopeKeys: [scopeKey],
+        query: "governor-memory-recall",
+        limit: 50,
+        now: params.now,
+      });
+    });
+    return records;
   }
 
   activeReplacement(params: {

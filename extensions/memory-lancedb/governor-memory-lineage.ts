@@ -16,7 +16,7 @@ export function assertNoGovernorLineageCycle(
     const placeholders = frontier.map(() => "?").join(", ");
     const rows = db
       .prepare(
-        `SELECT source_memory_id FROM memory_governor_lineage WHERE memory_id IN (${placeholders}) AND source_memory_id IS NOT NULL LIMIT 256`,
+        `SELECT source_memory_id FROM memory_governor_lineage WHERE relation_kind = 'memory' AND memory_id IN (${placeholders}) LIMIT 256`,
       )
       .all(...frontier) as SqlRow[];
     frontier = [];
@@ -36,17 +36,21 @@ export function assertNoGovernorLineageCycle(
 export function findGovernorLineageDescendants(
   db: DatabaseSync,
   memoryId: string,
+  scopeKey: string,
+  sourceEvidenceIds: readonly string[] = [],
   max = 256,
 ): readonly string[] {
   const descendants = new Set<string>();
   let frontier = [memoryId];
+  let pendingSourceEvidenceIds = [...new Set(sourceEvidenceIds.filter(Boolean))];
   while (frontier.length > 0 && descendants.size < max) {
     const placeholders = frontier.map(() => "?").join(", ");
+    const evidencePlaceholders = pendingSourceEvidenceIds.map(() => "?").join(", ");
     const rows = db
       .prepare(
-        `SELECT memory_id FROM memory_governor_lineage WHERE source_memory_id IN (${placeholders}) LIMIT ${max}`,
+        `SELECT memory_id, source_evidence_id FROM memory_governor_lineage WHERE scope_key = ? AND ((relation_kind = 'memory' AND source_memory_id IN (${placeholders})) OR (relation_kind = 'evidence' AND ${evidencePlaceholders ? `source_evidence_id IN (${evidencePlaceholders})` : "0"})) LIMIT ${max}`,
       )
-      .all(...frontier) as SqlRow[];
+      .all(scopeKey, ...frontier, ...pendingSourceEvidenceIds) as SqlRow[];
     frontier = [];
     for (const row of rows) {
       const child = String(row.memory_id);
@@ -55,6 +59,7 @@ export function findGovernorLineageDescendants(
         frontier.push(child);
       }
     }
+    pendingSourceEvidenceIds = [];
   }
   return [...descendants];
 }

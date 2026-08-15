@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { MemoryGovernorFact } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { DurableMemoryRuntime } from "./durable-memory-runtime.js";
 import { GovernorMemoryLanceDbAdapter } from "./governor-memory-adapter.js";
-import { GovernorMemoryLedger } from "./governor-memory-ledger.js";
 import { HybridMemoryIndex } from "./hybrid-memory-index.js";
 import { TemporalMemoryLedger } from "./temporal-ledger.js";
 
@@ -23,13 +24,27 @@ const embedding = {
 
 const compareStrings = (left: string, right: string): number => left.localeCompare(right);
 
-function fact(
-  overrides: Partial<Parameters<GovernorMemoryLanceDbAdapter["admit"]>[0]["fact"]> = {},
-) {
-  return {
+function digest(...values: unknown[]): string {
+  return createHash("sha256")
+    .update(
+      values
+        .map((value) => (typeof value === "string" ? value : JSON.stringify(value)))
+        .join("\u0000"),
+    )
+    .digest("hex");
+}
+
+function jsonDigest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function fact(overrides: Partial<MemoryGovernorFact> = {}): MemoryGovernorFact {
+  const base = {
     memoryId: "memory-a",
     agentId: "agent-a",
     scope: "scope-a",
+    scopeKey: "scope-a",
+    scopeEpoch: 0,
     factKey: "account.plan",
     subject: "account",
     predicate: "plan",
@@ -42,8 +57,47 @@ function fact(
     sourceIdentity: "host-evidence-a",
     sourceEvidenceId: "evidence-a",
     sourceEvidenceDigest: "digest-a",
-    ...overrides,
-  } as const;
+  } satisfies Partial<MemoryGovernorFact>;
+  const merged = { ...base, ...overrides };
+  const scopeKey = overrides.scopeKey ?? merged.scope;
+  const content = merged.content ?? { object: merged.object };
+  const sourceKind = merged.sourceKind ?? "structured_external";
+  const sourceEvidenceSemanticDigest = `semantic-${merged.sourceEvidenceDigest}`;
+  return {
+    ...merged,
+    scopeKey,
+    scopeEpoch: merged.scopeEpoch ?? 0,
+    generation: merged.generation ?? 1,
+    status: "verified",
+    sourceKind,
+    sourceRank:
+      sourceKind === "structured_external"
+        ? 600
+        : sourceKind === "authenticated_user"
+          ? 500
+          : sourceKind === "tool"
+            ? 400
+            : 200,
+    content,
+    contentDigest: jsonDigest(content),
+    sourceEvidenceSemanticDigest,
+    provenance: {
+      sourceRef: merged.sourceIdentity,
+      observedAt: merged.observedAt,
+      recordedAt: merged.provenance?.recordedAt ?? merged.observedAt,
+      scopeKey,
+      confidence: merged.confidence,
+      sensitivity: merged.provenance?.sensitivity ?? "normal",
+    },
+    authorityBindingDigest: digest(
+      "authority",
+      scopeKey,
+      merged.factKey,
+      merged.sourceEvidenceId,
+      merged.sourceEvidenceDigest,
+      sourceEvidenceSemanticDigest,
+    ),
+  };
 }
 
 type Context = {
@@ -74,6 +128,8 @@ async function closeContext(context: Context): Promise<void> {
   context.adapter.close();
   await context.index.closeAsync();
   await assert.rejects(context.index.has("memory-a"), /memory index is closed/u);
+  assert.equal(fs.existsSync(`${context.ledgerPath}-wal`), false);
+  assert.equal(fs.existsSync(`${context.ledgerPath}-shm`), false);
   fs.rmSync(context.root, { recursive: true, force: true });
   assert.equal(fs.existsSync(context.root), false);
 }
@@ -157,6 +213,8 @@ async function runtimeShadow(): Promise<void> {
     db.close();
   } finally {
     await runtime.stop();
+    assert.equal(fs.existsSync(path.join(root, "ledger.sqlite3-wal")), false);
+    assert.equal(fs.existsSync(path.join(root, "ledger.sqlite3-shm")), false);
     fs.rmSync(root, { recursive: true, force: true });
     assert.equal(fs.existsSync(root), false);
   }
@@ -188,9 +246,6 @@ async function replacementAndLineage(): Promise<void> {
       now: 210,
     });
     assert.equal(invalidation.status, "retired");
-    const ledger = new GovernorMemoryLedger(context.ledgerPath);
-    assert.equal(ledger.current("agent-a", "scope-a", "account.plan")?.generation, 2);
-    ledger.close();
     assert.equal(
       (
         await context.adapter.recall({
@@ -238,7 +293,6 @@ async function transitiveLineage(): Promise<void> {
         sourceEvidenceId: "evidence-summary",
         sourceEvidenceDigest: "digest-summary",
         sourceEvidenceLineage: ["evidence-a"],
-        sourceMemoryLineage: ["memory-a"],
       }),
       now: 120,
     });
@@ -367,6 +421,17 @@ async function poisoningAndCompaction(): Promise<void> {
       /memory content was rejected/u,
     );
     await context.adapter.admit({ fact: fact(), now: 110 });
+    await context.adapter.admit({
+      fact: fact({
+        memoryId: "memory-expiring",
+        factKey: "account.expiring",
+        text: "The account has an expiring fact.",
+        freshnessExpiresAt: 120,
+        sourceEvidenceId: "evidence-expiring",
+        sourceEvidenceDigest: "digest-expiring",
+      }),
+      now: 110,
+    });
     await context.adapter.invalidate({
       agentId: "agent-a",
       scope: "scope-a",
@@ -378,14 +443,15 @@ async function poisoningAndCompaction(): Promise<void> {
       reason: "operator_requested",
       now: 210,
     });
-    assert.equal(
-      (await context.adapter.compact({ agentId: "agent-a", now: 100_000, retentionMs: 60_000 }))
-        .compacted,
-      1,
-    );
-    const ledger = new GovernorMemoryLedger(context.ledgerPath);
-    assert.equal(ledger.highWater("agent-a", "scope-a", "account.plan")?.status, "tombstone");
-    ledger.close();
+    const compacted = await context.adapter.compact({
+      agentId: "agent-a",
+      now: 100_000,
+      retentionMs: 60_000,
+    });
+    assert.equal(compacted.compacted, 2);
+    assert.equal(await context.index.has("memory-expiring"), false);
+    context.adapter.close();
+    await context.index.closeAsync();
     const db = new DatabaseSync(context.ledgerPath);
     try {
       assert.equal(

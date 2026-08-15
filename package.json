@@ -1883,6 +1883,7 @@
     "test:extensions": "node scripts/test-projects.mjs extensions",
     "test:extensions:batch": "node scripts/test-extension-batch.mjs",
     "test:extensions:memory": "node scripts/profile-extension-memory.mjs",
+    "test:memory:governor": "tsx extensions/memory-lancedb/governor-memory-adapter.integration.ts && tsx extensions/memory-lancedb/governor-memory-runtime-lifetime.ts",
     "test:extensions:package-boundary": "node scripts/check-extension-package-tsc-boundary.mjs",
     "test:extensions:package-boundary:canary": "node scripts/check-extension-package-tsc-boundary.mjs --mode=canary",
     "test:extensions:package-boundary:compile": "node scripts/check-extension-package-tsc-boundary.mjs --mode=compile",

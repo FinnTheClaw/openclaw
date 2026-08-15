@@ -18,6 +18,7 @@ import { createGovernorHostDeliveryRuntime } from "./governor-host-channel-deliv
 import { createCompiledOwnerIngress } from "./governor-host-owner-ingress.js";
 import type { GovernorOwnerIngressBinding } from "./governor-host-owner-ingress.js";
 import { createGovernorHostPersistence } from "./governor-host-persistence.js";
+import { createGovernorHostRuntimeCloser } from "./governor-host-runtime-close.js";
 import { resolveGovernorSecrets } from "./governor-host-secrets.js";
 
 function aggregateWithCause(errors: unknown[], message: string, cause: unknown): AggregateError {
@@ -94,6 +95,7 @@ export type GovernorHostRuntime = Readonly<{
   >[];
   freeze: () => void;
   close: () => void;
+  closeAsync: () => Promise<void>;
   memory?: MemoryGovernorBackend;
 }>;
 
@@ -403,59 +405,20 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   if (!controller) {
     throw new Error("GOVERNOR_HOST_CONTROLLER_UNAVAILABLE");
   }
-  let closed = false;
-  let closeFailure: AggregateError | undefined;
-  const close = () => {
-    if (closeFailure) {
-      throw closeFailure;
-    }
-    if (closed) {
-      return;
-    }
-    const errors: unknown[] = [];
-    try {
-      bindings.freeze();
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      agentLoopLifecycle?.close();
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      controller.close();
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      bindings.close();
-    } catch (error) {
-      errors.push(error);
-    }
-    if (errors.length > 0) {
-      closeFailure = new AggregateError(errors, "GOVERNOR_HOST_RUNTIME_CLOSE_FAILED");
-      throw closeFailure;
-    }
-    closed = true;
-  };
+  const closer = createGovernorHostRuntimeCloser({
+    freeze: () => bindings.freeze(),
+    closeAgentLoop: () => agentLoopLifecycle?.close(),
+    flushMemoryBackend: () => controller.store.memory.flushBackend(),
+    closeController: () => controller.close(),
+    closeBindings: () => bindings.close(),
+  });
   let adapter: GovernorRuntimeAdapter;
   try {
     adapter = new GovernorRuntimeAdapter(controller, bindings.ownerIngressResolver);
   } catch (error) {
     const cleanupErrors: unknown[] = [];
     try {
-      agentLoopLifecycle?.close();
-    } catch (cleanupError) {
-      cleanupErrors.push(cleanupError);
-    }
-    try {
-      controller.close();
-    } catch (cleanupError) {
-      cleanupErrors.push(cleanupError);
-    }
-    try {
-      bindings.close();
+      closer.close();
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
@@ -477,7 +440,8 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       bindings.freeze();
       agentLoopLifecycle?.freezeAdmission();
     },
-    close,
+    close: closer.close,
+    closeAsync: closer.closeAsync,
   });
 }
 

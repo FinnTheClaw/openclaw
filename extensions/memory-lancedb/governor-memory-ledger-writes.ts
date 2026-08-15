@@ -14,20 +14,22 @@ function json(value: unknown): string {
   );
 }
 
+const LEDGER_OWNER = "governor-memory";
+
 export function insertGovernorFact(
   db: DatabaseSync,
   fact: MemoryGovernorFact,
   now: number,
   enqueueProjection = false,
 ): void {
-  const eventId = `governor-evidence-${digest(fact.agentId, fact.scope, fact.factKey, fact.sourceEvidenceDigest)}`;
+  const eventId = `governor-evidence-${digest(LEDGER_OWNER, fact.scopeKey, fact.factKey, fact.sourceEvidenceDigest)}`;
   db.prepare(
     "INSERT OR IGNORE INTO memory_events(event_id, external_id, agent_id, session_key, channel, conversation_id, role, content, source_kind, source_ref, observed_at, valid_from, valid_to, content_sha256, metadata_json) " +
       "VALUES(?, ?, ?, NULL, NULL, NULL, 'tool', ?, 'governor_verified_evidence', ?, ?, ?, ?, ?, ?)",
   ).run(
     eventId,
     eventId,
-    fact.agentId,
+    LEDGER_OWNER,
     fact.text,
     fact.sourceEvidenceId,
     fact.observedAt,
@@ -42,8 +44,8 @@ export function insertGovernorFact(
   ).run(
     fact.memoryId,
     fact.factKey,
-    fact.agentId,
-    fact.scope,
+    LEDGER_OWNER,
+    fact.scopeKey,
     fact.subject,
     fact.predicate,
     fact.object,
@@ -66,18 +68,15 @@ export function insertGovernorFact(
       "INSERT OR IGNORE INTO memory_projection_outbox(event_id, state, updated_at) VALUES(?, 'pending', ?)",
     ).run(eventId, now);
   }
-  db.prepare(
-    "INSERT OR IGNORE INTO memory_governor_lineage(memory_id, source_memory_id, source_evidence_id) VALUES(?, NULL, ?)",
-  ).run(fact.memoryId, fact.sourceEvidenceId);
   for (const sourceEvidenceId of fact.sourceEvidenceLineage ?? []) {
     db.prepare(
-      "INSERT OR IGNORE INTO memory_governor_lineage(memory_id, source_memory_id, source_evidence_id) VALUES(?, NULL, ?)",
-    ).run(fact.memoryId, sourceEvidenceId);
+      "INSERT OR IGNORE INTO memory_governor_lineage(memory_id, source_memory_id, source_evidence_id, scope_key, relation_kind) VALUES(?, '', ?, ?, 'evidence')",
+    ).run(fact.memoryId, sourceEvidenceId, fact.scopeKey);
   }
   for (const sourceMemoryId of fact.sourceMemoryLineage ?? []) {
     db.prepare(
-      "INSERT OR IGNORE INTO memory_governor_lineage(memory_id, source_memory_id, source_evidence_id) VALUES(?, ?, ?)",
-    ).run(fact.memoryId, sourceMemoryId, fact.sourceEvidenceId);
+      "INSERT OR IGNORE INTO memory_governor_lineage(memory_id, source_memory_id, source_evidence_id, scope_key, relation_kind) VALUES(?, ?, ?, ?, 'memory')",
+    ).run(fact.memoryId, sourceMemoryId, fact.sourceEvidenceId, fact.scopeKey);
   }
   db.prepare(
     "INSERT INTO memory_materialization_outbox(record_type, record_id, state, updated_at) VALUES('fact', ?, 'pending', ?) " +
@@ -114,12 +113,12 @@ export function upsertGovernorRemediation(params: {
   params.db
     .prepare(
       "INSERT INTO memory_governor_remediations(remediation_id, agent_id, scope, fact_key, stale_revision_id, replacement_revision_id, source_evidence_id, source_evidence_digest, reason, state, updated_at) " +
-        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?) ON CONFLICT(remediation_id) DO UPDATE SET replacement_revision_id = excluded.replacement_revision_id, state = 'completed', updated_at = excluded.updated_at",
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?) ON CONFLICT(remediation_id) DO UPDATE SET replacement_revision_id = excluded.replacement_revision_id, state = 'pending', updated_at = excluded.updated_at",
     )
     .run(
       params.remediationId,
-      params.fact.agentId,
-      params.fact.scope,
+      LEDGER_OWNER,
+      params.fact.scopeKey,
       params.fact.factKey,
       params.staleRevisionId,
       params.replacementRevisionId ?? null,

@@ -18,25 +18,54 @@ export type MemoryPromptSectionBuilder = (params: {
  * fields. A plugin may create the backend lazily, so the governor OFF path
  * does not open a ledger, resolve embeddings, or mutate a memory projection.
  */
+export type MemoryGovernorSourceKind =
+  | "structured_external"
+  | "authenticated_user"
+  | "tool"
+  | "historical_memory";
+
 export type MemoryGovernorFact = Readonly<{
   memoryId: string;
+  /** Compatibility routing label; authority is the exact scopeKey below. */
   agentId: string;
   scope: string;
+  /** Exact canonical scope key issued by the governor memory authority. */
+  scopeKey: string;
+  scopeEpoch: number;
+  /** Canonical fact identity; callers may not supply an alternate spelling. */
   factKey: string;
   subject: string;
   predicate: string;
   object: string;
   text: string;
+  content: unknown;
+  contentDigest: string;
   category?: string;
+  status: "verified" | "tombstone";
+  sourceKind: MemoryGovernorSourceKind;
+  sourceIdentity: string;
+  sourceRank: number;
   confidence: number;
   authority: number;
-  generation?: number;
+  generation: number;
   observedAt: number;
   freshnessExpiresAt?: number;
-  sourceIdentity: string;
+  provenance: Readonly<{
+    sourceRef: string;
+    observedAt: number;
+    recordedAt: number;
+    scopeKey: string;
+    confidence: number;
+    sensitivity: "normal" | "sensitive";
+    evidenceTaskId?: string;
+    evidenceTaskVersion?: number;
+    objectiveRevision?: number;
+    planVersion?: number;
+  }>;
+  authorityBindingDigest: string;
   sourceEvidenceId: string;
   sourceEvidenceDigest: string;
-  sourceEvidenceSemanticDigest?: string;
+  sourceEvidenceSemanticDigest: string;
   sourceEvidenceLineage?: readonly string[];
   sourceMemoryLineage?: readonly string[];
 }>;
@@ -45,12 +74,15 @@ export type MemoryGovernorRecall = Readonly<{
   memoryId: string;
   agentId: string;
   scope: string;
+  scopeKey: string;
   factKey: string;
   text: string;
   confidence: number;
   authority: number;
   observedAt: number;
   sourceEvidenceDigest: string;
+  contentDigest: string;
+  authorityBindingDigest: string;
 }>;
 
 export type MemoryGovernorBackend = Readonly<{
@@ -65,6 +97,7 @@ export type MemoryGovernorBackend = Readonly<{
   recall(params: {
     agentId: string;
     scopes: readonly string[];
+    scopeKeys?: readonly string[];
     query: string;
     limit: number;
     now: number;
@@ -72,6 +105,7 @@ export type MemoryGovernorBackend = Readonly<{
   invalidate(params: {
     agentId: string;
     scope: string;
+    scopeKey?: string;
     factKey: string;
     staleMemoryId: string;
     sourceEvidenceId: string;
@@ -96,6 +130,19 @@ export type MemoryGovernorBackend = Readonly<{
 export type MemoryGovernorCapability = Readonly<{
   createBackend(params: { mode: "shadow" | "enforce" }): MemoryGovernorBackend;
 }>;
+
+/** Shadow keeps the memory contract present while making every mutation inert. */
+export function createInertMemoryGovernorBackend(): MemoryGovernorBackend {
+  return Object.freeze({
+    admit: async () => ({ status: "rejected" as const, reason: "shadow_observation_only" }),
+    recall: async () => [],
+    invalidate: async () => {
+      throw new Error("GOVERNOR_MEMORY_SHADOW_MUTATION");
+    },
+    compact: async () => ({ compacted: 0, retainedHighWater: 0 }),
+    close: () => undefined,
+  });
+}
 
 export type MemoryCorpusSearchResult = {
   corpus: string;

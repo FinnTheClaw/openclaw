@@ -3,12 +3,14 @@ import { createReadStream } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import type { MemoryGovernorBackend } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import {
   createShadowGovernorMemoryBackend,
   GovernorMemoryLanceDbAdapter,
 } from "./governor-memory-adapter.js";
+import { GovernorMemoryLedger } from "./governor-memory-ledger.js";
 import { governorMemoryProjection } from "./governor-memory-projection.js";
 import { HybridMemoryIndex, type MemoryProjectionInput } from "./hybrid-memory-index.js";
 import { assertMemoryContentSafe, MemorySensitiveContentError } from "./memory-content-guard.js";
@@ -315,6 +317,7 @@ export class DurableMemoryRuntime {
   private drainRequested = false;
   private maintenanceCounter = 0;
   private stopped = false;
+  private governorLedger?: GovernorMemoryLedger;
 
   constructor(private readonly options: DurableMemoryRuntimeOptions) {
     this.ledger = new TemporalMemoryLedger(options.ledgerPath);
@@ -342,8 +345,13 @@ export class DurableMemoryRuntime {
     if (params.mode === "shadow") {
       return createShadowGovernorMemoryBackend();
     }
+    this.governorLedger ??= new GovernorMemoryLedger(this.options.ledgerPath, {
+      enqueueProjection: true,
+    });
     return new GovernorMemoryLanceDbAdapter({
       ledgerPath: this.options.ledgerPath,
+      ledger: this.governorLedger,
+      ownsLedger: false,
       index: this.index,
       embeddings: this.options.embeddings,
       refreshDerived: params.refreshDerived,
@@ -949,12 +957,26 @@ export class DurableMemoryRuntime {
       this.ledger.checkpoint("TRUNCATE");
     } catch (error) {
       errors.push(error);
-    } finally {
+    }
+    try {
+      this.ledger.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      this.governorLedger?.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      const cleanupDb = new DatabaseSync(this.options.ledgerPath);
       try {
-        this.ledger.close();
-      } catch (error) {
-        errors.push(error);
+        cleanupDb.exec("PRAGMA journal_mode=DELETE;");
+      } finally {
+        cleanupDb.close();
       }
+    } catch (error) {
+      errors.push(error);
     }
     if (errors.length > 0) {
       throw new AggregateError(errors, "MEMORY_RUNTIME_CLOSE_FAILED");

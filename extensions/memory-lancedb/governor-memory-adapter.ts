@@ -7,8 +7,12 @@ import { GovernorMemoryLedger } from "./governor-memory-ledger.js";
 import type { HybridMemoryIndex } from "./hybrid-memory-index.js";
 import type { DurableMemoryEmbedding } from "./memory-embedding.js";
 
+const GOVERNOR_LEDGER_OWNER = "governor-memory";
+
 export type GovernorMemoryLanceDbAdapterOptions = {
   ledgerPath: string;
+  ledger?: GovernorMemoryLedger;
+  ownsLedger?: boolean;
   index: HybridMemoryIndex;
   embeddings: DurableMemoryEmbedding;
   refreshDerived?: () => Promise<void>;
@@ -25,12 +29,15 @@ function resultFact(fact: MemoryGovernorFact): MemoryGovernorRecall {
     memoryId: fact.memoryId,
     agentId: fact.agentId,
     scope: fact.scope,
+    scopeKey: fact.scopeKey,
     factKey: fact.factKey,
     text: fact.text,
     confidence: fact.confidence,
     authority: fact.authority,
     observedAt: fact.observedAt,
     sourceEvidenceDigest: fact.sourceEvidenceDigest,
+    contentDigest: fact.contentDigest,
+    authorityBindingDigest: fact.authorityBindingDigest,
   };
 }
 
@@ -46,26 +53,32 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
   readonly #embeddings: DurableMemoryEmbedding;
   readonly #refreshDerived?: () => Promise<void>;
   readonly #observeOnly: boolean;
+  readonly #ownsLedger: boolean;
   #closed = false;
 
   constructor(options: GovernorMemoryLanceDbAdapterOptions) {
-    this.#ledger = new GovernorMemoryLedger(options.ledgerPath, {
-      enqueueProjection: options.enqueueProjection,
-    });
+    this.#ledger =
+      options.ledger ??
+      new GovernorMemoryLedger(options.ledgerPath, {
+        enqueueProjection: options.enqueueProjection,
+      });
     this.#index = options.index;
     this.#embeddings = options.embeddings;
     this.#refreshDerived = options.refreshDerived;
     this.#observeOnly = options.observeOnly === true;
+    this.#ownsLedger = options.ownsLedger ?? options.ledger === undefined;
   }
 
   async admit(params: Parameters<MemoryGovernorBackend["admit"]>[0]) {
     this.assertOpen();
+    await this.#replayPending(params.now);
     if (this.#observeOnly) {
       return { status: "rejected" as const, reason: "shadow_observation_only" };
     }
     const result = this.#ledger.admit(params.fact, params.now);
-    if (result.status === "admitted" && result.fact) {
+    if ((result.status === "admitted" || result.status === "duplicate") && result.fact) {
       await this.#project(result.fact, result.staleRevisionId);
+      this.#ledger.markRemediationCompleted(result.remediationId, params.now);
     }
     return result.status === "rejected"
       ? { status: result.status, reason: result.reason ?? "rejected" }
@@ -80,18 +93,20 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
     params: Parameters<MemoryGovernorBackend["recall"]>[0],
   ): Promise<readonly MemoryGovernorRecall[]> {
     this.assertOpen();
-    if (this.#observeOnly || params.scopes.length === 0) {
+    await this.#replayPending(params.now);
+    const scopeKeys = params.scopeKeys ?? params.scopes;
+    if (this.#observeOnly || scopeKeys.length === 0) {
       return [];
     }
     const vector = await this.#embeddings.embed(params.query);
     const hits = (
       await Promise.all(
-        params.scopes.map((scope) =>
+        scopeKeys.map((scopeKey) =>
           this.#index.search({
             queryText: params.query,
             vector,
-            agentId: params.agentId,
-            scope,
+            agentId: GOVERNOR_LEDGER_OWNER,
+            scope: scopeKey,
             limit: boundedLimit(params.limit),
             recordTypes: ["fact"],
             validAt: params.now,
@@ -99,7 +114,7 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
         ),
       )
     ).flat();
-    const current = this.#ledger.listCurrent(params.agentId, params.scopes, params.now);
+    const current = this.#ledger.listCurrent(GOVERNOR_LEDGER_OWNER, scopeKeys, params.now);
     const byRevision = new Map(current.map((fact) => [fact.memoryId, fact]));
     return hits
       .map((hit) => byRevision.get(hit.entry.id))
@@ -116,10 +131,15 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
 
   async invalidate(params: Parameters<MemoryGovernorBackend["invalidate"]>[0]) {
     this.assertOpen();
+    await this.#replayPending(params.now);
     if (this.#observeOnly) {
       throw new Error("GOVERNOR_MEMORY_SHADOW_MUTATION");
     }
-    const result = this.#ledger.invalidate(params);
+    const result = this.#ledger.invalidate({
+      ...params,
+      agentId: GOVERNOR_LEDGER_OWNER,
+      scopeKey: params.scopeKey ?? params.scope,
+    });
     if (result.invalidatedMemoryIds.length === 1) {
       await this.#index.delete(result.staleMemoryId);
     } else {
@@ -131,15 +151,17 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
       await this.#project(result.replacementFact);
     }
     await this.#refreshDerived?.();
+    this.#ledger.markRemediationCompleted(result.remediationId, params.now);
     return result;
   }
 
   async compact(params: Parameters<MemoryGovernorBackend["compact"]>[0]) {
     this.assertOpen();
+    await this.#replayPending(params.now);
     if (this.#observeOnly) {
       return { compacted: 0, retainedHighWater: 0 };
     }
-    const result = this.#ledger.compact(params);
+    const result = this.#ledger.compact({ ...params, agentId: GOVERNOR_LEDGER_OWNER });
     for (const memoryId of result.compactedMemoryIds) {
       await this.#index.delete(memoryId);
     }
@@ -152,7 +174,9 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
       return;
     }
     this.#closed = true;
-    this.#ledger.close();
+    if (this.#ownsLedger) {
+      this.#ledger.close();
+    }
   }
 
   async #project(fact: MemoryGovernorFact, staleRevisionId?: string): Promise<void> {
@@ -166,8 +190,8 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
         recordType: "fact",
         text: fact.text,
         vector,
-        agentId: fact.agentId,
-        scope: fact.scope,
+        agentId: GOVERNOR_LEDGER_OWNER,
+        scope: fact.scopeKey,
         factKey: fact.factKey,
         category: fact.category ?? "fact",
         status: "active",
@@ -183,6 +207,17 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
       },
     ]);
     await this.#refreshDerived?.();
+  }
+
+  async #replayPending(now: number): Promise<void> {
+    for (const remediation of this.#ledger.pendingRemediations()) {
+      if (remediation.replacementFact) {
+        await this.#project(remediation.replacementFact, remediation.staleRevisionId);
+      } else {
+        await this.#index.delete(remediation.staleRevisionId);
+      }
+      this.#ledger.markRemediationCompleted(remediation.remediationId, now);
+    }
   }
 
   private assertOpen(): void {

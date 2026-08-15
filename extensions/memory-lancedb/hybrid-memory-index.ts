@@ -618,8 +618,23 @@ export class HybridMemoryIndex {
       return;
     }
     this.closing = true;
-    await this.initPromise?.catch(() => undefined);
-    await this.writeTail;
-    this.close();
+    const errors: unknown[] = [];
+    try {
+      await this.initPromise?.catch((error: unknown) => {
+        errors.push(error);
+      });
+      await this.writeTail.catch((error: unknown) => {
+        errors.push(error);
+      });
+    } finally {
+      try {
+        this.close();
+      } catch (error: unknown) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "MEMORY_INDEX_CLOSE_FAILED");
+    }
   }
 }

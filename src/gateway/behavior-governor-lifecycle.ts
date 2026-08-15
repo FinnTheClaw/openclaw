@@ -9,6 +9,7 @@ import type {
 } from "../config/types.behavior-governor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef } from "../config/types.secrets.js";
+import { createInertMemoryGovernorBackend } from "../plugins/memory-state.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import type {
   GovernorHostIntegrationConfiguration,
@@ -173,7 +174,11 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     }
     const errors: unknown[] = [];
     try {
-      current.runtime.close();
+      if (current.runtime.closeAsync) {
+        await current.runtime.closeAsync();
+      } else {
+        current.runtime.close();
+      }
     } catch (error) {
       errors.push(error);
     }
@@ -282,7 +287,13 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
         await import("../security/governor-host-bootstrap.js");
       const suppliedMemory = host.integrations.memory;
       const memoryCapability = getMemoryCapabilityRegistration()?.capability.governorMemory;
-      const memory = suppliedMemory ?? memoryCapability?.createBackend({ mode: governor.mode });
+      const memory =
+        governor.mode === "shadow"
+          ? createInertMemoryGovernorBackend()
+          : (suppliedMemory ?? memoryCapability?.createBackend({ mode: "enforce" }));
+      if (governor.mode === "enforce" && !memory) {
+        throw new Error("GOVERNOR_GATEWAY_MEMORY_CAPABILITY_REQUIRED");
+      }
       if (memory && !suppliedMemory && memory.close) {
         memoryClose = () => memory.close?.();
       }
@@ -304,7 +315,11 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try {
-        runtime?.close();
+        if (runtime?.closeAsync) {
+          await runtime.closeAsync();
+        } else {
+          runtime?.close();
+        }
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }
