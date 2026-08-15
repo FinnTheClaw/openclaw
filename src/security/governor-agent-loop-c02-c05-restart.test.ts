@@ -228,6 +228,9 @@ describe("C02/C05 durable restart boundaries", () => {
 
         const fourth = start(state.stateDir, criteria);
         expect(fourth.adapter.controller.store.loadTask(taskId as never)?.state).toBe("COMPLETED");
+        expect(
+          fourth.adapter.controller.store.loadTask(taskId as never)?.finalResponsePhase,
+        ).toBeUndefined();
         expect(fourth.adapter.controller.store.listEffects(taskId as never)).toHaveLength(effects);
         fourth.close();
       },

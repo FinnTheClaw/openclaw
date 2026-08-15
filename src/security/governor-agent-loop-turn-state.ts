@@ -49,8 +49,11 @@ function reconstructFinalResponsePending(
     if (payload?.phase !== "final_response") {
       continue;
     }
-    if (payload.finalResponsePending !== true) {
+    if (payload.finalResponsePending === false) {
       pending = undefined;
+      continue;
+    }
+    if (payload.finalResponsePending !== true) {
       continue;
     }
     pending = {

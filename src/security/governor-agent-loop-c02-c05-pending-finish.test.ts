@@ -413,4 +413,44 @@ describe("C02 pending finish rejection matrix", () => {
       },
     );
   });
+
+  it("keeps event-only final-response masking through the response audit and clears on completion", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-c02-event-only-response-" },
+      async (state) => {
+        const runtime = start(state.stateDir);
+        const scope = resolveGovernorAgentLoopRunScope(input("event-only-response"))!;
+        observe(scope, 101);
+        expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 103 })).toMatchObject({
+          phase: "final_response",
+        });
+        const taskId = scope.taskId;
+        persistEventOnlyPending(runtime, taskId, 104);
+        scope.dispose();
+        closeOwnedRuntime(runtime);
+        closeOpenClawStateDatabase();
+
+        const resumedRuntime = start(state.stateDir);
+        const resumed = resolveGovernorAgentLoopRunScope(input("event-only-response"))!;
+        const agent = new Agent({
+          initialState: { model, tools: [...resumed.governedTools()] },
+          streamFn: scriptedStream(() => assistant([{ type: "text", text: "done" }])),
+        });
+        const bridge = installGovernorLoopBridge({ agent, scope: resumed, now: () => 300 });
+        expect(resumed.turnPhase()).toBe("final_response");
+        expect(agent.state.tools).toStrictEqual([]);
+        expect(
+          resumed.afterTurn({ assistantText: "done", toolCallCount: 0, now: 305 }),
+        ).toMatchObject({
+          kind: "complete",
+        });
+        const completed = resumedRuntime.adapter.controller.store.loadTask(taskId as never)!;
+        expect(completed.state).toBe("COMPLETED");
+        expect(completed.finalResponsePhase).toBeUndefined();
+        bridge.dispose();
+        resumed.dispose();
+        closeOwnedRuntime(resumedRuntime);
+      },
+    );
+  });
 });

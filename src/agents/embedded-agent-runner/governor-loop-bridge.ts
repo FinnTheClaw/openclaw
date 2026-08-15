@@ -200,6 +200,7 @@ export function installGovernorLoopBridge(params: {
         if (decision.phase === "final_response") {
           maskTools();
         } else {
+          refreshToolPhase();
           restoreTools();
         }
         params.agent.steerKeyed(governorSteeringKey, {

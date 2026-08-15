@@ -465,6 +465,7 @@ export class GovernorController {
     if (!transition.applied) {
       throw new Error("GOVERNOR_COMPLETION_TRANSITION_REJECTED");
     }
+    const completedTask = clearGovernorPendingFinishPhase(transition.task);
     const effectId = `completion_${transition.task.objectiveRevision}`;
     const payload: GovernorJsonValue = {
       kind: "completion",
@@ -472,13 +473,13 @@ export class GovernorController {
       certificateDigest: decision.certificate.certificateDigest,
     };
     const outbox = this.store.outbox.createCompletion({
-      task: transition.task,
+      task: completedTask,
       effectId,
       payload,
       now: params.now + 1,
     });
     const event = createGovernorEventRecord({
-      task: transition.task,
+      task: completedTask,
       eventType: "completion_certified",
       payload: {
         certificateDigest: decision.certificate.certificateDigest,
@@ -492,7 +493,7 @@ export class GovernorController {
       now: params.now + 1,
     });
     const completed = assertApplied(
-      this.store.commit({ current: task, next: transition.task, event, outbox: [outbox] }),
+      this.store.commit({ current: task, next: completedTask, event, outbox: [outbox] }),
     );
     return { completed: true, task: completed, certificate: decision.certificate };
   }
