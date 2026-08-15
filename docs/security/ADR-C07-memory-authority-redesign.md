@@ -179,29 +179,40 @@ States:
 - `ABSENT`: no authoritative fact has been admitted.
 - `CURRENT`: one verified fact is eligible.
 - `REVIEW_REQUIRED`: conflicting evidence is insufficient to choose a replacement.
-- `QUARANTINED`: current content is ineligible pending authenticated replacement or operator action.
+- `QUARANTINED_TRUSTED`: current content is ineligible, but its prior cutoff remains verified.
 - `QUARANTINED_UNTRUSTED`: tamper/legacy state has no trusted cutoff and requires an authenticated
   authority-epoch recovery before a new observation can be considered.
 - `EXPIRED`: the previous generation is ineligible; a strictly newer verified observation may enter.
 - `FORGOTTEN`: irrevocably fenced across every future authority and scope epoch.
-- `TOMBSTONED`: replaced or superseded content is retained as bounded audit identity only.
-- `LEGACY_UNPROVEN`: migrated data lacks complete proof and is permanently ineligible.
+- `LEGACY_UNPROVEN`: migrated content lacks complete proof and is permanently ineligible. Its exact
+  identity may return to `ABSENT` only through authenticated authority-epoch recovery; the old
+  content remains audit-only.
+
+`TOMBSTONED` is a historical revision status, not a current authority state. Replacement leaves the
+identity `CURRENT` at the new generation while retaining the old revision as a tombstone.
 
 Transitions:
 
-| Transition                | Allowed source                                     | Required authority                                                 | Target and cutoff rule                                                                |
-| ------------------------- | -------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| `ADMIT`                   | `ABSENT`, `EXPIRED`                                | Current exact-scope admitted evidence                              | `CURRENT`; cutoff is the signed observation/freshness boundary                        |
-| `REPLACE`                 | `CURRENT`, `QUARANTINED`, `REVIEW_REQUIRED`        | Qualified newer same-scope contradiction with sufficient authority | prior becomes `TOMBSTONED`; replacement becomes `CURRENT` in one transaction          |
-| `EXPIRE`                  | `CURRENT`                                          | Trusted clock plus stored signed expiry                            | `EXPIRED`; cutoff is exactly the stored expiry                                        |
-| `FORGET`                  | any non-legacy state                               | Authenticated operator receipt bound to fact/scope/epoch           | `FORGOTTEN`; advances scope/fact revocation high-water                                |
-| `CONTRADICT`              | `CURRENT`                                          | Qualified evidence                                                 | `REPLACE` if decisive, otherwise `REVIEW_REQUIRED`; never silent deletion             |
-| `TAMPER`                  | any materialized state                             | Failed signature/binding/rollback verification                     | `QUARANTINED`; no reactivation without authenticated replacement                      |
-| `SUPERSEDE`               | `CURRENT`                                          | Newer higher-authority verified fact with exact identity           | atomic `REPLACE`; old lineage remains auditable                                       |
-| `INVALIDATE_SOURCE`       | any lineage descendant                             | Authenticated source-evidence invalidation                         | transitive descendants become `QUARANTINED` in the same transaction                   |
-| `MIGRATE_REBUILD`         | legacy input                                       | Complete verifiable historical authority                           | new authority epoch `CURRENT`; values copied only from proved records                 |
-| `MIGRATE_QUARANTINE`      | legacy input                                       | Migration owner                                                    | `LEGACY_UNPROVEN`; no inferred reason, generation, or cutoff                          |
-| `ADVANCE_AUTHORITY_EPOCH` | `QUARANTINED_UNTRUSTED` or recovery-required scope | Authenticated host-operator recovery receipt                       | advances the epoch without reactivation; a later new verified observation is required |
+| Transition                | Allowed source                                                                    | Required authority                                                  | Target and bounded effect                                                                                                         |
+| ------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `ADMIT`                   | `ABSENT`, `EXPIRED`                                                               | Current exact-scope admitted evidence strictly newer than cutoff    | `CURRENT`; one new generation/event/outbox record                                                                                 |
+| `REPLACE`                 | `CURRENT`, `REVIEW_REQUIRED`, `QUARANTINED_TRUSTED`                               | Qualified newer decisive same-scope evidence                        | `CURRENT`; prior revision tombstoned in the same transaction                                                                      |
+| `CONTRADICT`              | `CURRENT`                                                                         | Qualified same-scope evidence                                       | decisive uses `REPLACE`; insufficient authority becomes `REVIEW_REQUIRED`                                                         |
+| `SUPERSEDE`               | `CURRENT`                                                                         | Newer higher-authority exact-identity evidence                      | atomic `REPLACE`; prior revision/lineage remains audit-only                                                                       |
+| `EXPIRE`                  | `CURRENT`                                                                         | Trusted clock plus stored signed expiry                             | `EXPIRED`; exact monotonic expiry cutoff                                                                                          |
+| `FORGET`                  | every state except `FORGOTTEN`                                                    | Authenticated operator receipt bound to fact/scope/current epoch    | `FORGOTTEN`; permanent revocation high-water and erasure FSM                                                                      |
+| `TAMPER`                  | `CURRENT`, `REVIEW_REQUIRED`, `QUARANTINED_TRUSTED`, `EXPIRED`                    | Failed binding/rollback verification with a verified prior cutoff   | `QUARANTINED_TRUSTED`; preserve monotonic cutoff                                                                                  |
+| `TAMPER`                  | `QUARANTINED_UNTRUSTED`, `LEGACY_UNPROVEN`, or material without a verified cutoff | Failed binding/rollback verification                                | `QUARANTINED_UNTRUSTED`; never invent cutoff                                                                                      |
+| `INVALIDATE_SOURCE`       | bounded proven descendants except `FORGOTTEN`                                     | Authenticated exact source-evidence invalidation                    | trusted descendants -> `QUARANTINED_TRUSTED`; untrusted -> `QUARANTINED_UNTRUSTED`, atomically                                    |
+| `ADVANCE_AUTHORITY_EPOCH` | `QUARANTINED_UNTRUSTED`, `LEGACY_UNPROVEN`                                        | Authenticated host-operator recovery receipt                        | old material stays audit-only; identity becomes `ABSENT` in a new epoch; later `ADMIT` needs new evidence                         |
+| `ADVANCE_SCOPE_EPOCH`     | one quota-bounded exact scope                                                     | Authenticated scope-revocation receipt and current scope high-water | nonforgotten trusted states -> `QUARANTINED_TRUSTED`; untrusted/legacy -> `QUARANTINED_UNTRUSTED`; `ABSENT`/`FORGOTTEN` unchanged |
+| `MIGRATE_REBUILD`         | external legacy input with no target row                                          | Complete verifiable historical authority and matching bytes         | `CURRENT` in the migration authority epoch                                                                                        |
+| `MIGRATE_QUARANTINE`      | external legacy input with no target row                                          | Migration owner                                                     | `LEGACY_UNPROVEN`; no inferred reason/generation/cutoff                                                                           |
+
+`FORGOTTEN` is absorbing: every later semantic transition is rejected, while exact duplicate forget
+or erasure-reconciliation operations are idempotent. Every state/event pair not listed above is
+rejected. Scope fact count and per-root lineage fan-out are bounded at admission so scope/source
+invalidation always fits one transaction.
 
 Every transition is a compare-and-swap on current event ID, generation, scope epoch, and authority
 epoch. A duplicate exact event returns the committed result. Any binding conflict fails closed.
@@ -216,6 +227,8 @@ control-plane transaction computes it once by this closed table:
 | decisive `CONTRADICT`, `REPLACE`, `SUPERSEDE`       | authenticated observation time of the replacement, which must already be strictly newer than the prior cutoff                                             |
 | `FORGET`                                            | `max(priorTrustedCutoff, authenticated operator-receipt server time)`, plus a permanent fact-revocation high-water                                        |
 | `TAMPER`, `INVALIDATE_SOURCE`, `MIGRATE_QUARANTINE` | prior trusted cutoff if one exists; otherwise no numeric trust is invented and `ADVANCE_AUTHORITY_EPOCH` plus a new authenticated observation is required |
+| `ADVANCE_AUTHORITY_EPOCH`                           | new authority epoch with no current semantic cutoff; later `ADMIT` establishes it from new authenticated evidence                                         |
+| `ADVANCE_SCOPE_EPOCH`                               | preserves each fact's prior trusted cutoff while making its old scope epoch ineligible                                                                    |
 
 Projection code receives this field and stores it verbatim. It does not inspect timestamps to choose
 another value.
@@ -229,6 +242,9 @@ The redesign must delete or close every current path below before enforce can st
 
 | Existing surface                                                                                     | Problem                                                                  | Required disposition                                                                                                            |
 | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `MemoryGovernorBackend.admit`                                                                        | public backend contract can write a fact outside the control ledger      | remove; trusted core submits `ADMIT` to the control ledger and receives the committed authority event                           |
+| `GovernorMemoryLanceDbAdapter.admit`                                                                 | authenticates then writes directly through the projection adapter        | delete; adapter accepts only an immutable event after authoritative admission                                                   |
+| `GovernorMemoryLedger.admit` and its direct index/revision writes                                    | allocates projection state in an independent transaction                 | delete as authority; equivalent LanceDB writes occur only inside idempotent `applyProjectionEvent`                              |
 | `MemoryGovernorBackend.invalidate`                                                                   | public unsigned invalidation with caller reason/time                     | remove from the contract; callers submit evidence/proposals to the control-plane transition API                                 |
 | `GovernorMemoryLanceDbAdapter.invalidate`                                                            | forwards unsigned replacement/tombstone requests                         | delete; projection adapter exposes only `applyProjectionEvent` and bounded reads                                                |
 | `GovernorMemoryLedger.invalidate`                                                                    | derives generation, cutoff, impact, and replacement state inside LanceDB | delete; equivalent behavior is one authoritative transition plus an immutable projection event                                  |
@@ -270,9 +286,9 @@ authority/key IDs, and a projection payload digest. LanceDB may only:
 - record an idempotent receipt keyed by event ID; and
 - rebuild entirely by replaying retained projection events/current snapshots.
 
-It may not expose `invalidate`, `retire`, `forget`, generation allocation, cutoff calculation, or
-caller-selected signing-key APIs. All alternate unsigned mutation paths are removed and guarded by
-static import/API inventory tests.
+It may not expose `admit`, `invalidate`, `retire`, `forget`, generation allocation, cutoff
+calculation, or caller-selected signing-key APIs. All alternate unsigned mutation paths are removed
+and guarded by static import/API inventory tests.
 
 ## Recall protocol
 
@@ -331,8 +347,9 @@ phase, cutover, abort, roll-forward, key/backup, and downgrade rules are in
 6. Commit cutover through the external-intent -> target-SQLite -> external-current protocol. The
    ordinary legacy store remains untouched for OFF; enforce uses only the new authority.
 
-A quarantined legacy identity may become current only through a new post-cutover authenticated
-observation and an explicit replacement transition. Migration does not invent a freshness cutoff.
+A quarantined legacy identity may become current only after authenticated `ADVANCE_AUTHORITY_EPOCH`
+makes the identity `ABSENT`, followed by a new post-cutover authenticated observation and `ADMIT`.
+The legacy content remains audit-only. Migration does not invent a freshness cutoff.
 
 Rollback after cutover cannot run the old binary against the new store. The operator must either:
 

@@ -135,14 +135,17 @@ trusted.
   high-water. It survives every later authority/scope epoch. There is no unforget transition.
 - `EXPIRE` stores exactly `max(priorCutoff, signedFreshnessExpiresAt)` and permits only a strictly
   newer verified observation.
-- `QUARANTINED` with a trusted cutoff may accept an authenticated decisive replacement in the same
-  authority epoch.
+- `QUARANTINED_TRUSTED` may accept an authenticated decisive replacement in the same authority
+  epoch.
 - Tamper/legacy state without a trusted cutoff enters `QUARANTINED_UNTRUSTED`. It cannot use ordinary
   `REPLACE`.
 - `ADVANCE_AUTHORITY_EPOCH` is a host-supervisor operation requiring an authenticated operator
   recovery receipt bound to deployment, scope/fact set, prior head, reason, and target epoch. It
   never reactivates a fact; it only permits a subsequent newly authenticated observation to create a
   new current row. Permanent forget high-water still wins.
+- `ADVANCE_SCOPE_EPOCH` is an authenticated scope-revocation transaction. The per-scope fact quota
+  makes its complete set bounded: trusted states become `QUARANTINED_TRUSTED`, untrusted/legacy
+  states become `QUARANTINED_UNTRUSTED`, absent identities remain absent, and permanent forget wins.
 
 Lineage insertion enforces per-root descendant count, maximum depth, maximum direct children, and
 per-transaction node limits before admission. The bounds are immutable policy in the readiness
@@ -156,24 +159,70 @@ Memory values, canonical text, summaries, embeddings, projection payloads, and q
 associations are sensitive assets. Durable plaintext is forbidden in the authority DB, outbox,
 checkpoints, dead letters, migration journal, diagnostics, and logs.
 
-Each fact payload uses a random per-fact data-encryption key (DEK). The supervisor key-encryption key
-(KEK) wraps it. The canonical AEAD envelope contains:
+Each fact payload uses a random per-fact data-encryption key (DEK). A supervisor-only key registry
+stores its KEK-wrapped value exactly once. Checkpoints, outbox records, projection rows, dead letters,
+and backups contain only the opaque DEK reference, never another wrapped-key copy. The canonical AEAD
+envelope contains:
 
-- algorithm/version, ciphertext, nonce, authentication tag, wrapped DEK and KEK ID/version;
+- algorithm/version, ciphertext, nonce, authentication tag, DEK reference and KEK ID/version;
 - scope/fact, event ID, generation, authority/projection epoch, content and semantic digests;
 - payload type/schema and canonical associated-data digest; and
 - optional source-byte digest needed for verified migration.
 
 The event signature binds the complete envelope metadata, ciphertext digest, and associated-data
-digest. Rotation rewraps DEKs under a new KEK through an authenticated maintenance event without
-changing semantic authority. Explicit forget deletes the wrapped DEK after required transactional
-fences and projection deletion receipts; audit retains only irreversible digests/high-water.
+digest. Audit retains only irreversible digests/high-water after erasure.
 
 The trusted projection worker decrypts only in memory. LanceDB stores the minimum encrypted payload
 and plaintext vectors needed for search; vectors and metadata are treated as sensitive derived data,
 kept in the supervisor-only directory, and included only in encrypted backups. Hydration occurs in
 the supervisor after authoritative eligibility. Logs and dead letters contain event IDs, bounded
 codes, digests, and counts only.
+
+### Durable erasure state machine
+
+Forget first commits the absorbing authority fence. Physical/cryptographic cleanup then follows this
+restart-safe FSM:
+
+`ERASE_PENDING -> REFERENCES_VERIFIED -> PROJECTION_DELETED -> CHECKPOINT_REPLACED -> BACKUP_FENCED
+-> KEY_TOMBSTONED -> KEY_DESTROYED -> ERASE_COMPLETE`.
+
+- `REFERENCES_VERIFIED` enumerates the exact DEK reference across authority rows, outbox, dead
+  letters, checkpoint catalog, projection receipts, and the managed backup catalog. A new reference
+  cannot be created after the authority fence.
+- `PROJECTION_DELETED` requires the event-bound deletion receipt and verifies no current
+  projection/index/cache/summary row uses the reference.
+- `CHECKPOINT_REPLACED` publishes and applies a post-forget checkpoint that contains only the
+  permanent forget high-water, then makes every older checkpoint ineligible for restore.
+- `BACKUP_FENCED` appends the DEK reference to the external signed erase high-water. Every managed
+  restore consults the current external high-water before restoring key-registry entries. Catalogued
+  backups are reindexed or destroyed under retention; none may restore a fenced key.
+- `KEY_TOMBSTONED` verifies a zero live-reference count and persists the irreversible key-registry
+  tombstone. `KEY_DESTROYED` removes the sole wrapped DEK. Duplicate cleanup is idempotent.
+- A crash resumes from the durable phase. Recall is already denied from `ERASE_PENDING`; an unknown
+  projection/backup result blocks erasure completion and key deletion rather than weakening the
+  authority fence.
+
+Unmanaged copies and complete hostile host snapshots remain outside the software boundary and are
+not claimed as cryptographically erased.
+
+### KEK rotation state machine
+
+KEK rotation is
+`ROTATION_PREPARED -> REWRAPPING -> REFERENCES_VERIFIED -> SWITCHED -> OLD_KEY_RETIRED -> COMPLETE`.
+
+- Preparation records old/new KEK IDs, the exact active DEK-reference snapshot, rotation generation,
+  and external signed intent.
+- Rewrapping runs bounded idempotent batches. Each key-registry row CASes old wrapper/version to the
+  new wrapper/version and records the rotation generation. Forgotten/tombstoned DEKs are never
+  recreated.
+- Verification scans authority, outbox, checkpoint, projection, dead-letter, key-registry, and
+  managed-backup catalogs and proves every live reference resolves through the new KEK or an
+  explicitly retained prior verification key.
+- `SWITCHED` makes the new KEK current under the external-intent/SQLite/current protocol. New writes
+  cannot use the old KEK.
+- The old KEK is destroyed only after zero live references and every managed backup has been
+  rewrapped, expired, or fenced. Crash/restart resumes the recorded phase; conflict or missing key
+  enters `RECOVERY_REQUIRED`.
 
 ## Projection checkpoints and bounded outbox
 

@@ -66,8 +66,10 @@ backup.
   manifest version. They may run only with C07 OFF against the untouched legacy path.
 
 Migration backup archives are encrypted, ACL-confined, hash-manifested, and retained for a bounded
-operator-configured window. Keys are stored separately. Reports contain classifications, digests,
-counts, and reasons only, never memory content.
+operator-configured window. Payload envelopes contain DEK references, not wrapped DEKs. Managed key
+backup/restore obeys the protocol's external erase high-water and KEK-rotation FSM; a forgotten key
+cannot be restored from an older catalogued backup. Keys are stored separately. Reports contain
+classifications, digests, counts, and reasons only, never memory content.
 
 ## Required migration tests
 
@@ -80,6 +82,10 @@ counts, and reasons only, never memory content.
 - crash/restart at every phase follows the table without duplicate events or inferred authority;
 - two migration owners serialize; stale owner cannot commit;
 - projection rebuild and checkpoint replay converge exactly;
+- forget crashes at every erasure phase; post-forget checkpoint and external backup fence prevent
+  every managed old checkpoint/backup from restoring the DEK reference;
+- KEK rotation crashes at every phase, resumes exact batches, verifies all active references, and
+  destroys the old key only after every managed backup is rewrapped, expired, or fenced;
 - pre-cutover abort, post-cutover roll-forward, and complete rollback rehearsal preserve boot gates;
 - bounded batches/quotas and reports contain no plaintext memory; and
 - OFF before/during/after an abandoned migration remains baseline-equivalent.
@@ -141,8 +147,10 @@ non-countable.
   remains quarantined; active/unknown work is never reported complete.
 
 Across the three campaigns the exact count is 300 Qwen calls: 100 C07a + 100 C07b + 100 C07c. Any
-missing call, extra retry/model call, wrong model/backend attestation, service restart, gateway OOM,
-or incomplete sanitized receipt fails that campaign denominator rather than being discarded.
+missing call, extra retry/model call, wrong model/backend attestation, unplanned service restart,
+restart outside C07c's one designated pre-call fault action, gateway OOM, or incomplete sanitized
+receipt fails that campaign denominator rather than being discarded. The scheduled C07c restart is
+required evidence, not a failure.
 
 Sanitized evidence stores opaque run/scope/fact/event IDs, generations, cutoffs, transition/reason
 codes, receipt/digest chains, physical operation counts, timings, model/backend/build attestation,
