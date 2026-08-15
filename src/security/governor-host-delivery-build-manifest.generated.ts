@@ -15899,7 +15899,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-anti-rollback-ledger.ts",
-      sha256: "0a2e0568e2911284087b12e4377c71c359c5460a0aa0628e6524124d5c9a2908",
+      sha256: "d4ba85d618bcb26c97c3489ae5c6296d5d18f3cd2cef495ac1d3f8b5fa04c054",
     },
     {
       path: "src/security/governor-host-approval-capabilities.ts",
@@ -15955,7 +15955,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-ledger-codec.ts",
-      sha256: "05cd68a20475182fe595838ee75ce3b36056f1a6f89383aec34cc02a7816eb62",
+      sha256: "e9d5366d0a07245a7be165a8d1037de1603a79b2c5a69e3b736bdec090644d8b",
     },
     {
       path: "src/security/governor-host-ledger-storage.ts",
@@ -15963,7 +15963,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-memory-authority.ts",
-      sha256: "64fca09fc26c523801c888fc2a8baa930123375ff19d2a4fbfd6a5ac5263348d",
+      sha256: "f67b6f24ab6bffe71dc376897779b1e267c69df102c648c687b30d5bfb847850",
     },
     {
       path: "src/security/governor-host-owner-ingress-persistence.ts",
@@ -16943,7 +16943,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/memory-authority.ts",
-      sha256: "89244a304a8e9d00f2e349ae67956bf072030c6f71dcd0f7e64d9937d08164ee",
+      sha256: "89bab565c08b809097b10dc4c9eda4f095ab2670e021b0642233308984980e6d",
     },
     {
       path: "src/tasks/governor/memory-backend-binding.ts",
@@ -16971,7 +16971,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/memory-integrity.ts",
-      sha256: "2f18c3d0630ceaf3aeea9cf31a9d79b8b236288baea738d4ec1bbac78a431e8d",
+      sha256: "645613680ea6ea30c0741a9808a622782212595d12c21bf92664eb243cc0b17a",
     },
     {
       path: "src/tasks/governor/memory-record-codec.ts",
@@ -17756,4 +17756,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "ed2d1d3e5206a7844f8ff7db0542c8daaee05cc6eae030a9c138db6eb554ad5d";
+  "9bb34b6f6ce1f9e1f72cbb3d0921c16d09ee9d34673c93ef4a78475097244017";

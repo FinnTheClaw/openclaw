@@ -465,7 +465,7 @@ export class GovernorMemoryStore {
       if (currentMemory.status === "verified") {
         const authorityState = this.#authority.state(currentMemory);
         if (authorityState === "current" || authorityState === "legacy") {
-          this.#authority.retire(currentMemory);
+          this.#authority.retire(currentMemory, "explicit_forget");
         }
       }
       const memory: GovernorMemoryRecord = {

@@ -106,9 +106,12 @@ export class GovernorMemoryAuthorityStore {
     };
   }
 
-  retire(memory: GovernorMemoryRecord): GovernorMemoryAuthorityState {
+  retire(
+    memory: GovernorMemoryRecord,
+    reason: "expiry" | "explicit_forget" = "explicit_forget",
+  ): GovernorMemoryAuthorityState {
     assertGovernorPersistedJson("memory", memory);
-    return this.#authority.retire(governorMemoryAuthorityBinding(memory));
+    return this.#authority.retire(governorMemoryAuthorityBinding(memory), reason);
   }
 
   state(memory: GovernorMemoryRecord): "current" | "legacy" | "stale" {
@@ -249,7 +252,7 @@ export class GovernorMemoryAuthorityStore {
       if (parsed.freshnessExpiresAt !== undefined && parsed.freshnessExpiresAt <= now) {
         try {
           if (this.state(parsed) === "current") {
-            this.quarantineMismatch(db, parsed, this.retire(parsed), now);
+            this.quarantineMismatch(db, parsed, this.retire(parsed, "expiry"), now);
             continue;
           }
         } catch {

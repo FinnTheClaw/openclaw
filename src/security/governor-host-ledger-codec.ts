@@ -23,6 +23,8 @@ export type GovernorLedgerStatus =
   | "task_current"
   | "task_intent"
   | "terminated";
+/** Causes that may enter memory_retired; contradiction/supersession stay current-or-stale. */
+export type GovernorMemoryRetirementReason = "expiry" | "explicit_forget";
 export type GovernorLedgerTaskFence = Readonly<{
   scopeDigest: string;
   authenticatedSourceSequence: number;
@@ -52,6 +54,7 @@ export type GovernorLedgerAppendInput = Readonly<{
   generation: number;
   status: GovernorLedgerStatus;
   bindingDigest: string;
+  retirementReason?: GovernorMemoryRetirementReason;
   ordering?: GovernorLedgerOrdering;
   taskFence?: GovernorLedgerTaskFence;
   priorTaskFence?: GovernorLedgerTaskFence;
@@ -81,6 +84,7 @@ export type GovernorLedgerState = Readonly<{
   status: GovernorLedgerStatus;
   digest: string;
   bindingDigest: string;
+  retirementReason?: GovernorMemoryRetirementReason;
   ordering?: GovernorLedgerOrdering;
   taskFence?: GovernorLedgerTaskFence;
   priorTaskFence?: GovernorLedgerTaskFence;
@@ -162,6 +166,7 @@ function unsignedEntry(entry: Omit<GovernorLedgerEntry, "digest" | "signature">)
     generation: entry.generation,
     status: entry.status,
     bindingDigest: entry.bindingDigest,
+    ...(entry.retirementReason ? { retirementReason: entry.retirementReason } : {}),
     ...(entry.ordering ? { ordering: entry.ordering } : {}),
     ...(entry.taskFence ? { taskFence: entry.taskFence } : {}),
     ...(entry.priorTaskFence ? { priorTaskFence: entry.priorTaskFence } : {}),
@@ -191,6 +196,9 @@ export function assertGovernorLedgerEntry(
     (entry.priorBindingDigest !== undefined && !/^[a-f0-9]{64}$/u.test(entry.priorBindingDigest)) ||
     (entry.status !== "task_intent" && entry.priorTaskFence !== undefined) ||
     (entry.kind !== "task" && entry.priorTaskFence !== undefined) ||
+    (entry.retirementReason !== undefined &&
+      (entry.status !== "memory_retired" ||
+        (entry.retirementReason !== "expiry" && entry.retirementReason !== "explicit_forget"))) ||
     entry.priorDigest !== priorDigest ||
     entry.keyId !== governorLedgerKeyId(signingKey) ||
     entry.keyVersion !== 1 ||
@@ -239,6 +247,7 @@ export function governorLedgerStates(
       status: entry.status,
       digest: entry.digest,
       bindingDigest: entry.bindingDigest,
+      ...(entry.retirementReason ? { retirementReason: entry.retirementReason } : {}),
       ...(entry.ordering ? { ordering: entry.ordering } : {}),
       ...(entry.taskFence ? { taskFence: entry.taskFence } : {}),
       ...(entry.priorTaskFence ? { priorTaskFence: entry.priorTaskFence } : {}),
@@ -255,6 +264,7 @@ function stateJson(key: string, state: GovernorLedgerState): GovernorJsonValue {
     status: state.status,
     digest: state.digest,
     bindingDigest: state.bindingDigest,
+    ...(state.retirementReason ? { retirementReason: state.retirementReason } : {}),
     ...(state.ordering ? { ordering: state.ordering } : {}),
     ...(state.taskFence ? { taskFence: state.taskFence } : {}),
     ...(state.priorTaskFence ? { priorTaskFence: state.priorTaskFence } : {}),
@@ -359,6 +369,8 @@ export function sameGovernorLedgerMetadata(
       canonicalGovernorJson(input.taskFence) === canonicalGovernorJson(state.taskFence)) &&
     (!input.priorTaskFence ||
       !state.priorTaskFence ||
-      canonicalGovernorJson(input.priorTaskFence) === canonicalGovernorJson(state.priorTaskFence))
+      canonicalGovernorJson(input.priorTaskFence) ===
+        canonicalGovernorJson(state.priorTaskFence)) &&
+    input.retirementReason === state.retirementReason
   );
 }

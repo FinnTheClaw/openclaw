@@ -217,6 +217,97 @@ describe("governor memory anti-rollback authority", () => {
     });
   });
 
+  it("keeps explicit forget fenced when primary rollback follows host retirement", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-governor-memory-forget-crash-" },
+      async (state) => {
+        let crashAfterAppend = false;
+        const env = syntheticGovernorSecretsEnvironment(state.stateDir);
+        const secrets = resolveGovernorSecrets(env);
+        const persistence = createGovernorHostPersistence({
+          env,
+          stateDir: state.stateDir,
+          secrets,
+          testMode: true,
+          testAfterLedgerAppend: () => {
+            if (crashAfterAppend) {
+              crashAfterAppend = false;
+              throw new Error("synthetic forget crash after ledger append");
+            }
+          },
+        });
+        const broker = createHostGovernorBroker({ secrets, persistence });
+        const capabilities = memoryTestRegistry();
+        const store = new GovernorSqliteStore({
+          stateDir: state.stateDir,
+          receiptResolver: broker.resolver,
+          approvalResolver: broker.approvalResolver,
+          deliveryResolver: broker.deliveryResolver,
+          physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+          memoryAuthority: broker.memoryAuthority,
+          secrets,
+          capabilities,
+        });
+        const controller = new GovernorController(store, capabilities);
+        const taskId = startMemoryTestTask(controller, memoryScopeA);
+        seedMemoryFact({
+          store,
+          broker: { ...broker, secrets },
+          taskId,
+          scope: memoryScopeA,
+          memoryId: "memory-explicit-forget",
+          factKey: "ssh.path",
+          path: "/must-stay-forgotten",
+          observedAt: 100,
+        });
+
+        crashAfterAppend = true;
+        expect(() =>
+          store.memory.forget({
+            memoryId: "memory-explicit-forget",
+            scope: memoryScopeA,
+            expectedScopeEpoch: 0,
+            now: 201,
+          }),
+        ).toThrow(/synthetic forget crash/u);
+
+        closeOpenClawStateDatabase();
+        const restartedPersistence = createGovernorHostPersistence({
+          env,
+          stateDir: state.stateDir,
+          secrets,
+          testMode: true,
+        });
+        const restartedBroker = createHostGovernorBroker({
+          secrets,
+          persistence: restartedPersistence,
+        });
+        const restarted = new GovernorSqliteStore({
+          stateDir: state.stateDir,
+          receiptResolver: restartedBroker.resolver,
+          approvalResolver: restartedBroker.approvalResolver,
+          deliveryResolver: restartedBroker.deliveryResolver,
+          physicalExecutionCoordinator: restartedBroker.physicalExecutionCoordinator,
+          memoryAuthority: restartedBroker.memoryAuthority,
+          secrets,
+          capabilities,
+        });
+        expect(
+          restarted.memory.promoteVerified({
+            taskId,
+            evidenceId: "seed-evidence-memory-explicit-forget",
+            memoryId: "memory-explicit-forget",
+            factKey: "ssh.path",
+            scope: memoryScopeA,
+            expectedScopeEpoch: 0,
+            now: 300,
+          }),
+        ).toMatchObject({ stored: false, reason: "provenance_rejected" });
+        expect(restarted.memory.retrieve({ scope: memoryScopeA, now: 301 })).toEqual([]);
+      },
+    );
+  });
+
   it("reconciles a host-ledger append followed by primary transaction rollback", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-memory-ledger-crash-" },

@@ -87,7 +87,7 @@ describe("governor memory authority generation binding", () => {
     });
     const original = binding(0, 100);
     expect(authority.advance(original)).toMatchObject({ accepted: true, state: { generation: 1 } });
-    expect(authority.retire({ ...original, generation: 1 })).toMatchObject({
+    expect(authority.retire({ ...original, generation: 1 }, "expiry")).toMatchObject({
       status: "retired",
       generation: 2,
     });
@@ -95,5 +95,30 @@ describe("governor memory authority generation binding", () => {
       accepted: true,
       state: { generation: 3, status: "current" },
     });
+  });
+
+  it.each([
+    ["expiry", true],
+    ["explicit_forget", false],
+  ] as const)("applies the %s same-epoch transition", (reason, mayReactivate) => {
+    const rows = new Map<string, GovernorLedgerState>();
+    const authority = createGovernorMemoryAuthority({
+      append(input) {
+        const row: GovernorLedgerState = { ...input, digest: "ledger-digest" };
+        rows.set(`${input.kind}:${input.key}`, row);
+        return row;
+      },
+      state(kind, key) {
+        return rows.get(`${kind}:${key}`) ?? null;
+      },
+    });
+    const original = binding(0, 100);
+    authority.advance(original);
+    authority.retire({ ...original, generation: 1 }, reason);
+    const decision = authority.advance(binding(0, 200));
+    expect(decision.accepted).toBe(mayReactivate);
+    if (!mayReactivate) {
+      expect(decision).toMatchObject({ accepted: false, reason: "retired" });
+    }
   });
 });
