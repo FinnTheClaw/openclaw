@@ -235,7 +235,7 @@ export function ownGovernorMemoryCapability(
   capability: MemoryGovernorCapability,
 ): MemoryGovernorCapability {
   const owned = Object.freeze({
-    createBackend(params) {
+    createBackend(params: Parameters<MemoryGovernorCapability["createBackend"]>[0]) {
       const backend = capability.createBackend(params);
       OWNED_BACKENDS.add(backend);
       return backend;

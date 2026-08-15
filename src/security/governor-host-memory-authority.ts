@@ -106,7 +106,7 @@ function rejectAdvance(
   if (
     current.status === "memory_retired" &&
     (current.retirementReason === "expiry"
-      ? next.scopeEpoch < prior.scopeEpoch
+      ? next.scopeEpoch < prior.scopeEpoch || next.observedAt <= prior.observedAt
       : next.scopeEpoch <= prior.scopeEpoch)
   ) {
     return { accepted: false, state, reason: "retired" };

@@ -84,13 +84,27 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     }
   }
 
-  #queueBackendRetirement(memory: GovernorMemoryRecord, now: number, force = false): void {
+  #queueBackendRetirement(
+    memory: GovernorMemoryRecord,
+    now: number,
+    force = false,
+    requestedReason?: "freshness_expired" | "operator_requested",
+  ): void {
     if (
       !this.backend?.retire ||
       (!force && (memory.status === "verified" || memory.status === "candidate"))
     ) {
       return;
     }
+    const reason =
+      requestedReason ??
+      (memory.freshnessExpiresAt !== undefined && memory.freshnessExpiresAt <= now
+        ? "freshness_expired"
+        : "operator_requested");
+    const backendNow =
+      reason === "freshness_expired" && memory.freshnessExpiresAt !== undefined
+        ? Math.min(now, memory.freshnessExpiresAt)
+        : now;
     this.#enqueueBackend(async () => {
       await this.backend!.retire!({
         agentId: "governor",
@@ -98,8 +112,8 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
         scopeKey: memory.scopeKey,
         factKey: memory.factKey,
         staleMemoryId: memory.memoryId,
-        reason: "operator_requested",
-        now,
+        reason,
+        now: backendNow,
       });
     });
   }
@@ -170,7 +184,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       .find((memory) => memory.memoryId === params.memoryId);
     const result = super.forget(params);
     if (result.status === "deleted" && before) {
-      this.#queueBackendRetirement(before, params.now, true);
+      this.#queueBackendRetirement(before, params.now, true, "operator_requested");
     }
     return result;
   }

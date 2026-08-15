@@ -121,4 +121,28 @@ describe("governor memory authority generation binding", () => {
       expect(decision).toMatchObject({ accepted: false, reason: "retired" });
     }
   });
+
+  it("rejects an equal-timestamp expiry re-observation even when stronger", () => {
+    const rows = new Map<string, GovernorLedgerState>();
+    const authority = createGovernorMemoryAuthority({
+      append(input) {
+        const row: GovernorLedgerState = { ...input, digest: "ledger-digest" };
+        rows.set(`${input.kind}:${input.key}`, row);
+        return row;
+      },
+      state(kind, key) {
+        return rows.get(`${kind}:${key}`) ?? null;
+      },
+    });
+    const original = binding(0, 100);
+    authority.advance(original);
+    authority.retire({ ...original, generation: 1 }, "expiry");
+    const stronger = {
+      ...binding(0, 100),
+      authority: 0.9,
+      authorityRank: 900,
+      ordering: { ...binding(0, 100).ordering, sourceRank: 900, confidenceMillionths: 950_000 },
+    };
+    expect(authority.advance(stronger)).toMatchObject({ accepted: false, reason: "retired" });
+  });
 });

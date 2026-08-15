@@ -292,6 +292,15 @@ describe("governor memory anti-rollback authority", () => {
           secrets,
           capabilities,
         });
+        const forgottenAudit = restarted.memory
+          .retrieveAudit({ scope: memoryScopeA })
+          .find((memory) => memory.memoryId === "memory-explicit-forget");
+        if (!forgottenAudit) {
+          throw new Error("missing explicit-forget audit record");
+        }
+        expect(
+          restartedBroker.memoryAuthority.state(forgottenAudit.scopeKey, forgottenAudit.factKey),
+        ).toMatchObject({ status: "retired", retirementReason: "explicit_forget" });
         expect(
           restarted.memory.promoteVerified({
             taskId,

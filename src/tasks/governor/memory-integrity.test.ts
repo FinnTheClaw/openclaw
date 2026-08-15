@@ -220,11 +220,21 @@ describe("governor memory integrity", () => {
       expect(harness.store.memory.retrieveAudit({ scope: scopeA })).toEqual([
         expect.objectContaining({ memoryId: "memory-expiring", status: "tombstoned" }),
       ]);
-
-      const replacementTask = startMemoryTestTask(harness.controller, scopeA, 2);
+      closeOpenClawStateDatabase();
+      const restartedCapabilities = memoryTestRegistry();
+      const restarted = createGovernorTestStore({
+        stateDir: harness.stateDir,
+        capabilities: restartedCapabilities,
+      });
+      const restartedHarness = {
+        ...restarted,
+        controller: new GovernorController(restarted.store, restartedCapabilities),
+        stateDir: harness.stateDir,
+      } as MemoryTestHarness;
+      const replacementTask = startMemoryTestTask(restartedHarness.controller, scopeA, 2);
       expect(
         promote({
-          harness,
+          harness: restartedHarness,
           taskId: replacementTask,
           scope: scopeA,
           memoryId: "memory-reobserved",
@@ -235,7 +245,7 @@ describe("governor memory integrity", () => {
         }).stored,
       ).toBe(true);
       expect(
-        harness.store.memory.retrieve({ scope: scopeA, now: 201 }).map((m) => m.memoryId),
+        restartedHarness.store.memory.retrieve({ scope: scopeA, now: 201 }).map((m) => m.memoryId),
       ).toEqual(["memory-reobserved"]);
     });
   });
