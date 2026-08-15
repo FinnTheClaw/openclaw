@@ -15963,7 +15963,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-memory-authority.ts",
-      sha256: "a962a35b57845bb16fa39465422e7a70f2159a3bf3717275725ea92b5f8419bb",
+      sha256: "64fca09fc26c523801c888fc2a8baa930123375ff19d2a4fbfd6a5ac5263348d",
     },
     {
       path: "src/security/governor-host-owner-ingress-persistence.ts",
@@ -16943,7 +16943,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/memory-authority.ts",
-      sha256: "f7d3574569a9c07fc602f94b0e726cc57ebe7542725b4e0bf3015201032360e3",
+      sha256: "89244a304a8e9d00f2e349ae67956bf072030c6f71dcd0f7e64d9937d08164ee",
     },
     {
       path: "src/tasks/governor/memory-backend-binding.ts",
@@ -17756,4 +17756,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "035ce50037a18a169c705ca43569aca1e42b8cf59a48f7a87b0b24883f41f749";
+  "ed2d1d3e5206a7844f8ff7db0542c8daaee05cc6eae030a9c138db6eb554ad5d";

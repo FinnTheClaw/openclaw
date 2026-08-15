@@ -97,7 +97,7 @@ function rejectAdvance(
   if (next.scopeEpoch < prior.scopeEpoch || next.observedAt < prior.observedAt) {
     return { accepted: false, state, reason: "stale" };
   }
-  if (current.status === "memory_retired" && next.scopeEpoch <= prior.scopeEpoch) {
+  if (current.status === "memory_retired" && next.scopeEpoch < prior.scopeEpoch) {
     return { accepted: false, state, reason: "retired" };
   }
   if (

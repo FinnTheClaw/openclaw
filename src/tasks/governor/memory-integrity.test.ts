@@ -49,6 +49,7 @@ function promote(params: {
   factKey: string;
   content: GovernorJsonValue;
   observedAt: number;
+  freshnessExpiresAt?: number;
   sourceKind?: "tool" | "structured_external" | "authenticated_user";
 }) {
   const evidenceId = `evidence-${params.memoryId}`;
@@ -70,6 +71,9 @@ function promote(params: {
     factKey: params.factKey,
     scope: params.scope,
     expectedScopeEpoch: params.harness.store.memory.getScopeEpoch(params.scope),
+    ...(params.freshnessExpiresAt === undefined
+      ? {}
+      : { freshnessExpiresAt: params.freshnessExpiresAt }),
     now: params.observedAt,
   });
 }
@@ -194,6 +198,45 @@ describe("governor memory integrity", () => {
         expect.objectContaining({ memoryId: "memory-forget", status: "tombstoned" }),
         expect.objectContaining({ memoryId: "memory-keep", status: "quarantined" }),
       ]);
+    });
+  });
+
+  it("retires expired authority before backend retirement and accepts a newer observation", async () => {
+    await withMemoryTestHarness(async (harness) => {
+      const firstTask = startMemoryTestTask(harness.controller, scopeA, 1);
+      expect(
+        promote({
+          harness,
+          taskId: firstTask,
+          scope: scopeA,
+          memoryId: "memory-expiring",
+          factKey: "fixture.expiring",
+          content: { value: "old" },
+          observedAt: 100,
+          freshnessExpiresAt: 102,
+        }).stored,
+      ).toBe(true);
+      expect(harness.store.memory.retrieve({ scope: scopeA, now: 103 })).toEqual([]);
+      expect(harness.store.memory.retrieveAudit({ scope: scopeA })).toEqual([
+        expect.objectContaining({ memoryId: "memory-expiring", status: "tombstoned" }),
+      ]);
+
+      const replacementTask = startMemoryTestTask(harness.controller, scopeA, 2);
+      expect(
+        promote({
+          harness,
+          taskId: replacementTask,
+          scope: scopeA,
+          memoryId: "memory-reobserved",
+          factKey: "fixture.expiring",
+          content: { value: "new" },
+          observedAt: 200,
+          freshnessExpiresAt: 300,
+        }).stored,
+      ).toBe(true);
+      expect(
+        harness.store.memory.retrieve({ scope: scopeA, now: 201 }).map((m) => m.memoryId),
+      ).toEqual(["memory-reobserved"]);
     });
   });
 

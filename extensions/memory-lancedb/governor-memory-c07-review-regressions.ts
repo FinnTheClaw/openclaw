@@ -302,6 +302,24 @@ function expiryAdvancesReplayHighWater(): void {
       ledger.highWater("governor-memory", expiring.scopeKey, expiring.factKey)?.status,
       "tombstone",
     );
+    assert.equal(
+      ledger.admit(
+        governorMemoryFact({
+          memoryId: "post-expiry-reobservation",
+          observedAt: 210,
+          generation: 3,
+          sourceEvidenceId: "post-expiry-evidence",
+          sourceEvidenceDigest: "post-expiry-digest",
+          freshnessExpiresAt: 300,
+        }),
+        211,
+      ).status,
+      "admitted",
+    );
+    assert.equal(
+      ledger.highWater("governor-memory", expiring.scopeKey, expiring.factKey)?.status,
+      "active",
+    );
   } finally {
     ledger.close();
     fs.rmSync(root, { recursive: true, force: true });

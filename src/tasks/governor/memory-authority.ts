@@ -246,6 +246,16 @@ export class GovernorMemoryAuthorityStore {
         );
         continue;
       }
+      if (parsed.freshnessExpiresAt !== undefined && parsed.freshnessExpiresAt <= now) {
+        try {
+          if (this.state(parsed) === "current") {
+            this.quarantineMismatch(db, parsed, this.retire(parsed), now);
+            continue;
+          }
+        } catch {
+          // Fall through to the normal evidence and authority checks.
+        }
+      }
       let memory: GovernorMemoryRecord;
       try {
         memory = verify(parsed);

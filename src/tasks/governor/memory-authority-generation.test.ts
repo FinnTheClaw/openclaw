@@ -72,4 +72,28 @@ describe("governor memory authority generation binding", () => {
       );
     }
   });
+
+  it("permits a newer same-scope observation after expiry retirement", () => {
+    const rows = new Map<string, GovernorLedgerState>();
+    const authority = createGovernorMemoryAuthority({
+      append(input) {
+        const row: GovernorLedgerState = { ...input, digest: "ledger-digest" };
+        rows.set(`${input.kind}:${input.key}`, row);
+        return row;
+      },
+      state(kind, key) {
+        return rows.get(`${kind}:${key}`) ?? null;
+      },
+    });
+    const original = binding(0, 100);
+    expect(authority.advance(original)).toMatchObject({ accepted: true, state: { generation: 1 } });
+    expect(authority.retire({ ...original, generation: 1 })).toMatchObject({
+      status: "retired",
+      generation: 2,
+    });
+    expect(authority.advance(binding(0, 200))).toMatchObject({
+      accepted: true,
+      state: { generation: 3, status: "current" },
+    });
+  });
 });
