@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   authenticateGovernorMemoryFact,
+  createGovernorMemoryRetirementDecision,
   governorMemoryAuthorityBindingDigest,
 } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { GovernorMemoryLanceDbAdapter } from "./governor-memory-adapter.js";
@@ -29,30 +30,43 @@ function prepareLedger(root: string): string {
   return ledgerPath;
 }
 
-function openAdapter(ledgerPath: string) {
+function openAdapter(ledgerPath: string, authorityBindingKey?: string) {
   const index = new HybridMemoryIndex(path.join(path.dirname(ledgerPath), "lancedb"), 4);
   return {
     index,
-    adapter: new GovernorMemoryLanceDbAdapter({ ledgerPath, index, embeddings }),
+    adapter: new GovernorMemoryLanceDbAdapter({
+      ledgerPath,
+      index,
+      embeddings,
+      authorityBindingKey,
+    }),
   };
 }
 
 async function retirementFencesRecallAfterRestart(): Promise<void> {
   const root = createRoot();
   const ledgerPath = prepareLedger(root);
-  const opened = openAdapter(ledgerPath);
+  const authorityBindingKey = "retirement-fence-fixture-key";
+  const opened = openAdapter(ledgerPath, authorityBindingKey);
   try {
-    const fact = governorMemoryFact();
+    const fact = authenticateGovernorMemoryFact(governorMemoryFact(), authorityBindingKey);
     assert.equal((await opened.adapter.admit({ fact, now: 101 })).status, "admitted");
-    await opened.adapter.retire!({
-      agentId: "governor",
-      scope: fact.scope,
-      scopeKey: fact.scopeKey,
-      factKey: fact.factKey,
-      staleMemoryId: fact.memoryId,
-      reason: "operator_requested",
-      now: 200,
-    });
+    await opened.adapter.retire!(
+      createGovernorMemoryRetirementDecision(
+        {
+          scopeKey: fact.scopeKey,
+          factKey: fact.factKey,
+          staleMemoryId: fact.memoryId,
+          priorGeneration: 1,
+          newGeneration: 2,
+          semanticCutoff: 200,
+          issuedAt: 200,
+          reason: "explicit_forget",
+          priorAuthorityBindingDigest: fact.authorityBindingDigest,
+        },
+        authorityBindingKey,
+      ),
+    );
     assert.deepEqual(
       await opened.adapter.recall({
         agentId: "governor",
@@ -68,7 +82,7 @@ async function retirementFencesRecallAfterRestart(): Promise<void> {
     opened.adapter.close();
     await opened.index.closeAsync();
   }
-  const reopened = openAdapter(ledgerPath);
+  const reopened = openAdapter(ledgerPath, authorityBindingKey);
   try {
     assert.deepEqual(
       await reopened.adapter.recall({

@@ -1,5 +1,9 @@
 // Pure signed-record codec for the host anti-rollback ledger.
 import crypto from "node:crypto";
+import {
+  type MemoryGovernorRetirementDecision,
+  verifyGovernorMemoryRetirementDecision,
+} from "../plugins/memory-governor-capability.js";
 import { canonicalGovernorJson, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 
 export type GovernorLedgerKind =
@@ -55,6 +59,7 @@ export type GovernorLedgerAppendInput = Readonly<{
   status: GovernorLedgerStatus;
   bindingDigest: string;
   retirementReason?: GovernorMemoryRetirementReason;
+  memoryRetirement?: MemoryGovernorRetirementDecision;
   ordering?: GovernorLedgerOrdering;
   taskFence?: GovernorLedgerTaskFence;
   priorTaskFence?: GovernorLedgerTaskFence;
@@ -85,6 +90,7 @@ export type GovernorLedgerState = Readonly<{
   digest: string;
   bindingDigest: string;
   retirementReason?: GovernorMemoryRetirementReason;
+  memoryRetirement?: MemoryGovernorRetirementDecision;
   ordering?: GovernorLedgerOrdering;
   taskFence?: GovernorLedgerTaskFence;
   priorTaskFence?: GovernorLedgerTaskFence;
@@ -167,6 +173,7 @@ function unsignedEntry(entry: Omit<GovernorLedgerEntry, "digest" | "signature">)
     status: entry.status,
     bindingDigest: entry.bindingDigest,
     ...(entry.retirementReason ? { retirementReason: entry.retirementReason } : {}),
+    ...(entry.memoryRetirement ? { memoryRetirement: entry.memoryRetirement } : {}),
     ...(entry.ordering ? { ordering: entry.ordering } : {}),
     ...(entry.taskFence ? { taskFence: entry.taskFence } : {}),
     ...(entry.priorTaskFence ? { priorTaskFence: entry.priorTaskFence } : {}),
@@ -199,6 +206,13 @@ export function assertGovernorLedgerEntry(
     (entry.retirementReason !== undefined &&
       (entry.status !== "memory_retired" ||
         (entry.retirementReason !== "expiry" && entry.retirementReason !== "explicit_forget"))) ||
+    (entry.memoryRetirement !== undefined &&
+      (entry.kind !== "memory" ||
+        entry.status !== "memory_retired" ||
+        entry.memoryRetirement.reason !== entry.retirementReason ||
+        entry.memoryRetirement.newGeneration !== entry.generation ||
+        entry.memoryRetirement.retirementBindingDigest !== entry.bindingDigest ||
+        !verifyGovernorMemoryRetirementDecision(entry.memoryRetirement, signingKey))) ||
     entry.priorDigest !== priorDigest ||
     entry.keyId !== governorLedgerKeyId(signingKey) ||
     entry.keyVersion !== 1 ||
@@ -248,6 +262,7 @@ export function governorLedgerStates(
       digest: entry.digest,
       bindingDigest: entry.bindingDigest,
       ...(entry.retirementReason ? { retirementReason: entry.retirementReason } : {}),
+      ...(entry.memoryRetirement ? { memoryRetirement: entry.memoryRetirement } : {}),
       ...(entry.ordering ? { ordering: entry.ordering } : {}),
       ...(entry.taskFence ? { taskFence: entry.taskFence } : {}),
       ...(entry.priorTaskFence ? { priorTaskFence: entry.priorTaskFence } : {}),
@@ -265,6 +280,7 @@ function stateJson(key: string, state: GovernorLedgerState): GovernorJsonValue {
     digest: state.digest,
     bindingDigest: state.bindingDigest,
     ...(state.retirementReason ? { retirementReason: state.retirementReason } : {}),
+    ...(state.memoryRetirement ? { memoryRetirement: state.memoryRetirement } : {}),
     ...(state.ordering ? { ordering: state.ordering } : {}),
     ...(state.taskFence ? { taskFence: state.taskFence } : {}),
     ...(state.priorTaskFence ? { priorTaskFence: state.priorTaskFence } : {}),
@@ -360,6 +376,7 @@ export function sameGovernorLedgerMetadata(
     (input.ordering === undefined) === (state.ordering === undefined) &&
     (input.taskFence === undefined) === (state.taskFence === undefined) &&
     (input.priorTaskFence === undefined) === (state.priorTaskFence === undefined) &&
+    (input.memoryRetirement === undefined) === (state.memoryRetirement === undefined) &&
     input.priorBindingDigest === state.priorBindingDigest &&
     (!input.ordering ||
       !state.ordering ||
@@ -371,6 +388,10 @@ export function sameGovernorLedgerMetadata(
       !state.priorTaskFence ||
       canonicalGovernorJson(input.priorTaskFence) ===
         canonicalGovernorJson(state.priorTaskFence)) &&
+    (!input.memoryRetirement ||
+      !state.memoryRetirement ||
+      canonicalGovernorJson(input.memoryRetirement) ===
+        canonicalGovernorJson(state.memoryRetirement)) &&
     input.retirementReason === state.retirementReason
   );
 }

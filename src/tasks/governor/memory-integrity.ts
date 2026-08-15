@@ -20,6 +20,7 @@ import {
   assertCurrentGovernorMemory,
   assertHistoricalGovernorMemory,
 } from "./memory-eligibility.js";
+import { forgetGovernorMemory } from "./memory-forget.js";
 import { assertExactGovernorMemoryInput } from "./memory-input-validation.js";
 import {
   assertCanonicalGovernorMemoryRecord,
@@ -438,69 +439,14 @@ export class GovernorMemoryStore {
   }): GovernorForgetResult {
     assertGovernorPersistedJson("memory", params);
     const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
-    return runOpenClawStateWriteTransaction(({ db }) => {
-      const currentEpoch = this.#epoch(db, scopeKey);
-      if (currentEpoch !== params.expectedScopeEpoch) {
-        return {
-          status: "partial_failure",
-          memoryId: params.memoryId,
-          scopeEpoch: currentEpoch,
-          failed: ["scope_epoch_conflict"],
-        };
-      }
-      const row = executeSqliteQueryTakeFirstSync(
-        db,
-        dbx(db)
-          .selectFrom("governor_memories")
-          .selectAll()
-          .where("memory_id", "=", params.memoryId)
-          .where("scope_key", "=", scopeKey)
-          .where("status", "!=", "tombstoned"),
-      );
-      if (!row) {
-        return { status: "not_found", memoryId: params.memoryId, scopeEpoch: currentEpoch };
-      }
-      const nextEpoch = currentEpoch + 1;
-      const currentMemory = parseGovernorMemory(row);
-      if (currentMemory.status === "verified") {
-        const authorityState = this.#authority.state(currentMemory);
-        if (authorityState === "current" || authorityState === "legacy") {
-          this.#authority.retire(currentMemory, "explicit_forget");
-        }
-      }
-      const memory: GovernorMemoryRecord = {
-        ...currentMemory,
-        status: "tombstoned",
-        updatedAt: params.now,
-        tombstonedAt: params.now,
-      };
-      executeSqliteQuerySync(
-        db,
-        dbx(db)
-          .updateTable("governor_memories")
-          .set(bindGovernorMemory(memory))
-          .where("memory_id", "=", params.memoryId)
-          .where("scope_key", "=", scopeKey),
-      );
-      executeSqliteQuerySync(
-        db,
-        dbx(db)
-          .insertInto("governor_scope_epochs")
-          .values({ scope_key: scopeKey, epoch: nextEpoch, updated_at: params.now })
-          .onConflict((conflict) =>
-            conflict.column("scope_key").doUpdateSet({
-              epoch: nextEpoch,
-              updated_at: params.now,
-            }),
-          ),
-      );
-      return {
-        status: "deleted",
-        memoryId: params.memoryId,
-        scopeEpoch: nextEpoch,
-        invalidated: ["primary", "scope_epoch"],
-      };
-    }, this.#options);
+    return forgetGovernorMemory({
+      options: this.#options,
+      authority: this.#authority,
+      scopeKey,
+      memoryId: params.memoryId,
+      expectedScopeEpoch: params.expectedScopeEpoch,
+      now: params.now,
+    });
   }
 
   listReobservationRequirements(scope: GovernorTaskScope) {

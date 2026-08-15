@@ -3,19 +3,20 @@ import type { MemoryCitationsMode } from "../config/types.memory.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { MemorySearchManager } from "../memory-host-sdk/host/types.js";
-import { ownGovernorMemoryCapability } from "./memory-governor-capability.js";
-import type { MemoryGovernorCapability } from "./memory-governor-capability.js";
 export {
   authenticateGovernorMemoryFact,
+  createGovernorMemoryRetirementDecision,
   createInertMemoryGovernorBackend,
   governorMemoryAuthorityBindingDigest,
   governorMemoryContentDigest,
   governorMemoryFactMac,
+  verifyGovernorMemoryRetirementDecision,
   verifyGovernorMemoryFact,
   type MemoryGovernorBackend,
-  type MemoryGovernorCapability,
   type MemoryGovernorFact,
   type MemoryGovernorRecall,
+  type MemoryGovernorRetirementDecision,
+  type MemoryGovernorRetirementReason,
   type MemoryGovernorSourceKind,
 } from "./memory-governor-capability.js";
 
@@ -170,7 +171,6 @@ export type MemoryPluginCapability = {
   flushPlanResolver?: MemoryFlushPlanResolver;
   runtime?: MemoryPluginRuntime;
   publicArtifacts?: MemoryPluginPublicArtifactsProvider;
-  governorMemory?: MemoryGovernorCapability;
 };
 
 export type MemoryPluginCapabilityRegistration = {
@@ -213,25 +213,17 @@ export function registerMemoryCapability(
 export function registerTrustedMemoryCapability(
   pluginId: string,
   capability: MemoryPluginCapability,
-  provenance: MemoryCapabilityProvenance,
+  _provenance: MemoryCapabilityProvenance,
 ): void {
-  registerMemoryCapabilityInternal(
-    pluginId,
-    capability,
-    provenance.origin === "bundled" && provenance.source.trim().length > 0,
-  );
+  registerMemoryCapabilityInternal(pluginId, capability);
 }
 
 function registerMemoryCapabilityInternal(
   pluginId: string,
   capability: MemoryPluginCapability,
-  bundledProvenance = false,
 ): void {
-  const governorMemory =
-    pluginId === "memory-lancedb" && bundledProvenance && capability.governorMemory
-      ? ownGovernorMemoryCapability(capability.governorMemory)
-      : undefined;
-  const { governorMemory: _untrustedGovernorMemory, ...capabilityWithoutGovernor } = capability;
+  const { governorMemory: _ignored, ...capabilityWithoutGovernor } =
+    capability as MemoryPluginCapability & { governorMemory?: unknown };
   const existingCapability = memoryPluginState.capability?.capability;
   // A selected memory plugin can add bridge artifacts while memory-core owns sidecar runtime hooks.
   const shouldPreserveExisting =
@@ -245,7 +237,6 @@ function registerMemoryCapabilityInternal(
     capability: {
       ...(shouldPreserveExisting ? existingCapability : {}),
       ...capabilityWithoutGovernor,
-      ...(governorMemory ? { governorMemory } : {}),
     },
   };
 }

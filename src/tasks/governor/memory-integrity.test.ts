@@ -5,6 +5,7 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
+import { GovernorController } from "./controller.js";
 import { governorMemoryFactPredicate } from "./memory-contradiction-policy.js";
 import {
   correctMemoryTestTask,
@@ -220,6 +221,23 @@ describe("governor memory integrity", () => {
       expect(harness.store.memory.retrieveAudit({ scope: scopeA })).toEqual([
         expect.objectContaining({ memoryId: "memory-expiring", status: "tombstoned" }),
       ]);
+      const retiredScopeKey = harness.store.memory.retrieveAudit({ scope: scopeA })[0]!.scopeKey;
+      const beforeRestart = harness.broker.memoryAuthority.state(
+        retiredScopeKey,
+        "fixture.expiring",
+      );
+      expect(beforeRestart).toMatchObject({
+        generation: 2,
+        status: "retired",
+        ordering: { observedAt: 102, recordedAt: 103 },
+        retirementDecision: {
+          priorGeneration: 1,
+          newGeneration: 2,
+          semanticCutoff: 102,
+          issuedAt: 103,
+          reason: "expiry",
+        },
+      });
       closeOpenClawStateDatabase();
       const restartedCapabilities = memoryTestRegistry();
       const restarted = createGovernorTestStore({
@@ -231,6 +249,9 @@ describe("governor memory integrity", () => {
         controller: new GovernorController(restarted.store, restartedCapabilities),
         stateDir: harness.stateDir,
       } as MemoryTestHarness;
+      expect(
+        restartedHarness.broker.memoryAuthority.state(retiredScopeKey, "fixture.expiring"),
+      ).toEqual(beforeRestart);
       const replacementTask = startMemoryTestTask(restartedHarness.controller, scopeA, 2);
       expect(
         promote({

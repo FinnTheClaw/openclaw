@@ -108,10 +108,14 @@ export class GovernorMemoryAuthorityStore {
 
   retire(
     memory: GovernorMemoryRecord,
-    reason: "expiry" | "explicit_forget" = "explicit_forget",
+    params: Readonly<{
+      reason: "expiry" | "explicit_forget";
+      semanticCutoff: number;
+      issuedAt: number;
+    }>,
   ): GovernorMemoryAuthorityState {
     assertGovernorPersistedJson("memory", memory);
-    return this.#authority.retire(governorMemoryAuthorityBinding(memory), reason);
+    return this.#authority.retire(governorMemoryAuthorityBinding(memory), params);
   }
 
   state(memory: GovernorMemoryRecord): "current" | "legacy" | "stale" {
@@ -252,7 +256,16 @@ export class GovernorMemoryAuthorityStore {
       if (parsed.freshnessExpiresAt !== undefined && parsed.freshnessExpiresAt <= now) {
         try {
           if (this.state(parsed) === "current") {
-            this.quarantineMismatch(db, parsed, this.retire(parsed, "expiry"), now);
+            this.quarantineMismatch(
+              db,
+              parsed,
+              this.retire(parsed, {
+                reason: "expiry",
+                semanticCutoff: parsed.freshnessExpiresAt,
+                issuedAt: now,
+              }),
+              now,
+            );
             continue;
           }
         } catch {

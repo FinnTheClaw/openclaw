@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { DurableMemoryRuntime } from "./durable-memory-runtime.js";
 import { GovernorMemoryLanceDbAdapter } from "./governor-memory-adapter.js";
 import { governorMemoryFact } from "./governor-memory-fact-fixture.js";
+import { delayedExpiryUsesHostDecision } from "./governor-memory-retirement.integration.js";
 import { HybridMemoryIndex } from "./hybrid-memory-index.js";
 import { TemporalMemoryLedger } from "./temporal-ledger.js";
 
@@ -339,54 +340,6 @@ async function staleProjectionAndRestart(): Promise<void> {
   }
 }
 
-async function delayedExpiryUsesObservationBoundary(): Promise<void> {
-  const context = createContext();
-  try {
-    const expiring = fact({
-      memoryId: "memory-delayed-expiry",
-      observedAt: 100,
-      freshnessExpiresAt: 120,
-      sourceEvidenceId: "evidence-delayed-expiry",
-      sourceEvidenceDigest: "digest-delayed-expiry",
-    });
-    assert.equal((await context.adapter.admit({ fact: expiring, now: 101 })).status, "admitted");
-    await context.adapter.retire!({
-      agentId: "agent-a",
-      scope: "scope-a",
-      factKey: expiring.factKey,
-      staleMemoryId: expiring.memoryId,
-      reason: "freshness_expired",
-      now: 120,
-    });
-    const replacement = fact({
-      memoryId: "memory-after-delayed-expiry",
-      observedAt: 200,
-      generation: 3,
-      sourceEvidenceId: "evidence-after-delayed-expiry",
-      sourceEvidenceDigest: "digest-after-delayed-expiry",
-      freshnessExpiresAt: 300,
-    });
-    assert.equal(
-      (await context.adapter.admit({ fact: replacement, now: 1000 })).status,
-      "admitted",
-    );
-    assert.deepEqual(
-      (
-        await context.adapter.recall({
-          agentId: "agent-a",
-          scopes: ["scope-a"],
-          query: "account plan",
-          limit: 5,
-          now: 250,
-        })
-      ).map((item) => item.memoryId),
-      [replacement.memoryId],
-    );
-  } finally {
-    await closeContext(context);
-  }
-}
-
 async function poisoningAndCompaction(): Promise<void> {
   const context = createContext();
   try {
@@ -469,5 +422,5 @@ await runtimeShadow();
 await replacementAndLineage();
 await transitiveLineage();
 await staleProjectionAndRestart();
-await delayedExpiryUsesObservationBoundary();
+await delayedExpiryUsesHostDecision();
 await poisoningAndCompaction();

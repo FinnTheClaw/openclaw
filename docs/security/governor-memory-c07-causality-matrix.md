@@ -1,0 +1,17 @@
+# C07 causality and invariant matrix
+
+This matrix preserves the release-blocking C07 findings that govern the current
+successor. It is an implementation checklist, not certification evidence.
+
+| Finding                                                                                               | Classification                                                  | Stable invariant                                                                                                                                                                                                                         | Owner / transition                                                                            | Closing regression                                                                                                                                                                                                    |
+| ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1-10: host retirement and backend high-water derived different semantic cutoffs and generations      | Missed by the previous expiry-boundary correction               | One signed host-issued retirement decision owns exact scope/fact identity, prior and new generation, semantic cutoff, typed reason, authority key identity, and backend binding. The backend verifies and applies those values verbatim. | Host memory authority `current -> retired`; LanceDB governor ledger retirement reconciliation | Observation 100 expiring 120 retires at cutoff 120 in both ledgers, fences 110 in both, admits only values newer than 120, and preserves equality after restart for every retirement reason.                          |
+| P1-11: public plugin SDK exposed the trusted memory factory and caller-selected authority binding key | Introduced in the C07 backend integration and previously missed | Only the verified bundled loader's private registration seam may construct/register the trusted backend. Public plugin SDK/runtime exports expose neither the factory nor authority-key selection.                                       | Bundled plugin loader registration; gateway host-only backend acquisition                     | Static export/manifest tests reject public factory/key access; wrong provenance and retained registration handles fail; exact bundled registration succeeds without exposing the key through public capability state. |
+
+If a subsequent exact-object review finds another host/backend authority divergence,
+this seam is an architectural NO-GO for deeper redesign rather than another leaf fix.
+
+The retirement-decision reason domain is exactly `expiry | explicit_forget`.
+Contradiction, tamper/invalid authority, and supersession remain in the existing
+authenticated invalidation/replacement lifecycle; they cannot be recast as a
+retirement reason or bypass that lifecycle.

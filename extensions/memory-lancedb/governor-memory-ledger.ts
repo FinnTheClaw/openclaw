@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import type { MemoryGovernorFact } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import type {
+  MemoryGovernorFact,
+  MemoryGovernorRetirementDecision,
+} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import {
   normalizeGovernorFact,
   parseGovernorFact,
@@ -13,6 +16,7 @@ import {
   type PendingGovernorRemediation,
 } from "./governor-memory-ledger-replay.js";
 import { compactGovernorMemoryLedger } from "./governor-memory-ledger-retention.js";
+import { retireGovernorMemoryFact } from "./governor-memory-ledger-retirement.js";
 import { initializeGovernorMemoryLedgerSchema } from "./governor-memory-ledger-schema.js";
 import {
   insertGovernorFact,
@@ -148,7 +152,8 @@ export class GovernorMemoryLedger {
           "INSERT INTO memory_governor_high_water(agent_id, scope, fact_key, generation, status, revision_id, source_evidence_digest, observed_at, updated_at) " +
             "VALUES(?, ?, ?, ?, 'active', ?, ?, ?, ?) ON CONFLICT(agent_id, scope, fact_key) DO UPDATE SET " +
             "generation = excluded.generation, status = excluded.status, revision_id = excluded.revision_id, " +
-            "source_evidence_digest = excluded.source_evidence_digest, observed_at = excluded.observed_at, updated_at = excluded.updated_at",
+            "source_evidence_digest = excluded.source_evidence_digest, observed_at = excluded.observed_at, updated_at = excluded.updated_at, " +
+            "retirement_decision_id = NULL, retirement_binding_digest = NULL, retirement_reason = NULL, authority_key_id = NULL",
         )
         .run(
           LEDGER_OWNER,
@@ -373,76 +378,17 @@ export class GovernorMemoryLedger {
     }
   }
 
-  retire(params: {
-    agentId: string;
-    scopeKey: string;
-    factKey: string;
+  retire(decision: MemoryGovernorRetirementDecision): {
+    status: "retired" | "duplicate";
     staleMemoryId: string;
-    reason: "freshness_expired" | "operator_requested";
-    now: number;
-  }): { status: "retired" | "duplicate"; staleMemoryId: string; remediationId: string } {
-    const remediationId = `gov-remediation-${digest(
-      params.agentId,
-      params.scopeKey,
-      params.factKey,
-      params.staleMemoryId,
-      params.reason,
-    )}`;
-    this.#db.exec("BEGIN IMMEDIATE");
-    try {
-      const row = this.#db
-        .prepare(
-          "SELECT * FROM memory_fact_revisions WHERE revision_id = ? AND agent_id = ? AND scope = ? " +
-            "AND fact_key = ? AND status = 'active' AND system_to IS NULL",
-        )
-        .get(params.staleMemoryId, params.agentId, params.scopeKey, params.factKey) as
-        | SqlRow
-        | undefined;
-      const fact = row ? this.#parse(row) : undefined;
-      if (!row || !fact) {
-        this.#db.exec("COMMIT");
-        return { status: "duplicate", staleMemoryId: params.staleMemoryId, remediationId };
-      }
-      retireGovernorFact(this.#db, row, params.now, "retracted");
-      const highWater = this.highWater(params.agentId, params.scopeKey, params.factKey);
-      const generation = Math.max(Number(highWater?.generation ?? 0), fact.generation) + 1;
-      const observedAt = Math.max(fact.observedAt, params.now);
-      this.#db
-        .prepare(
-          "INSERT INTO memory_governor_high_water(agent_id, scope, fact_key, generation, status, revision_id, source_evidence_digest, observed_at, updated_at) " +
-            "VALUES(?, ?, ?, ?, 'tombstone', NULL, ?, ?, ?) ON CONFLICT(agent_id, scope, fact_key) DO UPDATE SET " +
-            "generation = excluded.generation, status = 'tombstone', revision_id = NULL, " +
-            "source_evidence_digest = excluded.source_evidence_digest, observed_at = excluded.observed_at, updated_at = excluded.updated_at",
-        )
-        .run(
-          params.agentId,
-          params.scopeKey,
-          params.factKey,
-          generation,
-          fact.sourceEvidenceDigest,
-          observedAt,
-          params.now,
-        );
-      upsertGovernorRemediation({
-        db: this.#db,
-        remediationId,
-        fact,
-        staleRevisionId: fact.memoryId,
-        reason: params.reason,
-        now: params.now,
-        sourceEvidenceId: fact.sourceEvidenceId,
-        sourceEvidenceDigest: fact.sourceEvidenceDigest,
-      });
-      this.#db.exec("COMMIT");
-      return { status: "retired", staleMemoryId: fact.memoryId, remediationId };
-    } catch (error) {
-      try {
-        this.#db.exec("ROLLBACK");
-      } catch {
-        // Preserve the primary failure.
-      }
-      throw error;
-    }
+    remediationId: string;
+  } {
+    return retireGovernorMemoryFact({
+      db: this.#db,
+      authorityBindingKey: this.#authorityBindingKey,
+      decision,
+      parse: (row) => this.#parse(row),
+    });
   }
 
   listCurrent(agentId: string, scopes: readonly string[], now: number): MemoryGovernorFact[] {

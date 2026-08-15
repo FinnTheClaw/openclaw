@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { getMemoryCapabilityRegistration } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveStateDir } from "../config/paths.js";
 import type {
   BehaviorGovernorConfig,
@@ -9,10 +8,8 @@ import type {
 } from "../config/types.behavior-governor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef } from "../config/types.secrets.js";
-import {
-  isOwnedGovernorMemoryBackend,
-  isOwnedGovernorMemoryCapability,
-} from "../plugins/memory-governor-capability.js";
+import { isOwnedGovernorMemoryBackend } from "../plugins/memory-governor-capability.js";
+import { createRegisteredGovernorMemoryBackend } from "../plugins/memory-governor-private.js";
 import { createInertMemoryGovernorBackend } from "../plugins/memory-state.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import type {
@@ -290,16 +287,9 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       const { createGovernorHostRuntimeIfEnabled } =
         await import("../security/governor-host-bootstrap.js");
       const suppliedMemory = host.integrations.memory;
-      const registration = getMemoryCapabilityRegistration();
-      const memoryCapability =
-        registration?.pluginId === "memory-lancedb" &&
-        registration.capability.governorMemory &&
-        isOwnedGovernorMemoryCapability(registration.capability.governorMemory)
-          ? registration.capability.governorMemory
-          : undefined;
       const registeredMemory =
         governor.mode === "enforce"
-          ? memoryCapability?.createBackend({
+          ? createRegisteredGovernorMemoryBackend({
               mode: "enforce",
               authorityBindingKey: resolved.secrets.ledgerSigningKey,
             })

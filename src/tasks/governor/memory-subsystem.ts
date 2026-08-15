@@ -26,6 +26,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
   readonly #evidenceAdmissions: GovernorEvidenceAdmissionStore;
   readonly #queries: GovernorStoreQueries;
   readonly #identity: GovernorIdentityContext;
+  readonly #memoryAuthority: GovernorTrustedMemoryAuthority;
   readonly backend?: MemoryGovernorBackend;
   #backendTail: Promise<void> = Promise.resolve();
   #backendError: unknown;
@@ -48,6 +49,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       taskAuthority: params.taskAuthority,
     });
     this.#identity = params.identity;
+    this.#memoryAuthority = params.memoryAuthority;
     this.backend = params.backend;
     this.#evidenceAdmissions = params.evidenceAdmissions;
     this.#queries = params.queries;
@@ -84,37 +86,22 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     }
   }
 
-  #queueBackendRetirement(
-    memory: GovernorMemoryRecord,
-    now: number,
-    force = false,
-    requestedReason?: "freshness_expired" | "operator_requested",
-  ): void {
+  #queueBackendRetirement(memory: GovernorMemoryRecord, force = false): void {
     if (
       !this.backend?.retire ||
       (!force && (memory.status === "verified" || memory.status === "candidate"))
     ) {
       return;
     }
-    const reason =
-      requestedReason ??
-      (memory.freshnessExpiresAt !== undefined && memory.freshnessExpiresAt <= now
-        ? "freshness_expired"
-        : "operator_requested");
-    const backendNow =
-      reason === "freshness_expired" && memory.freshnessExpiresAt !== undefined
-        ? Math.min(now, memory.freshnessExpiresAt)
-        : now;
+    const decision = this.#memoryAuthority.state(
+      memory.scopeKey,
+      memory.factKey,
+    )?.retirementDecision;
+    if (!decision || decision.staleMemoryId !== memory.memoryId) {
+      return;
+    }
     this.#enqueueBackend(async () => {
-      await this.backend!.retire!({
-        agentId: "governor",
-        scope: memory.scopeKey,
-        scopeKey: memory.scopeKey,
-        factKey: memory.factKey,
-        staleMemoryId: memory.memoryId,
-        reason,
-        now: backendNow,
-      });
+      await this.backend!.retire!(decision);
     });
   }
 
@@ -165,7 +152,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       .find((memory) => memory.memoryId === params.memoryId);
     const result = super.quarantine(params);
     if (result && before) {
-      this.#queueBackendRetirement(before, params.now, true);
+      this.#queueBackendRetirement(before, true);
     }
     return result;
   }
@@ -173,7 +160,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
   override retrieveAudit(params: Parameters<GovernorMemoryStore["retrieveAudit"]>[0]) {
     const records = super.retrieveAudit(params);
     for (const memory of records) {
-      this.#queueBackendRetirement(memory, memory.updatedAt);
+      this.#queueBackendRetirement(memory);
     }
     return records;
   }
@@ -184,7 +171,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
       .find((memory) => memory.memoryId === params.memoryId);
     const result = super.forget(params);
     if (result.status === "deleted" && before) {
-      this.#queueBackendRetirement(before, params.now, true, "operator_requested");
+      this.#queueBackendRetirement(before, true);
     }
     return result;
   }
@@ -332,7 +319,7 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     const records = super.retrieve(params);
     if (this.backend?.retire) {
       for (const memory of super.retrieveAudit({ scope: params.scope })) {
-        this.#queueBackendRetirement(memory, params.now);
+        this.#queueBackendRetirement(memory);
       }
     }
     return records;

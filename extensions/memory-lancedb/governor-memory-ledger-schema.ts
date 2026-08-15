@@ -13,6 +13,10 @@ export function initializeGovernorMemoryLedgerSchema(db: DatabaseSync): void {
       source_evidence_digest TEXT NOT NULL,
       observed_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
+      retirement_decision_id TEXT,
+      retirement_binding_digest TEXT,
+      retirement_reason TEXT,
+      authority_key_id TEXT,
       PRIMARY KEY(agent_id, scope, fact_key)
     ) STRICT;
     CREATE TABLE IF NOT EXISTS memory_governor_remediations (
@@ -41,6 +45,18 @@ export function initializeGovernorMemoryLedgerSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS memory_governor_lineage_source
       ON memory_governor_lineage(scope_key, source_evidence_id, memory_id);
   `);
+  for (const statement of [
+    "ALTER TABLE memory_governor_high_water ADD COLUMN retirement_decision_id TEXT",
+    "ALTER TABLE memory_governor_high_water ADD COLUMN retirement_binding_digest TEXT",
+    "ALTER TABLE memory_governor_high_water ADD COLUMN retirement_reason TEXT",
+    "ALTER TABLE memory_governor_high_water ADD COLUMN authority_key_id TEXT",
+  ]) {
+    try {
+      db.exec(statement);
+    } catch {
+      // Existing current schemas already expose the signed-retirement columns.
+    }
+  }
   try {
     db.exec("ALTER TABLE memory_governor_lineage ADD COLUMN source_memory_id TEXT");
   } catch {

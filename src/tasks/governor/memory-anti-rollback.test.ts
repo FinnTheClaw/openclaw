@@ -134,6 +134,7 @@ describe("governor memory anti-rollback authority", () => {
       expect(() =>
         broker.memoryAuthority.retire(
           governorMemoryAuthorityBinding({ ...retiredAudit, status: "verified" }),
+          { reason: "explicit_forget", semanticCutoff: 203, issuedAt: 203 },
         ),
       ).toThrow(/does not match current host authority/u);
 

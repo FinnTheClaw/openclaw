@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export type MemoryGovernorSourceKind =
   | "structured_external"
@@ -67,6 +67,27 @@ export type MemoryGovernorRecall = Readonly<{
   authorityBindingDigest: string;
 }>;
 
+export type MemoryGovernorRetirementReason = "expiry" | "explicit_forget";
+
+export type MemoryGovernorRetirementDecision = Readonly<{
+  schemaVersion: 1;
+  authorityId: "openclaw-governor-memory";
+  authorityKeyId: string;
+  authorityKeyVersion: 1;
+  scopeKey: string;
+  factKey: string;
+  staleMemoryId: string;
+  priorGeneration: number;
+  newGeneration: number;
+  semanticCutoff: number;
+  issuedAt: number;
+  reason: MemoryGovernorRetirementReason;
+  priorAuthorityBindingDigest: string;
+  retirementBindingDigest: string;
+  decisionId: string;
+  signature: string;
+}>;
+
 export type MemoryGovernorBackend = Readonly<{
   admit(params: {
     fact: MemoryGovernorFact;
@@ -102,15 +123,7 @@ export type MemoryGovernorBackend = Readonly<{
     replacementMemoryId?: string;
     remediationId: string;
   }>;
-  retire?(params: {
-    agentId: string;
-    scope: string;
-    scopeKey?: string;
-    factKey: string;
-    staleMemoryId: string;
-    reason: "freshness_expired" | "operator_requested";
-    now: number;
-  }): Promise<{
+  retire?(decision: MemoryGovernorRetirementDecision): Promise<{
     status: "retired" | "duplicate";
     staleMemoryId: string;
     remediationId: string;
@@ -120,13 +133,6 @@ export type MemoryGovernorBackend = Readonly<{
     retainedHighWater: number;
   }>;
   close?(): Promise<void> | void;
-}>;
-
-export type MemoryGovernorCapability = Readonly<{
-  createBackend(params: {
-    mode: "shadow" | "enforce";
-    authorityBindingKey?: string;
-  }): MemoryGovernorBackend;
 }>;
 
 function canonical(value: unknown): unknown {
@@ -147,6 +153,117 @@ export function governorMemoryContentDigest(value: unknown): string {
   return createHash("sha256")
     .update(JSON.stringify(canonical(value)))
     .digest("hex");
+}
+
+function governorMemoryAuthorityKeyId(key: string): string {
+  return governorMemoryContentDigest({ purpose: "governor-memory-authority-key", key });
+}
+
+function secureEqual(left: string, right: string): boolean {
+  return left.length === right.length && timingSafeEqual(Buffer.from(left), Buffer.from(right));
+}
+
+function assertRetirementInput(input: {
+  scopeKey: string;
+  factKey: string;
+  staleMemoryId: string;
+  priorGeneration: number;
+  newGeneration: number;
+  semanticCutoff: number;
+  issuedAt: number;
+  reason: MemoryGovernorRetirementReason;
+  priorAuthorityBindingDigest: string;
+}): void {
+  if (
+    !input.scopeKey ||
+    !input.factKey ||
+    !input.staleMemoryId ||
+    !Number.isSafeInteger(input.priorGeneration) ||
+    input.priorGeneration < 0 ||
+    input.newGeneration !== input.priorGeneration + 1 ||
+    !Number.isSafeInteger(input.semanticCutoff) ||
+    input.semanticCutoff < 0 ||
+    !Number.isSafeInteger(input.issuedAt) ||
+    input.issuedAt < input.semanticCutoff ||
+    (input.reason !== "expiry" && input.reason !== "explicit_forget") ||
+    !/^[a-f0-9]{64}$/u.test(input.priorAuthorityBindingDigest)
+  ) {
+    throw new Error("GOVERNOR_MEMORY_RETIREMENT_DECISION_INVALID");
+  }
+}
+
+export function createGovernorMemoryRetirementDecision(
+  input: {
+    scopeKey: string;
+    factKey: string;
+    staleMemoryId: string;
+    priorGeneration: number;
+    newGeneration: number;
+    semanticCutoff: number;
+    issuedAt: number;
+    reason: MemoryGovernorRetirementReason;
+    priorAuthorityBindingDigest: string;
+  },
+  key: string,
+): MemoryGovernorRetirementDecision {
+  if (!key) {
+    throw new Error("GOVERNOR_MEMORY_AUTHORITY_KEY_REQUIRED");
+  }
+  assertRetirementInput(input);
+  const authority = {
+    schemaVersion: 1 as const,
+    authorityId: "openclaw-governor-memory" as const,
+    authorityKeyId: governorMemoryAuthorityKeyId(key),
+    authorityKeyVersion: 1 as const,
+    ...input,
+  };
+  const retirementBindingDigest = governorMemoryContentDigest({
+    kind: "memory-retired",
+    ...authority,
+  });
+  const unsigned = { ...authority, retirementBindingDigest };
+  const decisionId = governorMemoryContentDigest({
+    kind: "memory-retirement-decision",
+    ...unsigned,
+  });
+  const signature = createHmac("sha256", key)
+    .update(JSON.stringify(canonical({ ...unsigned, decisionId })))
+    .digest("hex");
+  return Object.freeze({ ...unsigned, decisionId, signature });
+}
+
+export function verifyGovernorMemoryRetirementDecision(
+  decision: MemoryGovernorRetirementDecision,
+  key: string,
+): boolean {
+  try {
+    assertRetirementInput(decision);
+    const expected = createGovernorMemoryRetirementDecision(
+      {
+        scopeKey: decision.scopeKey,
+        factKey: decision.factKey,
+        staleMemoryId: decision.staleMemoryId,
+        priorGeneration: decision.priorGeneration,
+        newGeneration: decision.newGeneration,
+        semanticCutoff: decision.semanticCutoff,
+        issuedAt: decision.issuedAt,
+        reason: decision.reason,
+        priorAuthorityBindingDigest: decision.priorAuthorityBindingDigest,
+      },
+      key,
+    );
+    return (
+      decision.schemaVersion === expected.schemaVersion &&
+      decision.authorityId === expected.authorityId &&
+      decision.authorityKeyId === expected.authorityKeyId &&
+      decision.authorityKeyVersion === expected.authorityKeyVersion &&
+      decision.retirementBindingDigest === expected.retirementBindingDigest &&
+      decision.decisionId === expected.decisionId &&
+      secureEqual(decision.signature, expected.signature)
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function governorMemoryFactMac(fact: MemoryGovernorFact, key: string): string {
@@ -229,28 +346,14 @@ export function verifyGovernorMemoryFact(fact: MemoryGovernorFact, key: string):
 }
 
 const OWNED_BACKENDS = new WeakSet<object>();
-const OWNED_CAPABILITIES = new WeakSet<object>();
-
-export function ownGovernorMemoryCapability(
-  capability: MemoryGovernorCapability,
-): MemoryGovernorCapability {
-  const owned = Object.freeze({
-    createBackend(params: Parameters<MemoryGovernorCapability["createBackend"]>[0]) {
-      const backend = capability.createBackend(params);
-      OWNED_BACKENDS.add(backend);
-      return backend;
-    },
-  });
-  OWNED_CAPABILITIES.add(owned);
-  return owned;
-}
-
-export function isOwnedGovernorMemoryCapability(value: unknown): value is MemoryGovernorCapability {
-  return Boolean(value && typeof value === "object" && OWNED_CAPABILITIES.has(value));
-}
-
 export function isOwnedGovernorMemoryBackend(value: unknown): value is MemoryGovernorBackend {
   return Boolean(value && typeof value === "object" && OWNED_BACKENDS.has(value));
+}
+
+/** Host-only registration code brands backends after verified bundled construction. */
+export function ownGovernorMemoryBackend(backend: MemoryGovernorBackend): MemoryGovernorBackend {
+  OWNED_BACKENDS.add(backend);
+  return backend;
 }
 
 /** Shadow keeps the memory contract present while making every mutation inert. */
