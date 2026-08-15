@@ -48,16 +48,23 @@ Provisioning is root/administrator-owned and restart-only.
 5. Record only key IDs/versions and deployment digests in SQLite. Raw keys stay in the supervisor
    secret snapshot and are never copied to plugin state, arguments, environment, logs, or RPC.
 
-The active verification keyring contains one signing key and a bounded configured set of prior
-verification keys. Rotation:
+The active verification keyring contains one signing key and a bounded configured set of
+verification-only historical keys. Rotation requires an authenticated operator receipt and a
+gateway restart, and never rewrites semantic generations or cutoffs:
 
-- requires an authenticated operator receipt and a gateway restart;
-- appends a signed rotation intent under the old key, activates the new key/version, and appends a
-  current marker cross-binding old and new key IDs;
-- never rewrites semantic generations or cutoffs;
-- permits prior-key verification only until a signed retirement high-water and retention deadline;
-  and
-- rejects an event signed by a retired, unknown, or future key.
+1. K1 signs a rotation intent that fixes its final signing sequence and cross-binds K2's key ID and
+   version. After K2 activation, a newly presented K1 event beyond that sequence is rejected; exact
+   retained K1 events remain replayable for historical verification.
+2. Active K2 verifies the complete K1 chain and publishes a K2-signed re-attestation checkpoint.
+   The checkpoint binds every current authority row, permanent fence, lineage root, replay base, and
+   the digest of all remaining K1 dependencies.
+3. The projection rebuilds from that checkpoint and returns a verified K2-bound receipt before K1
+   may enter verification retirement.
+4. Historical K1 verification remains available until compaction proves that no current row,
+   retained event, checkpoint, migration proof, backup, or anti-rollback head depends on it. Only
+   then may K1 verification material be destroyed.
+
+A compromised K1 enters `RECOVERY_REQUIRED`; it is never automatically re-attested under K2.
 
 Key loss or a keyring/head mismatch enters `RECOVERY_REQUIRED`. No C07 read, write, migration,
 projection apply, or compaction is available. Recovery requires an authenticated operator procedure
@@ -164,13 +171,16 @@ stores its KEK-wrapped value exactly once. Checkpoints, outbox records, projecti
 and backups contain only the opaque DEK reference, never another wrapped-key copy. The canonical AEAD
 envelope contains:
 
-- algorithm/version, ciphertext, nonce, authentication tag, DEK reference and KEK ID/version;
+- algorithm/version, ciphertext, nonce, authentication tag, and an immutable opaque DEK reference;
 - scope/fact, event ID, generation, authority/projection epoch, content and semantic digests;
 - payload type/schema and canonical associated-data digest; and
 - optional source-byte digest needed for verified migration.
 
 The event signature binds the complete envelope metadata, ciphertext digest, and associated-data
-digest. Audit retains only irreversible digests/high-water after erasure.
+digest. It never binds mutable KEK wrapper metadata. The supervisor key-registry row exclusively
+owns `DEK reference -> wrapped DEK, wrapper generation, current KEK ID/version, status`; rotation
+changes that row without changing the event or payload identity. Audit retains only irreversible
+digests/high-water after erasure.
 
 The trusted projection worker decrypts only in memory. LanceDB stores the minimum encrypted payload
 and plaintext vectors needed for search; vectors and metadata are treated as sensitive derived data,
@@ -210,16 +220,21 @@ not claimed as cryptographically erased.
 KEK rotation is
 `ROTATION_PREPARED -> REWRAPPING -> REFERENCES_VERIFIED -> SWITCHED -> OLD_KEY_RETIRED -> COMPLETE`.
 
-- Preparation records old/new KEK IDs, the exact active DEK-reference snapshot, rotation generation,
-  and external signed intent.
+- Preparation acquires the exclusive key-registry rotation lock, allocates the target rotation/KEK
+  generation, atomically raises the minimum write generation to that target, snapshots the exact
+  active DEK references, and records the external signed intent before releasing the lock. Every DEK
+  created afterward must be wrapped by the target KEK; no old-generation wrapper can enter the
+  registry after the snapshot.
 - Rewrapping runs bounded idempotent batches. Each key-registry row CASes old wrapper/version to the
   new wrapper/version and records the rotation generation. Forgotten/tombstoned DEKs are never
   recreated.
-- Verification scans authority, outbox, checkpoint, projection, dead-letter, key-registry, and
-  managed-backup catalogs and proves every live reference resolves through the new KEK or an
-  explicitly retained prior verification key.
+- During `REWRAPPING`, an old wrapper is permitted only for an exact snapshot row journaled under
+  this same active rotation generation. `REFERENCES_VERIFIED` scans authority, outbox, checkpoint,
+  projection, dead-letter, key-registry, and managed-backup catalogs and requires every live
+  reference to resolve through the target KEK.
 - `SWITCHED` makes the new KEK current under the external-intent/SQLite/current protocol. New writes
-  cannot use the old KEK.
+  cannot use the old KEK, and requires every snapshot row to have reached the target wrapper
+  generation first.
 - The old KEK is destroyed only after zero live references and every managed backup has been
   rewrapped, expired, or fenced. Crash/restart resumes the recorded phase; conflict or missing key
   enters `RECOVERY_REQUIRED`.

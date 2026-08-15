@@ -9,6 +9,8 @@ Normative companions:
   confidentiality, checkpoint, and readiness details.
 - `ADR-C07-memory-migration-acceptance.md` owns migration, rollback, deterministic prerequisites,
   and exact live-Qwen acceptance.
+- `ADR-C07-memory-writer-inventory.md` owns the exhaustive legacy writer inventory and the required
+  removal or control-ledger routing disposition for each surface.
 
 Supersedes: the C07 same-process trusted-factory and dual-ledger design through
 `68a28d83ed2be604a737a66fb0e9eda654da5b12`.
@@ -236,27 +238,12 @@ another value.
 The normative monotonic tuple, quarantine recovery, permanent forget, and lineage-cardinality rules
 are in `ADR-C07-memory-authority-protocol.md`.
 
-## Elimination inventory for `68a28d` alternate mutation paths
+## Elimination of `68a28d` alternate mutation paths
 
-The redesign must delete or close every current path below before enforce can start:
-
-| Existing surface                                                                                     | Problem                                                                  | Required disposition                                                                                                            |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `MemoryGovernorBackend.admit`                                                                        | public backend contract can write a fact outside the control ledger      | remove; trusted core submits `ADMIT` to the control ledger and receives the committed authority event                           |
-| `GovernorMemoryLanceDbAdapter.admit`                                                                 | authenticates then writes directly through the projection adapter        | delete; adapter accepts only an immutable event after authoritative admission                                                   |
-| `GovernorMemoryLedger.admit` and its direct index/revision writes                                    | allocates projection state in an independent transaction                 | delete as authority; equivalent LanceDB writes occur only inside idempotent `applyProjectionEvent`                              |
-| `MemoryGovernorBackend.invalidate`                                                                   | public unsigned invalidation with caller reason/time                     | remove from the contract; callers submit evidence/proposals to the control-plane transition API                                 |
-| `GovernorMemoryLanceDbAdapter.invalidate`                                                            | forwards unsigned replacement/tombstone requests                         | delete; projection adapter exposes only `applyProjectionEvent` and bounded reads                                                |
-| `GovernorMemoryLedger.invalidate`                                                                    | derives generation, cutoff, impact, and replacement state inside LanceDB | delete; equivalent behavior is one authoritative transition plus an immutable projection event                                  |
-| `GovernorMemoryBackend.retire` and `GovernorMemoryLedger.retire`                                     | a second retirement command surface even when signed                     | delete as commands; expiry/forget are control-plane transitions and projection receives their event                             |
-| `retireGovernorFact` calls from admit/invalidate/retire paths                                        | projection helper can be reached from multiple semantic owners           | make private to event application and dispatch only on the event's closed transition type                                       |
-| `GovernorMemorySubsystem.quarantine/forget/reconcile` direct status writes followed by backend calls | primary and backend can commit different state/order                     | replace with one control-plane command; callers receive the committed authoritative result                                      |
-| lazy recall quarantine/retirement                                                                    | stale data can trigger a new authority mutation while reading            | recall may filter and enqueue a repair request only; it cannot change fact authority                                            |
-| `DurableMemoryRuntime.createGovernorMemoryBackend` and caller-selected `authorityBindingKey`         | plugin/runtime code can construct an apparent authority                  | remove from plugin/runtime API; trusted supervisor constructs its internal projection worker from startup secrets               |
-| direct SQL writes to authority, projection high-water, remediation, or lineage tables                | bypasses the state machine/outbox                                        | generated durable-boundary inventory permits writes only from named control-ledger transactions or projection event application |
-
-Static AST/import/export/schema inventories and runtime negative tests guard this list. A newly added
-mutation verb, direct writer, or key-bearing factory fails architecture checks.
+The exhaustive current writer/API inventory and mandatory disposition for every surface are
+normative in `ADR-C07-memory-writer-inventory.md`. Enforce readiness requires its generated
+AST/import/export/schema inventory to match exactly; an unknown writer, mutation verb, direct SQL
+owner, or key-bearing factory is a readiness failure.
 
 ## Transactional outbox and projection protocol
 
