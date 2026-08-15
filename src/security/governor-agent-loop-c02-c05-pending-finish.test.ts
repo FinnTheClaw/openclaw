@@ -175,6 +175,29 @@ function persistCandidate(runtime: ReturnType<typeof start>, taskId: string, now
   ).toMatchObject({ applied: true });
 }
 
+function persistEventOnlyPending(
+  runtime: ReturnType<typeof start>,
+  taskId: string,
+  now: number,
+): void {
+  const store = runtime.adapter.controller.store;
+  const current = store.loadTask(taskId as never)!;
+  const { finalResponsePhase: _phase, ...withoutPhase } = current;
+  const next = { ...withoutPhase, taskVersion: current.taskVersion + 1, updatedAt: now };
+  expect(
+    store.commit({
+      current,
+      next,
+      event: createGovernorEventRecord({
+        task: next,
+        eventType: "runtime_model_turn_recorded",
+        payload: { kind: "event_only_pending_test" },
+        now: now + 1,
+      }),
+    }),
+  ).toMatchObject({ applied: true });
+}
+
 function invalidate(runtime: ReturnType<typeof start>, taskId: string): void {
   const store = runtime.adapter.controller.store;
   const task = store.loadTask(taskId as never)!;
@@ -334,5 +357,60 @@ afterEach(() => {
 describe("C02 pending finish rejection matrix", () => {
   it.each(cases)("handles $phase/$cause/$crash durably", async (params) => {
     await expect(runPendingFinishCase(params)).resolves.toBeUndefined();
+  });
+
+  it("rejects stale event-only pending state before restoring governed tools", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-c02-event-only-stale-" },
+      async (state) => {
+        const runtime = start(state.stateDir);
+        const scope = resolveGovernorAgentLoopRunScope(input("event-only-stale"))!;
+        observe(scope, 101);
+        expect(scope.afterTurn({ assistantText: "", toolCallCount: 1, now: 103 })).toMatchObject({
+          phase: "final_response",
+        });
+        const taskId = scope.taskId;
+        persistEventOnlyPending(runtime, taskId, 104);
+        invalidate(runtime, taskId);
+        scope.dispose();
+        closeOwnedRuntime(runtime);
+        closeOpenClawStateDatabase();
+
+        const resumedRuntime = start(state.stateDir);
+        const resumed = resolveGovernorAgentLoopRunScope(input("event-only-stale"))!;
+        const before = resumedRuntime.adapter.controller.store
+          .listEvents(taskId as never)
+          .filter((event) => event.eventType === "finish_rejected").length;
+        const agent = new Agent({
+          initialState: { model, tools: [...resumed.governedTools()] },
+          streamFn: scriptedStream(() => assistant([{ type: "text", text: "done" }])),
+        });
+        const bridge = installGovernorLoopBridge({ agent, scope: resumed, now: () => 300 });
+        expect(agent.state.tools).toHaveLength(resumed.governedTools().length);
+        const recoveredTask = resumedRuntime.adapter.controller.store.loadTask(taskId as never)!;
+        expect(recoveredTask.state).toBe("EXECUTING");
+        expect(recoveredTask.finalResponsePhase).toBeUndefined();
+        expect(
+          resumedRuntime.adapter.controller.store
+            .listEvents(taskId as never)
+            .filter((event) => event.eventType === "finish_rejected"),
+        ).toHaveLength(before + 1);
+        const planVersion = resumedRuntime.adapter.controller.store.loadTask(
+          taskId as never,
+        )!.planVersion;
+        expect(resumed.turnPhase()).toBe("actions");
+        expect(
+          resumedRuntime.adapter.controller.store
+            .listEvents(taskId as never)
+            .filter((event) => event.eventType === "finish_rejected"),
+        ).toHaveLength(before + 1);
+        expect(resumedRuntime.adapter.controller.store.loadTask(taskId as never)?.planVersion).toBe(
+          planVersion,
+        );
+        bridge.dispose();
+        resumed.dispose();
+        closeOwnedRuntime(resumedRuntime);
+      },
+    );
   });
 });

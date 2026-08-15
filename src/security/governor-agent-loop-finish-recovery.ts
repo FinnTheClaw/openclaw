@@ -5,12 +5,16 @@ export function rejectStaleGovernorPendingFinish(params: {
   controller: GovernorController;
   taskId: GovernorTaskId;
   progressFingerprint: string;
+  pendingProgressFingerprint?: string;
   now: number;
 }): boolean {
   const task = params.controller.store.loadTask(params.taskId);
+  const pendingProgressFingerprint =
+    params.pendingProgressFingerprint ?? task?.finalResponsePhase?.progressDigest;
   if (
-    !task?.finalResponsePhase ||
-    task.finalResponsePhase.progressDigest === params.progressFingerprint
+    !task ||
+    !pendingProgressFingerprint ||
+    pendingProgressFingerprint === params.progressFingerprint
   ) {
     return false;
   }
@@ -18,6 +22,8 @@ export function rejectStaleGovernorPendingFinish(params: {
     taskId: params.taskId,
     now: params.now,
     pendingUserUpdate: "Current evidence changed while final response was pending.",
+    allowExecutingPending: !task.finalResponsePhase,
+    pendingProgressFingerprint,
   });
   return true;
 }

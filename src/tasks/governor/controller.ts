@@ -392,6 +392,8 @@ export class GovernorController {
     taskId: GovernorTaskId;
     now: number;
     pendingUserUpdate: string;
+    allowExecutingPending?: boolean;
+    pendingProgressFingerprint?: string;
   }): GovernorTaskProjection {
     return rejectPendingGovernorFinish({
       store: this.store,

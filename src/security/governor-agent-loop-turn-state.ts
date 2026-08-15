@@ -13,22 +13,25 @@ function recordPayload(payload: unknown): Record<string, unknown> | undefined {
 function reconstructFinalResponsePending(
   controller: GovernorController,
   taskId: GovernorTaskId,
-): boolean {
+): { pending: boolean; progressFingerprint?: string } {
   const task = controller.store.loadTask(taskId);
   if (!task || task.state === "COMPLETED" || task.state === "BLOCKED") {
-    return false;
+    return { pending: false };
   }
   const recoverableState =
     task.state === "EXECUTING" || task.state === "VERIFYING" || task.state === "FINISH_CANDIDATE";
   if (task.finalResponsePhase) {
-    return (
+    const pending =
       recoverableState &&
       task.finalResponsePhase.objectiveRevision === task.objectiveRevision &&
-      task.finalResponsePhase.planVersion === task.planVersion
-    );
+      task.finalResponsePhase.planVersion === task.planVersion;
+    return {
+      pending,
+      ...(pending ? { progressFingerprint: task.finalResponsePhase.progressDigest } : {}),
+    };
   }
   if (!recoverableState) {
-    return false;
+    return { pending: false };
   }
   let pending:
     | {
@@ -60,15 +63,18 @@ function reconstructFinalResponsePending(
     };
   }
   if (!pending || pending.objectiveRevision !== task.objectiveRevision) {
-    return false;
+    return { pending: false };
   }
   if (pending.planVersion !== undefined && pending.planVersion !== task.planVersion) {
-    return false;
+    return { pending: false };
   }
-  return (
+  const isPending =
     pending.taskVersion <= task.taskVersion &&
-    (task.state === "EXECUTING" || task.taskVersion - pending.taskVersion <= 2)
-  );
+    (task.state === "EXECUTING" || task.taskVersion - pending.taskVersion <= 2);
+  return {
+    pending: isPending,
+    ...(isPending && pending.progressDigest ? { progressFingerprint: pending.progressDigest } : {}),
+  };
 }
 
 export function createGovernorAgentLoopTurnState(params: {
@@ -79,6 +85,7 @@ export function createGovernorAgentLoopTurnState(params: {
   terminal: boolean;
 }): GovernorAgentLoopTurnState {
   const progress = buildGovernorAgentLoopProgress(params.controller, params.taskId, params.config);
+  const finalResponse = reconstructFinalResponsePending(params.controller, params.taskId);
   return {
     turns: params.turns,
     progress,
@@ -86,7 +93,10 @@ export function createGovernorAgentLoopTurnState(params: {
     replannedAfterStagnation: false,
     skipNextStagnationCheck: false,
     toolErrorObserved: false,
-    finalResponsePending: reconstructFinalResponsePending(params.controller, params.taskId),
+    finalResponsePending: finalResponse.pending,
+    ...(finalResponse.progressFingerprint
+      ? { finalResponseProgressFingerprint: finalResponse.progressFingerprint }
+      : {}),
     terminal: params.terminal,
   };
 }

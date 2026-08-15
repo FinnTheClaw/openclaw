@@ -15791,7 +15791,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-finish-recovery.ts",
-      sha256: "f2019888e5e1d474e0b3b5b8c03c9d9f68102b84f911b7b4c263eb2de95c6e72",
+      sha256: "d1a054e1ac798cd33f6897657764096a7d36e08fa8c78dc251fa65206e096214",
     },
     {
       path: "src/security/governor-agent-loop-host-close.ts",
@@ -15815,7 +15815,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-phase.ts",
-      sha256: "fb9d0dd3a8ceb72fe996d195ac1096225f4d7c083103b3dcddb7c78c49b74f36",
+      sha256: "b4d3e458011f860b0f98a1cdb5f8b80322c4a66e46944b09c14106e3cad661a4",
     },
     {
       path: "src/security/governor-agent-loop-plan.ts",
@@ -15867,11 +15867,11 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-turn-handler.ts",
-      sha256: "ccb02855bae2647da42f4db80ba08edeb7bbe67463f26f0aa0e2fc7dbefd09bc",
+      sha256: "4019d87abba305361aad0ea015ff15870a6bbbe438c642beb42546f40367a31c",
     },
     {
       path: "src/security/governor-agent-loop-turn-state.ts",
-      sha256: "1fc465b13fec3f3a94763728b4fc1ca49097b56d08648c131f4101f6d39d05e6",
+      sha256: "251fb830941c06d969d0fe814ac0b44fc11afaa9fb44177fd428edeabf04898f",
     },
     {
       path: "src/security/governor-agent-loop-values.ts",
@@ -16835,7 +16835,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/controller.ts",
-      sha256: "84d918c4a2a62cc75135841333ccb4abd6657476bf28454f5ac99c37486b7216",
+      sha256: "8d997dce1a018dc551120c078d5c0a9c1a1e572319ab188f38ebbdb98b19da88",
     },
     {
       path: "src/tasks/governor/current-evidence.ts",
@@ -16895,7 +16895,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/finish-pending-rejection.ts",
-      sha256: "681e89e09df823d34c0ff74e51da532c4f4f426cd55fdd7e7a24b52c31e2a702",
+      sha256: "1cb1199920f10ac23b6c4d087dc0ee147642f218f061bf2f754523a76aca3994",
     },
     {
       path: "src/tasks/governor/integrity-error.ts",
@@ -17728,4 +17728,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "95e534ef3a7b7c68ba0a97b5ba610cb861ce689734f2f21c74a6607cbdff68fb";
+  "6bb9e28f57090493060c71d9e8b5997728896336d54503cac1e6becf1058be66";

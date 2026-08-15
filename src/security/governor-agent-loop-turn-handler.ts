@@ -23,6 +23,7 @@ export type GovernorAgentLoopTurnState = {
   toolErrorObserved: boolean;
   toolErrorEffectId?: string;
   finalResponsePending: boolean;
+  finalResponseProgressFingerprint?: string;
   terminal: boolean;
   terminalReason?: string;
 };
@@ -78,6 +79,7 @@ export function recordGovernorAgentLoopTurn(params: {
     state.priorProgressFingerprint = state.progress.fingerprint;
     state.replannedAfterStagnation = false;
     state.finalResponsePending = false;
+    state.finalResponseProgressFingerprint = undefined;
     if (retry.kind === "already_replanned") {
       stopAfterTurnReason = "GOVERNOR_AGENT_LOOP_NO_PROGRESS";
     } else if (turn.toolCallCount > 0) {
@@ -174,6 +176,7 @@ export function recordGovernorAgentLoopTurn(params: {
       }).accepted;
       if (ready) {
         state.finalResponsePending = true;
+        state.finalResponseProgressFingerprint = state.progress.fingerprint;
         setGovernorFinalResponsePending({
           controller: params.controller,
           taskId: params.taskId,
@@ -231,6 +234,8 @@ export function recordGovernorAgentLoopTurn(params: {
               taskId: params.taskId,
               now: turn.now + 4,
               pendingUserUpdate: "Final response did not match the host-bound response contract.",
+              allowExecutingPending: !currentTask?.finalResponsePhase,
+              pendingProgressFingerprint: state.finalResponseProgressFingerprint,
             }),
           };
     state.terminal = finished.completed;
@@ -243,6 +248,7 @@ export function recordGovernorAgentLoopTurn(params: {
       now: turn.now + 5,
     });
     state.finalResponsePending = false;
+    state.finalResponseProgressFingerprint = undefined;
     state.progress = buildGovernorAgentLoopProgress(
       params.controller,
       params.taskId,
@@ -280,6 +286,7 @@ export function recordGovernorAgentLoopTurn(params: {
       now: turn.now + 5,
     });
     state.finalResponsePending = false;
+    state.finalResponseProgressFingerprint = undefined;
   }
   if (state.turns >= params.safetyBudget) {
     state.terminalReason = "GOVERNOR_AGENT_LOOP_BUDGET_EXHAUSTED";

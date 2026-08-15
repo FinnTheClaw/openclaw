@@ -19,6 +19,8 @@ export function rejectPendingGovernorFinish(params: {
   taskId: GovernorTaskId;
   now: number;
   pendingUserUpdate: string;
+  allowExecutingPending?: boolean;
+  pendingProgressFingerprint?: string;
 }): GovernorTaskProjection {
   if (params.task.state === "REPLAN_REQUIRED" && !params.task.finalResponsePhase) {
     return params.task;
@@ -27,7 +29,10 @@ export function rejectPendingGovernorFinish(params: {
     params.task.taskId !== params.taskId ||
     (params.task.state !== "VERIFYING" &&
       params.task.state !== "FINISH_CANDIDATE" &&
-      !(params.task.state === "EXECUTING" && params.task.finalResponsePhase))
+      !(
+        params.task.state === "EXECUTING" &&
+        (params.task.finalResponsePhase || params.allowExecutingPending)
+      ))
   ) {
     throw new Error("GOVERNOR_PENDING_FINISH_STATE_INVALID");
   }
@@ -51,6 +56,9 @@ export function rejectPendingGovernorFinish(params: {
       reconciliationEffectIds: [],
       runningActionIds: [],
       pendingUserUpdate: params.pendingUserUpdate,
+      ...(params.pendingProgressFingerprint
+        ? { pendingProgressFingerprint: params.pendingProgressFingerprint }
+        : {}),
       unsupportedMaterialClaimIds: [],
     },
     now: params.now,
