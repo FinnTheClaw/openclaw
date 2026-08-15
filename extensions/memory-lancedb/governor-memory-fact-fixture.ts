@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import {
+  governorMemoryAuthorityBindingDigest,
+  governorMemoryContentDigest,
+} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { MemoryGovernorFact } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 
 function canonical(value: unknown): unknown {
@@ -22,38 +26,7 @@ export function governorMemoryFixtureDigest(value: unknown): string {
 }
 
 function authorityBindingDigest(fact: MemoryGovernorFact): string {
-  return governorMemoryFixtureDigest({
-    kind: "memory-current",
-    scopeKey: fact.scopeKey,
-    factKey: fact.factKey,
-    scopeEpoch: fact.scopeEpoch,
-    memoryId: fact.memoryId,
-    sourceKind: fact.sourceKind,
-    sourceIdentity: fact.sourceIdentity,
-    sourceReference: fact.provenance.sourceRef,
-    freshnessExpiresAt: fact.freshnessExpiresAt ?? null,
-    sensitivity: fact.sensitivity,
-    factDigest: governorMemoryFixtureDigest({
-      scopeKey: fact.scopeKey,
-      scopeEpoch: fact.scopeEpoch,
-      factKey: fact.factKey,
-    }),
-    contentDigest: fact.contentDigest,
-    provenanceDigest: governorMemoryFixtureDigest(fact.provenance),
-    evidenceDigest: fact.sourceEvidenceDigest,
-    semanticDigest: fact.sourceEvidenceSemanticDigest,
-    ordering: {
-      scopeEpoch: fact.scopeEpoch,
-      observedAt: fact.observedAt,
-      recordedAt: fact.provenance.recordedAt,
-      sourceRank: fact.sourceRank,
-      confidenceMillionths: Math.round(fact.confidence * 1_000_000),
-      taskVersion: fact.provenance.evidenceTaskVersion,
-      objectiveRevision: fact.provenance.objectiveRevision,
-      planVersion: fact.provenance.planVersion,
-      taskDigest: governorMemoryFixtureDigest({ taskId: fact.provenance.evidenceTaskId }),
-    },
-  });
+  return governorMemoryAuthorityBindingDigest(fact);
 }
 
 export function governorMemoryFact(
@@ -103,14 +76,15 @@ export function governorMemoryFact(
     text: overrides.text ?? "The account uses the standard plan.",
     category: overrides.category ?? "fact",
     content,
-    contentDigest: governorMemoryFixtureDigest(content),
+    contentDigest: governorMemoryContentDigest(content),
     status: "verified",
     sensitivity: overrides.sensitivity ?? "normal",
     sourceKind,
     sourceIdentity,
     sourceRank,
     confidence,
-    authority: overrides.authority ?? 0.9,
+    authority: overrides.authority ?? sourceRank / 1000,
+    authorityRank: sourceRank,
     generation: overrides.generation ?? 1,
     observedAt,
     ...(overrides.freshnessExpiresAt === undefined

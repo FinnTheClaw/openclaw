@@ -13,6 +13,12 @@ function authorityBindingDigest(memory: GovernorMemoryRecord): string {
     sourceReference: memory.provenance.sourceRef,
     freshnessExpiresAt: memory.freshnessExpiresAt ?? null,
     sensitivity: memory.sensitivity,
+    authority: memory.sourceRank / 1000,
+    authorityRank: memory.sourceRank,
+    generation: memory.authorityGeneration ?? 0,
+    sourceEvidenceId: memory.verifiedEvidenceId,
+    sourceEvidenceLineage: [],
+    sourceMemoryLineage: memory.supersedesId ? [memory.supersedesId] : [],
     factDigest: governorDigest({
       scopeKey: memory.scopeKey,
       scopeEpoch: memory.scopeEpoch,
@@ -82,7 +88,8 @@ export function toGovernorBackendFact(memory: GovernorMemoryRecord): MemoryGover
     sourceIdentity: memory.sourceIdentity,
     sourceRank: memory.sourceRank,
     confidence: memory.confidence,
-    authority: memory.confidence,
+    authority: memory.sourceRank / 1000,
+    authorityRank: memory.sourceRank,
     generation: memory.authorityGeneration ?? 0,
     observedAt: memory.observedAt,
     ...(memory.freshnessExpiresAt === undefined

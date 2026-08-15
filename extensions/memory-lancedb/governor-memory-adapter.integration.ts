@@ -156,6 +156,7 @@ async function replacementAndLineage(): Promise<void> {
       sourceIdentity: "host-evidence-b",
       sourceEvidenceId: "evidence-b",
       sourceEvidenceDigest: "digest-b",
+      generation: 2,
     });
     const invalidation = await context.adapter.invalidate({
       agentId: "agent-a",
@@ -251,6 +252,7 @@ async function transitiveLineage(): Promise<void> {
       sourceIdentity: "host-evidence-b",
       sourceEvidenceId: "evidence-b",
       sourceEvidenceDigest: "digest-b",
+      generation: 2,
     });
     const result = await context.adapter.invalidate({
       agentId: "agent-a",

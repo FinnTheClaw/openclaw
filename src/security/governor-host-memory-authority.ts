@@ -18,6 +18,12 @@ export type GovernorMemoryAuthorityBinding = Readonly<{
   sourceReference: string;
   freshnessExpiresAt: number | null;
   sensitivity: string;
+  authority: number;
+  authorityRank: number;
+  generation: number;
+  sourceEvidenceId: string;
+  sourceEvidenceLineage: readonly string[];
+  sourceMemoryLineage: readonly string[];
   factDigest: string;
   contentDigest: string;
   provenanceDigest: string;
@@ -165,7 +171,10 @@ export function createGovernorMemoryAuthority(
       assertOpen();
       assertGovernorBoundarySafe("memory", assertGovernorJsonResources(binding));
       const key = authorityKey(binding.scopeKey, binding.factKey);
-      const digest = governorDigest({ kind: "memory-retired", ...binding });
+      const digest = governorDigest({
+        kind: "memory-retired",
+        ...binding,
+      } as unknown as import("../tasks/governor/canonical-json.js").GovernorJsonValue);
       const current = ledger.state("memory", key);
       if (current?.status === "memory_retired" && current.bindingDigest === digest) {
         return toState(current) as GovernorMemoryAuthorityState;

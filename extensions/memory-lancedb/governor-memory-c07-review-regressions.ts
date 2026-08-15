@@ -3,6 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+  authenticateGovernorMemoryFact,
+  governorMemoryAuthorityBindingDigest,
+} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { GovernorMemoryLanceDbAdapter } from "./governor-memory-adapter.js";
 import { governorMemoryFact } from "./governor-memory-fact-fixture.js";
 import { GovernorMemoryLedger } from "./governor-memory-ledger.js";
@@ -106,6 +110,7 @@ function lineageOverflowRollsBack(): void {
           sourceEvidenceDigest: `lineage-child-digest-${index}`,
           observedAt: 200 + index,
           sourceMemoryLineage: [rootFact.memoryId],
+          sourceEvidenceLineage: [rootFact.sourceEvidenceId],
         }),
         300 + index,
       );
@@ -204,7 +209,109 @@ async function persistedBindingTamperIsRejected(): Promise<void> {
   }
 }
 
+function keyedBindingRejectsTamper(): void {
+  const root = createRoot();
+  const ledgerPath = prepareLedger(root);
+  const ledger = new GovernorMemoryLedger(ledgerPath, { authorityBindingKey: "fixture-key" });
+  try {
+    const signed = authenticateGovernorMemoryFact(governorMemoryFact(), "fixture-key");
+    assert.equal(ledger.admit(signed, 101).status, "admitted");
+    const forged = {
+      ...signed,
+      authority: signed.authority + 0.01,
+      authorityBindingDigest: governorMemoryAuthorityBindingDigest({
+        ...signed,
+        authority: signed.authority + 0.01,
+      }),
+    };
+    assert.throws(() => ledger.admit(forged, 102), /authority MAC is invalid/u);
+  } finally {
+    ledger.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function everyBindingFieldIsFenced(): void {
+  const mutations: readonly [string, (fact: ReturnType<typeof governorMemoryFact>) => unknown][] = [
+    ["authority", (fact) => fact.authority + 0.01],
+    ["generation", (fact) => fact.generation + 1],
+    ["sourceEvidenceId", () => "tampered-evidence"],
+    ["sourceEvidenceLineage", () => ["tampered-lineage"]],
+    ["sourceMemoryLineage", () => ["tampered-memory"]],
+  ];
+  for (const [field, value] of mutations) {
+    const root = createRoot();
+    const ledgerPath = prepareLedger(root);
+    const ledger = new GovernorMemoryLedger(ledgerPath);
+    const original = governorMemoryFact();
+    assert.equal(ledger.admit(original, 101).status, "admitted");
+    ledger.close();
+    const db = new DatabaseSync(ledgerPath);
+    const row = db
+      .prepare("SELECT metadata_json FROM memory_fact_revisions WHERE revision_id = ?")
+      .get(original.memoryId) as { metadata_json: string };
+    const metadata = JSON.parse(row.metadata_json) as { governor: Record<string, unknown> };
+    metadata.governor[field] = value(original);
+    db.prepare("UPDATE memory_fact_revisions SET metadata_json = ? WHERE revision_id = ?").run(
+      JSON.stringify(metadata),
+      original.memoryId,
+    );
+    if (field === "authority") {
+      db.prepare("UPDATE memory_fact_revisions SET authority = ? WHERE revision_id = ?").run(
+        Number(metadata.governor.authority),
+        original.memoryId,
+      );
+    }
+    db.close();
+    const reopened = new GovernorMemoryLedger(ledgerPath);
+    try {
+      assert.equal(
+        reopened.current("governor-memory", original.scopeKey, original.factKey),
+        undefined,
+      );
+    } finally {
+      reopened.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+function expiryAdvancesReplayHighWater(): void {
+  const root = createRoot();
+  const ledgerPath = prepareLedger(root);
+  const ledger = new GovernorMemoryLedger(ledgerPath);
+  try {
+    const expiring = governorMemoryFact({ freshnessExpiresAt: 120 });
+    assert.equal(ledger.admit(expiring, 101).status, "admitted");
+    ledger.compact({ agentId: "governor-memory", now: 200, retentionMs: 1 });
+    assert.equal(
+      ledger.admit(
+        governorMemoryFact({
+          memoryId: "pre-expiry-replay",
+          observedAt: 110,
+          generation: 2,
+          sourceEvidenceId: "pre-expiry-evidence",
+          sourceEvidenceDigest: "pre-expiry-digest",
+          freshnessExpiresAt: 130,
+        }),
+        201,
+      ).status,
+      "rejected",
+    );
+    assert.equal(
+      ledger.highWater("governor-memory", expiring.scopeKey, expiring.factKey)?.status,
+      "tombstone",
+    );
+  } finally {
+    ledger.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 await retirementFencesRecallAfterRestart();
 lineageOverflowRollsBack();
 highWaterSurvivesCompaction();
 await persistedBindingTamperIsRejected();
+keyedBindingRejectsTamper();
+everyBindingFieldIsFenced();
+expiryAdvancesReplayHighWater();

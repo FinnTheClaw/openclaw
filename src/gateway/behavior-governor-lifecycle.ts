@@ -1,10 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import {
-  GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION,
-  getMemoryCapabilityRegistration,
-} from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import { getMemoryCapabilityRegistration } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveStateDir } from "../config/paths.js";
 import type {
   BehaviorGovernorConfig,
@@ -12,7 +9,10 @@ import type {
 } from "../config/types.behavior-governor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef } from "../config/types.secrets.js";
-import { createInertMemoryGovernorBackend } from "../plugins/memory-state.js";
+import {
+  createInertMemoryGovernorBackend,
+  isOwnedGovernorMemoryBackend,
+} from "../plugins/memory-state.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import type {
   GovernorHostIntegrationConfiguration,
@@ -291,25 +291,23 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       const suppliedMemory = host.integrations.memory;
       const registration = getMemoryCapabilityRegistration();
       const memoryCapability =
-        registration?.pluginId === "memory-lancedb" &&
-        registration.capability.governorMemory?.implementationId ===
-          GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION
+        registration?.pluginId === "memory-lancedb" && registration.capability.governorMemory
           ? registration.capability.governorMemory
           : undefined;
       const registeredMemory =
         governor.mode === "enforce"
-          ? memoryCapability?.createBackend({ mode: "enforce" })
+          ? memoryCapability?.createBackend({
+              mode: "enforce",
+              authorityBindingKey: resolved.secrets.ledgerSigningKey,
+            })
           : undefined;
       const memory =
         governor.mode === "shadow"
           ? createInertMemoryGovernorBackend()
-          : suppliedMemory?.implementationId === GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION
-            ? suppliedMemory
+          : suppliedMemory
+            ? undefined
             : registeredMemory;
-      if (
-        governor.mode === "enforce" &&
-        (!memory || memory.implementationId !== GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION)
-      ) {
+      if (governor.mode === "enforce" && (!memory || !isOwnedGovernorMemoryBackend(memory))) {
         throw new Error("GOVERNOR_GATEWAY_MEMORY_CAPABILITY_REQUIRED");
       }
       if (memory && memory === registeredMemory && memory.close) {

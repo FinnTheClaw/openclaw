@@ -52,13 +52,15 @@ function digest(...parts: string[]): string {
 export class GovernorMemoryLedger {
   readonly #db: DatabaseSync;
   readonly #enqueueProjection: boolean;
+  readonly #authorityBindingKey?: string;
   #closed = false;
 
   constructor(
     readonly path: string,
-    options: { enqueueProjection?: boolean } = {},
+    options: { enqueueProjection?: boolean; authorityBindingKey?: string } = {},
   ) {
     this.#enqueueProjection = options.enqueueProjection === true;
+    this.#authorityBindingKey = options.authorityBindingKey;
     this.#db = new DatabaseSync(path);
     this.#db.exec(
       "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
@@ -73,7 +75,7 @@ export class GovernorMemoryLedger {
           "AND status = 'active' AND system_to IS NULL ORDER BY observed_at DESC LIMIT 1",
       )
       .get(agentId, scope, factKey) as SqlRow | undefined;
-    return row ? parseGovernorFact(row) : undefined;
+    return row ? parseGovernorFact(row, this.#authorityBindingKey) : undefined;
   }
 
   highWater(agentId: string, scope: string, factKey: string): SqlRow | undefined {
@@ -85,7 +87,7 @@ export class GovernorMemoryLedger {
   }
 
   admit(fact: MemoryGovernorFact, now: number): GovernorLedgerResult {
-    const normalized = normalizeGovernorFact(fact);
+    const normalized = normalizeGovernorFact(fact, this.#authorityBindingKey);
     const remediationId = `gov-remediation-${digest(
       LEDGER_OWNER,
       normalized.scopeKey,
@@ -105,7 +107,7 @@ export class GovernorMemoryLedger {
             "AND status = 'active' AND system_to IS NULL LIMIT 1",
         )
         .get(LEDGER_OWNER, normalized.scopeKey, normalized.factKey) as SqlRow | undefined;
-      const current = currentRow ? parseGovernorFact(currentRow) : undefined;
+      const current = currentRow ? this.#parse(currentRow) : undefined;
       const highWater = this.highWater(LEDGER_OWNER, normalized.scopeKey, normalized.factKey);
       if (
         current &&
@@ -123,7 +125,12 @@ export class GovernorMemoryLedger {
         current?.observedAt ?? 0,
         Number(highWater?.observed_at ?? 0),
       );
-      const generation = Number(highWater?.generation ?? 0) + 1;
+      const priorGeneration = Number(highWater?.generation ?? 0);
+      if (highWater && normalized.generation <= priorGeneration) {
+        this.#db.exec("ROLLBACK");
+        return { status: "rejected", reason: "authority_generation_not_monotonic", remediationId };
+      }
+      const generation = normalized.generation;
       if (
         normalized.observedAt <= priorObservedAt ||
         (current && normalized.authority < current.authority)
@@ -134,7 +141,7 @@ export class GovernorMemoryLedger {
       if (currentRow) {
         retireGovernorFact(this.#db, currentRow, now, "superseded");
       }
-      const admittedFact = { ...normalized, generation };
+      const admittedFact = normalized;
       insertGovernorFact(this.#db, admittedFact, now, this.#enqueueProjection);
       this.#db
         .prepare(
@@ -219,7 +226,7 @@ export class GovernorMemoryLedger {
         .get(params.staleMemoryId, params.agentId, params.scopeKey, params.factKey) as
         | SqlRow
         | undefined;
-      const stale = staleRow ? parseGovernorFact(staleRow) : undefined;
+      const stale = staleRow ? this.#parse(staleRow) : undefined;
       if (!staleRow || !stale) {
         this.#db.exec("ROLLBACK");
         throw new Error("GOVERNOR_MEMORY_STALE_BINDING_INVALID");
@@ -232,7 +239,7 @@ export class GovernorMemoryLedger {
         throw new Error("GOVERNOR_MEMORY_INVALIDATION_NOT_NEWER");
       }
       const replacement = params.replacement
-        ? normalizeGovernorFact(params.replacement)
+        ? normalizeGovernorFact(params.replacement, this.#authorityBindingKey)
         : undefined;
       const descendants = findGovernorLineageDescendants(
         this.#db,
@@ -272,9 +279,15 @@ export class GovernorMemoryLedger {
         ) {
           throw new Error("GOVERNOR_MEMORY_REPLACEMENT_BINDING_INVALID");
         }
+        if (replacement.generation <= Number(highWater?.generation ?? stale.generation)) {
+          throw new Error("GOVERNOR_MEMORY_REPLACEMENT_GENERATION_INVALID");
+        }
         replacementMemoryId = replacement.memoryId;
-        replacementFact = { ...replacement, generation: nextGeneration };
-        insertGovernorFact(this.#db, replacementFact, params.now, this.#enqueueProjection);
+        replacementFact = replacement;
+      }
+      const replacementGeneration = replacement?.generation ?? nextGeneration;
+      if (replacement) {
+        insertGovernorFact(this.#db, replacement, params.now, this.#enqueueProjection);
       }
       this.#db
         .prepare(
@@ -287,7 +300,7 @@ export class GovernorMemoryLedger {
           params.agentId,
           params.scopeKey,
           params.factKey,
-          nextGeneration,
+          replacementGeneration,
           replacement ? "active" : "tombstone",
           replacementMemoryId ?? null,
           params.sourceEvidenceDigest,
@@ -298,7 +311,7 @@ export class GovernorMemoryLedger {
         if (String(row.revision_id) === params.staleMemoryId) {
           continue;
         }
-        const fact = parseGovernorFact(row);
+        const fact = this.#parse(row);
         if (!fact) {
           continue;
         }
@@ -385,7 +398,7 @@ export class GovernorMemoryLedger {
         .get(params.staleMemoryId, params.agentId, params.scopeKey, params.factKey) as
         | SqlRow
         | undefined;
-      const fact = row ? parseGovernorFact(row) : undefined;
+      const fact = row ? this.#parse(row) : undefined;
       if (!row || !fact) {
         this.#db.exec("COMMIT");
         return { status: "duplicate", staleMemoryId: params.staleMemoryId, remediationId };
@@ -433,13 +446,13 @@ export class GovernorMemoryLedger {
   }
 
   listCurrent(agentId: string, scopes: readonly string[], now: number): MemoryGovernorFact[] {
-    return listCurrentGovernorFacts(this.#db, agentId, scopes, now, parseGovernorFact);
+    return listCurrentGovernorFacts(this.#db, agentId, scopes, now, (row) => this.#parse(row));
   }
 
   pendingRemediations(agentId = LEDGER_OWNER, limit = 256): PendingGovernorRemediation[] {
     return listPendingGovernorRemediations(
       this.#db,
-      parseGovernorFact,
+      (row) => this.#parse(row),
       agentId,
       Math.min(256, Math.max(1, Math.floor(limit))),
     );
@@ -451,6 +464,10 @@ export class GovernorMemoryLedger {
 
   compact(params: { agentId?: string; now: number; retentionMs: number }) {
     return compactGovernorMemoryLedger(this.#db, params);
+  }
+
+  #parse(row: SqlRow): Optional<MemoryGovernorFact> {
+    return parseGovernorFact(row, this.#authorityBindingKey);
   }
 
   close(): void {

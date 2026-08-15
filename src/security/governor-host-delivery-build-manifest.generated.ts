@@ -9943,7 +9943,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/behavior-governor-lifecycle.ts",
-      sha256: "96f1f5eabcfc4fd3b430e222a39c8d4d00b6070f9852184c3e330e4c7b911201",
+      sha256: "8305606bb899ef76a610ae6e1b9129d5c4fdce5a6d62316ae881b74928096903",
     },
     {
       path: "src/gateway/boot-echo-guard.ts",
@@ -13955,7 +13955,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/plugin-sdk/memory-core-host-runtime-core.ts",
-      sha256: "badd3df18afa6398c156e9543ca0b9e2eb4bc4e7dd4940ae1a3c07d32ff4f3ec",
+      sha256: "9bc4214a3fd29d818db2b652652d6516260f39fe76ceb469bf4bded50700f1b7",
     },
     {
       path: "src/plugin-sdk/message-tool-delivery-hints.ts",
@@ -14806,12 +14806,16 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "c507c64a4394e4a42df950cab602841ba03fc609118c1ee18907ebb9abc9fac5",
     },
     {
+      path: "src/plugins/memory-governor-capability.ts",
+      sha256: "83edb0791b30257c2511e0abaa515a637d318421b1bbd54235dfcfba4aa1db43",
+    },
+    {
       path: "src/plugins/memory-runtime.ts",
       sha256: "b951ce375af34db475641807887ae48e9cde97adeb17efa859b6aa4ecafc97b0",
     },
     {
       path: "src/plugins/memory-state.ts",
-      sha256: "8626b99757b7e4f76f5458f56a1d8c031b9a29599acba36ee989d2735270758f",
+      sha256: "e7fce8a567eb91b42b0a4fedc06fa2e06266b860f12d6e94b67486d9c9cf3ba0",
     },
     {
       path: "src/plugins/migration-provider-runtime.ts",
@@ -15959,7 +15963,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-memory-authority.ts",
-      sha256: "01bf97d6aa03eb34bf02d7f285c0daeab2c086dfe73dafdfc1b848cfc3a6129c",
+      sha256: "b97c5f14e8e72175777917780be9af25bb3b4125e943daf88b699050437a2de9",
     },
     {
       path: "src/security/governor-host-owner-ingress-persistence.ts",
@@ -16935,7 +16939,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/memory-authority-binding.ts",
-      sha256: "0431303b409d8c6820ab464065f944569da44b463314a0a6069458dc255fb85d",
+      sha256: "ecc8f19fc2a68be8ad842d990c66151a3d8ae535748ab6be9bd031e01a2ac177",
     },
     {
       path: "src/tasks/governor/memory-authority.ts",
@@ -16943,7 +16947,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/memory-backend-binding.ts",
-      sha256: "2b38562bf2274ee7aacf1e4506cf18661dfb30ff199b21c84ad71bff51d18663",
+      sha256: "63eb765b4d7e277c97f372f872b481e91ae09926cb796836f04064fbe5dc4ebc",
     },
     {
       path: "src/tasks/governor/memory-contradiction-policy.ts",
@@ -17003,7 +17007,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/memory-subsystem.ts",
-      sha256: "7f27b0f18915318af6f96ab3a68577d608134a8ae287c7411303e2acaf1a8a81",
+      sha256: "140af8d72ee6e6bf46bdee825dcc8d89452272f89d2ff65fdfd617fd59a9ea50",
     },
     {
       path: "src/tasks/governor/memory-types.ts",
@@ -17752,4 +17756,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "fde286744976aec41af47b267b30993dc4eb5e1665b009dedfe968ea1ab5d9a8";
+  "76522dd029e5d2438536484b01982aea117d730f4e9de43ea552e8e91b1df443";

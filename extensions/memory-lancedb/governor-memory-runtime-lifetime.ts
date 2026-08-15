@@ -17,7 +17,7 @@ const embedding = {
   },
 };
 
-function fact(id: string, observedAt: number, replacement = false) {
+function fact(id: string, observedAt: number, replacement = false, generation = 1) {
   const object = replacement ? "premium" : "standard";
   return governorMemoryFact({
     memoryId: id,
@@ -28,6 +28,7 @@ function fact(id: string, observedAt: number, replacement = false) {
     sourceIdentity: id,
     sourceEvidenceId: `evidence-${id}`,
     sourceEvidenceDigest: `digest-${id}`,
+    generation,
   });
 }
 
@@ -41,6 +42,7 @@ const runtime = new DurableMemoryRuntime({
 });
 const backend = runtime.createGovernorMemoryBackend({
   mode: "enforce",
+  authorityBindingKey: "fixture-ledger-key",
   refreshDerived: async () => {
     await runtime.flush(20_000);
   },
@@ -48,8 +50,13 @@ const backend = runtime.createGovernorMemoryBackend({
 
 try {
   for (let iteration = 0; iteration < 16; iteration += 1) {
-    const first = fact(`standard-${iteration}`, 100 + iteration * 1_000);
-    const replacement = fact(`premium-${iteration}`, 200 + iteration * 1_000, true);
+    const first = fact(`standard-${iteration}`, 100 + iteration * 1_000, false, iteration * 2 + 1);
+    const replacement = fact(
+      `premium-${iteration}`,
+      200 + iteration * 1_000,
+      true,
+      iteration * 2 + 2,
+    );
     await backend.admit({ fact: first, now: first.observedAt + 1 });
     await backend.invalidate({
       agentId: first.agentId,
@@ -91,7 +98,10 @@ const reopened = new DurableMemoryRuntime({
   embeddings: embedding,
   logger: {},
 });
-const reopenedBackend = reopened.createGovernorMemoryBackend({ mode: "enforce" });
+const reopenedBackend = reopened.createGovernorMemoryBackend({
+  mode: "enforce",
+  authorityBindingKey: "fixture-ledger-key",
+});
 try {
   const recalled = await reopenedBackend.recall({
     agentId: "agent-a",

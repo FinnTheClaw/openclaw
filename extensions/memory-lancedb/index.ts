@@ -21,7 +21,6 @@ import { BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES } from "openclaw/plugin-sdk/chat
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import type { MemoryEmbeddingProvider } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
-import { GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { resolveMemoryDreamingWorkspaces } from "openclaw/plugin-sdk/memory-core-host-status";
 import { MESSAGE_TOOL_DELIVERY_HINTS } from "openclaw/plugin-sdk/message-tool-delivery-hints";
 import {
@@ -1842,10 +1841,16 @@ export default definePluginEntry({
       ...(durableRuntime
         ? {
             governorMemory: {
-              implementationId: GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION,
-              createBackend: ({ mode }: { mode: "shadow" | "enforce" }) =>
+              createBackend: ({
+                mode,
+                authorityBindingKey,
+              }: {
+                mode: "shadow" | "enforce";
+                authorityBindingKey?: string;
+              }) =>
                 durableRuntime.createGovernorMemoryBackend({
                   mode,
+                  authorityBindingKey,
                   refreshDerived: async () => {
                     scheduleDurableWorkers();
                     await durableRuntime.flush(20_000);

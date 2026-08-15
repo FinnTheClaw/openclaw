@@ -3,165 +3,30 @@ import type { MemoryCitationsMode } from "../config/types.memory.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { MemorySearchManager } from "../memory-host-sdk/host/types.js";
+import { ownGovernorMemoryCapability } from "./memory-governor-capability.js";
+import type { MemoryGovernorCapability } from "./memory-governor-capability.js";
+export {
+  authenticateGovernorMemoryFact,
+  createInertMemoryGovernorBackend,
+  governorMemoryAuthorityBindingDigest,
+  governorMemoryContentDigest,
+  governorMemoryFactMac,
+  isOwnedGovernorMemoryBackend,
+  ownGovernorMemoryCapability,
+  verifyGovernorMemoryFact,
+  type MemoryGovernorBackend,
+  type MemoryGovernorCapability,
+  type MemoryGovernorFact,
+  type MemoryGovernorRecall,
+  type MemoryGovernorSourceKind,
+} from "./memory-governor-capability.js";
 
 const log = createSubsystemLogger("plugins/memory-state");
-
-/** Closed implementation identity required for enforce-mode authority. */
-export const GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION = "memory-lancedb-governor" as const;
 
 export type MemoryPromptSectionBuilder = (params: {
   availableTools: Set<string>;
   citationsMode?: MemoryCitationsMode;
 }) => string[];
-
-/**
- * Host-owned memory authority exposed by a selected memory plugin.
- *
- * The contract carries only opaque scope/evidence bindings and bounded fact
- * fields. A plugin may create the backend lazily, so the governor OFF path
- * does not open a ledger, resolve embeddings, or mutate a memory projection.
- */
-export type MemoryGovernorSourceKind =
-  | "structured_external"
-  | "authenticated_user"
-  | "tool"
-  | "historical_memory";
-
-export type MemoryGovernorFact = Readonly<{
-  memoryId: string;
-  /** Compatibility routing label; authority is the exact scopeKey below. */
-  agentId: string;
-  scope: string;
-  /** Exact canonical scope key issued by the governor memory authority. */
-  scopeKey: string;
-  scopeEpoch: number;
-  /** Canonical fact identity; callers may not supply an alternate spelling. */
-  factKey: string;
-  subject: string;
-  predicate: string;
-  object: string;
-  text: string;
-  content: unknown;
-  contentDigest: string;
-  category?: string;
-  status: "verified" | "tombstone";
-  sensitivity: "normal" | "sensitive";
-  sourceKind: MemoryGovernorSourceKind;
-  sourceIdentity: string;
-  sourceRank: number;
-  confidence: number;
-  authority: number;
-  generation: number;
-  observedAt: number;
-  freshnessExpiresAt?: number;
-  provenance: Readonly<{
-    sourceRef: string;
-    observedAt: number;
-    recordedAt: number;
-    scopeKey: string;
-    confidence: number;
-    sensitivity: "normal" | "sensitive";
-    evidenceTaskId?: string;
-    evidenceTaskVersion?: number;
-    objectiveRevision?: number;
-    planVersion?: number;
-  }>;
-  authorityBindingDigest: string;
-  sourceEvidenceId: string;
-  sourceEvidenceDigest: string;
-  sourceEvidenceSemanticDigest: string;
-  sourceEvidenceLineage?: readonly string[];
-  sourceMemoryLineage?: readonly string[];
-}>;
-
-export type MemoryGovernorRecall = Readonly<{
-  memoryId: string;
-  agentId: string;
-  scope: string;
-  scopeKey: string;
-  factKey: string;
-  text: string;
-  confidence: number;
-  authority: number;
-  observedAt: number;
-  sourceEvidenceDigest: string;
-  contentDigest: string;
-  authorityBindingDigest: string;
-}>;
-
-export type MemoryGovernorBackend = Readonly<{
-  implementationId?: typeof GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION;
-  admit(params: {
-    fact: MemoryGovernorFact;
-    now: number;
-  }): Promise<
-    | { status: "admitted"; fact: MemoryGovernorFact; remediationId: string }
-    | { status: "duplicate"; fact: MemoryGovernorFact; remediationId: string }
-    | { status: "rejected"; reason: string }
-  >;
-  recall(params: {
-    agentId: string;
-    scopes: readonly string[];
-    scopeKeys?: readonly string[];
-    query: string;
-    limit: number;
-    now: number;
-  }): Promise<readonly MemoryGovernorRecall[]>;
-  invalidate(params: {
-    agentId: string;
-    scope: string;
-    scopeKey?: string;
-    factKey: string;
-    staleMemoryId: string;
-    sourceEvidenceId: string;
-    sourceEvidenceDigest: string;
-    sourceObservedAt: number;
-    reason: "contradicted_by_newer_evidence" | "freshness_expired" | "operator_requested";
-    replacement?: MemoryGovernorFact;
-    now: number;
-  }): Promise<{
-    status: "retired" | "duplicate" | "tombstoned";
-    staleMemoryId: string;
-    replacementMemoryId?: string;
-    remediationId: string;
-  }>;
-  retire?(params: {
-    agentId: string;
-    scope: string;
-    scopeKey?: string;
-    factKey: string;
-    staleMemoryId: string;
-    reason: "freshness_expired" | "operator_requested";
-    now: number;
-  }): Promise<{
-    status: "retired" | "duplicate";
-    staleMemoryId: string;
-    remediationId: string;
-  }>;
-  compact(params: { agentId?: string; now: number; retentionMs: number }): Promise<{
-    compacted: number;
-    retainedHighWater: number;
-  }>;
-  close?(): Promise<void> | void;
-}>;
-
-export type MemoryGovernorCapability = Readonly<{
-  implementationId?: typeof GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION;
-  createBackend(params: { mode: "shadow" | "enforce" }): MemoryGovernorBackend;
-}>;
-
-/** Shadow keeps the memory contract present while making every mutation inert. */
-export function createInertMemoryGovernorBackend(): MemoryGovernorBackend {
-  return Object.freeze({
-    admit: async () => ({ status: "rejected" as const, reason: "shadow_observation_only" }),
-    recall: async () => [],
-    invalidate: async () => {
-      throw new Error("GOVERNOR_MEMORY_SHADOW_MUTATION");
-    },
-    compact: async () => ({ compacted: 0, retainedHighWater: 0 }),
-    close: () => undefined,
-  });
-}
 
 export type MemoryCorpusSearchResult = {
   corpus: string;
@@ -338,6 +203,10 @@ export function registerMemoryCapability(
   pluginId: string,
   capability: MemoryPluginCapability,
 ): void {
+  const governorMemory =
+    pluginId === "memory-lancedb" && capability.governorMemory
+      ? ownGovernorMemoryCapability(capability.governorMemory)
+      : capability.governorMemory;
   const existingCapability = memoryPluginState.capability?.capability;
   // A selected memory plugin can add bridge artifacts while memory-core owns sidecar runtime hooks.
   const shouldPreserveExisting =
@@ -351,6 +220,7 @@ export function registerMemoryCapability(
     capability: {
       ...(shouldPreserveExisting ? existingCapability : {}),
       ...capability,
+      ...(governorMemory ? { governorMemory } : {}),
     },
   };
 }

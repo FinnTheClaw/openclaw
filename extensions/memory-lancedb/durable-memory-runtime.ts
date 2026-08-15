@@ -340,13 +340,18 @@ export class DurableMemoryRuntime {
   /** Create the real governed backend only after an enabled host requests it. */
   createGovernorMemoryBackend(params: {
     mode: "shadow" | "enforce";
+    authorityBindingKey?: string;
     refreshDerived?: () => Promise<void>;
   }): MemoryGovernorBackend {
     if (params.mode === "shadow") {
       return createShadowGovernorMemoryBackend();
     }
+    if (!params.authorityBindingKey) {
+      throw new Error("GOVERNOR_MEMORY_AUTHORITY_KEY_REQUIRED");
+    }
     this.governorLedger ??= new GovernorMemoryLedger(this.options.ledgerPath, {
       enqueueProjection: true,
+      authorityBindingKey: params.authorityBindingKey,
     });
     return new GovernorMemoryLanceDbAdapter({
       ledgerPath: this.options.ledgerPath,
@@ -356,6 +361,7 @@ export class DurableMemoryRuntime {
       embeddings: this.options.embeddings,
       refreshDerived: params.refreshDerived,
       enqueueProjection: true,
+      authorityBindingKey: params.authorityBindingKey,
     });
   }
 

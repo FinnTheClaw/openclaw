@@ -48,7 +48,7 @@ export function findGovernorLineageDescendants(
     const evidencePlaceholders = pendingSourceEvidenceIds.map(() => "?").join(", ");
     const rows = db
       .prepare(
-        `SELECT memory_id, source_evidence_id FROM memory_governor_lineage WHERE scope_key = ? AND ((relation_kind = 'memory' AND source_memory_id IN (${placeholders})) OR (relation_kind = 'evidence' AND ${evidencePlaceholders ? `source_evidence_id IN (${evidencePlaceholders})` : "0"})) LIMIT ${max + 1}`,
+        `SELECT DISTINCT memory_id FROM memory_governor_lineage WHERE scope_key = ? AND ((relation_kind = 'memory' AND source_memory_id IN (${placeholders})) OR (relation_kind = 'evidence' AND ${evidencePlaceholders ? `source_evidence_id IN (${evidencePlaceholders})` : "0"})) LIMIT ${max + 1}`,
       )
       .all(scopeKey, ...frontier, ...pendingSourceEvidenceIds) as SqlRow[];
     frontier = [];
@@ -60,9 +60,21 @@ export function findGovernorLineageDescendants(
         }
         descendants.add(child);
         frontier.push(child);
+        const lineageRows = db
+          .prepare(
+            "SELECT DISTINCT source_evidence_id FROM memory_governor_lineage " +
+              "WHERE scope_key = ? AND memory_id = ? AND source_evidence_id != ''",
+          )
+          .all(scopeKey, child) as SqlRow[];
+        for (const lineageRow of lineageRows) {
+          const sourceEvidenceId = String(lineageRow.source_evidence_id);
+          if (sourceEvidenceId) {
+            pendingSourceEvidenceIds.push(sourceEvidenceId);
+          }
+        }
       }
     }
-    pendingSourceEvidenceIds = [];
+    pendingSourceEvidenceIds = [...new Set(pendingSourceEvidenceIds)];
   }
   return [...descendants];
 }

@@ -110,11 +110,14 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     limit: number;
     now: number;
   }) {
-    await this.flushBackend();
     if (!this.backend) {
       return [];
     }
     const scopeKey = canonicalGovernorScopeKey(params.scope, this.#identity);
+    // The host audit is authoritative across restart and projection lag. Queue
+    // every stale, tombstoned, or old-epoch row before allowing the backend read.
+    this.retrieveAudit({ scope: params.scope });
+    await this.flushBackend();
     return this.backend.recall({
       agentId: "governor",
       scopes: [scopeKey],
@@ -133,7 +136,10 @@ export class GovernorMemorySubsystem extends GovernorMemoryStore {
     if (result.stored && this.backend) {
       const fact = toGovernorBackendFact(result.memory);
       this.#enqueueBackend(async () => {
-        await this.backend!.admit({ fact, now: params.now });
+        const admission = await this.backend!.admit({ fact, now: params.now });
+        if (admission.status === "rejected") {
+          throw new Error(`GOVERNOR_MEMORY_BACKEND_ADMISSION_REJECTED:${admission.reason}`);
+        }
       });
     }
     return result;

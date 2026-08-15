@@ -23,8 +23,10 @@ export function compactGovernorMemoryLedger(
         "UPDATE memory_fact_revisions SET status = 'retracted', system_to = ? WHERE revision_id = ? AND status = 'active'",
       ).run(Number(row.valid_to), revisionId);
       db.prepare(
-        "UPDATE memory_governor_high_water SET status = 'tombstone', revision_id = NULL, updated_at = ? WHERE revision_id = ?",
-      ).run(params.now, revisionId);
+        "UPDATE memory_governor_high_water SET status = 'tombstone', revision_id = NULL, " +
+          "generation = generation + 1, observed_at = MAX(observed_at, ?), updated_at = ? " +
+          "WHERE revision_id = ?",
+      ).run(Number(row.valid_to), params.now, revisionId);
       db.prepare(
         "INSERT INTO memory_materialization_outbox(record_type, record_id, state, updated_at) VALUES('fact', ?, 'pending', ?) " +
           "ON CONFLICT(record_type, record_id) DO UPDATE SET state = 'pending', lease_owner = NULL, lease_until = NULL, next_attempt_at = 0, last_error = NULL, updated_at = excluded.updated_at",

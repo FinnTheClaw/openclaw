@@ -1,4 +1,4 @@
-import { GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
+import { authenticateGovernorMemoryFact } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type {
   MemoryGovernorBackend,
   MemoryGovernorFact,
@@ -19,6 +19,7 @@ export type GovernorMemoryLanceDbAdapterOptions = {
   refreshDerived?: () => Promise<void>;
   observeOnly?: boolean;
   enqueueProjection?: boolean;
+  authorityBindingKey?: string;
 };
 
 function boundedLimit(value: number): number {
@@ -49,13 +50,13 @@ function resultFact(fact: MemoryGovernorFact): MemoryGovernorRecall {
  * can be returned, including during projection lag or after a restart.
  */
 export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
-  readonly implementationId = GOVERNOR_MEMORY_BACKEND_IMPLEMENTATION;
   readonly #ledger: GovernorMemoryLedger;
   readonly #index: HybridMemoryIndex;
   readonly #embeddings: DurableMemoryEmbedding;
   readonly #refreshDerived?: () => Promise<void>;
   readonly #observeOnly: boolean;
   readonly #ownsLedger: boolean;
+  readonly #authorityBindingKey?: string;
   #closed = false;
 
   constructor(options: GovernorMemoryLanceDbAdapterOptions) {
@@ -63,12 +64,14 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
       options.ledger ??
       new GovernorMemoryLedger(options.ledgerPath, {
         enqueueProjection: options.enqueueProjection,
+        authorityBindingKey: options.authorityBindingKey,
       });
     this.#index = options.index;
     this.#embeddings = options.embeddings;
     this.#refreshDerived = options.refreshDerived;
     this.#observeOnly = options.observeOnly === true;
     this.#ownsLedger = options.ownsLedger ?? options.ledger === undefined;
+    this.#authorityBindingKey = options.authorityBindingKey;
   }
 
   async admit(params: Parameters<MemoryGovernorBackend["admit"]>[0]) {
@@ -77,7 +80,10 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
     if (this.#observeOnly) {
       return { status: "rejected" as const, reason: "shadow_observation_only" };
     }
-    const result = this.#ledger.admit(params.fact, params.now);
+    const fact = this.#authorityBindingKey
+      ? authenticateGovernorMemoryFact(params.fact, this.#authorityBindingKey)
+      : params.fact;
+    const result = this.#ledger.admit(fact, params.now);
     if ((result.status === "admitted" || result.status === "duplicate") && result.fact) {
       await this.#project(result.fact, result.staleRevisionId);
       this.#ledger.markRemediationCompleted(result.remediationId, params.now);
@@ -137,10 +143,15 @@ export class GovernorMemoryLanceDbAdapter implements MemoryGovernorBackend {
     if (this.#observeOnly) {
       throw new Error("GOVERNOR_MEMORY_SHADOW_MUTATION");
     }
+    const replacement =
+      params.replacement && this.#authorityBindingKey
+        ? authenticateGovernorMemoryFact(params.replacement, this.#authorityBindingKey)
+        : params.replacement;
     const result = this.#ledger.invalidate({
       ...params,
       agentId: GOVERNOR_LEDGER_OWNER,
       scopeKey: params.scopeKey ?? params.scope,
+      ...(replacement ? { replacement } : {}),
     });
     if (result.invalidatedMemoryIds.length === 1) {
       await this.#index.delete(result.staleMemoryId);
