@@ -103,6 +103,7 @@ export function markSubagentRunPausedAfterYield(params: {
   startedAt?: number;
   endedAt?: number;
   now?: number;
+  wakeOnDescendantSettle?: boolean;
 }): boolean {
   const { entry } = params;
   if (
@@ -130,6 +131,10 @@ export function markSubagentRunPausedAfterYield(params: {
   }
   if (entry.pauseReason !== "sessions_yield") {
     entry.pauseReason = "sessions_yield";
+    mutated = true;
+  }
+  if (params.wakeOnDescendantSettle === true && entry.wakeOnDescendantSettle !== true) {
+    entry.wakeOnDescendantSettle = true;
     mutated = true;
   }
   if (entry.outcome !== undefined) {
@@ -241,6 +246,7 @@ export function createSubagentRunManager(params: {
     startedAt?: number;
   }): Promise<void>;
   resolveSubagentTask(entry: SubagentRunRecord): DetachedTaskFindResult;
+  countPendingDescendantRuns(rootSessionKey: string): number;
 }) {
   const markOlderKillReconciliationsSuperseded = (next: SubagentRunRecord) => {
     const snapshots = new Map<SubagentRunRecord, SubagentRunRecord["killReconciliation"]>();
@@ -336,6 +342,7 @@ export function createSubagentRunManager(params: {
             entry,
             startedAt: wait.startedAt,
             endedAt: wait.endedAt,
+            wakeOnDescendantSettle: params.countPendingDescendantRuns(entry.childSessionKey) > 0,
           })
         ) {
           params.persist();

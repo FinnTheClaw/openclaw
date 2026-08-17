@@ -1557,6 +1557,7 @@ function ensureListener() {
             entry,
             endedAt,
             startedAt: startedAt ?? entry.startedAt,
+            wakeOnDescendantSettle: countPendingDescendantRuns(entry.childSessionKey) > 0,
           })
         ) {
           persistSubagentRuns();
@@ -1667,6 +1668,7 @@ const subagentRunManager = createSubagentRunManager({
   completeCleanupBookkeeping,
   completeSubagentRun,
   resolveSubagentTask: findSubagentTaskForRun,
+  countPendingDescendantRuns: (rootSessionKey) => countPendingDescendantRuns(rootSessionKey),
 });
 
 configureSubagentRegistrySteerRuntime({
