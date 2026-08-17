@@ -330,6 +330,18 @@ export class DurableMemoryRuntime {
     this.embeddingTimeoutMs = Math.max(1_000, Math.floor(options.embeddingTimeoutMs ?? 15_000));
   }
 
+  /** Completes any ledger-first repair after a crash without cross-principal fallback reads. */
+  async repairLegacyTruncatedPrincipalProjections(): Promise<number> {
+    const discovered = this.ledger.repairLegacyTruncatedPrincipalIds();
+    const mappings =
+      discovered.length > 0 ? discovered : this.ledger.listLegacyTruncatedPrincipalRekeys();
+    let repaired = 0;
+    for (const mapping of mappings) {
+      repaired += await this.index.rekeyAgentId(mapping.fromAgentId, mapping.toAgentId);
+    }
+    return repaired;
+  }
+
   captureInbound(options: {
     agentId?: string;
     sessionKey?: string;

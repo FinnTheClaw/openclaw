@@ -44,6 +44,11 @@ export type StoredMemoryEvent = {
   metadata: Record<string, unknown>;
 };
 
+export type LegacyTruncatedAgentIdRekey = {
+  fromAgentId: string;
+  toAgentId: string;
+};
+
 export type ProjectionLease = StoredMemoryEvent & {
   attempts: number;
   leaseOwner: string;
@@ -241,6 +246,14 @@ function stableJson(value: Record<string, unknown> | undefined): string {
     );
   };
   return JSON.stringify(normalize(value));
+}
+
+function isLegacyTruncatedPrincipalId(value: string): boolean {
+  return /^principal_[a-f0-9]{54}$/.test(value);
+}
+
+function isCanonicalPrincipalId(value: string): boolean {
+  return /^principal_[a-f0-9]{64}$/.test(value);
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> {
@@ -638,6 +651,158 @@ export class TemporalMemoryLedger {
           "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       )
       .run(String(SCHEMA_VERSION));
+  }
+
+  /**
+   * Repairs the one historical representation produced when an opaque
+   * `principal_<sha256>` owner was accidentally sent through the 64-character
+   * public agent-id normalizer. Only an unambiguous prefix match is eligible:
+   * this never broadens a memory read across principals.
+   *
+   * The ledger rewrite and durable mapping record commit together. Projection
+   * repair is deliberately retried by DurableMemoryRuntime from that mapping,
+   * so a crash between SQLite and LanceDB cannot strand the repaired records.
+   */
+  repairLegacyTruncatedPrincipalIds(): LegacyTruncatedAgentIdRekey[] {
+    this.assertOpen();
+    const rows = this.db
+      .prepare(`
+        SELECT DISTINCT agent_id FROM memory_events
+        UNION SELECT DISTINCT agent_id FROM memory_deletion_audit
+        UNION SELECT DISTINCT agent_id FROM memory_operation_receipts
+        UNION SELECT DISTINCT agent_id FROM memory_source_checkpoints
+        UNION SELECT DISTINCT agent_id FROM memory_fact_revisions
+        UNION SELECT DISTINCT agent_id FROM memory_summary_nodes
+      `)
+      .all() as SqlRow[];
+    const ids = rows.map((row) => String(row.agent_id));
+    const canonical = ids.filter(isCanonicalPrincipalId);
+    const mappings: LegacyTruncatedAgentIdRekey[] = [];
+    for (const legacy of ids.filter(isLegacyTruncatedPrincipalId)) {
+      const candidates = canonical.filter((candidate) => candidate.startsWith(legacy));
+      if (candidates.length > 1) {
+        throw new Error("legacy truncated principal id maps to multiple canonical principals");
+      }
+      if (candidates.length === 1) {
+        mappings.push({ fromAgentId: legacy, toAgentId: candidates[0]! });
+      }
+    }
+    if (mappings.length === 0) {
+      return [];
+    }
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const mapping of mappings) {
+        this.assertRekeyHasNoConflict(mapping);
+        this.db
+          .prepare(`
+            UPDATE memory_summary_nodes AS canonical
+            SET source_count = MAX(canonical.source_count, legacy.source_count),
+                source_generation = MAX(canonical.source_generation, legacy.source_generation),
+                target_generation = MAX(canonical.target_generation, legacy.target_generation),
+                dirty = 1,
+                updated_at = MAX(canonical.updated_at, legacy.updated_at)
+            FROM memory_summary_nodes AS legacy
+            WHERE legacy.agent_id = ? AND canonical.agent_id = ?
+              AND legacy.scope = canonical.scope AND legacy.level = canonical.level
+              AND legacy.bucket_start = canonical.bucket_start
+          `)
+          .run(mapping.fromAgentId, mapping.toAgentId);
+        this.db
+          .prepare("DELETE FROM memory_summary_nodes WHERE agent_id = ?")
+          .run(mapping.fromAgentId);
+        for (const table of [
+          "memory_events",
+          "memory_deletion_audit",
+          "memory_operation_receipts",
+          "memory_source_checkpoints",
+          "memory_fact_revisions",
+        ]) {
+          this.db
+            .prepare(`UPDATE ${table} SET agent_id = ? WHERE agent_id = ?`)
+            .run(mapping.toAgentId, mapping.fromAgentId);
+        }
+      }
+      this.db
+        .prepare(
+          "INSERT INTO memory_metadata(key, value) VALUES(?, ?) " +
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .run("legacy_truncated_principal_rekeys_v1", JSON.stringify(mappings));
+      this.db.exec("COMMIT");
+      return mappings;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listLegacyTruncatedPrincipalRekeys(): LegacyTruncatedAgentIdRekey[] {
+    this.assertOpen();
+    const raw = this.getMetadata("legacy_truncated_principal_rekeys_v1");
+    if (!raw) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) {
+        throw new Error("not an array");
+      }
+      return parsed.map((entry) => {
+        if (
+          !entry ||
+          typeof entry !== "object" ||
+          !isLegacyTruncatedPrincipalId(String((entry as SqlRow).fromAgentId)) ||
+          !isCanonicalPrincipalId(String((entry as SqlRow).toAgentId)) ||
+          !String((entry as SqlRow).toAgentId).startsWith(String((entry as SqlRow).fromAgentId))
+        ) {
+          throw new Error("invalid mapping");
+        }
+        return {
+          fromAgentId: String((entry as SqlRow).fromAgentId),
+          toAgentId: String((entry as SqlRow).toAgentId),
+        };
+      });
+    } catch {
+      throw new Error("legacy truncated principal rekey metadata is invalid");
+    }
+  }
+
+  private assertRekeyHasNoConflict(mapping: LegacyTruncatedAgentIdRekey): void {
+    const checks = [
+      [
+        "memory event external identity",
+        "SELECT 1 FROM memory_events legacy JOIN memory_events canonical " +
+          "ON legacy.external_id = canonical.external_id " +
+          "WHERE legacy.agent_id = ? AND canonical.agent_id = ? AND legacy.external_id IS NOT NULL LIMIT 1",
+      ],
+      [
+        "memory deletion external identity",
+        "SELECT 1 FROM memory_deletion_audit legacy JOIN memory_deletion_audit canonical " +
+          "ON legacy.external_id = canonical.external_id " +
+          "WHERE legacy.agent_id = ? AND canonical.agent_id = ? AND legacy.external_id IS NOT NULL LIMIT 1",
+      ],
+      [
+        "active fact identity",
+        "SELECT 1 FROM memory_fact_revisions legacy JOIN memory_fact_revisions canonical " +
+          "ON legacy.scope = canonical.scope AND legacy.fact_key = canonical.fact_key " +
+          "WHERE legacy.agent_id = ? AND canonical.agent_id = ? " +
+          "AND legacy.status = 'active' AND legacy.system_to IS NULL " +
+          "AND canonical.status = 'active' AND canonical.system_to IS NULL LIMIT 1",
+      ],
+      [
+        "source checkpoint identity",
+        "SELECT 1 FROM memory_source_checkpoints legacy JOIN memory_source_checkpoints canonical " +
+          "ON legacy.source_kind = canonical.source_kind AND legacy.source_path = canonical.source_path " +
+          "WHERE legacy.agent_id = ? AND canonical.agent_id = ? LIMIT 1",
+      ],
+    ] as const;
+    for (const [label, sql] of checks) {
+      if (this.db.prepare(sql).get(mapping.fromAgentId, mapping.toAgentId)) {
+        throw new Error(`legacy truncated principal rekey conflicts on ${label}`);
+      }
+    }
   }
 
   private ensureColumn(table: string, name: string, definition: string): void {

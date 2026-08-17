@@ -429,6 +429,41 @@ export class HybridMemoryIndex {
     });
   }
 
+  /** Rebinds a historical opaque-principal prefix without widening any search. */
+  async rekeyAgentId(fromAgentId: string, toAgentId: string): Promise<number> {
+    await this.ensureInitialized();
+    const from = requiredText(fromAgentId, "fromAgentId");
+    const to = requiredText(toAgentId, "toAgentId");
+    if (from === to) {
+      return 0;
+    }
+    return await this.runExclusive(async () => {
+      const filter = `agentId = ${sqlString(from)}`;
+      const count = await this.table!.countRows(filter);
+      if (count > 10_000) {
+        throw new Error("legacy principal projection rekey exceeds bounded batch");
+      }
+      if (count === 0) {
+        return 0;
+      }
+      const rows = await this.table!.query().where(filter).limit(10_000).toArray();
+      const byId = new Map<string, MemoryProjectionEntry>();
+      for (const row of rows) {
+        const entry = rowToProjection(row);
+        const prior = byId.get(entry.id);
+        if (!prior || entry.updatedAt >= prior.updatedAt) {
+          byId.set(entry.id, { ...entry, agentId: to });
+        }
+      }
+      const rebound = [...byId.values()].map(toLanceRow);
+      await this.table!.mergeInsert("id")
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute(rebound);
+      return rebound.length;
+    });
+  }
+
   async has(id: string, options?: { agentId?: string; scope?: string }): Promise<boolean> {
     await this.ensureInitialized();
     const conditions = [`id = ${sqlString(requiredText(id, "id"))}`];

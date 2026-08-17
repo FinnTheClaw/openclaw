@@ -2973,6 +2973,13 @@ export default definePluginEntry({
             `durable ledger integrity check failed: ${integrity.messages.join("; ")}`,
           );
         }
+        const repairedLegacyPrincipalRows =
+          await durableRuntime.repairLegacyTruncatedPrincipalProjections();
+        if (repairedLegacyPrincipalRows > 0) {
+          api.logger.info?.(
+            `memory-v2: repaired ${repairedLegacyPrincipalRows} legacy truncated-principal projections`,
+          );
+        }
         const migrationKey = "legacy_lancedb_v1_migrated";
         if (durableRuntime.ledger.getMetadata(migrationKey) !== "1") {
           const legacyCount = await db.count();
