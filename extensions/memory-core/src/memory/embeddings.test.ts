@@ -136,6 +136,37 @@ describe("createEmbeddingProvider", () => {
     );
   });
 
+  it("keeps primary credentials out of a different fallback provider", async () => {
+    const primaryCreate = vi.fn<MemoryEmbeddingProviderAdapter["create"]>(async () => {
+      throw new Error("primary unavailable");
+    });
+    const fallbackCreate = vi.fn<MemoryEmbeddingProviderAdapter["create"]>(async () => ({
+      provider: {
+        id: "ollama",
+        model: "nomic-embed-text",
+        embedQuery: async () => [1],
+        embedBatch: async (texts) => texts.map(() => [1]),
+      },
+    }));
+    registerMemoryEmbeddingProvider({ id: "openai", create: primaryCreate });
+    registerMemoryEmbeddingProvider({ id: "ollama", create: fallbackCreate });
+    const remote = {
+      baseUrl: "https://primary.invalid/v1",
+      apiKey: "synthetic-primary-key",
+      headers: { Authorization: "Bearer synthetic-primary-key" },
+      nonBatchConcurrency: 3,
+    };
+
+    await createEmbeddingProvider({
+      ...createOptions("openai"),
+      fallback: "ollama",
+      remote,
+    });
+
+    expect(primaryCreate.mock.calls[0]?.[0].remote).toBe(remote);
+    expect(fallbackCreate.mock.calls[0]?.[0].remote).toEqual({ nonBatchConcurrency: 3 });
+  });
+
   it("does not run priority-based auto-selection after a skippable setup failure", async () => {
     registerMemoryEmbeddingProvider(createMissingCredentialsAdapter({ autoSelectPriority: 10 }));
     registerMemoryEmbeddingProvider({

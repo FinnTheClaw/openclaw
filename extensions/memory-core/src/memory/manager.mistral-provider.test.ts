@@ -14,7 +14,8 @@ import {
 const DEFAULT_OLLAMA_EMBEDDING_MODEL = "nomic-embed-text";
 const DEFAULT_LMSTUDIO_EMBEDDING_MODEL = "text-embedding-nomic-embed-text-v1.5";
 
-vi.mock("./embeddings.js", () => ({
+vi.mock("./embeddings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./embeddings.js")>()),
   resolveEmbeddingProviderIndexIdentity: () => undefined,
   resolveEmbeddingProviderFallbackModel: (providerId: string, fallbackSourceModel: string) =>
     providerId === "ollama"
@@ -163,6 +164,33 @@ describe("memory manager mistral provider wiring", () => {
     expect(fallbackRequest.provider).toBe("ollama");
     expect(fallbackRequest.model).toBe(DEFAULT_OLLAMA_EMBEDDING_MODEL);
     expect(fallbackRequest.fallback).toBe("none");
+  });
+
+  it("preserves neutral scheduling but removes primary remote credentials on fallback", () => {
+    const settings = {
+      ...createSettings({ provider: "openai", fallback: "ollama" }),
+      remote: {
+        baseUrl: "https://primary.invalid/v1",
+        apiKey: "synthetic-primary-key",
+        headers: { Authorization: "Bearer synthetic-primary-key" },
+        nonBatchConcurrency: 3,
+        batch: { enabled: true, wait: false, concurrency: 2 },
+      },
+    } as ResolvedMemorySearchConfig;
+
+    expect(resolveMemoryPrimaryProviderRequest({ settings }).remote).toBe(settings.remote);
+    expect(
+      expectMemoryFallbackRequest(
+        resolveMemoryFallbackProviderRequest({
+          cfg: {} as OpenClawConfig,
+          settings,
+          currentProviderId: "openai",
+        }),
+      ).remote,
+    ).toEqual({
+      nonBatchConcurrency: 3,
+      batch: { enabled: true, wait: false, concurrency: 2 },
+    });
   });
 
   it("includes outputDimensionality in the primary provider request", () => {
