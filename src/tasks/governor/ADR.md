@@ -310,7 +310,8 @@ not in the package export map. A whole-source allowlist permits only the explici
 and host-internal dependency edges. Governor, task, model, and plugin code may
 consume read-only resolvers from `governor-host-readonly.ts`, but must not import the broker or a
 capability constructor. The static boundary test enforces that edge. Test-only synthetic bindings
-are rejected unless `NODE_ENV=test`; they are never a production fallback.
+live under explicit test-helper paths; production store bootstrap requires every trusted binding
+and never constructs a synthetic fallback.
 
 The host ledger sidecars are private and store only opaque stream keys, digests, generations,
 signed task fences, and signatures. The append-only journal and independently signed full-state

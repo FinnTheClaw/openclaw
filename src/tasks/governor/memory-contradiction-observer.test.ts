@@ -12,7 +12,7 @@ import {
   startMemoryTestTask,
   withMemoryTestHarness,
 } from "./memory-contradiction-test-helpers.js";
-import { createGovernorTestStore } from "./test-broker.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 
 afterEach(() => closeOpenClawStateDatabase());
 

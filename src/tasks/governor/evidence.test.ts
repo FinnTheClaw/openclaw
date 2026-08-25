@@ -8,7 +8,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createGovernorEventRecord } from "./events.js";
 import { createGovernorEvidenceCandidate } from "./evidence.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestBroker } from "./test-broker.js";
+import { createGovernorTestBroker } from "./test-helpers/test-broker.js";
 import type { GovernorTaskContract, GovernorTaskScope } from "./types.js";
 
 const scope: GovernorTaskScope = {
@@ -75,8 +75,13 @@ describe("governor evidence host receipt boundary", () => {
         let store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
+          physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+          memoryAuthority: broker.memoryAuthority,
+          taskAuthority: broker.taskAuthority,
+          secrets: broker.secrets,
         });
         const task = store.ingest({
           sourceMessageId: "evidence-message-1",
@@ -111,8 +116,13 @@ describe("governor evidence host receipt boundary", () => {
         store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
+          physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+          memoryAuthority: broker.memoryAuthority,
+          taskAuthority: broker.taskAuthority,
+          secrets: broker.secrets,
         });
         const persisted = store.listEvidence(task.taskId);
         expect(persisted).toHaveLength(1);
@@ -131,8 +141,13 @@ describe("governor evidence host receipt boundary", () => {
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
+          physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+          memoryAuthority: broker.memoryAuthority,
+          taskAuthority: broker.taskAuthority,
+          secrets: broker.secrets,
         });
         const task = store.ingest({
           sourceMessageId: "evidence-message-2",

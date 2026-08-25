@@ -1,12 +1,4 @@
 /** Host-only primary-state reconciliation behind the V9 anti-rollback ledger. */
-import type { DatabaseSync } from "node:sqlite";
-import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-  getNodeSqliteKysely,
-} from "../infra/kysely-sync.js";
-import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
-import type { DB as StateDb } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -15,8 +7,19 @@ import {
 import { resolveOpenClawStateSqliteDir } from "../state/openclaw-state-db.paths.js";
 import { governorDigest } from "../tasks/governor/canonical-json.js";
 import { assertGovernorPersistedJson } from "../tasks/governor/persistence-guard.js";
+import { assertGovernorJsonResources } from "../tasks/governor/resource-guard.js";
+import { assertGovernorBoundarySafe } from "../tasks/governor/secret-filter.js";
 import { initializeGovernorStateSchema } from "../tasks/governor/state-schema.js";
 import { GovernorStoreLifecycle } from "../tasks/governor/store-lifecycle.js";
+import {
+  approvalGrantKey,
+  approvalScopeKey,
+  cancelUnstartedApprovalExecutions,
+  markApprovalGrantRevoked,
+  primaryApprovalEpoch,
+  requestStartedApprovalCancellation,
+  writeApprovalEpoch,
+} from "./governor-host-approval-persistence-helpers.js";
 import {
   createGovernorHostAntiRollbackLedger,
   isGovernorHostAntiRollbackLedger,
@@ -28,7 +31,9 @@ import {
   type GovernorHostDeliveryPersistence,
 } from "./governor-host-delivery-persistence.js";
 import {
-  createGovernorMemoryAuthority,
+  type GovernorMemoryAuthorityAdvance,
+  type GovernorMemoryAuthorityBinding,
+  type GovernorMemoryAuthorityState,
   type GovernorTrustedMemoryAuthority,
 } from "./governor-host-memory-authority.js";
 import {
@@ -45,14 +50,165 @@ import {
   type GovernorTrustedTaskAuthority,
 } from "./governor-host-task-authority.js";
 
-type ApprovalDb = Pick<
-  StateDb,
-  "governor_action_intents" | "governor_approval_epochs" | "governor_approval_grants"
->;
-const dbx = (db: DatabaseSync) => getNodeSqliteKysely<ApprovalDb>(db);
-const approvalScopeKey = (scopeKey: string) => governorDigest({ kind: "scope", scopeKey });
-const approvalGrantKey = (scopeKey: string, grantId: string) =>
-  governorDigest({ kind: "grant", scopeKey, grantId });
+const MEMORY_AUTHORITIES = new WeakSet<object>();
+
+export function isTrustedGovernorMemoryAuthority(value: GovernorTrustedMemoryAuthority): boolean {
+  return MEMORY_AUTHORITIES.has(value);
+}
+
+function memoryAuthorityKey(scopeKey: string, factKey: string) {
+  return governorDigest({ kind: "memory-fact", scopeKey, factKey });
+}
+
+function memoryAuthorityBinding(binding: GovernorMemoryAuthorityBinding) {
+  return governorDigest(
+    assertGovernorBoundarySafe(
+      "memory",
+      assertGovernorJsonResources({ kind: "memory-current", ...binding }),
+    ),
+  );
+}
+
+function memoryAuthorityState(state: GovernorLedgerState | null): GovernorMemoryAuthorityState | null {
+  if (!state || (state.status !== "memory_current" && state.status !== "memory_retired")) {
+    return null;
+  }
+  return {
+    generation: state.generation,
+    status: state.status === "memory_current" ? "current" : "retired",
+    bindingDigest: state.bindingDigest,
+    ledgerDigest: state.digest,
+    ...(state.ordering ? { ordering: state.ordering } : {}),
+  };
+}
+
+function rejectMemoryAdvance(
+  current: GovernorLedgerState,
+  binding: GovernorMemoryAuthorityBinding,
+): Exclude<GovernorMemoryAuthorityAdvance, { accepted: true }> | null {
+  const state = memoryAuthorityState(current) as GovernorMemoryAuthorityState;
+  const prior = current.ordering;
+  const next = binding.ordering;
+  if (!prior) {
+    return { accepted: false, state, reason: "legacy_high_water" };
+  }
+  if (next.scopeEpoch < prior.scopeEpoch || next.observedAt < prior.observedAt) {
+    return { accepted: false, state, reason: "stale" };
+  }
+  if (current.status === "memory_retired" && next.scopeEpoch <= prior.scopeEpoch) {
+    return { accepted: false, state, reason: "retired" };
+  }
+  if (
+    next.taskDigest === prior.taskDigest &&
+    (next.objectiveRevision < prior.objectiveRevision ||
+      (next.objectiveRevision === prior.objectiveRevision && next.planVersion < prior.planVersion) ||
+      (next.objectiveRevision === prior.objectiveRevision &&
+        next.planVersion === prior.planVersion &&
+        next.taskVersion < prior.taskVersion))
+  ) {
+    return { accepted: false, state, reason: "fence_regression" };
+  }
+  if (
+    next.scopeEpoch === prior.scopeEpoch &&
+    (next.sourceRank < prior.sourceRank ||
+      (next.sourceRank === prior.sourceRank &&
+        next.confidenceMillionths < prior.confidenceMillionths))
+  ) {
+    return { accepted: false, state, reason: "weaker" };
+  }
+  if (
+    next.scopeEpoch === prior.scopeEpoch &&
+    next.observedAt === prior.observedAt &&
+    next.sourceRank === prior.sourceRank &&
+    next.confidenceMillionths === prior.confidenceMillionths
+  ) {
+    return { accepted: false, state, reason: "stale" };
+  }
+  return null;
+}
+
+function createMemoryAuthorityOwner(
+  ledger: GovernorHostAntiRollbackLedger,
+  afterLedgerAppend?: () => void,
+): { authority: GovernorTrustedMemoryAuthority; close: () => void } {
+  let closed = false;
+  const assertOpen = () => {
+    if (closed) {
+      throw new Error("GOVERNOR_HOST_CAPABILITY_CLOSED");
+    }
+  };
+  const authority: GovernorTrustedMemoryAuthority = Object.freeze({
+    advance: (binding) => {
+      assertOpen();
+      const digest = memoryAuthorityBinding(binding);
+      const key = memoryAuthorityKey(binding.scopeKey, binding.factKey);
+      const current = ledger.state("memory", key);
+      if (current?.status === "memory_current" && current.bindingDigest === digest) {
+        return { accepted: true, state: memoryAuthorityState(current)! };
+      }
+      if (current) {
+        const rejection = rejectMemoryAdvance(current, binding);
+        if (rejection) {
+          return rejection;
+        }
+      }
+      const next = ledger.append({
+        kind: "memory",
+        key,
+        generation: (current?.generation ?? 0) + 1,
+        status: "memory_current",
+        bindingDigest: digest,
+        ordering: binding.ordering,
+      });
+      afterLedgerAppend?.();
+      return { accepted: true, state: memoryAuthorityState(next)! };
+    },
+    retire: (binding) => {
+      assertOpen();
+      assertGovernorBoundarySafe("memory", assertGovernorJsonResources(binding));
+      const key = memoryAuthorityKey(binding.scopeKey, binding.factKey);
+      const digest = governorDigest({ kind: "memory-retired", ...binding });
+      const current = ledger.state("memory", key);
+      if (current?.status === "memory_retired" && current.bindingDigest === digest) {
+        return memoryAuthorityState(current)!;
+      }
+      if (
+        current &&
+        (current.status !== "memory_current" ||
+          current.bindingDigest !== memoryAuthorityBinding(binding))
+      ) {
+        throw new Error("Governor memory retirement does not match current host authority");
+      }
+      const next = ledger.append({
+        kind: "memory",
+        key,
+        generation: (current?.generation ?? 0) + 1,
+        status: "memory_retired",
+        bindingDigest: digest,
+        ordering: binding.ordering,
+      });
+      afterLedgerAppend?.();
+      return memoryAuthorityState(next)!;
+    },
+    state: (scopeKey, factKey) => {
+      assertOpen();
+      return memoryAuthorityState(ledger.state("memory", memoryAuthorityKey(scopeKey, factKey)));
+    },
+    matches: (binding, generation, bindingDigest) => {
+      assertOpen();
+      const expectedBinding = memoryAuthorityBinding(binding);
+      const current = ledger.state("memory", memoryAuthorityKey(binding.scopeKey, binding.factKey));
+      return (
+        current?.status === "memory_current" &&
+        current.generation === generation &&
+        current.bindingDigest === bindingDigest &&
+        bindingDigest === expectedBinding
+      );
+    },
+  });
+  MEMORY_AUTHORITIES.add(authority);
+  return { authority, close: () => (closed = true) };
+}
 
 function governorPrimaryHasDurableState(options: OpenClawStateDatabaseOptions): boolean {
   const { db } = openOpenClawStateDatabase(options);
@@ -108,125 +264,6 @@ const PORTS = new WeakSet<object>();
 
 export function isGovernorHostPersistence(value: GovernorHostPersistence): boolean {
   return PORTS.has(value);
-}
-
-function primaryApprovalEpoch(db: DatabaseSync, scopeKey: string): number {
-  const row = executeSqliteQueryTakeFirstSync(
-    db,
-    dbx(db)
-      .selectFrom("governor_approval_epochs")
-      .select("epoch")
-      .where("scope_key", "=", scopeKey),
-  );
-  return normalizeSqliteNumber(row?.epoch ?? null) ?? 0;
-}
-
-function writeApprovalEpoch(
-  db: DatabaseSync,
-  scopeKey: string,
-  epoch: number,
-  observedAt: number,
-): void {
-  executeSqliteQuerySync(
-    db,
-    dbx(db)
-      .insertInto("governor_approval_epochs")
-      .values({ scope_key: scopeKey, epoch, updated_at: observedAt })
-      .onConflict((conflict) =>
-        conflict.column("scope_key").doUpdateSet({ epoch, updated_at: observedAt }),
-      ),
-  );
-}
-
-function requestStartedApprovalCancellation(
-  db: DatabaseSync,
-  grantId: string,
-  now: number,
-): boolean {
-  const rows = executeSqliteQuerySync(
-    db,
-    dbx(db)
-      .selectFrom("governor_action_intents")
-      .selectAll()
-      .where("state", "=", "running")
-      .where("effect_started_at", "is not", null),
-  );
-  let found = false;
-  for (const row of rows.rows) {
-    try {
-      const proposal = JSON.parse(row.proposal_json) as unknown;
-      if (typeof proposal !== "object" || proposal === null) {
-        return true;
-      }
-      if (!("approvalGrantId" in proposal)) {
-        if (normalizeSqliteNumber(row.approval_required) === 1) {
-          return true;
-        }
-        continue;
-      }
-      if (proposal.approvalGrantId !== grantId) {
-        continue;
-      }
-      found = true;
-      executeSqliteQuerySync(
-        db,
-        dbx(db)
-          .updateTable("governor_action_intents")
-          .set({ cancellation_requested_at: row.cancellation_requested_at ?? now, updated_at: now })
-          .where("task_id", "=", row.task_id)
-          .where("effect_id", "=", row.effect_id)
-          .where("state", "=", "running")
-          .where("claim_epoch", "=", row.claim_epoch),
-      );
-    } catch {
-      return true;
-    }
-  }
-  return found;
-}
-
-function cancelUnstartedApprovalExecutions(db: DatabaseSync, grantId: string, now: number): void {
-  const rows = executeSqliteQuerySync(
-    db,
-    dbx(db)
-      .selectFrom("governor_action_intents")
-      .selectAll()
-      .where("state", "=", "running")
-      .where("effect_started_at", "is", null),
-  );
-  for (const row of rows.rows) {
-    let proposal: unknown;
-    try {
-      proposal = JSON.parse(row.proposal_json) as unknown;
-    } catch {
-      continue;
-    }
-    if (
-      typeof proposal !== "object" ||
-      proposal === null ||
-      !("approvalGrantId" in proposal) ||
-      proposal.approvalGrantId !== grantId
-    ) {
-      continue;
-    }
-    executeSqliteQuerySync(
-      db,
-      dbx(db)
-        .updateTable("governor_action_intents")
-        .set({
-          state: "cancelled",
-          cancelled_at: now,
-          lease_expires_at: null,
-          claim_epoch: (normalizeSqliteNumber(row.claim_epoch) ?? 0) + 1,
-          updated_at: now,
-        })
-        .where("task_id", "=", row.task_id)
-        .where("effect_id", "=", row.effect_id)
-        .where("state", "=", "running")
-        .where("claim_epoch", "=", row.claim_epoch)
-        .where("updated_at", "=", row.updated_at),
-    );
-  }
 }
 
 /** Called only from trusted bootstrap; the ledger is a separate host sidecar. */
@@ -299,11 +336,17 @@ export function createGovernorHostPersistence(params: {
     );
   };
 
+  const memoryAuthorityOwner = createMemoryAuthorityOwner(ledger, params.testAfterLedgerAppend);
   const port: GovernorHostPersistence = Object.freeze({
     close: () => {
       const errors: unknown[] = [];
       try {
         params.testClose?.();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        memoryAuthorityOwner.close();
       } catch (error) {
         errors.push(error);
       }
@@ -317,7 +360,7 @@ export function createGovernorHostPersistence(params: {
       }
     },
     physicalExecutions: createGovernorPhysicalExecutionCoordinator(ledger),
-    memoryAuthority: createGovernorMemoryAuthority(ledger, params.testAfterLedgerAppend),
+    memoryAuthority: memoryAuthorityOwner.authority,
     taskAuthority: createGovernorTaskAuthority(ledger, params.testAfterLedgerAppend),
     ...createGovernorOwnerIngressPersistence(options, ledger),
     ...createGovernorHostDeliveryPersistence({
@@ -438,13 +481,7 @@ export function createGovernorHostPersistence(params: {
           });
         }
         writeApprovalEpoch(db, input.scopeKey, targetEpoch, input.observedAt);
-        executeSqliteQuerySync(
-          db,
-          dbx(db)
-            .updateTable("governor_approval_grants")
-            .set({ revoked_at: input.observedAt })
-            .where("grant_id", "=", input.grantId),
-        );
+        markApprovalGrantRevoked(db, input.grantId, input.observedAt);
         return true;
       }, options);
     },

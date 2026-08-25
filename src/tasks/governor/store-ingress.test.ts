@@ -6,7 +6,7 @@ import {
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createGovernorEventRecord } from "./events.js";
 import { GovernorResourceGuardError } from "./resource-guard.js";
-import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 import type { GovernorTaskContract, GovernorTaskScope } from "./types.js";
 
 const scope: GovernorTaskScope = {
@@ -37,7 +37,7 @@ describe("governor task ingress resource boundary", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-resource-ingress-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const store = createGovernorTestStore({ stateDir: state.stateDir }).store;
         expect(() =>
           store.ingest({
             sourceMessageId: "ingress-resource-test",
@@ -67,7 +67,7 @@ describe("governor task ingress resource boundary", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-flow-ingress-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const store = createGovernorTestStore({ stateDir: state.stateDir }).store;
         const current = store.ingest({
           sourceMessageId: "flow-resource-test",
           sourceSequence: 1,

@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { governorDigest } from "../tasks/governor/canonical-json.js";
 import { isTrustedGovernorReceiptResolver } from "./governor-host-broker.js";
 import { createHostDeliveryImplementation } from "./governor-host-delivery-implementations.js";
-import { createGovernorTestHostBindings } from "./governor-host-readonly.js";
+import { createGovernorTestBindings } from "./test-helpers/governor-test-host-bindings.js";
 
 describe("governor host broker", () => {
   it("keeps receipt creation capability separate from a scope-bound resolver", () => {
-    const broker = createGovernorTestHostBindings();
+    const broker = createGovernorTestBindings();
     const receiptId = broker.capabilities.submitObservedReceipt({
       scopeKey: "scope-a",
       taskId: "task-a",
@@ -26,7 +26,7 @@ describe("governor host broker", () => {
   });
 
   it("resolves only a compiled implementation and snapshots caller-owned config", async () => {
-    const broker = createGovernorTestHostBindings();
+    const broker = createGovernorTestBindings();
     const originalConfig = { label: "before", nested: { value: "before" } };
     const registration = {
       implementationId: "synthetic",
@@ -60,7 +60,7 @@ describe("governor host broker", () => {
   });
 
   it("persists authenticated owner ingress without raw channel identities", () => {
-    const broker = createGovernorTestHostBindings();
+    const broker = createGovernorTestBindings();
     const id = broker.capabilities.submitAuthenticatedOwnerIngress({
       channel: "signal",
       accountId: "private-account-fixture",
@@ -91,7 +91,7 @@ describe("governor host broker", () => {
   });
 
   it("rejects arbitrary IDs, caller functions, registries, and executable config fields", () => {
-    const broker = createGovernorTestHostBindings();
+    const broker = createGovernorTestBindings();
     expect(() =>
       broker.capabilities.registerStaticDeliveryAdapter({
         implementationId: "caller-owned",

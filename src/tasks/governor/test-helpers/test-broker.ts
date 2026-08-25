@@ -1,16 +1,16 @@
 // Synthetic host bootstrap for governor tests only. Never import from runtime code.
-import { createGovernorTestHostBindings } from "../../security/governor-host-readonly.js";
+import { createGovernorTestBindings } from "../../../security/test-helpers/governor-test-host-bindings.js";
 import type {
   GovernorRecordAdmittedToolOutcomeParams,
   GovernorRecordToolOutcomeParams,
-} from "./action-runtime.js";
-import type { GovernorJsonValue } from "./canonical-json.js";
-import { GovernorCapabilityRegistry } from "./capability-registry.js";
-import type { GovernorController } from "./controller.js";
-import { GovernorSqliteStore } from "./store.js";
+} from "../action-runtime.js";
+import type { GovernorJsonValue } from "../canonical-json.js";
+import { GovernorCapabilityRegistry } from "../capability-registry.js";
+import type { GovernorController } from "../controller.js";
+import { GovernorSqliteStore } from "../store.js";
 
 export function createGovernorTestBroker(params: { stateDir?: string } = {}) {
-  return createGovernorTestHostBindings(params);
+  return createGovernorTestBindings(params);
 }
 
 export function createGovernorTestStore(
@@ -22,6 +22,7 @@ export function createGovernorTestStore(
     store: new GovernorSqliteStore({
       ...params,
       receiptResolver: broker.resolver,
+      evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
       approvalResolver: broker.approvalResolver,
       deliveryResolver: broker.deliveryResolver,
       physicalExecutionCoordinator: broker.physicalExecutionCoordinator,

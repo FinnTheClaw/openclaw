@@ -2,7 +2,7 @@
 import { governorActionTerminationReceiptPayload } from "./action-execution-lifecycle.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import type { GovernorController } from "./controller.js";
-import type { createGovernorTestStore } from "./test-broker.js";
+import type { createGovernorTestStore } from "./test-helpers/test-broker.js";
 
 export function reconcileMandatoryUnknownMutation(params: {
   controller: GovernorController;

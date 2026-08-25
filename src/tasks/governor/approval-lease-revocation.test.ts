@@ -6,7 +6,7 @@ import { governorActionTerminationReceiptPayload } from "./action-execution-life
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestBroker } from "./test-broker.js";
+import { createGovernorTestBroker } from "./test-helpers/test-broker.js";
 import { createGovernorEffectId, type GovernorTaskId, type GovernorTaskScope } from "./types.js";
 
 const scope: GovernorTaskScope = {
@@ -110,9 +110,12 @@ describe("governor approval lease fencing", () => {
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
           physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+          memoryAuthority: broker.memoryAuthority,
+          taskAuthority: broker.taskAuthority,
           secrets: broker.secrets,
           capabilities: registry,
         });
@@ -182,8 +185,12 @@ describe("governor approval lease fencing", () => {
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
+          physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+          memoryAuthority: broker.memoryAuthority,
+          taskAuthority: broker.taskAuthority,
           secrets: broker.secrets,
           capabilities: registry,
         });
@@ -270,8 +277,12 @@ describe("governor approval lease fencing", () => {
         const restartedStore = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: restartedBroker.resolver,
+          evidenceInvalidationResolver: restartedBroker.evidenceInvalidationResolver,
           approvalResolver: restartedBroker.approvalResolver,
           deliveryResolver: restartedBroker.deliveryResolver,
+          physicalExecutionCoordinator: restartedBroker.physicalExecutionCoordinator,
+          memoryAuthority: restartedBroker.memoryAuthority,
+          taskAuthority: restartedBroker.taskAuthority,
           secrets: restartedBroker.secrets,
           capabilities: restartedCapabilities,
         });
@@ -309,9 +320,12 @@ describe("governor approval lease fencing", () => {
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
           physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+          memoryAuthority: broker.memoryAuthority,
+          taskAuthority: broker.taskAuthority,
           secrets: broker.secrets,
           capabilities: registry,
         });

@@ -10,7 +10,7 @@ import {
   createGovernorTestStore,
   recordGovernorTestToolOutcome,
   resolveGovernorTestMutation,
-} from "./test-broker.js";
+} from "./test-helpers/test-broker.js";
 import {
   createGovernorEffectId,
   type GovernorPlan,
@@ -476,7 +476,10 @@ describe("governor mutation reconciliation and delivery", () => {
       providerSend(oldClaim.entry.deliveryKey);
 
       closeOpenClawStateDatabase();
-      const restartedStore = new GovernorSqliteStore({ stateDir, capabilities: capabilities() });
+      const restartedStore = createGovernorTestStore({
+        stateDir,
+        capabilities: capabilities(),
+      }).store;
       const newClaim = restartedStore.outbox.claim({
         taskId,
         effectId,

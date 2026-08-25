@@ -5,7 +5,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorActionRejectedError, GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { evaluateGovernorActionAdmission, governorProgressVectorHash } from "./progress-monitor.js";
-import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 import { createGovernorEffectRecord, type GovernorActionProposal } from "./tool-outcome.js";
 import {
   createGovernorEffectId,
@@ -182,10 +182,7 @@ describe("governed actions", () => {
       { layout: "state-only", prefix: "openclaw-governor-late-result-" },
       async (state) => {
         const capabilities = registry();
-        const store = new GovernorSqliteStore({
-          stateDir: state.stateDir,
-          capabilities,
-        });
+        const { store } = createGovernorTestStore({ stateDir: state.stateDir, capabilities });
         const controller = new GovernorController(store, capabilities);
         try {
           const taskId = controller.ingest({
@@ -242,10 +239,7 @@ describe("governed actions", () => {
       { layout: "state-only", prefix: "openclaw-governor-no-progress-" },
       async (state) => {
         const capabilities = registry();
-        const store = new GovernorSqliteStore({
-          stateDir: state.stateDir,
-          capabilities,
-        });
+        const { store } = createGovernorTestStore({ stateDir: state.stateDir, capabilities });
         const controller = new GovernorController(store, capabilities);
         try {
           const taskId = controller.ingest({

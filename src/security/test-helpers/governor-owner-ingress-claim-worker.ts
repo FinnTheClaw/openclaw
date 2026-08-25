@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import {
-  createGovernorTestHostBindings,
-  type HostGovernorOwnerIngressReceiptId,
-} from "../governor-host-readonly.js";
+import type { HostGovernorOwnerIngressReceiptId } from "../governor-host-readonly.js";
+import { createGovernorTestBindings } from "./governor-test-host-bindings.js";
 
 const [stateDir, receiptId, nowValue, outputPath] = process.argv.slice(2);
 if (!stateDir || !receiptId || !nowValue || !outputPath) {
@@ -14,7 +12,7 @@ let claimed = false;
 let errored = false;
 let errorMessage = "";
 try {
-  const broker = createGovernorTestHostBindings({ stateDir });
+  const broker = createGovernorTestBindings({ stateDir });
   claimed = Boolean(
     broker.ownerIngressResolver.claim(
       receiptId as HostGovernorOwnerIngressReceiptId,

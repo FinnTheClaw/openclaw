@@ -9,7 +9,7 @@ import { createGovernorEvidenceCandidate, type GovernorEvidenceSourceKind } from
 import { governorMemoryFactPredicate } from "./memory-contradiction-policy.js";
 import type { GovernorMemoryRepairAction } from "./memory-remediation-runtime.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestStore } from "./test-broker.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 import type {
   GovernorPlan,
   GovernorTaskContract,

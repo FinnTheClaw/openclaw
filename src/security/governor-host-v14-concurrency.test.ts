@@ -15,7 +15,7 @@ import {
   resetSyntheticHostDeliveryAttempts,
 } from "./governor-host-delivery-implementations.js";
 import { createGovernorHostPersistence } from "./governor-host-persistence.js";
-import { createGovernorTestHostBindings } from "./governor-host-readonly.js";
+import { createGovernorTestBindings } from "./test-helpers/governor-test-host-bindings.js";
 import {
   resolveGovernorSecrets,
   syntheticGovernorSecretsEnvironment,
@@ -63,7 +63,7 @@ describe("governor V14 host concurrency fences", () => {
       { layout: "state-only", prefix: "governor-v14-retained-delivery-" },
       async (state) => {
         resetSyntheticHostDeliveryAttempts("test", "retained-revoke");
-        const broker = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const broker = createGovernorTestBindings({ stateDir: state.stateDir });
         const handle = broker.capabilities.registerStaticDeliveryAdapter({
           implementationId: "synthetic",
           config: { observerKey: "retained-revoke" },
@@ -183,7 +183,7 @@ describe("governor V14 host concurrency fences", () => {
       { layout: "state-only", prefix: "governor-v14-delivery-crash-" },
       async (state) => {
         resetSyntheticHostDeliveryAttempts("test", "effect-crash");
-        const broker = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const broker = createGovernorTestBindings({ stateDir: state.stateDir });
         const handle = broker.capabilities.registerStaticDeliveryAdapter({
           implementationId: "synthetic",
           config: { observerKey: "effect-crash", throwBeforeSend: true },
@@ -198,7 +198,7 @@ describe("governor V14 host concurrency fences", () => {
           /GOVERNOR_DELIVERY_TRANSPORT_INTERRUPTED/u,
         );
         closeOpenClawStateDatabase();
-        const restarted = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const restarted = createGovernorTestBindings({ stateDir: state.stateDir });
         const restartedHandle = restarted.capabilities.registerStaticDeliveryAdapter({
           implementationId: "synthetic",
           config: { observerKey: "effect-crash", throwBeforeSend: true },
@@ -228,7 +228,7 @@ describe("governor V14 host concurrency fences", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v14-owner-claim-" },
       async (state) => {
-        const first = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const first = createGovernorTestBindings({ stateDir: state.stateDir });
         const receiptId = first.capabilities.submitAuthenticatedOwnerIngress({
           channel: "signal",
           accountId: "claim-account-fixture",
@@ -242,7 +242,7 @@ describe("governor V14 host concurrency fences", () => {
           observedAt: 100,
           expiresAt: 100_000,
         });
-        const second = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const second = createGovernorTestBindings({ stateDir: state.stateDir });
         const firstClaim = first.ownerIngressResolver.claim(receiptId, 101);
         expect(firstClaim).not.toBeNull();
         expect(second.ownerIngressResolver.claim(receiptId, 102)).toBeNull();
@@ -269,7 +269,7 @@ describe("governor V14 host concurrency fences", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v14-owner-processes-" },
       async (state) => {
-        const broker = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const broker = createGovernorTestBindings({ stateDir: state.stateDir });
         const receiptId = broker.capabilities.submitAuthenticatedOwnerIngress({
           channel: "signal",
           accountId: "process-account-fixture",
@@ -310,7 +310,7 @@ describe("governor V14 host concurrency fences", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v14-owner-revoke-" },
       async (state) => {
-        const broker = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const broker = createGovernorTestBindings({ stateDir: state.stateDir });
         const receiptId = broker.capabilities.submitAuthenticatedOwnerIngress({
           channel: "imessage",
           accountId: "revoked-account-fixture",
@@ -336,7 +336,7 @@ describe("governor V14 host concurrency fences", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v14-owner-finalize-crash-" },
       async (state) => {
-        const first = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const first = createGovernorTestBindings({ stateDir: state.stateDir });
         const receiptId = first.capabilities.submitAuthenticatedOwnerIngress({
           channel: "signal",
           accountId: "finalize-account-fixture",
@@ -366,7 +366,7 @@ describe("governor V14 host concurrency fences", () => {
         ).run(receiptId);
         closeOpenClawStateDatabase();
 
-        const restarted = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const restarted = createGovernorTestBindings({ stateDir: state.stateDir });
         const recovered = restarted.ownerIngressResolver.claim(receiptId, 30_102);
         if (!recovered) {
           throw new Error("expected recoverable finalization claim");
@@ -383,7 +383,7 @@ describe("governor V14 host concurrency fences", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v14-owner-replay-" },
       async (state) => {
-        const first = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const first = createGovernorTestBindings({ stateDir: state.stateDir });
         const receiptId = first.capabilities.submitAuthenticatedOwnerIngress({
           channel: "imessage",
           accountId: "replay-account-fixture",
@@ -408,7 +408,7 @@ describe("governor V14 host concurrency fences", () => {
         expect(first.ownerIngressResolver.finalize(claim, "task-consumed", 102)).toBe(true);
         closeOpenClawStateDatabase();
         fs.copyFileSync(snapshot, primary);
-        const restarted = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const restarted = createGovernorTestBindings({ stateDir: state.stateDir });
         expect(restarted.ownerIngressResolver.claim(receiptId, 103)).toBeNull();
         const delayedReceipt = restarted.capabilities.submitAuthenticatedOwnerIngress({
           channel: "imessage",

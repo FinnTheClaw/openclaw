@@ -30,7 +30,6 @@ import {
   createHostGovernorDeliveryBroker,
   isTrustedGovernorDeliveryResolver,
 } from "./governor-host-delivery-broker.js";
-import { closeGovernorMemoryAuthority } from "./governor-host-memory-authority.js";
 import {
   createHostOwnerIngressResolver,
   isTrustedGovernorOwnerIngressResolver as isTrustedOwnerIngressResolver,
@@ -346,11 +345,6 @@ export function createHostGovernorBroker(params: {
     }
     try {
       closeGovernorPhysicalExecutionCoordinator(physicalExecutionCoordinator);
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      closeGovernorMemoryAuthority(memoryAuthority);
     } catch (error) {
       errors.push(error);
     }

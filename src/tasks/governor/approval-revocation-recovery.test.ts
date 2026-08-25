@@ -85,9 +85,12 @@ describe("governor approval revocation crash recovery", () => {
           new GovernorSqliteStore({
             stateDir: state.stateDir,
             receiptResolver: broker.resolver,
+            evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
             approvalResolver: broker.approvalResolver,
             deliveryResolver: broker.deliveryResolver,
             physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+            memoryAuthority: broker.memoryAuthority,
+            taskAuthority: broker.taskAuthority,
             secrets,
             capabilities,
           });

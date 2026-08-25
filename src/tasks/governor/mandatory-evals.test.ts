@@ -27,8 +27,10 @@ import {
   mandatoryEvalScope,
 } from "./mandatory-eval-fixtures.js";
 import { GovernorRuntimeAdapter } from "./runtime-adapter.js";
-import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestStore, recordGovernorTestToolOutcome } from "./test-broker.js";
+import {
+  createGovernorTestStore,
+  recordGovernorTestToolOutcome,
+} from "./test-helpers/test-broker.js";
 import { createGovernorEffectId } from "./types.js";
 
 function registerMandatorySyntheticDelivery(
@@ -53,10 +55,7 @@ describe("behavior governor mandatory synthetic evals", () => {
       { layout: "state-only", prefix: "openclaw-governor-four-message-" },
       async (state) => {
         const capabilities = createMandatoryEvalRegistry();
-        const store = new GovernorSqliteStore({
-          stateDir: state.stateDir,
-          capabilities,
-        });
+        const { store } = createGovernorTestStore({ stateDir: state.stateDir, capabilities });
         const controller = new GovernorController(store, capabilities);
         try {
           const arrivals = [
@@ -435,10 +434,7 @@ describe("behavior governor mandatory synthetic evals", () => {
       { layout: "state-only", prefix: "openclaw-governor-semantic-eval-" },
       async (state) => {
         const capabilities = createMandatoryEvalRegistry();
-        const store = new GovernorSqliteStore({
-          stateDir: state.stateDir,
-          capabilities,
-        });
+        const { store } = createGovernorTestStore({ stateDir: state.stateDir, capabilities });
         const controller = new GovernorController(store, capabilities);
         try {
           const taskId = controller.ingest({

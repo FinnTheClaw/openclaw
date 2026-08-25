@@ -123,4 +123,60 @@ describe("secrets runtime state", () => {
     expect(second?.config.secretRefs.identityHmacKey).toBe("identity");
     expect(second?.env.OPENCLAW_STATE_DIR).toBe("fixture-state");
   });
+
+  it("allows unrelated refreshes but rejects source or resolved governor drift", () => {
+    const governor = {
+      enabled: true,
+      mode: "shadow",
+      secretRefs: {},
+      agentLoop: { scopes: [], criteria: [], toolBindings: [], maxTurns: 3 },
+    } as const;
+    const snapshot = (params: { channel: string; sourceMode?: string; resolvedKey?: string }) =>
+      ({
+        sourceConfig: {
+          channels: { slack: { signingSecret: params.channel } },
+          experimental: {
+            behaviorGovernor: { ...governor, mode: params.sourceMode ?? "shadow" },
+          },
+        },
+        config: {
+          channels: { slack: { signingSecret: params.channel } },
+          experimental: {
+            behaviorGovernor: {
+              ...governor,
+              secretRefs: { identityHmacKey: params.resolvedKey ?? "identity" },
+            },
+          },
+        },
+        authStores: [],
+        warnings: [],
+        webTools: {
+          search: { providerSource: "none", diagnostics: [] },
+          fetch: { providerSource: "none", diagnostics: [] },
+          diagnostics: [],
+        },
+      }) as unknown as PreparedSecretsRuntimeSnapshot;
+    const activate = (next: PreparedSecretsRuntimeSnapshot) =>
+      activateSecretsRuntimeSnapshotState({
+        snapshot: next,
+        refreshContext: null,
+        refreshHandler: null,
+      });
+
+    activate(snapshot({ channel: "old" }));
+    activate(snapshot({ channel: "new" }));
+    expect(getActiveSecretsRuntimeSnapshot()?.config.channels?.slack).toMatchObject({
+      signingSecret: "new",
+    });
+
+    expect(() => activate(snapshot({ channel: "ignored", sourceMode: "enforce" }))).toThrow(
+      "GOVERNOR_GATEWAY_RESTART_REQUIRED",
+    );
+    expect(() => activate(snapshot({ channel: "ignored", resolvedKey: "rotated" }))).toThrow(
+      "GOVERNOR_GATEWAY_RESTART_REQUIRED",
+    );
+    expect(getActiveSecretsRuntimeSnapshot()?.config.channels?.slack).toMatchObject({
+      signingSecret: "new",
+    });
+  });
 });

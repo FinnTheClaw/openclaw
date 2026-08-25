@@ -6,7 +6,7 @@ import {
   getSyntheticHostObservableSends,
   resetSyntheticHostDeliveryAttempts,
 } from "./governor-host-delivery-implementations.js";
-import { createGovernorTestHostBindings } from "./governor-host-readonly.js";
+import { createGovernorTestBindings } from "./test-helpers/governor-test-host-bindings.js";
 
 afterEach(() => {
   closeOpenClawStateDatabase();
@@ -19,7 +19,7 @@ describe("governor unknown delivery review", () => {
       { layout: "state-only", prefix: "governor-delivery-review-" },
       async (state) => {
         const config = { observerKey: "review-observer", throwDeliveryKey: "unknown-key" };
-        const first = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const first = createGovernorTestBindings({ stateDir: state.stateDir });
         const handle = first.capabilities.registerStaticDeliveryAdapter({
           implementationId: "synthetic",
           config,
@@ -39,7 +39,7 @@ describe("governor unknown delivery review", () => {
         );
 
         closeOpenClawStateDatabase();
-        const restarted = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const restarted = createGovernorTestBindings({ stateDir: state.stateDir });
         const reconstructedHandle = restarted.capabilities.registerStaticDeliveryAdapter({
           implementationId: "synthetic",
           config,
@@ -89,7 +89,7 @@ describe("governor unknown delivery review", () => {
           const observerKey = `review-${resolution}`;
           const payload = { safe: resolution };
           const config = { observerKey, throwDeliveryKey: "ambiguous-key" };
-          const first = createGovernorTestHostBindings({ stateDir: state.stateDir });
+          const first = createGovernorTestBindings({ stateDir: state.stateDir });
           const handle = first.capabilities.registerStaticDeliveryAdapter({
             implementationId: "synthetic",
             config,
@@ -102,7 +102,7 @@ describe("governor unknown delivery review", () => {
           await expect(adapter.send({ deliveryKey: "ambiguous-key", payload })).rejects.toThrow();
 
           closeOpenClawStateDatabase();
-          const restarted = createGovernorTestHostBindings({ stateDir: state.stateDir });
+          const restarted = createGovernorTestBindings({ stateDir: state.stateDir });
           expect(
             restarted.capabilities.registerStaticDeliveryAdapter({
               implementationId: "synthetic",

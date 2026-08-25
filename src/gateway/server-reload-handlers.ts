@@ -14,6 +14,7 @@ import {
 } from "../agents/model-provider-auth.js";
 import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.js";
 import type { CliDeps } from "../cli/deps.types.js";
+import { deriveBehaviorGovernorBootDecision } from "../config/behavior-governor-boot-decision.js";
 import { isRestartEnabled } from "../config/commands.flags.js";
 import { getRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -225,12 +226,16 @@ type ManagedGatewayConfigReloaderParams = Omit<
   sharedGatewaySessionGenerationState: SharedGatewaySessionGenerationState;
   clients: Iterable<SharedGatewayAuthClient>;
   reconcileTerminalSessions: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void;
-  onBehaviorGovernorConfigChange?: (
-    plan: GatewayReloadPlan,
-    nextConfig: OpenClawConfig,
-  ) => Promise<void>;
   commitTerminalConfig: () => void;
 };
+
+function behaviorGovernorChanged(plan: GatewayReloadPlan): boolean {
+  return plan.changedPaths.some(
+    (path) =>
+      path === "experimental.behaviorGovernor" ||
+      path.startsWith("experimental.behaviorGovernor."),
+  );
+}
 
 export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) {
   const myGeneration = ++currentReloadGeneration;
@@ -799,8 +804,19 @@ export function startManagedGatewayConfigReloader(
     promoteSnapshot: async (snapshot, _reason) => await params.promoteSnapshot(snapshot),
     subscribeToWrites: params.subscribeToWrites,
     onConfigChange: async (plan, nextConfig) => {
-      await params.onBehaviorGovernorConfigChange?.(plan, nextConfig);
-      params.reconcileTerminalSessions(plan, nextConfig);
+      if (!plan.restartGateway) {
+        params.reconcileTerminalSessions(plan, nextConfig);
+      }
+    },
+    validateConfigCandidate: async (plan, nextConfig) => {
+      if (behaviorGovernorChanged(plan)) {
+        // Validate supported process posture without replacing the bound boot decision.
+        deriveBehaviorGovernorBootDecision(nextConfig);
+        await params.activateRuntimeSecrets(nextConfig, {
+          reason: "restart-check",
+          activate: false,
+        });
+      }
     },
     onConfigApplied: () => params.commitTerminalConfig(),
     onNoopConfigCommit: async (_plan, nextConfig) => {
@@ -859,6 +875,12 @@ export function startManagedGatewayConfigReloader(
       const previousSharedGatewaySessionGeneration =
         params.sharedGatewaySessionGenerationState.current;
       try {
+        if (behaviorGovernorChanged(plan)) {
+          if (!requestGatewayRestart(plan, nextConfig)) {
+            throw new Error("GOVERNOR_GATEWAY_RESTART_UNAVAILABLE");
+          }
+          return;
+        }
         const prepared = await params.activateRuntimeSecrets(nextConfig, {
           reason: "restart-check",
           activate: false,

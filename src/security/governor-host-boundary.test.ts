@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { GovernorSqliteStore } from "../tasks/governor/store.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const authorityModules = [
@@ -175,9 +177,14 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
 function files(directory: string): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const target = path.join(directory, entry.name);
+    if (entry.isDirectory() && entry.name === "test-helpers") {
+      return [];
+    }
     return entry.isDirectory()
       ? files(target)
-      : target.endsWith(".ts") && !target.endsWith(".test.ts")
+      : target.endsWith(".ts") &&
+          !target.endsWith(".test.ts") &&
+          !target.endsWith("-test-helpers.ts")
         ? [target]
         : [];
   });
@@ -198,10 +205,71 @@ describe("governor host authority boundary", () => {
 
   it("keeps host authority and test-only bridge out of package exports", () => {
     const manifest = fs.readFileSync(path.join(root, "..", "package.json"), "utf8");
+    const tsdown = fs.readFileSync(path.join(root, "..", "tsdown.config.ts"), "utf8");
     for (const moduleName of authorityModules) {
       expect(manifest).not.toContain(moduleName);
     }
     expect(manifest).not.toContain("governor-host-readonly");
+    expect(tsdown).not.toMatch(/(?:governor-host-memory-authority|governor-test-host-bindings)/u);
+    expect(manifest).not.toMatch(/(?:governor-host-memory-authority|governor-test-host-bindings)/u);
+  });
+
+  it("keeps production sources free of the old test factory and mutable test bypass", () => {
+    for (const file of files(root)) {
+      const source = fs.readFileSync(file, "utf8");
+      expect(source, file).not.toContain("createGovernorTestHostBindings");
+      if (file.includes("governor")) {
+        expect(source, file).not.toMatch(
+          /process\.env\.NODE_ENV[^\n]*(?:test|production)|(?:test|production)[^\n]*process\.env\.NODE_ENV/u,
+        );
+      }
+    }
+  });
+
+  it("fails closed before creating state when trusted store bindings are missing", () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-governor-no-bindings-"));
+    try {
+      expect(() => new GovernorSqliteStore({ stateDir })).toThrow(
+        "Governor store requires a trusted host receipt resolver",
+      );
+      expect(fs.readdirSync(stateDir)).toEqual([]);
+      const bootstrap = fs.readFileSync(
+        path.join(root, "tasks/governor/store-bootstrap.ts"),
+        "utf8",
+      );
+      expect(bootstrap).not.toMatch(
+        /(?:createHostGovernorBroker|resolveGovernorSecrets|syntheticGovernorSecretsEnvironment)/u,
+      );
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps memory authority construction and revocation private to persistence ownership", () => {
+    const contractSource = fs.readFileSync(
+      path.join(root, "security/governor-host-memory-authority.ts"),
+      "utf8",
+    );
+    expect(contractSource).not.toMatch(
+      /export\s+(?:function|const|class)\s+(?:create|close|isTrusted)GovernorMemoryAuthority/u,
+    );
+    const persistenceSource = fs.readFileSync(
+      path.join(root, "security/governor-host-persistence.ts"),
+      "utf8",
+    );
+    expect(persistenceSource).toContain("function createMemoryAuthorityOwner(");
+    expect(persistenceSource).toContain("memoryAuthorityOwner.close()");
+    const owners = files(root)
+      .filter((file) => {
+        const source = fs.readFileSync(file, "utf8");
+        return (
+          source.includes("function createMemoryAuthorityOwner(") ||
+          source.includes("MEMORY_AUTHORITIES.add(") ||
+          source.includes("memoryAuthorityOwner.close()")
+        );
+      })
+      .map((file) => path.relative(root, file).replaceAll("\\", "/"));
+    expect(owners).toEqual(["security/governor-host-persistence.ts"]);
   });
 
   it("allows authority modules only through the explicit whole-source dependency map", () => {

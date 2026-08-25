@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
+import { collectGovernorProductionAuthoritySurfaceErrors } from "./lib/governor-production-authority-surface.mjs";
 import { LOCAL_BUILD_METADATA_DIST_PATHS } from "./lib/local-build-metadata-paths.mjs";
 import {
   collectPackageDistImports,
@@ -559,6 +560,7 @@ errors.push(
     imports: packageDistImports ?? undefined,
   }),
 );
+errors.push(...collectGovernorProductionAuthoritySurfaceErrors(normalized, readTarEntry));
 
 if (errors.length > 0) {
   fs.rmSync(extractDir, { recursive: true, force: true });

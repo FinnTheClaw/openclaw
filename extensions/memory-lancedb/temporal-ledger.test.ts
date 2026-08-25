@@ -170,6 +170,13 @@ describe("TemporalMemoryLedger", () => {
         now: 10_001,
       }),
     ).toBe("dead");
+    expect(
+      db.claimMaterializationBatch({
+        owner: "materialization-before-recovery",
+        limit: 1,
+        now: 19_999,
+      }),
+    ).toEqual([]);
     expect(db.getStats()).toMatchObject({
       events: 1,
       deadProjection: 1,
@@ -210,8 +217,8 @@ describe("TemporalMemoryLedger", () => {
       }),
     ).toEqual([expect.objectContaining({ eventId: event.eventId, attempts: 1 })]);
 
-    expect(db.requeueDeadLetters({ queue: "all", now: 22_000 })).toEqual({
-      queue: "all",
+    expect(db.requeueDeadLetters({ queue: "materialization", now: 22_000 })).toEqual({
+      queue: "materialization",
       projection: 0,
       extraction: 0,
       materialization: 1,

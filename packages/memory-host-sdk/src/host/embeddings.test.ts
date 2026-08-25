@@ -69,6 +69,18 @@ function mockLocalEmbeddingRuntime(
 }
 
 describe("local embedding provider", () => {
+  it("rejects pending worker requests before disconnecting the child", async () => {
+    const source = await fs.readFile(new URL("./embeddings-worker.ts", import.meta.url), "utf8");
+    const shutdown = source.match(
+      /private shutdownChild\(\): void \{(?<body>[\s\S]*?)\n  \}\n\n  \/\*\* Reject all pending/u,
+    )?.groups?.body;
+    expect(shutdown).toBeDefined();
+    expect(shutdown!.indexOf("this.rejectPending(")).toBeGreaterThanOrEqual(0);
+    expect(shutdown!.indexOf("this.rejectPending(")).toBeLessThan(
+      shutdown!.indexOf("child.disconnect()"),
+    );
+  });
+
   it("normalizes local embeddings and resolves the default local model", async () => {
     const runtime = mockLocalEmbeddingRuntime();
 

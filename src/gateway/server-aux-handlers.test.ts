@@ -145,9 +145,16 @@ type SecretsReloadHarnessParams = {
 
 function createSecretsReloadHarness(params: SecretsReloadHarnessParams) {
   const respond = params.respond ?? vi.fn();
+  const activatePreparedSnapshot = vi.fn(async (snapshot: PreparedSecretsRuntimeSnapshot) => {
+    activateSecretsRuntimeSnapshot(snapshot);
+    return snapshot;
+  });
+  const activateRuntimeSecrets = Object.assign(params.activateRuntimeSecrets, {
+    activatePreparedSnapshot,
+  });
   const { extraHandlers } = createGatewayAuxHandlers({
     log: {},
-    activateRuntimeSecrets: params.activateRuntimeSecrets,
+    activateRuntimeSecrets,
     buildReloadPlan: params.buildReloadPlan,
     sharedGatewaySessionGenerationState: params.sharedGatewaySessionGenerationState ?? {
       current: undefined,
@@ -164,6 +171,7 @@ function createSecretsReloadHarness(params: SecretsReloadHarnessParams) {
 
   return {
     extraHandlers,
+    activatePreparedSnapshot,
     respond,
     reload: () => invokeSecretsReload({ handlers: extraHandlers, respond }),
   };
@@ -241,10 +249,7 @@ describe("gateway aux handlers", () => {
     const prepared = createSnapshot(
       slackZaloDiscordConfig("new-slack-secret", "new-zalo-secret", "unchanged-discord-token"),
     );
-    const activateRuntimeSecrets = vi.fn().mockImplementation(async () => {
-      activateSecretsRuntimeSnapshot(prepared);
-      return prepared;
-    });
+    const activateRuntimeSecrets = vi.fn().mockResolvedValue(prepared);
     const { reload, respond, startChannel, stopChannel } =
       createSecretsReloadHarnessWithChannelMocks({
         activateRuntimeSecrets,
@@ -278,7 +283,6 @@ describe("gateway aux handlers", () => {
       // handler were not serialized.
       await Promise.resolve();
       await Promise.resolve();
-      activateSecretsRuntimeSnapshot(preparedFirst);
       activationOrder.push("first-end");
       return preparedFirst;
     });
@@ -487,5 +491,36 @@ describe("gateway aux handlers", () => {
     expect(stopChannel).not.toHaveBeenCalled();
     expect(startChannel).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(true, { ok: true, warningCount: 0 });
+  });
+
+  it("rejects a governor secret projection change before activating the prepared snapshot", async () => {
+    const oldGovernor = {
+      experimental: { behaviorGovernor: { enabled: true, mode: "shadow", secretRefs: {} } },
+    } as unknown as OpenClawConfig;
+    const newGovernor = {
+      experimental: {
+        behaviorGovernor: {
+          enabled: true,
+          mode: "shadow",
+          secretRefs: { identityHmacKey: "rotated" },
+        },
+      },
+    } as unknown as OpenClawConfig;
+    activateSnapshot(oldGovernor);
+    const { reload, respond, activatePreparedSnapshot } = createSecretsReloadHarness({
+      activateRuntimeSecrets: mockResolvedSecrets(newGovernor),
+      buildReloadPlan: () =>
+        createReloadPlan({
+          changedPaths: ["experimental.behaviorGovernor.secretRefs.identityHmacKey"],
+          restartGateway: true,
+          restartReasons: ["experimental.behaviorGovernor.secretRefs.identityHmacKey"],
+        }),
+    });
+
+    await reload();
+
+    expect(activatePreparedSnapshot).not.toHaveBeenCalled();
+    expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(oldGovernor);
+    expect(firstRespondCall(respond)[0]).toBe(false);
   });
 });

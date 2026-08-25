@@ -149,7 +149,7 @@ export function createGatewayAuxHandlers(params: {
                   previousSnapshot.sourceConfig,
                   {
                     reason: "reload",
-                    activate: true,
+                    activate: false,
                   },
                 );
                 nextSharedGatewaySessionGeneration =
@@ -157,6 +157,15 @@ export function createGatewayAuxHandlers(params: {
                 const plan = buildReloadPlan(
                   diffConfigPaths(previousSnapshot.config, prepared.config),
                 );
+                if (plan.restartGateway) {
+                  throw new Error(
+                    `secrets.reload requires gateway restart: ${plan.restartReasons.join(", ")}`,
+                  );
+                }
+                await params.activateRuntimeSecrets.activatePreparedSnapshot(prepared, {
+                  reason: "reload",
+                  activate: true,
+                });
                 setCurrentSharedGatewaySessionGeneration(
                   params.sharedGatewaySessionGenerationState,
                   nextSharedGatewaySessionGeneration,

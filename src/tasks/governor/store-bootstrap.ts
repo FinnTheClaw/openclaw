@@ -1,6 +1,5 @@
 // Constructs the explicit, feature-enabled governor store dependency graph.
 import {
-  createGovernorTestHostBindings,
   isTrustedGovernorReceiptResolver,
   isTrustedGovernorEvidenceInvalidationResolver,
   type GovernorTrustedApprovalResolver,
@@ -54,27 +53,14 @@ export type GovernorSqliteStoreParams = {
 };
 
 export function createGovernorStoreDependencies(params: GovernorSqliteStoreParams) {
-  const testBroker =
-    !params.receiptResolver ||
-    !params.evidenceInvalidationResolver ||
-    !params.approvalResolver ||
-    !params.deliveryResolver ||
-    !params.physicalExecutionCoordinator ||
-    !params.memoryAuthority ||
-    !params.taskAuthority ||
-    !params.secrets
-      ? createGovernorTestHostBindings({ stateDir: params.stateDir })
-      : undefined;
-  const receiptResolver = params.receiptResolver ?? testBroker?.resolver;
-  const evidenceInvalidationResolver =
-    params.evidenceInvalidationResolver ?? testBroker?.evidenceInvalidationResolver;
-  const approvalResolver = params.approvalResolver ?? testBroker?.approvalResolver;
-  const deliveryResolver = params.deliveryResolver ?? testBroker?.deliveryResolver;
-  const physicalExecutionCoordinator =
-    params.physicalExecutionCoordinator ?? testBroker?.physicalExecutionCoordinator;
-  const memoryAuthority = params.memoryAuthority ?? testBroker?.memoryAuthority;
-  const taskAuthority = params.taskAuthority ?? testBroker?.taskAuthority;
-  const secrets = params.secrets ?? testBroker?.secrets;
+  const receiptResolver = params.receiptResolver;
+  const evidenceInvalidationResolver = params.evidenceInvalidationResolver;
+  const approvalResolver = params.approvalResolver;
+  const deliveryResolver = params.deliveryResolver;
+  const physicalExecutionCoordinator = params.physicalExecutionCoordinator;
+  const memoryAuthority = params.memoryAuthority;
+  const taskAuthority = params.taskAuthority;
+  const secrets = params.secrets;
   if (!receiptResolver || !isTrustedGovernorReceiptResolver(receiptResolver)) {
     throw new Error("Governor store requires a trusted host receipt resolver");
   }

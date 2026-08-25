@@ -1,6 +1,6 @@
 // Proves durable FIFO fan-out, bounded execution, worker fencing, and deterministic fan-in.
 import { afterEach, describe, expect, it } from "vitest";
-import { createGovernorTestHostBindings } from "../../security/governor-host-readonly.js";
+import { createGovernorTestBindings } from "../../security/test-helpers/governor-test-host-bindings.js";
 import { closeOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { governorDigest } from "./canonical-json.js";
@@ -12,6 +12,7 @@ import {
   type GovernorFanoutJob,
 } from "./fanout.js";
 import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 import type {
   GovernorPlan,
   GovernorTaskContract,
@@ -62,19 +63,22 @@ async function withFanout(
     fanout: GovernorFanoutStore;
     stateDir: string;
     task: GovernorTaskProjection;
-    host: ReturnType<typeof createGovernorTestHostBindings>;
+    host: ReturnType<typeof createGovernorTestBindings>;
   }) => Promise<void> | void,
 ): Promise<void> {
   await withOpenClawTestState(
     { layout: "state-only", prefix: "openclaw-governor-fanout-" },
     async (state) => {
-      const host = createGovernorTestHostBindings({ stateDir: state.stateDir });
+      const host = createGovernorTestBindings({ stateDir: state.stateDir });
       const store = new GovernorSqliteStore({
         stateDir: state.stateDir,
         receiptResolver: host.resolver,
+        evidenceInvalidationResolver: host.evidenceInvalidationResolver,
         approvalResolver: host.approvalResolver,
         deliveryResolver: host.deliveryResolver,
         physicalExecutionCoordinator: host.physicalExecutionCoordinator,
+        memoryAuthority: host.memoryAuthority,
+        taskAuthority: host.taskAuthority,
         secrets: host.secrets,
       });
       const controller = new GovernorController(store, store.capabilities);
@@ -105,7 +109,7 @@ async function withFanout(
 
 function acknowledgeTermination(params: {
   fanout: GovernorFanoutStore;
-  host: ReturnType<typeof createGovernorTestHostBindings>;
+  host: ReturnType<typeof createGovernorTestBindings>;
   task: GovernorTaskProjection;
   job: GovernorFanoutJob;
   outcome: "crashed" | "terminated";
@@ -292,7 +296,7 @@ describe("governor durable fan-out and fan-in", () => {
       });
 
       closeOpenClawStateDatabase();
-      const reopened = new GovernorSqliteStore({ stateDir }).fanout;
+      const reopened = createGovernorTestStore({ stateDir }).store.fanout;
       expect(reopened.listJobs(task.taskId)).toHaveLength(10);
       expect(reopened.claimReducer({ task, round: 1, now: clock + 6 }).kind).toBe("completed");
     });

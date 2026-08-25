@@ -12,7 +12,7 @@ import {
 } from "../../test-utils/openclaw-test-state.js";
 import { governorDigest } from "./canonical-json.js";
 import { GovernorController } from "./controller.js";
-import { createGovernorTestStore } from "./test-broker.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 import type { GovernorPlan, GovernorTaskScope } from "./types.js";
 
 const plan: GovernorPlan = { kind: "ordered", steps: [] };

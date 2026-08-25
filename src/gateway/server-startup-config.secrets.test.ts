@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles.js";
+import { deriveBehaviorGovernorBootDecision } from "../config/behavior-governor-boot-decision.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.js";
 import { measureDiagnosticsTimelineSpan } from "../infra/diagnostics-timeline.js";
 import type { PreparedSecretsRuntimeSnapshot, SecretResolverWarning } from "../secrets/runtime.js";
@@ -141,6 +142,7 @@ function runtimeSecretsActivatorForTest(params: {
 }) {
   const defaultActivatorOptions = runtimeSecretsActivatorOptionsForTest();
   return createRuntimeSecretsActivator({
+    behaviorGovernorBootDecision: deriveBehaviorGovernorBootDecision({}),
     logSecrets: params.logSecrets ?? defaultActivatorOptions.logSecrets,
     emitStateEvent: params.emitStateEvent ?? defaultActivatorOptions.emitStateEvent,
     prepareRuntimeSecretsSnapshot: params.prepareRuntimeSecretsSnapshot,
@@ -265,13 +267,14 @@ function createGatewayStartupSecretsRuntimeHarness(prefix: string) {
 async function activateImportedStartupConfig(config: OpenClawConfig) {
   const { createRuntimeSecretsActivator: createActivator } =
     await import("./server-startup-config.js");
-  return await createActivator(runtimeSecretsActivatorOptionsForTest())(
-    gatewayTokenConfig(config),
-    {
-      reason: "startup",
-      activate: true,
-    },
-  );
+  const startupConfig = gatewayTokenConfig(config);
+  return await createActivator({
+    ...runtimeSecretsActivatorOptionsForTest(),
+    behaviorGovernorBootDecision: deriveBehaviorGovernorBootDecision(startupConfig),
+  })(startupConfig, {
+    reason: "startup",
+    activate: true,
+  });
 }
 
 async function prepareGatewaySecretRefStartupConfig(params: {
@@ -325,6 +328,37 @@ describe("gateway startup config secret preflight", () => {
     } else {
       process.env.OPENCLAW_SKIP_PROVIDERS = previousSkipProviders;
     }
+  });
+
+  it("preflights governor drift without granting activation authority", async () => {
+    const bootConfig = asConfig({
+      experimental: { behaviorGovernor: { enabled: true, mode: "shadow" } },
+    });
+    const changedConfig = asConfig({
+      experimental: { behaviorGovernor: { enabled: false } },
+    });
+    const prepareRuntimeSecretsSnapshot = vi.fn(async ({ config }) => preparedSnapshot(config));
+    const activateRuntimeSecretsSnapshot = vi.fn();
+    const activateRuntimeSecrets = createRuntimeSecretsActivator({
+      behaviorGovernorBootDecision: deriveBehaviorGovernorBootDecision(bootConfig),
+      ...runtimeSecretsActivatorOptionsForTest(),
+      prepareRuntimeSecretsSnapshot,
+      activateRuntimeSecretsSnapshot,
+    });
+
+    const prepared = await activateRuntimeSecrets(changedConfig, {
+      reason: "restart-check",
+      activate: false,
+    });
+    expect(prepareRuntimeSecretsSnapshot).toHaveBeenCalledTimes(1);
+    expect(activateRuntimeSecretsSnapshot).not.toHaveBeenCalled();
+    await expect(
+      activateRuntimeSecrets.activatePreparedSnapshot(prepared, {
+        reason: "restart-check",
+        activate: true,
+      }),
+    ).rejects.toThrow("GOVERNOR_GATEWAY_RESTART_REQUIRED");
+    expect(activateRuntimeSecretsSnapshot).not.toHaveBeenCalled();
   });
 
   it("measures startup auth subphases", async () => {

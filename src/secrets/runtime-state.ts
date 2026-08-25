@@ -1,4 +1,5 @@
 /** Holds active secrets runtime snapshots, refresh context, and cleanup hooks. */
+import { isDeepStrictEqual } from "node:util";
 import {
   clearRuntimeAuthProfileStoreSnapshots,
   getRuntimeAuthProfileStoreSnapshot,
@@ -139,6 +140,19 @@ export function activateSecretsRuntimeSnapshotState(params: {
   refreshContext: SecretsRuntimeRefreshContext | null;
   refreshHandler: RuntimeConfigSnapshotRefreshHandler | null;
 }): void {
+  if (
+    activeSnapshot &&
+    (!isDeepStrictEqual(
+      activeSnapshot.sourceConfig.experimental?.behaviorGovernor,
+      params.snapshot.sourceConfig.experimental?.behaviorGovernor,
+    ) ||
+      !isDeepStrictEqual(
+        activeSnapshot.config.experimental?.behaviorGovernor,
+        params.snapshot.config.experimental?.behaviorGovernor,
+      ))
+  ) {
+    throw new Error("GOVERNOR_GATEWAY_RESTART_REQUIRED");
+  }
   const next = cloneSnapshot(params.snapshot);
   const nextRefreshContext = params.refreshContext
     ? cloneSecretsRuntimeRefreshContext(params.refreshContext)

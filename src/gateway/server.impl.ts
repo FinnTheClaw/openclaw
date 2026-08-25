@@ -19,6 +19,7 @@ import {
 import type { ChannelId } from "../channels/plugins/types.public.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { isRestartEnabled } from "../config/commands.flags.js";
+import { deriveBehaviorGovernorBootDecision } from "../config/behavior-governor-boot-decision.js";
 import {
   getRuntimeConfig,
   promoteConfigSnapshotToLastKnownGood,
@@ -71,6 +72,7 @@ import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
 import { resolveGatewayAuth } from "./auth.js";
+import { revokeAndCloseBehaviorGovernor } from "./behavior-governor-close.js";
 import type {
   GatewayBehaviorGovernorHostFactory,
   GatewayBehaviorGovernorLifecycle,
@@ -605,6 +607,8 @@ export async function startGatewayServer(
     }),
   );
   const configSnapshot = startupConfigLoad.snapshot;
+  // This process-lifetime decision precedes secrets and governor state allocation.
+  const behaviorGovernorBootDecision = deriveBehaviorGovernorBootDecision(configSnapshot.config);
 
   const emitSecretsStateEvent = (
     code: "SECRETS_RELOADER_DEGRADED" | "SECRETS_RELOADER_RECOVERED",
@@ -618,6 +622,7 @@ export async function startGatewayServer(
   };
   const { createRuntimeSecretsActivator } = await startupConfigModulePromise;
   const activateRuntimeSecrets = createRuntimeSecretsActivator({
+    behaviorGovernorBootDecision,
     logSecrets,
     emitStateEvent: emitSecretsStateEvent,
     ...(startupConfigLoad.pluginMetadataSnapshot
@@ -1001,37 +1006,25 @@ export async function startGatewayServer(
 
   let closePreludeStarted = false;
   let behaviorGovernorLifecycle: GatewayBehaviorGovernorLifecycle | undefined;
-  const applyBehaviorGovernorConfig = async (
-    plan: { restartGateway: boolean; changedPaths: readonly string[] } | undefined,
-    config: OpenClawConfig,
-  ): Promise<void> => {
-    if (
-      plan &&
-      (plan.restartGateway ||
-        !plan.changedPaths.some(
-          (changedPath) =>
-            changedPath === "experimental.behaviorGovernor" ||
-            changedPath.startsWith("experimental.behaviorGovernor."),
-        ))
-    ) {
-      return;
-    }
-    const enabled = config.experimental?.behaviorGovernor?.enabled === true;
-    if (!enabled && !behaviorGovernorLifecycle) {
+  const applyBehaviorGovernorBootDecision = async (): Promise<void> => {
+    if (behaviorGovernorBootDecision.kind === "off") {
       return;
     }
     if (!behaviorGovernorLifecycle) {
       const { createGatewayBehaviorGovernorLifecycle } =
         await import("./behavior-governor-lifecycle.js");
-      behaviorGovernorLifecycle = createGatewayBehaviorGovernorLifecycle(
-        opts.behaviorGovernorHostFactory ? { hostFactory: opts.behaviorGovernorHostFactory } : {},
-      );
+      behaviorGovernorLifecycle = createGatewayBehaviorGovernorLifecycle({
+        bootDecision: behaviorGovernorBootDecision,
+        ...(opts.behaviorGovernorHostFactory
+          ? { hostFactory: opts.behaviorGovernorHostFactory }
+          : {}),
+      });
     }
     const secretSnapshot = getActiveSecretsRuntimeGovernorSnapshot();
     if (!secretSnapshot) {
       throw new Error("GOVERNOR_GATEWAY_SECRET_SNAPSHOT_REQUIRED");
     }
-    await behaviorGovernorLifecycle.apply(config, {
+    await behaviorGovernorLifecycle.apply({
       env: secretSnapshot.env,
       generation: secretSnapshot.generation,
       sourceConfig: secretSnapshot.sourceConfig,
@@ -1049,12 +1042,11 @@ export async function startGatewayServer(
   };
   const closeBehaviorGovernor = async () => {
     const lifecycle = behaviorGovernorLifecycle;
-    if (!lifecycle) {
-      return;
-    }
-    await lifecycle.close();
     behaviorGovernorLifecycle = undefined;
-    clearGatewayAcceptanceReceiptSigner();
+    await revokeAndCloseBehaviorGovernor({
+      lifecycle,
+      revoke: clearGatewayAcceptanceReceiptSigner,
+    });
   };
   const freezeBehaviorGovernor = async () => {
     await behaviorGovernorLifecycle?.freeze();
@@ -1259,7 +1251,7 @@ export async function startGatewayServer(
   };
 
   try {
-    await applyBehaviorGovernorConfig(undefined, cfgAtStart);
+    await applyBehaviorGovernorBootDecision();
     const earlyRuntime = await startupTrace.measure("runtime.early", () =>
       loadGatewayStartupEarlyModule().then(({ startGatewayEarlyRuntime }) =>
         startGatewayEarlyRuntime({
@@ -1917,7 +1909,6 @@ export async function startGatewayServer(
           (agentId) => terminalLaunchPolicy.resolve(agentId).ok,
         );
       },
-      onBehaviorGovernorConfigChange: applyBehaviorGovernorConfig,
       commitTerminalConfig: terminalLaunchPolicy.commitConfig,
       channelManager,
       activateRuntimeSecrets,

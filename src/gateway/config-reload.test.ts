@@ -9,6 +9,7 @@ import type {
   ConfigWriteNotification,
   OpenClawConfig,
 } from "../config/config.js";
+import { deriveBehaviorGovernorBootDecision } from "../config/behavior-governor-boot-decision.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import {
   pinActivePluginChannelRegistry,
@@ -197,6 +198,19 @@ describe("buildGatewayReloadPlan", () => {
     const plan = buildGatewayReloadPlan(["gateway.port"]);
     expect(plan.restartGateway).toBe(true);
     expect(plan.restartReasons).toContain("gateway.port");
+  });
+
+  it("treats every behavior governor subtree change as restart-only", () => {
+    for (const changedPath of [
+      "experimental.behaviorGovernor",
+      "experimental.behaviorGovernor.enabled",
+      "experimental.behaviorGovernor.secretRefs.identityHmacKey",
+    ]) {
+      const plan = buildGatewayReloadPlan([changedPath]);
+      expect(plan.restartGateway, changedPath).toBe(true);
+      expect(plan.restartReasons, changedPath).toContain(changedPath);
+      expect(plan.hotReasons, changedPath).toEqual([]);
+    }
   });
 
   it("restarts the gateway for operator terminal config changes", () => {
@@ -723,6 +737,10 @@ function createReloaderHarness(
     promoteSnapshot?: (snapshot: ConfigFileSnapshot, reason: string) => Promise<boolean>;
     initialPluginInstallRecords?: Record<string, PluginInstallRecord>;
     readPluginInstallRecords?: () => Promise<Record<string, PluginInstallRecord>>;
+    validateConfigCandidate?: (
+      plan: GatewayReloadPlan,
+      nextConfig: OpenClawConfig,
+    ) => void | Promise<void>;
   } = {},
 ) {
   const watcher = createWatcherMock();
@@ -765,6 +783,9 @@ function createReloaderHarness(
     onNoopConfigCommit,
     onHotReload,
     onRestart,
+    ...(options.validateConfigCandidate
+      ? { validateConfigCandidate: options.validateConfigCandidate }
+      : {}),
     log,
     watchPath: "/tmp/openclaw.json",
   });
@@ -1063,6 +1084,99 @@ describe("startGatewayConfigReloader", () => {
       process.off("unhandledRejection", onUnhandled);
       await reloader.stop();
     }
+  });
+
+  it("gates last-known-good promotion on restart preflight acceptance", async () => {
+    const rejectedSnapshot = makeSnapshot({
+      config: { gateway: { reload: { debounceMs: 0 }, port: 18790 } },
+      hash: "restart-rejected",
+    });
+    const acceptedSnapshot = makeSnapshot({
+      config: { gateway: { reload: { debounceMs: 0 }, port: 18791 } },
+      hash: "restart-accepted",
+    });
+    const latestSnapshot = makeSnapshot({
+      config: { gateway: { reload: { debounceMs: 0 }, port: 18792 } },
+      hash: "restart-latest",
+    });
+    const readSnapshot = vi
+      .fn<() => Promise<ConfigFileSnapshot>>()
+      .mockResolvedValueOnce(rejectedSnapshot)
+      .mockResolvedValueOnce(acceptedSnapshot)
+      .mockResolvedValueOnce(latestSnapshot);
+    const promoteSnapshot = vi.fn(async () => true);
+    const harness = createReloaderHarness(readSnapshot, { promoteSnapshot });
+    let rejectPreflight: ((reason: unknown) => void) | undefined;
+    let enterPreflight: (() => void) | undefined;
+    const preflightEntered = new Promise<void>((resolve) => {
+      enterPreflight = resolve;
+    });
+    const preflight = new Promise<void>((_resolve, reject) => {
+      rejectPreflight = reject;
+    });
+    harness.onRestart.mockImplementationOnce(async () => {
+      enterPreflight?.();
+      await preflight;
+    });
+
+    harness.watcher.emit("change");
+    const rejectedReload = vi.runOnlyPendingTimersAsync();
+    await preflightEntered;
+    expect(harness.onRestart).toHaveBeenCalledTimes(1);
+    expect(promoteSnapshot).not.toHaveBeenCalled();
+
+    rejectPreflight?.(new Error("unresolved governor SecretRef"));
+    await rejectedReload;
+    expect(promoteSnapshot).not.toHaveBeenCalled();
+
+    harness.onRestart.mockResolvedValueOnce(undefined);
+    harness.watcher.emit("change");
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(harness.onRestart).toHaveBeenCalledTimes(2);
+    expect(promoteSnapshot).toHaveBeenCalledTimes(1);
+    expect(promoteSnapshot).toHaveBeenCalledWith(acceptedSnapshot, "valid-config");
+
+    // The actual restart layer may already be deferred, but every newer file
+    // candidate must still pass its own bounded preflight before becoming LKG.
+    harness.onRestart.mockResolvedValueOnce(undefined);
+    harness.watcher.emit("change");
+    await vi.runOnlyPendingTimersAsync();
+    expect(harness.onRestart).toHaveBeenCalledTimes(3);
+    expect(promoteSnapshot).toHaveBeenCalledTimes(2);
+    expect(promoteSnapshot).toHaveBeenLastCalledWith(latestSnapshot, "valid-config");
+    await harness.reloader.stop();
+  });
+
+  it("rejects an enforce governor candidate before hot-mode ignore or promotion", async () => {
+    const initialConfig = {
+      gateway: { reload: { debounceMs: 0, mode: "hot" } },
+      experimental: { behaviorGovernor: { enabled: false } },
+    } as OpenClawConfig;
+    const enforceConfig = {
+      gateway: { reload: { debounceMs: 0, mode: "hot" } },
+      experimental: { behaviorGovernor: { enabled: true, mode: "enforce" } },
+    } as OpenClawConfig;
+    const snapshot = makeSnapshot({ config: enforceConfig, hash: "governor-enforce" });
+    const promoteSnapshot = vi.fn(async () => true);
+    const harness = createReloaderHarness(vi.fn(async () => snapshot), {
+      initialConfig,
+      promoteSnapshot,
+      validateConfigCandidate: (_plan, config) => {
+        deriveBehaviorGovernorBootDecision(config);
+      },
+    });
+
+    harness.watcher.emit("change");
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(harness.onRestart).not.toHaveBeenCalled();
+    expect(harness.onHotReload).not.toHaveBeenCalled();
+    expect(promoteSnapshot).not.toHaveBeenCalled();
+    expect(harness.log.error).toHaveBeenCalledWith(
+      "config reload failed: Error: C07_ARCHITECTURE_NOT_READY",
+    );
+    await harness.reloader.stop();
   });
 
   it("skips invalid external config edits without recovery", async () => {

@@ -75,6 +75,7 @@ function createStore(params: {
   const store = new GovernorSqliteStore({
     stateDir: params.stateDir,
     receiptResolver: broker.resolver,
+    evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
     approvalResolver: broker.approvalResolver,
     deliveryResolver: broker.deliveryResolver,
     physicalExecutionCoordinator: broker.physicalExecutionCoordinator,

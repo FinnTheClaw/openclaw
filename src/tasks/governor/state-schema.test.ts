@@ -12,7 +12,7 @@ import {
 import { resolveOpenClawStateSqliteDir } from "../../state/openclaw-state-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
-import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 
 function columns(db: ReturnType<typeof openOpenClawStateDatabase>["db"], table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
@@ -140,7 +140,7 @@ describe("governor schema migration", () => {
           .all() as Array<{ name: string }>;
         expect(indexColumns.map((row) => row.name)).toContain("plan_version");
         closeOpenClawStateDatabase();
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const store = createGovernorTestStore({ stateDir: state.stateDir }).store;
         expect(store.listEvidence("legacy-task" as never)).toEqual([]);
         closeOpenClawStateDatabase();
       },

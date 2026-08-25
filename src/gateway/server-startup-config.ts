@@ -7,6 +7,10 @@ import {
 } from "../cli/config-recovery-hints.js";
 import { createInvalidConfigError } from "../config/io.invalid-config.js";
 import {
+  assertBehaviorGovernorConfigMatchesBootDecision,
+  type BehaviorGovernorBootDecision,
+} from "../config/behavior-governor-boot-decision.js";
+import {
   type ReadConfigFileSnapshotWithPluginMetadataResult,
   readConfigFileSnapshotWithPluginMetadata,
 } from "../config/io.js";
@@ -68,7 +72,7 @@ export type ActivateRuntimeSecrets = ((
   config: OpenClawConfig,
   params: RuntimeSecretsActivationParams,
 ) => Promise<PreparedRuntimeSecretsSnapshot>) & {
-  activatePreparedSnapshot?: (
+  activatePreparedSnapshot: (
     snapshot: PreparedRuntimeSecretsSnapshot,
     params: RuntimeSecretsActivationParams,
   ) => Promise<PreparedRuntimeSecretsSnapshot>;
@@ -173,6 +177,7 @@ function withRuntimeConfig(
 
 /** Create the serialized secrets activation function used by startup and reload paths. */
 export function createRuntimeSecretsActivator(params: {
+  behaviorGovernorBootDecision: BehaviorGovernorBootDecision;
   logSecrets: GatewayStartupLog;
   emitStateEvent: (
     code: GatewaySecretsStateEventCode,
@@ -217,8 +222,15 @@ export function createRuntimeSecretsActivator(params: {
     activationParams: RuntimeSecretsActivationParams,
     options?: {
       activateRuntimeSecretsSnapshot?: (snapshot: PreparedRuntimeSecretsSnapshot) => void;
+      requireBehaviorGovernorBootMatch?: boolean;
     },
   ) => {
+    if (activationParams.activate || options?.requireBehaviorGovernorBootMatch) {
+      assertBehaviorGovernorConfigMatchesBootDecision(
+        params.behaviorGovernorBootDecision,
+        prepared.sourceConfig,
+      );
+    }
     assertRuntimeGatewayAuthNotKnownWeak(prepared.config);
     if (activationParams.activate) {
       const activateRuntimeSecretsSnapshot =
@@ -269,6 +281,12 @@ export function createRuntimeSecretsActivator(params: {
   const activateRuntimeSecrets = (async (config, activationParams) =>
     await runWithSecretsActivationLock(async () => {
       try {
+        if (activationParams.activate) {
+          assertBehaviorGovernorConfigMatchesBootDecision(
+            params.behaviorGovernorBootDecision,
+            config,
+          );
+        }
         const startupPreflight =
           activationParams.reason === "startup" || activationParams.reason === "restart-check";
         if (
@@ -320,6 +338,10 @@ export function createRuntimeSecretsActivator(params: {
                   refreshContext: fastPath.refreshContext,
                   refreshHandler: {
                     preflight: async ({ sourceConfig, includeAuthStoreRefs }) => {
+                      assertBehaviorGovernorConfigMatchesBootDecision(
+                        params.behaviorGovernorBootDecision,
+                        sourceConfig,
+                      );
                       const secretsRuntime = await loadSecretsRuntime();
                       const activeSnapshot = getActiveSecretsRuntimeSnapshot();
                       if (!activeSnapshot) {
@@ -332,6 +354,10 @@ export function createRuntimeSecretsActivator(params: {
                       );
                     },
                     refresh: async ({ sourceConfig, includeAuthStoreRefs, preflightResult }) => {
+                      assertBehaviorGovernorConfigMatchesBootDecision(
+                        params.behaviorGovernorBootDecision,
+                        sourceConfig,
+                      );
                       const secretsRuntime = await loadSecretsRuntime();
                       const activeSnapshot = getActiveSecretsRuntimeSnapshot();
                       const oneShotSkipAuthStoreRefs =
@@ -398,7 +424,9 @@ export function createRuntimeSecretsActivator(params: {
   activateRuntimeSecrets.activatePreparedSnapshot = async (snapshot, activationParams) =>
     await runWithSecretsActivationLock(async () => {
       try {
-        return await finishPreparedSnapshot(snapshot, activationParams);
+        return await finishPreparedSnapshot(snapshot, activationParams, {
+          requireBehaviorGovernorBootMatch: true,
+        });
       } catch (err) {
         return handleSecretsActivationError(err, activationParams, snapshot.sourceConfig);
       }
@@ -473,14 +501,13 @@ export async function prepareGatewayStartupConfig(params: {
   const canReusePreflightPreparedSnapshot = (config: OpenClawConfig): boolean =>
     Boolean(
       preflightPrepared &&
-      params.activateRuntimeSecrets.activatePreparedSnapshot &&
       isDeepStrictEqual(pruneSkippedStartupSecretSurfaces(config), preflightPrepared.sourceConfig),
     );
   const activateStartupSecrets = async (config: OpenClawConfig) => {
     // Reuse the preflight snapshot only if generated startup auth did not
     // change the secret-relevant source config.
     if (preflightPrepared && canReusePreflightPreparedSnapshot(config)) {
-      return await params.activateRuntimeSecrets.activatePreparedSnapshot!(preflightPrepared, {
+      return await params.activateRuntimeSecrets.activatePreparedSnapshot(preflightPrepared, {
         reason: "startup",
         activate: true,
       });

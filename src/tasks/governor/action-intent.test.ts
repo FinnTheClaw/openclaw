@@ -7,7 +7,10 @@ import { governorDigest } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestStore, recordGovernorTestAdmittedToolOutcome } from "./test-broker.js";
+import {
+  createGovernorTestStore,
+  recordGovernorTestAdmittedToolOutcome,
+} from "./test-helpers/test-broker.js";
 import {
   createGovernorEffectId,
   type GovernorPlan,
@@ -166,8 +169,13 @@ describe("governor durable action intents", () => {
       const restartedStore = new GovernorSqliteStore({
         stateDir,
         receiptResolver: broker.resolver,
+        evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
         approvalResolver: broker.approvalResolver,
         deliveryResolver: broker.deliveryResolver,
+        physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+        memoryAuthority: broker.memoryAuthority,
+        taskAuthority: broker.taskAuthority,
+        secrets: broker.secrets,
         capabilities,
       });
       const restarted = new GovernorController(restartedStore, capabilities);

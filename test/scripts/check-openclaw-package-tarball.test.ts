@@ -120,6 +120,344 @@ describe("check-openclaw-package-tarball", () => {
     expect(extra.stderr).not.toContain("OpenClaw package tarball does not exist");
   });
 
+  it("allows private governor authority bodies in hashed dist chunks", () => {
+    withTarball(
+      ["dist/governor-host-bootstrap-1PwSH9Yi.js"],
+      {
+        "dist/governor-host-bootstrap-1PwSH9Yi.js":
+          "function createGovernorMemoryAuthority() {}\nexport { createGovernorHostRuntimeIfEnabled };\n",
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status, result.stderr).toBe(0);
+      },
+    );
+  });
+
+  it.each([
+    ["test factory", "function createGovernorTestBindings() {}\n"],
+    ["synthetic secrets", "function syntheticGovernorSecretsEnvironment() {}\n"],
+  ])("rejects private governor %s bodies in hashed chunks", (_label, body) => {
+    withTarball(
+      ["dist/governor-test-internals-a1B2.js"],
+      { "dist/governor-test-internals-a1B2.js": body },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("forbidden shipped governor test-only marker");
+      },
+    );
+  });
+
+  it("allows only the canonical bootstrap export from an authority-bearing chunk", () => {
+    withTarball(
+      ["dist/governor-host-bootstrap-a1B2.js"],
+      {
+        "dist/governor-host-bootstrap-a1B2.js":
+          "function createMemoryAuthorityOwner() {}\nfunction createGovernorHostRuntimeIfEnabled() {}\nexport { createGovernorHostRuntimeIfEnabled };\n",
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status, result.stderr).toBe(0);
+      },
+    );
+  });
+
+  it("rejects a governor bootstrap inventory with no durable authority marker", () => {
+    withTarball(
+      ["dist/governor-host-bootstrap-a1B2.js"],
+      {
+        "dist/governor-host-bootstrap-a1B2.js":
+          "function createGovernorHostRuntimeIfEnabled() {}\nexport { createGovernorHostRuntimeIfEnabled };\n",
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "governor host bootstrap dist inventory contains no durable authority marker",
+        );
+      },
+    );
+  });
+
+  it("rejects extra exports from an authority-bearing chunk", () => {
+    withTarball(
+      ["dist/governor-host-bootstrap-a1B2.js"],
+      {
+        "dist/governor-host-bootstrap-a1B2.js":
+          "function createMemoryAuthorityOwner() {}\nexport function safe() { return createMemoryAuthorityOwner(); }\n",
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "unexpected governor authority-bearing export safe in dist/governor-host-bootstrap-a1B2.js",
+        );
+      },
+    );
+  });
+
+  it("rejects star-expanded exports from an authority-bearing chunk", () => {
+    withTarball(
+      ["dist/governor-host-bootstrap-a1B2.js", "dist/unrelated-c3D4.js"],
+      {
+        "dist/governor-host-bootstrap-a1B2.js":
+          'function createMemoryAuthorityOwner() {}\nexport * from "./unrelated-c3D4.js";\n',
+        "dist/unrelated-c3D4.js": "export const safe = true;\n",
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "unexpected governor authority-bearing export safe in dist/governor-host-bootstrap-a1B2.js",
+        );
+      },
+    );
+  });
+
+  it("rejects an anonymous default export from an authority-bearing chunk", () => {
+    withTarball(
+      ["dist/governor-host-bootstrap-a1B2.js"],
+      {
+        "dist/governor-host-bootstrap-a1B2.js":
+          "function createMemoryAuthorityOwner() {}\nexport default function() { return createMemoryAuthorityOwner(); }\n",
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "unexpected governor authority-bearing export default in dist/governor-host-bootstrap-a1B2.js",
+        );
+      },
+    );
+  });
+
+  it.each([
+    [
+      "renamed",
+      'export { createGovernorHostRuntimeIfEnabled as safe } from "./authority-a1B2.js";\n',
+    ],
+    ["namespace", 'export * as safe from "./authority-a1B2.js";\n'],
+  ])("rejects a %s reexport of the canonical authority binding", (_label, reexport) => {
+    withTarball(
+      ["dist/authority-a1B2.js", "dist/governor-entry-c3D4.js"],
+      {
+        "dist/authority-a1B2.js":
+          "function createMemoryAuthorityOwner() {}\nfunction createGovernorHostRuntimeIfEnabled() {}\nexport { createGovernorHostRuntimeIfEnabled };\n",
+        "dist/governor-entry-c3D4.js": reexport,
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "unexpected governor authority-bearing export safe in dist/governor-entry-c3D4.js",
+        );
+      },
+    );
+  });
+
+  it.each([
+    [
+      "named import/export",
+      'import { createGovernorHostRuntimeIfEnabled as safe } from "./authority-a1B2.js";\nexport { safe };\n',
+    ],
+    [
+      "namespace import/export",
+      'import * as gov from "./authority-a1B2.js";\nexport { gov as safe };\n',
+    ],
+    [
+      "local identifier chain",
+      'import { createGovernorHostRuntimeIfEnabled as local } from "./authority-a1B2.js";\nconst middle = local;\nexport { middle as safe };\n',
+    ],
+    [
+      "default local alias",
+      'import { createGovernorHostRuntimeIfEnabled as local } from "./authority-a1B2.js";\nexport default local;\n',
+    ],
+    [
+      "array data alias",
+      'import { createGovernorHostRuntimeIfEnabled as local } from "./authority-a1B2.js";\nexport const safe = [local];\n',
+    ],
+    [
+      "array destructuring alias",
+      'import { createGovernorHostRuntimeIfEnabled as local } from "./authority-a1B2.js";\nconst [safe] = [local];\nexport { safe };\n',
+    ],
+    [
+      "namespace destructuring alias",
+      'import * as gov from "./authority-a1B2.js";\nconst { createGovernorHostRuntimeIfEnabled: safe } = gov;\nexport { safe };\n',
+    ],
+    [
+      "namespace element access alias",
+      'import * as gov from "./authority-a1B2.js";\nexport const safe = gov["createGovernorHostRuntimeIfEnabled"];\n',
+    ],
+    [
+      "destructuring default alias",
+      'import { createGovernorHostRuntimeIfEnabled as local } from "./authority-a1B2.js";\nconst { missing = local } = {};\nexport { missing as safe };\n',
+    ],
+  ])("rejects a two-statement %s authority alias", (_label, reexport) => {
+    withTarball(
+      ["dist/authority-a1B2.js", "dist/governor-entry-c3D4.js"],
+      {
+        "dist/authority-a1B2.js":
+          "function createMemoryAuthorityOwner() {}\nfunction createGovernorHostRuntimeIfEnabled() {}\nexport { createGovernorHostRuntimeIfEnabled };\n",
+        "dist/governor-entry-c3D4.js": reexport,
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("unexpected governor authority-bearing export");
+      },
+    );
+  });
+
+  it.each([
+    ["named", "export function createGovernorMemoryAuthority() {}\n"],
+    ["default", "function closeGovernorMemoryAuthority() {}\nexport default closeGovernorMemoryAuthority;\n"],
+    ["reexport", 'export { isTrustedGovernorMemoryAuthority } from "./authority.js";\n'],
+    ["test factory", "const createGovernorTestHostBindings = () => {};\nexport { createGovernorTestHostBindings };\n"],
+    ["current bindings factory", "export function createGovernorTestBindings() {}\n"],
+    ["current broker factory", "export const createGovernorTestBroker = () => {};\n"],
+    [
+      "current store factory",
+      "const createGovernorTestStore = () => {};\nexport { createGovernorTestStore };\n",
+    ],
+  ])("rejects %s governor authority exports in hashed dist chunks", (_label, body) => {
+    withTarball(
+      ["dist/governor-host-bootstrap-a1B2c3D4.js"],
+      { "dist/governor-host-bootstrap-a1B2c3D4.js": body },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("forbidden governor authority export");
+      },
+    );
+  });
+
+  it("rejects forbidden authority names exposed through star reexports", () => {
+    withTarball(
+      ["dist/authority-a1B2.js", "dist/governor-host-bootstrap-c3D4.js"],
+      {
+        "dist/authority-a1B2.js": "export function createGovernorMemoryAuthority() {}\n",
+        "dist/governor-host-bootstrap-c3D4.js": 'export * from "./authority-a1B2.js";\n',
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "forbidden governor authority export createGovernorMemoryAuthority in dist/governor-host-bootstrap-c3D4.js",
+        );
+      },
+    );
+  });
+
+  it("rejects forbidden authority exposed through namespace reexports", () => {
+    withTarball(
+      ["dist/authority-a1B2.js", "dist/governor-host-bootstrap-c3D4.js"],
+      {
+        "dist/authority-a1B2.js": "export function closeGovernorMemoryAuthority() {}\n",
+        "dist/governor-host-bootstrap-c3D4.js":
+          'export * as safeAuthority from "./authority-a1B2.js";\n',
+      },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          "forbidden governor authority export closeGovernorMemoryAuthority in dist/governor-host-bootstrap-c3D4.js",
+        );
+      },
+    );
+  });
+
+  it.each([
+    ["shorthand", "const createGovernorMemoryAuthority = () => {}; export default { createGovernorMemoryAuthority };\n"],
+    ["aliased", "const closeGovernorMemoryAuthority = () => {}; export const safe = { close: closeGovernorMemoryAuthority };\n"],
+    ["identifier", "const createGovernorMemoryAuthority = () => {}; const safe = { createGovernorMemoryAuthority }; export default safe;\n"],
+  ])("rejects authority exposed through an exported %s object", (_label, body) => {
+    withTarball(
+      ["dist/governor-host-bootstrap-a1B2.js"],
+      { "dist/governor-host-bootstrap-a1B2.js": body },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("forbidden governor authority export");
+      },
+    );
+  });
+
+  it.each([
+    [
+      "named alias",
+      "const createGovernorMemoryAuthority = () => {}; const safe = { createGovernorMemoryAuthority }; export { safe };\n",
+    ],
+    [
+      "multi-hop alias",
+      "const createGovernorMemoryAuthority = () => {}; const owner = { createGovernorMemoryAuthority }; const middle = owner; const safe = { ...middle }; export { safe as default };\n",
+    ],
+  ])("rejects authority exposed through a local %s export", (_label, body) => {
+    withTarball(
+      ["dist/governor-host-bootstrap-a1B2.js"],
+      { "dist/governor-host-bootstrap-a1B2.js": body },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("forbidden governor authority export");
+      },
+    );
+  });
+
+  it("rejects malformed shipped JavaScript instead of scanning a partial AST", () => {
+    withTarball(
+      ["dist/governor-host-bootstrap-a1B2.js"],
+      { "dist/governor-host-bootstrap-a1B2.js": "export {\n" },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("unparseable dist JavaScript");
+      },
+    );
+  });
+
+  it("does not reject unrelated packaged test helpers", () => {
+    withTarball(
+      ["dist/channels/test-helpers/fixture.js"],
+      { "dist/channels/test-helpers/fixture.js": "export const fixture = true;\n" },
+      (tarball) => {
+        const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+        expect(result.status, result.stderr).toBe(0);
+      },
+    );
+  });
+
+  it.each([
+    "dist/governor-test-host-bindings-Ha5h3d.js",
+    "dist/security/test-helpers/governor-test-host-bindings.js",
+    "dist/tasks/governor/test-broker-Ha5h3d.js",
+    "dist/tasks/governor/memory-contradiction-test-helpers.js",
+    "src/security/governor-host-memory-authority.ts",
+  ])("rejects governor test-helper or source authority tar entry %s", (forbiddenEntry) => {
+    withTarball([forbiddenEntry], { [forbiddenEntry]: "export {};\n" }, (tarball) => {
+      const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/forbidden governor (?:test-helper|source authority) tar entry/u);
+    });
+  });
+
   it.runIf(process.platform !== "win32")(
     "removes the extract dir when tar extraction fails",
     () => {

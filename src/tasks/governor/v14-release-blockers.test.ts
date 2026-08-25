@@ -13,7 +13,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorController } from "./controller.js";
 import { GovernorRuntimeAdapter } from "./runtime-adapter.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestStore } from "./test-broker.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 import type { GovernorTaskContract, GovernorTaskScope } from "./types.js";
 
 const scope: GovernorTaskScope = {
@@ -58,7 +58,7 @@ describe("governor V14 release blockers", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v14-terminal-order-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const store = createGovernorTestStore({ stateDir: state.stateDir }).store;
         const controller = new GovernorController(store, store.capabilities);
         const newest = controller.ingest({
           sourceMessageId: "sequence-ten-message",
@@ -103,7 +103,7 @@ describe("governor V14 release blockers", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v14-independent-order-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const store = createGovernorTestStore({ stateDir: state.stateDir }).store;
         const controller = new GovernorController(store, store.capabilities);
         const first = controller.ingest({
           sourceMessageId: "source-alpha-message-ten",
@@ -138,7 +138,7 @@ describe("governor V14 release blockers", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-v14-deleted-task-order-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const store = createGovernorTestStore({ stateDir: state.stateDir }).store;
         const controller = new GovernorController(store, store.capabilities);
         const accepted = controller.ingest({
           sourceMessageId: "deleted-task-sequence-ten",
@@ -324,8 +324,12 @@ describe("governor V14 release blockers", () => {
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
+          physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+          memoryAuthority: broker.memoryAuthority,
+          taskAuthority: broker.taskAuthority,
           secrets,
         });
         const controller = new GovernorController(store, store.capabilities);

@@ -23,7 +23,7 @@ import {
   withMemoryTestHarness,
 } from "./memory-contradiction-test-helpers.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestStore } from "./test-broker.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 
 afterEach(() => closeOpenClawStateDatabase());
 
@@ -242,10 +242,12 @@ describe("governor memory anti-rollback authority", () => {
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
           physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
           memoryAuthority: broker.memoryAuthority,
+          taskAuthority: broker.taskAuthority,
           secrets,
           capabilities,
         });
@@ -298,10 +300,12 @@ describe("governor memory anti-rollback authority", () => {
         const restarted = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: restartedBroker.resolver,
+          evidenceInvalidationResolver: restartedBroker.evidenceInvalidationResolver,
           approvalResolver: restartedBroker.approvalResolver,
           deliveryResolver: restartedBroker.deliveryResolver,
           physicalExecutionCoordinator: restartedBroker.physicalExecutionCoordinator,
           memoryAuthority: restartedBroker.memoryAuthority,
+          taskAuthority: restartedBroker.taskAuthority,
           secrets,
           capabilities,
         });

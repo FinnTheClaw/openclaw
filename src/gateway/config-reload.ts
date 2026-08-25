@@ -10,16 +10,18 @@ import {
   loadInstalledPluginIndexInstallRecords,
   loadInstalledPluginIndexInstallRecordsSync,
 } from "../plugins/installed-plugin-index-records.js";
-import { bumpSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
 import { diffConfigPaths } from "./config-diff.js";
 import {
   buildGatewayReloadPlan,
+  isNoopReloadPlan,
   listPluginInstallTimestampMetadataPaths,
   listPluginInstallWholeRecordPaths,
   resolveConfigReloadMetadata,
   type GatewayReloadPlan,
 } from "./config-reload-plan.js";
+import { requestConfigRestartAcceptance } from "./config-reload-restart-acceptance.js";
 import { resolveGatewayReloadSettings } from "./config-reload-settings.js";
+import { invalidateSkillsSnapshotForConfigChanges } from "./config-reload-skills.js";
 import type { GatewayHotReloadStatus } from "./config-reload-status.types.js";
 
 export {
@@ -57,40 +59,6 @@ function resolveChokidarUsePolling(degradedToPolling: boolean): boolean {
   return Boolean(process.env.VITEST) || degradedToPolling;
 }
 
-/**
- * Paths under `skills.*` always change the snapshot that sessions cache in
- * sessions.json. Any prefix match here (for example `skills.allowBundled`,
- * `skills.entries.X.enabled`, `skills.profile`) forces sessions to rebuild
- * their snapshot on the next turn rather than silently advertising stale
- * tools to the model.
- */
-const SKILLS_INVALIDATION_PREFIXES = ["skills"] as const;
-
-function matchesSkillsInvalidationPrefix(path: string): boolean {
-  return SKILLS_INVALIDATION_PREFIXES.some(
-    (prefix) => path === prefix || path.startsWith(`${prefix}.`),
-  );
-}
-
-function firstSkillsChangedPath(changedPaths: string[]): string | undefined {
-  return changedPaths.find(matchesSkillsInvalidationPrefix);
-}
-
-function isNoopReloadPlan(plan: GatewayReloadPlan): boolean {
-  return (
-    !plan.restartGateway &&
-    plan.hotReasons.length === 0 &&
-    !plan.reloadHooks &&
-    !plan.restartGmailWatcher &&
-    !plan.restartCron &&
-    !plan.restartHeartbeat &&
-    !plan.restartHealthMonitor &&
-    !plan.reloadPlugins &&
-    !plan.disposeMcpRuntimes &&
-    plan.restartChannels.size === 0
-  );
-}
-
 type GatewayConfigReloader = {
   stop: () => Promise<void>;
   hotReloadStatus: () => GatewayHotReloadStatus;
@@ -112,6 +80,10 @@ export function startGatewayConfigReloader(opts: {
   initialInternalWriteHash?: string | null;
   readSnapshot: () => Promise<ConfigFileSnapshot>;
   onConfigChange?: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
+  validateConfigCandidate?: (
+    plan: GatewayReloadPlan,
+    nextConfig: OpenClawConfig,
+  ) => void | Promise<void>;
   onConfigApplied?: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
   onNoopConfigCommit: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => Promise<void>;
   onHotReload: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => Promise<void>;
@@ -134,7 +106,6 @@ export function startGatewayConfigReloader(opts: {
   let pending = false;
   let running = false;
   let stopped = false;
-  let restartQueued = false;
   let missingConfigRetries = 0;
   let pendingInProcessConfig: {
     config: OpenClawConfig;
@@ -164,23 +135,13 @@ export function startGatewayConfigReloader(opts: {
   const schedule = () => {
     scheduleAfter(settings.debounceMs);
   };
-  const queueRestart = (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => {
-    if (restartQueued) {
-      return;
-    }
-    restartQueued = true;
-    void (async () => {
-      try {
-        await opts.onRestart(plan, nextConfig);
-      } catch (err) {
-        // Restart checks can fail (for example unresolved SecretRefs). Keep the
-        // reloader alive and allow a future change to retry restart scheduling.
-        restartQueued = false;
-        opts.log.error(`config restart failed: ${String(err)}`);
-      }
-    })();
-  };
-
+  const acceptRestart = (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) =>
+    requestConfigRestartAcceptance({
+      plan,
+      nextConfig,
+      onRestart: opts.onRestart,
+      logError: opts.log.error,
+    });
   const handleMissingSnapshot = (snapshot: ConfigFileSnapshot): boolean => {
     if (snapshot.exists) {
       missingConfigRetries = 0;
@@ -250,45 +211,48 @@ export function startGatewayConfigReloader(opts: {
       ...configPluginInstallWholeRecordPaths,
       ...pluginInstallRecordWholeRecordPaths,
     ];
-    currentConfig = nextConfig;
-    currentCompareConfig = nextCompareConfig;
-    currentPluginInstallRecords = nextPluginInstallRecords;
-    settings = resolveGatewayReloadSettings(nextConfig);
+    const nextSettings = resolveGatewayReloadSettings(nextConfig);
     if (changedPaths.length === 0) {
-      return;
+      currentConfig = nextConfig;
+      currentCompareConfig = nextCompareConfig;
+      currentPluginInstallRecords = nextPluginInstallRecords;
+      settings = nextSettings;
+      return true;
     }
-
-    // Invalidate cached skills snapshots (persisted in sessions.json) whenever
-    // the user touches skills.* config. Without this, sessions keep advertising
-    // tools that no longer exist in the allowlist, which causes infinite
-    // tool-not-found loops against the model.
-    const skillsChangedPath = firstSkillsChangedPath(changedPaths);
-    if (skillsChangedPath !== undefined) {
-      bumpSkillsSnapshotVersion({ reason: "config-change", changedPath: skillsChangedPath });
-      opts.log.info(`skills snapshot invalidated by config change (${skillsChangedPath})`);
-    }
-
     const followUp = resolveConfigWriteFollowUp(afterWrite);
-    opts.log.info(`config change detected; evaluating reload (${changedPaths.join(", ")})`);
-    if (followUp.mode === "none") {
-      opts.log.info(`config reload skipped by writer intent (${followUp.reason})`);
-      return;
-    }
     const plan = buildGatewayReloadPlan(changedPaths, {
       noopPaths: pluginInstallTimestampNoopPaths,
       forceChangedPaths: pluginInstallWholeRecordPaths,
     });
-    if (settings.mode === "off") {
+    await opts.validateConfigCandidate?.(plan, nextConfig);
+    const acceptCandidate = () => {
+      currentConfig = nextConfig;
+      currentCompareConfig = nextCompareConfig;
+      currentPluginInstallRecords = nextPluginInstallRecords;
+      settings = nextSettings;
+      invalidateSkillsSnapshotForConfigChanges({ changedPaths, logInfo: opts.log.info });
+      return true;
+    };
+
+    opts.log.info(`config change detected; evaluating reload (${changedPaths.join(", ")})`);
+    if (followUp.mode === "none") {
+      acceptCandidate();
+      opts.log.info(`config reload skipped by writer intent (${followUp.reason})`);
+      return true;
+    }
+    if (nextSettings.mode === "off") {
+      acceptCandidate();
       opts.log.info("config reload disabled (gateway.reload.mode=off)");
-      return;
+      return true;
     }
     if (isNoopReloadPlan(plan) && !followUp.requiresRestart) {
+      acceptCandidate();
       await opts.onConfigChange?.(plan, nextConfig);
       // No-op plans still change the runtime config snapshot. Commit before
       // marking applied so getRuntimeConfig() readers do not stay stale until restart.
       await opts.onNoopConfigCommit(plan, nextConfig);
       await opts.onConfigApplied?.(plan, nextConfig);
-      return;
+      return true;
     }
     if (followUp.requiresRestart) {
       const restartPlan = {
@@ -297,31 +261,31 @@ export function startGatewayConfigReloader(opts: {
         restartReasons: [...plan.restartReasons, followUp.reason],
       };
       await opts.onConfigChange?.(restartPlan, nextConfig);
-      queueRestart(restartPlan, nextConfig);
-      return;
+      return (await acceptRestart(restartPlan, nextConfig)) && acceptCandidate();
     }
-    if (settings.mode === "restart") {
-      await opts.onConfigChange?.({ ...plan, restartGateway: true }, nextConfig);
-      queueRestart(plan, nextConfig);
-      return;
+    if (nextSettings.mode === "restart") {
+      const restartPlan = { ...plan, restartGateway: true };
+      await opts.onConfigChange?.(restartPlan, nextConfig);
+      return (await acceptRestart(restartPlan, nextConfig)) && acceptCandidate();
     }
     if (plan.restartGateway) {
-      if (settings.mode === "hot") {
+      if (nextSettings.mode === "hot") {
         opts.log.warn(
           `config reload requires gateway restart; hot mode ignoring (${plan.restartReasons.join(
             ", ",
           )})`,
         );
-        return;
+        return acceptCandidate();
       }
       await opts.onConfigChange?.(plan, nextConfig);
-      queueRestart(plan, nextConfig);
-      return;
+      return (await acceptRestart(plan, nextConfig)) && acceptCandidate();
     }
 
+    acceptCandidate();
     await opts.onConfigChange?.(plan, nextConfig);
     await opts.onHotReload(plan, nextConfig);
     await opts.onConfigApplied?.(plan, nextConfig);
+    return true;
   };
 
   const promoteAcceptedSnapshot = async (snapshot: ConfigFileSnapshot, reason: string) => {
@@ -368,12 +332,14 @@ export function startGatewayConfigReloader(opts: {
         const pendingWrite = pendingInProcessConfig;
         pendingInProcessConfig = null;
         missingConfigRetries = 0;
-        await applySnapshot(
+        const accepted = await applySnapshot(
           pendingWrite.config,
           pendingWrite.compareConfig,
           pendingWrite.afterWrite,
         );
-        await promoteAcceptedInProcessWrite(pendingWrite.persistedHash);
+        if (accepted) {
+          await promoteAcceptedInProcessWrite(pendingWrite.persistedHash);
+        }
         return;
       }
       const snapshot = await opts.readSnapshot();
@@ -390,8 +356,10 @@ export function startGatewayConfigReloader(opts: {
         handleInvalidSnapshot(snapshot);
         return;
       }
-      await applySnapshot(snapshot.config, snapshot.sourceConfig);
-      await promoteAcceptedSnapshot(snapshot, "valid-config");
+      const accepted = await applySnapshot(snapshot.config, snapshot.sourceConfig);
+      if (accepted) {
+        await promoteAcceptedSnapshot(snapshot, "valid-config");
+      }
     } catch (err) {
       opts.log.error(`config reload failed: ${String(err)}`);
     } finally {

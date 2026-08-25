@@ -12,6 +12,7 @@ import {
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorController } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 import type { GovernorTaskContract, GovernorTaskScope } from "./types.js";
 
 const scope: GovernorTaskScope = {
@@ -107,7 +108,7 @@ describe("governor runtime adapter", () => {
           .all();
         expect(before).toEqual([]);
         closeOpenClawStateDatabase();
-        const enabledStore = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const enabledStore = createGovernorTestStore({ stateDir: state.stateDir }).store;
         expect(enabledStore).toBeInstanceOf(GovernorSqliteStore);
         const after = openOpenClawStateDatabase({ env })
           .db.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'governor_%'")
@@ -122,7 +123,7 @@ describe("governor runtime adapter", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-opaque-identities-" },
       async (state) => {
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir });
+        const store = createGovernorTestStore({ stateDir: state.stateDir }).store;
         const controller = new GovernorController(store, store.capabilities);
         try {
           const privateScope = {

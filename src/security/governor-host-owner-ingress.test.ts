@@ -5,7 +5,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createCompiledOwnerIngress } from "./governor-host-owner-ingress.js";
-import { createGovernorTestHostBindings } from "./governor-host-readonly.js";
+import { createGovernorTestBindings } from "./test-helpers/governor-test-host-bindings.js";
 
 afterEach(() => closeOpenClawStateDatabase());
 
@@ -14,7 +14,7 @@ describe("compiled governor owner ingress", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-owner-restart-" },
       async (state) => {
-        const first = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const first = createGovernorTestBindings({ stateDir: state.stateDir });
         const ingress = createCompiledOwnerIngress(
           first.capabilities.submitAuthenticatedOwnerIngress,
           [
@@ -41,7 +41,7 @@ describe("compiled governor owner ingress", () => {
           expiresAt: 300,
         });
         closeOpenClawStateDatabase();
-        const restarted = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const restarted = createGovernorTestBindings({ stateDir: state.stateDir });
         const claim = restarted.ownerIngressResolver.claim(receiptId, 200);
         expect(claim?.receipt).toMatchObject({
           action: "approve",
@@ -76,7 +76,7 @@ describe("compiled governor owner ingress", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-governor-owner-reject-" },
       async (state) => {
-        const broker = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const broker = createGovernorTestBindings({ stateDir: state.stateDir });
         const ingress = createCompiledOwnerIngress(
           broker.capabilities.submitAuthenticatedOwnerIngress,
           [

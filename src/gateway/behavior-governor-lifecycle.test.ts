@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { deriveBehaviorGovernorBootDecision } from "../config/behavior-governor-boot-decision.js";
 import type { BehaviorGovernorConfig } from "../config/types.behavior-governor.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayBehaviorGovernorLifecycle } from "./behavior-governor-lifecycle.js";
@@ -71,15 +71,10 @@ function integrations(deliveries = true) {
   };
 }
 
-function configFor(governor: Extract<BehaviorGovernorConfig, { enabled: true }>): OpenClawConfig {
-  return {
-    experimental: {
-      behaviorGovernor: {
-        ...governor,
-        secretRefs: resolvedGovernor.secretRefs,
-      },
-    },
-  } as unknown as OpenClawConfig;
+function decisionFor(governor: Extract<BehaviorGovernorConfig, { enabled: true }>) {
+  return deriveBehaviorGovernorBootDecision({
+    experimental: { behaviorGovernor: governor },
+  });
 }
 
 function snapshotFor(stateDir: string, sourceConfig = sourceGovernor) {
@@ -105,6 +100,7 @@ describe("gateway behavior governor prepared snapshot binding", () => {
             }
           | undefined;
         const lifecycle = createGatewayBehaviorGovernorLifecycle({
+          bootDecision: decisionFor(sourceGovernor),
           hostFactory: async (input) => {
             received = {
               config: input.config as unknown as Record<string, unknown>,
@@ -120,14 +116,8 @@ describe("gateway behavior governor prepared snapshot binding", () => {
             throw new Error("fixture factory stop");
           },
         });
-        const resolvedConfig = {
-          experimental: {
-            behaviorGovernor: resolvedGovernor,
-          },
-          secrets: { unrelated: "not-for-governor" },
-        } as unknown as OpenClawConfig;
         await expect(
-          lifecycle.apply(resolvedConfig, {
+          lifecycle.apply({
             sourceConfig: sourceGovernor,
             config: { secretRefs: resolvedGovernor.secretRefs },
             env: { NODE_ENV: "test", OPENCLAW_STATE_DIR: stateDir },
@@ -160,26 +150,25 @@ describe("gateway behavior governor prepared snapshot binding", () => {
       async (state) => {
         let factoryCalls = 0;
         const offLifecycle = createGatewayBehaviorGovernorLifecycle({
+          bootDecision: deriveBehaviorGovernorBootDecision({}),
           hostFactory: () => {
             factoryCalls += 1;
             return { capabilities: [capability], integrations: integrations() };
           },
         });
-        await offLifecycle.apply(
-          { experimental: { behaviorGovernor: { enabled: false } } },
-          snapshotFor(state.stateDir),
-        );
+        await offLifecycle.apply(snapshotFor(state.stateDir));
         expect(factoryCalls).toBe(0);
         expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(false);
 
         const lifecycle = createGatewayBehaviorGovernorLifecycle({
+          bootDecision: decisionFor(sourceGovernor),
           hostFactory: () => {
             factoryCalls += 1;
             return { capabilities: [capability], integrations: integrations() };
           },
         });
-        await lifecycle.apply(configFor(sourceGovernor), snapshotFor(state.stateDir));
-        await lifecycle.apply(configFor(sourceGovernor), snapshotFor(state.stateDir));
+        await lifecycle.apply(snapshotFor(state.stateDir));
+        await lifecycle.apply(snapshotFor(state.stateDir));
         expect(factoryCalls).toBe(1);
         expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(true);
 
@@ -188,7 +177,7 @@ describe("gateway behavior governor prepared snapshot binding", () => {
           agentLoop: { ...sourceGovernor.agentLoop, maxTurns: 4 },
         } as typeof sourceGovernor;
         await expect(
-          lifecycle.apply(configFor(changedSource), snapshotFor(state.stateDir, changedSource)),
+          lifecycle.apply(snapshotFor(state.stateDir, changedSource)),
         ).rejects.toThrow("GOVERNOR_GATEWAY_RESTART_REQUIRED");
         await lifecycle.close();
         expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(true);
@@ -204,6 +193,7 @@ describe("gateway behavior governor prepared snapshot binding", () => {
       { layout: "state-only", prefix: `governor-lifecycle-${label.replaceAll(" ", "-")}-` },
       async (state) => {
         const lifecycle = createGatewayBehaviorGovernorLifecycle({
+          bootDecision: decisionFor(source as typeof sourceGovernor),
           hostFactory: () => {
             throw new Error("factory must not run");
           },
@@ -213,7 +203,7 @@ describe("gateway behavior governor prepared snapshot binding", () => {
           snapshot.config.secretRefs.identityHmacKey = "";
         }
         await expect(
-          lifecycle.apply(configFor(source as typeof sourceGovernor), snapshot),
+          lifecycle.apply(snapshot),
         ).rejects.toThrow(
           label === "plaintext"
             ? "GOVERNOR_GATEWAY_SECRET_REF_INVALID"
@@ -230,6 +220,7 @@ describe("gateway behavior governor prepared snapshot binding", () => {
       async (state) => {
         let startupCloseCalls = 0;
         const startupFailure = createGatewayBehaviorGovernorLifecycle({
+          bootDecision: decisionFor(sourceGovernor),
           hostFactory: () => ({
             capabilities: [capability],
             integrations: integrations(false),
@@ -240,13 +231,14 @@ describe("gateway behavior governor prepared snapshot binding", () => {
           }),
         });
         await expect(
-          startupFailure.apply(configFor(sourceGovernor), snapshotFor(state.stateDir)),
+          startupFailure.apply(snapshotFor(state.stateDir)),
         ).rejects.toBeInstanceOf(AggregateError);
         expect(startupCloseCalls).toBe(1);
         expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(false);
 
         let closeCalls = 0;
         const closeFailure = createGatewayBehaviorGovernorLifecycle({
+          bootDecision: decisionFor(sourceGovernor),
           hostFactory: () => ({
             capabilities: [capability],
             integrations: integrations(),
@@ -256,7 +248,7 @@ describe("gateway behavior governor prepared snapshot binding", () => {
             },
           }),
         });
-        await closeFailure.apply(configFor(sourceGovernor), snapshotFor(state.stateDir));
+        await closeFailure.apply(snapshotFor(state.stateDir));
         await expect(closeFailure.close()).rejects.toBeInstanceOf(AggregateError);
         await expect(closeFailure.close()).rejects.toBeInstanceOf(AggregateError);
         expect(closeCalls).toBe(1);

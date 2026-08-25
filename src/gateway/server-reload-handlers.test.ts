@@ -1327,6 +1327,142 @@ describe("gateway Gmail hot reload handlers", () => {
     expect(clearGmailRestartAbortController).toHaveBeenCalledWith(abortController);
   });
 
+  it("rejects managed enforce governor reloads before secrets, restart, or promotion", async () => {
+    vi.useFakeTimers();
+    const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
+      current: null,
+    };
+    const initialConfig = {
+      gateway: { reload: { debounceMs: 0, mode: "hot" } },
+      experimental: { behaviorGovernor: { enabled: false } },
+    } as OpenClawConfig;
+    const enforceConfig = {
+      gateway: { reload: { debounceMs: 0, mode: "hot" } },
+      experimental: { behaviorGovernor: { enabled: true, mode: "enforce" } },
+    } as OpenClawConfig;
+    const unresolvedShadowConfig = {
+      gateway: { reload: { debounceMs: 0, mode: "hot" } },
+      experimental: {
+        behaviorGovernor: {
+          enabled: true,
+          mode: "shadow",
+          secretRefs: { identityHmacKey: { source: "env", provider: "default", id: "MISSING" } },
+        },
+      },
+    } as OpenClawConfig;
+    const activateRuntimeSecrets = vi.fn();
+    const promoteSnapshot = vi.fn(async () => true);
+    const logReload = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const reloader = startManagedGatewayConfigReloader({
+      minimalTestGateway: false,
+      initialConfig,
+      initialCompareConfig: initialConfig,
+      initialInternalWriteHash: null,
+      watchPath: "/tmp/openclaw.json",
+      readSnapshot: vi.fn(async () => ({
+        path: "/tmp/openclaw.json",
+        exists: true,
+        raw: "{}",
+        parsed: {},
+        sourceConfig: enforceConfig,
+        resolved: enforceConfig,
+        valid: true,
+        runtimeConfig: enforceConfig,
+        config: enforceConfig,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+        hash: "governor-enforce",
+      })) as never,
+      promoteSnapshot: promoteSnapshot as never,
+      subscribeToWrites: ((listener: (event: ConfigWriteNotification) => void) => {
+        writeListenerRef.current = listener;
+        return () => {
+          writeListenerRef.current = null;
+        };
+      }) as never,
+      deps: {} as never,
+      broadcast: vi.fn(),
+      getState: () => ({
+        hooksConfig: {} as never,
+        hookClientIpConfig: {} as never,
+        heartbeatRunner: { stop: vi.fn(), updateConfig: vi.fn() } as never,
+        cronState: {
+          cron: { start: vi.fn(async () => {}), stop: vi.fn() },
+          storePath: "/tmp/cron.json",
+          cronEnabled: false,
+        } as never,
+        channelHealthMonitor: null,
+      }),
+      setState: vi.fn(),
+      startChannel: vi.fn(async () => {}),
+      stopChannel: vi.fn(async () => {}),
+      reloadPlugins: vi.fn(
+        async (): Promise<GatewayPluginReloadResult> => ({
+          restartChannels: new Set(),
+          activeChannels: new Set(),
+        }),
+      ),
+      logHooks: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logChannels: { info: vi.fn(), error: vi.fn() },
+      logCron: { error: vi.fn() },
+      logReload,
+      channelManager: {} as never,
+      activateRuntimeSecrets: activateRuntimeSecrets as never,
+      resolveSharedGatewaySessionGenerationForConfig: () => undefined,
+      sharedGatewaySessionGenerationState: { current: "current", required: null },
+      clients: [],
+      reconcileTerminalSessions: vi.fn(),
+      commitTerminalConfig: vi.fn(),
+    });
+    writeListenerRef.current?.({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig: enforceConfig,
+      runtimeConfig: enforceConfig,
+      persistedHash: "governor-enforce",
+      revision: 1,
+      fingerprint: "governor-enforce",
+      sourceFingerprint: "governor-enforce",
+      writtenAtMs: Date.now(),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(activateRuntimeSecrets).not.toHaveBeenCalled();
+    expect(promoteSnapshot).not.toHaveBeenCalled();
+    expect(logReload.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("no SIGUSR1 listener found"),
+    );
+    expect(logReload.error).toHaveBeenCalledWith(
+      "config reload failed: Error: C07_ARCHITECTURE_NOT_READY",
+    );
+
+    activateRuntimeSecrets.mockRejectedValueOnce(new Error("unresolved governor SecretRef"));
+    writeListenerRef.current?.({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig: unresolvedShadowConfig,
+      runtimeConfig: unresolvedShadowConfig,
+      persistedHash: "governor-shadow-unresolved",
+      revision: 2,
+      fingerprint: "governor-shadow-unresolved",
+      sourceFingerprint: "governor-shadow-unresolved",
+      writtenAtMs: Date.now(),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(activateRuntimeSecrets).toHaveBeenCalledWith(unresolvedShadowConfig, {
+      reason: "restart-check",
+      activate: false,
+    });
+    expect(promoteSnapshot).not.toHaveBeenCalled();
+    expect(logReload.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("no SIGUSR1 listener found"),
+    );
+    expect(logReload.error).toHaveBeenCalledWith(
+      "config reload failed: Error: unresolved governor SecretRef",
+    );
+    await reloader.stop();
+  });
+
   it("commits runtime secrets for managed no-op config reloads", async () => {
     vi.useFakeTimers();
     const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {

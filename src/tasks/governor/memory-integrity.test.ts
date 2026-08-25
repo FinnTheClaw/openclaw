@@ -21,7 +21,7 @@ import {
   type GovernorSecretBoundary,
 } from "./secret-filter.js";
 import { initializeGovernorStateSchema } from "./state-schema.js";
-import { createGovernorTestStore } from "./test-broker.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 import type { GovernorTaskId, GovernorTaskScope } from "./types.js";
 
 const scopeA: GovernorTaskScope = {

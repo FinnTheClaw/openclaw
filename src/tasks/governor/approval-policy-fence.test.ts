@@ -9,7 +9,7 @@ import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { createGovernorEventRecord } from "./events.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestBroker } from "./test-broker.js";
+import { createGovernorTestBroker } from "./test-helpers/test-broker.js";
 import { createGovernorEffectId, type GovernorTaskScope } from "./types.js";
 
 const scope: GovernorTaskScope = {
@@ -47,8 +47,13 @@ describe("governor action approval policy fence", () => {
         const store = new GovernorSqliteStore({
           stateDir: state.stateDir,
           receiptResolver: broker.resolver,
+          evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
           approvalResolver: broker.approvalResolver,
           deliveryResolver: broker.deliveryResolver,
+          physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+          memoryAuthority: broker.memoryAuthority,
+          taskAuthority: broker.taskAuthority,
+          secrets: broker.secrets,
           capabilities: registry,
         });
         const controller = new GovernorController(store, registry);

@@ -36,6 +36,7 @@ describe("durable memory storage principal identity", () => {
     const principal = `principal_${"a".repeat(64)}`;
     const truncated = principal.slice(0, 64);
 
+    expect(principal).toHaveLength(74);
     expect(resolveDurableMemoryAgentId(principal, undefined)).toBe(principal);
     expect(
       runtime!.captureInbound({
@@ -114,5 +115,65 @@ describe("durable memory storage principal identity", () => {
       status: "superseded",
       supersedesRevisionId: canonicalFact.fact.revisionId,
     });
+    expect(await runtime!.repairLegacyTruncatedPrincipalProjections()).toBe(0);
+    expect(runtime!.ledger.listLegacyTruncatedPrincipalRekeys()).toEqual([
+      { fromAgentId: truncated, toAgentId: principal },
+    ]);
+  });
+
+  it("rolls back equivalent-fact retirement when a principal rekey conflicts", () => {
+    const principal = `principal_${"c".repeat(64)}`;
+    const truncated = principal.slice(0, 64);
+    const legacyEvent = runtime!.ledger.appendEvent({
+      agentId: truncated,
+      role: "user",
+      content: "Legacy conflicting evidence.",
+      sourceKind: "message_received",
+      externalId: "shared-conflicting-external-id",
+    }).event;
+    const canonicalEvent = runtime!.ledger.appendEvent({
+      agentId: principal,
+      role: "user",
+      content: "Canonical conflicting evidence.",
+      sourceKind: "message_received",
+      externalId: "shared-conflicting-external-id",
+    }).event;
+    const sharedFact = {
+      factKey: "fact_rekey_rollback",
+      scope: "scope_rekey_rollback",
+      subject: "rollback marker",
+      predicate: "has value",
+      object: "preserved",
+      text: "The rollback marker is preserved.",
+      category: "fact",
+      confidence: 0.9,
+    } as const;
+    const legacyFact = runtime!.ledger.appendFactRevision({
+      ...sharedFact,
+      agentId: truncated,
+      authority: 0.7,
+      observedAt: 100,
+      validFrom: 100,
+      sourceEventId: legacyEvent.eventId,
+    }).fact;
+    runtime!.ledger.appendFactRevision({
+      ...sharedFact,
+      agentId: principal,
+      authority: 0.9,
+      observedAt: 200,
+      validFrom: 200,
+      sourceEventId: canonicalEvent.eventId,
+    });
+
+    expect(() => runtime!.ledger.repairLegacyTruncatedPrincipalIds()).toThrow(
+      "legacy truncated principal rekey conflicts on memory event external identity",
+    );
+    expect(runtime!.ledger.getFactRevision(legacyFact.revisionId)).toMatchObject({
+      agentId: truncated,
+      status: "active",
+      supersedesRevisionId: undefined,
+    });
+    expect(runtime!.ledger.listRecentEvents({ agentId: truncated })).toHaveLength(1);
+    expect(runtime!.ledger.listLegacyTruncatedPrincipalRekeys()).toEqual([]);
   });
 });

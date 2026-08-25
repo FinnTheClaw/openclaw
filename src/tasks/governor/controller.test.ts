@@ -5,7 +5,10 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
 import { GovernorController, governorArgumentsDigest } from "./controller.js";
 import { GovernorSqliteStore } from "./store.js";
-import { createGovernorTestStore, recordGovernorTestToolOutcome } from "./test-broker.js";
+import {
+  createGovernorTestStore,
+  recordGovernorTestToolOutcome,
+} from "./test-helpers/test-broker.js";
 import {
   createGovernorEffectId,
   type GovernorPlan,

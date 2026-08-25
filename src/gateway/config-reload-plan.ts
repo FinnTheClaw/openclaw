@@ -26,6 +26,21 @@ export type GatewayReloadPlan = {
   noopPaths: string[];
 };
 
+export function isNoopReloadPlan(plan: GatewayReloadPlan): boolean {
+  return (
+    !plan.restartGateway &&
+    plan.hotReasons.length === 0 &&
+    !plan.reloadHooks &&
+    !plan.restartGmailWatcher &&
+    !plan.restartCron &&
+    !plan.restartHeartbeat &&
+    !plan.restartHealthMonitor &&
+    !plan.reloadPlugins &&
+    !plan.disposeMcpRuntimes &&
+    plan.restartChannels.size === 0
+  );
+}
+
 type ReloadRule = {
   prefix: string;
   kind: "restart" | "hot" | "none";
@@ -54,6 +69,8 @@ type GatewayReloadPlanOptions = {
 const PLUGIN_INSTALL_TIMESTAMP_KEYS = ["installedAt", "resolvedAt"] as const;
 
 const BASE_RELOAD_RULES: ReloadRule[] = [
+  // The behavior governor is a process-lifetime authority decision. Never hot-activate it.
+  { prefix: "experimental.behaviorGovernor", kind: "restart" },
   { prefix: "gateway.remote", kind: "none" },
   { prefix: "gateway.reload", kind: "none" },
   // gateway.terminal.* deliberately has no rule here: it falls through to the

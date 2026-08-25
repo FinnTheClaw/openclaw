@@ -2,11 +2,9 @@
  * Read-only governor host contracts.
  *
  * Governor/task code may depend on these resolver shapes, but never on the
- * capability kernel.  The only runtime factory here is deliberately test-only
- * and rejects every non-test process.
+ * capability kernel or any construction path.
  */
 import {
-  createHostGovernorBroker,
   isTrustedGovernorApprovalResolver,
   isTrustedGovernorEvidenceInvalidationResolver,
   isTrustedGovernorDeliveryResolver,
@@ -29,12 +27,11 @@ import {
   type HostDeliveryReceipt,
 } from "./governor-host-broker.js";
 import {
-  isTrustedGovernorMemoryAuthority,
   type GovernorMemoryAuthorityBinding,
   type GovernorMemoryAuthorityState,
   type GovernorTrustedMemoryAuthority,
 } from "./governor-host-memory-authority.js";
-import { createGovernorHostPersistence } from "./governor-host-persistence.js";
+import { isTrustedGovernorMemoryAuthority } from "./governor-host-persistence.js";
 import {
   isTrustedGovernorPhysicalExecutionCoordinator,
   type GovernorPhysicalExecutionBinding,
@@ -42,10 +39,6 @@ import {
   type GovernorPhysicalExecutionState,
   type GovernorTrustedPhysicalExecutionCoordinator,
 } from "./governor-host-physical-execution.js";
-import {
-  resolveGovernorSecrets,
-  syntheticGovernorSecretsEnvironment,
-} from "./governor-host-secrets.js";
 import {
   isTrustedGovernorTaskAuthority,
   type GovernorTaskFenceBinding,
@@ -90,21 +83,3 @@ export type {
   HostGovernorReceiptId,
   HostDeliveryReceipt,
 };
-
-export function createGovernorTestHostBindings(params: { stateDir?: string } = {}) {
-  if (process.env.NODE_ENV !== "test") {
-    throw new Error("Governor test host bindings are unavailable outside tests");
-  }
-  const env = syntheticGovernorSecretsEnvironment(params.stateDir);
-  const secrets = resolveGovernorSecrets(env);
-  const broker = createHostGovernorBroker({
-    secrets,
-    persistence: createGovernorHostPersistence({
-      env,
-      ...params,
-      secrets,
-      testMode: true,
-    }),
-  });
-  return { ...broker, secrets };
-}

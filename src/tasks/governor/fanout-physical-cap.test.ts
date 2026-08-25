@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createGovernorTestHostBindings } from "../../security/governor-host-readonly.js";
+import { createGovernorTestBindings } from "../../security/test-helpers/governor-test-host-bindings.js";
 import {
   closeOpenClawStateDatabase,
   openOpenClawStateDatabase,
@@ -37,13 +37,16 @@ const plan: GovernorPlan = {
   ],
 };
 
-function storeWithHost(stateDir: string, host: ReturnType<typeof createGovernorTestHostBindings>) {
+function storeWithHost(stateDir: string, host: ReturnType<typeof createGovernorTestBindings>) {
   return new GovernorSqliteStore({
     stateDir,
     receiptResolver: host.resolver,
+    evidenceInvalidationResolver: host.evidenceInvalidationResolver,
     approvalResolver: host.approvalResolver,
     deliveryResolver: host.deliveryResolver,
     physicalExecutionCoordinator: host.physicalExecutionCoordinator,
+    memoryAuthority: host.memoryAuthority,
+    taskAuthority: host.taskAuthority,
     secrets: host.secrets,
   });
 }
@@ -55,7 +58,7 @@ describe("governor host-owned physical fanout cap", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-physical-cap-" },
       async (state) => {
-        const host = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const host = createGovernorTestBindings({ stateDir: state.stateDir });
         const store = storeWithHost(state.stateDir, host);
         const controller = new GovernorController(store, store.capabilities);
         const ingress = controller.ingest({
@@ -119,7 +122,7 @@ describe("governor host-owned physical fanout cap", () => {
 
         closeOpenClawStateDatabase();
         fs.copyFileSync(snapshotPath, primaryPath);
-        const restartedHost = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const restartedHost = createGovernorTestBindings({ stateDir: state.stateDir });
         const restarted = storeWithHost(state.stateDir, restartedHost);
         expect(restarted.fanout.claimNext({ workerId: "restored-worker", now: 220 })).toEqual({
           kind: "saturated",
@@ -179,7 +182,7 @@ describe("governor host-owned physical fanout cap", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "governor-physical-completion-recovery-" },
       async (state) => {
-        const host = createGovernorTestHostBindings({ stateDir: state.stateDir });
+        const host = createGovernorTestBindings({ stateDir: state.stateDir });
         const store = storeWithHost(state.stateDir, host);
         const controller = new GovernorController(store, store.capabilities);
         const ingress = controller.ingest({

@@ -2,11 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { resolveStateDir } from "../config/paths.js";
+import {
+  assertBehaviorGovernorBootDecision,
+  type BehaviorGovernorBootDecision,
+} from "../config/behavior-governor-boot-decision.js";
 import type {
   BehaviorGovernorConfig,
   BehaviorGovernorAgentLoopConfig,
 } from "../config/types.behavior-governor.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef } from "../config/types.secrets.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import type {
@@ -50,10 +53,7 @@ export type GatewayBehaviorGovernorHostFactory = (params: {
     }>;
 
 export type GatewayBehaviorGovernorLifecycle = Readonly<{
-  apply: (
-    config: OpenClawConfig,
-    secretSnapshot: GatewayBehaviorGovernorSecretSnapshot,
-  ) => Promise<void>;
+  apply: (secretSnapshot: GatewayBehaviorGovernorSecretSnapshot) => Promise<void>;
   close: () => Promise<void>;
   freeze: () => Promise<void>;
 }>;
@@ -76,11 +76,6 @@ const SECRET_ENV_NAMES = {
   ledgerSigningKey: "OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY",
   deploymentIdentity: "OPENCLAW_GOVERNOR_DEPLOYMENT_ID",
 } as const;
-
-function enabledConfig(config: OpenClawConfig): EnabledBehaviorGovernorConfig | undefined {
-  const value = config.experimental?.behaviorGovernor;
-  return value?.enabled === true ? value : undefined;
-}
 
 function loopConfig(config: EnabledBehaviorGovernorConfig): BehaviorGovernorAgentLoopConfig & {
   mode: EnabledBehaviorGovernorConfig["mode"];
@@ -147,9 +142,12 @@ function readPreparedGovernorEnvironment(params: {
 }
 
 export function createGatewayBehaviorGovernorLifecycle(params: {
+  bootDecision: BehaviorGovernorBootDecision;
   stateDir?: string;
   hostFactory?: GatewayBehaviorGovernorHostFactory;
 }): GatewayBehaviorGovernorLifecycle {
+  assertBehaviorGovernorBootDecision(params.bootDecision);
+  const bootDecision = params.bootDecision;
   let active:
     | {
         key: string;
@@ -191,28 +189,23 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     active?.runtime.freeze();
   };
 
-  const applyUnsafe = async (
-    config: OpenClawConfig,
-    secretSnapshot: GatewayBehaviorGovernorSecretSnapshot,
-  ) => {
-    const requestedGovernor = enabledConfig(config);
-    if (!requestedGovernor) {
+  const applyUnsafe = async (secretSnapshot: GatewayBehaviorGovernorSecretSnapshot) => {
+    if (bootDecision.kind === "off") {
       if (initialized && active) {
         throw new Error("GOVERNOR_GATEWAY_RESTART_REQUIRED");
       }
       initialized = true;
       return;
     }
+    const requestedGovernor = bootDecision.config;
     const governor = secretSnapshot.sourceConfig;
-    if (
-      !isDeepStrictEqual(
-        { mode: requestedGovernor.mode, agentLoop: requestedGovernor.agentLoop },
-        { mode: governor.mode, agentLoop: governor.agentLoop },
-      )
-    ) {
+    if (!isDeepStrictEqual(requestedGovernor, governor)) {
+      if (initialized && active) {
+        throw new Error("GOVERNOR_GATEWAY_RESTART_REQUIRED");
+      }
       throw new Error("GOVERNOR_GATEWAY_SECRET_SNAPSHOT_CONFIG_MISMATCH");
     }
-    const key = `${secretSnapshot.generation}:${JSON.stringify(governor)}`;
+    const key = secretSnapshot.generation;
     if (active?.key === key) {
       return;
     }
@@ -316,8 +309,8 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     }
   };
 
-  const apply = (config: OpenClawConfig, secretSnapshot: GatewayBehaviorGovernorSecretSnapshot) => {
-    const result = serial.then(() => applyUnsafe(config, secretSnapshot));
+  const apply = (secretSnapshot: GatewayBehaviorGovernorSecretSnapshot) => {
+    const result = serial.then(() => applyUnsafe(secretSnapshot));
     serial = result.catch(() => {});
     return result;
   };

@@ -8,7 +8,7 @@ import {
 import { GovernorController } from "./controller.js";
 import { createGovernorEventRecord } from "./events.js";
 import { GovernorRuntimeAdapter } from "./runtime-adapter.js";
-import { GovernorSqliteStore } from "./store.js";
+import { createGovernorTestStore } from "./test-helpers/test-broker.js";
 import type { GovernorTaskContract, GovernorTaskScope } from "./types.js";
 import { classifyGovernorRequest } from "./work-classification.js";
 
@@ -124,7 +124,10 @@ describe("governor host-derived work classification", () => {
       { layout: "state-only", prefix: "governor-v26-classification-" },
       async (state) => {
         const registry = new GovernorCapabilityRegistry(capabilities);
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir, capabilities: registry });
+        const store = createGovernorTestStore({
+          stateDir: state.stateDir,
+          capabilities: registry,
+        }).store;
         const controller = new GovernorController(store, registry);
         const adapter = new GovernorRuntimeAdapter(controller);
         const routed = adapter.routeIngress({
@@ -165,7 +168,10 @@ describe("governor host-derived work classification", () => {
       { layout: "state-only", prefix: "governor-v26-classification-policy-" },
       async (state) => {
         const initial = new GovernorCapabilityRegistry(capabilities);
-        const store = new GovernorSqliteStore({ stateDir: state.stateDir, capabilities: initial });
+        const store = createGovernorTestStore({
+          stateDir: state.stateDir,
+          capabilities: initial,
+        }).store;
         store.ingest({
           sourceMessageId: "classification-policy",
           sourceSequence: 1,
@@ -181,7 +187,8 @@ describe("governor host-derived work classification", () => {
           ),
         );
         expect(
-          () => new GovernorSqliteStore({ stateDir: state.stateDir, capabilities: changed }),
+          () =>
+            createGovernorTestStore({ stateDir: state.stateDir, capabilities: changed }).store,
         ).toThrow(/CLASSIFICATION_INVALID/u);
       },
     );
