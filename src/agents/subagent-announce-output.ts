@@ -185,7 +185,10 @@ function summarizeSubagentOutputHistory(messages: Array<unknown>): SubagentOutpu
   return snapshot;
 }
 
-function selectSubagentOutputText(snapshot: SubagentOutputSnapshot): string | undefined {
+function selectSubagentOutputText(
+  snapshot: SubagentOutputSnapshot,
+  outcome?: SubagentRunOutcome,
+): string | undefined {
   if (snapshot.waitingForContinuation) {
     return undefined;
   }
@@ -195,7 +198,11 @@ function selectSubagentOutputText(snapshot: SubagentOutputSnapshot): string | un
   if (snapshot.latestAssistantText) {
     return snapshot.latestAssistantText;
   }
-  if (snapshot.latestToolCallCount && snapshot.latestToolCallCount > 0) {
+  if (
+    snapshot.latestToolCallCount &&
+    snapshot.latestToolCallCount > 0 &&
+    (outcome?.status === "error" || outcome?.status === "timeout")
+  ) {
     return `${snapshot.latestToolCallCount} tool call(s) made without visible output.`;
   }
   return undefined;
@@ -203,7 +210,7 @@ function selectSubagentOutputText(snapshot: SubagentOutputSnapshot): string | un
 
 export async function readSubagentOutput(
   sessionKey: string,
-  _outcome?: SubagentRunOutcome,
+  outcome?: SubagentRunOutcome,
   options?: { sessionFile?: string },
 ): Promise<string | undefined> {
   let messages: unknown[] | undefined;
@@ -230,7 +237,7 @@ export async function readSubagentOutput(
       : undefined;
   const sourceMessages = messages ?? (Array.isArray(history?.messages) ? history.messages : []);
   const snapshot = summarizeSubagentOutputHistory(sourceMessages);
-  const selected = selectSubagentOutputText(snapshot);
+  const selected = selectSubagentOutputText(snapshot, outcome);
   if (selected?.trim()) {
     return selected;
   }

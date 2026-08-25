@@ -491,8 +491,8 @@ export async function runSubagentAnnounceFlow(params: {
 
     const taskLabel = params.label || params.task || "task";
     const announceSessionId = childSessionId || "unknown";
-    const completionResultText = childCompletionFindings || reply;
-    const findings = completionResultText || "(no output)";
+    const completionResultText = reply;
+    const findings = childCompletionFindings || completionResultText || "(no output)";
     const completionBlocked = isRequiredCompletionPresentationBlocked({
       required: expectsCompletionMessage,
       executionSucceeded: outcome.status === "ok",

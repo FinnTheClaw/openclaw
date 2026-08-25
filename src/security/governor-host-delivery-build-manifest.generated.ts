@@ -4131,7 +4131,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-announce-output.ts",
-      sha256: "094bc8a91b9a0fde7b0dccb33e06e0dca9989908c2d3517a634f6e78f2fec78e",
+      sha256: "6963642c80740d3c5d18a3a6c23689be0ee2924c9548f1afd9fdf929824f2f5f",
     },
     {
       path: "src/agents/subagent-announce.registry.runtime.ts",
@@ -4143,7 +4143,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-announce.ts",
-      sha256: "b79b97e0ce0bddd74a28e9e6191659ee40da43add7b37e637a99921488534089",
+      sha256: "1b0d4223cca8d1cf06f62516cb7642c3721563a34f768270d840d54a5ee2b8a2",
     },
     {
       path: "src/agents/subagent-attachments.ts",
@@ -17752,4 +17752,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "5884b892d49506d707d5fae68c7cfc62487901c7c7c08414a043591629108ff2";
+  "a3f28f5e74573e583e3d5732bebce8d49df45f026d5bf4bc398bfa8398595767";

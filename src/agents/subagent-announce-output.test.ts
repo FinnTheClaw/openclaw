@@ -64,6 +64,16 @@ function sessionsYieldTurn(message = "Waiting for subagent completion.") {
   ];
 }
 
+function toolOnlyTurn() {
+  return [
+    {
+      role: "assistant",
+      stopReason: "toolUse",
+      content: [{ type: "toolCall", id: "call-read", name: "read", arguments: {} }],
+    },
+  ];
+}
+
 describe("dedupeLatestChildCompletionRows", () => {
   it("prefers the newer generation when child runs share a creation timestamp", () => {
     const childSessionKey = "agent:main:subagent:reused";
@@ -206,6 +216,28 @@ describe("readSubagentOutput", () => {
     });
 
     await expect(readSubagentOutput("agent:main:subagent:child")).resolves.toBeUndefined();
+  });
+
+  it("does not turn successful tool-only execution into completion text", async () => {
+    installOutputDeps({ messages: toolOnlyTurn() });
+
+    await expect(
+      readSubagentOutput("agent:main:subagent:child", { status: "ok" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not turn outcome-unspecified tool-only execution into completion text", async () => {
+    installOutputDeps({ messages: toolOnlyTurn() });
+
+    await expect(readSubagentOutput("agent:main:subagent:child")).resolves.toBeUndefined();
+  });
+
+  it("retains tool-only diagnostics for an explicit timeout", async () => {
+    installOutputDeps({ messages: toolOnlyTurn() });
+
+    await expect(
+      readSubagentOutput("agent:main:subagent:child", { status: "timeout" }),
+    ).resolves.toBe("1 tool call(s) made without visible output.");
   });
 
   it("reads recovered output from the private transcript before gateway history", async () => {
