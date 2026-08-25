@@ -176,11 +176,22 @@ function stableMessageExternalId(options: {
   return undefined;
 }
 
+const CANONICAL_STORAGE_PRINCIPAL_RE = /^principal_[a-f0-9]{64}$/;
+
 export function resolveDurableMemoryAgentId(
   explicit: string | undefined,
   sessionKey: string | undefined,
 ): string {
-  const explicitAgentId = explicit?.trim() ? normalizeAgentId(explicit) : undefined;
+  const explicitValue = explicit?.trim();
+  // Storage principals are host-issued SHA-256 identities, not public agent IDs.
+  // Sending them through normalizeAgentId truncates the 74-character value to
+  // 64 characters and splits capture from recall. Preserve only the exact closed
+  // principal representation; ordinary agent IDs retain their existing rules.
+  const explicitAgentId = explicitValue
+    ? CANONICAL_STORAGE_PRINCIPAL_RE.test(explicitValue)
+      ? explicitValue
+      : normalizeAgentId(explicitValue)
+    : undefined;
   const sessionAgentId = parseAgentSessionKey(sessionKey)?.agentId;
   if (explicitAgentId && sessionAgentId && explicitAgentId !== sessionAgentId) {
     throw new Error(
