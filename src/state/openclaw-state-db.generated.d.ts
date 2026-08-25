@@ -758,6 +758,7 @@ export interface GovernorEvidence {
   plan_version: number;
   scope_key: string;
   semantic_digest: string;
+  source_evidence_id: string | null;
   source_identity: string;
   source_kind: string;
   task_id: string;

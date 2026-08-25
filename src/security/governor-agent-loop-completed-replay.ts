@@ -16,6 +16,9 @@ export function createGovernorCompletedReplayScope(
     afterTurn() {
       return { kind: "complete" as const };
     },
+    turnPhase() {
+      return "final_response" as const;
+    },
     interrupt() {},
     assertTerminal() {},
     governedTools() {

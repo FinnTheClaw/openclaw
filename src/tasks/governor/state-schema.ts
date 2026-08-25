@@ -53,6 +53,7 @@ function migrateLegacyGovernorColumns(
   addIfMissing("governor_evidence", "claim_predicate", "TEXT NOT NULL DEFAULT ''");
   addIfMissing("governor_evidence", "claim_value_json", "TEXT NOT NULL DEFAULT 'null'");
   addIfMissing("governor_evidence", "semantic_digest", "TEXT NOT NULL DEFAULT 'legacy-unverified'");
+  addIfMissing("governor_evidence", "source_evidence_id", "TEXT");
   // Legacy evidence is deliberately unsigned and must fail admission verification.
   addIfMissing("governor_evidence", "admission_key_id", "TEXT NOT NULL DEFAULT 'legacy'");
   addIfMissing("governor_evidence", "admission_version", "INTEGER NOT NULL DEFAULT 0");

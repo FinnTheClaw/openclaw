@@ -1580,6 +1580,7 @@ CREATE TABLE IF NOT EXISTS governor_evidence (
   scope_key TEXT NOT NULL,
   observed_at INTEGER NOT NULL,
   evidence_digest TEXT NOT NULL,
+  source_evidence_id TEXT,
   claim_predicate TEXT NOT NULL,
   claim_value_json TEXT NOT NULL,
   semantic_digest TEXT NOT NULL,

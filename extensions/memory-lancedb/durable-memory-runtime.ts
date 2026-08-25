@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import { HybridMemoryIndex, type MemoryProjectionInput } from "./hybrid-memory-index.js";
 import { assertMemoryContentSafe, MemorySensitiveContentError } from "./memory-content-guard.js";
+import type { DurableMemoryEmbedding } from "./memory-embedding.js";
 import { memoryScopeMetadata, resolveTrustedMemoryScope } from "./memory-scope.js";
 import {
   TemporalMemoryLedger,
@@ -37,10 +38,7 @@ export type DurableMemoryLogger = {
   error?: (message: string) => void;
 };
 
-export type DurableMemoryEmbedding = {
-  embed(text: string, options?: { timeoutMs?: number }): Promise<number[]>;
-  embedBatch?(texts: string[], options?: { timeoutMs?: number }): Promise<number[][]>;
-};
+export type { DurableMemoryEmbedding } from "./memory-embedding.js";
 
 export type DurableMemoryRuntimeOptions = {
   ledgerPath: string;
