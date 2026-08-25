@@ -64,6 +64,7 @@ describe("OpenAI-compatible memory consolidation client", () => {
     expect(url).toBe("http://memory.local/v1/chat/completions");
     const body = JSON.parse(String(init?.body)) as Record<string, any>;
     expect(body.model).toBe("moira/memory");
+    expect(body.max_completion_tokens).toBe(8_000);
     expect(body.response_format).toMatchObject({
       type: "json_schema",
       json_schema: { strict: true },
@@ -136,6 +137,7 @@ describe("OpenAI-compatible memory consolidation client", () => {
     );
     expect(summary).toBe("Juniper controls irrigation and uses circuit C.");
     const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, any>;
+    expect(body.max_completion_tokens).toBe(8_000);
     expect(String(body.messages[0].content)).toContain('{"summary":"compact factual summary"}');
   });
 

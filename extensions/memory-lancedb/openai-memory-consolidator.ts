@@ -206,7 +206,7 @@ class OpenAICompatibleMemoryModel {
         body: JSON.stringify({
           model: this.options.model,
           temperature: 0,
-          max_completion_tokens: params.kind === "facts" ? 2_000 : 4_000,
+          max_completion_tokens: 8_000,
           response_format: { type: "json_schema", json_schema: params.schema },
           messages: [
             { role: "system", content: params.system },
