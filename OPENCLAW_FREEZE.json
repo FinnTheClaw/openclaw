@@ -6,7 +6,7 @@
   "source_commit": "de366037b3b07592f9463f1cbbfaf499b1a4eb16",
   "frozen_source_commit": "de366037b3b07592f9463f1cbbfaf499b1a4eb16",
   "artifact_source_commit": "de366037b3b07592f9463f1cbbfaf499b1a4eb16",
-  "source_branch": "feature/hardening-governor-v1-20260810",
+  "source_branch": "functional-finn/memory-8k-20260825",
   "upstream_repository": "https://github.com/openclaw/openclaw.git",
   "frozen_repository": "/Users/aiapi/workspace/openclaw-frozen",
   "upstream_mirror": "/Users/aiapi/workspace/openclaw-upstream",
