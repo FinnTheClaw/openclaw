@@ -129,7 +129,7 @@ describe("plugin SDK surface report", () => {
     expect(readDefaultPublicSurfaceBudgets()).toEqual(readCurrentPublicSurfaceCounts());
   });
 
-  it("keeps generated package declarations out of source surface counts", () => {
+  it("rejects callable surface growth from the canonical source graph", () => {
     const budget = readDefaultPublicSurfaceBudgets().callableExports;
     const budgetConfig = readPluginSdkSurfaceBudgets({
       OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_FUNCTION_EXPORTS: String(budget - 1),
