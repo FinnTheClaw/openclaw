@@ -97,6 +97,22 @@ describe("uploadBatchJsonlFile", () => {
     expect(canceled).toBe(true);
   });
 
+  it("redacts credentials echoed by a batch endpoint", async () => {
+    const credential = "memory/Start~opaque+End=";
+    remoteHttpMock.mockImplementationOnce(async (params) => {
+      return await params.onResponse(textResponse(`Authorization: bearer ${credential}`, 401));
+    });
+
+    const error = await uploadBatchJsonlFile({
+      client: { baseUrl: "https://memory.example/v1", headers: {} },
+      requests: [{ input: "one" }],
+      errorPrefix: "file upload failed",
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain(credential);
+  });
+
   it("rejects oversized successful file-upload JSON before parsing", async () => {
     let canceled = false;
     remoteHttpMock.mockImplementationOnce(async (params) => {

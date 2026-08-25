@@ -1,4 +1,5 @@
 // Memory Host SDK module implements post json behavior.
+import { formatErrorMessage } from "./error-utils.js";
 import { withRemoteHttpResponse } from "./remote-http.js";
 import { readResponseJsonWithLimit, readResponseTextSnippet } from "./response-snippet.js";
 import type { SsrFPolicy } from "./ssrf-policy.js";
@@ -31,7 +32,9 @@ export async function postJson<T>(params: {
     onResponse: async (res) => {
       if (!res.ok) {
         const text = await readResponseTextSnippet(res, { signal: params.signal });
-        const err = new Error(`${params.errorPrefix}: ${res.status} ${text}`) as Error & {
+        const err = new Error(
+          `${params.errorPrefix}: ${res.status} ${formatErrorMessage(text)}`,
+        ) as Error & {
           status?: number;
         };
         if (params.attachStatus) {

@@ -143,6 +143,26 @@ describe("postJson", () => {
     expect((error as { status?: unknown }).status).toBe(502);
   });
 
+  it("redacts credentials echoed by a remote JSON error", async () => {
+    remoteHttpMock.mockImplementationOnce(async (params) => {
+      return await params.onResponse(textResponse('{"Authorization":"bearer t7K4_x"}', 401));
+    });
+
+    await expect(
+      postJson({
+        url: "https://memory.example/v1/post",
+        headers: {},
+        body: {},
+        errorPrefix: "post failed",
+        attachStatus: true,
+        parse: () => ({}),
+      }),
+    ).rejects.toMatchObject({
+      message: 'post failed: 401 {"Authorization":"bearer ***"}',
+      status: 401,
+    });
+  });
+
   it("bounds non-ok response bodies before formatting the error", async () => {
     let canceled = false;
     remoteHttpMock.mockImplementationOnce(async (params) => {
