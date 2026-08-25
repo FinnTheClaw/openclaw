@@ -74,21 +74,21 @@ were rechecked before promotion.
 The following status distinguishes source/deterministic implementation evidence
 from countable live certification:
 
-| Criterion | Status |
-| --- | --- |
-| C01 | Source/deterministic coverage present; live countability pending Alistar/Qwen smoke and review. |
-| C02 | Remaining: terminal final-response-only phase and campaign evidence. |
-| C03 | Source/deterministic coverage present; live countability pending. |
-| C04 | Source/deterministic coverage present; live countability pending. |
-| C05 | Remaining: durable retry plan/checkpoint semantics and campaign evidence. |
-| C06 | Source/deterministic coverage present; live countability pending. |
-| C07 | Remaining: real memory-backend adapter/invalidation/retention integration; synthetic store evidence is not countable. |
-| C08 | Source/deterministic coverage present; live countability pending. |
-| C09 | Source/deterministic coverage present; live countability pending. |
-| C10 | Remaining: authorized live integration/campaign evidence. |
-| C11 | Source/deterministic coverage present; live countability pending. |
-| C12 | Remaining: signed host close/abort receipt and restart/recovery evidence. |
-| C13 | Source/deterministic coverage present; live countability pending. |
+| Criterion | Status                                                                                                                |
+| --------- | --------------------------------------------------------------------------------------------------------------------- |
+| C01       | Source/deterministic coverage present; live countability pending Alistar/Qwen smoke and review.                       |
+| C02       | Remaining: terminal final-response-only phase and campaign evidence.                                                  |
+| C03       | Source/deterministic coverage present; live countability pending.                                                     |
+| C04       | Source/deterministic coverage present; live countability pending.                                                     |
+| C05       | Remaining: durable retry plan/checkpoint semantics and campaign evidence.                                             |
+| C06       | Source/deterministic coverage present; live countability pending.                                                     |
+| C07       | Remaining: real memory-backend adapter/invalidation/retention integration; synthetic store evidence is not countable. |
+| C08       | Source/deterministic coverage present; live countability pending.                                                     |
+| C09       | Source/deterministic coverage present; live countability pending.                                                     |
+| C10       | Remaining: authorized live integration/campaign evidence.                                                             |
+| C11       | Source/deterministic coverage present; live countability pending.                                                     |
+| C12       | Remaining: signed host close/abort receipt and restart/recovery evidence.                                             |
+| C13       | Source/deterministic coverage present; live countability pending.                                                     |
 
 Grond fake-provider and process-boundary results remain supplemental prerequisite
 evidence only. They are not actual-Qwen, Alistar, or production certification.
