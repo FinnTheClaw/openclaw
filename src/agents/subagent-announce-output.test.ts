@@ -6,6 +6,7 @@ import {
   applySubagentWaitOutcome,
   buildCompactAnnounceStatsLine,
   buildChildCompletionFindings,
+  captureSubagentCompletionReply,
   dedupeLatestChildCompletionRows,
   readSubagentOutput,
 } from "./subagent-announce-output.js";
@@ -236,8 +237,23 @@ describe("readSubagentOutput", () => {
     installOutputDeps({ messages: toolOnlyTurn() });
 
     await expect(
-      readSubagentOutput("agent:main:subagent:child", { status: "timeout" }),
+      readSubagentOutput(
+        "agent:main:subagent:child",
+        { status: "timeout" },
+        { includeToolCallDiagnostic: true },
+      ),
     ).resolves.toBe("1 tool call(s) made without visible output.");
+  });
+
+  it("keeps timeout diagnostics out of authoritative completion capture", async () => {
+    installOutputDeps({ messages: toolOnlyTurn() });
+
+    await expect(
+      captureSubagentCompletionReply("agent:main:subagent:child", {
+        waitForReply: false,
+        outcome: { status: "timeout" },
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("reads recovered output from the private transcript before gateway history", async () => {

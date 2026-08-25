@@ -188,6 +188,7 @@ function summarizeSubagentOutputHistory(messages: Array<unknown>): SubagentOutpu
 function selectSubagentOutputText(
   snapshot: SubagentOutputSnapshot,
   outcome?: SubagentRunOutcome,
+  includeToolCallDiagnostic = false,
 ): string | undefined {
   if (snapshot.waitingForContinuation) {
     return undefined;
@@ -201,6 +202,7 @@ function selectSubagentOutputText(
   if (
     snapshot.latestToolCallCount &&
     snapshot.latestToolCallCount > 0 &&
+    includeToolCallDiagnostic &&
     (outcome?.status === "error" || outcome?.status === "timeout")
   ) {
     return `${snapshot.latestToolCallCount} tool call(s) made without visible output.`;
@@ -211,7 +213,7 @@ function selectSubagentOutputText(
 export async function readSubagentOutput(
   sessionKey: string,
   outcome?: SubagentRunOutcome,
-  options?: { sessionFile?: string },
+  options?: { sessionFile?: string; includeToolCallDiagnostic?: boolean },
 ): Promise<string | undefined> {
   let messages: unknown[] | undefined;
   if (options?.sessionFile) {
@@ -237,7 +239,7 @@ export async function readSubagentOutput(
       : undefined;
   const sourceMessages = messages ?? (Array.isArray(history?.messages) ? history.messages : []);
   const snapshot = summarizeSubagentOutputHistory(sourceMessages);
-  const selected = selectSubagentOutputText(snapshot, outcome);
+  const selected = selectSubagentOutputText(snapshot, outcome, options?.includeToolCallDiagnostic);
   if (selected?.trim()) {
     return selected;
   }
