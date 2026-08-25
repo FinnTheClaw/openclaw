@@ -1,13 +1,12 @@
 import fs from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OutboundMediaAccess } from "openclaw/plugin-sdk/media-runtime";
-import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearSignalApprovalReactionTargetsForTest } from "./approval-reactions.js";
 import { signalPlugin } from "./channel.js";
-import { registerSignalReplyContext } from "./reply-authors.js";
 import { sendMessageSignal } from "./send.js";
 
 const SIGNAL_IMAGE = Buffer.from(
@@ -23,7 +22,6 @@ type SignalMediaContext = {
   mediaAccess?: OutboundMediaAccess;
   mediaLocalRoots?: readonly string[];
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
-  replyToId?: string;
   deps?: { signal: typeof sendMessageSignal };
 };
 
@@ -35,9 +33,6 @@ type SignalRpcEnvelope = {
     recipient?: string[];
     message?: string;
     attachments?: string[];
-    quoteTimestamp?: number;
-    quoteAuthor?: string;
-    quoteMessage?: string;
   };
 };
 
@@ -75,16 +70,16 @@ const SIGNAL_MEDIA_ADAPTERS = [
 ] as const;
 
 describe("Signal host-owned outbound media access", () => {
-  let state: OpenClawTestState;
+  let root: string;
+  let workspaceDir: string;
   let server: http.Server;
   let cfg: OpenClawConfig;
   let requests: Array<{ envelope: SignalRpcEnvelope; attachment: Buffer | undefined }>;
 
   beforeEach(async () => {
-    state = await createOpenClawTestState({
-      layout: "state-only",
-      prefix: "openclaw-signal-media-access-",
-    });
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-signal-media-access-"));
+    workspaceDir = path.join(root, "workspace");
+    await fs.mkdir(workspaceDir);
     requests = [];
     server = http.createServer((request, response) => {
       const chunks: Buffer[] = [];
@@ -124,10 +119,11 @@ describe("Signal host-owned outbound media access", () => {
     cfg = {
       channels: {
         signal: {
+          apiMode: "native",
           accounts: {
             default: {
               account: "+15550001111",
-              transport: { kind: "external-native", url: `http://127.0.0.1:${address.port}` },
+              httpUrl: `http://127.0.0.1:${address.port}`,
             },
           },
         },
@@ -145,7 +141,7 @@ describe("Signal host-owned outbound media access", () => {
     } finally {
       clearSignalApprovalReactionTargetsForTest();
       vi.restoreAllMocks();
-      await state?.cleanup();
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 
@@ -160,34 +156,26 @@ describe("Signal host-owned outbound media access", () => {
   }
 
   it.each(SIGNAL_MEDIA_ADAPTERS)(
-    "delivers approved workspace bytes through the real $name and preserves native quotes",
+    "delivers approved workspace bytes through the real $name",
     async ({ deliver }) => {
-      const sourcePath = path.join(state.workspaceDir, "chart.png");
-      const conflictingRoot = state.path("conflicting-root");
+      const sourcePath = path.join(workspaceDir, "chart.png");
+      const conflictingRoot = path.join(root, "conflicting-root");
       await fs.mkdir(conflictingRoot);
       await fs.writeFile(sourcePath, SIGNAL_IMAGE);
       const approvedReader = vi.fn(async (filePath: string) => await fs.readFile(filePath));
       const conflictingReader = vi.fn(async () => Buffer.from("untrusted bytes"));
       const mediaAccess = {
-        localRoots: [state.workspaceDir],
-        workspaceDir: state.workspaceDir,
+        localRoots: [workspaceDir],
+        workspaceDir,
         readFile: approvedReader,
       } satisfies OutboundMediaAccess;
       const send = vi.fn(sendMessageSignal);
-      await registerSignalReplyContext({
-        accountId: "default",
-        to: "+15551234567",
-        replyToId: "1700000000001",
-        author: "+15550002222",
-        body: "original message",
-      });
 
       const result = await deliver(
         createContext({
           mediaAccess,
           mediaLocalRoots: [conflictingRoot],
           mediaReadFile: conflictingReader,
-          replyToId: "1700000000001",
           deps: { signal: send },
         }),
       );
@@ -206,9 +194,6 @@ describe("Signal host-owned outbound media access", () => {
         params: {
           account: "+15550001111",
           recipient: ["+15551234567"],
-          quoteTimestamp: 1700000000001,
-          quoteAuthor: "+15550002222",
-          quoteMessage: "original message",
         },
       });
     },
@@ -217,7 +202,7 @@ describe("Signal host-owned outbound media access", () => {
   it.each(SIGNAL_MEDIA_ADAPTERS)(
     "rejects traversal before reading or contacting Signal through the $name",
     async ({ deliver }) => {
-      await fs.writeFile(state.path("outside.png"), SIGNAL_IMAGE);
+      await fs.writeFile(path.join(root, "outside.png"), SIGNAL_IMAGE);
       const approvedReader = vi.fn(async (filePath: string) => await fs.readFile(filePath));
       const conflictingReader = vi.fn(async (filePath: string) => await fs.readFile(filePath));
 
@@ -225,11 +210,11 @@ describe("Signal host-owned outbound media access", () => {
         deliver(
           createContext({
             mediaUrl: "../outside.png",
-            mediaLocalRoots: [state.root],
+            mediaLocalRoots: [root],
             mediaReadFile: conflictingReader,
             mediaAccess: {
-              localRoots: [state.workspaceDir],
-              workspaceDir: state.workspaceDir,
+              localRoots: [workspaceDir],
+              workspaceDir,
               readFile: approvedReader,
             },
           }),
@@ -243,9 +228,9 @@ describe("Signal host-owned outbound media access", () => {
   );
 
   it("rejects workspace symlinks that resolve outside the approved root", async () => {
-    const outsidePath = state.path("outside.png");
+    const outsidePath = path.join(root, "outside.png");
     await fs.writeFile(outsidePath, SIGNAL_IMAGE);
-    await fs.symlink(outsidePath, path.join(state.workspaceDir, "linked.png"));
+    await fs.symlink(outsidePath, path.join(workspaceDir, "linked.png"));
     const approvedReader = vi.fn(async (filePath: string) => await fs.readFile(filePath));
 
     await expect(
@@ -253,8 +238,8 @@ describe("Signal host-owned outbound media access", () => {
         createContext({
           mediaUrl: "linked.png",
           mediaAccess: {
-            localRoots: [state.workspaceDir],
-            workspaceDir: state.workspaceDir,
+            localRoots: [workspaceDir],
+            workspaceDir,
             readFile: approvedReader,
           },
         }),
@@ -266,13 +251,13 @@ describe("Signal host-owned outbound media access", () => {
   });
 
   it("rejects host readers that do not declare an approved root", async () => {
-    await fs.writeFile(path.join(state.workspaceDir, "chart.png"), SIGNAL_IMAGE);
+    await fs.writeFile(path.join(workspaceDir, "chart.png"), SIGNAL_IMAGE);
     const unrootedReader = vi.fn(async (filePath: string) => await fs.readFile(filePath));
 
     await expect(
       SIGNAL_MEDIA_ADAPTERS[0].deliver(
         createContext({
-          mediaAccess: { workspaceDir: state.workspaceDir, readFile: unrootedReader },
+          mediaAccess: { workspaceDir, readFile: unrootedReader },
         }),
       ),
     ).rejects.toThrow("Host media read requires explicit localRoots");
@@ -282,8 +267,8 @@ describe("Signal host-owned outbound media access", () => {
   });
 
   it("preserves reader-free Gateway workspace capabilities", async () => {
-    await fs.writeFile(path.join(state.workspaceDir, "chart.png"), SIGNAL_IMAGE);
-    const mediaAccess = { localRoots: [state.workspaceDir], workspaceDir: state.workspaceDir };
+    await fs.writeFile(path.join(workspaceDir, "chart.png"), SIGNAL_IMAGE);
+    const mediaAccess = { localRoots: [workspaceDir], workspaceDir };
     const send = vi.fn(sendMessageSignal);
 
     await expect(
@@ -302,15 +287,15 @@ describe("Signal host-owned outbound media access", () => {
     { name: "forged PDF", filename: "forged.pdf", contents: "not a real PDF" },
     { name: "untrusted HTML", filename: "untrusted.html", contents: "<html>private</html>" },
   ])("rejects a $name before contacting Signal", async ({ filename, contents }) => {
-    await fs.writeFile(path.join(state.workspaceDir, filename), contents);
+    await fs.writeFile(path.join(workspaceDir, filename), contents);
 
     await expect(
       SIGNAL_MEDIA_ADAPTERS[0].deliver(
         createContext({
           mediaUrl: filename,
           mediaAccess: {
-            localRoots: [state.workspaceDir],
-            workspaceDir: state.workspaceDir,
+            localRoots: [workspaceDir],
+            workspaceDir,
             readFile: async (filePath) => await fs.readFile(filePath),
           },
         }),
@@ -321,7 +306,7 @@ describe("Signal host-owned outbound media access", () => {
   });
 
   it("propagates host-reader failures without contacting Signal", async () => {
-    await fs.writeFile(path.join(state.workspaceDir, "chart.png"), SIGNAL_IMAGE);
+    await fs.writeFile(path.join(workspaceDir, "chart.png"), SIGNAL_IMAGE);
     const deniedReader = vi.fn(async (_filePath: string): Promise<Buffer> => {
       throw new Error("host denied this attachment");
     });
@@ -330,8 +315,8 @@ describe("Signal host-owned outbound media access", () => {
       SIGNAL_MEDIA_ADAPTERS[0].deliver(
         createContext({
           mediaAccess: {
-            localRoots: [state.workspaceDir],
-            workspaceDir: state.workspaceDir,
+            localRoots: [workspaceDir],
+            workspaceDir,
             readFile: deniedReader,
           },
         }),
