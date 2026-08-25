@@ -12,6 +12,7 @@ import {
   mergeExecApprovalsSocketDefaults,
   normalizeExecApprovals,
   readExecApprovalsSnapshot,
+  redactExecApprovalsSnapshot,
   resolveAllowAlwaysPatternCoverage,
   saveExecApprovals,
   type ExecAsk,
@@ -241,14 +242,6 @@ export function decodeCapturedOutputBuffer(params: {
   windowsEncoding?: string | null;
 }): string {
   return decodeWindowsOutputBuffer(params);
-}
-
-function redactExecApprovals(file: ExecApprovalsFile): ExecApprovalsFile {
-  const socketPath = file.socket?.path?.trim();
-  return {
-    ...file,
-    socket: socketPath ? { path: socketPath } : undefined,
-  };
 }
 
 function requireExecApprovalsBaseHash(
@@ -544,12 +537,7 @@ export async function handleInvoke(
     try {
       ensureExecApprovals();
       const snapshot = readExecApprovalsSnapshot();
-      const payload: ExecApprovalsSnapshot = {
-        path: snapshot.path,
-        exists: snapshot.exists,
-        hash: snapshot.hash,
-        file: redactExecApprovals(snapshot.file),
-      };
+      const payload = redactExecApprovalsSnapshot(snapshot);
       await sendJsonPayloadResult(client, frame, payload);
     } catch (err) {
       const message = String(err);
@@ -574,12 +562,7 @@ export async function handleInvoke(
       const next = mergeExecApprovalsSocketDefaults({ normalized, current: snapshot.file });
       saveExecApprovals(next);
       const nextSnapshot = readExecApprovalsSnapshot();
-      const payload: ExecApprovalsSnapshot = {
-        path: nextSnapshot.path,
-        exists: nextSnapshot.exists,
-        hash: nextSnapshot.hash,
-        file: redactExecApprovals(nextSnapshot.file),
-      };
+      const payload = redactExecApprovalsSnapshot(nextSnapshot);
       await sendJsonPayloadResult(client, frame, payload);
     } catch (err) {
       await sendInvalidRequestResult(client, frame, err);

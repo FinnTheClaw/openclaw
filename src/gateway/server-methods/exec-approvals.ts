@@ -14,6 +14,7 @@ import {
   mergeExecApprovalsSocketDefaults,
   normalizeExecApprovals,
   readExecApprovalsSnapshot,
+  redactExecApprovalsSnapshot,
   saveExecApprovals,
   type ExecApprovalsFile,
   type ExecApprovalsSnapshot,
@@ -75,22 +76,9 @@ function requireApprovalsBaseHash(
   return true;
 }
 
-function redactExecApprovals(file: ExecApprovalsFile): ExecApprovalsFile {
-  const socketPath = file.socket?.path?.trim();
-  // The socket token/defaults are runtime-only; expose only the path needed by
-  // the editor so GET responses cannot leak connection material.
-  return {
-    ...file,
-    socket: socketPath ? { path: socketPath } : undefined,
-  };
-}
-
 function toExecApprovalsPayload(snapshot: ExecApprovalsSnapshot) {
   return {
-    path: snapshot.path,
-    exists: snapshot.exists,
-    hash: snapshot.hash,
-    file: redactExecApprovals(snapshot.file),
+    ...redactExecApprovalsSnapshot(snapshot),
   };
 }
 

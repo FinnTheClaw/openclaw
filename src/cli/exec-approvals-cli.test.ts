@@ -236,6 +236,33 @@ describe("exec approvals CLI", () => {
     expect(runtimeErrors).toHaveLength(0);
   });
 
+  it("redacts the local socket token from get JSON while preserving its path", async () => {
+    localSnapshot.file = {
+      version: 1,
+      socket: { path: "/tmp/local-exec-approvals.sock", token: "fixture-token" },
+      agents: {},
+    };
+
+    await runApprovalsCommand(["approvals", "get", "--json"]);
+
+    expect(requireRecord(writtenJson().file, "approvals file").socket).toEqual({
+      path: "/tmp/local-exec-approvals.sock",
+    });
+    expect(JSON.stringify(writtenJson())).not.toContain("fixture-token");
+  });
+
+  it("redacts the local socket token from mutation JSON", async () => {
+    localSnapshot.file = {
+      version: 1,
+      socket: { path: "/tmp/local-exec-approvals.sock", token: "fixture-token" },
+      agents: {},
+    };
+
+    await runApprovalsCommand(["approvals", "allowlist", "add", "/usr/bin/uname", "--json"]);
+
+    expect(JSON.stringify(writtenJson())).not.toContain("fixture-token");
+  });
+
   it("adds effective policy to json output", async () => {
     localSnapshot.file = {
       version: 1,

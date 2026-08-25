@@ -276,6 +276,23 @@ export type ExecApprovalsSnapshot = {
   hash: string;
 };
 
+export type ExecApprovalsPresentationSnapshot = Omit<ExecApprovalsSnapshot, "raw">;
+
+/** Remove runtime-only socket credentials before an approvals snapshot crosses a UI/RPC boundary. */
+export function redactExecApprovalsSnapshot(
+  snapshot: ExecApprovalsPresentationSnapshot & { raw?: string | null },
+): ExecApprovalsPresentationSnapshot {
+  const { raw: _raw, ...presentation } = snapshot;
+  const socketPath = snapshot.file.socket?.path?.trim();
+  return {
+    ...presentation,
+    file: {
+      ...snapshot.file,
+      socket: socketPath ? { path: socketPath } : undefined,
+    },
+  };
+}
+
 export type ExecApprovalsResolved = {
   path: string;
   socketPath: string;

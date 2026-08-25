@@ -16,6 +16,7 @@ import {
 } from "../infra/exec-approvals-effective.js";
 import {
   readExecApprovalsSnapshot,
+  redactExecApprovalsSnapshot,
   saveExecApprovals,
   type ExecApprovalsAgent,
   type ExecApprovalsFile,
@@ -314,7 +315,10 @@ async function saveSnapshotTargeted(params: SaveSnapshotTargetedParams): Promise
     next = await saveSnapshot(params.opts, params.nodeId, params.file, params.baseHash);
   }
   if (params.opts.json) {
-    defaultRuntime.writeJson(next, 0);
+    defaultRuntime.writeJson(
+      isFileApprovalsSnapshot(next) ? redactExecApprovalsSnapshot(next) : next,
+      0,
+    );
     return;
   }
   defaultRuntime.log(theme.muted(`Target: ${params.targetLabel}`));
@@ -735,7 +739,10 @@ export function registerExecApprovalsCli(program: Command) {
           nativePolicy,
         });
         if (opts.json) {
-          defaultRuntime.writeJson({ ...snapshot, effectivePolicy }, 0);
+          const outputSnapshot = fileSnapshot
+            ? redactExecApprovalsSnapshot(fileSnapshot)
+            : snapshot;
+          defaultRuntime.writeJson({ ...outputSnapshot, effectivePolicy }, 0);
           return;
         }
 
