@@ -125,6 +125,14 @@ describe("governor external child lifecycle", () => {
       closeOpenClawStateDatabase();
       const restarted = new (await import("./store.js")).GovernorSqliteStore({
         stateDir,
+        receiptResolver: broker.resolver,
+        evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
+        approvalResolver: broker.approvalResolver,
+        deliveryResolver: broker.deliveryResolver,
+        physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+        memoryAuthority: broker.memoryAuthority,
+        taskAuthority: broker.taskAuthority,
+        secrets: broker.secrets,
         capabilities: memoryTestRegistry(),
       });
       expect(restarted.listUnfinishedFanoutJobIds(task)).toEqual([]);
@@ -225,6 +233,14 @@ describe("governor external child lifecycle", () => {
       closeOpenClawStateDatabase();
       const restarted = new (await import("./store.js")).GovernorSqliteStore({
         stateDir,
+        receiptResolver: broker.resolver,
+        evidenceInvalidationResolver: broker.evidenceInvalidationResolver,
+        approvalResolver: broker.approvalResolver,
+        deliveryResolver: broker.deliveryResolver,
+        physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
+        memoryAuthority: broker.memoryAuthority,
+        taskAuthority: broker.taskAuthority,
+        secrets: broker.secrets,
         capabilities: memoryTestRegistry(),
       });
       expect(
