@@ -13,6 +13,7 @@ export const TaskLedgerStatusSchema = Type.Union([
   Type.Literal("queued"),
   Type.Literal("running"),
   Type.Literal("completed"),
+  Type.Literal("blocked"),
   Type.Literal("failed"),
   Type.Literal("cancelled"),
   Type.Literal("timed_out"),

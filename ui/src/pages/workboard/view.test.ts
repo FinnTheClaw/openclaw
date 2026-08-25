@@ -1859,6 +1859,54 @@ describe("renderWorkboard", () => {
     expect(container.textContent).toContain("Ready for operator review.");
   });
 
+  it("renders blocked Gateway task truth instead of completion", () => {
+    const host = {};
+    const state = getWorkboardState(host);
+    state.loaded = true;
+    state.cards = [
+      {
+        id: "card-1",
+        title: "Resolve blocked result",
+        status: "running",
+        priority: "normal",
+        labels: [],
+        position: 1000,
+        createdAt: 1,
+        updatedAt: 1,
+        sessionKey: "agent:main:subagent:workboard-default-card-1",
+        runId: "run-1",
+        taskId: "task-1",
+      },
+    ];
+    state.tasksByCardId.set("card-1", {
+      id: "task-1",
+      taskId: "task-1",
+      status: "blocked",
+      title: "Resolve blocked result",
+      childSessionKey: "agent:main:subagent:workboard-default-card-1",
+      runId: "run-1",
+      terminalSummary: "Operator input is required.",
+    });
+    const container = document.createElement("div");
+
+    render(
+      renderWorkboard({
+        host,
+        client: null,
+        connected: true,
+        pluginEnabled: true,
+        agentsList: null,
+        sessions: [],
+        onOpenSession: () => undefined,
+      }),
+      container,
+    );
+
+    expect(container.textContent).toContain("Blocked");
+    expect(container.textContent).toContain("Operator input is required.");
+    expect(container.textContent).not.toContain("Task complete");
+  });
+
   it("uses terminal session lifecycle when cached task status is stale", () => {
     const host = {};
     const state = getWorkboardState(host);

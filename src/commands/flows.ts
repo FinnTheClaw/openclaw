@@ -17,6 +17,7 @@ import {
   listTaskFlowRecords,
   resolveTaskFlowForLookupToken,
 } from "../tasks/task-flow-runtime-internal.js";
+import { formatTaskStatus, isTaskStatusIssue } from "../tasks/task-status.js";
 
 const ID_PAD = 10;
 const STATUS_PAD = 10;
@@ -231,7 +232,7 @@ export async function flowsShowCommand(
     `createdAt: ${formatFlowTimestamp(flow.createdAt)}`,
     `updatedAt: ${formatFlowTimestamp(flow.updatedAt)}`,
     `endedAt: ${formatFlowTimestamp(flow.endedAt)}`,
-    `tasks: ${taskSummary.total} total · ${taskSummary.active} active · ${taskSummary.failures} issues`,
+    `tasks: ${taskSummary.total} total · ${taskSummary.active} active · ${tasks.filter(isTaskStatusIssue).length} issues`,
   ];
   for (const line of lines) {
     runtime.log(line);
@@ -243,7 +244,7 @@ export async function flowsShowCommand(
   runtime.log("Linked tasks:");
   for (const task of tasks) {
     const safeLabel = safeFlowDisplayText(task.label ?? task.task);
-    runtime.log(`- ${task.taskId} ${task.status} ${task.runId ?? "n/a"} ${safeLabel}`);
+    runtime.log(`- ${task.taskId} ${formatTaskStatus(task)} ${task.runId ?? "n/a"} ${safeLabel}`);
   }
 }
 

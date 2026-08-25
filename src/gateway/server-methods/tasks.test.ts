@@ -244,6 +244,49 @@ describe("tasks gateway handlers", () => {
     expect(payload?.task?.title).toBe("Done task");
   });
 
+  it("projects blocked outcomes and keeps completed and blocked filters disjoint", async () => {
+    const completed = createTaskRecord({
+      runtime: "cli",
+      requesterSessionKey: "agent:main:main",
+      ownerKey: "agent:main:main",
+      scopeKind: "session",
+      runId: "run-completed-filter",
+      task: "Completed task",
+      status: "succeeded",
+      deliveryStatus: "not_applicable",
+    });
+    const blocked = createTaskRecord({
+      runtime: "subagent",
+      requesterSessionKey: "agent:main:main",
+      ownerKey: "agent:main:main",
+      scopeKind: "session",
+      runId: "run-blocked-filter",
+      task: "Blocked task",
+      status: "running",
+      deliveryStatus: "pending",
+    });
+    markTaskTerminalById({
+      taskId: blocked.taskId,
+      status: "succeeded",
+      terminalOutcome: "blocked",
+      terminalSummary: "Required completion remains blocked.",
+      endedAt: Date.now(),
+    });
+
+    const blockedGet = await getTaskPayload(blocked.taskId);
+    expect(blockedGet.payload?.task).toMatchObject({
+      id: blocked.taskId,
+      status: "blocked",
+      terminalSummary: "Required completion remains blocked.",
+    });
+
+    const completedList = await runTaskHandler("tasks.list", { status: "completed" });
+    expect(completedList.payload?.tasks?.map((task) => task.id)).toEqual([completed.taskId]);
+
+    const blockedList = await runTaskHandler("tasks.list", { status: "blocked" });
+    expect(blockedList.payload?.tasks?.map((task) => task.id)).toEqual([blocked.taskId]);
+  });
+
   it("sanitizes task text before exposing SDK summaries", async () => {
     const task = createTaskRecord({
       runtime: "cli",

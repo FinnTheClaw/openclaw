@@ -1572,6 +1572,38 @@ describe("session_status tool", () => {
     expect(text).toContain("permission denied");
   });
 
+  it("shows blocked completion outcomes in session_status output", async () => {
+    resetSessionStore({
+      "agent:main:main": {
+        sessionId: "sess-main",
+        updatedAt: Date.now(),
+      },
+    });
+    listTasksForRelatedSessionKeyForOwnerMock.mockReturnValue([
+      {
+        taskId: "task-blocked",
+        runtime: "cron",
+        requesterSessionKey: "agent:main:main",
+        task: "blocked task",
+        status: "succeeded",
+        terminalOutcome: "blocked",
+        deliveryStatus: "pending",
+        notifyPolicy: "done_only",
+        createdAt: Date.now() - 5_000,
+        terminalSummary: "Additional input required.",
+      },
+    ]);
+
+    const tool = createSessionStatusTool({ agentSessionKey: "agent:main:main" });
+    const result = await tool.execute("tc-blocked", { sessionKey: "agent:main:main" });
+    const firstContent = result.content?.[0];
+    const text = (firstContent as { text: string } | undefined)?.text ?? "";
+
+    expect(text).toContain("📌 Tasks: 1 recent failure · blocked");
+    expect(text).toContain("blocked task");
+    expect(text).toContain("Additional input required.");
+  });
+
   it("truncates long task titles and details in session_status output", async () => {
     resetSessionStore({
       "agent:main:main": {

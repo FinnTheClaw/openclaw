@@ -134,7 +134,14 @@ export type ArtifactsDownloadResult = {
   url?: string;
 };
 
-export type TaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "timed_out";
+export type TaskStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "cancelled"
+  | "timed_out";
 
 /** Gateway task summary returned by task list/get calls. */
 export type TaskSummary = {

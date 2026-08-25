@@ -823,7 +823,7 @@ describe("validateTasksListParams", () => {
   it("accepts SDK task ledger filters", () => {
     expect(
       validateTasksListParams({
-        status: ["running", "completed"],
+        status: ["running", "completed", "blocked"],
         agentId: "main",
         sessionKey: "agent:main:main",
         limit: 50,

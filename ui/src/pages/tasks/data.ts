@@ -1,4 +1,11 @@
-export type TaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "timed_out";
+export type TaskStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "cancelled"
+  | "timed_out";
 
 export type TaskRuntime = "subagent" | "cron" | "acp" | "cli";
 type TaskTimestamp = number | string;
@@ -40,6 +47,7 @@ function normalizeTaskStatus(value: unknown): TaskStatus | null {
     case "queued":
     case "running":
     case "completed":
+    case "blocked":
     case "failed":
     case "cancelled":
     case "timed_out":

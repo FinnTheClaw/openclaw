@@ -22,6 +22,7 @@ const STATUS_LABEL_KEYS = {
   queued: "tasksPage.status.queued",
   running: "tasksPage.status.running",
   completed: "tasksPage.status.completed",
+  blocked: "workboard.status.blocked",
   failed: "tasksPage.status.failed",
   cancelled: "tasksPage.status.cancelled",
   timed_out: "tasksPage.status.timedOut",
@@ -31,6 +32,7 @@ const STATUS_CHIP_CLASSES = {
   queued: "chip-warn",
   running: "chip-warn",
   completed: "chip-ok",
+  blocked: "chip-danger",
   failed: "chip-danger",
   cancelled: "",
   timed_out: "chip-danger",
@@ -67,7 +69,7 @@ function taskDetail(task: TaskSummary): string | null {
   if (task.status === "queued" || task.status === "running") {
     return task.progressSummary ?? null;
   }
-  if (task.status === "failed" || task.status === "timed_out") {
+  if (task.status === "blocked" || task.status === "failed" || task.status === "timed_out") {
     return task.error ?? task.terminalSummary ?? task.progressSummary ?? null;
   }
   return task.terminalSummary ?? task.error ?? task.progressSummary ?? null;

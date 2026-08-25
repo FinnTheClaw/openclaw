@@ -4876,6 +4876,10 @@ describe("workboard controller", () => {
         targetStatus: "review",
       },
     );
+    expect(getWorkboardLifecycle(linked, [], { ...sampleTask, status: "blocked" })).toMatchObject({
+      state: "failed",
+      targetStatus: "blocked",
+    });
     expect(getWorkboardLifecycle(linked, [], { ...sampleTask, status: "timed_out" })).toMatchObject(
       {
         state: "failed",
@@ -5035,6 +5039,46 @@ describe("workboard controller", () => {
       }),
     });
     expect(state.tasksByCardId.get("card-1")).toMatchObject({ status: "completed" });
+  });
+
+  it("syncs a blocked task to blocked instead of review", async () => {
+    const host = {};
+    const state = getWorkboardState(host);
+    const linked = {
+      ...sampleCard,
+      status: "running",
+      sessionKey: sampleTaskSessionKey,
+      runId: "run-1",
+      taskId: "task-1",
+    } satisfies WorkboardCard;
+    state.loaded = true;
+    state.cards = [linked];
+    state.tasksByCardId.set("card-1", sampleTask);
+    const blockedTask = { ...sampleTask, status: "blocked" as const, updatedAt: 3 };
+    const client = createClient({
+      "tasks.list": { tasks: [blockedTask] },
+      "workboard.cards.update": {
+        card: { ...linked, status: "blocked" },
+      },
+    });
+
+    await syncWorkboardLifecycle({
+      host,
+      client: client as never,
+      sessions: [],
+    });
+
+    expect(client.request).toHaveBeenNthCalledWith(2, "workboard.cards.update", {
+      id: "card-1",
+      patch: expect.objectContaining({
+        status: "blocked",
+      }),
+    });
+    expect(client.request).not.toHaveBeenCalledWith(
+      "workboard.cards.update",
+      expect.objectContaining({ patch: expect.objectContaining({ status: "review" }) }),
+    );
+    expect(state.tasksByCardId.get("card-1")).toMatchObject({ status: "blocked" });
   });
 
   it("cancels in-flight lifecycle reconciliation when refresh stops", async () => {

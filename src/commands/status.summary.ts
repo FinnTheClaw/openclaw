@@ -24,6 +24,7 @@ import {
   summarizeActionableTaskAuditFindings,
   summarizeRetainedLostTaskAuditFindings,
 } from "../tasks/task-registry.audit.js";
+import { isTaskStatusIssue } from "../tasks/task-status.js";
 import { resolveRuntimeServiceVersion } from "../version.js";
 import type { HeartbeatStatus, SessionStatus, StatusSummary } from "./status.types.js";
 
@@ -344,11 +345,15 @@ export async function getStatusSummary(
   });
   const inspectableTasks = taskMaintenanceModule.reconcileInspectableTasks();
   const rawTasks = taskMaintenanceModule.getInspectableTaskRegistrySummary(inspectableTasks);
+  const presentationTasks = {
+    ...rawTasks,
+    failures: inspectableTasks.filter(isTaskStatusIssue).length,
+  };
   const taskAuditFindings = taskMaintenanceModule.getInspectableTaskAuditFindings(inspectableTasks);
   const now = Date.now();
   const taskAudit = summarizeActionableTaskAuditFindings(taskAuditFindings, { now });
   const taskAuditRetainedLost = summarizeRetainedLostTaskAuditFindings(taskAuditFindings, { now });
-  const tasks = discountRetainedLostTaskFailures(rawTasks, taskAuditRetainedLost.count);
+  const tasks = discountRetainedLostTaskFailures(presentationTasks, taskAuditRetainedLost.count);
 
   const resolved = resolveConfiguredStatusModelRef({
     cfg,

@@ -4,13 +4,14 @@ import type { TaskSummary } from "../../../packages/gateway-protocol/src/index.j
 import type { TaskRecord, TaskStatus } from "../../tasks/task-registry.types.js";
 import {
   TASK_STATUS_DETAIL_MAX_CHARS,
+  formatTaskStatus,
   formatTaskStatusTitle,
   sanitizeTaskStatusText,
 } from "../../tasks/task-status.js";
 
 type TaskLedgerStatus = TaskSummary["status"];
 
-const TASK_STATUS_TO_LEDGER_STATUS: Record<TaskStatus, TaskLedgerStatus> = {
+const TASK_STATUS_TO_LEDGER_STATUS: Record<TaskStatus, Exclude<TaskLedgerStatus, "blocked">> = {
   queued: "queued",
   running: "running",
   succeeded: "completed",
@@ -19,6 +20,13 @@ const TASK_STATUS_TO_LEDGER_STATUS: Record<TaskStatus, TaskLedgerStatus> = {
   cancelled: "cancelled",
   lost: "failed",
 };
+
+export function projectTaskLedgerStatus(
+  task: Pick<TaskRecord, "status" | "terminalOutcome">,
+): TaskLedgerStatus {
+  const status = formatTaskStatus(task);
+  return status === "blocked" ? status : TASK_STATUS_TO_LEDGER_STATUS[status];
+}
 
 export type TaskEventPayload =
   | { action: "upserted"; task: TaskSummary }
@@ -49,7 +57,7 @@ export function mapTaskSummary(task: TaskRecord): TaskSummary {
     taskId: task.taskId,
     kind: task.taskKind ?? task.runtime,
     runtime: task.runtime,
-    status: TASK_STATUS_TO_LEDGER_STATUS[task.status],
+    status: projectTaskLedgerStatus(task),
     title: formatTaskStatusTitle(task),
     ...(task.agentId ? { agentId: task.agentId } : {}),
     sessionKey: task.requesterSessionKey,

@@ -37,6 +37,11 @@ describe("tasks page data", () => {
       updatedAt: "2026-07-05T12:00:00.000Z",
     });
     expect(normalizeTaskSummary({ id: "task-2", status: "lost" })).toBeNull();
+    expect(normalizeTaskSummary({ id: "task-3", status: "blocked" })).toMatchObject({
+      id: "task-3",
+      taskId: "task-3",
+      status: "blocked",
+    });
     expect(normalizeTasksListResult({ tasks: "not-an-array" })).toBeNull();
   });
 

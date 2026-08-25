@@ -14,8 +14,8 @@ import {
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { cancelDetachedTaskRunById } from "../../tasks/detached-task-runtime.js";
 import { getTaskById, listTaskRecords } from "../../tasks/runtime-internal.js";
-import type { TaskRecord, TaskStatus } from "../../tasks/task-registry.types.js";
-import { mapTaskSummary, taskUpdatedAt } from "./task-summary.js";
+import type { TaskRecord } from "../../tasks/task-registry.types.js";
+import { mapTaskSummary, projectTaskLedgerStatus, taskUpdatedAt } from "./task-summary.js";
 import type { GatewayRequestHandlers } from "./types.js";
 
 const DEFAULT_TASKS_LIST_LIMIT = 100;
@@ -23,21 +23,14 @@ const MAX_TASKS_LIST_LIMIT = 500;
 
 type TaskLedgerStatus = TaskSummary["status"];
 
-const LEDGER_STATUS_TO_TASK_STATUSES: Record<TaskLedgerStatus, TaskStatus[]> = {
-  queued: ["queued"],
-  running: ["running"],
-  completed: ["succeeded"],
-  failed: ["failed", "lost"],
-  timed_out: ["timed_out"],
-  cancelled: ["cancelled"],
-};
-
-function normalizeTaskStatusFilter(status: TasksListParams["status"]): Set<TaskStatus> | null {
+function normalizeTaskStatusFilter(
+  status: TasksListParams["status"],
+): Set<TaskLedgerStatus> | null {
   if (!status) {
     return null;
   }
   const statuses = Array.isArray(status) ? status : [status];
-  return new Set(statuses.flatMap((value) => LEDGER_STATUS_TO_TASK_STATUSES[value] ?? []));
+  return new Set(statuses);
 }
 
 // Session filtering needs all ownership keys because detached child runs may be
@@ -114,7 +107,7 @@ export const tasksHandlers: GatewayRequestHandlers = {
     // on the first page instead of hiding behind newer-created records.
     const filtered = listTaskRecords()
       .filter((task) => {
-        if (statusFilter && !statusFilter.has(task.status)) {
+        if (statusFilter && !statusFilter.has(projectTaskLedgerStatus(task))) {
           return false;
         }
         return (

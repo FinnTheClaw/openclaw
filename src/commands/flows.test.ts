@@ -8,6 +8,7 @@ import {
 } from "../tasks/task-flow-registry.js";
 import type { TaskFlowRecord } from "../tasks/task-flow-registry.types.js";
 import {
+  markTaskTerminalById,
   resetTaskRegistryDeliveryRuntimeForTests,
   resetTaskRegistryForTests,
 } from "../tasks/task-registry.js";
@@ -258,6 +259,56 @@ describe("flows commands", () => {
         "Linked tasks:",
         `- ${task.taskId} running run-child-2 Collect logs`,
       ]);
+    });
+  });
+
+  it("shows blocked linked tasks as issues while preserving raw JSON state", async () => {
+    await withTaskFlowCommandStateDir(async () => {
+      const flow = createManagedTaskFlow({
+        ownerKey: "agent:main:main",
+        controllerId: "tests/flows-command-blocked-child",
+        goal: "Inspect blocked child truth",
+        status: "running",
+        createdAt: 100,
+        updatedAt: 100,
+      });
+      const blocked = createRunningTaskRun({
+        runtime: "subagent",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        parentFlowId: flow.flowId,
+        childSessionKey: "agent:main:flow-child-blocked",
+        runId: "run-flow-child-blocked",
+        label: "Inspect blocked child",
+        task: "Inspect blocked child",
+        startedAt: 100,
+      });
+      markTaskTerminalById({
+        taskId: blocked.taskId,
+        status: "succeeded",
+        terminalOutcome: "blocked",
+        endedAt: 200,
+        terminalSummary: "Required completion did not produce a final deliverable.",
+      });
+
+      const runtime = createRuntime();
+      await flowsShowCommand({ lookup: flow.flowId }, runtime);
+      const lines = vi.mocked(runtime.log).mock.calls.map(([line]) => String(line));
+      expect(lines).toContain("tasks: 1 total · 0 active · 1 issues");
+      expect(lines.find((line) => line.startsWith(`- ${blocked.taskId} `))).toContain(" blocked ");
+
+      const jsonRuntime = createRuntime();
+      await flowsShowCommand({ lookup: flow.flowId, json: true }, jsonRuntime);
+      expect(vi.mocked(jsonRuntime.writeJson).mock.calls[0]?.[0]).toMatchObject({
+        tasks: [
+          expect.objectContaining({
+            taskId: blocked.taskId,
+            status: "succeeded",
+            terminalOutcome: "blocked",
+          }),
+        ],
+        taskSummary: expect.objectContaining({ failures: 0 }),
+      });
     });
   });
 

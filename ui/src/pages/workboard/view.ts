@@ -1760,6 +1760,7 @@ function taskMatchesLifecycle(task: WorkboardTaskSummary, lifecycle: WorkboardLi
       return lifecycle.state === "running";
     case "completed":
       return lifecycle.state === "succeeded";
+    case "blocked":
     case "failed":
     case "cancelled":
     case "timed_out":
@@ -1897,7 +1898,12 @@ function renderLifecycle(
   const execution = card.execution;
   const stale = lifecycle.state === "stale";
   const taskIsAuthoritative = task ? taskMatchesLifecycle(task, lifecycle) : false;
-  const taskStatus = task && taskIsAuthoritative ? t(`workboard.taskStatus.${task.status}`) : null;
+  const taskStatus =
+    task && taskIsAuthoritative
+      ? task.status === "blocked"
+        ? t("workboard.status.blocked")
+        : t(`workboard.taskStatus.${task.status}`)
+      : null;
   return html`
     <div class="workboard-card__lifecycle">
       <span class="workboard-lifecycle workboard-lifecycle--${formatted.tone}">

@@ -289,6 +289,43 @@ describe("getStatusSummary", () => {
     );
   });
 
+  it("counts blocked completion outcomes as status issues without changing raw status counts", async () => {
+    statusSummaryMocks.inspectableTasks = [
+      {
+        taskId: "task-blocked-status",
+        runtime: "subagent",
+        ownerKey: "agent:main:main",
+        requesterSessionKey: "agent:main:main",
+        scopeKind: "session",
+        task: "Blocked status task",
+        status: "succeeded",
+        terminalOutcome: "blocked",
+        deliveryStatus: "pending",
+        notifyPolicy: "done_only",
+        createdAt: 1,
+        endedAt: 2,
+      },
+    ];
+    statusSummaryMocks.taskRegistrySummary = {
+      ...statusSummaryMocks.taskRegistrySummary,
+      total: 1,
+      terminal: 1,
+      byStatus: {
+        ...statusSummaryMocks.taskRegistrySummary.byStatus,
+        succeeded: 1,
+      },
+      byRuntime: {
+        ...statusSummaryMocks.taskRegistrySummary.byRuntime,
+        subagent: 1,
+      },
+    };
+
+    const summary = await getStatusSummary();
+
+    expect(summary.tasks.failures).toBe(1);
+    expect(summary.tasks.byStatus.succeeded).toBe(1);
+  });
+
   it("keeps retained lost tasks out of default status audit counts", async () => {
     const cleanupAfter = Date.now() + 60_000;
     statusSummaryMocks.taskRegistrySummary = {

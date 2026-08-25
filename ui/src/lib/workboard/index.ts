@@ -294,6 +294,7 @@ type WorkboardTaskStatus =
   | "queued"
   | "running"
   | "completed"
+  | "blocked"
   | "failed"
   | "cancelled"
   | "timed_out";
@@ -844,7 +845,12 @@ function hasWorkboardProofEvidence(card: WorkboardCard): boolean {
 }
 
 function taskFailedTerminal(task: WorkboardTaskSummary | undefined): boolean {
-  return task?.status === "failed" || task?.status === "cancelled" || task?.status === "timed_out";
+  return (
+    task?.status === "blocked" ||
+    task?.status === "failed" ||
+    task?.status === "cancelled" ||
+    task?.status === "timed_out"
+  );
 }
 
 function taskFailureRepresentedByCard(
@@ -1502,6 +1508,7 @@ function normalizeTaskStatus(value: unknown): WorkboardTaskStatus | null {
     case "queued":
     case "running":
     case "completed":
+    case "blocked":
     case "failed":
     case "cancelled":
     case "timed_out":
@@ -2652,6 +2659,7 @@ export function getWorkboardLifecycle(
           targetStatus: "review",
           sourceUpdatedAt: taskLifecycleSourceUpdatedAt(task),
         };
+      case "blocked":
       case "failed":
       case "cancelled":
       case "timed_out":
