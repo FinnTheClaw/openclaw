@@ -241,10 +241,15 @@ function parsePositiveIntegerOption(value: string | undefined, flag: string): nu
 
 export function parseDeadLetterQueue(value: string): DeadLetterQueue {
   const queue = value.trim().toLowerCase();
-  if (queue === "projection" || queue === "extraction" || queue === "all") {
+  if (
+    queue === "projection" ||
+    queue === "extraction" ||
+    queue === "materialization" ||
+    queue === "all"
+  ) {
     return queue;
   }
-  throw new Error("--queue must be projection, extraction, or all");
+  throw new Error("--queue must be projection, extraction, materialization, or all");
 }
 
 type CertifyCliOptions = {
@@ -2715,7 +2720,10 @@ export default definePluginEntry({
         memory
           .command("retry-dead")
           .description("Atomically requeue selected durable-memory dead letters")
-          .requiredOption("--queue <queue>", "Queue to recover: projection, extraction, or all")
+          .requiredOption(
+            "--queue <queue>",
+            "Queue to recover: projection, extraction, materialization, or all",
+          )
           .action((opts) => {
             const runtime = requireLiveDurableRuntime();
             const result = runtime.ledger.requeueDeadLetters({

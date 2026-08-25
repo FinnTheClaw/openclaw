@@ -69,9 +69,10 @@ test("memory CLI paths do not depend on a lazy plugin path resolver", () => {
 test("dead-letter recovery requires an explicit valid queue", () => {
   expect(parseDeadLetterQueue("projection")).toBe("projection");
   expect(parseDeadLetterQueue(" EXTRACTION ")).toBe("extraction");
+  expect(parseDeadLetterQueue("materialization")).toBe("materialization");
   expect(parseDeadLetterQueue("all")).toBe("all");
   expect(() => parseDeadLetterQueue("everything")).toThrow(
-    "--queue must be projection, extraction, or all",
+    "--queue must be projection, extraction, materialization, or all",
   );
 });
 type MemoryPluginTestConfig = {

@@ -148,6 +148,28 @@ describe("TemporalMemoryLedger", () => {
         now: 10_001,
       }),
     ).toBe("dead");
+    const fact = db.appendFactRevision({
+      agentId: "jake",
+      subject: "greenhouse_controller",
+      predicate: "name",
+      object: "Juniper",
+      text: "The greenhouse controller is named Juniper.",
+      sourceEventId: event.eventId,
+    }).fact;
+    const [materialization] = db.claimMaterializationBatch({
+      owner: "materialization-worker",
+      limit: 1,
+      now: 10_000,
+    });
+    expect(materialization).toMatchObject({ recordId: fact.revisionId });
+    expect(
+      db.markMaterializationFailed({
+        lease: materialization!,
+        error: "embedding endpoint unavailable",
+        maxAttempts: 1,
+        now: 10_001,
+      }),
+    ).toBe("dead");
     expect(db.getStats()).toMatchObject({
       events: 1,
       deadProjection: 1,
@@ -158,6 +180,7 @@ describe("TemporalMemoryLedger", () => {
       queue: "projection",
       projection: 1,
       extraction: 0,
+      materialization: 0,
       total: 1,
       recoveredAt: 20_000,
     });
@@ -175,6 +198,7 @@ describe("TemporalMemoryLedger", () => {
       queue: "extraction",
       projection: 0,
       extraction: 1,
+      materialization: 0,
       total: 1,
       recoveredAt: 21_000,
     });
@@ -190,9 +214,17 @@ describe("TemporalMemoryLedger", () => {
       queue: "all",
       projection: 0,
       extraction: 0,
-      total: 0,
+      materialization: 1,
+      total: 1,
       recoveredAt: 22_000,
     });
+    expect(
+      db.claimMaterializationBatch({
+        owner: "materialization-recovery",
+        limit: 1,
+        now: 22_001,
+      }),
+    ).toEqual([expect.objectContaining({ recordId: fact.revisionId, attempts: 1 })]);
     expect(db.getStats()).toMatchObject({ events: 1 });
   });
 
