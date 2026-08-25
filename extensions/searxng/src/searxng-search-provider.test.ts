@@ -14,6 +14,25 @@ vi.mock("./searxng-client.js", () => ({
   runSearxngSearch,
 }));
 
+function buildSearxngConfig(
+  baseUrl: unknown,
+  secrets?: {
+    providers?: Record<string, unknown>;
+    defaults?: { env?: string };
+  },
+) {
+  return {
+    ...(secrets ? { secrets } : {}),
+    plugins: {
+      entries: {
+        searxng: {
+          config: { webSearch: { baseUrl } },
+        },
+      },
+    },
+  } as never;
+}
+
 describe("searxng web search provider", () => {
   let createSearxngWebSearchProvider: typeof import("./searxng-search-provider.js").createSearxngWebSearchProvider;
   let plugin: typeof import("../index.js").default;
@@ -111,37 +130,89 @@ describe("searxng web search provider", () => {
     expect(runSearxngSearch).not.toHaveBeenCalled();
   });
 
-  it("reads base URL from plugin config SecretRef, then env var, stripping trailing slashes", () => {
+  it("uses a configured literal and falls back to ambient env only when config is missing", () => {
     expect(
-      resolveSearxngBaseUrl(
-        {
-          plugins: {
-            entries: {
-              searxng: {
-                config: {
-                  webSearch: {
-                    baseUrl: {
-                      source: "env",
-                      provider: "default",
-                      id: "SEARXNG_BASE_URL",
-                    },
-                  },
-                },
-              },
-            },
-          },
-        } as never,
-        { SEARXNG_BASE_URL: "http://localhost:8888/" },
-      ),
-    ).toBe("http://localhost:8888");
-
+      resolveSearxngBaseUrl(buildSearxngConfig(" https://configured.example///"), {
+        SEARXNG_BASE_URL: "https://ambient.example/",
+      }),
+    ).toBe("https://configured.example");
     expect(
       resolveSearxngBaseUrl({} as never, {
         SEARXNG_BASE_URL: "https://search.local/searxng///",
       }),
     ).toBe("https://search.local/searxng");
+    expect(resolveSearxngBaseUrl(buildSearxngConfig(""), {})).toBeUndefined();
+  });
 
-    expect(resolveSearxngBaseUrl({} as never, {})).toBeUndefined();
+  it.each([
+    {
+      name: "implicit default env provider",
+      ref: { source: "env", provider: "default", id: "SEARXNG_BASE_URL" },
+      secrets: undefined,
+    },
+    {
+      name: "configured env provider with exact allowlist entry",
+      ref: { source: "env", provider: "restricted", id: "SEARXNG_BASE_URL" },
+      secrets: {
+        providers: { restricted: { source: "env", allowlist: ["SEARXNG_BASE_URL"] } },
+      },
+    },
+    {
+      name: "configured default provider for a legacy ref",
+      ref: { source: "env", id: "SEARXNG_BASE_URL" },
+      secrets: {
+        defaults: { env: "restricted" },
+        providers: { restricted: { source: "env", allowlist: ["SEARXNG_BASE_URL"] } },
+      },
+    },
+  ])("resolves an allowed env SecretRef: $name", ({ ref, secrets }) => {
+    expect(
+      resolveSearxngBaseUrl(buildSearxngConfig(ref, secrets), {
+        SEARXNG_BASE_URL: "http://localhost:8888///",
+      }),
+    ).toBe("http://localhost:8888");
+  });
+
+  it.each([
+    {
+      name: "non-env source",
+      ref: { source: "file", provider: "default", id: "SEARXNG_BASE_URL" },
+      secrets: undefined,
+    },
+    {
+      name: "wrong env id",
+      ref: { source: "env", provider: "default", id: "OTHER_BASE_URL" },
+      secrets: undefined,
+    },
+    {
+      name: "env provider allowlist denial",
+      ref: { source: "env", provider: "restricted", id: "SEARXNG_BASE_URL" },
+      secrets: { providers: { restricted: { source: "env", allowlist: [] } } },
+    },
+    {
+      name: "unknown non-default provider",
+      ref: { source: "env", provider: "unknown", id: "SEARXNG_BASE_URL" },
+      secrets: undefined,
+    },
+    {
+      name: "provider configured for a different source",
+      ref: { source: "env", provider: "mounted", id: "SEARXNG_BASE_URL" },
+      secrets: {
+        providers: { mounted: { source: "file", path: "/tmp/secrets", mode: "json" } },
+      },
+    },
+    {
+      name: "malformed explicit ref",
+      ref: { source: "env", provider: "default" },
+      secrets: undefined,
+    },
+  ])("blocks an explicit SecretRef without ambient fallback: $name", ({ ref, secrets }) => {
+    expect(
+      resolveSearxngBaseUrl(buildSearxngConfig(ref, secrets), {
+        SEARXNG_BASE_URL: "https://ambient.example/",
+        OTHER_BASE_URL: "https://other.example/",
+      }),
+    ).toBeUndefined();
   });
 
   it("reads categories and language from plugin config", () => {
