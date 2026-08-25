@@ -4024,7 +4024,7 @@ describe("memory plugin e2e", () => {
               }
               return { index, embedding };
             })
-            .reverse(),
+            .toReversed(),
         };
       }
       if (input === "opaque alpha lookup") {
