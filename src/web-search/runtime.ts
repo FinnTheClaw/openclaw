@@ -4,6 +4,12 @@ import {
   normalizeOptionalLowercaseString,
 } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import {
+  hasWebProviderEntryCredential,
+  providerRequiresCredential,
+  readWebProviderEnvValue,
+  resolveWebProviderConfig,
+} from "../../packages/web-content-core/src/provider-runtime-shared.js";
 import { resolveDefaultAgentDir } from "../agents/agent-scope-config.js";
 import { hasAuthProfileForProvider } from "../agents/tools/model-config.helpers.js";
 import {
@@ -22,12 +28,6 @@ import {
 import { sortWebSearchProvidersForAutoDetect } from "../plugins/web-search-providers.shared.js";
 import { getActiveRuntimeWebToolsMetadata } from "../secrets/runtime-web-tools-state.js";
 import type { RuntimeWebSearchMetadata } from "../secrets/runtime-web-tools.types.js";
-import {
-  hasWebProviderEntryCredential,
-  providerRequiresCredential,
-  readWebProviderEnvValue,
-  resolveWebProviderConfig,
-} from "../../packages/web-content-core/src/provider-runtime-shared.js";
 import type {
   ResolveWebSearchDefinitionParams,
   RunWebSearchParams,
@@ -445,6 +445,23 @@ function isStructuredAvailabilityError(result: unknown): result is { error: stri
   return typeof error === "string" && /^missing_[a-z0-9_]*api_key$/i.test(error);
 }
 
+function snapshotProviderResult(result: unknown): Record<string, unknown> {
+  try {
+    // Provider output is untrusted. Clone before shape inspection so accessors and
+    // proxies are observed once and cannot remain live in the delivered result.
+    const snapshot: unknown = structuredClone(result);
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+      return { error: "provider_error" };
+    }
+    const prototype = Object.getPrototypeOf(snapshot);
+    return prototype === Object.prototype || prototype === null
+      ? (snapshot as Record<string, unknown>)
+      : { error: "provider_error" };
+  } catch {
+    return { error: "provider_error" };
+  }
+}
+
 /** Executes web_search with fallback when selection was not explicit. */
 export async function runWebSearch(params: RunWebSearchParams): Promise<RunWebSearchResult> {
   const config = resolveWebSearchRuntimeConfig({
@@ -486,7 +503,9 @@ export async function runWebSearch(params: RunWebSearchParams): Promise<RunWebSe
         sawUnavailableProvider = true;
         continue;
       }
-      const executed = await definition.execute(params.args, { signal: params.signal });
+      const executed = snapshotProviderResult(
+        await definition.execute(params.args, { signal: params.signal }),
+      );
       if (allowFallback && isStructuredAvailabilityError(executed)) {
         // Some providers report missing credentials as structured tool output.
         // Treat that like unavailable only during auto-detected fallback.

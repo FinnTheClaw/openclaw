@@ -250,11 +250,13 @@ function replaceMarkers(content: string): string {
   // Match markers with or without id attribute (handles both legacy and spoofed markers)
   const patterns: Array<{ regex: RegExp; value: string }> = [
     {
-      regex: /<<<\s*EXTERNAL[\s_]+UNTRUSTED[\s_]+CONTENT(?:\s+id="[^"]{1,128}")?\s*>>>/gi,
+      regex:
+        /<<<\s*EXTERNAL[\s_]+UNTRUSTED[\s_]+CONTENT(?:\s+id=(?:"(?:\\.|[^"\\])*"|\\"(?:\\[^"]|[^"\\])*\\"))?\s*>>>/gi,
       value: "[[MARKER_SANITIZED]]",
     },
     {
-      regex: /<<<\s*END[\s_]+EXTERNAL[\s_]+UNTRUSTED[\s_]+CONTENT(?:\s+id="[^"]{1,128}")?\s*>>>/gi,
+      regex:
+        /<<<\s*END[\s_]+EXTERNAL[\s_]+UNTRUSTED[\s_]+CONTENT(?:\s+id=(?:"(?:\\.|[^"\\])*"|\\"(?:\\[^"]|[^"\\])*\\"))?\s*>>>/gi,
       value: "[[END_MARKER_SANITIZED]]",
     },
   ];
@@ -317,6 +319,8 @@ export type WrapExternalContentOptions = {
   sender?: string;
   /** Subject line (for emails) */
   subject?: string;
+  /** Untrusted task name associated with the external payload */
+  taskName?: string;
   /** Whether to include detailed security warning */
   includeWarning?: boolean;
 };
@@ -338,7 +342,7 @@ export type WrapExternalContentOptions = {
  * ```
  */
 export function wrapExternalContent(content: string, options: WrapExternalContentOptions): string {
-  const { source, sender, subject, includeWarning = true } = options;
+  const { source, sender, subject, taskName, includeWarning = true } = options;
 
   const sanitized = sanitizeExternalContentText(content);
   const sourceLabel = EXTERNAL_SOURCE_LABELS[source] ?? "External";
@@ -351,6 +355,9 @@ export function wrapExternalContent(content: string, options: WrapExternalConten
   }
   if (subject) {
     metadataLines.push(`Subject: ${sanitizeMetadataValue(subject)}`);
+  }
+  if (taskName) {
+    metadataLines.push(`Task: ${sanitizeMetadataValue(taskName)}`);
   }
 
   const metadata = metadataLines.join("\n");
@@ -386,13 +393,13 @@ export function buildSafeExternalPrompt(params: {
     source,
     sender,
     subject,
+    // Hook task names cross the same trust boundary as their payload. Keep them inside
+    // the randomized marker so they cannot become trusted prompt instructions.
+    taskName: jobName,
     includeWarning: true,
   });
 
   const contextLines: string[] = [];
-  if (jobName) {
-    contextLines.push(`Task: ${jobName}`);
-  }
   if (jobId) {
     contextLines.push(`Job ID: ${jobId}`);
   }
