@@ -15763,7 +15763,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/external-content.ts",
-      sha256: "83a39a2fa0a3397a8d36293ca4d3a60a06406fcfd637f295e519ab484044a253",
+      sha256: "c02edeb0f8ddf966e6395e1cede4508e3bf8ee0c3efe8b9b3f6f74c3daf42558",
     },
     {
       path: "src/security/governor-agent-loop-admission.ts",
@@ -17732,4 +17732,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "afc42e9fe9d8b379fb6a070882c5dfb278944f9d78173092a9881ae465ad886d";
+  "af876c180de176fc0aea8eaf249d892f65f48d4c427e3bafce3ab62396f1add0";
