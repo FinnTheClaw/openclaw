@@ -692,23 +692,26 @@ describe("session history HTTP endpoints", () => {
         if (!hidden.ok) {
           throw new Error(`append failed: ${hidden.reason}`);
         }
+        // OpenAI-compatible transcripts can carry input_text/output_text blocks even though
+        // the core AssistantMessage type only models its canonical in-memory block variants.
+        const phasedContent = [
+          {
+            type: blockType,
+            text: "internal reasoning",
+            textSignature: JSON.stringify({ v: 1, id: "item_commentary", phase: "commentary" }),
+          },
+          {
+            type: blockType,
+            text: "Done.",
+            textSignature: JSON.stringify({ v: 1, id: "item_final", phase: "final_answer" }),
+          },
+        ] as unknown as AssistantMessage["content"];
         const visibleMessageId = await appendTranscriptMessage({
           sessionKey: "agent:main:main",
           storePath,
           message: makeTranscriptAssistantMessage({
             text: "Done.",
-            content: [
-              {
-                type: blockType,
-                text: "internal reasoning",
-                textSignature: JSON.stringify({ v: 1, id: "item_commentary", phase: "commentary" }),
-              },
-              {
-                type: blockType,
-                text: "Done.",
-                textSignature: JSON.stringify({ v: 1, id: "item_final", phase: "final_answer" }),
-              },
-            ],
+            content: phasedContent,
           }),
           emitInlineMessage: false,
         });
