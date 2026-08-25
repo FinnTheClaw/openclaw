@@ -191,3 +191,22 @@ delivery. All three outboxes drained to zero.
 - Core artifact SHA-256: `8be5e9ad147bea896a757ab4755983d16aabddf095ef43dabed97238803b041d`.
 - Memory artifact SHA-256: `545a86160cd86f73f7017b3068aa7b63d057ed51db642ae2a0bf163752ced676`.
 - Installed runtime tree SHA-256: `ab73591ae51a918309cee547350c27e5a2d19de4e6d58933e7d2521d5fd93751`.
+
+## 2026-08-25 memory materialization fairness
+
+Source commit `230f0ade21a28a3cd273e8866ca547e36d17d533` reorders the
+existing consolidator drain pass so ready embedding materializations run before
+rate-limited extraction. This is a subtraction-oriented scheduling correction:
+it adds no worker, shell guard, alternate queue, or retry state machine.
+
+The paired `2026.7.1-37` artifacts passed the focused memory suites, targeted
+type/lint/format/diff checks, and the complete production build including
+`plugins:assets:build`. Fresh Alistar boot
+`713422cf-1c68-40ee-afea-0b7bd6ea3aa6` was provisioned at its canonical
+`192.168.1.240` address. The installed runtime reported source `230f0ad`, loaded
+the matching memory plugin, and completed an actual-Qwen store followed by an
+independent-session exact recall with no channel delivery or gateway restart.
+
+- Core artifact SHA-256: `49791608b1b82fcd7f04bc2458aebba776f10db2c678cf8139b1dc8b679a8941`.
+- Memory artifact SHA-256: `9310fc2a35f142f09a41799b8a8550a80adbf363d91b06d6865a21583cbecf0c`.
+- Installed runtime tree SHA-256: `d8a360607a584ed8f5fb8e84fb31f3725648d68436773e867859456dd9eac57f`.
