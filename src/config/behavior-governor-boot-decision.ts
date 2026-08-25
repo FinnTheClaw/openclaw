@@ -75,7 +75,7 @@ function cloneFrozenData<T>(value: T, seen = new WeakSet<object>()): T {
     ) {
       throw new Error("GOVERNOR_BOOT_CONFIG_DESCRIPTOR_REJECTED");
     }
-    const clone: unknown[] = new Array(length);
+    const clone: unknown[] = Array.from({ length });
     for (let index = 0; index < length; index += 1) {
       const descriptor = descriptors[String(index)];
       if (!descriptor || !descriptor.enumerable) {
@@ -128,10 +128,10 @@ function readGovernorConfig(config: OpenClawConfig): BehaviorGovernorConfig | un
     throw new Error("GOVERNOR_BOOT_CONFIG_INVALID");
   }
   const enabled = ownDataProperty(governor, "enabled");
-  if (enabled !== true && enabled !== false) {
+  if (typeof enabled !== "boolean") {
     throw new Error("GOVERNOR_BOOT_CONFIG_INVALID");
   }
-  if (enabled === true) {
+  if (enabled) {
     const mode = ownDataProperty(governor, "mode");
     if (mode === "enforce") {
       throw new Error("C07_ARCHITECTURE_NOT_READY");
@@ -160,7 +160,7 @@ export function deriveBehaviorGovernorBootDecision(
   validatedConfig: OpenClawConfig,
 ): BehaviorGovernorBootDecision {
   const governor = readGovernorConfig(validatedConfig);
-  if (!governor || governor.enabled === false) {
+  if (!governor || !governor.enabled) {
     return brandDecision({ kind: "off", config: governor ?? null }) as BehaviorGovernorBootDecision;
   }
   if (governor.mode !== "shadow") {

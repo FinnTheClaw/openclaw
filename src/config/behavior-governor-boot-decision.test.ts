@@ -86,7 +86,9 @@ describe("behavior governor boot decision", () => {
     );
 
     const sparse = config();
-    (enabledGovernor(sparse).agentLoop as unknown as { scopes: unknown[] }).scopes = new Array(1);
+    const sparseScopes: unknown[] = [];
+    sparseScopes.length = 1;
+    (enabledGovernor(sparse).agentLoop as unknown as { scopes: unknown[] }).scopes = sparseScopes;
     expect(() => deriveBehaviorGovernorBootDecision(sparse)).toThrow(
       "GOVERNOR_BOOT_CONFIG_DESCRIPTOR_REJECTED",
     );

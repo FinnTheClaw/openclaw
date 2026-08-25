@@ -753,7 +753,9 @@ function createReloaderHarness(
     async (_plan: GatewayReloadPlan, _nextConfig: OpenClawConfig) => {},
   );
   const onHotReload = vi.fn(async (_plan: GatewayReloadPlan, _nextConfig: OpenClawConfig) => {});
-  const onRestart = vi.fn((_plan: GatewayReloadPlan, _nextConfig: OpenClawConfig) => {});
+  const onRestart = vi.fn<
+    (_plan: GatewayReloadPlan, _nextConfig: OpenClawConfig) => void | Promise<void>
+  >((_plan, _nextConfig) => {});
   let writeListener: ((event: ConfigWriteNotification) => void) | null = null;
   const subscribeToWrites = vi.fn((listener: (event: ConfigWriteNotification) => void) => {
     writeListener = listener;

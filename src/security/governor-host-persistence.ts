@@ -30,11 +30,11 @@ import {
   createGovernorHostDeliveryPersistence,
   type GovernorHostDeliveryPersistence,
 } from "./governor-host-delivery-persistence.js";
-import {
-  type GovernorMemoryAuthorityAdvance,
-  type GovernorMemoryAuthorityBinding,
-  type GovernorMemoryAuthorityState,
-  type GovernorTrustedMemoryAuthority,
+import type {
+  GovernorMemoryAuthorityAdvance,
+  GovernorMemoryAuthorityBinding,
+  GovernorMemoryAuthorityState,
+  GovernorTrustedMemoryAuthority,
 } from "./governor-host-memory-authority.js";
 import {
   createGovernorOwnerIngressPersistence,

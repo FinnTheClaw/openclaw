@@ -26,10 +26,10 @@ import {
   type HostGovernorReceiptId,
   type HostDeliveryReceipt,
 } from "./governor-host-broker.js";
-import {
-  type GovernorMemoryAuthorityBinding,
-  type GovernorMemoryAuthorityState,
-  type GovernorTrustedMemoryAuthority,
+import type {
+  GovernorMemoryAuthorityBinding,
+  GovernorMemoryAuthorityState,
+  GovernorTrustedMemoryAuthority,
 } from "./governor-host-memory-authority.js";
 import { isTrustedGovernorMemoryAuthority } from "./governor-host-persistence.js";
 import {
