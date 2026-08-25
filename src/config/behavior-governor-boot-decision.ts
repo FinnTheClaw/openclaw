@@ -42,11 +42,12 @@ function cloneFrozenData<T>(value: T, seen = new WeakSet<object>()): T {
   if (value === null || valueType !== "object") {
     return value;
   }
-  if (seen.has(value)) {
+  const objectValue = value as object;
+  if (seen.has(objectValue)) {
     throw new Error("GOVERNOR_BOOT_CONFIG_CYCLE_REJECTED");
   }
-  seen.add(value);
-  const descriptors = Object.getOwnPropertyDescriptors(value);
+  seen.add(objectValue);
+  const descriptors = Object.getOwnPropertyDescriptors(objectValue);
   const keys = Reflect.ownKeys(descriptors);
   for (const key of keys) {
     const descriptor = Reflect.get(descriptors, key) as PropertyDescriptor;
@@ -57,7 +58,7 @@ function cloneFrozenData<T>(value: T, seen = new WeakSet<object>()): T {
       throw new Error("GOVERNOR_BOOT_CONFIG_DESCRIPTOR_REJECTED");
     }
   }
-  if (Array.isArray(value)) {
+  if (Array.isArray(objectValue)) {
     const lengthDescriptor = descriptors.length;
     const length = lengthDescriptor?.value;
     if (
@@ -87,10 +88,10 @@ function cloneFrozenData<T>(value: T, seen = new WeakSet<object>()): T {
         writable: false,
       });
     }
-    seen.delete(value);
+    seen.delete(objectValue);
     return Object.freeze(clone) as unknown as T;
   }
-  const prototype = Object.getPrototypeOf(value);
+  const prototype = Object.getPrototypeOf(objectValue);
   if (prototype !== Object.prototype && prototype !== null) {
     throw new Error("GOVERNOR_BOOT_CONFIG_PROTOTYPE_REJECTED");
   }
@@ -107,8 +108,8 @@ function cloneFrozenData<T>(value: T, seen = new WeakSet<object>()): T {
       writable: false,
     });
   }
-  seen.delete(value);
-  return Object.freeze(clone) as T;
+  seen.delete(objectValue);
+  return Object.freeze(clone) as unknown as T;
 }
 
 function readGovernorConfig(config: OpenClawConfig): BehaviorGovernorConfig | undefined {

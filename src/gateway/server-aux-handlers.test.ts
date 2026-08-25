@@ -131,7 +131,7 @@ function buildRestartChannelsPlan(...channels: ChannelName[]) {
 }
 
 type SecretsReloadHarnessParams = {
-  activateRuntimeSecrets: GatewayAuxHandlerParams["activateRuntimeSecrets"];
+  activateRuntimeSecrets: (config: OpenClawConfig) => Promise<PreparedSecretsRuntimeSnapshot>;
   buildReloadPlan?: GatewayAuxHandlerParams["buildReloadPlan"];
   sharedGatewaySessionGenerationState?: GatewayAuxHandlerParams["sharedGatewaySessionGenerationState"];
   resolveSharedGatewaySessionGenerationForConfig?: GatewayAuxHandlerParams["resolveSharedGatewaySessionGenerationForConfig"];
