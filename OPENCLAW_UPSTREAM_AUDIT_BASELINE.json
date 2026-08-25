@@ -1,0 +1,24 @@
+{
+  "kind": "finn-openclaw-upstream-audit-baseline",
+  "schema_version": 1,
+  "upstream_repository": "https://github.com/openclaw/openclaw.git",
+  "original_merge_base": "b81666ca6af25c86cc099983a4358cdc5ea9ced8",
+  "previous_audited_tip": "f3e3f8ba934510445dc6751bcb7dfda357c35275",
+  "audited_upstream_tip": "3506a55218530ee56674a865a77d84f7191b3e09",
+  "total_commits_since_original_merge_base": 17087,
+  "delta_commits_since_previous_audit": 246,
+  "delta_first_id": "U16842",
+  "delta_last_id": "U17087",
+  "integration_base_before_selected_ports": "e130a9f92e677d1457c2cf907a8b1c52e4f022dc",
+  "selected_upstream_changes_only": true,
+  "audit_cutoff_at": "2026-08-25T12:43:04Z",
+  "audit_report": "/Users/aiapi/.openclaw/workspace/reports/openclaw-hardening/2026-08-25T124304Z-upstream-delta-3506a55/upstream-delta-ledger.md",
+  "audit_ledger_sha256": "e602824cadd5527ee2bb5d154ac24429987de62232443d41c2558b50efdd0e3d",
+  "audit_summary_sha256": "5ffa50a7588cde4dfeedf766e33c708d1bb92e0912516ba6c0fd059bc252e24c",
+  "authority": {
+    "purpose": "audit-watermark-only",
+    "artifact_source_authority": "OPENCLAW_FREEZE.json",
+    "must_not_be_used_as_artifact_source_commit": true,
+    "reason": "The product intentionally takes selected upstream changes only; identifying the upstream audit cutoff as the installed source would falsify artifact provenance."
+  }
+}
