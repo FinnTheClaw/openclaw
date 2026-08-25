@@ -1089,6 +1089,53 @@ describe("gateway sessions patch", () => {
     expect(entry.groupActivation).toBe("always");
   });
 
+  test("clears node-only exec host when its node is explicitly unbound", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        store: mainStoreEntry({ execHost: "node", execNode: "worker-1" }),
+        patch: { key: MAIN_SESSION_KEY, execNode: null },
+      }),
+    );
+    expect(entry.execNode).toBeUndefined();
+    expect(entry.execHost).toBeUndefined();
+  });
+
+  test.each(["auto", "gateway", "sandbox"] as const)(
+    "preserves exec host %s when a node is explicitly unbound",
+    async (execHost) => {
+      const entry = expectPatchOk(
+        await runPatch({
+          store: mainStoreEntry({ execHost, execNode: "worker-1" }),
+          patch: { key: MAIN_SESSION_KEY, execNode: null },
+        }),
+      );
+      expect(entry.execNode).toBeUndefined();
+      expect(entry.execHost).toBe(execHost);
+    },
+  );
+
+  test("preserves node exec host when changing the bound node", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        store: mainStoreEntry({ execHost: "node", execNode: "worker-1" }),
+        patch: { key: MAIN_SESSION_KEY, execNode: "worker-2" },
+      }),
+    );
+    expect(entry.execNode).toBe("worker-2");
+    expect(entry.execHost).toBe("node");
+  });
+
+  test("treats an undefined exec node patch as a no-op", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        store: mainStoreEntry({ execHost: "node", execNode: "worker-1" }),
+        patch: { key: MAIN_SESSION_KEY, execNode: undefined },
+      }),
+    );
+    expect(entry.execNode).toBe("worker-1");
+    expect(entry.execHost).toBe("node");
+  });
+
   test("rejects invalid execHost values", async () => {
     const result = await runPatch({
       patch: { key: MAIN_SESSION_KEY, execHost: "edge" },

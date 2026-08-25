@@ -576,6 +576,13 @@ export async function projectSessionsPatchEntry(params: {
     const raw = patch.execNode;
     if (raw === null) {
       delete next.execNode;
+      // A node-only execution host without a bound node can silently fall
+      // through to broader agent or global defaults. Explicitly unbinding the
+      // node must also remove that stale authority, while preserving hosts
+      // that remain meaningful without an execNode selection.
+      if (next.execHost === "node") {
+        delete next.execHost;
+      }
     } else if (raw !== undefined) {
       const trimmed = normalizeOptionalString(raw) ?? "";
       if (!trimmed) {

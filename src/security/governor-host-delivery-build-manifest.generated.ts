@@ -11239,7 +11239,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/sessions-patch.ts",
-      sha256: "b4ac9a3407f39b63260080da47a732fd21065f1ca4edcf3f5625df9834ae3e70",
+      sha256: "9393962993f4a46b554eb46ad05d8879767ec68c9d9998638dbea0fb8414b28e",
     },
     {
       path: "src/gateway/sessions-resolve.ts",
@@ -17752,4 +17752,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "7a6b916b62eb433d7ee5017540258860538ac8ff251767e20a09831c07c993b2";
+  "d2522961a9af4cb3d637ddc13cb98379b94d386af33a0ca9f5d0b467a1ca4c5b";
