@@ -694,6 +694,7 @@ export class TemporalMemoryLedger {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const mapping of mappings) {
+        this.retireEquivalentActiveFactConflicts(mapping);
         this.assertRekeyHasNoConflict(mapping);
         this.db
           .prepare(`
@@ -766,6 +767,51 @@ export class TemporalMemoryLedger {
       });
     } catch {
       throw new Error("legacy truncated principal rekey metadata is invalid");
+    }
+  }
+
+  private retireEquivalentActiveFactConflicts(mapping: LegacyTruncatedAgentIdRekey): void {
+    const rows = this.db
+      .prepare(`
+        SELECT legacy.revision_id AS legacy_revision_id,
+               canonical.revision_id AS canonical_revision_id,
+               canonical.system_from AS canonical_system_from
+        FROM memory_fact_revisions AS legacy
+        JOIN memory_fact_revisions AS canonical
+          ON legacy.scope = canonical.scope AND legacy.fact_key = canonical.fact_key
+        WHERE legacy.agent_id = ? AND canonical.agent_id = ?
+          AND legacy.status = 'active' AND legacy.system_to IS NULL
+          AND canonical.status = 'active' AND canonical.system_to IS NULL
+          AND legacy.subject = canonical.subject
+          AND legacy.predicate = canonical.predicate
+          AND legacy.object_value = canonical.object_value
+          AND legacy.text = canonical.text
+          AND legacy.category = canonical.category
+          AND canonical.authority >= legacy.authority
+          AND canonical.confidence >= legacy.confidence
+          AND canonical.observed_at >= legacy.observed_at
+          AND canonical.valid_from >= legacy.valid_from
+      `)
+      .all(mapping.fromAgentId, mapping.toAgentId) as SqlRow[];
+    const now = Date.now();
+    for (const row of rows) {
+      const legacyRevisionId = String(row.legacy_revision_id);
+      const result = this.db
+        .prepare(`
+          UPDATE memory_fact_revisions
+          SET status = 'superseded',
+              system_to = MAX(system_from, ?),
+              supersedes_revision_id = ?
+          WHERE revision_id = ? AND status = 'active' AND system_to IS NULL
+        `)
+        .run(
+          Number(row.canonical_system_from),
+          String(row.canonical_revision_id),
+          legacyRevisionId,
+        );
+      if (result.changes > 0) {
+        this.enqueueMaterialization("fact", legacyRevisionId, now);
+      }
     }
   }
 

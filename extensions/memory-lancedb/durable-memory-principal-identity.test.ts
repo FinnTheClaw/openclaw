@@ -64,10 +64,36 @@ describe("durable memory storage principal identity", () => {
       sourceKind: "message_received",
       externalId: "legacy-principal-event",
     });
-    runtime!.captureManualMemory({
+    const canonical = runtime!.captureManualMemory({
       agentId: principal,
       text: "Canonical principal marker.",
       externalId: "canonical-principal-event",
+    });
+    const sharedFact = {
+      factKey: "fact_shared_principal_marker",
+      scope: "scope_shared_principal_marker",
+      subject: "synthetic marker",
+      predicate: "has value",
+      object: "blueberry",
+      text: "The synthetic marker has value blueberry.",
+      category: "fact",
+      confidence: 0.9,
+    } as const;
+    const legacyFact = runtime!.ledger.appendFactRevision({
+      ...sharedFact,
+      agentId: truncated,
+      authority: 0.7,
+      observedAt: 100,
+      validFrom: 100,
+      sourceEventId: legacy.event.eventId,
+    });
+    const canonicalFact = runtime!.ledger.appendFactRevision({
+      ...sharedFact,
+      agentId: principal,
+      authority: 0.9,
+      observedAt: 200,
+      validFrom: 200,
+      sourceEventId: canonical.id,
     });
     expect(await runtime!.flush()).toBe(true);
 
@@ -76,5 +102,17 @@ describe("durable memory storage principal identity", () => {
     expect(runtime!.ledger.listRecentEvents({ agentId: principal })).toHaveLength(2);
     expect(await runtime!.index.has(legacy.event.eventId, { agentId: principal })).toBe(true);
     expect(await runtime!.index.has(legacy.event.eventId, { agentId: truncated })).toBe(false);
+    expect(
+      runtime!.ledger.findCurrentFacts({
+        agentId: principal,
+        scope: sharedFact.scope,
+        factKey: sharedFact.factKey,
+      }),
+    ).toEqual([expect.objectContaining({ revisionId: canonicalFact.fact.revisionId })]);
+    expect(runtime!.ledger.getFactRevision(legacyFact.fact.revisionId)).toMatchObject({
+      agentId: principal,
+      status: "superseded",
+      supersedesRevisionId: canonicalFact.fact.revisionId,
+    });
   });
 });
