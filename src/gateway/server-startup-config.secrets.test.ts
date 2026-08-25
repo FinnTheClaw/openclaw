@@ -265,12 +265,19 @@ function createGatewayStartupSecretsRuntimeHarness(prefix: string) {
 }
 
 async function activateImportedStartupConfig(config: OpenClawConfig) {
-  const { createRuntimeSecretsActivator: createActivator } =
-    await import("./server-startup-config.js");
+  // These tests reset the ESM graph. Mint the branded decision from the same
+  // module instance consumed by the freshly imported activator.
+  const [
+    { createRuntimeSecretsActivator: createActivator },
+    { deriveBehaviorGovernorBootDecision: deriveBootDecision },
+  ] = await Promise.all([
+    import("./server-startup-config.js"),
+    import("../config/behavior-governor-boot-decision.js"),
+  ]);
   const startupConfig = gatewayTokenConfig(config);
   return await createActivator({
     ...runtimeSecretsActivatorOptionsForTest(),
-    behaviorGovernorBootDecision: deriveBehaviorGovernorBootDecision(startupConfig),
+    behaviorGovernorBootDecision: deriveBootDecision(startupConfig),
   })(startupConfig, {
     reason: "startup",
     activate: true,
