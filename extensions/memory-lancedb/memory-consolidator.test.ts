@@ -272,4 +272,60 @@ describe("MemoryConsolidator", () => {
     expect((await memory.index.getStats()).rows).toBe(1);
     expect(memory.ledger.getStats()).toMatchObject({ pendingMaterialization: 0 });
   });
+
+  it("materializes ready records before awaiting slow extraction retries", async () => {
+    ledger = new TemporalMemoryLedger(path.join(tmpDir, "ledger.sqlite3"));
+    index = new HybridMemoryIndex(path.join(tmpDir, "projection"), 16);
+    const order: string[] = [];
+    let releaseExtraction!: () => void;
+    const extractionReleased = new Promise<void>((resolve) => {
+      releaseExtraction = resolve;
+    });
+    let extractionStarted!: () => void;
+    const extractionStart = new Promise<void>((resolve) => {
+      extractionStarted = resolve;
+    });
+    consolidator = new MemoryConsolidator({
+      ledger,
+      index,
+      embeddings: {
+        embed: async (text) => embedding(text),
+        embedBatch: async (texts) => {
+          order.push("materialization");
+          return texts.map((text) => embedding(text));
+        },
+      },
+      logger: {},
+      extractor: {
+        version: "held-extractor-v1",
+        extract: async () => {
+          order.push("extraction");
+          extractionStarted();
+          await extractionReleased;
+          return [];
+        },
+      },
+    });
+    const event = ledger.appendEvent({
+      agentId: "jake",
+      role: "user",
+      content: "The ready projection must not wait for extraction.",
+      sourceKind: "message_received",
+    }).event;
+    ledger.appendFactRevision({
+      agentId: "jake",
+      subject: "ready projection",
+      predicate: "queue_order",
+      object: "first",
+      text: "The ready projection is materialized first.",
+      sourceEventId: event.eventId,
+    });
+
+    consolidator.schedule();
+    await extractionStart;
+    expect(order).toEqual(["materialization", "extraction"]);
+    expect((await index.getStats()).rows).toBe(1);
+    releaseExtraction();
+    expect(await consolidator.flush()).toBe(true);
+  });
 });

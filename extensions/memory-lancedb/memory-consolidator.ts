@@ -296,9 +296,9 @@ export class MemoryConsolidator {
   private async drain(): Promise<void> {
     this.drainRequested = false;
     for (let pass = 0; pass < MAX_PASSES_PER_TICK; pass++) {
+      const materialized = await this.drainMaterialization();
       const extracted = await this.drainExtraction();
       const summarized = await this.drainSummaries();
-      const materialized = await this.drainMaterialization();
       if (extracted + summarized + materialized === 0) {
         return;
       }
