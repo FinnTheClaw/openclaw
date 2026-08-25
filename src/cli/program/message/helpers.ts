@@ -10,6 +10,10 @@ import { messageCommand } from "../../../commands/message.js";
 import { danger, setVerbose } from "../../../globals.js";
 import { CHANNEL_TARGET_DESCRIPTION } from "../../../infra/outbound/channel-target.js";
 import {
+  areMessageBroadcastEntriesSuccessful,
+  isMessageSendSuccessful,
+} from "../../../infra/outbound/message-send-outcome.js";
+import {
   parseStrictNonNegativeInteger,
   parseStrictPositiveInteger,
 } from "../../../infra/parse-finite-number.js";
@@ -163,6 +167,7 @@ export function createMessageCliHelpers(
   const runMessageAction = async (action: string, opts: Record<string, unknown>) => {
     setVerbose(Boolean(opts.verbose));
     let failed = false;
+    let result: Awaited<ReturnType<typeof messageCommand>> | undefined;
     await runCommandWithRuntime(
       defaultRuntime,
       async () => {
@@ -172,7 +177,7 @@ export function createMessageCliHelpers(
           ensurePluginRegistryLoaded(preloadPlan.loadOptions);
         }
         const deps = createDefaultDeps();
-        await messageCommand(
+        result = await messageCommand(
           {
             ...normalizeMessageOptions(opts),
             action,
@@ -189,6 +194,11 @@ export function createMessageCliHelpers(
     // Outbound actions may start plugin-side resources; run bounded stop hooks even after failure.
     if (!ACTIONS_WITHOUT_STOP_HOOKS.has(action)) {
       await runPluginStopHooks();
+    }
+    if (result?.kind === "send") {
+      failed ||= !isMessageSendSuccessful(result.sendResult, result.dryRun);
+    } else if (result?.kind === "broadcast") {
+      failed ||= !areMessageBroadcastEntriesSuccessful(result.payload.results);
     }
     defaultRuntime.exit(failed ? 1 : 0);
   };

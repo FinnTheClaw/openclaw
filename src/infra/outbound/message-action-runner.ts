@@ -84,6 +84,7 @@ import {
 } from "./message-action-threading.js";
 import { maybeApplyTtsToMessageActionSendPayload } from "./message-action-tts.js";
 import { resolveOutboundMessageGatewayOptions } from "./message-gateway-options.js";
+import { resolveMessageSendOutcome } from "./message-send-outcome.js";
 import type { MessagePollResult, MessageSendResult } from "./message.js";
 import {
   applyCrossContextDecoration,
@@ -771,7 +772,10 @@ async function handleBroadcastAction(
         results.push({
           channel: targetChannel,
           to: resolved.to,
-          ok: true,
+          ...resolveMessageSendOutcome(
+            sendResult.kind === "send" ? sendResult.sendResult : undefined,
+            "Broadcast",
+          ),
           payload: sendResult.kind === "send" ? sendResult.payload : undefined,
           result: sendResult.kind === "send" ? sendResult.sendResult : undefined,
         });

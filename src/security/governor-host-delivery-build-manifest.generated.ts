@@ -12367,7 +12367,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/infra/outbound/message-action-runner.ts",
-      sha256: "74c63341c97fa0590c5c9f63577a30506712698d89632ee87df2ece9daab1e81",
+      sha256: "70a2aa0dffcba582505de9c05dbfefc0c5367db57bd366e0c72ffe96bf140421",
     },
     {
       path: "src/infra/outbound/message-action-spec.ts",
@@ -12390,6 +12390,10 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "e3988623d518b9ab31eb7d880d09b28559defb2f9fc95a744d97d9b4c341a1b6",
     },
     {
+      path: "src/infra/outbound/message-send-outcome.ts",
+      sha256: "ef3888546b86a37838a86fe506ad31754b2ae1e4544e4da3b171c8a93c5b34bc",
+    },
+    {
       path: "src/infra/outbound/message.config.runtime.ts",
       sha256: "02ba2fc6e1dd9c93630356970015e57abf7e832c024f5b31ae3214ae1f3c2458",
     },
@@ -12399,7 +12403,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/infra/outbound/message.ts",
-      sha256: "02d649bf250527146a9c7bb7bff65fa1f5001a41e340b44629beac097a5440f8",
+      sha256: "83c61e843232cf112b1e439c07a6db930509f1ca16bd95c9d154a1003b0b4e7c",
     },
     {
       path: "src/infra/outbound/outbound-policy.ts",
@@ -17752,4 +17756,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "bbeb82cc087c26235762f8ae2aa1c89e80a51decc8082a001f912e7bc0e7cb9d";
+  "1ef0289de1d21c740a784112812eb2aea3003161b397e91d0c897c8a0cf775ee";

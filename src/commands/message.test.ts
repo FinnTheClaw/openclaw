@@ -1,6 +1,7 @@
 // Message command tests cover CLI message sending, environment handling, and runtime dependency wiring.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CliDeps } from "../cli/deps.js";
+import type { MessageActionRunResult } from "../infra/outbound/message-action-runner.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { captureEnv } from "../test-utils/env.js";
 
@@ -90,6 +91,10 @@ const runMessageActionMock = vi.hoisted(() =>
     dryRun: false,
   })),
 );
+
+function mockMessageActionResult(result: MessageActionRunResult): void {
+  runMessageActionMock.mockResolvedValueOnce(result as never);
+}
 
 vi.mock("../infra/outbound/message-action-runner.js", () => ({
   runMessageAction: runMessageActionMock,
@@ -185,6 +190,11 @@ async function runMessageCommand(opts: Record<string, unknown> = {}) {
     makeDeps(),
     runtime,
   );
+}
+
+function readLoggedJson(): Record<string, unknown> {
+  const output = vi.mocked(runtime.log).mock.calls[0]?.[0];
+  return JSON.parse(String(output)) as Record<string, unknown>;
 }
 
 describe("messageCommand", () => {
@@ -323,8 +333,7 @@ describe("messageCommand", () => {
       target: "channel:general",
     });
 
-    const output = vi.mocked(runtime.log).mock.calls[0]?.[0];
-    const json = JSON.parse(String(output)) as { messageId?: string; payload?: unknown };
+    const json = readLoggedJson();
     expect(json.messageId).toBe("msg-json-1");
     expect(json.payload).toEqual({
       ok: true,
@@ -332,6 +341,153 @@ describe("messageCommand", () => {
         messageId: "msg-json-1",
         channelId: "general",
       },
+    });
+    expect(json).not.toHaveProperty("ok");
+  });
+
+  it.each([
+    {
+      deliveryStatus: "suppressed" as const,
+      suppressionReason: "cancelled_by_message_sending_hook" as const,
+      expectedMessage: "Message send suppressed: cancelled_by_message_sending_hook.",
+    },
+    {
+      deliveryStatus: "failed" as const,
+      error: "provider rejected the message",
+      expectedMessage: "provider rejected the message",
+    },
+  ])(
+    "emits a typed JSON error for $deliveryStatus sends",
+    async ({ deliveryStatus, expectedMessage, ...failure }) => {
+      const sendResult = {
+        channel: "discord",
+        to: "channel:general",
+        via: "direct" as const,
+        mediaUrl: null,
+        deliveryStatus,
+        ...failure,
+      };
+      mockMessageActionResult({
+        kind: "send",
+        channel: "discord",
+        action: "send",
+        to: "channel:general",
+        handledBy: "core",
+        payload: sendResult,
+        sendResult,
+        dryRun: false,
+      });
+
+      await runMessageCommand({ channel: "discord", target: "channel:general" });
+
+      expect(readLoggedJson()).toMatchObject({
+        ok: false,
+        deliveryStatus,
+        error: { type: "cli_error", message: expectedMessage },
+      });
+    },
+  );
+
+  it("preserves partial-delivery evidence in failed-send JSON", async () => {
+    const sendResult = {
+      channel: "discord",
+      to: "channel:general",
+      via: "direct" as const,
+      mediaUrl: null,
+      deliveryStatus: "partial_failed" as const,
+      error: "second payload failed",
+      sentBeforeError: true,
+      result: { channel: "discord" as const, messageId: "partial-json-1" },
+    };
+    mockMessageActionResult({
+      kind: "send",
+      channel: "discord",
+      action: "send",
+      to: "channel:general",
+      handledBy: "core",
+      payload: sendResult,
+      sendResult,
+      dryRun: false,
+    });
+
+    await runMessageCommand({ channel: "discord", target: "channel:general" });
+
+    expect(readLoggedJson()).toMatchObject({
+      ok: false,
+      deliveryStatus: "partial_failed",
+      messageId: "partial-json-1",
+      sentBeforeError: true,
+      error: { type: "cli_error", message: "second payload failed" },
+    });
+  });
+
+  it.each([
+    { label: "sent", deliveryStatus: "sent" as const, dryRun: false },
+    { label: "legacy", deliveryStatus: undefined, dryRun: false },
+    { label: "dry-run", deliveryStatus: "failed" as const, dryRun: true },
+  ])("does not add top-level failure fields for $label send JSON", async (testCase) => {
+    const sendResult = {
+      channel: "discord",
+      to: "channel:general",
+      via: "direct" as const,
+      mediaUrl: null,
+      ...(testCase.deliveryStatus ? { deliveryStatus: testCase.deliveryStatus } : {}),
+      ...(testCase.deliveryStatus === "failed" ? { error: "not attempted" } : {}),
+    };
+    mockMessageActionResult({
+      kind: "send",
+      channel: "discord",
+      action: "send",
+      to: "channel:general",
+      handledBy: "core",
+      payload: sendResult,
+      sendResult,
+      dryRun: testCase.dryRun,
+    });
+
+    await runMessageCommand({
+      channel: "discord",
+      target: "channel:general",
+      dryRun: testCase.dryRun,
+    });
+
+    const json = readLoggedJson();
+    expect(json).not.toHaveProperty("ok");
+    expect(json).not.toHaveProperty("error");
+  });
+
+  it.each([
+    { label: "all successful", entries: [{ ok: true }, { ok: true }], expectedOk: true },
+    {
+      label: "partially failed",
+      entries: [{ ok: true }, { ok: false, error: "provider unavailable" }],
+      expectedOk: false,
+    },
+  ])("reports $label broadcast JSON truth", async ({ entries, expectedOk }) => {
+    mockMessageActionResult({
+      kind: "broadcast",
+      channel: "discord",
+      action: "broadcast",
+      handledBy: "core",
+      payload: {
+        results: entries.map((entry, index) => ({
+          channel: "discord" as const,
+          to: `channel:${index + 1}`,
+          ...entry,
+        })),
+      },
+      dryRun: false,
+    });
+
+    await runMessageCommand({
+      action: "broadcast",
+      channel: "discord",
+      targets: ["channel:1", "channel:2"],
+    });
+
+    expect(readLoggedJson()).toMatchObject({
+      ok: expectedOk,
+      action: "broadcast",
     });
   });
 

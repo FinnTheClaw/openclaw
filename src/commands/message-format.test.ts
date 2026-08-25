@@ -1,6 +1,7 @@
 // Tests for CLI message text formatting helpers (renderMessageList, formatMessageCliText).
 import { describe, expect, it, vi } from "vitest";
 import type { MessageActionRunResult } from "../infra/outbound/message-action-runner.js";
+import type { MessageSendResult } from "../infra/outbound/message.js";
 import { formatMessageCliText } from "./message-format.js";
 
 const getChannelPluginMock = vi.hoisted(() =>
@@ -53,6 +54,22 @@ function msg(id: string, ts: string, authorTag: string, content: string) {
 
 function textJoined(lines: string[]): string {
   return lines.join("\n");
+}
+
+function coreSendResult(
+  sendResult: MessageSendResult,
+  opts: { dryRun?: boolean } = {},
+): MessageActionRunResult {
+  return {
+    kind: "send",
+    channel: "directchat",
+    action: "send",
+    to: "room-1",
+    handledBy: "core",
+    payload: sendResult,
+    sendResult,
+    dryRun: opts.dryRun ?? false,
+  };
 }
 
 describe("formatMessageCliText displayLimit", () => {
@@ -233,5 +250,110 @@ describe("formatMessageCliText poll results", () => {
       "✅ Poll sent via Direct Chat. Message ID: p1 (conversation conv-1)",
       "Poll id: poll-1",
     ]);
+  });
+});
+
+describe("formatMessageCliText send outcomes", () => {
+  const baseSendResult = {
+    channel: "directchat",
+    to: "room-1",
+    via: "direct",
+    mediaUrl: null,
+  } satisfies MessageSendResult;
+
+  it.each([
+    {
+      status: "suppressed" as const,
+      result: {
+        ...baseSendResult,
+        deliveryStatus: "suppressed" as const,
+        suppressionReason: "cancelled_by_message_sending_hook" as const,
+      },
+      expected: "Message send suppressed: cancelled_by_message_sending_hook.",
+    },
+    {
+      status: "failed" as const,
+      result: {
+        ...baseSendResult,
+        deliveryStatus: "failed" as const,
+        error: "provider rejected the message",
+      },
+      expected: "provider rejected the message",
+    },
+    {
+      status: "partial_failed" as const,
+      result: {
+        ...baseSendResult,
+        deliveryStatus: "partial_failed" as const,
+        error: "second payload failed",
+        sentBeforeError: true,
+        result: { channel: "directchat" as const, messageId: "partial-1" },
+      },
+      expected: "second payload failed",
+    },
+  ])("renders $status as an explicit failure", ({ result, expected }) => {
+    const [line] = formatMessageCliText(coreSendResult(result));
+
+    expect(line).toContain("❌");
+    expect(line).toContain(expected);
+    expect(line).not.toContain("✅");
+  });
+
+  it.each([
+    { label: "sent", result: { ...baseSendResult, deliveryStatus: "sent" as const } },
+    { label: "legacy", result: baseSendResult },
+  ])("keeps $label sends on the success path", ({ result }) => {
+    expect(formatMessageCliText(coreSendResult(result))[0]).toContain("✅");
+  });
+
+  it("keeps dry-run sends on the dry-run path", () => {
+    const result = {
+      ...baseSendResult,
+      deliveryStatus: "failed" as const,
+      error: "not attempted",
+    };
+
+    expect(formatMessageCliText(coreSendResult(result, { dryRun: true }))).toEqual([
+      "[dry-run] would run send via directchat",
+    ]);
+  });
+});
+
+describe("formatMessageCliText broadcast outcomes", () => {
+  function broadcastResult(
+    entries: Array<{ ok: boolean; error?: string }>,
+  ): MessageActionRunResult {
+    return {
+      kind: "broadcast",
+      channel: "directchat",
+      action: "broadcast",
+      handledBy: "core",
+      payload: {
+        results: entries.map((entry, index) => ({
+          channel: "directchat",
+          to: `room-${index + 1}`,
+          ...entry,
+        })),
+      },
+      dryRun: false,
+    };
+  }
+
+  it("uses a failed heading when any broadcast entry failed", () => {
+    const [heading, table] = formatMessageCliText(
+      broadcastResult([{ ok: true }, { ok: false, error: "provider unavailable" }]),
+    );
+
+    expect(heading).toContain("❌");
+    expect(heading).toContain("Broadcast failed");
+    expect(heading).toContain("1/2 succeeded");
+    expect(table).toContain("provider unavailable");
+  });
+
+  it("keeps the complete heading when every broadcast entry succeeded", () => {
+    const [heading] = formatMessageCliText(broadcastResult([{ ok: true }, { ok: true }]));
+
+    expect(heading).toContain("✅ Broadcast complete");
+    expect(heading).toContain("2/2 succeeded");
   });
 });

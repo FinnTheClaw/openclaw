@@ -20,6 +20,10 @@ import { withProgress } from "../cli/progress.js";
 import { getRuntimeConfig } from "../config/config.js";
 import type { OutboundSendDeps } from "../infra/outbound/deliver.js";
 import { runMessageAction } from "../infra/outbound/message-action-runner.js";
+import {
+  areMessageBroadcastEntriesSuccessful,
+  resolveMessageSendOutcome,
+} from "../infra/outbound/message-send-outcome.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 
 function extractMessageId(payload: unknown): string | undefined {
@@ -43,7 +47,19 @@ function extractMessageId(payload: unknown): string | undefined {
 
 function buildMessageCliJson(result: Awaited<ReturnType<typeof runMessageAction>>) {
   const messageId = extractMessageId(result.payload);
+  const sendResult = result.kind === "send" ? result.sendResult : undefined;
+  const sendOutcome = result.kind === "send" ? resolveMessageSendOutcome(sendResult) : undefined;
   return {
+    ...(result.kind === "broadcast"
+      ? { ok: areMessageBroadcastEntriesSuccessful(result.payload.results) }
+      : sendOutcome && !sendOutcome.ok && !result.dryRun
+        ? {
+            ok: false as const,
+            deliveryStatus: sendResult?.deliveryStatus,
+            error: { type: "cli_error" as const, message: sendOutcome.error },
+            ...(sendOutcome.sentBeforeError ? { sentBeforeError: true as const } : {}),
+          }
+        : {}),
     action: result.action,
     channel: result.channel,
     dryRun: result.dryRun,
@@ -129,7 +145,7 @@ export async function messageCommand(
 
   if (json) {
     writeRuntimeJson(runtime, buildMessageCliJson(result));
-    return;
+    return result;
   }
 
   const { formatMessageCliText } = await import("./message-format.js");
@@ -137,4 +153,5 @@ export async function messageCommand(
   for (const line of formatMessageCliText(result, { displayLimit })) {
     runtime.log(line);
   }
+  return result;
 }

@@ -513,6 +513,7 @@ describe("sendMessage", () => {
     });
 
     expect(result.deliveryStatus).toBe("suppressed");
+    expect(result.suppressionReason).toBe("cancelled_by_message_sending_hook");
     expect(result.payloadOutcomes).toEqual([
       {
         index: 0,
