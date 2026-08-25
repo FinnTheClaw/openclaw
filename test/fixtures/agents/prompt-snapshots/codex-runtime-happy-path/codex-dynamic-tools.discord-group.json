@@ -134,7 +134,7 @@
     "type": "function"
   },
   {
-    "description": "Spawn clean child session; default `runtime=\"subagent\"`. `mode=\"run\"` one-shot; `mode=\"session\"` persistent/thread-bound, only when requester channel supports thread bindings. Subagents inherit parent workspace. Native subagents get task in first visible `[Subagent Task]` message. Native only: `context=\"fork\"` only when child needs current transcript; else omit or `isolated`. Use for fresh child-session work. Delegate sidecar/parallel tasks: batch file reads, multi-step searches, data collection. Avoid delegating quick lookups or single-file reads unless policy prefers delegation. After spawning, do non-overlapping work; run-mode results return, session-mode output stays in thread.",
+    "description": "Spawn clean child session; default `runtime=\"subagent\"`. `mode=\"run\"` one-shot; `mode=\"session\"` persistent/thread-bound, only when requester channel supports thread bindings. Subagents inherit parent workspace. Native subagents get task in first visible `[Subagent Task]` message. Native only: `context=\"fork\"` only when child needs current transcript; else omit or `isolated`. Native only: omit `subagentRole` or set `subagentRole=\"leaf\"` for atomic workers; use `subagentRole=\"orchestrator\"` only when that child must decompose work. Each spawn must be one bounded, independently verifiable shard, never an entire repository or the complete parent request. For two or more independent native children, use one `tasks` array (maximum 50); it admits distinct child sessions concurrently instead of relying on a fragile sequence of tool calls. Decompose broad work into disjoint independent shards and dependency waves; never place a task in the same wave as work it depends on, and never claim a shard was spawned unless the returned result accepted it. Choose `modelRoute` to match the work to an administrator-configured specialist; omit raw `model` unless an explicit override is allowed. Use for fresh child-session work. Delegate sidecar/parallel tasks: batch file reads, multi-step searches, data collection. Avoid delegating quick lookups or single-file reads unless policy prefers delegation. After spawning, do non-overlapping work; run-mode results return, session-mode output stays in thread.",
     "inputSchema": {
       "properties": {
         "agentId": {
@@ -163,9 +163,13 @@
               },
               "name": {
                 "type": "string"
+              },
+              "path": {
+                "description": "Exact local staged-media path. Allowed only when local-path attachments are enabled and the resolved file is under an administrator-approved root.",
+                "type": "string"
               }
             },
-            "required": ["name", "content"],
+            "required": ["name"],
             "type": "object"
           },
           "maxItems": 50,
@@ -183,6 +187,11 @@
         "cwd": {
           "type": "string"
         },
+        "idempotencyKey": {
+          "description": "Stable logical child operation key.",
+          "maxLength": 256,
+          "type": "string"
+        },
         "label": {
           "type": "string"
         },
@@ -195,6 +204,11 @@
           "type": "string"
         },
         "model": {
+          "description": "Optional raw model override. Prefer modelRoute so deployments can select an administrator-approved specialist; deployments may disallow raw overrides.",
+          "type": "string"
+        },
+        "modelRoute": {
+          "description": "Named specialist/capability route configured by the administrator (for example general, coding, creative, reasoning, research, vision, vision_reasoning, audio, video, or compaction). Match the task and honor an explicit user route request. Image attachments automatically prefer vision when omitted.",
           "type": "string"
         },
         "runtime": {
@@ -205,12 +219,89 @@
           "enum": ["inherit", "require"],
           "type": "string"
         },
+        "subagentRole": {
+          "description": "Native subagent capability boundary. Omit or use \"leaf\" for an atomic worker that cannot delegate. Use \"orchestrator\" only when this child must itself decompose work.",
+          "enum": ["leaf", "orchestrator"],
+          "type": "string"
+        },
         "task": {
+          "description": "One bounded, independently verifiable shard with explicit scope, deliverable, and test; never the whole repository or complete parent request.",
           "type": "string"
         },
         "taskName": {
           "description": "Stable alias for later targeting; lowercase letters/digits/underscores/hyphens, starts letter.",
           "type": "string"
+        },
+        "tasks": {
+          "description": "Two to fifty independent native-subagent shards to admit concurrently as distinct child sessions. Use dependency waves instead of placing dependent work in the same batch.",
+          "items": {
+            "properties": {
+              "agentId": {
+                "type": "string"
+              },
+              "cleanup": {
+                "enum": ["delete", "keep"],
+                "type": "string"
+              },
+              "context": {
+                "description": "Native context. Omit/\"isolated\" for clean child; \"fork\" only when child needs requester transcript.",
+                "enum": ["isolated", "fork"],
+                "type": "string"
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "idempotencyKey": {
+                "description": "Stable logical child operation key.",
+                "maxLength": 256,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "lightContext": {
+                "description": "Light bootstrap context; runtime=\"subagent\" only.",
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": ["run", "session"],
+                "type": "string"
+              },
+              "model": {
+                "description": "Optional raw model override. Prefer modelRoute so deployments can select an administrator-approved specialist; deployments may disallow raw overrides.",
+                "type": "string"
+              },
+              "modelRoute": {
+                "description": "Named specialist/capability route configured by the administrator (for example general, coding, creative, reasoning, research, vision, vision_reasoning, audio, video, or compaction). Match the task and honor an explicit user route request. Image attachments automatically prefer vision when omitted.",
+                "type": "string"
+              },
+              "sandbox": {
+                "enum": ["inherit", "require"],
+                "type": "string"
+              },
+              "subagentRole": {
+                "description": "Native subagent capability boundary. Omit or use \"leaf\" for an atomic worker that cannot delegate. Use \"orchestrator\" only when this child must itself decompose work.",
+                "enum": ["leaf", "orchestrator"],
+                "type": "string"
+              },
+              "task": {
+                "description": "One bounded, independently verifiable shard with explicit scope, deliverable, and test; never the whole repository or complete parent request.",
+                "type": "string"
+              },
+              "taskName": {
+                "description": "Stable alias for later targeting; lowercase letters/digits/underscores/hyphens, starts letter.",
+                "type": "string"
+              },
+              "thinking": {
+                "type": "string"
+              }
+            },
+            "required": ["task"],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "type": "array"
         },
         "thinking": {
           "type": "string"
@@ -220,7 +311,6 @@
           "type": "boolean"
         }
       },
-      "required": ["task"],
       "type": "object"
     },
     "name": "sessions_spawn",
@@ -1294,16 +1384,22 @@
       },
       {
         "deferLoading": true,
-        "description": "List active and recent subagents for the requester session. If sessions_yield exists, use it for completion; do not poll wait loops.",
+        "description": "List, kill, or live-steer spawned subagents owned by this requester session. If sessions_yield exists, use it for completion; do not poll wait loops.",
         "inputSchema": {
           "properties": {
             "action": {
-              "enum": ["list"],
+              "enum": ["list", "kill", "steer"],
+              "type": "string"
+            },
+            "message": {
               "type": "string"
             },
             "recentMinutes": {
               "minimum": 1,
               "type": "integer"
+            },
+            "target": {
+              "type": "string"
             }
           },
           "type": "object"
@@ -1320,6 +1416,10 @@
               "type": "string"
             },
             "sessionKey": {
+              "type": "string"
+            },
+            "view": {
+              "enum": ["origin"],
               "type": "string"
             }
           },
