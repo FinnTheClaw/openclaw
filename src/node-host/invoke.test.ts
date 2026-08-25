@@ -9,6 +9,74 @@ import type { SkillBinsProvider } from "./invoke-types.js";
 import { handleInvoke } from "./invoke.js";
 
 describe("node host invoke", () => {
+  it("redacts socket tokens from exec approvals get and set payloads while preserving paths", async () => {
+    const stateDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-node-approvals-")),
+    );
+    const approvalsPath = path.join(stateDir, "exec-approvals.json");
+    fs.writeFileSync(
+      approvalsPath,
+      JSON.stringify({
+        version: 1,
+        socket: { path: "/run/openclaw/exec-approvals.sock", token: "node-host-secret" },
+        agents: {},
+      }),
+    );
+
+    try {
+      await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const request = vi.fn<GatewayClient["request"]>().mockResolvedValue(null);
+        const skillBins: SkillBinsProvider = { current: async () => [] };
+
+        await handleInvoke(
+          { id: "invoke-approvals-get", nodeId: "node-1", command: "system.execApprovals.get" },
+          { request } as unknown as GatewayClient,
+          skillBins,
+        );
+
+        const getResult = request.mock.calls[0]?.[1] as { payloadJSON?: string } | undefined;
+        const getPayload = JSON.parse(getResult?.payloadJSON ?? "{}") as {
+          path?: string;
+          hash?: string;
+          raw?: unknown;
+          file?: { socket?: { path?: string; token?: string } };
+        };
+        expect(getPayload.path).toBe(approvalsPath);
+        expect(getPayload.raw).toBeUndefined();
+        expect(getPayload.file?.socket).toEqual({ path: "/run/openclaw/exec-approvals.sock" });
+        expect(getResult?.payloadJSON).not.toContain("node-host-secret");
+
+        request.mockClear();
+        await handleInvoke(
+          {
+            id: "invoke-approvals-set",
+            nodeId: "node-1",
+            command: "system.execApprovals.set",
+            paramsJSON: JSON.stringify({
+              baseHash: getPayload.hash,
+              file: { version: 1, agents: {} },
+            }),
+          },
+          { request } as unknown as GatewayClient,
+          skillBins,
+        );
+
+        const setResult = request.mock.calls[0]?.[1] as { payloadJSON?: string } | undefined;
+        const setPayload = JSON.parse(setResult?.payloadJSON ?? "{}") as {
+          path?: string;
+          raw?: unknown;
+          file?: { socket?: { path?: string; token?: string } };
+        };
+        expect(setPayload.path).toBe(approvalsPath);
+        expect(setPayload.raw).toBeUndefined();
+        expect(setPayload.file?.socket).toEqual({ path: "/run/openclaw/exec-approvals.sock" });
+        expect(setResult?.payloadJSON).not.toContain("node-host-secret");
+      });
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(process.platform !== "win32")(
     "reports current allow-always coverage for prepared shell-wrapped system.run commands",
     async () => {

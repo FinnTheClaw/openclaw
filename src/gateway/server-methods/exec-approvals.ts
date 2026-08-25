@@ -17,6 +17,7 @@ import {
   redactExecApprovalsSnapshot,
   saveExecApprovals,
   type ExecApprovalsFile,
+  type ExecApprovalsPresentationSnapshot,
   type ExecApprovalsSnapshot,
 } from "../../infra/exec-approvals.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
@@ -82,6 +83,21 @@ function toExecApprovalsPayload(snapshot: ExecApprovalsSnapshot) {
   };
 }
 
+function presentExecApprovalsNodePayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return payload;
+  }
+  const { raw: _raw, ...presentation } = payload as Record<string, unknown>;
+  if (
+    !presentation.file ||
+    typeof presentation.file !== "object" ||
+    Array.isArray(presentation.file)
+  ) {
+    return presentation;
+  }
+  return redactExecApprovalsSnapshot(presentation as unknown as ExecApprovalsPresentationSnapshot);
+}
+
 async function respondWithExecApprovalsNodePayload<TParams extends { nodeId: string }>(params: {
   method: string;
   rawParams: unknown;
@@ -144,7 +160,9 @@ async function respondWithExecApprovalsNodePayload<TParams extends { nodeId: str
       );
       return;
     }
-    params.respond(true, payload, undefined);
+    // Mixed-version nodes may return internal raw/socket credentials on reads or writes.
+    // Re-apply the presentation boundary before relaying either response.
+    params.respond(true, presentExecApprovalsNodePayload(payload), undefined);
   });
 }
 

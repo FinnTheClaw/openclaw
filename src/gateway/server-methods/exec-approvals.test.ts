@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecApprovalsFile } from "../../infra/exec-approvals.js";
 
 const ensureExecApprovalsMock = vi.hoisted(() => vi.fn());
@@ -28,6 +28,48 @@ function makeSnapshot(file: ExecApprovalsFile = { version: 1, agents: {} }) {
 }
 
 describe("exec approvals gateway methods", () => {
+  beforeEach(() => {
+    ensureExecApprovalsMock.mockReset();
+    readExecApprovalsSnapshotMock.mockReset();
+    saveExecApprovalsMock.mockReset();
+  });
+
+  it("redacts raw state and socket tokens from local gateway snapshots", async () => {
+    const file: ExecApprovalsFile = {
+      version: 1,
+      socket: { path: "/tmp/exec-approvals.sock", token: "local-secret" },
+      agents: {},
+    };
+    ensureExecApprovalsMock.mockReturnValue(file);
+    readExecApprovalsSnapshotMock.mockReturnValue(makeSnapshot(file));
+    const respond = vi.fn();
+
+    await execApprovalsHandlers["exec.approvals.get"]({
+      req: { type: "req", id: "req-local-redaction", method: "exec.approvals.get", params: {} },
+      params: {},
+      client: null,
+      isWebchatConnect: () => false,
+      respond,
+      context: {} as never,
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        path: "/tmp/exec-approvals.json",
+        exists: true,
+        hash: "base-hash",
+        file: {
+          version: 1,
+          socket: { path: "/tmp/exec-approvals.sock" },
+          agents: {},
+        },
+      },
+      undefined,
+    );
+    expect(JSON.stringify(respond.mock.calls)).not.toContain("local-secret");
+  });
+
   it("returns a structured unavailable error when local approvals get cannot read state", async () => {
     ensureExecApprovalsMock.mockImplementationOnce(() => {
       throw new Error("permission denied while ensuring approvals");
@@ -183,11 +225,128 @@ describe("exec approvals gateway methods", () => {
     expect(respond).toHaveBeenCalledWith(true, payload, undefined);
   });
 
+  it.each([
+    {
+      method: "exec.approvals.node.get" as const,
+      command: "system.execApprovals.get" as const,
+      params: { nodeId: "node-1" },
+    },
+    {
+      method: "exec.approvals.node.set" as const,
+      command: "system.execApprovals.set" as const,
+      params: {
+        nodeId: "node-1",
+        file: { version: 1 as const, agents: {} },
+        baseHash: "sha256:stale-node",
+      },
+    },
+  ])("re-redacts file snapshots returned by mixed-version $method nodes", async (testCase) => {
+    const filePayload = {
+      path: "/var/lib/openclaw/exec-approvals.json",
+      exists: true,
+      hash: "sha256:stale-node",
+      file: {
+        version: 1,
+        socket: { path: "/run/openclaw/exec-approvals.sock", token: "stale-node-secret" },
+        agents: {},
+      },
+    };
+    const payload =
+      testCase.method === "exec.approvals.node.set"
+        ? { ...filePayload, raw: "stale-node-raw-secret" }
+        : filePayload;
+    const invoke = vi.fn().mockResolvedValue({ ok: true, payloadJSON: JSON.stringify(payload) });
+    const respond = vi.fn();
+
+    await execApprovalsHandlers[testCase.method]({
+      req: {
+        type: "req",
+        id: "req-stale-node-redaction",
+        method: testCase.method,
+        params: testCase.params,
+      },
+      params: testCase.params,
+      client: null,
+      isWebchatConnect: () => false,
+      respond,
+      context: {
+        getRuntimeConfig: () => ({}),
+        nodeRegistry: {
+          get: () => ({
+            nodeId: "node-1",
+            connId: "conn-1",
+            platform: "linux",
+            deviceFamily: "Linux",
+            declaredCommands: [testCase.command],
+            commands: [testCase.command],
+          }),
+          invoke,
+        },
+      } as never,
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        ...filePayload,
+        file: {
+          ...filePayload.file,
+          socket: { path: "/run/openclaw/exec-approvals.sock" },
+        },
+      },
+      undefined,
+    );
+    expect(JSON.stringify(respond.mock.calls)).not.toContain("stale-node-secret");
+    expect(JSON.stringify(respond.mock.calls)).not.toContain("stale-node-raw-secret");
+  });
+
+  it("preserves validated host-native node snapshots", async () => {
+    const command = "system.execApprovals.get";
+    const payload = {
+      enabled: true,
+      hash: "sha256:native",
+      baseHash: "sha256:native",
+      defaultAction: "deny",
+      rules: [{ pattern: "hostname", action: "allow" }],
+    };
+    const invoke = vi.fn().mockResolvedValue({ ok: true, payload });
+    const respond = vi.fn();
+
+    await execApprovalsHandlers["exec.approvals.node.get"]({
+      req: {
+        type: "req",
+        id: "req-native-node-get",
+        method: "exec.approvals.node.get",
+        params: { nodeId: "windows-node" },
+      },
+      params: { nodeId: "windows-node" },
+      client: null,
+      isWebchatConnect: () => false,
+      respond,
+      context: {
+        getRuntimeConfig: () => ({}),
+        nodeRegistry: {
+          get: () => ({
+            nodeId: "windows-node",
+            connId: "conn-1",
+            platform: "windows",
+            deviceFamily: "Windows",
+            declaredCommands: [command],
+            commands: [command],
+          }),
+          invoke,
+        },
+      } as never,
+    });
+
+    expect(respond).toHaveBeenCalledWith(true, payload, undefined);
+  });
+
   it("relays host-native approval writes without file-shape translation", async () => {
     const command = "system.execApprovals.set";
     const invoke = vi.fn().mockResolvedValue({
       ok: true,
-      payload: { updated: true, hash: "sha256:next" },
+      payload: { updated: true, hash: "sha256:next", raw: "native-raw-secret" },
     });
     const respond = vi.fn();
     const params = {
@@ -236,6 +395,7 @@ describe("exec approvals gateway methods", () => {
       },
     });
     expect(respond).toHaveBeenCalledWith(true, { updated: true, hash: "sha256:next" }, undefined);
+    expect(JSON.stringify(respond.mock.calls)).not.toContain("native-raw-secret");
   });
 
   it("rejects malformed node approval snapshots at the gateway boundary", async () => {
