@@ -243,12 +243,13 @@ The layout is frozen:
 
 The tag uses the exact 32-byte channel key over header bytes 0-95 followed by the untouched body.
 Each direction starts at sequence `1`; duplicates, gaps, zero, and out-of-order frames revoke.
-Sequence never wraps: a sender at `2^64-1` drains and replaces the generation. Channel ID, boot
-epoch, and request ID are uniformly random 128-bit values created by the supervisor. Control and
-registration frames require a zero request ID and deadline. `INVOKE` requires a nonzero retained
-request ID and a deadline greater than current monotonic time and no more than 300 seconds ahead.
-Related result and cancel frames repeat that request ID; only the supervisor's retained
-deadline is authoritative, and a different carried deadline revokes rather than extending it.
+Usable sequences end at `2^64-2`; `2^64-1` is an exhaustion sentinel that is never emitted or
+accepted. Reaching it fences new work and drains if the supervisor can still send, otherwise it
+performs exact stop; no direction wraps. Channel, boot, and request IDs are random supervisor-made
+128-bit values. Lifecycle and registration kinds require zero request ID/deadline. `INVOKE`,
+`RESULT`, and `CANCEL` are request-bearing, repeat one nonzero retained ID/deadline, and `INVOKE`'s
+deadline must be future monotonic time no more than 300 seconds away. Only the retained deadline is
+authoritative; a different carried value revokes rather than extending it.
 
 Kinds are `0x01 SESSION_READY`, `0x02 LOAD_PACKAGE`, `0x03 REGISTER`,
 `0x04 REGISTER_DONE`, `0x05 REGISTER_ACCEPT`, `0x10 INVOKE`, `0x11 RESULT`,
@@ -260,7 +261,8 @@ Supervisor-to-worker-only kinds are `LOAD_PACKAGE`, `REGISTER_ACCEPT`, `INVOKE`,
 `CLOSE_ACK`, and `FATAL`. Base v1 has no credit or streaming frame and no active flow-control
 semantics. Streaming categories remain unsupported.
 
-The raw slice authenticates bodies as opaque bytes and does no CBOR or semantic-schema decoding.
+The raw slice authenticates bodies as opaque bytes, returns owned non-aliasing copies of every
+decoded byte field, and does no CBOR or semantic-schema decoding.
 Header schema ID is zero in that slice. `SESSION_READY`, `LOAD_PACKAGE`, `REGISTER_DONE`,
 `REGISTER_ACCEPT`, `CANCEL`, `DRAIN`, `CLOSE_ACK`, and `FATAL` require an empty body. The fixed unit
 already selects the package/generation. The absolute body cap is 1,048,576 bytes; `REGISTER` is
@@ -273,8 +275,8 @@ reserved bytes, or request binding before verifying HMAC in constant time. Work 
 verified effective kernel send/receive buffer cap of 4,194,304 bytes each, 64 queued frames,
 4,194,304 queued bytes, and 32 in-flight invocations.
 `CANCEL` is admitted only for a pending request or terminal-grace tombstone and `FATAL` only once per
-generation. They bypass a full ordinary-work queue using exactly 32 reserved cancellation slots and
-one reserved fatal slot, empty bodies, and the same HMAC/sequence caps.
+generation. They bypass ordinary queue accounting using exactly 32 cancellation slots plus one
+fatal slot and a separate `33 * 128 = 4224` byte reserve; bodies stay empty and HMAC/sequence applies.
 
 ### Session and cleanup state machine
 
@@ -288,6 +290,7 @@ one reserved fatal slot, empty bodies, and the same HMAC/sequence caps.
 | `REGISTERING`  | one-descriptor `REGISTER` or final `REGISTER_DONE` | Retain one descriptor, or compare inventory and return `REGISTER_ACCEPT`; `ACTIVE` only on final. |
 | `ACTIVE`       | valid invoke/result/cancel                         | Apply exact context, deadline, and quota rules; remain `ACTIVE`.                                  |
 | `ACTIVE`       | shutdown/update/sequence drain                     | Fence local work; on Linux stop/verify socket unit; send `DRAIN`; `DRAINING`.                     |
+| `DRAINING`     | matching terminal/local cancel/timeout             | Complete only already-pending work and grace accounting; remain `DRAINING`.                       |
 | `DRAINING`     | `CLOSE_ACK` and no pending work                    | Close channel and stop fixed service/job; `STOPPING`.                                             |
 | `DRAINING`     | five-second grace expires                          | Reject pending once, force close and exact service/job stop; `STOPPING`.                          |
 | any live state | protocol/identity/package/process fault            | Fence ingress, revoke handles/pending, close, exact stop; `STOPPING`.                             |
@@ -312,8 +315,9 @@ matching terminal frame is discarded and counted during that tombstone's two-sec
 duplicate terminal, continued request traffic, wrong request, or traffic after grace revokes; no
 losing path reports success or releases resources twice.
 
-FSM tests include zero, one, and exactly 4096 one-frame descriptors;
-4097, multi-descriptor `REGISTER`, and post-`REGISTER_DONE` registration revoke before proxy attach.
+The raw FSM counts one registration per `REGISTER` frame and consumes a host-local
+`inventoryMatches` result at `REGISTER_DONE`; this is a model boundary, not semantic wire proof.
+FSM tests cover zero, one, and 4096 frames; 4097, mismatch, and post-done registration revoke.
 
 ## Context confinement
 
@@ -418,8 +422,8 @@ Target files and non-comment, nonblank ceilings:
 - `src/plugins/process-boundary/session-fsm.test.ts`: 500 lines.
 
 The codec tests cover every offset and byte order, exact lengths, truncation, cap boundaries,
-opaque-body preservation, bodyless-control rejection, MAC mismatch, kind/flag/direction rejection,
-and no body inspection before authentication. The FSM tests table-drive legal transitions plus
+opaque-body preservation and post-MAC caller-mutation isolation, bodyless-control rejection, MAC
+mismatch, kind/flag/direction rejection, and no body inspection before authentication. FSM tests cover
 duplicate/gap/wrap,
 wrong-generation, nonpending, expiry, queue/byte/in-flight exhaustion, cancellation/result races,
 revocation, drain, close, and restart isolation. These are unit proofs only and make no OS-boundary
