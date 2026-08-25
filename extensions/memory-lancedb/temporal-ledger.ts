@@ -145,12 +145,13 @@ export type TemporalLedgerStats = {
   pendingMaterialization: number;
 };
 
-export type DeadLetterQueue = "projection" | "extraction" | "all";
+export type DeadLetterQueue = "projection" | "extraction" | "materialization" | "all";
 
 export type DeadLetterRecoveryResult = {
   queue: DeadLetterQueue;
   projection: number;
   extraction: number;
+  materialization: number;
   total: number;
   recoveredAt: number;
 };
@@ -1195,12 +1196,18 @@ export class TemporalMemoryLedger {
   requeueDeadLetters(options: { queue: DeadLetterQueue; now?: number }): DeadLetterRecoveryResult {
     this.assertOpen();
     const queue = options.queue;
-    if (queue !== "projection" && queue !== "extraction" && queue !== "all") {
-      throw new Error("queue must be projection, extraction, or all");
+    if (
+      queue !== "projection" &&
+      queue !== "extraction" &&
+      queue !== "materialization" &&
+      queue !== "all"
+    ) {
+      throw new Error("queue must be projection, extraction, materialization, or all");
     }
     const recoveredAt = finiteTimestamp(options.now, Date.now());
     let projection = 0;
     let extraction = 0;
+    let materialization = 0;
 
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -1228,6 +1235,18 @@ export class TemporalMemoryLedger {
             .run(recoveredAt).changes,
         );
       }
+      if (queue === "materialization" || queue === "all") {
+        materialization = Number(
+          this.db
+            .prepare(`
+              UPDATE memory_materialization_outbox
+              SET state = 'pending', attempts = 0, lease_owner = NULL,
+                  lease_until = NULL, next_attempt_at = 0, updated_at = ?
+              WHERE state = 'dead'
+            `)
+            .run(recoveredAt).changes,
+        );
+      }
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -1238,7 +1257,8 @@ export class TemporalMemoryLedger {
       queue,
       projection,
       extraction,
-      total: projection + extraction,
+      materialization,
+      total: projection + extraction + materialization,
       recoveredAt,
     };
   }

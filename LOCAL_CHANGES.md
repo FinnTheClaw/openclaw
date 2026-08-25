@@ -7,6 +7,25 @@ current promoted freeze revision is source commit
 `6b1ccfd1b2dfa4a95d1a250acc0eb53c7c427cb3` remains available at rollback ref
 `freeze-rollback-20260814-6b1ccfd`.
 
+## 2026-08-25 memory route and dead-letter recovery candidate
+
+- The live coordinator had moved both memory aliases to Narya. The Narya
+  embedding backend rejects OpenClaw's required 1024-dimension request, causing
+  a deterministic HTTP 400 before fallback and leaving durable materialization
+  work dead.
+- The live aliases were restored to the compatible Moira Gemma generation and
+  Qwen3 1024-dimension embedding backends. Narya models remain directly
+  addressable but no longer own either production memory role.
+- `openclaw ltm retry-dead` now includes the materialization queue in the same
+  atomic, idempotent recovery transaction as projection and extraction.
+- The observed exec failure was not an approval or custom-hook rejection. It was
+  zsh's normal `no matches found` error for a nonexistent `*.md` glob. The
+  previously removed debug-hooks remain absent; no replacement shell guard or
+  fail-open rewrite is added.
+- Grond and fake-provider evidence is not used. Promotion requires a packaged
+  frozen artifact, a fresh Alistar provision, and installed actual-Qwen
+  functional validation.
+
 ## 2026-08-14 hardening freeze promotion: 2f4
 
 This is a canonical source/artifact revision only. Alistar has not been rebooted,
