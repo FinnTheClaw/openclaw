@@ -22,7 +22,7 @@
   "automatic_runtime_updates": false,
   "selected_upstream_changes_only": true,
   "created_at": "2026-07-26T05:35:00Z",
-  "updated_at": "2026-08-25T03:14:00Z",
+  "updated_at": "2026-08-25T03:36:37Z",
   "canonical_runtime_sha256": "2f300f4fd089ae37cf4565cd90284b922a7b8bd6c541cd90c54b4c65781b6ccc",
   "candidate_id": "20260825-memory-8k-debug-subtraction-principal-r4",
   "source_build_info": {
@@ -33,7 +33,7 @@
   "previous_frozen_manifest_sha256": "dce77d0d3873b12a598249ce7bf97f7c7cc6147379de274fd4bfbddd727873dd",
   "previous_frozen_source_commit": "e2d0b3a2a47ada8ad437a06a40edbf4dd2f40882",
   "rollback_ref": "freeze-rollback-20260825-90419a94",
-  "promotion_status": "Memory 8K, debug-hook subtraction, canonical storage-principal repair, and idempotent legacy rekey packaged; Finn and Alistar revalidation pending",
+  "promotion_status": "Promoted after state-preserving Finn install and rebooted Alistar actual-Qwen validation",
   "evidence_classification": [
     "Moira build and paired artifact hashes verified",
     "Numeric runtime compatibility correction verified after install preflight",
@@ -45,7 +45,10 @@
     "Legacy debug-hooks are removed from generated config, allowlist, and load paths; exact observed exec failure was an unmatched zsh glob",
     "Canonical storage principals now bypass the public 64-character agent-name normalizer; legacy rows rekey only by exact unambiguous prefix",
     "Repeated legacy rekey safely retires only semantically identical, no-newer-authority active fact conflicts and leaves divergent conflicts fail-closed",
-    "This successor still requires installed Finn and Alistar actual-runtime recall validation"
+    "Finn installed 2026.7.1-35 with valid configuration, live gateway, 8K compiled consolidator, no debug-hooks, and exact brain and embedding routes; startup repaired 151 legacy truncated-principal projections while four unresolvable legacy events remained fail-closed",
+    "Alistar rebooted to boot 598ab1a5-7d99-4e8e-a32d-fd8c13c6724d with unchanged PXE command-line hash, then installed the hash-locked 2026.7.1-35 runtime and paired memory plugin",
+    "Installed Alistar actual-Qwen canaries routed to Narya Qwen/Qwen3.8-27B-NVFP4, performed exactly one exec tool call without the removed zsh-glob failure, and performed one memory_recall call without channel delivery",
+    "The Alistar direct observation used the full 74-character storage principal; CLI-origin evidence remained a non-active candidate as designed, while moira/memory-embedding completed recall embeddings with HTTP 200 through the Moira backend"
   ],
   "supersedes_freeze_commit": "90419a94bb8b18a985f5d53045a9924c8c09cd10",
   "superseded_runtime_version": "2026.7.1-34",
