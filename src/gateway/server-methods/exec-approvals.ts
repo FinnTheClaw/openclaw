@@ -7,6 +7,7 @@ import {
   validateExecApprovalsNodeGetParams,
   validateExecApprovalsNodeSnapshot,
   validateExecApprovalsNodeSetParams,
+  validateExecApprovalsNodeSetResult,
   validateExecApprovalsSetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import {
@@ -233,6 +234,7 @@ export const execApprovalsHandlers: GatewayRequestHandlers = {
           ? { ...parsedParams.native, baseHash: parsedParams.baseHash }
           : { file: parsedParams.file, baseHash: parsedParams.baseHash },
       readPayload: (res) => (res.payloadJSON ? safeParseJson(res.payloadJSON) : res.payload),
+      validatePayload: validateExecApprovalsNodeSetResult,
     });
   },
 };

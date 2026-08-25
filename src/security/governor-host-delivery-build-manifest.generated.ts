@@ -715,7 +715,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/gateway-protocol/src/index.ts",
-      sha256: "739d0421190f23552561656ff54c707318335aa6af20d346733ec730f3217608",
+      sha256: "2d7ffc606931d7c549a5ffc903183a2fdf3b32259261985cd98585e7f41b75e3",
     },
     {
       path: "packages/gateway-protocol/src/schema.ts",
@@ -775,7 +775,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/gateway-protocol/src/schema/exec-approvals.ts",
-      sha256: "b66dc4719dc238f5400fc541d63c153ac16279240f721facde58873953db607b",
+      sha256: "7b31b1172d581eb0f5552d67ccb9dbd5e0671cb07f54c813bdbebe789f25e536",
     },
     {
       path: "packages/gateway-protocol/src/schema/frames.ts",
@@ -803,7 +803,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/gateway-protocol/src/schema/protocol-schemas.ts",
-      sha256: "8cf8adedd6ff4a4d17a8bf0e9aedb0071ae4155a729c560b60335dd62641dc7a",
+      sha256: "2110b6e2500356413399ce9c1cffdaab126f305f8b35a1cb5bda13448a95d1ad",
     },
     {
       path: "packages/gateway-protocol/src/schema/push.ts",
@@ -835,7 +835,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/gateway-protocol/src/schema/types.ts",
-      sha256: "29418cb007ffb3693dcd0484396c214ebb93b4f95047453c88bb528189483ca2",
+      sha256: "2d21bf443780773ef9381feb5c39966eb9ae69720f14373d6442721f51ff9ad2",
     },
     {
       path: "packages/gateway-protocol/src/schema/wizard.ts",
@@ -10667,7 +10667,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/server-methods/exec-approvals.ts",
-      sha256: "7e792a2a4484c5df12c49871b354aa91271c134f8991b013623532472b9fe6b5",
+      sha256: "244052283dac50f95917beac74eb53128caffbf3a346ef7c000f9d2bcdf0e4ae",
     },
     {
       path: "src/gateway/server-methods/health.ts",
@@ -17732,4 +17732,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "75ff14bcc1e87ec5622b755f37f8a0ee940509e143bd2d79edca6d44890f1ace";
+  "436f21a789e94211e6bc5923f0c919ea97fe1b5c65e738917d14a009be46814f";

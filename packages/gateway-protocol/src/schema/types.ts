@@ -312,6 +312,7 @@ export type ExecApprovalsSetParams = SchemaType<"ExecApprovalsSetParams">;
 export type ExecApprovalsNodeGetParams = SchemaType<"ExecApprovalsNodeGetParams">;
 export type ExecApprovalsNodeSnapshot = SchemaType<"ExecApprovalsNodeSnapshot">;
 export type ExecApprovalsNodeSetParams = SchemaType<"ExecApprovalsNodeSetParams">;
+export type ExecApprovalsNodeSetResult = SchemaType<"ExecApprovalsNodeSetResult">;
 export type ExecApprovalsSnapshot = SchemaType<"ExecApprovalsSnapshot">;
 export type ExecApprovalGetParams = SchemaType<"ExecApprovalGetParams">;
 export type ExecApprovalRequestParams = SchemaType<"ExecApprovalRequestParams">;

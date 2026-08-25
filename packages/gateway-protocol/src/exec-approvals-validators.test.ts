@@ -4,6 +4,7 @@ import {
   validateExecApprovalRequestParams,
   validateExecApprovalsNodeSnapshot,
   validateExecApprovalsNodeSetParams,
+  validateExecApprovalsNodeSetResult,
   validateExecApprovalsSetParams,
 } from "./index.js";
 
@@ -71,6 +72,40 @@ describe("exec approvals protocol validators", () => {
         baseHash: "sha256:current",
       }),
     ).toBe(true);
+    expect(validateExecApprovalsNodeSetResult({ updated: true, hash: "sha256:next" })).toBe(true);
+  });
+
+  it("accepts only closed file-backed or host-native node set results", () => {
+    expect(
+      validateExecApprovalsNodeSetResult({
+        path: "/tmp/exec-approvals.json",
+        exists: true,
+        hash: "sha256:file",
+        file: { version: 1, socket: { path: "/tmp/approvals.sock", token: "secret" } },
+      }),
+    ).toBe(true);
+
+    for (const result of [
+      undefined,
+      "updated",
+      [],
+      {},
+      { payloadJSON: '{"updated":true,"hash":"sha256:next"}' },
+      { updated: true, hash: "sha256:next", debug: true },
+      { updated: true, hash: "sha256:next", token: "secret" },
+      { updated: true, hash: "sha256:next", raw: "secret" },
+      { updated: false, hash: "sha256:next" },
+      { updated: true, hash: "" },
+      {
+        path: "/tmp/exec-approvals.json",
+        exists: true,
+        hash: "sha256:file",
+        file: { version: 1 },
+        updated: true,
+      },
+    ]) {
+      expect(validateExecApprovalsNodeSetResult(result)).toBe(false);
+    }
   });
 
   it("rejects ambiguous or unsafe host-native approval payloads", () => {

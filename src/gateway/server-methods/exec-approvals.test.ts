@@ -251,10 +251,7 @@ describe("exec approvals gateway methods", () => {
         agents: {},
       },
     };
-    const payload =
-      testCase.method === "exec.approvals.node.set"
-        ? { ...filePayload, raw: "stale-node-raw-secret" }
-        : filePayload;
+    const payload = filePayload;
     const invoke = vi.fn().mockResolvedValue({ ok: true, payloadJSON: JSON.stringify(payload) });
     const respond = vi.fn();
 
@@ -297,7 +294,6 @@ describe("exec approvals gateway methods", () => {
       undefined,
     );
     expect(JSON.stringify(respond.mock.calls)).not.toContain("stale-node-secret");
-    expect(JSON.stringify(respond.mock.calls)).not.toContain("stale-node-raw-secret");
   });
 
   it("preserves validated host-native node snapshots", async () => {
@@ -346,7 +342,7 @@ describe("exec approvals gateway methods", () => {
     const command = "system.execApprovals.set";
     const invoke = vi.fn().mockResolvedValue({
       ok: true,
-      payload: { updated: true, hash: "sha256:next", raw: "native-raw-secret" },
+      payload: { updated: true, hash: "sha256:next" },
     });
     const respond = vi.fn();
     const params = {
@@ -395,7 +391,6 @@ describe("exec approvals gateway methods", () => {
       },
     });
     expect(respond).toHaveBeenCalledWith(true, { updated: true, hash: "sha256:next" }, undefined);
-    expect(JSON.stringify(respond.mock.calls)).not.toContain("native-raw-secret");
   });
 
   it("rejects malformed node approval snapshots at the gateway boundary", async () => {

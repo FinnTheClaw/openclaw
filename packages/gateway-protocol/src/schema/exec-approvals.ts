@@ -214,6 +214,21 @@ export const ExecApprovalsNodeSetParamsSchema = Type.Object(
   },
 );
 
+/** Host-native acknowledgement returned after an exec approval policy write. */
+const NativeExecApprovalsSetResultSchema = Type.Object(
+  {
+    updated: Type.Literal(true),
+    hash: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+/** Closed node write result: one file snapshot or one host-native acknowledgement. */
+export const ExecApprovalsNodeSetResultSchema = Type.Union([
+  ExecApprovalsSnapshotSchema,
+  NativeExecApprovalsSetResultSchema,
+]);
+
 /** Lookup request for one pending exec approval by id. */
 export const ExecApprovalGetParamsSchema = Type.Object(
   {
