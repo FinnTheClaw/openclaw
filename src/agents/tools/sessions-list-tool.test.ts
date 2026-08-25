@@ -1,5 +1,6 @@
 // sessions_list tool tests cover session metadata projection, visibility
 // helpers, and numeric argument validation.
+import { Value } from "typebox/value";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createSessionsListTool } from "./sessions-list-tool.js";
 
@@ -50,6 +51,7 @@ type SessionsListDetails = {
     archivedAt?: number;
     pinned?: boolean;
     pinnedAt?: number;
+    kind?: "main" | "group" | "cron" | "hook" | "node" | "other";
     reasoningLevel?: string;
     responseUsage?: string;
     status?: string;
@@ -230,6 +232,70 @@ describe("sessions-list-tool", () => {
     const result = await tool.execute("call-blocked", {});
 
     expect(getSessionsListDetails(result).sessions?.[0]?.status).toBe("blocked");
+  });
+
+  it("limits session kind arguments to the documented classification values", () => {
+    const tool = createSessionsListTool({ config: {} as never });
+
+    expect(
+      Value.Check(tool.parameters, { kinds: ["main", "group", "cron", "hook", "node", "other"] }),
+    ).toBe(true);
+    expect(Value.Check(tool.parameters, { kinds: ["unknown"] })).toBe(false);
+    expect(Value.Check(tool.parameters, { kinds: ["   "] })).toBe(false);
+    expect(Value.Check(tool.parameters, { kinds: ["MAIN"] })).toBe(false);
+    expect(Value.Check(tool.parameters, { kinds: "main" })).toBe(false);
+  });
+
+  it.each([
+    { name: "omitted", params: {}, expected: ["main", "group", "cron", "hook", "node", "other"] },
+    {
+      name: "empty array",
+      params: { kinds: [] },
+      expected: ["main", "group", "cron", "hook", "node", "other"],
+    },
+    {
+      name: "empty scalar",
+      params: { kinds: "" },
+      expected: ["main", "group", "cron", "hook", "node", "other"],
+    },
+    { name: "unknown-only", params: { kinds: ["unknown"] }, expected: [] },
+    { name: "whitespace-only", params: { kinds: ["   "] }, expected: [] },
+    { name: "unknown scalar", params: { kinds: "unknown" }, expected: [] },
+    { name: "whitespace scalar", params: { kinds: "   " }, expected: [] },
+    { name: "known scalar", params: { kinds: "MAIN" }, expected: ["main"] },
+    { name: "known array", params: { kinds: ["MAIN"] }, expected: ["main"] },
+    {
+      name: "mixed known and unknown",
+      params: { kinds: ["unknown", "MAIN"] },
+      expected: ["main"],
+    },
+    { name: "mixed string and number", params: { kinds: ["MAIN", 7] }, expected: ["main"] },
+    { name: "non-string array", params: { kinds: [7] }, expected: [] },
+    { name: "object", params: { kinds: {} }, expected: [] },
+    { name: "null", params: { kinds: null }, expected: [] },
+    { name: "number", params: { kinds: 42 }, expected: [] },
+    { name: "boolean", params: { kinds: true }, expected: [] },
+  ])("never broadens the $name session kind filter", async ({ params, expected }) => {
+    mocks.gatewayCall.mockResolvedValue({
+      path: "/tmp/sessions.json",
+      sessions: [
+        { key: "main", kind: "direct" },
+        { key: "slack:channel:team-room", kind: "group" },
+        { key: "cron:nightly", kind: "direct" },
+        { key: "hook:deploy", kind: "direct" },
+        { key: "node-device", kind: "direct" },
+        { key: "agent:main:subagent:other", kind: "direct" },
+      ],
+    });
+
+    const result = await createSessionsListTool({ config: {} as never }).execute(
+      "filter-kinds",
+      params,
+    );
+
+    expect(getSessionsListDetails(result).sessions?.map((session) => session.kind)).toEqual(
+      expected,
+    );
   });
 
   it("requests archived sessions and keeps management metadata", async () => {

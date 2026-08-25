@@ -26,7 +26,8 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { FastModeSource } from "../../shared/fast-mode.js";
 
 /** Coarse session category used by session list/status tools. */
-type SessionKind = "main" | "group" | "cron" | "hook" | "node" | "other";
+export const SESSION_LIST_KINDS = ["main", "group", "cron", "hook", "node", "other"] as const;
+type SessionKind = (typeof SESSION_LIST_KINDS)[number];
 
 /** Delivery target metadata attached to session rows. */
 type SessionListDeliveryContext = {

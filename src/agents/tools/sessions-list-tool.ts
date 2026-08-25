@@ -27,6 +27,7 @@ import { deliveryContextFromSession } from "../../utils/delivery-context.shared.
 import {
   optionalNonNegativeIntegerSchema,
   optionalPositiveIntegerSchema,
+  stringEnum,
 } from "../schema/typebox.js";
 import {
   describeSessionsListTool,
@@ -50,12 +51,13 @@ import {
   resolveEffectiveSessionToolsVisibility,
   resolveInternalSessionKey,
   resolveSandboxedSessionToolContext,
+  SESSION_LIST_KINDS,
   type SessionListRow,
   type SessionRunStatus,
 } from "./sessions-helpers.js";
 
 const SessionsListToolSchema = Type.Object({
-  kinds: Type.Optional(Type.Array(Type.String())),
+  kinds: Type.Optional(Type.Array(stringEnum(SESSION_LIST_KINDS))),
   limit: optionalPositiveIntegerSchema(),
   activeMinutes: optionalPositiveIntegerSchema(),
   messageLimit: optionalNonNegativeIntegerSchema(),
@@ -113,10 +115,13 @@ export function createSessionsListTool(opts?: {
       const kindsRaw = readStringArrayParam(params, "kinds")
         ?.map((value) => normalizeOptionalLowercaseString(value))
         .filter((value): value is string => Boolean(value));
-      const allowedKindsList = (kindsRaw ?? []).filter((value) =>
-        ["main", "group", "cron", "hook", "node", "other"].includes(value),
-      );
-      const allowedKinds = allowedKindsList.length ? new Set(allowedKindsList) : undefined;
+      const requestedKinds = params.kinds;
+      const hasExplicitKinds =
+        Object.hasOwn(params, "kinds") &&
+        requestedKinds !== undefined &&
+        requestedKinds !== "" &&
+        !(Array.isArray(requestedKinds) && requestedKinds.length === 0);
+      const allowedKinds = hasExplicitKinds ? new Set(kindsRaw ?? []) : undefined;
 
       const limit = readPositiveIntegerParam(params, "limit");
       const activeMinutes = readPositiveIntegerParam(params, "activeMinutes");

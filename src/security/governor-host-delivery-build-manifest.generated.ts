@@ -4759,7 +4759,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/tools/sessions-helpers.ts",
-      sha256: "575ff875ef4278666a9f3e658bf83ec40bb187c0a0ba937d6ca15ba88a391d48",
+      sha256: "775661c6db93872fc892d330d28bb4869ddea76b723a0e61c6bdd9e1cdc00d83",
     },
     {
       path: "src/agents/tools/sessions-history-tool.ts",
@@ -4767,7 +4767,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/tools/sessions-list-tool.ts",
-      sha256: "876f934b6d1ba465cb93d811b14174a78fe5ca5862f2cc8d205febca4a9016c1",
+      sha256: "c5679ac04ba5213de78d23ab45fc5f05c1de42db60fe1d37ab04cd7b60696400",
     },
     {
       path: "src/agents/tools/sessions-resolution.ts",
@@ -17752,4 +17752,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "6db74d376ce940c362934f8ada8a0391f208f02a1a2f6edbb648717d2f346951";
+  "bbeb82cc087c26235762f8ae2aa1c89e80a51decc8082a001f912e7bc0e7cb9d";

@@ -1298,6 +1298,7 @@
             },
             "kinds": {
               "items": {
+                "enum": ["main", "group", "cron", "hook", "node", "other"],
                 "type": "string"
               },
               "type": "array"
