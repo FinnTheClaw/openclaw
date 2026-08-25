@@ -3,6 +3,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { hasErrnoCode } from "../../infra/errors.js";
 import { isPathInside } from "../../security/scan-paths.js";
+import {
+  collectChildProcessBindings,
+  findAliasedChildProcessCalls,
+  isBenignChildProcessMatch,
+} from "./scanner-child-process.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,6 +61,8 @@ const SCANNABLE_EXTENSIONS = new Set([
 
 const DEFAULT_MAX_SCAN_FILES = 500;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
+// Bound hostile scanner output while retaining evidence that more matches existed.
+const MAX_LINE_RULE_FINDINGS_PER_RULE = 32;
 const FILE_SCAN_CACHE_MAX = 5000;
 const DIR_ENTRY_CACHE_MAX = 5000;
 const TEST_DIRECTORY_NAMES = new Set(["__fixtures__", "__mocks__", "__tests__", "test", "tests"]);
@@ -87,7 +94,6 @@ const DIR_ENTRY_CACHE = new Map<string, DirEntryCacheEntry>();
 export function isScannable(filePath: string): boolean {
   return SCANNABLE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
-
 function getCachedFileScanResult(params: {
   filePath: string;
   size: number;
@@ -164,7 +170,8 @@ const LINE_RULES: LineRule[] = [
     ruleId: "dangerous-exec",
     severity: "critical",
     message: "Shell command execution detected (child_process)",
-    pattern: /\b(exec|execSync|spawn|spawnSync|execFile|execFileSync)\s*\(/,
+    pattern:
+      /\b(exec|execSync|spawn|spawnSync|execFile|execFileSync)\s*\(|["'](exec|execSync|spawn|spawnSync|execFile|execFileSync)["']\s*\]\s*\(/,
     requiresContext: /child_process/,
   },
   {
@@ -226,20 +233,20 @@ const SKILL_CONTENT_RULES: SourceRule[] = [
     ruleId: "prompt-injection-ignore-instructions",
     severity: "critical",
     message: "Prompt-injection wording attempts to override higher-priority instructions",
-    pattern: /ignore (all|any|previous|above|prior) instructions/i,
+    pattern: /\bignore\s+(?:(?:all|any)\s+)?(?:previous|above|prior|all|any)\s+instructions\b/i,
   },
   {
     ruleId: "prompt-injection-system",
     severity: "critical",
     message: "Skill text references hidden prompt layers",
-    pattern: /\b(system prompt|developer message|hidden instructions)\b/i,
+    pattern: /\b(?:system\s+prompt|developer\s+message|hidden\s+instructions)\b/i,
   },
   {
     ruleId: "prompt-injection-tool",
     severity: "critical",
     message: "Skill text encourages bypassing tool approval",
     pattern:
-      /\b(run|execute|invoke|call)\b.{0,50}\btool\b.{0,50}\bwithout\b.{0,30}\b(permission|approval)/i,
+      /\b(run|execute|invoke|call)\b[\s\S]{0,50}\btool\b[\s\S]{0,50}\bwithout\b[\s\S]{0,30}\b(permission|approval)/i,
   },
   {
     ruleId: "shell-pipe-to-shell",
@@ -275,21 +282,12 @@ function truncateEvidence(evidence: string, maxLen = 120): string {
   if (evidence.length <= maxLen) {
     return evidence;
   }
-  return `${evidence.slice(0, maxLen)}…`;
-}
-
-function isBenignMemberExecMatch(line: string, match: RegExpExecArray): boolean {
-  const command = match[1];
-  if (command !== "exec") {
-    return false;
+  let end = maxLen;
+  const finalCodeUnit = evidence.charCodeAt(end - 1);
+  if (finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff) {
+    end -= 1;
   }
-
-  const matchIndex = match.index;
-  if (matchIndex <= 0 || line[matchIndex - 1] !== ".") {
-    return false;
-  }
-
-  return !/\b(?:cp|childProcess|child_process)\s*\.\s*exec\s*\(/.test(line);
+  return `${evidence.slice(0, end)}…`;
 }
 
 function stripCommentsForHeuristics(source: string): string {
@@ -359,7 +357,8 @@ function findSourceRuleMatch(params: {
   source: string;
   lines: string[];
 }): { line: number; evidence: string } | null {
-  if (!params.rule.pattern.test(params.source)) {
+  const sourceMatch = params.rule.pattern.exec(params.source);
+  if (!sourceMatch) {
     return null;
   }
   if (params.rule.requiresContext && !params.rule.requiresContext.test(params.source)) {
@@ -387,7 +386,13 @@ function findSourceRuleMatch(params: {
     return null;
   }
 
-  return { line: 1, evidence: params.source.slice(0, 120) };
+  let line = 1;
+  for (let index = 0; index < sourceMatch.index; index += 1) {
+    if (params.source.charCodeAt(index) === 10) {
+      line += 1;
+    }
+  }
+  return { line, evidence: params.lines[line - 1] ?? params.source.slice(0, 120) };
 }
 
 export function scanSource(source: string, filePath: string): SkillScanFinding[] {
@@ -395,48 +400,84 @@ export function scanSource(source: string, filePath: string): SkillScanFinding[]
   const lines = source.split("\n");
   const heuristicSource = stripCommentsForHeuristics(source);
   const heuristicLines = heuristicSource.split("\n");
-  const matchedLineRules = new Set<string>();
+  const { methodAliases, namespaceAliases } = collectChildProcessBindings(heuristicSource);
 
   // --- Line rules ---
   for (const rule of LINE_RULES) {
-    if (matchedLineRules.has(rule.ruleId)) {
-      continue;
-    }
-
     // Skip rule entirely if context requirement not met
     if (rule.requiresContext && !rule.requiresContext.test(source)) {
       continue;
     }
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const match = rule.pattern.exec(line);
-      if (!match) {
-        continue;
+    let acceptedMatches = 0;
+    let omittedMatches = 0;
+    let lastOmittedLine: number | undefined;
+    const acceptFinding = (line: string, lineNumber: number): void => {
+      if (acceptedMatches >= MAX_LINE_RULE_FINDINGS_PER_RULE) {
+        omittedMatches += 1;
+        lastOmittedLine = lineNumber;
+        return;
       }
-
-      if (rule.ruleId === "dangerous-exec" && isBenignMemberExecMatch(line, match)) {
-        continue;
-      }
-
-      // Special handling for suspicious-network: check port
-      if (rule.ruleId === "suspicious-network") {
-        const port = Number.parseInt(match[1], 10);
-        if (STANDARD_PORTS.has(port)) {
-          continue;
-        }
-      }
-
       findings.push({
         ruleId: rule.ruleId,
         severity: rule.severity,
         file: filePath,
-        line: i + 1,
+        line: lineNumber,
         message: rule.message,
         evidence: truncateEvidence(line.trim()),
       });
-      matchedLineRules.add(rule.ruleId);
-      break; // one finding per line-rule per file
+      acceptedMatches += 1;
+    };
+
+    for (const [index, line] of lines.entries()) {
+      const literalDangerousExecIndexes = new Set<number>();
+      const pattern = new RegExp(
+        rule.pattern.source,
+        rule.pattern.flags.includes("g") ? rule.pattern.flags : `${rule.pattern.flags}g`,
+      );
+      for (const match of line.matchAll(pattern)) {
+        if (
+          rule.ruleId === "dangerous-exec" &&
+          isBenignChildProcessMatch(line, match, namespaceAliases)
+        ) {
+          continue;
+        }
+        if (rule.ruleId === "suspicious-network") {
+          const port = Number.parseInt(match[1] ?? "", 10);
+          if (STANDARD_PORTS.has(port)) {
+            continue;
+          }
+        }
+        acceptFinding(line, index + 1);
+        if (rule.ruleId === "dangerous-exec") {
+          literalDangerousExecIndexes.add(match.index ?? -1);
+        }
+      }
+
+      if (rule.ruleId === "dangerous-exec") {
+        for (const aliasIndex of findAliasedChildProcessCalls(line, methodAliases)) {
+          if (literalDangerousExecIndexes.has(aliasIndex)) {
+            continue;
+          }
+          acceptFinding(line, index + 1);
+        }
+      }
+    }
+    if (lastOmittedLine !== undefined) {
+      const omission =
+        `${omittedMatches} additional ${rule.ruleId} matches omitted after ` +
+        `${MAX_LINE_RULE_FINDINGS_PER_RULE} findings`;
+      const omissionEvidence =
+        `[${omittedMatches} additional matches omitted after ` +
+        `${MAX_LINE_RULE_FINDINGS_PER_RULE} findings]`;
+      findings.push({
+        ruleId: `${rule.ruleId}-truncated`,
+        severity: rule.severity,
+        file: filePath,
+        line: lastOmittedLine,
+        message: omission,
+        evidence: omissionEvidence,
+      });
     }
   }
 
