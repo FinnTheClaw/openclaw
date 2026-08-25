@@ -163,3 +163,31 @@ Every source-built artifact must:
    certification before Finn/Jake promotion;
 4. update `OPENCLAW_FREEZE.json` only after the artifact hash and runtime tree
    hash are final.
+
+## 2026-08-25 memory-route subtraction and dead-letter recovery
+
+The Narya `Qwen3-Embedding-8B` runtime does not support the 1024-dimensional
+Matryoshka output required by the installed memory index. Requests with that
+dimension therefore returned HTTP 400 before falling back. The role correction
+removes memory ownership from the incompatible Narya embedding and generation
+entries and restores the known-compatible Moira `memory` and
+`memory-embedding` routes. No model process restart was required.
+
+Source commit `dbc14a0d84abde9431451e0104ff297d40f11c58` adds the missing
+`materialization` queue to the existing atomic `ltm retry-dead` recovery path.
+It does not add a worker, shell guard, or alternate memory state machine. The
+reported compound exec failure was independently classified as zsh
+`no matches found` for a nonexistent `*.md` glob; a valid installed exec canary
+passed, so no fail-open glob workaround was added.
+
+The paired `2026.7.1-36` core and memory plugin passed focused tests, targeted
+type/lint/format/diff checks, and the full production build. Freshly rebooted
+Alistar boot `0b79a9f2-d644-4b6c-8f6f-277c26699746` was provisioned through the
+canonical Linux provisioner. Installed actual-Qwen validation routed generation
+to Narya `Qwen/Qwen3.8-27B-NVFP4`, durably extracted and materialized the canary,
+and recalled its exact identifier on a second gateway turn with no channel
+delivery. All three outboxes drained to zero.
+
+- Core artifact SHA-256: `8be5e9ad147bea896a757ab4755983d16aabddf095ef43dabed97238803b041d`.
+- Memory artifact SHA-256: `545a86160cd86f73f7017b3068aa7b63d057ed51db642ae2a0bf163752ced676`.
+- Installed runtime tree SHA-256: `ab73591ae51a918309cee547350c27e5a2d19de4e6d58933e7d2521d5fd93751`.
