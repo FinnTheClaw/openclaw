@@ -62,9 +62,6 @@ function normalizeActiveModel(
 }
 
 function resolveScreenshotAgentId(ctx: BrowserScreenshotDescriptionContext): string | undefined {
-  if (ctx.agentDir) {
-    return undefined;
-  }
   const explicitRaw = ctx.agentId?.trim();
   const explicitAgentId = explicitRaw ? normalizeAgentId(explicitRaw) : undefined;
   const sessionRaw = parseAgentSessionKey(ctx.mediaScope?.sessionKey)?.agentId;

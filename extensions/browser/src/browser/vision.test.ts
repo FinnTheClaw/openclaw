@@ -84,6 +84,7 @@ describe("describeBrowserScreenshot", () => {
           },
         },
         prompt: DEFAULT_BROWSER_SCREENSHOT_DESCRIPTION_PROMPT,
+        agentId: "main",
         agentDir: "/tmp/agent",
         workspaceDir: "/tmp/workspace",
         activeModel: { provider: "anthropic", model: "claude-sonnet-4.6" },
@@ -93,28 +94,36 @@ describe("describeBrowserScreenshot", () => {
   });
 
   it.each([
-    { name: "session-owned default agent", agentId: undefined, sessionAgentId: "main" },
-    { name: "explicit matching worker agent", agentId: "worker", sessionAgentId: "worker" },
-  ])(
-    "passes the $name identity to image understanding when its directory is absent",
-    async (testCase) => {
-      const describeEntry = vi.fn().mockResolvedValue({ text: "A dashboard." });
-
-      await describeBrowserScreenshot(
-        {
-          cfg: {},
-          filePath: "/tmp/screenshot.png",
-          ...(testCase.agentId ? { agentId: testCase.agentId } : {}),
-          mediaScope: { sessionKey: `agent:${testCase.sessionAgentId}:webchat:direct:123` },
-        },
-        makeDeps(describeEntry),
-      );
-
-      expect(describeEntry).toHaveBeenCalledWith(
-        expect.objectContaining({ agentId: testCase.sessionAgentId, agentDir: undefined }),
-      );
+    {
+      name: "session-owned default agent without a directory",
+      agentId: undefined,
+      agentDir: undefined,
+      sessionAgentId: "main",
     },
-  );
+    {
+      name: "explicit matching worker agent with an authoritative directory",
+      agentId: "worker",
+      agentDir: "/tmp/worker",
+      sessionAgentId: "worker",
+    },
+  ])("passes the $name identity to image understanding", async (testCase) => {
+    const describeEntry = vi.fn().mockResolvedValue({ text: "A dashboard." });
+
+    await describeBrowserScreenshot(
+      {
+        cfg: {},
+        filePath: "/tmp/screenshot.png",
+        ...(testCase.agentId ? { agentId: testCase.agentId } : {}),
+        ...(testCase.agentDir ? { agentDir: testCase.agentDir } : {}),
+        mediaScope: { sessionKey: `agent:${testCase.sessionAgentId}:webchat:direct:123` },
+      },
+      makeDeps(describeEntry),
+    );
+
+    expect(describeEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: testCase.sessionAgentId, agentDir: testCase.agentDir }),
+    );
+  });
 
   it("rejects an agent identity that conflicts with its session before image understanding", async () => {
     const describeEntry = vi.fn().mockResolvedValue({ text: "A dashboard." });
@@ -125,6 +134,7 @@ describe("describeBrowserScreenshot", () => {
           cfg: {},
           filePath: "/tmp/screenshot.png",
           agentId: "worker",
+          agentDir: "/tmp/worker",
           mediaScope: { sessionKey: "agent:main:webchat:direct:123" },
         },
         makeDeps(describeEntry),
