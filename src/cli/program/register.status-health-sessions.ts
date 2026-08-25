@@ -542,7 +542,7 @@ export function registerStatusHealthSessionsCommands(program: Command) {
     .option("--runtime <name>", "Filter by kind (subagent, acp, cron, cli)")
     .option(
       "--status <name>",
-      "Filter by status (queued, running, succeeded, failed, timed_out, cancelled, lost)",
+      "Filter by displayed status (queued, running, succeeded, blocked, failed, timed_out, cancelled, lost; JSON uses raw lifecycle status)",
     )
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -566,7 +566,7 @@ export function registerStatusHealthSessionsCommands(program: Command) {
     .option("--runtime <name>", "Filter by kind (subagent, acp, cron, cli)")
     .option(
       "--status <name>",
-      "Filter by status (queued, running, succeeded, failed, timed_out, cancelled, lost)",
+      "Filter by displayed status (queued, running, succeeded, blocked, failed, timed_out, cancelled, lost; JSON uses raw lifecycle status)",
     )
     .action(async (opts, command) => {
       const parentOpts = command.parent?.opts() as

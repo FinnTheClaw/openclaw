@@ -359,7 +359,8 @@ export async function tasksListCommand(
     if (runtimeFilter && task.runtime !== runtimeFilter) {
       return false;
     }
-    if (statusFilter && task.status !== statusFilter) {
+    const filterStatus = opts.json ? task.status : formatTaskStatus(task);
+    if (statusFilter && filterStatus !== statusFilter) {
       return false;
     }
     return true;

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import "./subagent-registry.mocks.shared.js";
+import { formatRunStatus } from "../auto-reply/reply/subagents-utils.js";
 import {
   clearSessionStoreCacheForTest,
   drainSessionStoreWriterQueuesForTest,
@@ -14,6 +15,7 @@ import {
   createSubagentRegistryTestDeps,
   writeSubagentSessionEntry,
 } from "./subagent-registry.persistence.test-support.js";
+import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite.js";
 
 const hoisted = vi.hoisted(() => ({
   announceSpy: vi.fn(async () => true),
@@ -228,6 +230,131 @@ describe("subagent registry persistence resume", () => {
       expect(restored?.childSessionKey).toBe("agent:main:subagent:test");
       expect(restored?.requesterOrigin?.channel).toBe("whatsapp");
       expect(restored?.requesterOrigin?.accountId).toBe("acct-main");
+    });
+  });
+
+  it("restores a progress-only required completion as blocked without rewriting execution", async () => {
+    tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
+    const stateDir = tempStateDir;
+    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+      const registryPath = path.join(stateDir, "subagents", "runs.json");
+      const runId = "run-required-progress-only";
+      const childSessionKey = "agent:main:subagent:required-progress-only";
+      const progressOnlyText = "I will now inspect the remaining evidence.";
+      const now = Date.now();
+      const startedAt = now - 1_500;
+      const endedAt = now - 500;
+      const successfulOutcome = { status: "ok", startedAt, endedAt };
+
+      hoisted.registryPath = registryPath;
+      await fs.mkdir(path.dirname(registryPath), { recursive: true });
+      await fs.writeFile(
+        registryPath,
+        `${JSON.stringify(
+          {
+            version: 2,
+            runs: {
+              [runId]: {
+                runId,
+                childSessionKey,
+                requesterSessionKey: "agent:main:main",
+                requesterDisplayKey: "main",
+                task: "produce the final report",
+                cleanup: "keep",
+                createdAt: now - 2_000,
+                startedAt,
+                endedAt,
+                endedReason: "subagent-complete",
+                outcome: successfulOutcome,
+                expectsCompletionMessage: true,
+                completion: { required: true },
+                delivery: {
+                  status: "pending",
+                  payload: {
+                    requesterSessionKey: "agent:main:main",
+                    requesterDisplayKey: "main",
+                    childSessionKey,
+                    childRunId: runId,
+                    task: "produce the final report",
+                    startedAt,
+                    endedAt,
+                    outcome: successfulOutcome,
+                    expectsCompletionMessage: true,
+                    frozenResultText: progressOnlyText,
+                  },
+                },
+              },
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+      await writeChildSessionEntry({
+        sessionKey: childSessionKey,
+        sessionId: "sess-required-progress-only",
+      });
+
+      let announceResolver: ((value: boolean) => void) | undefined;
+      announceSpy.mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            announceResolver = resolve;
+          }),
+      );
+      const releaseAnnounce = (value: boolean) => {
+        if (!announceResolver) {
+          throw new Error("expected resumed announcement to start");
+        }
+        announceResolver(value);
+      };
+
+      mod.initSubagentRegistry();
+
+      await vi.waitFor(() => expect(announceSpy).toHaveBeenCalledTimes(1), {
+        timeout: 1_000,
+        interval: 10,
+      });
+      const announceCalls = announceSpy.mock.calls as unknown as Array<
+        [
+          {
+            childRunId?: string;
+            roundOneReply?: string;
+            expectsCompletionMessage?: boolean;
+            outcome?: { status?: string };
+          },
+        ]
+      >;
+      expect(announceCalls[0]?.[0]).toMatchObject({
+        childRunId: runId,
+        roundOneReply: progressOnlyText,
+        expectsCompletionMessage: true,
+        outcome: { status: "ok" },
+      });
+
+      const persistedDuringResume = loadSubagentRegistryFromSqlite().get(runId);
+      if (!persistedDuringResume) {
+        throw new Error("expected restored persisted run");
+      }
+      expect(persistedDuringResume.delivery?.status).toBe("pending");
+      expect(persistedDuringResume.delivery?.payload?.frozenResultText).toBe(progressOnlyText);
+      expect(formatRunStatus(persistedDuringResume)).toBe("blocked");
+      expect(persistedDuringResume.outcome?.status).toBe("ok");
+      expect(persistedDuringResume.execution?.outcome?.status).toBe("ok");
+
+      releaseAnnounce(true);
+      await vi.waitFor(
+        () =>
+          expect(
+            mod.listSubagentRunsForRequester("agent:main:main").find((run) => run.runId === runId)
+              ?.cleanupCompletedAt,
+          ).toEqual(expect.any(Number)),
+        { timeout: 1_000, interval: 10 },
+      );
+      const persistedAfterResume = loadSubagentRegistryFromSqlite().get(runId);
+      expect(persistedAfterResume?.outcome?.status).toBe("ok");
+      expect(persistedAfterResume?.execution?.outcome?.status).toBe("ok");
     });
   });
 });

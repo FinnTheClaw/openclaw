@@ -104,7 +104,9 @@ function formatTaskCompletionEvent(
     mode === "protected"
       ? ["[Internal task completion event]"]
       : [
-          "A background task completed. Use this result to reply to the user in your normal assistant voice.",
+          event.status === "blocked"
+            ? "A background task stopped without a valid final deliverable. Continue the task or explain the blocker truthfully in your normal assistant voice."
+            : "A background task completed. Use this result to reply to the user in your normal assistant voice.",
           "",
         ];
   lines.push(

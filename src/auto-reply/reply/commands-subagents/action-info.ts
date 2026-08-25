@@ -9,7 +9,7 @@ import { formatTimeAgo } from "../../../infra/format-time/format-relative.ts";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { formatDurationCompact } from "../../../shared/subagents-format.js";
 import { findTaskByRunIdForOwner } from "../../../tasks/task-owner-access.js";
-import { sanitizeTaskStatusText } from "../../../tasks/task-status.js";
+import { formatTaskStatus, sanitizeTaskStatusText } from "../../../tasks/task-status.js";
 import type { CommandHandlerResult } from "../commands-types.js";
 import { formatRunLabel, formatRunStatus } from "../subagents-utils.js";
 import {
@@ -74,9 +74,15 @@ export function handleSubagentsInfoAction(ctx: SubagentsCommandContext): Command
     run.startedAt && Number.isFinite(run.startedAt)
       ? (formatDurationCompact((run.endedAt ?? Date.now()) - run.startedAt) ?? "n/a")
       : "n/a";
+  const displayStatus = resolveDisplayStatus(run, {
+    pendingDescendants: countPendingDescendantRunsFromRuns(
+      getSubagentRunsSnapshotForRead(subagentRuns),
+      run.childSessionKey,
+    ),
+  });
   const outcomeError = sanitizeTaskStatusText(run.outcome?.error, { errorContext: true });
   const outcome = run.outcome
-    ? `${run.outcome.status}${outcomeError ? ` (${outcomeError})` : ""}`
+    ? `${displayStatus}${outcomeError ? ` (${outcomeError})` : ""}`
     : "n/a";
   const linkedTask = findTaskByRunIdForOwner({
     runId: run.runId,
@@ -91,17 +97,12 @@ export function handleSubagentsInfoAction(ctx: SubagentsCommandContext): Command
 
   const lines = [
     "ℹ️ Subagent info",
-    `Status: ${resolveDisplayStatus(run, {
-      pendingDescendants: countPendingDescendantRunsFromRuns(
-        getSubagentRunsSnapshotForRead(subagentRuns),
-        run.childSessionKey,
-      ),
-    })}`,
+    `Status: ${displayStatus}`,
     `Label: ${formatRunLabel(run)}`,
     `Task: ${taskText}`,
     `Run: ${run.runId}`,
     linkedTask ? `TaskId: ${linkedTask.taskId}` : undefined,
-    linkedTask ? `TaskStatus: ${linkedTask.status}` : undefined,
+    linkedTask ? `TaskStatus: ${formatTaskStatus(linkedTask)}` : undefined,
     `Session: ${run.childSessionKey}`,
     `SessionId: ${sessionEntry?.sessionId ?? "n/a"}`,
     `Transcript: ${sessionEntry?.sessionFile ?? "n/a"}`,

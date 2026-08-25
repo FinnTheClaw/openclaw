@@ -186,6 +186,7 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
 function sessionRunStatus(value: unknown): SessionRunStatus | null {
   return value === "running" ||
     value === "done" ||
+    value === "blocked" ||
     value === "failed" ||
     value === "killed" ||
     value === "timeout"

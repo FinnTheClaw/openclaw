@@ -109,6 +109,52 @@ describe("subagents info", () => {
     expect(text).toContain("Task summary: Completed the requested task");
   });
 
+  it("presents required progress-only completion and linked task outcome as blocked", () => {
+    const now = Date.now();
+    const runId = "commands-subagents-info-blocked-run";
+    const childSessionKey = "agent:main:subagent:commands-info-blocked";
+    const run = {
+      runId,
+      childSessionKey,
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "finish the investigation",
+      cleanup: "keep",
+      createdAt: now - 20_000,
+      startedAt: now - 20_000,
+      endedAt: now - 1_000,
+      outcome: { status: "ok" },
+      expectsCompletionMessage: true,
+      completion: {
+        required: true,
+        resultText: "I will now inspect the remaining evidence.",
+      },
+    } satisfies SubagentRunRecord;
+    addSubagentRunForTests(run);
+    createTaskRecord({
+      runtime: "subagent",
+      requesterSessionKey: "agent:main:main",
+      childSessionKey,
+      runId,
+      task: "finish the investigation",
+      status: "succeeded",
+      terminalOutcome: "blocked",
+      terminalSummary: "Required completion ended with progress-only text.",
+      deliveryStatus: "pending",
+    });
+
+    const result = handleSubagentsInfoAction(
+      buildInfoContext({ cfg: buildCommandTestConfig(), runs: [run], restTokens: ["1"] }),
+    );
+    const text = requireReplyText(result.reply);
+
+    expect(text).toContain("Status: blocked");
+    expect(text).toContain("TaskStatus: blocked");
+    expect(text).toContain("Outcome: blocked");
+    expect(text).not.toContain("TaskStatus: succeeded");
+    expect(text).not.toContain("Outcome: ok");
+  });
+
   it("omits Date-invalid subagent timestamps", () => {
     const runId = "commands-subagents-info-invalid-date-run";
     const childSessionKey = "agent:main:subagent:commands-info-invalid-date";
@@ -197,7 +243,7 @@ describe("subagents info", () => {
 
     expect(result.shouldContinue).toBe(false);
     expect(text).toContain("Subagent info");
-    expect(text).toContain("Outcome: error");
+    expect(text).toContain("Outcome: failed");
     expect(text).toContain("Task summary: Needs manual follow-up.");
     expect(text).not.toContain("OpenClaw runtime context (internal):");
     expect(text).not.toContain("Internal task completion event");

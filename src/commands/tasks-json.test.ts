@@ -117,7 +117,7 @@ describe("tasks JSON commands", () => {
     });
   });
 
-  it("shows blocked outcomes without changing raw task JSON or filters", async () => {
+  it("uses blocked human filters without changing raw task JSON filters", async () => {
     await withTaskJsonStateDir(async () => {
       const task = createTaskRecord({
         runtime: "cli",
@@ -136,10 +136,16 @@ describe("tasks JSON commands", () => {
       });
 
       const listRuntime = createRuntime();
-      await tasksListCommand({ status: "succeeded" }, listRuntime);
+      await tasksListCommand({ status: "blocked" }, listRuntime);
       const listOutput = vi.mocked(listRuntime.log).mock.calls.flat().join("\n");
       expect(listOutput).toContain("Task pressure: 0 queued · 0 running · 1 issues");
       expect(listOutput).toMatch(/\bblocked\s+pending\b/);
+
+      const humanSucceededRuntime = createRuntime();
+      await tasksListCommand({ status: "succeeded" }, humanSucceededRuntime);
+      expect(vi.mocked(humanSucceededRuntime.log).mock.calls.flat().join("\n")).toContain(
+        "No background tasks found.",
+      );
 
       const showRuntime = createRuntime();
       await tasksShowCommand({ lookup: task.taskId }, showRuntime);
@@ -150,6 +156,21 @@ describe("tasks JSON commands", () => {
       expect(readJsonLog(listJsonRuntime)).toMatchObject({
         status: "succeeded",
         tasks: [expect.objectContaining({ status: "succeeded", terminalOutcome: "blocked" })],
+      });
+
+      const commandJsonRuntime = createRuntime();
+      await tasksListCommand({ json: true, status: "succeeded" }, commandJsonRuntime);
+      expect(readJsonLog(commandJsonRuntime)).toMatchObject({
+        status: "succeeded",
+        tasks: [expect.objectContaining({ status: "succeeded", terminalOutcome: "blocked" })],
+      });
+
+      const blockedJsonRuntime = createRuntime();
+      await tasksListCommand({ json: true, status: "blocked" }, blockedJsonRuntime);
+      expect(readJsonLog(blockedJsonRuntime)).toMatchObject({
+        count: 0,
+        status: "blocked",
+        tasks: [],
       });
 
       const showJsonRuntime = createRuntime();

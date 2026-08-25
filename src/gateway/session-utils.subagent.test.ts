@@ -210,6 +210,53 @@ describe("listSessionsFromStore subagent metadata", () => {
     expect(failed?.runtimeMs).toBe(5_000);
   });
 
+  test("overrides persisted done with blocked required-completion presentation", () => {
+    const now = Date.now();
+    const childSessionKey = "agent:main:subagent:blocked-display";
+    const store: Record<string, SessionEntry> = {
+      [childSessionKey]: {
+        sessionId: "sess-blocked-display",
+        updatedAt: now - 250,
+        spawnedBy: "agent:main:main",
+        status: "done",
+        startedAt: now - 4_000,
+        endedAt: now - 500,
+        runtimeMs: 3_500,
+      } as SessionEntry,
+    };
+    addSubagentRunForTests({
+      runId: "run-blocked-display",
+      childSessionKey,
+      controllerSessionKey: "agent:main:main",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "finish the investigation",
+      cleanup: "keep",
+      createdAt: now - 5_000,
+      startedAt: now - 4_000,
+      endedAt: now - 500,
+      outcome: { status: "ok" },
+      expectsCompletionMessage: true,
+      completion: {
+        required: true,
+        resultText: "I will now inspect the remaining evidence.",
+      },
+    });
+
+    const result = listSessionsFromStore({
+      cfg,
+      storePath: "/tmp/sessions.json",
+      store,
+      opts: {},
+    });
+    const row = result.sessions.find((session) => session.key === childSessionKey);
+
+    expect(row?.status).toBe("blocked");
+    expect(row?.subagentRunState).toBe("historical");
+    expect(row?.hasActiveSubagentRun).toBe(false);
+    expect(row?.endedAt).toBe(now - 500);
+  });
+
   test("does not show stale registry-only subagent runs as actively running", () => {
     const now = Date.now();
     const childSessionKey = "agent:main:subagent:stale-display";

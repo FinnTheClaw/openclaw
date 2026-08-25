@@ -4,6 +4,7 @@ import {
   getDetachedTaskLifecycleRuntime,
   setDetachedTaskLifecycleRuntime,
 } from "../../tasks/detached-task-runtime.js";
+import { completeTaskRunByRunId } from "../../tasks/task-executor.js";
 import {
   getRuntimeTaskMocks,
   installRuntimeTaskDeliveryMock,
@@ -142,6 +143,44 @@ describe("runtime tasks", () => {
     expect(taskDetail).not.toHaveProperty("taskId");
     expect(taskDetail).not.toHaveProperty("requesterSessionKey");
     expect(taskDetail).not.toHaveProperty("scopeKind");
+
+    completeTaskRunByRunId({
+      runId: "runtime-task-run",
+      runtime: "acp",
+      sessionKey: "agent:main:subagent:child",
+      endedAt: 12,
+      lastEventAt: 12,
+      terminalOutcome: "blocked",
+      suppressDelivery: true,
+    });
+    expect(taskRuns.get(child.task.taskId)).toMatchObject({
+      id: child.task.taskId,
+      status: "succeeded",
+      terminalOutcome: "blocked",
+    });
+    expect(taskFlows.get(created.flowId)).toMatchObject({
+      tasks: [
+        {
+          id: child.task.taskId,
+          status: "succeeded",
+          terminalOutcome: "blocked",
+        },
+      ],
+      taskSummary: {
+        total: 1,
+        active: 0,
+        terminal: 1,
+        failures: 1,
+        byStatus: { succeeded: 1, failed: 0 },
+      },
+    });
+    expect(taskFlows.getTaskSummary(created.flowId)).toMatchObject({
+      total: 1,
+      active: 0,
+      terminal: 1,
+      failures: 1,
+      byStatus: { succeeded: 1, failed: 0 },
+    });
   });
 
   it("maps task cancellation results onto canonical task DTOs", async () => {

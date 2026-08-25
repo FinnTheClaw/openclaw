@@ -4811,6 +4811,12 @@ describe("workboard controller", () => {
       targetStatus: "blocked",
     });
     expect(
+      getWorkboardLifecycle(linked, [{ ...sampleSession, hasActiveRun: false, status: "blocked" }]),
+    ).toMatchObject({
+      state: "failed",
+      targetStatus: "blocked",
+    });
+    expect(
       getWorkboardLifecycle(linked, [
         {
           ...sampleSession,
@@ -4893,12 +4899,12 @@ describe("workboard controller", () => {
         sampleTask,
       ),
     ).toMatchObject({
-      state: "succeeded",
-      targetStatus: "review",
+      state: "running",
+      targetStatus: "running",
     });
   });
 
-  it("syncs linked card status from session lifecycle without overriding manual review", async () => {
+  it("syncs linked card status and corrects manual review when terminal truth is blocked", async () => {
     const host = {};
     const state = getWorkboardState(host);
     state.loaded = true;
@@ -4906,9 +4912,14 @@ describe("workboard controller", () => {
       { ...sampleCard, sessionKey: sampleSession.key },
       { ...sampleCard, id: "card-review", status: "review", sessionKey: "session-review" },
     ];
-    const client = createClient((method) => {
+    const client = createClient((method, params) => {
       if (method === "workboard.cards.update") {
-        return { card: { ...sampleCard, status: "running", sessionKey: sampleSession.key } };
+        const { id, patch } = params as { id: string; patch: Partial<WorkboardCard> };
+        const card = state.cards.find((candidate) => candidate.id === id);
+        if (!card) {
+          throw new Error(`missing card ${id}`);
+        }
+        return { card: { ...card, ...patch } };
       }
       return {};
     });
@@ -4922,8 +4933,8 @@ describe("workboard controller", () => {
       ],
     });
 
-    expect(client.request).toHaveBeenCalledOnce();
-    expect(client.request).toHaveBeenCalledWith("workboard.cards.update", {
+    expect(client.request).toHaveBeenCalledTimes(2);
+    expect(client.request).toHaveBeenNthCalledWith(1, "workboard.cards.update", {
       id: "card-1",
       patch: expect.objectContaining({
         status: "running",
@@ -4932,7 +4943,16 @@ describe("workboard controller", () => {
         }),
       }),
     });
-    expect(state.cards.find((card) => card.id === "card-review")?.status).toBe("review");
+    expect(client.request).toHaveBeenNthCalledWith(2, "workboard.cards.update", {
+      id: "card-review",
+      patch: expect.objectContaining({
+        status: "blocked",
+        metadata: expect.objectContaining({
+          lifecycleStatusSourceUpdatedAt: sampleSession.updatedAt,
+        }),
+      }),
+    });
+    expect(state.cards.find((card) => card.id === "card-review")?.status).toBe("blocked");
   });
 
   it("does not sync stale linked-session status over a card creation status", async () => {
@@ -5079,6 +5099,43 @@ describe("workboard controller", () => {
       expect.objectContaining({ patch: expect.objectContaining({ status: "review" }) }),
     );
     expect(state.tasksByCardId.get("card-1")).toMatchObject({ status: "blocked" });
+  });
+
+  it("corrects a review card when newer task evidence is blocked", async () => {
+    const host = {};
+    const state = getWorkboardState(host);
+    const linked = {
+      ...sampleCard,
+      status: "review",
+      sessionKey: sampleTaskSessionKey,
+      runId: "run-1",
+      taskId: "task-1",
+      metadata: { lifecycleStatusSourceUpdatedAt: 2 },
+    } satisfies WorkboardCard;
+    state.loaded = true;
+    state.cards = [linked];
+    state.tasksByCardId.set("card-1", { ...sampleTask, status: "completed", updatedAt: 2 });
+    const blockedTask = { ...sampleTask, status: "blocked" as const, updatedAt: 3 };
+    const client = createClient({
+      "tasks.list": { tasks: [blockedTask] },
+      "workboard.cards.update": {
+        card: { ...linked, status: "blocked" },
+      },
+    });
+
+    await syncWorkboardLifecycle({
+      host,
+      client: client as never,
+      sessions: [],
+    });
+
+    expect(client.request).toHaveBeenNthCalledWith(2, "workboard.cards.update", {
+      id: "card-1",
+      patch: expect.objectContaining({
+        status: "blocked",
+        metadata: expect.objectContaining({ lifecycleStatusSourceUpdatedAt: 3 }),
+      }),
+    });
   });
 
   it("cancels in-flight lifecycle reconciliation when refresh stops", async () => {

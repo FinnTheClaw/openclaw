@@ -2597,7 +2597,7 @@ function draftPayload(state: WorkboardUiState) {
 }
 
 function isFailedSessionStatus(status: GatewaySessionRow["status"]): boolean {
-  return status === "failed" || status === "killed" || status === "timeout";
+  return status === "blocked" || status === "failed" || status === "killed" || status === "timeout";
 }
 
 function staleSessionState(session: GatewaySessionRow): WorkboardStaleState | undefined {
@@ -2638,14 +2638,9 @@ export function getWorkboardLifecycle(
     switch (task.status) {
       case "queued":
       case "running":
-        if (
-          session &&
-          (session.abortedLastRun ||
-            session.status === "done" ||
-            isFailedSessionStatus(session.status))
-        ) {
-          break;
-        }
+        // A linked task is the authoritative lifecycle source. Session state can
+        // settle before required-completion validation updates the task, so
+        // promoting from a terminal session would create a transient false success.
         return {
           session,
           state: "running",
@@ -2719,7 +2714,15 @@ function shouldSyncCardStatus(card: WorkboardCard, targetStatus: WorkboardStatus
   if (targetStatus === "running") {
     return card.status === "backlog" || card.status === "todo" || card.status === "ready";
   }
-  if (targetStatus === "blocked" || targetStatus === "review") {
+  if (targetStatus === "blocked") {
+    return (
+      card.status === "running" ||
+      card.status === "todo" ||
+      card.status === "ready" ||
+      card.status === "review"
+    );
+  }
+  if (targetStatus === "review") {
     return card.status === "running" || card.status === "todo" || card.status === "ready";
   }
   return false;

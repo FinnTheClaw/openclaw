@@ -74,6 +74,7 @@ const SESSIONS_LIST_TRANSCRIPT_FIELD_ROWS = 100;
 function readSessionRunStatus(value: unknown): SessionRunStatus | undefined {
   return value === "running" ||
     value === "done" ||
+    value === "blocked" ||
     value === "failed" ||
     value === "killed" ||
     value === "timeout"

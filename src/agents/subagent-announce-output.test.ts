@@ -327,6 +327,39 @@ describe("buildChildCompletionFindings", () => {
     expect(findings).not.toContain("(no output)");
   });
 
+  it("reports a progress-only required child completion as blocked", () => {
+    const findings = buildChildCompletionFindings([
+      {
+        childSessionKey: "agent:main:subagent:blocked-child",
+        task: "finish the investigation",
+        createdAt: 1,
+        expectsCompletionMessage: true,
+        completion: { resultText: "I will now inspect the remaining evidence." },
+        outcome: { status: "ok" },
+      },
+    ]);
+
+    expect(findings).toContain("status: blocked");
+    expect(findings).not.toContain("status: ok");
+    expect(findings).toContain("I will now inspect the remaining evidence.");
+  });
+
+  it("keeps a final required child completion successful", () => {
+    const findings = buildChildCompletionFindings([
+      {
+        childSessionKey: "agent:main:subagent:complete-child",
+        task: "finish the investigation",
+        createdAt: 1,
+        expectsCompletionMessage: true,
+        completion: { resultText: "The investigation is complete with three verified findings." },
+        outcome: { status: "ok" },
+      },
+    ]);
+
+    expect(findings).toContain("status: ok");
+    expect(findings).not.toContain("status: blocked");
+  });
+
   it("numbers findings contiguously after skipped silent completions", () => {
     const findings = buildChildCompletionFindings([
       {

@@ -31,7 +31,7 @@ export type GatewaySessionsDefaults = {
 };
 
 /** Runtime status surfaced for the latest session run. */
-export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout";
+export type SessionRunStatus = "running" | "done" | "blocked" | "failed" | "killed" | "timeout";
 
 type SubagentRunState = "active" | "interrupted" | "historical";
 

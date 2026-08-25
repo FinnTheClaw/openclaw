@@ -10,7 +10,7 @@ const AGENT_INTERNAL_EVENT_SOURCES = [
   "music_generation",
 ] as const;
 
-const AGENT_INTERNAL_EVENT_STATUSES = ["ok", "timeout", "error", "unknown"] as const;
+const AGENT_INTERNAL_EVENT_STATUSES = ["ok", "blocked", "timeout", "error", "unknown"] as const;
 
 export type AgentInternalEventSource = (typeof AGENT_INTERNAL_EVENT_SOURCES)[number];
 export type AgentInternalEventStatus = (typeof AGENT_INTERNAL_EVENT_STATUSES)[number];

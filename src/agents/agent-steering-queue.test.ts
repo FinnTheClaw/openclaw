@@ -191,6 +191,35 @@ describe("agent steering queue", () => {
     });
   });
 
+  it.each(["pending", "suspended"] as const)(
+    "presents a %s restored progress-only completion as blocked",
+    (deliveryStatus) => {
+      const runs = runMap([
+        makeRun({
+          runId: `progress-${deliveryStatus}`,
+          completion: { required: true },
+          delivery: {
+            status: deliveryStatus,
+            payload: payload(`progress-${deliveryStatus}`, {
+              frozenResultText: "I will now inspect the remaining evidence.",
+            }),
+          },
+        }),
+      ]);
+
+      const leased = leasePendingAgentSteeringItemsFromSubagentRuns({
+        runs,
+        requesterSessionKey,
+        leaseId: `lease-${deliveryStatus}`,
+        now: 3_000,
+      });
+
+      expect(leased?.prompt).toContain("status: blocked");
+      expect(leased?.prompt).not.toContain("status: ok");
+      expect(leased?.prompt).toContain("I will now inspect the remaining evidence.");
+    },
+  );
+
   it("bounds merged prompts and leaves overflow pending", () => {
     const runs = runMap(
       Array.from({ length: 6 }, (_, index) =>

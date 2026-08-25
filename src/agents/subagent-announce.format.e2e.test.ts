@@ -561,6 +561,35 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("completed; ready for parent review");
   });
 
+  it("presents a progress-only required completion as blocked instead of successful", async () => {
+    await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-required-blocked",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: "I will now inspect the remaining evidence.",
+    });
+
+    const call = getAgentCall() as {
+      params?: {
+        message?: string;
+        internalEvents?: Array<{ status?: string; statusLabel?: string; result?: string }>;
+      };
+    };
+    const message = call.params?.message ?? "";
+    expect(call.params?.internalEvents?.[0]).toMatchObject({
+      status: "blocked",
+      statusLabel: "blocked; no valid final deliverable",
+      result: "I will now inspect the remaining evidence.",
+    });
+    expect(message).toContain("blocked; no valid final deliverable");
+    expect(message).toContain("Do not treat the parent task as complete or ready for review.");
+    expect(message).not.toContain("completed; ready for parent review");
+    expect(message).not.toContain("A completed subagent task is ready for parent review.");
+  });
+
   it("rechecks timed-out waits before announcing timeout when the run finishes immediately after", async () => {
     const waitStatuses = [
       { status: "timeout", startedAt: 10, endedAt: 20 },

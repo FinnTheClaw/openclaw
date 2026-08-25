@@ -431,7 +431,7 @@ export type ArtifactDownloadResult = {
   url?: string;
 };
 
-export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout";
+export type SessionRunStatus = "running" | "done" | "blocked" | "failed" | "killed" | "timeout";
 type SubagentRunState = "active" | "interrupted" | "historical";
 
 type SessionCompactionCheckpointReason =

@@ -82,6 +82,19 @@ export function resolveRequiredCompletionTerminalResult(
   return {};
 }
 
+/** True when successful execution still failed to produce a required final deliverable. */
+export function isRequiredCompletionPresentationBlocked(params: {
+  required: boolean;
+  executionSucceeded: boolean;
+  resultText: string | null | undefined;
+}): boolean {
+  return (
+    params.required &&
+    params.executionSucceeded &&
+    resolveRequiredCompletionTerminalResult(params.resultText).terminalOutcome === "blocked"
+  );
+}
+
 export function resolveRequiredCompletionDeliveryFailureTerminalResult(
   reason: string | null | undefined,
 ): RequiredCompletionTerminalResult {

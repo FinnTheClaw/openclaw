@@ -364,4 +364,58 @@ describe("buildSubagentList", () => {
     expect(list.active).toStrictEqual([]);
     expect(list.recent[0]?.status).toBe("done");
   });
+
+  it("lists live and restored required-completion blocks as blocked instead of done", () => {
+    const now = Date.now();
+    const base = {
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      cleanup: "keep" as const,
+      createdAt: now - 2_000,
+      startedAt: now - 1_500,
+      endedAt: now - 500,
+      outcome: { status: "ok" as const },
+      expectsCompletionMessage: true,
+    };
+    const live: SubagentRunRecord = {
+      ...base,
+      runId: "run-blocked-live",
+      childSessionKey: "agent:main:subagent:blocked-live",
+      task: "produce a final report",
+      completion: {
+        required: true,
+        resultText: "I will now inspect the remaining evidence.",
+        capturedAt: now - 500,
+      },
+    };
+    const restored: SubagentRunRecord = {
+      ...base,
+      runId: "run-blocked-restored",
+      childSessionKey: "agent:main:subagent:blocked-restored",
+      task: "deliver a final report",
+      completion: { required: true },
+      delivery: {
+        status: "suspended",
+        payload: {
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          childSessionKey: "agent:main:subagent:blocked-restored",
+          childRunId: "run-blocked-restored",
+          task: "deliver a final report",
+          frozenResultText: "The final report exists but delivery did not complete.",
+        },
+      },
+    };
+
+    const list = buildSubagentList({
+      cfg: {} as OpenClawConfig,
+      runs: [live, restored],
+      recentMinutes: 30,
+      taskMaxChars: 110,
+    });
+
+    expect(list.recent).toHaveLength(2);
+    expect(list.recent.map((entry) => entry.status)).toEqual(["blocked", "blocked"]);
+    expect(list.text).not.toContain("done");
+  });
 });

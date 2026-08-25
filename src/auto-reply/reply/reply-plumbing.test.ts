@@ -488,6 +488,39 @@ describe("subagents utils", () => {
     expect(formatRunStatus({ ...baseRun, endedAt: 2000, outcome: { status: "timeout" } })).toBe(
       "timeout",
     );
+    expect(
+      formatRunStatus({
+        ...baseRun,
+        endedAt: 2000,
+        outcome: { status: "ok" },
+        expectsCompletionMessage: true,
+        completion: {
+          required: true,
+          resultText: "I will now inspect the remaining evidence.",
+          capturedAt: 2000,
+        },
+      }),
+    ).toBe("blocked");
+    expect(
+      formatRunStatus({
+        ...baseRun,
+        endedAt: 2000,
+        outcome: { status: "ok" },
+        expectsCompletionMessage: true,
+        completion: { required: true },
+        delivery: {
+          status: "suspended",
+          payload: {
+            requesterSessionKey: "agent:main:main",
+            requesterDisplayKey: "main",
+            childSessionKey: baseRun.childSessionKey,
+            childRunId: baseRun.runId,
+            task: baseRun.task,
+            frozenResultText: "A complete result that has not reached the requester.",
+          },
+        },
+      }),
+    ).toBe("blocked");
   });
 
   it("formats duration compact for seconds and minutes", () => {

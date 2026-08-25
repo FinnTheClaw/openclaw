@@ -1,5 +1,6 @@
 // Runtime task-flow tests cover plugin task-flow registration and execution behavior.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { completeTaskRunByRunId } from "../../tasks/task-executor.js";
 import { getTaskFlowById } from "../../tasks/task-flow-registry.js";
 import { getTaskById } from "../../tasks/task-registry.js";
 import {
@@ -136,5 +137,22 @@ describe("runtime TaskFlow", () => {
     }
     expect(summary.total).toBe(1);
     expect(summary.active).toBe(1);
+
+    completeTaskRunByRunId({
+      runId: "runtime-taskflow-child",
+      runtime: "acp",
+      sessionKey: "agent:main:subagent:child",
+      endedAt: 11,
+      lastEventAt: 11,
+      terminalOutcome: "blocked",
+      suppressDelivery: true,
+    });
+    expect(ownerTaskFlow.getTaskSummary(created.flowId)).toMatchObject({
+      total: 1,
+      active: 0,
+      terminal: 1,
+      failures: 1,
+      byStatus: { succeeded: 1, failed: 0 },
+    });
   });
 });

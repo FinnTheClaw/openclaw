@@ -4,6 +4,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import type { SubagentRunRecord } from "../../agents/subagent-registry.js";
+import { isSubagentCompletionPresentationBlocked } from "../../agents/subagent-session-metrics.js";
 import { sanitizeTaskStatusText } from "../../tasks/task-status.js";
 import { truncateUtf16Safe } from "../../utils.js";
 
@@ -24,6 +25,9 @@ export function formatRunLabel(entry: SubagentRunRecord, options?: { maxLength?:
 export function formatRunStatus(entry: SubagentRunRecord) {
   if (!entry.endedAt) {
     return "running";
+  }
+  if (isSubagentCompletionPresentationBlocked(entry)) {
+    return "blocked";
   }
   const status = entry.outcome?.status ?? "done";
   return status === "ok" ? "done" : status;

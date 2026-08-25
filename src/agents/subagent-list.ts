@@ -4,7 +4,11 @@
  * Combines live registry runs and persisted session metadata for sessions_list/subagents views.
  */
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { resolveSubagentLabel, sortSubagentRuns } from "../auto-reply/reply/subagents-utils.js";
+import {
+  formatRunStatus,
+  resolveSubagentLabel,
+  sortSubagentRuns,
+} from "../auto-reply/reply/subagents-utils.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
 import { loadSessionStore } from "../config/sessions/store-load.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -181,10 +185,7 @@ function resolveRunStatus(entry: SubagentRunRecord, options?: { pendingDescendan
   if (!hasSubagentRunEnded(entry)) {
     return "running";
   }
-  const status = entry.outcome?.status ?? "done";
-  if (status === "ok") {
-    return "done";
-  }
+  const status = formatRunStatus(entry);
   if (status === "error") {
     return "failed";
   }

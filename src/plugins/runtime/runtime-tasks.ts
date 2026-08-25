@@ -171,7 +171,11 @@ function createBoundTaskFlowsRuntime(params: {
         flowId,
         callerOwnerKey: ownerKey,
       });
-      return flow ? mapTaskRunAggregateSummary(getFlowTaskSummary(flow.flowId)) : undefined;
+      if (!flow) {
+        return undefined;
+      }
+      const tasks = listTasksForFlowId(flow.flowId);
+      return mapTaskRunAggregateSummary(getFlowTaskSummary(flow.flowId), tasks);
     },
   };
 }

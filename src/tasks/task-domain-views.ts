@@ -9,14 +9,18 @@ import type {
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { summarizeTaskRecords } from "./task-registry.summary.js";
 import type { TaskRecord, TaskRegistrySummary } from "./task-registry.types.js";
+import { isTaskStatusIssue } from "./task-status.js";
 
 /** Maps internal task summary counts to the plugin task-domain view contract. */
-export function mapTaskRunAggregateSummary(summary: TaskRegistrySummary): TaskRunAggregateSummary {
+export function mapTaskRunAggregateSummary(
+  summary: TaskRegistrySummary,
+  tasks: readonly Pick<TaskRecord, "status" | "terminalOutcome">[],
+): TaskRunAggregateSummary {
   return {
     total: summary.total,
     active: summary.active,
     terminal: summary.terminal,
-    failures: summary.failures,
+    failures: tasks.filter(isTaskStatusIssue).length,
     byStatus: { ...summary.byStatus },
     byRuntime: { ...summary.byRuntime },
   };
@@ -92,6 +96,6 @@ export function mapTaskFlowDetail(params: {
         }
       : {}),
     tasks: params.tasks.map((task) => mapTaskRunView(task)),
-    taskSummary: mapTaskRunAggregateSummary(summary),
+    taskSummary: mapTaskRunAggregateSummary(summary, params.tasks),
   };
 }

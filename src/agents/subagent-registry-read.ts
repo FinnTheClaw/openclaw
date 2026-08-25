@@ -20,6 +20,7 @@ import { compareSubagentRunGeneration } from "./subagent-run-generation.js";
 export {
   getSubagentSessionRuntimeMs,
   getSubagentSessionStartedAt,
+  resolveSubagentSessionPresentationStatus,
   resolveSubagentSessionStatus,
 } from "./subagent-session-metrics.js";
 

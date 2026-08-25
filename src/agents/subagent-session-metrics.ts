@@ -3,8 +3,11 @@
  *
  * Derives display/runtime status from partial live, archived, or recovered registry records.
  */
+import { isRequiredCompletionPresentationBlocked } from "../tasks/task-completion-contract.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+
+const BLOCKED_COMPLETION_DELIVERY_STATUSES = new Set(["failed", "suspended", "discarded"]);
 
 function resolveSubagentSessionStartedAtInternal(
   entry: Pick<SubagentRunRecord, "sessionStartedAt" | "startedAt" | "createdAt">,
@@ -75,4 +78,44 @@ export function resolveSubagentSessionStatus(
     return "timeout";
   }
   return "done";
+}
+
+/** True when a completed execution lacks its required deliverable or delivery. */
+export function isSubagentCompletionPresentationBlocked(
+  entry: Pick<
+    SubagentRunRecord,
+    "expectsCompletionMessage" | "outcome" | "completion" | "delivery"
+  >,
+): boolean {
+  const required =
+    entry.expectsCompletionMessage ??
+    entry.completion?.required ??
+    entry.delivery?.payload?.expectsCompletionMessage ??
+    false;
+  const executionSucceeded = entry.outcome?.status === "ok";
+  if (!required || !executionSucceeded) {
+    return false;
+  }
+  const resultText =
+    entry.completion?.resultText ??
+    entry.delivery?.payload?.frozenResultText ??
+    entry.completion?.fallbackResultText ??
+    entry.delivery?.payload?.fallbackFrozenResultText;
+  return (
+    isRequiredCompletionPresentationBlocked({
+      required,
+      executionSucceeded,
+      resultText,
+    }) || BLOCKED_COMPLETION_DELIVERY_STATUSES.has(entry.delivery?.status ?? "")
+  );
+}
+
+/** Maps registry execution truth to the user/model-facing subagent session status. */
+export function resolveSubagentSessionPresentationStatus(
+  entry: SubagentRunRecord | null | undefined,
+): "running" | "killed" | "failed" | "timeout" | "done" | "blocked" | undefined {
+  const status = resolveSubagentSessionStatus(entry);
+  return status === "done" && entry && isSubagentCompletionPresentationBlocked(entry)
+    ? "blocked"
+    : status;
 }

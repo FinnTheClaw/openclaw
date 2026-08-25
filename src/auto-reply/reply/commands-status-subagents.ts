@@ -1,7 +1,7 @@
 // Formats subagent status rows for the status command response.
 import type { SubagentRunRecord } from "../../agents/subagent-registry.types.js";
 import { formatDurationCompact } from "../../infra/format-time/format-duration.ts";
-import { formatRunLabel, sortSubagentRuns } from "./subagents-utils.js";
+import { formatRunLabel, formatRunStatus, sortSubagentRuns } from "./subagents-utils.js";
 
 function formatActiveSubagentDetail(params: {
   entry: SubagentRunRecord;
@@ -38,12 +38,27 @@ export function buildSubagentsStatusLine(params: {
     .map((entry) => ({ entry, pendingDescendants: pendingDescendantsForRun(entry) }))
     .filter(({ entry, pendingDescendants }) => !entry.endedAt || pendingDescendants > 0);
   const active = activeWithDescendants.map(({ entry }) => entry);
-  const done = runs.length - active.length;
+  const activeRunIds = new Set(active.map((entry) => entry.runId));
+  const settledStatuses = runs
+    .filter((entry) => !activeRunIds.has(entry.runId))
+    .map((entry) => formatRunStatus(entry));
+  const done = settledStatuses.filter((status) => status === "done").length;
+  const blocked = settledStatuses.filter((status) => status === "blocked").length;
+  const issues = settledStatuses.length - done - blocked;
+  const settledSummary = [
+    done > 0 ? `${done} done` : undefined,
+    blocked > 0 ? `${blocked} blocked` : undefined,
+    issues > 0 ? `${issues} issue${issues === 1 ? "" : "s"}` : undefined,
+  ].filter((value): value is string => Boolean(value));
   if (active.length === 0) {
-    return verboseEnabled && done > 0 ? `🤖 Subagents: 0 active · ${done} done` : undefined;
+    return verboseEnabled && settledSummary.length > 0
+      ? `🤖 Subagents: 0 active · ${settledSummary.join(" · ")}`
+      : undefined;
   }
 
-  const summary = `🤖 Subagents: ${active.length} active${done > 0 ? ` · ${done} done` : ""}`;
+  const summary = `🤖 Subagents: ${active.length} active${
+    settledSummary.length > 0 ? ` · ${settledSummary.join(" · ")}` : ""
+  }`;
   const now = params.now ?? Date.now();
   const detailLookup = new Map(
     activeWithDescendants.map(({ entry, pendingDescendants }) => [entry.runId, pendingDescendants]),

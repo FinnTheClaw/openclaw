@@ -52,6 +52,7 @@ type SessionsListDetails = {
     pinnedAt?: number;
     reasoningLevel?: string;
     responseUsage?: string;
+    status?: string;
     thinkingLevel?: string;
     verboseLevel?: string;
   }>;
@@ -210,6 +211,25 @@ describe("sessions-list-tool", () => {
     expect(session?.reasoningLevel).toBe("deep");
     expect(session?.elevatedLevel).toBe("on");
     expect(session?.responseUsage).toBe("full");
+  });
+
+  it("preserves blocked subagent presentation status", async () => {
+    mocks.gatewayCall.mockResolvedValue({
+      path: "/tmp/sessions.json",
+      sessions: [
+        {
+          key: "agent:main:subagent:blocked",
+          kind: "direct",
+          sessionId: "sess-blocked",
+          status: "blocked",
+        },
+      ],
+    });
+    const tool = createSessionsListTool({ config: {} as never });
+
+    const result = await tool.execute("call-blocked", {});
+
+    expect(getSessionsListDetails(result).sessions?.[0]?.status).toBe("blocked");
   });
 
   it("requests archived sessions and keeps management metadata", async () => {

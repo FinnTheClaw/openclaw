@@ -1,4 +1,5 @@
 /** Leases and formats completed subagent results for injection into requester turns. */
+import { isRequiredCompletionPresentationBlocked } from "../tasks/task-completion-contract.js";
 import { sanitizeForPromptLiteral, wrapPromptDataBlock } from "./sanitize-for-prompt.js";
 import type {
   PendingFinalDeliveryPayload,
@@ -45,8 +46,23 @@ function selectResultText(payload: PendingFinalDeliveryPayload): string | undefi
   return payload.frozenResultText?.trim() || payload.fallbackFrozenResultText?.trim() || undefined;
 }
 
-function describeOutcome(payload: PendingFinalDeliveryPayload): string {
-  const outcome = payload.outcome;
+function describeOutcome(item: AgentSteeringQueueItem, resultText: string | undefined): string {
+  const { entry, payload } = item;
+  const outcome = payload.outcome ?? entry.outcome;
+  const required =
+    payload.expectsCompletionMessage ??
+    entry.expectsCompletionMessage ??
+    entry.completion?.required ??
+    false;
+  if (
+    isRequiredCompletionPresentationBlocked({
+      required,
+      executionSucceeded: outcome?.status === "ok",
+      resultText,
+    })
+  ) {
+    return "blocked";
+  }
   if (!outcome) {
     return "unknown";
   }
@@ -126,7 +142,7 @@ export function buildMergedAgentSteeringPrompt(
     sections.push(
       [
         `${sections.length + 1}. ${title}`,
-        `status: ${promptLiteral(describeOutcome(payload))}`,
+        `status: ${promptLiteral(describeOutcome(item, resultText))}`,
         `childSessionKey: ${promptLiteral(payload.childSessionKey)}`,
         `childRunId: ${promptLiteral(payload.childRunId)}`,
         wrapPromptDataBlock({

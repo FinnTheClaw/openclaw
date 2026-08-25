@@ -15,6 +15,7 @@ import { logWarn } from "../logger.js";
 import { defaultRuntime } from "../runtime.js";
 import { isCronSessionKey } from "../sessions/session-key-utils.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
+import { isRequiredCompletionPresentationBlocked } from "../tasks/task-completion-contract.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import {
@@ -89,7 +90,11 @@ function buildAnnounceReplyInstruction(params: {
   requesterIsSubagent: boolean;
   announceType: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
+  completionBlocked: boolean;
 }): string {
+  if (params.completionBlocked) {
+    return `This ${params.announceType} is blocked because it did not produce a valid final deliverable. Continue the work, request the missing input, or record a concrete follow-up. Do not treat the parent task as complete or ready for review. Keep this internal context private (don't mention system/log/stats/session details or announce type).`;
+  }
   if (params.requesterIsSubagent) {
     return `Convert this completion into a concise internal orchestration update for your parent agent in your own words. Keep this internal context private (don't mention system/log/stats/session details or announce type). If this result is duplicate or no update is needed, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
   }
@@ -484,19 +489,25 @@ export async function runSubagentAnnounceFlow(params: {
       outcome = { status: "unknown" };
     }
 
-    // Build status label
-    const statusLabel =
-      outcome.status === "ok"
+    const taskLabel = params.label || params.task || "task";
+    const announceSessionId = childSessionId || "unknown";
+    const completionResultText = childCompletionFindings || reply;
+    const findings = completionResultText || "(no output)";
+    const completionBlocked = isRequiredCompletionPresentationBlocked({
+      required: expectsCompletionMessage,
+      executionSucceeded: outcome.status === "ok",
+      resultText: completionResultText,
+    });
+    const presentationStatus = completionBlocked ? "blocked" : outcome.status;
+    const statusLabel = completionBlocked
+      ? "blocked; no valid final deliverable"
+      : outcome.status === "ok"
         ? "completed; ready for parent review"
         : outcome.status === "timeout"
           ? "timed out"
           : outcome.status === "error"
             ? `failed: ${outcome.error || "unknown error"}`
             : "finished with unknown status";
-
-    const taskLabel = params.label || params.task || "task";
-    const announceSessionId = childSessionId || "unknown";
-    const findings = childCompletionFindings || reply || "(no output)";
 
     let requesterIsSubagent = requesterIsInternalSession();
     if (requesterIsSubagent) {
@@ -531,6 +542,7 @@ export async function runSubagentAnnounceFlow(params: {
       requesterIsSubagent,
       announceType,
       expectsCompletionMessage,
+      completionBlocked,
     });
     const statsLine = await buildCompactAnnounceStatsLine({
       sessionKey: params.childSessionKey,
@@ -545,7 +557,7 @@ export async function runSubagentAnnounceFlow(params: {
         childSessionId: announceSessionId,
         announceType,
         taskLabel,
-        status: outcome.status,
+        status: presentationStatus,
         statusLabel,
         result: findings,
         statsLine,

@@ -5,6 +5,7 @@
  */
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
+import { isRequiredCompletionPresentationBlocked } from "../tasks/task-completion-contract.js";
 import { buildAgentRunTerminalOutcomeFromWaitResult } from "./agent-run-terminal-outcome.js";
 import { wrapPromptDataBlock } from "./sanitize-for-prompt.js";
 import {
@@ -363,6 +364,7 @@ type ChildCompletionRow = {
     };
   };
   outcome?: SubagentRunOutcome;
+  expectsCompletionMessage?: boolean;
 };
 
 function selectChildCompletionResultText(child: ChildCompletionRow): string | undefined {
@@ -391,7 +393,12 @@ export function buildChildCompletionFindings(
   const sections: string[] = [];
   for (const [index, child] of sorted.entries()) {
     const resultText = selectChildCompletionResultText(child);
-    const outcome = describeSubagentOutcome(child.outcome);
+    const completionBlocked = isRequiredCompletionPresentationBlocked({
+      required: child.expectsCompletionMessage === true,
+      executionSucceeded: child.outcome?.status === "ok",
+      resultText,
+    });
+    const outcome = completionBlocked ? "blocked" : describeSubagentOutcome(child.outcome);
     if (
       child.outcome?.status === "ok" &&
       resultText &&

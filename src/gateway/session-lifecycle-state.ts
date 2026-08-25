@@ -7,7 +7,7 @@ import {
 import { updateSessionStoreEntry, type SessionEntry } from "../config/sessions.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
 import { loadSessionEntry } from "./session-utils.js";
-import type { GatewaySessionRow, SessionRunStatus } from "./session-utils.types.js";
+import type { GatewaySessionRow } from "./session-utils.types.js";
 
 type LifecyclePhase = "start" | "end" | "error";
 
@@ -43,7 +43,15 @@ type PersistedLifecycleSessionShape = Pick<
   | "restartRecoveryRuns"
 >;
 
-type GatewaySessionLifecycleSnapshot = Partial<LifecycleSessionShape>;
+type PersistedSessionRunStatus = NonNullable<SessionEntry["status"]>;
+
+type GatewaySessionLifecycleSnapshot = Omit<Partial<LifecycleSessionShape>, "status"> & {
+  status?: PersistedSessionRunStatus;
+};
+
+type GatewaySessionLifecycleProjectionEntry = Partial<
+  LifecycleSessionShape & Pick<PersistedLifecycleSessionShape, "restartRecoveryRuns">
+>;
 
 function isFiniteTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -56,7 +64,7 @@ function resolveLifecyclePhase(event: Pick<LifecycleEventLike, "data">): Lifecyc
 
 function mapAgentRunTerminalOutcomeToSessionStatus(
   outcome: AgentRunTerminalOutcome,
-): SessionRunStatus {
+): PersistedSessionRunStatus {
   switch (outcome.reason) {
     case "completed":
       return "done";
@@ -75,7 +83,7 @@ function mapAgentRunTerminalOutcomeToSessionStatus(
   }
 }
 
-function resolveTerminalStatus(event: LifecycleEventLike): SessionRunStatus {
+function resolveTerminalStatus(event: LifecycleEventLike): PersistedSessionRunStatus {
   const phase = resolveLifecyclePhase(event);
   const terminal = buildAgentRunTerminalOutcome({
     status: phase === "error" ? "error" : event.data?.aborted === true ? "timeout" : "ok",
@@ -209,11 +217,22 @@ export function derivePersistedSessionLifecyclePatch(params: {
 }
 
 export function deriveGatewaySessionLifecycleProjectionPatch(params: {
-  entry?: Partial<PersistedLifecycleSessionShape> | null;
+  entry?: GatewaySessionLifecycleProjectionEntry | null;
   event: LifecycleEventLike;
 }): GatewaySessionLifecycleSnapshot {
+  const entry: Partial<PersistedLifecycleSessionShape> | null | undefined = params.entry
+    ? {
+        updatedAt: typeof params.entry.updatedAt === "number" ? params.entry.updatedAt : undefined,
+        status: params.entry.status === "blocked" ? undefined : params.entry.status,
+        startedAt: params.entry.startedAt,
+        endedAt: params.entry.endedAt,
+        runtimeMs: params.entry.runtimeMs,
+        abortedLastRun: params.entry.abortedLastRun,
+        restartRecoveryRuns: params.entry.restartRecoveryRuns,
+      }
+    : params.entry;
   const { restartRecoveryRuns: _restartRecoveryRuns, ...patch } =
-    derivePersistedSessionLifecyclePatch(params);
+    derivePersistedSessionLifecyclePatch({ entry, event: params.event });
   return patch;
 }
 

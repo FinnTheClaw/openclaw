@@ -69,12 +69,41 @@ function makeSummary(overrides: Partial<TaskRegistrySummary> = {}): TaskRegistry
 describe("task domain view mappers", () => {
   it("maps task registry summaries without sharing mutable count objects", () => {
     const summary = makeSummary();
+    const tasks = [makeTask({ status: "running" }), makeTask({ status: "failed" })];
 
-    const view = mapTaskRunAggregateSummary(summary);
+    const view = mapTaskRunAggregateSummary(summary, tasks);
 
     expect(view).toEqual(summary);
     expect(view.byStatus).not.toBe(summary.byStatus);
     expect(view.byRuntime).not.toBe(summary.byRuntime);
+  });
+
+  it("counts blocked task outcomes as projected aggregate failures without rewriting raw status", () => {
+    const task = makeTask({ status: "succeeded", terminalOutcome: "blocked" });
+    const summary = makeSummary({
+      total: 1,
+      active: 0,
+      terminal: 1,
+      failures: 0,
+      byStatus: {
+        queued: 0,
+        running: 0,
+        succeeded: 1,
+        failed: 0,
+        timed_out: 0,
+        cancelled: 0,
+        lost: 0,
+      },
+    });
+
+    expect(mapTaskRunView(task)).toMatchObject({
+      status: "succeeded",
+      terminalOutcome: "blocked",
+    });
+    expect(mapTaskRunAggregateSummary(summary, [task])).toMatchObject({
+      failures: 1,
+      byStatus: { succeeded: 1 },
+    });
   });
 
   it("maps task run records to the public task run view contract", () => {
@@ -194,7 +223,7 @@ describe("task domain view mappers", () => {
         summary: "Waiting for child task",
       },
       tasks: [mapTaskRunView(task)],
-      taskSummary: mapTaskRunAggregateSummary(summary),
+      taskSummary: mapTaskRunAggregateSummary(summary, [task]),
     });
     expect(detail.taskSummary.byStatus).not.toBe(summary.byStatus);
     expect(detail.taskSummary.byRuntime).not.toBe(summary.byRuntime);

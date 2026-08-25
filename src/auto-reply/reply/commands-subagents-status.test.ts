@@ -93,6 +93,31 @@ describe("subagents status", () => {
       expectedText: ["🤖 Subagents: 0 active · 1 done"],
       unexpectedText: ["  • finished task"],
     },
+    {
+      name: "counts required progress-only completions as blocked instead of done",
+      seedRuns: () => {
+        addSubagentRunForTests({
+          runId: "run-blocked",
+          childSessionKey: "agent:main:subagent:blocked",
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          task: "finish the investigation",
+          cleanup: "keep",
+          createdAt: 1000,
+          startedAt: 1000,
+          endedAt: 2000,
+          outcome: { status: "ok" },
+          expectsCompletionMessage: true,
+          completion: {
+            required: true,
+            resultText: "I will now inspect the remaining evidence.",
+          },
+        });
+      },
+      verboseLevel: "on" as const,
+      expectedText: ["🤖 Subagents: 0 active · 1 blocked"],
+      unexpectedText: ["1 done"],
+    },
   ])("$name", ({ seedRuns, verboseLevel, expectedText, unexpectedText }) => {
     seedRuns();
     const runsSnapshot = getSubagentRunsSnapshotForRead(subagentRuns);

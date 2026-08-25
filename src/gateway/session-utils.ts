@@ -50,7 +50,7 @@ import {
   getSubagentSessionStartedAt,
   isSubagentRunLive,
   listSubagentRunsForController,
-  resolveSubagentSessionStatus,
+  resolveSubagentSessionPresentationStatus,
 } from "../agents/subagent-registry-read.js";
 import {
   RECENT_ENDED_SUBAGENT_CHILD_SESSION_MS,
@@ -2110,6 +2110,7 @@ export function buildGatewaySessionRow(params: {
   const persistedSessionEndedAt = entry?.endedAt;
   const persistedSessionStartedAt = entry?.startedAt;
   const persistedSessionRuntimeMs = entry?.runtimeMs;
+  const subagentPresentationStatus = resolveSubagentSessionPresentationStatus(subagentRun);
   const subagentRunState = subagentRun
     ? liveSubagentRunActive
       ? "active"
@@ -2124,13 +2125,13 @@ export function buildGatewaySessionRow(params: {
     : undefined;
   const subagentStatus = subagentRun
     ? liveSubagentRunActive
-      ? resolveSubagentSessionStatus(subagentRun)
-      : persistedSessionStatus === "running"
-        ? undefined
-        : (persistedSessionStatus ??
-          (typeof subagentRun.endedAt === "number"
-            ? resolveSubagentSessionStatus(subagentRun)
-            : undefined))
+      ? subagentPresentationStatus
+      : subagentPresentationStatus === "blocked"
+        ? "blocked"
+        : persistedSessionStatus === "running"
+          ? undefined
+          : (persistedSessionStatus ??
+            (typeof subagentRun.endedAt === "number" ? subagentPresentationStatus : undefined))
     : undefined;
   const subagentStartedAt = subagentRun
     ? liveSubagentRunActive

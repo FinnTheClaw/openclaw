@@ -1907,7 +1907,7 @@ describe("renderWorkboard", () => {
     expect(container.textContent).not.toContain("Task complete");
   });
 
-  it("uses terminal session lifecycle when cached task status is stale", () => {
+  it("keeps a linked running task authoritative until its terminal result arrives", () => {
     const host = {};
     const state = getWorkboardState(host);
     state.loaded = true;
@@ -1958,18 +1958,16 @@ describe("renderWorkboard", () => {
 
     render(renderWorkboard(props), container);
 
-    expect(container.textContent).toContain("Done");
-    expect(container.textContent).toContain("Finished session");
-    expect(container.textContent).not.toContain("Task running");
-    expect(container.textContent).not.toContain("Still running according to stale cache.");
+    expect(container.textContent).toContain("Task running");
+    expect(container.textContent).toContain("Still running according to stale cache.");
+    expect(container.textContent).not.toContain("Task complete");
 
     container
       .querySelector<HTMLButtonElement>('button[aria-label="View details"]')
       ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     render(renderWorkboard(props), container);
 
-    expect(container.querySelector(".workboard-detail")?.textContent).toContain("Finished session");
-    expect(container.querySelector(".workboard-detail")?.textContent).not.toContain(
+    expect(container.querySelector(".workboard-detail")?.textContent).toContain(
       "Still running according to stale cache.",
     );
   });

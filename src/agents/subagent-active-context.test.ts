@@ -82,7 +82,39 @@ describe("buildActiveSubagentSystemPromptAddition", () => {
     expect(prompt).toContain("scope=recent");
     expect(prompt).toContain("taskName=completed_worker");
     expect(prompt).toContain("status=done");
-    expect(prompt).toContain("do not wait for them again");
+    expect(prompt).toContain("do not wait for the same run again");
+  });
+
+  it("keeps a required progress-only child blocked in parent runtime context", () => {
+    const now = Date.now();
+    addSubagentRunForTests({
+      runId: "run-blocked-context",
+      childSessionKey: "agent:main:subagent:blocked-context",
+      controllerSessionKey: "agent:main:main",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "produce a final report",
+      cleanup: "keep",
+      createdAt: now - 2_000,
+      startedAt: now - 1_500,
+      endedAt: now - 500,
+      outcome: { status: "ok" },
+      expectsCompletionMessage: true,
+      completion: {
+        required: true,
+        resultText: "I will now inspect the remaining evidence.",
+        capturedAt: now - 500,
+      },
+    });
+
+    const prompt = buildActiveSubagentSystemPromptAddition({
+      cfg: {} as OpenClawConfig,
+      controllerSessionKey: "agent:main:main",
+    });
+
+    expect(prompt).toContain("status=blocked");
+    expect(prompt).toContain("A blocked result still requires follow-up");
+    expect(prompt).not.toContain("run=run-blocked-context; status=done");
   });
 
   it("normalizes public main aliases before looking up active children", () => {

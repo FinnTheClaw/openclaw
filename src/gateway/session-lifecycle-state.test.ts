@@ -3,6 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  deriveGatewaySessionLifecycleProjectionPatch,
   deriveGatewaySessionLifecycleSnapshot,
   derivePersistedSessionLifecyclePatch,
   isStaleLifecycleEventForSession,
@@ -102,6 +103,35 @@ describe("session lifecycle state", () => {
       updatedAt: 900,
       status: "running",
       startedAt: 900,
+      endedAt: undefined,
+      runtimeMs: undefined,
+      abortedLastRun: false,
+    });
+  });
+
+  it("keeps presentation-only blocked status outside persisted lifecycle state", () => {
+    expect(
+      deriveGatewaySessionLifecycleProjectionPatch({
+        entry: {
+          updatedAt: 500,
+          status: "blocked",
+          startedAt: 100,
+          endedAt: 400,
+          runtimeMs: 300,
+          abortedLastRun: false,
+        },
+        event: {
+          ts: 2_000,
+          data: {
+            phase: "start",
+            startedAt: 1_500,
+          },
+        },
+      }),
+    ).toEqual({
+      updatedAt: 1_500,
+      status: "running",
+      startedAt: 1_500,
       endedAt: undefined,
       runtimeMs: undefined,
       abortedLastRun: false,

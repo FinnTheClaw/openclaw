@@ -666,6 +666,12 @@ describe("sessions view", () => {
               status: "failed",
             },
             {
+              key: "agent:main:blocked",
+              kind: "direct",
+              updatedAt: 7,
+              status: "blocked",
+            },
+            {
               key: "agent:main:done",
               kind: "direct",
               updatedAt: 5,
@@ -685,11 +691,13 @@ describe("sessions view", () => {
       "Live",
       "Idle",
       "Failed",
+      "Blocked",
       "Done",
     ]);
     expect(badges.map((badge) => [...badge.classList])).toEqual([
       ["session-status-badge", "session-status-badge--live"],
       ["session-status-badge", "session-status-badge--idle"],
+      ["session-status-badge", "session-status-badge--failed"],
       ["session-status-badge", "session-status-badge--failed"],
       ["session-status-badge", "session-status-badge--done"],
     ]);
@@ -697,6 +705,7 @@ describe("sessions view", () => {
       "Status: Live",
       "Status: Idle",
       "Status: Failed",
+      "Status: Blocked",
       "Status: Done",
     ]);
   });

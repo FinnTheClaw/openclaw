@@ -200,6 +200,8 @@ function formatSessionRunStatus(status: SessionRunStatus): string {
       return t("sessionsView.statusRunning");
     case "done":
       return t("sessionsView.statusDone");
+    case "blocked":
+      return t("workboard.status.blocked");
     case "failed":
       return t("sessionsView.statusFailed");
     case "killed":

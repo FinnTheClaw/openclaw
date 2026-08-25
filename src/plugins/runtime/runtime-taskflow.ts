@@ -1,3 +1,5 @@
+import { listTasksForFlowId } from "../../tasks/runtime-internal.js";
+import { mapTaskRunAggregateSummary } from "../../tasks/task-domain-views.js";
 // Runtime task-flow helpers adapt plugin task descriptors into executable task flows.
 import {
   cancelFlowByIdForOwner,
@@ -152,7 +154,11 @@ function createBoundTaskFlowRuntime(params: {
         flowId,
         callerOwnerKey: ownerKey,
       });
-      return flow ? getFlowTaskSummary(flow.flowId) : undefined;
+      if (!flow) {
+        return undefined;
+      }
+      const tasks = listTasksForFlowId(flow.flowId);
+      return mapTaskRunAggregateSummary(getFlowTaskSummary(flow.flowId), tasks);
     },
     setWaiting: (input) => {
       const flow = resolveManagedFlowForOwner({
