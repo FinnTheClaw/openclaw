@@ -88,7 +88,6 @@ export async function collectPluginsTrustFindings(
   const { collectPluginsTrustFindings: collect } = await loadAuditPluginsTrustModule();
   return await collect(params);
 }
-
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
@@ -186,6 +185,35 @@ async function getCodeSafetySummary(params: {
   return await skillScanner.scanDirectoryWithSummary(params.dirPath, {
     includeFiles: params.includeFiles,
   });
+}
+
+async function getSkillCodeSafetySummary(params: {
+  dirPath: string;
+  skillFilePath: string;
+  summaryCache?: CodeSafetySummaryCache;
+}): Promise<SkillScanSummary> {
+  // Keep SKILL.md outside the directory-summary cache so instruction edits are
+  // observed even when callers reuse cached JavaScript scan results.
+  const [summary, skillContent, skillScanner] = await Promise.all([
+    getCodeSafetySummary({ dirPath: params.dirPath, summaryCache: params.summaryCache }),
+    fs.readFile(params.skillFilePath, "utf-8"),
+    loadSkillScannerModule(),
+  ]);
+  const skillFindings = [
+    ...skillScanner.scanSkillContent(skillContent, params.skillFilePath),
+    ...skillScanner.scanSource(skillContent, params.skillFilePath),
+  ];
+  const count = (severity: SkillScanFinding["severity"]) =>
+    skillFindings.filter((finding) => finding.severity === severity).length;
+
+  return {
+    ...summary,
+    scannedFiles: summary.scannedFiles + 1,
+    critical: summary.critical + count("critical"),
+    warn: summary.warn + count("warn"),
+    info: summary.info + count("info"),
+    findings: [...summary.findings, ...skillFindings],
+  };
 }
 
 // --------------------------------------------------------------------------
@@ -898,8 +926,9 @@ export async function collectInstalledSkillsCodeSafetyFindings(params: {
       scannedSkillDirs.add(skillDir);
 
       const skillName = entry.skill.name;
-      const summary = await getCodeSafetySummary({
+      const summary = await getSkillCodeSafetySummary({
         dirPath: skillDir,
+        skillFilePath: entry.skill.filePath,
         summaryCache: params.summaryCache,
       }).catch((err: unknown) => {
         findings.push({
