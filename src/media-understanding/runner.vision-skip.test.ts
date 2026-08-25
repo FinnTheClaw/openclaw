@@ -448,6 +448,23 @@ describe("runCapability image skip", () => {
     });
   });
 
+  it("uses the requesting agent provider for a providerless image model", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          model: { primary: "main-provider/chat" },
+          imageModel: { primary: "vision-v1" },
+        },
+        list: [{ id: "worker", model: { primary: "worker-provider/chat" } }],
+      },
+    } as unknown as OpenClawConfig;
+
+    await expect(resolveAutoImageModel({ cfg, agentId: "worker" })).resolves.toEqual({
+      provider: "worker-provider",
+      model: "vision-v1",
+    });
+  });
+
   it("runs providerless configured imageModel fallbacks on the unique configured provider", async () => {
     await withMediaFixture(
       {

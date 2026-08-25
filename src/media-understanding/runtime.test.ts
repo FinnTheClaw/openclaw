@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => {
     readLocalFileSafely: vi.fn(async () => ({ buffer: Buffer.from("image") })),
     describeImageWithModel: vi.fn(async () => ({ text: "generic image ok", model: "vision" })),
     convertHeicToJpeg: vi.fn(async () => Buffer.from("jpeg-normalized")),
+    resolveAgentDir: vi.fn((_cfg: OpenClawConfig, agentId: string) => `/tmp/${agentId}-agent`),
     runCapability: vi.fn(),
     cleanup,
     getBuffer,
@@ -53,6 +54,10 @@ vi.mock("./provider-registry.js", () => ({
 
 vi.mock("../infra/fs-safe.js", () => ({
   readLocalFileSafely: mocks.readLocalFileSafely,
+}));
+
+vi.mock("../agents/agent-scope.js", () => ({
+  resolveAgentDir: mocks.resolveAgentDir,
 }));
 
 vi.mock("./image-runtime.js", () => ({
@@ -91,6 +96,10 @@ describe("media-understanding runtime", () => {
     mocks.describeImageWithModel.mockResolvedValue({ text: "generic image ok", model: "vision" });
     mocks.convertHeicToJpeg.mockReset();
     mocks.convertHeicToJpeg.mockResolvedValue(Buffer.from("jpeg-normalized"));
+    mocks.resolveAgentDir.mockReset();
+    mocks.resolveAgentDir.mockImplementation(
+      (_cfg: OpenClawConfig, agentId: string) => `/tmp/${agentId}-agent`,
+    );
     mocks.runCapability.mockReset();
     mocks.cleanup.mockReset();
     mocks.cleanup.mockResolvedValue(undefined);
@@ -298,6 +307,34 @@ describe("media-understanding runtime", () => {
     expect(requireRunCapabilityRequest()).toMatchObject({
       agentDir: "/tmp/agent",
       workspaceDir: "/tmp/workspace",
+    });
+  });
+
+  it("derives the requesting agent credential directory for image understanding", async () => {
+    const output: MediaUnderstandingOutput = {
+      kind: "image.description",
+      attachmentIndex: 0,
+      provider: "worker-vision",
+      model: "vision-v1",
+      text: "worker image ok",
+    };
+    const cfg = {} as OpenClawConfig;
+    mocks.normalizeMediaAttachments.mockReturnValue([
+      { index: 0, path: "/tmp/sample.jpg", mime: "image/jpeg" },
+    ]);
+    mocks.runCapability.mockResolvedValue({ outputs: [output] });
+
+    await describeImageFile({
+      filePath: "/tmp/sample.jpg",
+      mime: "image/jpeg",
+      cfg,
+      agentId: "worker",
+    });
+
+    expect(mocks.resolveAgentDir).toHaveBeenCalledWith(cfg, "worker");
+    expect(requireRunCapabilityRequest()).toMatchObject({
+      agentId: "worker",
+      agentDir: "/tmp/worker-agent",
     });
   });
 

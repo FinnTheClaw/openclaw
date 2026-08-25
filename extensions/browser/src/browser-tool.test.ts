@@ -1155,7 +1155,10 @@ describe("browser tool snapshot maxChars", () => {
       model: "gpt-vision",
     } as never);
 
-    const tool = createBrowserTool();
+    const tool = createBrowserTool({
+      agentId: "worker",
+      mediaScope: { sessionKey: "agent:worker:webchat:direct:123" },
+    });
     const out = await tool.execute?.("call-1", {
       action: "screenshot",
       target: "host",
@@ -1171,6 +1174,12 @@ describe("browser tool snapshot maxChars", () => {
     expect(joined).toContain("/tmp/secret.png");
     expect(joined).toContain(JSON.stringify("/tmp/openclaw-media/outbound/share.png"));
     expect(joined).toContain("message tool");
+    expect(toolCommonMocks.describeImageFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "worker",
+        scopeContext: { sessionKey: "agent:worker:webchat:direct:123" },
+      }),
+    );
     // The vision-success path must not surface raw screenshot media via
     // details.media so channel auto-delivery cannot grab the screenshot.
     expect((out?.details as Record<string, unknown>)?.media).toBeUndefined();

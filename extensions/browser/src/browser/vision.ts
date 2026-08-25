@@ -6,6 +6,7 @@
 import { readFile } from "node:fs/promises";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { describeImageFile as DescribeImageFileFn } from "openclaw/plugin-sdk/media-understanding-runtime";
+import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import type { saveMediaBuffer as SaveMediaBufferFn } from "../sdk-setup-tools.js";
 import type { normalizeBrowserScreenshot as NormalizeBrowserScreenshotFn } from "./screenshot.js";
 
@@ -60,6 +61,22 @@ function normalizeActiveModel(
   return model ? { provider, model } : { provider };
 }
 
+function resolveScreenshotAgentId(ctx: BrowserScreenshotDescriptionContext): string | undefined {
+  if (ctx.agentDir) {
+    return undefined;
+  }
+  const explicitRaw = ctx.agentId?.trim();
+  const explicitAgentId = explicitRaw ? normalizeAgentId(explicitRaw) : undefined;
+  const sessionRaw = parseAgentSessionKey(ctx.mediaScope?.sessionKey)?.agentId;
+  const sessionAgentId = sessionRaw ? normalizeAgentId(sessionRaw) : undefined;
+  if (explicitAgentId && sessionAgentId && explicitAgentId !== sessionAgentId) {
+    throw new Error(
+      `Browser screenshot session belongs to "${sessionAgentId}", not "${explicitAgentId}".`,
+    );
+  }
+  return sessionAgentId ?? explicitAgentId;
+}
+
 async function resolveImageUnderstandingFilePath(
   ctx: BrowserScreenshotDescriptionContext,
   deps: BrowserScreenshotDescriptionDeps,
@@ -90,10 +107,12 @@ export async function describeBrowserScreenshot(
   deps: BrowserScreenshotDescriptionDeps,
 ): Promise<BrowserScreenshotDescriptionResult | null> {
   const filePath = await resolveImageUnderstandingFilePath(ctx, deps);
+  const agentId = resolveScreenshotAgentId(ctx);
   const described = await deps.describeImageFile({
     filePath,
     cfg: ctx.cfg,
     prompt: DEFAULT_BROWSER_SCREENSHOT_DESCRIPTION_PROMPT,
+    ...(agentId ? { agentId } : {}),
     agentDir: ctx.agentDir,
     workspaceDir: ctx.workspaceDir,
     activeModel: normalizeActiveModel(ctx.activeModel),
