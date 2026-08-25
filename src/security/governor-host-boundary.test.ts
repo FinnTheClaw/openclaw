@@ -165,7 +165,6 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-host-delivery-broker.ts",
     "security/governor-host-owner-ingress-resolver.ts",
     "security/governor-host-persistence.ts",
-    "security/governor-host-readonly.ts",
   ],
   "governor-host-task-authority": [
     "security/governor-host-broker.ts",
