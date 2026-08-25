@@ -37,7 +37,7 @@ export const openAiMemoryEmbeddingProviderAdapter: MemoryEmbeddingProviderAdapte
           model: client.model,
           outputDimensionality: client.outputDimensionality,
           documentInputType: client.documentInputType ?? client.inputType,
-          headers: sanitizeEmbeddingCacheHeaders(client.headers, ["authorization"]),
+          headers: sanitizeEmbeddingCacheHeaders(client.headers, ["authorization", "x-api-key"]),
         },
         batchEmbed: async (batch) => {
           const inputType = client.documentInputType ?? client.inputType;

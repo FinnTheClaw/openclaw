@@ -99,6 +99,39 @@ describe("OpenAI memory embedding adapter", () => {
     expect(result.runtime?.cacheKeyData?.provider).toBe("bailian-embedding");
   });
 
+  it("keeps rotated proxy credentials out of embedding cache identity", async () => {
+    const createForProxyKey = async (proxyKey: string, headerName = "X-Api-Key") => {
+      mocks.createOpenAiEmbeddingProvider.mockResolvedValueOnce({
+        provider,
+        client: {
+          baseUrl: "https://embeddings.example/v1",
+          headers: {
+            Authorization: "Bearer fixture-secret",
+            [headerName]: proxyKey,
+            "X-Tenant": "tenant-a",
+          },
+          model: "text-embedding-v3",
+          documentInputType: "document",
+          outputDimensionality: 512,
+        },
+      });
+      return await openAiMemoryEmbeddingProviderAdapter.create({
+        config: {} as never,
+        provider: "bailian-embedding",
+        model: "text-embedding-v3",
+        fallback: "none",
+      });
+    };
+
+    const first = await createForProxyKey("proxy-key-before-rotation");
+    const rotated = await createForProxyKey("proxy-key-after-rotation", "x-aPI-kEY");
+
+    expect(first.runtime?.cacheKeyData).toEqual(rotated.runtime?.cacheKeyData);
+    expect(first.runtime?.cacheKeyData?.headers).toEqual([["X-Tenant", "tenant-a"]]);
+    expect(JSON.stringify(first.runtime?.cacheKeyData)).not.toContain("fixture-secret");
+    expect(JSON.stringify(first.runtime?.cacheKeyData)).not.toContain("proxy-key-before-rotation");
+  });
+
   it("defaults provider id to openai when the caller leaves it unset", async () => {
     await openAiMemoryEmbeddingProviderAdapter.create({
       config: {} as never,
