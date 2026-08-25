@@ -740,6 +740,29 @@ describe("handleInlineActions", () => {
     );
   });
 
+  it("keeps literal dollar patterns in bundle command arguments", async () => {
+    const typing = createTypingController();
+    handleCommandsMock.mockResolvedValue({ shouldContinue: false, reply: { text: "done" } });
+    const body = "/office_hours price $$ and $& here";
+    const ctx = buildTestCtx({ Body: body, CommandBody: body });
+
+    await handleInlineActions(
+      createHandleInlineActionsInput({
+        ctx,
+        typing,
+        cleanedBody: body,
+        command: { isAuthorizedSender: true, rawBodyNormalized: body, commandBodyNormalized: body },
+        overrides: {
+          allowTextCommands: true,
+          cfg: { commands: { text: true } },
+          skillCommands: officeHoursSkillCommands(),
+        },
+      }),
+    );
+
+    expect(ctx.Body).toBe("Act as an engineering advisor.\n\nFocus on:\nprice $$ and $& here");
+  });
+
   it("loads workspace skills when /skill gets an empty preloaded command list", async () => {
     const typing = createTypingController();
     handleCommandsMock.mockResolvedValue({ shouldContinue: false, reply: { text: "done" } });
