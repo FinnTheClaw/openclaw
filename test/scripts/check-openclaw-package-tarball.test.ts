@@ -373,7 +373,7 @@ describe("check-openclaw-package-tarball", () => {
 
         expect(result.status).not.toBe(0);
         expect(result.stderr).toContain(
-          "forbidden governor authority export closeGovernorMemoryAuthority in dist/governor-host-bootstrap-c3D4.js",
+          "unexpected governor authority-bearing export safeAuthority in dist/governor-host-bootstrap-c3D4.js",
         );
       },
     );
