@@ -22,7 +22,7 @@
   "automatic_runtime_updates": false,
   "selected_upstream_changes_only": true,
   "created_at": "2026-07-26T05:35:00Z",
-  "updated_at": "2026-08-25T07:42:51Z",
+  "updated_at": "2026-08-25T08:05:46Z",
   "canonical_runtime_sha256": "17fadbe99a69b80091aa6338e85daea0e1f7d310fe44029b57a78f7e9a51cf9a",
   "candidate_id": "20260825-memory-fairness-230f0ad",
   "source_build_info": {
@@ -33,7 +33,7 @@
   "previous_frozen_manifest_sha256": "c53b88dd94ca9ff123720d6750d01f6757378e58346a3b58abd50ad9ddf7b30d",
   "previous_frozen_source_commit": "dbc14a0d84abde9431451e0104ff297d40f11c58",
   "rollback_ref": "freeze-rollback-20260825-before-37",
-  "promotion_status": "Promoted after fresh Alistar provision and installed actual-Qwen store/recall validation",
+  "promotion_status": "Promoted after fresh Alistar and live Finn actual-Qwen store/recall validation",
   "evidence_classification": [
     "Moira build and paired artifact hashes verified",
     "Numeric runtime compatibility correction verified after install preflight",
@@ -57,7 +57,12 @@
     "Source commit 230f0ad processes ready materialization work before awaiting rate-limited extraction, preventing one queue from starving the other without adding a worker or guard",
     "Full production build at 230f0ad passed plugins:assets:build, tsdown, runtime postbuild, plugin SDK, Control UI, and build metadata",
     "Alistar boot 713422cf-1c68-40ee-afea-0b7bd6ea3aa6 was provisioned at 192.168.1.240 with 2026.7.1-37 and the paired 230f0ad memory plugin",
-    "Installed actual-Qwen store and independent-session recall recovered the exact canary identifier with zero gateway restarts, no channel delivery, and no projection or materialization backlog"
+    "Installed actual-Qwen store and independent-session recall recovered the exact canary identifier with zero gateway restarts, no channel delivery, and no projection or materialization backlog",
+    "Finn promoted state-preservingly to 2026.7.1-37 with the paired 230f0ad plugin; configuration, communication identity hashes, credential hashes, and runtime tree remained verified",
+    "A live actual-Qwen store and independent-session recall recovered the exact canary while extraction retries were active; the index advanced and materialization remained fully drained",
+    "The moira/memory route accepted an 8000-token completion envelope with HTTP 200 and the moira/memory-embedding health contract reported 1024 dimensions",
+    "Idempotent dead-letter recovery moved extraction from 33 dead rows to zero dead rows; remaining rows are leased, pending, or bounded retry and projection retains five bounded retries",
+    "A live actual-Qwen exec canary completed exactly once after removal of the legacy debug hook; the reported wildcard failure remains classified as an unmatched zsh glob rather than a policy guard"
   ],
   "supersedes_freeze_commit": "946693c04bea777ca4f2f0c04e18b7862a325ca1",
   "superseded_runtime_version": "2026.7.1-36",

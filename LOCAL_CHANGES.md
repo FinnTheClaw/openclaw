@@ -210,3 +210,20 @@ independent-session exact recall with no channel delivery or gateway restart.
 - Core artifact SHA-256: `49791608b1b82fcd7f04bc2458aebba776f10db2c678cf8139b1dc8b679a8941`.
 - Memory artifact SHA-256: `9310fc2a35f142f09a41799b8a8550a80adbf363d91b06d6865a21583cbecf0c`.
 - Installed runtime tree SHA-256: `d8a360607a584ed8f5fb8e84fb31f3725648d68436773e867859456dd9eac57f`.
+
+Live Finn was then promoted state-preservingly from `2026.7.1-36` to
+`2026.7.1-37`, with rollback bundle
+`/Users/aiapi/openclaw-promotion-backups/20260825T0747Z-memory-fairness-230f0ad`.
+The gateway, configuration, paired memory plugin, communication identities,
+credentials, and runtime tree all verified after the single restart.
+
+An installed actual-Qwen memory store followed by an independent-session
+recall recovered the exact canary without channel delivery. While extraction
+retries remained active, the index advanced and materialization stayed fully
+drained, directly exercising the corrected scheduling order. The real
+`moira/memory` route accepted an 8,000-token completion envelope with HTTP 200,
+and `moira/memory-embedding` reported a healthy 1,024-dimensional contract.
+The idempotent recovery command moved extraction from 33 dead rows to zero;
+remaining work is durably leased, pending, or in bounded retry. A separate
+actual-Qwen exec canary also completed exactly once with the legacy debug hook
+absent.
