@@ -990,6 +990,10 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "7ced32b627b31496c804a42d61ea782280c5ad0a6c9675c68968bf4a67961bcf",
     },
     {
+      path: "packages/memory-host-sdk/src/host/embedding-vectors.ts",
+      sha256: "c9026da05ed14b92e3a3b65229f468e512e9bf7f0d3a8a9248a3e106d74bc173",
+    },
+    {
       path: "packages/memory-host-sdk/src/host/error-utils.ts",
       sha256: "80c151f6979a6b3fefadfa5c882e8f0ed81a38e06127304de7d466dffb9dbedc",
     },
@@ -4759,7 +4763,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/tools/sessions-history-tool.ts",
-      sha256: "ca4865b0c6a6cb235b72ac109c92db39c07b52bf24d1a2abdf02320d8d9ecbdb",
+      sha256: "fa74a165fd0b3c02e17c10ca94e659b2056c99c7d5017a4312adabfc2d111447",
     },
     {
       path: "src/agents/tools/sessions-list-tool.ts",
@@ -9971,7 +9975,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/chat-display-projection.ts",
-      sha256: "2781d79bcf107e7f38fff071e37863ba1410a6b5d55c7f4cb0e435e5a842f5ef",
+      sha256: "b97ddda6f97b16ca959bf38e3f01be2153b07181ab7e18b669dcc223bff5e354",
     },
     {
       path: "src/gateway/chat-input-sanitize.ts",
@@ -14859,7 +14863,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/plugins/openai-compatible-embedding-provider.ts",
-      sha256: "fb4ebea345d76b84a6429189d5729bb1994b8e0ef6387d3b6b6bffccf380fa96",
+      sha256: "e9134aa7a4771d6630651406635d7c4b95fff686ed7f67c5f69e274a5265ed54",
     },
     {
       path: "src/plugins/package-compat.ts",
@@ -17748,4 +17752,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "da20089e3d2123131c26a7e580474c9db5c7f6399c4f66179a22f9ba69c567d4";
+  "7a6b916b62eb433d7ee5017540258860538ac8ff251767e20a09831c07c993b2";

@@ -24,6 +24,7 @@ export {
   normalizeBatchBaseUrl,
   normalizeEmbeddingModelWithPrefixes,
   postJsonWithRetry,
+  readEmbeddingVectors,
   resolveBatchCompletionFromStatus,
   resolveCompletedBatchResult,
   resolveRemoteEmbeddingBearerClient,

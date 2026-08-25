@@ -20,7 +20,10 @@ import {
 import { BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES } from "openclaw/plugin-sdk/chat-channel-ids";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
-import type { MemoryEmbeddingProvider } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
+import {
+  readEmbeddingVectors,
+  type MemoryEmbeddingProvider,
+} from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import { resolveMemoryDreamingWorkspaces } from "openclaw/plugin-sdk/memory-core-host-status";
 import { MESSAGE_TOOL_DELIVERY_HINTS } from "openclaw/plugin-sdk/message-tool-delivery-hints";
 import {
@@ -504,7 +507,11 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
       body: params,
       ...(options?.timeoutMs ? { timeout: options.timeoutMs, maxRetries: 0 } : {}),
     });
-    return normalizeEmbeddingVector(response.data?.[0]?.embedding);
+    const [embedding] = readOpenAiCompatibleEmbeddingVectors(response.data, 1);
+    if (!embedding) {
+      throw new Error("memory-lancedb embeddings failed: malformed JSON response");
+    }
+    return embedding;
   }
 
   async embedBatch(texts: string[], options?: { timeoutMs?: number }): Promise<number[][]> {
@@ -529,13 +536,7 @@ class OpenAiCompatibleEmbeddings implements Embeddings {
       body: params,
       ...(options?.timeoutMs ? { timeout: options.timeoutMs, maxRetries: 0 } : {}),
     });
-    const vectors = (response.data ?? []).map((item) => normalizeEmbeddingVector(item.embedding));
-    if (vectors.length !== texts.length) {
-      throw new Error(
-        `Embedding response returned ${vectors.length} vectors for ${texts.length} inputs`,
-      );
-    }
-    return vectors;
+    return readOpenAiCompatibleEmbeddingVectors(response.data, texts.length);
   }
 }
 
@@ -711,6 +712,7 @@ class MemoryRecallEmbeddingError extends Error {
 }
 
 export const testing = {
+  readOpenAiCompatibleEmbeddingVectors,
   runWithTimeout,
 } as const;
 
@@ -725,6 +727,7 @@ function createEmbeddings(api: OpenClawPluginApi, cfg: MemoryConfig): Embeddings
 type EmbeddingCreateResponse = {
   data?: Array<{
     embedding?: unknown;
+    index?: unknown;
   }>;
 };
 
@@ -750,6 +753,15 @@ export function normalizeEmbeddingVector(value: unknown): number[] {
   }
 
   throw new Error("Embedding response is missing a vector");
+}
+
+function readOpenAiCompatibleEmbeddingVectors(data: unknown, expectedCount: number): number[][] {
+  return readEmbeddingVectors(
+    data,
+    expectedCount,
+    "memory-lancedb embeddings failed",
+    normalizeEmbeddingVector,
+  );
 }
 
 // ============================================================================

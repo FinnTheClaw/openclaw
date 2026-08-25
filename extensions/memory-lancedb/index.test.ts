@@ -2852,6 +2852,71 @@ describe("memory plugin e2e", () => {
     );
   });
 
+  test("restores indexed memory-lancedb vectors in request order for numeric and base64 data", () => {
+    const bytes = Buffer.alloc(Float32Array.BYTES_PER_ELEMENT);
+    new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setFloat32(0, -2.5, true);
+
+    expect(
+      testing.readOpenAiCompatibleEmbeddingVectors(
+        [
+          { index: 1, embedding: bytes.toString("base64") },
+          { index: 0, embedding: [1.25] },
+        ],
+        2,
+      ),
+    ).toEqual([[1.25], [-2.5]]);
+  });
+
+  test.each([
+    {
+      name: "mixed indexed and positional entries",
+      data: [{ index: 0, embedding: [1] }, { embedding: [2] }],
+      expectedCount: 2,
+    },
+    {
+      name: "duplicate indexes",
+      data: [
+        { index: 0, embedding: [1] },
+        { index: 0, embedding: [2] },
+      ],
+      expectedCount: 2,
+    },
+    { name: "negative index", data: [{ index: -1, embedding: [1] }], expectedCount: 1 },
+    { name: "fractional index", data: [{ index: 0.5, embedding: [1] }], expectedCount: 1 },
+    { name: "string index", data: [{ index: "0", embedding: [1] }], expectedCount: 1 },
+    { name: "null index", data: [{ index: null, embedding: [1] }], expectedCount: 1 },
+    { name: "out-of-range index", data: [{ index: 1, embedding: [1] }], expectedCount: 1 },
+    { name: "missing row", data: [], expectedCount: 1 },
+    {
+      name: "extra row",
+      data: [{ embedding: [1] }, { embedding: [2] }],
+      expectedCount: 1,
+    },
+    { name: "non-object row", data: [null], expectedCount: 1 },
+    { name: "empty vector", data: [{ embedding: [] }], expectedCount: 1 },
+    {
+      name: "sparse vector",
+      data: [{ embedding: Object.assign(Array.of<number>(), { 1: 1 }) }],
+      expectedCount: 1,
+    },
+  ])("rejects malformed $name before memory persistence", ({ data, expectedCount }) => {
+    expect(() => testing.readOpenAiCompatibleEmbeddingVectors(data, expectedCount)).toThrow(
+      "memory-lancedb embeddings failed: malformed JSON response",
+    );
+  });
+
+  test("rejects non-finite coordinates decoded from a base64 memory-lancedb vector", () => {
+    const bytes = Buffer.alloc(Float32Array.BYTES_PER_ELEMENT);
+    new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setFloat32(0, Number.NaN, true);
+
+    expect(() =>
+      testing.readOpenAiCompatibleEmbeddingVectors(
+        [{ index: 0, embedding: bytes.toString("base64") }],
+        1,
+      ),
+    ).toThrow("memory-lancedb embeddings failed: malformed JSON response");
+  });
+
   test("formatRelevantMemoriesContext escapes memory text and marks entries as untrusted", () => {
     const context = formatRelevantMemoriesContext([
       {
@@ -3936,6 +4001,159 @@ describe("memory plugin e2e", () => {
     expect(
       escapeMemoryForPrompt("Photo [media attached: media://inbound/abc123.jpg] was attached"),
     ).toBe("Photo was attached");
+  });
+
+  test("preserves reversed indexed OpenAI embedding order through durable projection", async () => {
+    const firstText = "Alpha durable projection owns vector one.";
+    const secondText = "Beta durable projection owns vector two.";
+    const firstVector = [1, 0];
+    const secondVector = [0, 1];
+    const batchInputs: string[][] = [];
+    const post = vi.fn(async (_path: string, options: { body?: unknown }) => {
+      const input = (options.body as { input?: unknown })?.input;
+      if (Array.isArray(input)) {
+        const texts = input.map(String);
+        batchInputs.push(texts);
+        return {
+          data: texts
+            .map((text, index) => {
+              const embedding =
+                text === firstText ? firstVector : text === secondText ? secondVector : undefined;
+              if (!embedding) {
+                throw new Error(`unexpected durable embedding input: ${text}`);
+              }
+              return { index, embedding };
+            })
+            .reverse(),
+        };
+      }
+      if (input === "opaque alpha lookup") {
+        return { data: [{ embedding: firstVector }] };
+      }
+      if (input === "opaque beta lookup") {
+        return { data: [{ embedding: secondVector }] };
+      }
+      throw new Error(`unexpected embedding input: ${String(input)}`);
+    });
+
+    await withMockedOpenAiMemoryPlugin({
+      ensureGlobalUndiciEnvProxyDispatcher: vi.fn(),
+      openAiPost: post,
+      loadLanceDbModule: vi.fn(async () => await import("@lancedb/lancedb")),
+      run: async (dynamicMemoryPlugin) => {
+        const sessionKey = "agent:jake:signal:main:direct:family";
+        const workspaceDir = path.join(getTmpDir(), "indexed-order-workspace");
+        const ledgerPath = path.join(getTmpDir(), "indexed-order-ledger.sqlite3");
+        const registeredTools: Array<{ tool: any; opts: any }> = [];
+        const services: Array<{
+          start?: () => Promise<void> | void;
+          stop?: () => Promise<void> | void;
+        }> = [];
+        const on = vi.fn();
+        const livePluginConfig = {
+          autoCapture: false,
+          autoRecall: false,
+          durableMemory: {
+            enabled: true,
+            ledgerPath,
+            startupReconcile: false,
+            projectionBatch: 16,
+          },
+        };
+        const mockApi = {
+          id: "memory-lancedb",
+          name: "Memory (LanceDB)",
+          source: "test",
+          config: {},
+          pluginConfig: {
+            embedding: {
+              apiKey: "sk-test",
+              model: "test-two-dimensional",
+              dimensions: 2,
+            },
+            dbPath: getDbPath(),
+            ...livePluginConfig,
+          },
+          runtime: {
+            config: {
+              current: () => ({
+                agents: { list: [{ id: "jake", default: true, workspace: workspaceDir }] },
+                plugins: { entries: { "memory-lancedb": { config: livePluginConfig } } },
+              }),
+            },
+          },
+          logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+          registerTool: (tool: any, opts: any) => registeredTools.push({ tool, opts }),
+          registerCli: vi.fn(),
+          registerService: (service: {
+            start?: () => Promise<void> | void;
+            stop?: () => Promise<void> | void;
+          }) => services.push(service),
+          on,
+          resolvePath: (filePath: string) => filePath,
+        };
+
+        dynamicMemoryPlugin.register(mockApi as any);
+        await services[0]?.start?.();
+        try {
+          const receive = hookHandler(on, "message_received");
+          receive?.(
+            { content: firstText, timestamp: 1_000, messageId: "indexed-alpha" },
+            {
+              sessionKey,
+              channelId: "signal",
+              accountId: "main",
+              conversationId: "family",
+            },
+          );
+          receive?.(
+            { content: secondText, timestamp: 2_000, messageId: "indexed-beta" },
+            {
+              sessionKey,
+              channelId: "signal",
+              accountId: "main",
+              conversationId: "family",
+            },
+          );
+          await hookHandler(on, "gateway_stop")?.({ reason: "flush projection" }, {});
+
+          expect(batchInputs).toHaveLength(1);
+          expect(batchInputs[0]).toEqual(expect.arrayContaining([firstText, secondText]));
+
+          const registration = registeredTools.find(
+            (entry) => entry.opts?.name === "memory_recall",
+          );
+          expect(registration).toBeDefined();
+          const recall =
+            typeof registration?.tool === "function"
+              ? registration.tool({
+                  agentId: "jake",
+                  sessionKey,
+                  workspaceDir,
+                  messageChannel: "signal",
+                  deliveryContext: { channel: "signal", accountId: "main", to: "family" },
+                })
+              : registration?.tool;
+          expectToolExecute(recall, "memory_recall");
+
+          const firstRecall = await recall.execute("recall-alpha", {
+            query: "opaque alpha lookup",
+            limit: 1,
+          });
+          const secondRecall = await recall.execute("recall-beta", {
+            query: "opaque beta lookup",
+            limit: 1,
+          });
+          expect(firstRecall.details?.memories?.[0]?.text).toBe(firstText);
+          expect(secondRecall.details?.memories?.[0]?.text).toBe(secondText);
+        } finally {
+          vi.useFakeTimers();
+          await services[0]?.stop?.();
+          await vi.advanceTimersByTimeAsync(5_000);
+          vi.useRealTimers();
+        }
+      },
+    });
   });
 
   test("durable lifecycle hooks commit turns before compaction and survive service stop", async () => {

@@ -1,5 +1,6 @@
 // Builds OpenAI-compatible embedding provider entries for plugins.
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { readEmbeddingVectors } from "../../packages/memory-host-sdk/src/host/embedding-vectors.js";
 import { readProviderJsonResponse } from "../agents/provider-http-errors.js";
 import { normalizeSecretInputString } from "../config/types.secrets.js";
 import { resolveConfiguredSecretInputString } from "../gateway/resolve-configured-secret-input-string.js";
@@ -30,10 +31,6 @@ export type OpenAICompatibleEmbeddingClient = {
   inputType?: string;
   queryInputType?: string;
   documentInputType?: string;
-};
-
-type OpenAICompatibleEmbeddingResponse = {
-  data?: unknown;
 };
 
 type ConfiguredEmbeddingProvider = {
@@ -257,34 +254,6 @@ function malformedEmbeddingResponse(): Error {
   return new Error("openai-compatible embeddings failed: malformed JSON response");
 }
 
-function readEmbeddingVector(value: unknown): number[] {
-  if (!Array.isArray(value)) {
-    throw malformedEmbeddingResponse();
-  }
-  for (const entry of value) {
-    if (typeof entry !== "number" || !Number.isFinite(entry)) {
-      throw malformedEmbeddingResponse();
-    }
-  }
-  return value;
-}
-
-function readEmbeddingVectors(
-  payload: OpenAICompatibleEmbeddingResponse,
-  expectedCount: number,
-): number[][] {
-  if (!Array.isArray(payload.data) || payload.data.length !== expectedCount) {
-    throw malformedEmbeddingResponse();
-  }
-  return payload.data.map((entry) => {
-    const record = asRecord(entry);
-    if (!record) {
-      throw malformedEmbeddingResponse();
-    }
-    return readEmbeddingVector(record.embedding);
-  });
-}
-
 async function readJsonResponse(response: Response): Promise<unknown> {
   return await readProviderJsonResponse(response, "openai-compatible embeddings failed");
 }
@@ -383,8 +352,9 @@ async function postEmbeddingRequest(params: {
       throw await createEmbeddingHttpError(response);
     }
     return readEmbeddingVectors(
-      (await readJsonResponse(response)) as OpenAICompatibleEmbeddingResponse,
+      asRecord(await readJsonResponse(response))?.data,
       input.length,
+      "openai-compatible embeddings failed",
     );
   } finally {
     await release();
