@@ -339,7 +339,8 @@ function sanitizeAssistantPhasedContentBlocks(content: unknown[]): {
     }
     const entry = block as { type?: unknown; textSignature?: unknown };
     return (
-      entry.type === "text" && Boolean(parseAssistantTextSignature(entry.textSignature)?.phase)
+      isAssistantTextContentType(entry.type) &&
+      Boolean(parseAssistantTextSignature(entry.textSignature)?.phase)
     );
   });
   if (!hasExplicitPhasedText) {
@@ -350,7 +351,7 @@ function sanitizeAssistantPhasedContentBlocks(content: unknown[]): {
       return true;
     }
     const entry = block as { type?: unknown; textSignature?: unknown };
-    if (entry.type !== "text") {
+    if (!isAssistantTextContentType(entry.type)) {
       return true;
     }
     return parseAssistantTextSignature(entry.textSignature)?.phase === "final_answer";
