@@ -87,8 +87,7 @@ function propertyNameText(name) {
 
 function elementAccessSelector(expression) {
   const argument = expression.argumentExpression;
-  return argument &&
-    (ts.isStringLiteralLike(argument) || ts.isNumericLiteral(argument))
+  return argument && (ts.isStringLiteralLike(argument) || ts.isNumericLiteral(argument))
     ? argument.text
     : undefined;
 }
@@ -154,16 +153,16 @@ function selectedExpressionCarriesAuthority(
     const selected = expression.elements[selector];
     return Boolean(
       selected &&
-        !ts.isOmittedExpression(selected) &&
-        selectedExpressionCarriesAuthority(
-          file,
-          ts.isSpreadElement(selected) ? selected.expression : selected,
-          rest,
-          parsed,
-          fileSet,
-          authorityExportNames,
-          visited,
-        ),
+      !ts.isOmittedExpression(selected) &&
+      selectedExpressionCarriesAuthority(
+        file,
+        ts.isSpreadElement(selected) ? selected.expression : selected,
+        rest,
+        parsed,
+        fileSet,
+        authorityExportNames,
+        visited,
+      ),
     );
   }
   if (ts.isObjectLiteralExpression(expression) && typeof selector === "string") {
@@ -307,11 +306,7 @@ function expressionCarriesAuthority(
   });
 }
 
-export function propagateLocalAuthorityAliases({
-  parsed,
-  fileSet,
-  authorityExportNames,
-}) {
+export function propagateLocalAuthorityAliases({ parsed, fileSet, authorityExportNames }) {
   let changed = false;
   for (const [file, info] of parsed) {
     for (const localExport of info.localExports) {

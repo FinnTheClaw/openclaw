@@ -165,13 +165,13 @@ export function deriveBehaviorGovernorBootDecision(
   if (governor.mode !== "shadow") {
     throw new Error("GOVERNOR_BOOT_CONFIG_INVALID");
   }
-  return brandDecision({ kind: "shadow", config: governor as ShadowGovernorConfig }) as
-    BehaviorGovernorBootDecision;
+  return brandDecision({
+    kind: "shadow",
+    config: governor as ShadowGovernorConfig,
+  }) as BehaviorGovernorBootDecision;
 }
 
-export function assertBehaviorGovernorBootDecision(
-  decision: BehaviorGovernorBootDecision,
-): void {
+export function assertBehaviorGovernorBootDecision(decision: BehaviorGovernorBootDecision): void {
   if (!BOOT_DECISIONS.has(decision)) {
     throw new Error("GOVERNOR_BOOT_DECISION_INVALID");
   }

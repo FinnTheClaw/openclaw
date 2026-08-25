@@ -26,9 +26,7 @@ export const AUTHORITY_KERNEL_MARKERS = new Set([
   "createMemoryAuthorityOwner",
 ]);
 
-export const ALLOWED_AUTHORITY_BEARING_EXPORTS = new Set([
-  "createGovernorHostRuntimeIfEnabled",
-]);
+export const ALLOWED_AUTHORITY_BEARING_EXPORTS = new Set(["createGovernorHostRuntimeIfEnabled"]);
 
 export function collectGovernorTarEntryErrors(files) {
   const errors = [];

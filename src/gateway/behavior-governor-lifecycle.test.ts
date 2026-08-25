@@ -176,9 +176,9 @@ describe("gateway behavior governor prepared snapshot binding", () => {
           ...sourceGovernor,
           agentLoop: { ...sourceGovernor.agentLoop, maxTurns: 4 },
         } as typeof sourceGovernor;
-        await expect(
-          lifecycle.apply(snapshotFor(state.stateDir, changedSource)),
-        ).rejects.toThrow("GOVERNOR_GATEWAY_RESTART_REQUIRED");
+        await expect(lifecycle.apply(snapshotFor(state.stateDir, changedSource))).rejects.toThrow(
+          "GOVERNOR_GATEWAY_RESTART_REQUIRED",
+        );
         await lifecycle.close();
         expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(true);
       },
@@ -202,9 +202,7 @@ describe("gateway behavior governor prepared snapshot binding", () => {
         if (label === "missing snapshot value") {
           snapshot.config.secretRefs.identityHmacKey = "";
         }
-        await expect(
-          lifecycle.apply(snapshot),
-        ).rejects.toThrow(
+        await expect(lifecycle.apply(snapshot)).rejects.toThrow(
           label === "plaintext"
             ? "GOVERNOR_GATEWAY_SECRET_REF_INVALID"
             : "GOVERNOR_GATEWAY_SECRET_SNAPSHOT_INCOMPLETE",
@@ -230,9 +228,9 @@ describe("gateway behavior governor prepared snapshot binding", () => {
             },
           }),
         });
-        await expect(
-          startupFailure.apply(snapshotFor(state.stateDir)),
-        ).rejects.toBeInstanceOf(AggregateError);
+        await expect(startupFailure.apply(snapshotFor(state.stateDir))).rejects.toBeInstanceOf(
+          AggregateError,
+        );
         expect(startupCloseCalls).toBe(1);
         expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(false);
 

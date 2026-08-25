@@ -16,7 +16,9 @@ function hasExportModifier(node) {
   return node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
 }
 function hasDefaultModifier(node) {
-  return node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ?? false;
+  return (
+    node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ?? false
+  );
 }
 function collectBindingNames(name, names) {
   if (ts.isIdentifier(name)) {
@@ -153,7 +155,13 @@ function parseAuthorityExports(file, source) {
   const importBindings = [];
   const localExports = [];
   const expressionExports = [];
-  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.JS,
+  );
   const authorityMarkers = new Set();
   const forbiddenTestFactoryMarkers = new Set();
   const visit = (node) => {
@@ -367,10 +375,10 @@ function collectAuthorityExportErrors(files, readText) {
     .map((file) => file.replace(/\\/gu, "/"))
     .filter((file) => /^dist\/.*\.js$/u.test(file));
   const fileSet = new Set(jsFiles);
-  const parsed = new Map(jsFiles.map((file) => [file, parseAuthorityExports(file, readText(file))]));
-  const exportNames = new Map(
-    [...parsed].map(([file, info]) => [file, new Set(info.directNames)]),
+  const parsed = new Map(
+    jsFiles.map((file) => [file, parseAuthorityExports(file, readText(file))]),
   );
+  const exportNames = new Map([...parsed].map(([file, info]) => [file, new Set(info.directNames)]));
   const authorityExportNames = new Map(
     [...parsed].map(([file, info]) => [
       file,
@@ -431,8 +439,7 @@ function collectAuthorityExportErrors(files, readText) {
         }
       }
     }
-    changed =
-      propagateLocalAuthorityAliases({ parsed, fileSet, authorityExportNames }) || changed;
+    changed = propagateLocalAuthorityAliases({ parsed, fileSet, authorityExportNames }) || changed;
   }
 
   const errors = [];

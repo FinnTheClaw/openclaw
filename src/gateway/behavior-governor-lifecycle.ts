@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { resolveStateDir } from "../config/paths.js";
 import {
   assertBehaviorGovernorBootDecision,
   type BehaviorGovernorBootDecision,
 } from "../config/behavior-governor-boot-decision.js";
+import { resolveStateDir } from "../config/paths.js";
 import type {
   BehaviorGovernorConfig,
   BehaviorGovernorAgentLoopConfig,

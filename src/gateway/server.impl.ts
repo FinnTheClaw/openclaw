@@ -18,8 +18,8 @@ import {
 } from "../channels/plugins/registry-loaded.js";
 import type { ChannelId } from "../channels/plugins/types.public.js";
 import { createDefaultDeps } from "../cli/deps.js";
-import { isRestartEnabled } from "../config/commands.flags.js";
 import { deriveBehaviorGovernorBootDecision } from "../config/behavior-governor-boot-decision.js";
+import { isRestartEnabled } from "../config/commands.flags.js";
 import {
   getRuntimeConfig,
   promoteConfigSnapshotToLastKnownGood,

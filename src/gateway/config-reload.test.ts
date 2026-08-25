@@ -4,12 +4,12 @@ import chokidar from "chokidar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listChannelPlugins } from "../channels/plugins/index.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
+import { deriveBehaviorGovernorBootDecision } from "../config/behavior-governor-boot-decision.js";
 import type {
   ConfigFileSnapshot,
   ConfigWriteNotification,
   OpenClawConfig,
 } from "../config/config.js";
-import { deriveBehaviorGovernorBootDecision } from "../config/behavior-governor-boot-decision.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import {
   pinActivePluginChannelRegistry,
@@ -1159,13 +1159,16 @@ describe("startGatewayConfigReloader", () => {
     } as OpenClawConfig;
     const snapshot = makeSnapshot({ config: enforceConfig, hash: "governor-enforce" });
     const promoteSnapshot = vi.fn(async () => true);
-    const harness = createReloaderHarness(vi.fn(async () => snapshot), {
-      initialConfig,
-      promoteSnapshot,
-      validateConfigCandidate: (_plan, config) => {
-        deriveBehaviorGovernorBootDecision(config);
+    const harness = createReloaderHarness(
+      vi.fn(async () => snapshot),
+      {
+        initialConfig,
+        promoteSnapshot,
+        validateConfigCandidate: (_plan, config) => {
+          deriveBehaviorGovernorBootDecision(config);
+        },
       },
-    });
+    );
 
     harness.watcher.emit("change");
     await vi.runOnlyPendingTimersAsync();

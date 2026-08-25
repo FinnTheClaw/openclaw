@@ -320,9 +320,15 @@ describe("check-openclaw-package-tarball", () => {
 
   it.each([
     ["named", "export function createGovernorMemoryAuthority() {}\n"],
-    ["default", "function closeGovernorMemoryAuthority() {}\nexport default closeGovernorMemoryAuthority;\n"],
+    [
+      "default",
+      "function closeGovernorMemoryAuthority() {}\nexport default closeGovernorMemoryAuthority;\n",
+    ],
     ["reexport", 'export { isTrustedGovernorMemoryAuthority } from "./authority.js";\n'],
-    ["test factory", "const createGovernorTestHostBindings = () => {};\nexport { createGovernorTestHostBindings };\n"],
+    [
+      "test factory",
+      "const createGovernorTestHostBindings = () => {};\nexport { createGovernorTestHostBindings };\n",
+    ],
     ["current bindings factory", "export function createGovernorTestBindings() {}\n"],
     ["current broker factory", "export const createGovernorTestBroker = () => {};\n"],
     [
@@ -380,9 +386,18 @@ describe("check-openclaw-package-tarball", () => {
   });
 
   it.each([
-    ["shorthand", "const createGovernorMemoryAuthority = () => {}; export default { createGovernorMemoryAuthority };\n"],
-    ["aliased", "const closeGovernorMemoryAuthority = () => {}; export const safe = { close: closeGovernorMemoryAuthority };\n"],
-    ["identifier", "const createGovernorMemoryAuthority = () => {}; const safe = { createGovernorMemoryAuthority }; export default safe;\n"],
+    [
+      "shorthand",
+      "const createGovernorMemoryAuthority = () => {}; export default { createGovernorMemoryAuthority };\n",
+    ],
+    [
+      "aliased",
+      "const closeGovernorMemoryAuthority = () => {}; export const safe = { close: closeGovernorMemoryAuthority };\n",
+    ],
+    [
+      "identifier",
+      "const createGovernorMemoryAuthority = () => {}; const safe = { createGovernorMemoryAuthority }; export default safe;\n",
+    ],
   ])("rejects authority exposed through an exported %s object", (_label, body) => {
     withTarball(
       ["dist/governor-host-bootstrap-a1B2.js"],
@@ -454,7 +469,9 @@ describe("check-openclaw-package-tarball", () => {
       const result = spawnSync("node", [CHECK_SCRIPT, tarball], { encoding: "utf8" });
 
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toMatch(/forbidden governor (?:test-helper|source authority) tar entry/u);
+      expect(result.stderr).toMatch(
+        /forbidden governor (?:test-helper|source authority) tar entry/u,
+      );
     });
   });
 

@@ -187,8 +187,7 @@ describe("governor host-derived work classification", () => {
           ),
         );
         expect(
-          () =>
-            createGovernorTestStore({ stateDir: state.stateDir, capabilities: changed }).store,
+          () => createGovernorTestStore({ stateDir: state.stateDir, capabilities: changed }).store,
         ).toThrow(/CLASSIFICATION_INVALID/u);
       },
     );

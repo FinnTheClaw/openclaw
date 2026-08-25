@@ -232,8 +232,7 @@ type ManagedGatewayConfigReloaderParams = Omit<
 function behaviorGovernorChanged(plan: GatewayReloadPlan): boolean {
   return plan.changedPaths.some(
     (path) =>
-      path === "experimental.behaviorGovernor" ||
-      path.startsWith("experimental.behaviorGovernor."),
+      path === "experimental.behaviorGovernor" || path.startsWith("experimental.behaviorGovernor."),
   );
 }
 

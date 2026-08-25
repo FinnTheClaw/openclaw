@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { OpenClawConfig } from "./types.openclaw.js";
 import {
   assertBehaviorGovernorConfigMatchesBootDecision,
   deriveBehaviorGovernorBootDecision,
 } from "./behavior-governor-boot-decision.js";
+import type { OpenClawConfig } from "./types.openclaw.js";
 
 const refs = {
   identityHmacKey: { source: "env", provider: "default", id: "GOV_IDENTITY" },
@@ -92,8 +92,8 @@ describe("behavior governor boot decision", () => {
     );
 
     const executable = config() as OpenClawConfig & { injected?: unknown };
-    (executable.experimental!.behaviorGovernor as unknown as { injected: unknown }).injected =
-      () => undefined;
+    (executable.experimental!.behaviorGovernor as unknown as { injected: unknown }).injected = () =>
+      undefined;
     expect(() => deriveBehaviorGovernorBootDecision(executable)).toThrow(
       "GOVERNOR_BOOT_CONFIG_VALUE_REJECTED",
     );

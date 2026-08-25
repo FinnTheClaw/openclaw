@@ -15,11 +15,11 @@ import {
   resetSyntheticHostDeliveryAttempts,
 } from "./governor-host-delivery-implementations.js";
 import { createGovernorHostPersistence } from "./governor-host-persistence.js";
-import { createGovernorTestBindings } from "./test-helpers/governor-test-host-bindings.js";
 import {
   resolveGovernorSecrets,
   syntheticGovernorSecretsEnvironment,
 } from "./governor-host-secrets.js";
+import { createGovernorTestBindings } from "./test-helpers/governor-test-host-bindings.js";
 
 afterEach(() => closeOpenClawStateDatabase());
 

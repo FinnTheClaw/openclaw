@@ -5,11 +5,11 @@ import {
   formatInvalidConfigRecoveryHint,
   formatPluginPackagingRuntimeOutputRecoveryHint,
 } from "../cli/config-recovery-hints.js";
-import { createInvalidConfigError } from "../config/io.invalid-config.js";
 import {
   assertBehaviorGovernorConfigMatchesBootDecision,
   type BehaviorGovernorBootDecision,
 } from "../config/behavior-governor-boot-decision.js";
+import { createInvalidConfigError } from "../config/io.invalid-config.js";
 import {
   type ReadConfigFileSnapshotWithPluginMetadataResult,
   readConfigFileSnapshotWithPluginMetadata,

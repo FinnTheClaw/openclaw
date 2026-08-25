@@ -12,6 +12,12 @@ import { assertGovernorBoundarySafe } from "../tasks/governor/secret-filter.js";
 import { initializeGovernorStateSchema } from "../tasks/governor/state-schema.js";
 import { GovernorStoreLifecycle } from "../tasks/governor/store-lifecycle.js";
 import {
+  createGovernorHostAntiRollbackLedger,
+  isGovernorHostAntiRollbackLedger,
+  type GovernorHostAntiRollbackLedger,
+  type GovernorLedgerState,
+} from "./governor-host-anti-rollback-ledger.js";
+import {
   approvalGrantKey,
   approvalScopeKey,
   cancelUnstartedApprovalExecutions,
@@ -20,12 +26,6 @@ import {
   requestStartedApprovalCancellation,
   writeApprovalEpoch,
 } from "./governor-host-approval-persistence-helpers.js";
-import {
-  createGovernorHostAntiRollbackLedger,
-  isGovernorHostAntiRollbackLedger,
-  type GovernorHostAntiRollbackLedger,
-  type GovernorLedgerState,
-} from "./governor-host-anti-rollback-ledger.js";
 import {
   createGovernorHostDeliveryPersistence,
   type GovernorHostDeliveryPersistence,
@@ -69,7 +69,9 @@ function memoryAuthorityBinding(binding: GovernorMemoryAuthorityBinding) {
   );
 }
 
-function memoryAuthorityState(state: GovernorLedgerState | null): GovernorMemoryAuthorityState | null {
+function memoryAuthorityState(
+  state: GovernorLedgerState | null,
+): GovernorMemoryAuthorityState | null {
   if (!state || (state.status !== "memory_current" && state.status !== "memory_retired")) {
     return null;
   }
@@ -101,7 +103,8 @@ function rejectMemoryAdvance(
   if (
     next.taskDigest === prior.taskDigest &&
     (next.objectiveRevision < prior.objectiveRevision ||
-      (next.objectiveRevision === prior.objectiveRevision && next.planVersion < prior.planVersion) ||
+      (next.objectiveRevision === prior.objectiveRevision &&
+        next.planVersion < prior.planVersion) ||
       (next.objectiveRevision === prior.objectiveRevision &&
         next.planVersion === prior.planVersion &&
         next.taskVersion < prior.taskVersion))

@@ -11,8 +11,8 @@ import {
   createGovernorHostRuntimeBindings,
   createGovernorHostRuntimeIfEnabled,
 } from "./governor-host-bootstrap.js";
-import { isTrustedGovernorMemoryAuthority } from "./governor-host-readonly.js";
 import { isTrustedGovernorPhysicalExecutionCoordinator } from "./governor-host-physical-execution.js";
+import { isTrustedGovernorMemoryAuthority } from "./governor-host-readonly.js";
 import { isTrustedGovernorTaskAuthority } from "./governor-host-task-authority.js";
 
 const env = (stateDir: string): NodeJS.ProcessEnv => ({
