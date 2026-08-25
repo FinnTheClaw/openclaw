@@ -307,7 +307,7 @@ describe("governor V14 release blockers", () => {
       async (state) => {
         const env = syntheticGovernorSecretsEnvironment(state.stateDir);
         const secrets = resolveGovernorSecrets(env);
-        let crash = true;
+        let crash = false;
         const persistence = createGovernorHostPersistence({
           env,
           stateDir: state.stateDir,
@@ -357,6 +357,7 @@ describe("governor V14 release blockers", () => {
         if (!held) {
           throw new Error("expected approval before revocation");
         }
+        crash = true;
         expect(() =>
           broker.capabilities.submitApprovalRevocation({
             grantId: held.grantId,
