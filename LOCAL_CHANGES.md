@@ -227,3 +227,46 @@ The idempotent recovery command moved extraction from 33 dead rows to zero;
 remaining work is durably leased, pending, or in bounded retry. A separate
 actual-Qwen exec canary also completed exactly once with the legacy debug hook
 absent.
+
+## 2026-08-27 accepted subagent registration and local memory failover
+
+Source commit `dd4c6b6632264e423fb0f305305e86810847723d` fixes the
+accepted-child persistence order without adding a new scheduler or guard. The
+registry projection now performs the durable registration CAS only for the
+accepted `dispatched` record, rather than the provisional `unknown` reservation
+record that is flushed first. That ordering error caused long-running Finn
+subagents to finish physically while their parent failed registration and never
+compiled the completion until another turn.
+
+The paired `2026.7.1-38` artifacts passed 44 focused/adjacent persistence tests,
+targeted format/lint/diff checks, and the complete production build including
+`plugins:assets:build`. Freshly rebooted Alistar boot
+`4430b98c-860b-44fd-8961-2513ea28f328` installed the exact candidate through
+the canonical Linux provisioner. An installed actual-Qwen canary spawned one
+child, yielded the parent, completed and registered the child under the same
+provider/run identity, woke the parent without a follow-up message, and
+announced completion once. No child-registration CAS, replay, or duplicate
+error appeared.
+
+- Core artifact SHA-256: `7fbd375bbb71b25e469fb75f08a5e4b3095e78d117209752ef395b65f205aa09`.
+- Memory artifact SHA-256: `b96f2daecc6ab20cc45f012f0d2b927148705b34075f1170169f81478b1e4a0d`.
+- Installed runtime tree SHA-256: `d866a5f9b23dbcb0580ad1d73c4bd2af013c482c9d1bf151be72ae146a3b017c`.
+
+The stable OpenClaw aliases remain `moira/memory` and
+`moira/memory-embedding`; those names are API contracts, not physical-host
+claims. Coordinator role persistence now selects Narya Gemma 4 and Narya
+Qwen3-Embedding-8B as the primaries and retains explicit compatible Moira
+fallbacks. Direct alias probes returned the Narya generation model and a healthy
+1,024-dimensional Narya embedding response.
+
+The native stopgap settings are also explicit in the canonical provisioner:
+main concurrency 4, subagent admission 50, and built-in loop detection with a
+30-item history and 10/10/20/30 thresholds. Finn's stronger existing
+pre-compaction memory flush remains unchanged at 20,000 tokens plus a 16 MB
+transcript fuse. No hosted fallback, duplicate memory store, shell guard,
+generic retry cap, or alternate planning/governor authority was added.
+
+The standard handoff gate passed the coordinator, actual-Qwen, context,
+streaming, and runtime-tree probes but stopped on one inherited durable-memory
+dead extraction row. That backlog remains open and this promotion does not
+claim it resolved.
