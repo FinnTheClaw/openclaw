@@ -11,16 +11,19 @@ export type GatewayBehaviorGovernorModuleRuntime = Readonly<{
 export class GatewayBehaviorGovernorModuleStartupError extends Error {
   readonly moduleId: string;
   readonly runtime: GatewayBehaviorGovernorModuleRuntime;
+  readonly activation: GatewayBehaviorGovernorModuleActivationContext;
 
   constructor(params: {
     moduleId: string;
     runtime: GatewayBehaviorGovernorModuleRuntime;
+    activation: GatewayBehaviorGovernorModuleActivationContext;
     cause: unknown;
   }) {
     super("GOVERNOR_MODULE_FACTORY_CLEANUP_INCOMPLETE", { cause: params.cause });
     this.name = "GatewayBehaviorGovernorModuleStartupError";
     this.moduleId = params.moduleId;
     this.runtime = params.runtime;
+    this.activation = params.activation;
   }
 }
 
@@ -228,41 +231,61 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
     }
     const resolved = resolveModules({ catalog, selections });
     const started: typeof active = [];
-    let startingId: string | undefined;
+    let starting:
+      | {
+          id: string;
+          context: GatewayBehaviorGovernorModuleActivationContext;
+        }
+      | undefined;
     try {
       for (const item of resolved) {
-        startingId = item.descriptor.id;
-        const create = await item.descriptor.load();
-        if (typeof create !== "function") {
-          throw new Error("GOVERNOR_MODULE_FACTORY_INVALID");
-        }
-        const runtime = await create({
+        const context = Object.freeze({
           id: item.selection.id,
           mode: item.selection.mode,
           version: item.selection.version,
         });
+        starting = { id: item.descriptor.id, context };
+        const create = await item.descriptor.load();
+        if (typeof create !== "function") {
+          throw new Error("GOVERNOR_MODULE_FACTORY_INVALID");
+        }
+        const runtime = await create(context);
         if (!runtime || typeof runtime.close !== "function") {
           throw new Error("GOVERNOR_MODULE_RUNTIME_INVALID");
         }
         started.push({ id: item.selection.id, runtime });
-        startingId = undefined;
+        starting = undefined;
       }
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       const survivors: typeof active = [];
-      for (const item of started.toReversed()) {
+      const cleanup = [...started];
+      if (
+        error instanceof GatewayBehaviorGovernorModuleStartupError &&
+        !cleanup.some((item) => item.runtime === error.runtime)
+      ) {
+        // The carried runtime is a cleanup liability even if its claimed
+        // module id or activation context is untrusted. The exact context
+        // identity only decides which attempt owns its accounting label.
+        const currentAttempt = starting;
+        const survivorId =
+          currentAttempt !== undefined &&
+          error.moduleId === currentAttempt.id &&
+          error.activation === currentAttempt.context
+            ? currentAttempt.id
+            : "GOVERNOR_MODULE_UNKNOWN_SURVIVOR";
+        cleanup.push({
+          id: survivorId,
+          runtime: error.runtime,
+        });
+      }
+      for (const item of cleanup.toReversed()) {
         try {
           await item.runtime.close();
         } catch (cleanupError) {
           cleanupErrors.push(cleanupError);
           survivors.push(item);
         }
-      }
-      if (
-        error instanceof GatewayBehaviorGovernorModuleStartupError &&
-        error.moduleId === startingId
-      ) {
-        survivors.push({ id: error.moduleId, runtime: error.runtime });
       }
       // Retain only runtimes whose close failed. Gateway shutdown can retry
       // those survivors without double-closing a runtime that already closed.
@@ -299,6 +322,8 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
     if (closed) {
       return;
     }
+    // A partial shutdown must not leave the applied-plan fast path live.
+    poisoned = true;
     const errors: unknown[] = [];
     const survivors: typeof active = [];
     for (const item of active.toReversed()) {

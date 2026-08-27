@@ -161,11 +161,19 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     | undefined;
   let initialized = false;
   let poisoned = false;
+  let closed = false;
   let serial = Promise.resolve();
 
   const closeUnsafe = async () => {
+    if (closed) {
+      return;
+    }
+    // A shutdown may have already closed a subset of resources. Never let
+    // apply report the cached plan as active while its cleanup is incomplete.
+    poisoned = true;
     const current = active;
     if (!current) {
+      closed = true;
       return;
     }
     const errors: unknown[] = [];
@@ -189,6 +197,7 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       throw new AggregateError(errors, "GOVERNOR_GATEWAY_CLOSE_FAILED");
     }
     active = undefined;
+    closed = true;
   };
 
   const freezeUnsafe = () => {
@@ -201,6 +210,9 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     config: OpenClawConfig,
     secretSnapshot: GatewayBehaviorGovernorSecretSnapshot,
   ) => {
+    if (closed) {
+      throw new Error("GOVERNOR_GATEWAY_LIFECYCLE_CLOSED");
+    }
     if (poisoned) {
       throw new Error("GOVERNOR_GATEWAY_LIFECYCLE_POISONED");
     }

@@ -268,7 +268,13 @@ describe("gateway behavior governor prepared snapshot binding", () => {
         });
         await closeFailure.apply(configFor(sourceGovernor), snapshotFor(state.stateDir));
         await expect(closeFailure.close()).rejects.toBeInstanceOf(AggregateError);
+        await expect(
+          closeFailure.apply(configFor(sourceGovernor), snapshotFor(state.stateDir)),
+        ).rejects.toThrow("GOVERNOR_GATEWAY_LIFECYCLE_POISONED");
         await closeFailure.close();
+        await expect(
+          closeFailure.apply(configFor(sourceGovernor), snapshotFor(state.stateDir)),
+        ).rejects.toThrow("GOVERNOR_GATEWAY_LIFECYCLE_CLOSED");
         expect(closeCalls).toBe(2);
       },
     );
@@ -304,8 +310,14 @@ describe("gateway behavior governor prepared snapshot binding", () => {
         await lifecycle.apply(configFor(sourceGovernor), snapshotFor(state.stateDir));
 
         await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_GATEWAY_CLOSE_FAILED");
+        await expect(
+          lifecycle.apply(configFor(sourceGovernor), snapshotFor(state.stateDir)),
+        ).rejects.toThrow("GOVERNOR_GATEWAY_LIFECYCLE_POISONED");
         await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_GATEWAY_CLOSE_FAILED");
         await lifecycle.close();
+        await expect(
+          lifecycle.apply(configFor(sourceGovernor), snapshotFor(state.stateDir)),
+        ).rejects.toThrow("GOVERNOR_GATEWAY_LIFECYCLE_CLOSED");
 
         expect(runtimeClose).toHaveBeenCalledTimes(2);
         expect(hostClose).toHaveBeenCalledTimes(3);

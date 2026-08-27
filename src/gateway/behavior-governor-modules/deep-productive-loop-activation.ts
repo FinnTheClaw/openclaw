@@ -112,6 +112,7 @@ export function createDeepProductiveLoopActivator(params: {
         throw new GatewayBehaviorGovernorModuleStartupError({
           moduleId: context.id,
           runtime,
+          activation: context,
           cause: new AggregateError(
             [error, cleanupError],
             "GOVERNOR_C03_ACTIVATION_ROLLBACK_FAILED",

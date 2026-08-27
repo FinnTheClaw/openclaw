@@ -267,7 +267,13 @@ describe("gateway behavior governor module lifecycle", () => {
 
     await lifecycle.apply([selection("C01"), selection("C02")]);
     await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_MODULE_CLOSE_FAILED");
+    await expect(lifecycle.apply([selection("C01"), selection("C02")])).rejects.toThrow(
+      "GOVERNOR_MODULE_LIFECYCLE_POISONED",
+    );
     await lifecycle.close();
+    await expect(lifecycle.apply([selection("C01"), selection("C02")])).rejects.toThrow(
+      "GOVERNOR_MODULE_LIFECYCLE_CLOSED",
+    );
 
     expect(events.filter((event) => event === "close:C01")).toHaveLength(1);
     expect(events.filter((event) => event === "close:C02")).toHaveLength(2);
@@ -282,10 +288,11 @@ describe("gateway behavior governor module lifecycle", () => {
     });
     const failed: GatewayBehaviorGovernorModuleDescriptor = {
       ...descriptor({ id: "C03" }),
-      load: async () => async () => {
+      load: async () => async (activation) => {
         throw new GatewayBehaviorGovernorModuleStartupError({
           moduleId: "C03",
           runtime: { close },
+          activation,
           cause: new Error("factory activation failed"),
         });
       },
@@ -297,9 +304,120 @@ describe("gateway behavior governor module lifecycle", () => {
     );
     await expect(lifecycle.apply([])).rejects.toThrow("GOVERNOR_MODULE_LIFECYCLE_POISONED");
     await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_MODULE_CLOSE_FAILED");
-    await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_MODULE_CLOSE_FAILED");
     await lifecycle.close();
 
     expect(close).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not double-close a carried runtime that aliases a started module", async () => {
+    let closeFailures = 1;
+    const close = vi.fn(() => {
+      if (closeFailures-- > 0) {
+        throw new Error("shared runtime close failed");
+      }
+    });
+    const shared = { close };
+    const c01: GatewayBehaviorGovernorModuleDescriptor = {
+      ...descriptor({ id: "C01" }),
+      load: async () => async () => shared,
+    };
+    const c02: GatewayBehaviorGovernorModuleDescriptor = {
+      ...descriptor({ id: "C02", dependencies: ["C01"] }),
+      load: async () => async (activation) => {
+        throw new GatewayBehaviorGovernorModuleStartupError({
+          moduleId: "C02",
+          runtime: shared,
+          activation,
+          cause: new Error("C02 failed after aliasing C01"),
+        });
+      },
+    };
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [c01, c02] });
+
+    await expect(lifecycle.apply([selection("C01"), selection("C02")])).rejects.toThrow(
+      "GOVERNOR_MODULE_STARTUP_CLEANUP_FAILED",
+    );
+    expect(close).toHaveBeenCalledTimes(1);
+    await lifecycle.close();
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a same-id carried runtime only when its activation identity mismatches", async () => {
+    let closeFailures = 1;
+    const close = vi.fn(() => {
+      if (closeFailures-- > 0) {
+        throw new Error("mismatched survivor close failed");
+      }
+    });
+    const c01: GatewayBehaviorGovernorModuleDescriptor = {
+      ...descriptor({ id: "C01" }),
+      load: async () => async () => {
+        throw new GatewayBehaviorGovernorModuleStartupError({
+          moduleId: "C01",
+          runtime: { close },
+          activation: { id: "C01", mode: "shadow", version: "1.0.0" },
+          cause: new Error("mismatched carried runtime"),
+        });
+      },
+    };
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [c01] });
+
+    await expect(lifecycle.apply([selection("C01")])).rejects.toThrow(
+      "GOVERNOR_MODULE_STARTUP_CLEANUP_FAILED",
+    );
+    await expect(lifecycle.apply([selection("C01")])).rejects.toThrow(
+      "GOVERNOR_MODULE_LIFECYCLE_POISONED",
+    );
+    await lifecycle.close();
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries preexisting and carried survivors in reverse dependency order", async () => {
+    const events: string[] = [];
+    const runtime = (id: string) => {
+      let closeFailures = 1;
+      return {
+        close: () => {
+          events.push(`close:${id}`);
+          if (closeFailures-- > 0) {
+            throw new Error(`close failed: ${id}`);
+          }
+        },
+      };
+    };
+    const c01: GatewayBehaviorGovernorModuleDescriptor = {
+      ...descriptor({ id: "C01" }),
+      load: async () => async () => runtime("C01"),
+    };
+    const c02: GatewayBehaviorGovernorModuleDescriptor = {
+      ...descriptor({ id: "C02", dependencies: ["C01"] }),
+      load: async () => async () => runtime("C02"),
+    };
+    const c03: GatewayBehaviorGovernorModuleDescriptor = {
+      ...descriptor({ id: "C03", dependencies: ["C02"] }),
+      load: async () => async (activation) => {
+        throw new GatewayBehaviorGovernorModuleStartupError({
+          moduleId: "C03",
+          runtime: runtime("C03"),
+          activation,
+          cause: new Error("C03 activation failed"),
+        });
+      },
+    };
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [c03, c02, c01] });
+
+    await expect(
+      lifecycle.apply([selection("C01"), selection("C02"), selection("C03")]),
+    ).rejects.toThrow("GOVERNOR_MODULE_STARTUP_CLEANUP_FAILED");
+    await lifecycle.close();
+
+    expect(events).toEqual([
+      "close:C03",
+      "close:C02",
+      "close:C01",
+      "close:C03",
+      "close:C02",
+      "close:C01",
+    ]);
   });
 });
