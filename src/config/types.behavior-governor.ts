@@ -48,6 +48,7 @@ export type BehaviorGovernorConfig =
       mode: "shadow" | "enforce";
       secretRefs: BehaviorGovernorSecretRefs;
       agentLoop: BehaviorGovernorAgentLoopConfig;
+      modules?: readonly BehaviorGovernorModuleSelection[];
     }>
   | Readonly<{
       modules: readonly BehaviorGovernorModuleSelection[];

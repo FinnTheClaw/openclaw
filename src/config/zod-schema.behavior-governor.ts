@@ -85,6 +85,7 @@ export const BehaviorGovernorConfigSchema = z.union([
       mode: z.enum(["shadow", "enforce"]),
       secretRefs: SecretRefsSchema,
       agentLoop: AgentLoopSchema,
+      modules: z.array(ModuleSelectionSchema).max(64).optional(),
     })
     .strict(),
   z.object({ modules: z.array(ModuleSelectionSchema).max(64) }).strict(),
