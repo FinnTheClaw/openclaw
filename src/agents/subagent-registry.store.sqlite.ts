@@ -398,6 +398,7 @@ export function saveSubagentRegistryToSqlite(runs: Map<string, SubagentRunRecord
       }
       entry.projectionRevision = currentRow ? expectedProjectionRevision + 1 : 0;
       if (
+        entry.spawnAdmission === "dispatched" &&
         entry.reservationOwnerToken &&
         entry.childIntentKey &&
         !commitSubagentRunRegistrationInTransaction(db, entry)

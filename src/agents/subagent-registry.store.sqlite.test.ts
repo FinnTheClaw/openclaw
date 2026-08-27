@@ -1,4 +1,4 @@
-// Subagent registry SQLite store tests cover whole-snapshot persistence and
+// Subagent registry SQLite store tests cover monotonic row persistence and
 // one-time import from the legacy JSON registry file.
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -9,6 +9,10 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import {
+  reserveSubagentRunAtomically,
+  transitionSubagentRunAdmissionAtomically,
+} from "./subagent-child-intent-store.sqlite.js";
 import {
   loadSubagentRegistryFromSqlite,
   saveSubagentRegistryToSqlite,
@@ -115,7 +119,7 @@ describe("subagent registry sqlite store", () => {
     });
   });
 
-  it("uses save calls as whole-registry snapshots", async () => {
+  it("does not let a stale partial save prune another run", async () => {
     await withTempStateEnv(async () => {
       const first = createRun({ runId: "run-one", childSessionKey: "agent:main:subagent:one" });
       const second = createRun({ runId: "run-two", childSessionKey: "agent:main:subagent:two" });
@@ -128,7 +132,94 @@ describe("subagent registry sqlite store", () => {
       );
       saveSubagentRegistryToSqlite(new Map([[second.runId, second]]));
 
-      expect([...loadSubagentRegistryFromSqlite().keys()]).toEqual(["run-two"]);
+      expect([...loadSubagentRegistryFromSqlite().keys()]).toEqual(["run-one", "run-two"]);
+    });
+  });
+
+  it("registers an accepted provider run after flushing its provisional unknown reservation", async () => {
+    await withTempStateEnv(async () => {
+      const controllerSessionKey = "agent:main:main";
+      const childIntentKey = "child_op_resume";
+      const operationKey = "resume-1";
+      const reservationToken = "reservation-owner-resume";
+      const reservationRunId = "child_reservation_resume";
+      const providerRunId = "child_acceptance_resume";
+      const provisional = createRun({
+        runId: reservationRunId,
+        childSessionKey: "agent:main:subagent:resume",
+        controllerSessionKey,
+        childIntentKey,
+        childIntentLookupKey: childIntentKey,
+        childIntentOperationKey: operationKey,
+        childIntentRequestDigest: "request-resume",
+        childIntentPreparationDigest: "preparation-resume",
+        childIntentBehaviorDigest: "resolved-resume",
+        childIntentTargetAgentId: "main",
+        reservationOwnerToken: reservationToken,
+        reservationExpiresAt: Date.now() + 60_000,
+        providerRunId,
+        spawnAdmission: "unknown",
+        endedAt: undefined,
+        outcome: undefined,
+        archiveAtMs: undefined,
+        execution: { status: "running", startedAt: 110 },
+      });
+
+      expect(
+        reserveSubagentRunAtomically(
+          { ...provisional, providerRunId: undefined, spawnAdmission: "reserved" },
+          4,
+        ),
+      ).toBeNull();
+      expect(
+        transitionSubagentRunAdmissionAtomically({
+          childIntentKey,
+          controllerSessionKey,
+          operationKey,
+          reservationOwnerToken: reservationToken,
+          from: "reserved",
+          to: "dispatching",
+        }),
+      ).not.toBeNull();
+      expect(
+        transitionSubagentRunAdmissionAtomically({
+          childIntentKey,
+          controllerSessionKey,
+          operationKey,
+          reservationOwnerToken: reservationToken,
+          from: "dispatching",
+          to: "unknown",
+          providerRunId,
+        }),
+      ).not.toBeNull();
+
+      const accepted = createRun({
+        ...provisional,
+        runId: providerRunId,
+        taskRunId: providerRunId,
+        spawnAdmission: "dispatched",
+      });
+      expect(() =>
+        saveSubagentRegistryToSqlite(
+          new Map([
+            [provisional.runId, provisional],
+            [accepted.runId, accepted],
+          ]),
+        ),
+      ).not.toThrow();
+
+      expect(
+        openOpenClawStateDatabase()
+          .db.prepare(
+            "SELECT state, registered_run_id, provider_run_id FROM subagent_child_intents " +
+              "WHERE controller_session_key = ? AND canonical_key = ? AND operation_key = ?",
+          )
+          .get(controllerSessionKey, childIntentKey, operationKey),
+      ).toEqual({
+        state: "registered",
+        registered_run_id: providerRunId,
+        provider_run_id: providerRunId,
+      });
     });
   });
 
