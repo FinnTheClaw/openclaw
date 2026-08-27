@@ -5,14 +5,12 @@ import { testing as cliBackendsTesting } from "./cli-backends.js";
 import {
   awaitChildDispatchProtocolCommand,
   emitChildDispatchProtocolEvent,
+  requireChildDispatchProtocolPath,
 } from "./subagent-child-dispatch-process-protocol.js";
 import { installChildDispatchTestHooksForProcess } from "./subagent-child-dispatch-test-hooks.js";
 import { installGatewayAcceptanceReceiptSigner } from "./subagent-gateway-acceptance-receipt-runtime.js";
 
-const protocolPath = process.env.CHILD_DISPATCH_PROTOCOL;
-if (!protocolPath) {
-  throw new Error("CHILD_DISPATCH_PROTOCOL is required");
-}
+const protocolPath = requireChildDispatchProtocolPath();
 
 function installBarrierHooks(): void {
   installChildDispatchTestHooksForProcess({

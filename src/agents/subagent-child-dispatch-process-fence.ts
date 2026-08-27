@@ -91,9 +91,7 @@ async function replayAfterRestart(
   await allow(harness, "intent.reserved", barriers);
   const line = await controller.waitForAny(["RESULT ", "ERROR "], 45_000);
   await controller.close();
-  const result = line.startsWith("RESULT ")
-    ? (JSON.parse(line.slice(7)) as Record<string, unknown>)
-    : { status: "error", error: JSON.parse(line.slice(6)) };
+  const result = JSON.parse(line.slice(7)) as Record<string, unknown>;
   assert.equal(result.status, "accepted");
   assert.equal(result.runId, expectedRunId);
   return result;
