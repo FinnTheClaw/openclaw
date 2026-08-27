@@ -4,10 +4,13 @@ import { createServer } from "node:http";
 import { createInterface } from "node:readline";
 import { emitChildDispatchProtocolEvent } from "./subagent-child-dispatch-process-protocol.js";
 
-const counter = process.env.MODEL_COUNTER;
-if (!counter) {
-  throw new Error("MODEL_COUNTER is required");
-}
+const counter = (() => {
+  const value = process.env.MODEL_COUNTER;
+  if (!value) {
+    throw new Error("MODEL_COUNTER is required");
+  }
+  return value;
+})();
 const protocolPath = process.env.CHILD_DISPATCH_PROTOCOL;
 
 async function record(): Promise<void> {

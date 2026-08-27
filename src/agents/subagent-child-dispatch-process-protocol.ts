@@ -5,6 +5,14 @@ import path from "node:path";
 export const CHILD_DISPATCH_PROTOCOL_VERSION = 1 as const;
 export const CHILD_DISPATCH_PROTOCOL_TIMEOUT_MS = 10_000;
 
+export function requireChildDispatchProtocolPath(): string {
+  const protocolPath = process.env.CHILD_DISPATCH_PROTOCOL;
+  if (!protocolPath) {
+    throw new Error("CHILD_DISPATCH_PROTOCOL is required");
+  }
+  return protocolPath;
+}
+
 export type ChildDispatchProtocolRecord =
   | {
       version: typeof CHILD_DISPATCH_PROTOCOL_VERSION;
@@ -118,13 +126,9 @@ export async function awaitChildDispatchProtocolCommand(params: {
     offset,
     timeoutMs: params.timeoutMs,
     description: `child dispatch barrier ${params.id}`,
-    predicate: (record) => record.kind === "command" && record.id === params.id,
-  }).then((record) => {
-    if (record.kind !== "command") {
-      throw new Error(`invalid child dispatch command ${params.id}`);
-    }
-    return record.action;
-  });
+    predicate: (record): record is Extract<ChildDispatchProtocolRecord, { kind: "command" }> =>
+      record.kind === "command" && record.id === params.id,
+  }).then((record) => record.action);
 }
 
 export async function releaseChildDispatchProtocolBarrier(params: {

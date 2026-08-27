@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import {
   awaitChildDispatchProtocolCommand,
   emitChildDispatchProtocolEvent,
+  requireChildDispatchProtocolPath,
 } from "./subagent-child-dispatch-process-protocol.js";
 import { installChildDispatchTestHooksForProcess } from "./subagent-child-dispatch-test-hooks.js";
 import { cancelSubagentChildIntentAtomically } from "./subagent-child-intent-store-lifecycle.sqlite.js";
@@ -15,10 +16,7 @@ import { readGatewayAcceptanceReceipt } from "./subagent-gateway-acceptance-rece
 import { releaseSubagentRun } from "./subagent-registry.js";
 import { spawnSubagentDirect } from "./subagent-spawn.js";
 
-const protocolPath = process.env.CHILD_DISPATCH_PROTOCOL;
-if (!protocolPath) {
-  throw new Error("CHILD_DISPATCH_PROTOCOL is required");
-}
+const protocolPath = requireChildDispatchProtocolPath();
 
 if (process.env.INSTALL_RECEIPT_SIGNER === "1") {
   installGatewayAcceptanceReceiptSigner({
