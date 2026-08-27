@@ -26,28 +26,6 @@ const EXTENSIONS = new Set([
   ".tsx",
   ".zsh",
 ]);
-const HASH_COMMENT_EXTENSIONS = new Set([
-  ".bash",
-  ".fish",
-  ".pl",
-  ".ps1",
-  ".py",
-  ".rb",
-  ".sh",
-  ".zsh",
-]);
-const SLASH_COMMENT_EXTENSIONS = new Set([
-  ".cjs",
-  ".cts",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".mts",
-  ".rs",
-  ".swift",
-  ".ts",
-  ".tsx",
-]);
 const GENERATED_UNTRACKED_ROOTS = new Set([
   ".artifacts",
   ".pnpm-store",
@@ -64,8 +42,8 @@ type Change = {
   origin: "diff" | "untracked";
   path: string;
 };
-type CommentStyle = "hash" | "none" | "slash";
-type Candidate = { content: string; style: CommentStyle };
+type IndexEntry = { mode: string; objectId: string; path: string; stage: string };
+type Representation = { governed: boolean; lines: number; source: "index" | "worktree" };
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
@@ -111,6 +89,14 @@ function decode(buffer: Buffer, filePath: string): string {
   } catch {
     throw new Error(`governed source is not valid UTF-8: ${filePath}`);
   }
+}
+
+function countNonblankLines(content: string): number {
+  return content.split("\n").filter((line) => line.trim().length > 0).length;
+}
+
+function isGoverned(filePath: string, executable: boolean, shebang: boolean): boolean {
+  return EXTENSIONS.has(extname(filePath).toLowerCase()) || executable || shebang;
 }
 
 function parseBaseline(value: unknown): Baseline {
@@ -195,22 +181,21 @@ function collectChanges(root: string, baseCommit: string): Change[] {
   const byPath = new Map<string, Change>();
   for (const change of [...working, ...staged]) {
     const previous = byPath.get(change.path);
-    if (previous?.baselinePath && !change.baselinePath) {
-      byPath.set(change.path, { ...change, baselinePath: previous.baselinePath, kind: "existing" });
-    } else {
-      byPath.set(change.path, change);
-    }
+    byPath.set(
+      change.path,
+      previous?.baselinePath && !change.baselinePath
+        ? { ...change, baselinePath: previous.baselinePath, kind: "existing" }
+        : change,
+    );
   }
-  const changes = [...byPath.values()];
-  const seen = new Set(changes.map((change) => change.path));
   const ordinary = git(["ls-files", "--others", "--exclude-standard", "-z"], root);
   const ignored = git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], root);
   for (const filePath of `${ordinary}${ignored}`.split("\0").filter(Boolean)) {
-    if (!seen.has(filePath)) {
-      changes.push({ kind: "new", origin: "untracked", path: filePath });
-      seen.add(filePath);
+    if (!byPath.has(filePath)) {
+      byPath.set(filePath, { kind: "new", origin: "untracked", path: filePath });
     }
   }
+  const changes = [...byPath.values()];
   for (const change of changes) {
     validatePath(change.path);
     if (change.baselinePath) {
@@ -224,130 +209,89 @@ function collectChanges(root: string, baseCommit: string): Change[] {
   );
 }
 
-function indexExecutableModes(root: string): Map<string, boolean> {
-  const modes = new Map<string, boolean>();
-  for (const record of git(["ls-files", "--stage", "-z"], root).split("\0")) {
+function parseIndexEntries(root: string): Map<string, IndexEntry[]> {
+  const entries = new Map<string, IndexEntry[]>();
+  for (const record of git(["ls-files", "--stage", "-z"], root).split("\0").filter(Boolean)) {
     const separator = record.indexOf("\t");
-    if (separator > 0) {
-      modes.set(record.slice(separator + 1), record.startsWith("100755 "));
+    const metadata = separator > 0 ? record.slice(0, separator).split(" ") : [];
+    const filePath = separator > 0 ? record.slice(separator + 1) : "";
+    if (metadata.length !== 3 || !filePath) {
+      throw new Error(`malformed Git index record: ${JSON.stringify(record)}`);
     }
+    validatePath(filePath);
+    const entry = { mode: metadata[0], objectId: metadata[1], path: filePath, stage: metadata[2] };
+    entries.set(filePath, [...(entries.get(filePath) ?? []), entry]);
   }
-  return modes;
+  return entries;
 }
 
-function styleFor(filePath: string, content: string): CommentStyle {
-  const extension = extname(filePath).toLowerCase();
-  if (HASH_COMMENT_EXTENSIONS.has(extension)) {
-    return "hash";
-  }
-  if (SLASH_COMMENT_EXTENSIONS.has(extension)) {
-    return "slash";
-  }
-  const firstLine = content.split("\n", 1)[0].toLowerCase();
-  const hashRuntimes = [
-    "python",
-    "ruby",
-    "perl",
-    "pwsh",
-    "powershell",
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-  ];
-  if (firstLine.startsWith("#!") && hashRuntimes.some((runtime) => firstLine.includes(runtime))) {
-    return "hash";
-  }
+function readGitBlob(root: string, objectId: string, filePath: string): Buffer {
   if (
-    firstLine.startsWith("#!") &&
-    ["node", "deno", "bun"].some((runtime) => firstLine.includes(runtime))
+    !/^[0-9a-f]{40,64}$/u.test(objectId) ||
+    git(["cat-file", "-t", objectId], root).trim() !== "blob"
   ) {
-    return "slash";
+    throw new Error(`Git object is not a valid blob for ${filePath}`);
   }
-  return "none";
+  return gitBuffer(["cat-file", "blob", objectId], root);
 }
 
-function isWholeLineComment(trimmed: string, style: CommentStyle): boolean {
-  if (style === "slash") {
-    return trimmed.startsWith("//");
+function indexRepresentation(
+  root: string,
+  entries: IndexEntry[] | undefined,
+): Representation | undefined {
+  if (!entries) {
+    return undefined;
   }
-  if (style === "hash") {
-    return trimmed.startsWith("#") && !trimmed.startsWith("#!");
+  if (entries.length !== 1 || entries[0].stage !== "0") {
+    throw new Error(
+      `unmerged or duplicate Git index stages for ${entries[0]?.path ?? "unknown path"}`,
+    );
   }
-  return false;
+  const entry = entries[0];
+  if (entry.mode !== "100644" && entry.mode !== "100755") {
+    throw new Error(`Git index path is not a regular blob: ${entry.path} mode=${entry.mode}`);
+  }
+  const buffer = readGitBlob(root, entry.objectId, entry.path);
+  const shebang = buffer.length >= 2 && buffer[0] === 0x23 && buffer[1] === 0x21;
+  const governed = isGoverned(entry.path, entry.mode === "100755", shebang);
+  return {
+    governed,
+    lines: governed ? countNonblankLines(decode(buffer, entry.path)) : 0,
+    source: "index",
+  };
 }
 
-function countLines(content: string, style: CommentStyle): number {
-  let count = 0;
-  let inWholeLineBlock = false;
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-    if (style === "slash" && inWholeLineBlock) {
-      const closing = trimmed.indexOf("*/");
-      if (closing === -1) {
-        if (trimmed.includes("/*")) {
-          count++;
-        }
-        continue;
-      }
-      const beforeClosing = trimmed.slice(0, closing);
-      const afterClosing = trimmed.slice(closing + 2).trim();
-      if (beforeClosing.includes("/*") || afterClosing) {
-        count++;
-      }
-      inWholeLineBlock = false;
-      continue;
-    }
-    if (isWholeLineComment(trimmed, style)) {
-      continue;
-    }
-    if (style === "slash" && trimmed.startsWith("/*")) {
-      const closing = trimmed.indexOf("*/", 2);
-      if (closing === -1) {
-        inWholeLineBlock = true;
-        continue;
-      }
-      if (trimmed.slice(closing + 2).trim()) {
-        count++;
-      }
-      continue;
-    }
-    if (trimmed) {
-      count++;
-    }
-  }
-  return count;
-}
-
-async function inspectCandidate(
+async function worktreeRepresentation(
   root: string,
   filePath: string,
-  indexExecutable: boolean,
-): Promise<Candidate | undefined> {
+): Promise<Representation | undefined> {
   const absolutePath = join(root, filePath);
-  const before = await lstat(absolutePath);
+  let before;
+  try {
+    before = await lstat(absolutePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
   if (!before.isFile()) {
-    throw new Error(`changed path must be a regular file: ${filePath}`);
+    throw new Error(`working-tree path is not a regular file: ${filePath}`);
   }
   const handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const after = await handle.stat();
     if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino) {
-      throw new Error(`changed path changed during inspection: ${filePath}`);
+      throw new Error(`working-tree path changed during inspection: ${filePath}`);
     }
-    const prefix = Buffer.alloc(2);
-    const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0);
-    const shebang = bytesRead === 2 && prefix[0] === 0x23 && prefix[1] === 0x21;
-    const executable = (after.mode & 0o111) !== 0 || indexExecutable;
-    const extension = extname(filePath).toLowerCase();
-    if (!shebang && !executable && !EXTENSIONS.has(extension)) {
-      return undefined;
-    }
-    const content = decode(await handle.readFile(), filePath);
-    return { content, style: styleFor(filePath, content) };
+    const buffer = await handle.readFile();
+    const shebang = buffer.length >= 2 && buffer[0] === 0x23 && buffer[1] === 0x21;
+    const governed = isGoverned(filePath, (after.mode & 0o111) !== 0, shebang);
+    return {
+      governed,
+      lines: governed ? countNonblankLines(decode(buffer, filePath)) : 0,
+      source: "worktree",
+    };
   } finally {
     await handle.close();
   }
@@ -358,53 +302,63 @@ function baseAllowance(
   baseCommit: string,
   filePath: string,
 ): { governed: boolean; lines: number } {
-  const blob = gitBuffer(["show", `${baseCommit}:${filePath}`], root);
-  const content = decode(blob, filePath);
-  const treeRecord = git(["ls-tree", "-z", baseCommit, "--", filePath], root);
-  if (!treeRecord) {
-    throw new Error(`base path is missing from immutable tree: ${filePath}`);
+  const rawRecord = git(["ls-tree", "-z", baseCommit, "--", filePath], root);
+  const record = rawRecord.endsWith("\0") ? rawRecord.slice(0, -1) : rawRecord;
+  const separator = record.indexOf("\t");
+  const metadata = separator > 0 ? record.slice(0, separator).split(" ") : [];
+  if (
+    metadata.length !== 3 ||
+    metadata[1] !== "blob" ||
+    !["100644", "100755"].includes(metadata[0])
+  ) {
+    throw new Error(`immutable base path is not a regular blob: ${filePath}`);
   }
-  const executable = treeRecord.startsWith("100755 ");
-  const shebang = blob.length >= 2 && blob[0] === 0x23 && blob[1] === 0x21;
-  const recognized = EXTENSIONS.has(extname(filePath).toLowerCase());
+  const buffer = readGitBlob(root, metadata[2], filePath);
+  const shebang = buffer.length >= 2 && buffer[0] === 0x23 && buffer[1] === 0x21;
+  const governed = isGoverned(filePath, metadata[0] === "100755", shebang);
   return {
-    governed: recognized || executable || shebang,
-    lines: countLines(content, styleFor(filePath, content)),
+    governed,
+    lines: governed ? countNonblankLines(decode(buffer, filePath)) : 0,
   };
 }
 
 async function check(root: string, baseline: Baseline): Promise<number> {
   const failures: string[] = [];
-  const indexModes = indexExecutableModes(root);
+  const index = parseIndexEntries(root);
   let checked = 0;
   for (const change of collectChanges(root, baseline.baseCommit).toSorted((a, b) =>
     a.path.localeCompare(b.path),
   )) {
-    const candidate = await inspectCandidate(
-      root,
-      change.path,
-      indexModes.get(change.path) === true,
-    );
-    if (!candidate) {
+    const representations = [
+      indexRepresentation(root, index.get(change.path)),
+      await worktreeRepresentation(root, change.path),
+    ].filter((value): value is Representation => value !== undefined);
+    const governed = representations.filter((value) => value.governed);
+    if (!governed.length) {
       continue;
     }
     checked++;
-    const lines = countLines(candidate.content, candidate.style);
     const base =
       change.kind === "existing"
         ? baseAllowance(root, baseline.baseCommit, change.baselinePath ?? change.path)
         : undefined;
     const limit = base?.governed ? Math.max(MAX_LINES, base.lines) : MAX_LINES;
-    if (lines > limit) {
-      failures.push(`${lines}\t${limit}\t${change.kind}\t${change.path}`);
+    for (const representation of governed) {
+      if (representation.lines > limit) {
+        failures.push(
+          `${representation.lines}\t${limit}\t${change.kind}\t${representation.source}\t${change.path}`,
+        );
+      }
     }
   }
   if (failures.length) {
-    process.stderr.write("counted-lines\tlimit\tkind\tpath\n");
+    process.stderr.write("nonblank-lines\tlimit\tkind\trepresentation\tpath\n");
     process.stderr.write(`${failures.join("\n")}\n`);
     return 1;
   }
-  process.stdout.write(`source-size-check: ${checked} changed governed files within limits\n`);
+  process.stdout.write(
+    `source-size-check: ${checked} changed governed paths within nonblank limits\n`,
+  );
   return 0;
 }
 

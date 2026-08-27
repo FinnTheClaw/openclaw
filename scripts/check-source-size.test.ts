@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,7 +41,7 @@ function check(cwd: string): Result {
   );
 }
 
-function codeLines(
+function lines(
   count: number,
   makeLine = (index: number) => `const value${index} = ${index};`,
 ): string {
@@ -64,37 +64,40 @@ async function expectNewFailure(
 ): Promise<void> {
   await writeFile(join(cwd, filePath), content, "utf8");
   const result = check(cwd);
-  assert.equal(result.code, 1, `${filePath} should fail`);
+  assert.equal(result.code, 1, `${filePath} should exceed the nonblank limit`);
   assert.match(result.output, pattern);
   await rm(join(cwd, filePath));
+}
+
+async function removeStaged(cwd: string, filePath: string): Promise<void> {
+  assert.equal(git(["rm", "--cached", "-fq", "--", filePath], cwd).code, 0);
+  await rm(join(cwd, filePath), { force: true });
 }
 
 async function main(): Promise<void> {
   const cwd = await mkdtemp(join(tmpdir(), "openclaw-source-size-"));
   try {
-    for (const directory of [
-      "scripts",
-      "src",
-      "docs",
-      "custom/deep",
-      "vendor",
-      ".github/actions",
-      "git-hooks",
-      "node_modules/dependency",
-    ]) {
+    for (const directory of ["scripts", "src", "custom", "vendor", "node_modules/dependency"]) {
       await mkdir(join(cwd, directory), { recursive: true });
     }
     assert.equal(git(["init", "-q"], cwd).code, 0);
     assert.equal(git(["config", "user.email", "test@example.invalid"], cwd).code, 0);
     assert.equal(git(["config", "user.name", "Source Size Test"], cwd).code, 0);
     await writeFile(join(cwd, ".gitignore"), "src/ignored.ts\nnode_modules/\n", "utf8");
-    await writeFile(join(cwd, "legacy.ts"), codeLines(501), "utf8");
-    await writeFile(join(cwd, "docs/legacy.ts"), codeLines(501), "utf8");
-    await writeFile(join(cwd, "rename-data.txt"), codeLines(5000), "utf8");
-    await writeFile(join(cwd, "chmod-data.txt"), codeLines(5000), "utf8");
+    await writeFile(join(cwd, "legacy.ts"), lines(501), "utf8");
+    await writeFile(join(cwd, "rename-data.txt"), lines(5000), "utf8");
+    await writeFile(join(cwd, "chmod-data.txt"), lines(5000), "utf8");
+    await writeFile(join(cwd, "delete-recreate.ts"), lines(501), "utf8");
     assert.equal(
       git(
-        ["add", ".gitignore", "legacy.ts", "docs/legacy.ts", "rename-data.txt", "chmod-data.txt"],
+        [
+          "add",
+          ".gitignore",
+          "legacy.ts",
+          "rename-data.txt",
+          "chmod-data.txt",
+          "delete-recreate.ts",
+        ],
         cwd,
       ).code,
       0,
@@ -110,156 +113,135 @@ async function main(): Promise<void> {
     await writeBaseline(cwd, baseCommit);
     assert.equal(check(cwd).code, 0);
 
-    await writeFile(join(cwd, "legacy.ts"), codeLines(502), "utf8");
+    await writeFile(join(cwd, "legacy.ts"), lines(502), "utf8");
     let result = check(cwd);
     assert.equal(result.code, 1);
-    assert.match(result.output, /502\t501\texisting\tlegacy\.ts/u);
-    await writeFile(join(cwd, "legacy.ts"), codeLines(500), "utf8");
-
-    await rename(join(cwd, "docs/legacy.ts"), join(cwd, "docs/renamed.ts"));
-    await writeFile(join(cwd, "docs/renamed.ts"), codeLines(502), "utf8");
-    assert.equal(git(["add", "-A", "docs/legacy.ts", "docs/renamed.ts"], cwd).code, 0);
-    result = check(cwd);
-    assert.equal(result.code, 1);
-    assert.match(result.output, /502\t501\texisting\tdocs\/renamed\.ts/u);
-    await writeFile(join(cwd, "docs/renamed.ts"), codeLines(500), "utf8");
+    assert.match(result.output, /502\t501\texisting\tworktree\tlegacy\.ts/u);
+    await writeFile(join(cwd, "legacy.ts"), lines(500), "utf8");
 
     await rename(join(cwd, "rename-data.txt"), join(cwd, "feature.ts"));
     assert.equal(git(["add", "-A", "rename-data.txt", "feature.ts"], cwd).code, 0);
     result = check(cwd);
     assert.equal(result.code, 1);
-    assert.match(result.output, /5000\t500\texisting\tfeature\.ts/u);
-    await writeFile(join(cwd, "feature.ts"), codeLines(500), "utf8");
+    assert.match(result.output, /5000\t500\texisting\tindex\tfeature\.ts/u);
+    await writeFile(join(cwd, "feature.ts"), lines(500), "utf8");
+    assert.equal(git(["add", "feature.ts"], cwd).code, 0);
 
-    await chmod(join(cwd, "chmod-data.txt"), 0o644);
     assert.equal(git(["update-index", "--chmod=+x", "chmod-data.txt"], cwd).code, 0);
     result = check(cwd);
     assert.equal(result.code, 1);
-    assert.match(result.output, /5000\t500\texisting\tchmod-data\.txt/u);
-    await writeFile(join(cwd, "chmod-data.txt"), codeLines(500), "utf8");
+    assert.match(result.output, /5000\t500\texisting\tindex\tchmod-data\.txt/u);
+    assert.equal(git(["update-index", "--chmod=-x", "chmod-data.txt"], cwd).code, 0);
 
-    await expectNewFailure(cwd, "copy.ts", codeLines(501), /501\t500\tnew\tcopy\.ts/u);
+    await writeFile(join(cwd, "custom/staged-large.ts"), lines(1000), "utf8");
+    assert.equal(git(["add", "custom/staged-large.ts"], cwd).code, 0);
+    await writeFile(join(cwd, "custom/staged-large.ts"), lines(500), "utf8");
+    result = check(cwd);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /1000\t500\tnew\tindex\tcustom\/staged-large\.ts/u);
+    await removeStaged(cwd, "custom/staged-large.ts");
+
+    await writeFile(join(cwd, "custom/worktree-large.ts"), lines(500), "utf8");
+    assert.equal(git(["add", "custom/worktree-large.ts"], cwd).code, 0);
+    await writeFile(join(cwd, "custom/worktree-large.ts"), lines(1000), "utf8");
+    result = check(cwd);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /1000\t500\tnew\tworktree\tcustom\/worktree-large\.ts/u);
+    await removeStaged(cwd, "custom/worktree-large.ts");
+
+    assert.equal(git(["rm", "--cached", "-q", "delete-recreate.ts"], cwd).code, 0);
+    result = check(cwd);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /501\t500\tnew\tworktree\tdelete-recreate\.ts/u);
+    await writeFile(join(cwd, "delete-recreate.ts"), lines(500), "utf8");
+
+    await expectNewFailure(cwd, "copy.ts", lines(501), /501\t500\tnew\tworktree\tcopy\.ts/u);
+    await expectNewFailure(cwd, "src/ignored.ts", lines(501), /src\/ignored\.ts/u);
     await expectNewFailure(
       cwd,
-      "src/untracked.ts",
-      codeLines(501),
-      /501\t500\tnew\tsrc\/untracked\.ts/u,
+      "custom/regex.ts",
+      lines(501, () => "const r = /[/*]/;"),
+      /custom\/regex\.ts/u,
     );
     await expectNewFailure(
       cwd,
-      "src/ignored.ts",
-      codeLines(501),
-      /501\t500\tnew\tsrc\/ignored\.ts/u,
+      "custom/inline.ts",
+      lines(501, () => "const x = 1; /*"),
+      /custom\/inline\.ts/u,
     );
     await expectNewFailure(
       cwd,
-      "custom/deep/source.ts",
-      codeLines(501),
-      /custom\/deep\/source\.ts/u,
+      "custom/comments.ts",
+      lines(501, () => "// comment"),
+      /custom\/comments\.ts/u,
     );
-    await expectNewFailure(cwd, "vendor/source.ts", codeLines(501), /vendor\/source\.ts/u);
+    const block = ["/*", ...Array<string>(499).fill("* body"), "*/"].join("\n");
     await expectNewFailure(
       cwd,
-      ".github/actions/source.ts",
-      codeLines(501),
-      /.github\/actions\/source\.ts/u,
+      "custom/block.ts",
+      block,
+      /501\t500\tnew\tworktree\tcustom\/block\.ts/u,
     );
+    const template = ["const value = `", ...Array<string>(499).fill("template text"), "`;"].join(
+      "\n",
+    );
+    await expectNewFailure(cwd, "custom/template.ts", template, /custom\/template\.ts/u);
+    const triple = ['value = """', ...Array<string>(499).fill("triple text"), '"""'].join("\n");
+    await expectNewFailure(cwd, "custom/triple.py", triple, /custom\/triple\.py/u);
+    const shell = `#!/bin/sh\n${lines(500, () => "rm -rf /*")}`;
+    await expectNewFailure(cwd, "custom/tool.conf", shell, /custom\/tool\.conf/u);
 
     for (const extension of ["bash", "zsh", "fish", "swift"]) {
       await expectNewFailure(
         cwd,
-        `custom/deep/source.${extension}`,
-        codeLines(501, () => "rm -rf /*"),
-        new RegExp(`501\\t500\\tnew\\tcustom/deep/source\\.${extension}`, "u"),
+        `vendor/source.${extension}`,
+        lines(501),
+        new RegExp(`vendor/source\\.${extension}`, "u"),
       );
     }
 
-    const regexLines = codeLines(501, () => "const matcher = /[/*]/;");
-    await expectNewFailure(cwd, "custom/deep/regex.ts", regexLines, /custom\/deep\/regex\.ts/u);
-    const stringLines = codeLines(501, () => 'const marker = "/*";');
-    await expectNewFailure(cwd, "custom/deep/string.ts", stringLines, /custom\/deep\/string\.ts/u);
-    const pureBlock = ["/*", ...Array<string>(499).fill("* body"), "*/"].join("\n");
-    await writeFile(join(cwd, "custom/deep/pure-block.ts"), pureBlock, "utf8");
-    assert.equal(check(cwd).code, 0, "a 501-line pure whole-line block comment is excluded");
-    await rm(join(cwd, "custom/deep/pure-block.ts"));
-    const trailingCode = `${codeLines(500)}\n/*\nbody\n*/ const extra = 1;`;
-    await expectNewFailure(
-      cwd,
-      "custom/deep/trailing.ts",
-      trailingCode,
-      /501\t500\tnew\tcustom\/deep\/trailing\.ts/u,
+    await writeFile(
+      join(cwd, "custom/blank-heavy.ts"),
+      `${lines(500)}${"\n\n".repeat(1000)}`,
+      "utf8",
     );
-    const inlineBlock = codeLines(501, (index) => `const value${index} = ${index}; /*`);
-    await expectNewFailure(
-      cwd,
-      "custom/deep/inline.ts",
-      inlineBlock,
-      /501\t500\tnew\tcustom\/deep\/inline\.ts/u,
-    );
-    const nestedRust = `${codeLines(499, (index) => `let value_${index} = ${index};`)}\n/*\n/* nested\n*/\n*/`;
-    await expectNewFailure(
-      cwd,
-      "custom/deep/nested.rs",
-      nestedRust,
-      /501\t500\tnew\tcustom\/deep\/nested\.rs/u,
-    );
+    assert.equal(check(cwd).code, 0, "blank physical lines are the only excluded lines");
+    await rm(join(cwd, "custom/blank-heavy.ts"));
 
-    const comments = `${codeLines(500)}\n${Array<string>(100).fill("// comment").join("\n")}`;
-    await writeFile(join(cwd, "custom/deep/comments.ts"), comments, "utf8");
-    assert.equal(check(cwd).code, 0, "only unambiguous whole-line comments are excluded");
-    await rm(join(cwd, "custom/deep/comments.ts"));
-
-    const shell = `#!/bin/sh\n${codeLines(500, () => "rm -rf /*")}`;
-    await expectNewFailure(cwd, "custom/deep/tool.conf", shell, /custom\/deep\/tool\.conf/u);
-    await writeFile(join(cwd, "git-hooks/hook"), codeLines(501), "utf8");
-    await chmod(join(cwd, "git-hooks/hook"), 0o755);
-    result = check(cwd);
-    assert.equal(result.code, 1);
-    assert.match(result.output, /git-hooks\/hook/u);
-    await rm(join(cwd, "git-hooks/hook"));
-    await writeFile(join(cwd, "custom/deep/executable.txt"), codeLines(501), "utf8");
-    await chmod(join(cwd, "custom/deep/executable.txt"), 0o755);
-    result = check(cwd);
-    assert.equal(result.code, 1);
-    assert.match(result.output, /custom\/deep\/executable\.txt/u);
-    await rm(join(cwd, "custom/deep/executable.txt"));
-
-    await writeFile(join(cwd, "node_modules/dependency/large.ts"), codeLines(501), "utf8");
-    assert.equal(check(cwd).code, 0, "proven untracked dependency roots are excluded");
+    await writeFile(join(cwd, "node_modules/dependency/large.ts"), lines(1000), "utf8");
+    assert.equal(check(cwd).code, 0, "untracked generated dependency roots remain excluded");
     await rm(join(cwd, "node_modules/dependency/large.ts"));
 
-    await symlink("../../legacy.ts", join(cwd, "custom/deep/link.txt"));
+    await writeFile(join(cwd, "custom/target"), "target\n", "utf8");
+    await symlink("target", join(cwd, "custom/index-link.ts"));
+    assert.equal(git(["add", "custom/index-link.ts"], cwd).code, 0);
     result = check(cwd);
     assert.equal(result.code, 1);
-    assert.match(result.output, /changed path must be a regular file: custom\/deep\/link\.txt/u);
-    await rm(join(cwd, "custom/deep/link.txt"));
+    assert.match(
+      result.output,
+      /Git index path is not a regular blob: custom\/index-link\.ts mode=120000/u,
+    );
+    await removeStaged(cwd, "custom/index-link.ts");
+    await rm(join(cwd, "custom/target"));
 
-    await writeFile(join(cwd, "custom/deep/bad\n.ts"), "const value = 1;\n", "utf8");
+    await writeFile(join(cwd, "custom/invalid-utf8.ts"), Buffer.from([0xff, 0xfe]));
+    assert.equal(git(["add", "custom/invalid-utf8.ts"], cwd).code, 0);
+    await writeFile(join(cwd, "custom/invalid-utf8.ts"), "const value = 1;\n", "utf8");
+    result = check(cwd);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /governed source is not valid UTF-8: custom\/invalid-utf8\.ts/u);
+    await removeStaged(cwd, "custom/invalid-utf8.ts");
+
+    await writeFile(join(cwd, "custom/bad\n.ts"), "const value = 1;\n", "utf8");
     result = check(cwd);
     assert.equal(result.code, 1);
     assert.match(result.output, /malformed repository path/u);
-    await rm(join(cwd, "custom/deep/bad\n.ts"));
-
-    for (let index = 0; index < 128; index++) {
-      await writeFile(
-        join(cwd, `custom/deep/small-${index}.rs`),
-        `// comment\nlet value_${index} = ${index};\n`,
-        "utf8",
-      );
-    }
-    assert.equal(check(cwd).code, 0, "large populations use bounded sequential reads");
-    for (let index = 0; index < 128; index++) {
-      await rm(join(cwd, `custom/deep/small-${index}.rs`));
-    }
+    await rm(join(cwd, "custom/bad\n.ts"));
 
     await writeBaseline(cwd, baseCommit, { legacyMaxNonCommentLines: { "legacy.ts": 9999 } });
     result = check(cwd);
     assert.equal(result.code, 1);
     assert.match(result.output, /may contain only baseCommit and schemaVersion/u);
-    await writeBaseline(cwd, "0".repeat(40));
-    result = check(cwd);
-    assert.equal(result.code, 1);
-    assert.match(result.output, /must match the immutable source-GO skeleton/u);
   } finally {
     await rm(cwd, { force: true, recursive: true });
   }
