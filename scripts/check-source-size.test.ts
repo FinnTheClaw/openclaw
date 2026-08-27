@@ -90,9 +90,13 @@ async function main(): Promise<void> {
     await writeFile(join(cwd, ".gitignore"), "src/ignored.ts\nnode_modules/\n", "utf8");
     await writeFile(join(cwd, "legacy.ts"), codeLines(501), "utf8");
     await writeFile(join(cwd, "docs/legacy.ts"), codeLines(501), "utf8");
-    await writeFile(join(cwd, "custom/staged-tool"), codeLines(501), "utf8");
+    await writeFile(join(cwd, "rename-data.txt"), codeLines(5000), "utf8");
+    await writeFile(join(cwd, "chmod-data.txt"), codeLines(5000), "utf8");
     assert.equal(
-      git(["add", ".gitignore", "legacy.ts", "docs/legacy.ts", "custom/staged-tool"], cwd).code,
+      git(
+        ["add", ".gitignore", "legacy.ts", "docs/legacy.ts", "rename-data.txt", "chmod-data.txt"],
+        cwd,
+      ).code,
       0,
     );
     assert.equal(git(["commit", "-qm", "baseline"], cwd).code, 0);
@@ -119,6 +123,20 @@ async function main(): Promise<void> {
     assert.equal(result.code, 1);
     assert.match(result.output, /502\t501\texisting\tdocs\/renamed\.ts/u);
     await writeFile(join(cwd, "docs/renamed.ts"), codeLines(500), "utf8");
+
+    await rename(join(cwd, "rename-data.txt"), join(cwd, "feature.ts"));
+    assert.equal(git(["add", "-A", "rename-data.txt", "feature.ts"], cwd).code, 0);
+    result = check(cwd);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /5000\t500\texisting\tfeature\.ts/u);
+    await writeFile(join(cwd, "feature.ts"), codeLines(500), "utf8");
+
+    await chmod(join(cwd, "chmod-data.txt"), 0o644);
+    assert.equal(git(["update-index", "--chmod=+x", "chmod-data.txt"], cwd).code, 0);
+    result = check(cwd);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /5000\t500\texisting\tchmod-data\.txt/u);
+    await writeFile(join(cwd, "chmod-data.txt"), codeLines(500), "utf8");
 
     await expectNewFailure(cwd, "copy.ts", codeLines(501), /501\t500\tnew\tcopy\.ts/u);
     await expectNewFailure(
@@ -158,12 +176,32 @@ async function main(): Promise<void> {
 
     const regexLines = codeLines(501, () => "const matcher = /[/*]/;");
     await expectNewFailure(cwd, "custom/deep/regex.ts", regexLines, /custom\/deep\/regex\.ts/u);
-    const ambiguousBlock = ["/*", ...Array<string>(499).fill("* body"), "*/"].join("\n");
+    const stringLines = codeLines(501, () => 'const marker = "/*";');
+    await expectNewFailure(cwd, "custom/deep/string.ts", stringLines, /custom\/deep\/string\.ts/u);
+    const pureBlock = ["/*", ...Array<string>(499).fill("* body"), "*/"].join("\n");
+    await writeFile(join(cwd, "custom/deep/pure-block.ts"), pureBlock, "utf8");
+    assert.equal(check(cwd).code, 0, "a 501-line pure whole-line block comment is excluded");
+    await rm(join(cwd, "custom/deep/pure-block.ts"));
+    const trailingCode = `${codeLines(500)}\n/*\nbody\n*/ const extra = 1;`;
     await expectNewFailure(
       cwd,
-      "custom/deep/ambiguous.ts",
-      ambiguousBlock,
-      /custom\/deep\/ambiguous\.ts/u,
+      "custom/deep/trailing.ts",
+      trailingCode,
+      /501\t500\tnew\tcustom\/deep\/trailing\.ts/u,
+    );
+    const inlineBlock = codeLines(501, (index) => `const value${index} = ${index}; /*`);
+    await expectNewFailure(
+      cwd,
+      "custom/deep/inline.ts",
+      inlineBlock,
+      /501\t500\tnew\tcustom\/deep\/inline\.ts/u,
+    );
+    const nestedRust = `${codeLines(499, (index) => `let value_${index} = ${index};`)}\n/*\n/* nested\n*/\n*/`;
+    await expectNewFailure(
+      cwd,
+      "custom/deep/nested.rs",
+      nestedRust,
+      /501\t500\tnew\tcustom\/deep\/nested\.rs/u,
     );
 
     const comments = `${codeLines(500)}\n${Array<string>(100).fill("// comment").join("\n")}`;
@@ -186,15 +224,6 @@ async function main(): Promise<void> {
     assert.match(result.output, /custom\/deep\/executable\.txt/u);
     await rm(join(cwd, "custom/deep/executable.txt"));
 
-    await writeFile(join(cwd, "custom/staged-tool"), codeLines(502), "utf8");
-    await chmod(join(cwd, "custom/staged-tool"), 0o755);
-    assert.equal(git(["add", "custom/staged-tool"], cwd).code, 0);
-    await chmod(join(cwd, "custom/staged-tool"), 0o644);
-    result = check(cwd);
-    assert.equal(result.code, 1);
-    assert.match(result.output, /502\t501\texisting\tcustom\/staged-tool/u);
-    await writeFile(join(cwd, "custom/staged-tool"), codeLines(500), "utf8");
-
     await writeFile(join(cwd, "node_modules/dependency/large.ts"), codeLines(501), "utf8");
     assert.equal(check(cwd).code, 0, "proven untracked dependency roots are excluded");
     await rm(join(cwd, "node_modules/dependency/large.ts"));
@@ -204,6 +233,12 @@ async function main(): Promise<void> {
     assert.equal(result.code, 1);
     assert.match(result.output, /changed path must be a regular file: custom\/deep\/link\.txt/u);
     await rm(join(cwd, "custom/deep/link.txt"));
+
+    await writeFile(join(cwd, "custom/deep/bad\n.ts"), "const value = 1;\n", "utf8");
+    result = check(cwd);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /malformed repository path/u);
+    await rm(join(cwd, "custom/deep/bad\n.ts"));
 
     for (let index = 0; index < 128; index++) {
       await writeFile(

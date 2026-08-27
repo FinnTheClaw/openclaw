@@ -153,9 +153,15 @@ function parseNameStatus(raw: string): Change[] {
   for (let index = 0; index < tokens.length - 1; ) {
     const status = tokens[index++];
     const code = status[0];
+    if (!["A", "C", "D", "M", "R", "T"].includes(code)) {
+      throw new Error(`unsupported or malformed Git name-status record: ${JSON.stringify(status)}`);
+    }
     if (code === "R" || code === "C") {
       const oldPath = tokens[index++];
       const newPath = tokens[index++];
+      if (!oldPath || !newPath) {
+        throw new Error(`incomplete Git ${code} name-status record`);
+      }
       changes.set(
         newPath,
         code === "R"
@@ -165,6 +171,9 @@ function parseNameStatus(raw: string): Change[] {
       continue;
     }
     const filePath = tokens[index++];
+    if (!filePath) {
+      throw new Error(`incomplete Git ${code} name-status record`);
+    }
     if (code !== "D") {
       changes.set(filePath, {
         kind: code === "A" ? "new" : "existing",
@@ -177,8 +186,22 @@ function parseNameStatus(raw: string): Change[] {
 }
 
 function collectChanges(root: string, baseCommit: string): Change[] {
-  const raw = git(["diff", "--name-status", "-z", "--find-renames", baseCommit, "--"], root);
-  const changes = parseNameStatus(raw);
+  const working = parseNameStatus(
+    git(["diff", "--name-status", "-z", "--find-renames", baseCommit, "--"], root),
+  );
+  const staged = parseNameStatus(
+    git(["diff", "--cached", "--name-status", "-z", "--find-renames", baseCommit, "--"], root),
+  );
+  const byPath = new Map<string, Change>();
+  for (const change of [...working, ...staged]) {
+    const previous = byPath.get(change.path);
+    if (previous?.baselinePath && !change.baselinePath) {
+      byPath.set(change.path, { ...change, baselinePath: previous.baselinePath, kind: "existing" });
+    } else {
+      byPath.set(change.path, change);
+    }
+  }
+  const changes = [...byPath.values()];
   const seen = new Set(changes.map((change) => change.path));
   const ordinary = git(["ls-files", "--others", "--exclude-standard", "-z"], root);
   const ignored = git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], root);
@@ -256,9 +279,43 @@ function isWholeLineComment(trimmed: string, style: CommentStyle): boolean {
 
 function countLines(content: string, style: CommentStyle): number {
   let count = 0;
+  let inWholeLineBlock = false;
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
-    if (trimmed && !isWholeLineComment(trimmed, style)) {
+    if (!trimmed) {
+      continue;
+    }
+    if (style === "slash" && inWholeLineBlock) {
+      const closing = trimmed.indexOf("*/");
+      if (closing === -1) {
+        if (trimmed.includes("/*")) {
+          count++;
+        }
+        continue;
+      }
+      const beforeClosing = trimmed.slice(0, closing);
+      const afterClosing = trimmed.slice(closing + 2).trim();
+      if (beforeClosing.includes("/*") || afterClosing) {
+        count++;
+      }
+      inWholeLineBlock = false;
+      continue;
+    }
+    if (isWholeLineComment(trimmed, style)) {
+      continue;
+    }
+    if (style === "slash" && trimmed.startsWith("/*")) {
+      const closing = trimmed.indexOf("*/", 2);
+      if (closing === -1) {
+        inWholeLineBlock = true;
+        continue;
+      }
+      if (trimmed.slice(closing + 2).trim()) {
+        count++;
+      }
+      continue;
+    }
+    if (trimmed) {
       count++;
     }
   }
@@ -296,9 +353,24 @@ async function inspectCandidate(
   }
 }
 
-function countBase(root: string, baseCommit: string, filePath: string): number {
-  const content = decode(gitBuffer(["show", `${baseCommit}:${filePath}`], root), filePath);
-  return countLines(content, styleFor(filePath, content));
+function baseAllowance(
+  root: string,
+  baseCommit: string,
+  filePath: string,
+): { governed: boolean; lines: number } {
+  const blob = gitBuffer(["show", `${baseCommit}:${filePath}`], root);
+  const content = decode(blob, filePath);
+  const treeRecord = git(["ls-tree", "-z", baseCommit, "--", filePath], root);
+  if (!treeRecord) {
+    throw new Error(`base path is missing from immutable tree: ${filePath}`);
+  }
+  const executable = treeRecord.startsWith("100755 ");
+  const shebang = blob.length >= 2 && blob[0] === 0x23 && blob[1] === 0x21;
+  const recognized = EXTENSIONS.has(extname(filePath).toLowerCase());
+  return {
+    governed: recognized || executable || shebang,
+    lines: countLines(content, styleFor(filePath, content)),
+  };
 }
 
 async function check(root: string, baseline: Baseline): Promise<number> {
@@ -318,11 +390,11 @@ async function check(root: string, baseline: Baseline): Promise<number> {
     }
     checked++;
     const lines = countLines(candidate.content, candidate.style);
-    const baseLines =
+    const base =
       change.kind === "existing"
-        ? countBase(root, baseline.baseCommit, change.baselinePath ?? change.path)
-        : MAX_LINES;
-    const limit = Math.max(MAX_LINES, baseLines);
+        ? baseAllowance(root, baseline.baseCommit, change.baselinePath ?? change.path)
+        : undefined;
+    const limit = base?.governed ? Math.max(MAX_LINES, base.lines) : MAX_LINES;
     if (lines > limit) {
       failures.push(`${lines}\t${limit}\t${change.kind}\t${change.path}`);
     }
