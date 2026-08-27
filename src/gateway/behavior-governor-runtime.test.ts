@@ -69,6 +69,7 @@ describe("gateway behavior governor runtime", () => {
     await expect(runtime.apply(c03ModuleWithoutPolicyConfig)).rejects.toThrow(
       "GOVERNOR_C03_CONFIGURATION_REQUIRED",
     );
+    await runtime.apply({});
     await runtime.close();
   });
 
