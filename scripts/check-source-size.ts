@@ -7,8 +7,10 @@ const MAX_LINES = 500;
 const BASELINE_PATH = "scripts/source-size-baseline.json";
 const IMMUTABLE_BASE_COMMIT = "e9030d5476e5572a44ba89f653bc5c6c428ea351";
 const EXTENSIONS = new Set([
+  ".bash",
   ".cjs",
   ".cts",
+  ".fish",
   ".js",
   ".jsx",
   ".mjs",
@@ -19,49 +21,51 @@ const EXTENSIONS = new Set([
   ".rb",
   ".rs",
   ".sh",
+  ".swift",
+  ".ts",
+  ".tsx",
+  ".zsh",
+]);
+const HASH_COMMENT_EXTENSIONS = new Set([
+  ".bash",
+  ".fish",
+  ".pl",
+  ".ps1",
+  ".py",
+  ".rb",
+  ".sh",
+  ".zsh",
+]);
+const SLASH_COMMENT_EXTENSIONS = new Set([
+  ".cjs",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".mts",
+  ".rs",
+  ".swift",
   ".ts",
   ".tsx",
 ]);
-const SOURCE_ROOTS = new Set([
-  "apps",
-  "bin",
-  "crates",
-  "extensions",
-  "lib",
-  "packages",
-  "scripts",
-  "skills",
-  "src",
-  "test",
-  "tests",
-  "tools",
-  "ui",
-  "web",
-]);
-const EXCLUDED_ROOTS = new Set([
+const GENERATED_UNTRACKED_ROOTS = new Set([
   ".artifacts",
-  ".git",
   ".pnpm-store",
   "build",
   "coverage",
   "dist",
   "node_modules",
-  "vendor",
 ]);
 
 type Baseline = { baseCommit: string; schemaVersion: 1 };
-type Change = { baselinePath?: string; kind: "existing" | "new"; path: string };
-type Language = "hash" | "js" | "rust";
-type LexState =
-  | { kind: "block" }
-  | { kind: "code" }
-  | { kind: "double" }
-  | { kind: "pythonTripleDouble" }
-  | { kind: "pythonTripleSingle" }
-  | { kind: "rustChar" }
-  | { closing: string; kind: "rustRaw" }
-  | { kind: "single" }
-  | { kind: "template" };
+type Change = {
+  baselinePath?: string;
+  kind: "existing" | "new";
+  origin: "diff" | "untracked";
+  path: string;
+};
+type CommentStyle = "hash" | "none" | "slash";
+type Candidate = { content: string; style: CommentStyle };
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
@@ -101,28 +105,6 @@ function validatePath(filePath: string): void {
   }
 }
 
-function isSourceLocation(filePath: string): boolean {
-  const parts = filePath.split("/");
-  if (EXCLUDED_ROOTS.has(parts[0])) {
-    return false;
-  }
-  return parts.length === 1 || parts.some((part) => SOURCE_ROOTS.has(part));
-}
-
-function languageFor(filePath: string, content: string): Language {
-  const extension = extname(filePath).toLowerCase();
-  if (extension === ".rs") {
-    return "rust";
-  }
-  if ([".pl", ".ps1", ".py", ".rb", ".sh"].includes(extension)) {
-    return "hash";
-  }
-  if (!extension && /^#!.*(?:python|ruby|perl|pwsh|powershell|sh|bash|zsh|fish)/u.test(content)) {
-    return "hash";
-  }
-  return "js";
-}
-
 function decode(buffer: Buffer, filePath: string): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
@@ -136,8 +118,7 @@ function parseBaseline(value: unknown): Baseline {
     throw new Error("source-size baseline must be an object");
   }
   const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).toSorted();
-  if (keys.join(",") !== "baseCommit,schemaVersion") {
+  if (Object.keys(record).toSorted().join(",") !== "baseCommit,schemaVersion") {
     throw new Error("source-size baseline may contain only baseCommit and schemaVersion");
   }
   if (record.schemaVersion !== 1) {
@@ -178,32 +159,32 @@ function parseNameStatus(raw: string): Change[] {
       changes.set(
         newPath,
         code === "R"
-          ? { baselinePath: oldPath, kind: "existing", path: newPath }
-          : { kind: "new", path: newPath },
+          ? { baselinePath: oldPath, kind: "existing", origin: "diff", path: newPath }
+          : { kind: "new", origin: "diff", path: newPath },
       );
       continue;
     }
     const filePath = tokens[index++];
     if (code !== "D") {
-      changes.set(filePath, { kind: code === "A" ? "new" : "existing", path: filePath });
+      changes.set(filePath, {
+        kind: code === "A" ? "new" : "existing",
+        origin: "diff",
+        path: filePath,
+      });
     }
   }
   return [...changes.values()];
-}
-
-function untrackedPaths(root: string): string[] {
-  const ordinary = git(["ls-files", "--others", "--exclude-standard", "-z"], root);
-  const ignored = git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], root);
-  return `${ordinary}${ignored}`.split("\0").filter(Boolean);
 }
 
 function collectChanges(root: string, baseCommit: string): Change[] {
   const raw = git(["diff", "--name-status", "-z", "--find-renames", baseCommit, "--"], root);
   const changes = parseNameStatus(raw);
   const seen = new Set(changes.map((change) => change.path));
-  for (const filePath of untrackedPaths(root)) {
+  const ordinary = git(["ls-files", "--others", "--exclude-standard", "-z"], root);
+  const ignored = git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], root);
+  for (const filePath of `${ordinary}${ignored}`.split("\0").filter(Boolean)) {
     if (!seen.has(filePath)) {
-      changes.push({ kind: "new", path: filePath });
+      changes.push({ kind: "new", origin: "untracked", path: filePath });
       seen.add(filePath);
     }
   }
@@ -213,177 +194,130 @@ function collectChanges(root: string, baseCommit: string): Change[] {
       validatePath(change.baselinePath);
     }
   }
-  return changes.filter((change) => isSourceLocation(change.path));
+  return changes.filter(
+    (change) =>
+      change.origin === "diff" ||
+      !change.path.split("/").some((component) => GENERATED_UNTRACKED_ROOTS.has(component)),
+  );
 }
 
-function beginsRustRaw(line: string, index: number): string | undefined {
-  const match = /^(?:br|r)(#*)"/u.exec(line.slice(index));
-  return match ? `"${match[1]}` : undefined;
-}
-
-function countNonCommentLines(content: string, language: Language): number {
-  let state: LexState = { kind: "code" };
-  let count = 0;
-  for (const line of content.split(/\r?\n/u)) {
-    let hasCode = state.kind !== "code" && state.kind !== "block";
-    for (let index = 0; index < line.length; ) {
-      if (state.kind === "block") {
-        const end = line.indexOf("*/", index);
-        if (end === -1) {
-          break;
-        }
-        state = { kind: "code" };
-        index = end + 2;
-        continue;
-      }
-      if (state.kind === "pythonTripleSingle" || state.kind === "pythonTripleDouble") {
-        hasCode = true;
-        const closing = state.kind === "pythonTripleSingle" ? "'''" : '"""';
-        const end = line.indexOf(closing, index);
-        if (end === -1) {
-          break;
-        }
-        state = { kind: "code" };
-        index = end + 3;
-        continue;
-      }
-      if (state.kind === "rustRaw") {
-        hasCode = true;
-        const end = line.indexOf(state.closing, index);
-        if (end === -1) {
-          break;
-        }
-        index = end + state.closing.length;
-        state = { kind: "code" };
-        continue;
-      }
-      if (["single", "double", "template", "rustChar"].includes(state.kind)) {
-        hasCode = true;
-        const closing = state.kind === "double" ? '"' : state.kind === "template" ? "`" : "'";
-        if (line[index] === "\\") {
-          index += 2;
-        } else if (line[index] === closing) {
-          state = { kind: "code" };
-          index++;
-        } else {
-          index++;
-        }
-        continue;
-      }
-
-      const character = line[index];
-      if (/\s/u.test(character)) {
-        index++;
-        continue;
-      }
-      if ((language === "js" || language === "rust") && line.startsWith("//", index)) {
-        break;
-      }
-      if ((language === "js" || language === "rust") && line.startsWith("/*", index)) {
-        state = { kind: "block" };
-        index += 2;
-        continue;
-      }
-      if (language === "hash" && character === "#") {
-        if (index === 0 && line.startsWith("#!")) {
-          hasCode = true;
-        }
-        break;
-      }
-      if (language === "rust") {
-        const rawClosing = beginsRustRaw(line, index);
-        if (rawClosing) {
-          hasCode = true;
-          state = { closing: rawClosing, kind: "rustRaw" };
-          index += rawClosing.length + (line[index] === "b" ? 2 : 1);
-          continue;
-        }
-      }
-      if (language === "hash" && (line.startsWith("'''", index) || line.startsWith('"""', index))) {
-        hasCode = true;
-        state = { kind: line[index] === "'" ? "pythonTripleSingle" : "pythonTripleDouble" };
-        index += 3;
-        continue;
-      }
-      if (character === "'") {
-        hasCode = true;
-        state = { kind: language === "rust" ? "rustChar" : "single" };
-        index++;
-        continue;
-      }
-      if (character === '"') {
-        hasCode = true;
-        state = { kind: "double" };
-        index++;
-        continue;
-      }
-      if (character === "`") {
-        hasCode = true;
-        state = { kind: "template" };
-        index++;
-        continue;
-      }
-      hasCode = true;
-      index++;
+function indexExecutableModes(root: string): Map<string, boolean> {
+  const modes = new Map<string, boolean>();
+  for (const record of git(["ls-files", "--stage", "-z"], root).split("\0")) {
+    const separator = record.indexOf("\t");
+    if (separator > 0) {
+      modes.set(record.slice(separator + 1), record.startsWith("100755 "));
     }
-    if (hasCode) {
+  }
+  return modes;
+}
+
+function styleFor(filePath: string, content: string): CommentStyle {
+  const extension = extname(filePath).toLowerCase();
+  if (HASH_COMMENT_EXTENSIONS.has(extension)) {
+    return "hash";
+  }
+  if (SLASH_COMMENT_EXTENSIONS.has(extension)) {
+    return "slash";
+  }
+  const firstLine = content.split("\n", 1)[0].toLowerCase();
+  const hashRuntimes = [
+    "python",
+    "ruby",
+    "perl",
+    "pwsh",
+    "powershell",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+  ];
+  if (firstLine.startsWith("#!") && hashRuntimes.some((runtime) => firstLine.includes(runtime))) {
+    return "hash";
+  }
+  if (
+    firstLine.startsWith("#!") &&
+    ["node", "deno", "bun"].some((runtime) => firstLine.includes(runtime))
+  ) {
+    return "slash";
+  }
+  return "none";
+}
+
+function isWholeLineComment(trimmed: string, style: CommentStyle): boolean {
+  if (style === "slash") {
+    return trimmed.startsWith("//");
+  }
+  if (style === "hash") {
+    return trimmed.startsWith("#") && !trimmed.startsWith("#!");
+  }
+  return false;
+}
+
+function countLines(content: string, style: CommentStyle): number {
+  let count = 0;
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed && !isWholeLineComment(trimmed, style)) {
       count++;
     }
   }
   return count;
 }
 
-async function readCandidate(
+async function inspectCandidate(
   root: string,
   filePath: string,
-): Promise<{ content: string; executable: boolean }> {
+  indexExecutable: boolean,
+): Promise<Candidate | undefined> {
   const absolutePath = join(root, filePath);
   const before = await lstat(absolutePath);
   if (!before.isFile()) {
-    throw new Error(`governed path must be a regular file: ${filePath}`);
+    throw new Error(`changed path must be a regular file: ${filePath}`);
   }
   const handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const after = await handle.stat();
     if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino) {
-      throw new Error(`governed path changed during inspection: ${filePath}`);
+      throw new Error(`changed path changed during inspection: ${filePath}`);
     }
-    return {
-      content: decode(await handle.readFile(), filePath),
-      executable: (after.mode & 0o111) !== 0,
-    };
+    const prefix = Buffer.alloc(2);
+    const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0);
+    const shebang = bytesRead === 2 && prefix[0] === 0x23 && prefix[1] === 0x21;
+    const executable = (after.mode & 0o111) !== 0 || indexExecutable;
+    const extension = extname(filePath).toLowerCase();
+    if (!shebang && !executable && !EXTENSIONS.has(extension)) {
+      return undefined;
+    }
+    const content = decode(await handle.readFile(), filePath);
+    return { content, style: styleFor(filePath, content) };
   } finally {
     await handle.close();
   }
 }
 
-function isGoverned(filePath: string, content: string, executable: boolean): boolean {
-  const extension = extname(filePath).toLowerCase();
-  return EXTENSIONS.has(extension) || (!extension && (executable || content.startsWith("#!")));
-}
-
 function countBase(root: string, baseCommit: string, filePath: string): number {
   const content = decode(gitBuffer(["show", `${baseCommit}:${filePath}`], root), filePath);
-  return countNonCommentLines(content, languageFor(filePath, content));
+  return countLines(content, styleFor(filePath, content));
 }
 
 async function check(root: string, baseline: Baseline): Promise<number> {
   const failures: string[] = [];
+  const indexModes = indexExecutableModes(root);
   let checked = 0;
   for (const change of collectChanges(root, baseline.baseCommit).toSorted((a, b) =>
     a.path.localeCompare(b.path),
   )) {
-    const extension = extname(change.path).toLowerCase();
-    if (extension && !EXTENSIONS.has(extension)) {
-      continue;
-    }
-    const candidate = await readCandidate(root, change.path);
-    if (!isGoverned(change.path, candidate.content, candidate.executable)) {
+    const candidate = await inspectCandidate(
+      root,
+      change.path,
+      indexModes.get(change.path) === true,
+    );
+    if (!candidate) {
       continue;
     }
     checked++;
-    const language = languageFor(change.path, candidate.content);
-    const lines = countNonCommentLines(candidate.content, language);
+    const lines = countLines(candidate.content, candidate.style);
     const baseLines =
       change.kind === "existing"
         ? countBase(root, baseline.baseCommit, change.baselinePath ?? change.path)
@@ -394,7 +328,7 @@ async function check(root: string, baseline: Baseline): Promise<number> {
     }
   }
   if (failures.length) {
-    process.stderr.write("non-comment-lines\tlimit\tkind\tpath\n");
+    process.stderr.write("counted-lines\tlimit\tkind\tpath\n");
     process.stderr.write(`${failures.join("\n")}\n`);
     return 1;
   }
