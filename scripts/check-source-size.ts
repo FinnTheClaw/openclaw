@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { constants } from "node:fs";
+import { lstat, open, readFile } from "node:fs/promises";
+import { extname, isAbsolute, join } from "node:path";
 
-const MAX_NEW_FILE_LINES = 500;
+const MAX_LINES = 500;
 const BASELINE_PATH = "scripts/source-size-baseline.json";
-const GOVERNED_EXTENSIONS = new Set([
+const IMMUTABLE_BASE_COMMIT = "e9030d5476e5572a44ba89f653bc5c6c428ea351";
+const EXTENSIONS = new Set([
   ".cjs",
   ".cts",
   ".js",
@@ -21,22 +22,53 @@ const GOVERNED_EXTENSIONS = new Set([
   ".ts",
   ".tsx",
 ]);
-const HASH_COMMENT_EXTENSIONS = new Set([".pl", ".ps1", ".py", ".rb", ".sh"]);
+const SOURCE_ROOTS = new Set([
+  "apps",
+  "bin",
+  "crates",
+  "extensions",
+  "lib",
+  "packages",
+  "scripts",
+  "skills",
+  "src",
+  "test",
+  "tests",
+  "tools",
+  "ui",
+  "web",
+]);
+const EXCLUDED_ROOTS = new Set([
+  ".artifacts",
+  ".git",
+  ".pnpm-store",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "vendor",
+]);
 
-type Baseline = {
-  baseCommit: string;
-  legacyMaxNonCommentLines: Record<string, number>;
-  schemaVersion: 1;
-};
-
-type Change = {
-  baselinePath?: string;
-  kind: "existing" | "new";
-  path: string;
-};
+type Baseline = { baseCommit: string; schemaVersion: 1 };
+type Change = { baselinePath?: string; kind: "existing" | "new"; path: string };
+type Language = "hash" | "js" | "rust";
+type LexState =
+  | { kind: "block" }
+  | { kind: "code" }
+  | { kind: "double" }
+  | { kind: "pythonTripleDouble" }
+  | { kind: "pythonTripleSingle" }
+  | { kind: "rustChar" }
+  | { closing: string; kind: "rustRaw" }
+  | { kind: "single" }
+  | { kind: "template" };
 
 function git(args: string[], cwd: string): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8" });
+  return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+}
+
+function gitBuffer(args: string[], cwd: string): Buffer {
+  return execFileSync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
 }
 
 function gitExitCode(args: string[], cwd: string): number {
@@ -52,47 +84,85 @@ function repositoryRoot(): string {
   return git(["rev-parse", "--show-toplevel"], process.cwd()).trim();
 }
 
-function isGovernedPath(filePath: string): boolean {
-  return GOVERNED_EXTENSIONS.has(extname(filePath).toLowerCase());
+function validatePath(filePath: string): void {
+  const parts = filePath.split("/");
+  const hasControlCharacter = [...filePath].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+  if (
+    !filePath ||
+    isAbsolute(filePath) ||
+    filePath.includes("\\") ||
+    hasControlCharacter ||
+    parts.some((part) => !part || part === "." || part === "..")
+  ) {
+    throw new Error(`malformed repository path: ${JSON.stringify(filePath)}`);
+  }
+}
+
+function isSourceLocation(filePath: string): boolean {
+  const parts = filePath.split("/");
+  if (EXCLUDED_ROOTS.has(parts[0])) {
+    return false;
+  }
+  return parts.length === 1 || parts.some((part) => SOURCE_ROOTS.has(part));
+}
+
+function languageFor(filePath: string, content: string): Language {
+  const extension = extname(filePath).toLowerCase();
+  if (extension === ".rs") {
+    return "rust";
+  }
+  if ([".pl", ".ps1", ".py", ".rb", ".sh"].includes(extension)) {
+    return "hash";
+  }
+  if (!extension && /^#!.*(?:python|ruby|perl|pwsh|powershell|sh|bash|zsh|fish)/u.test(content)) {
+    return "hash";
+  }
+  return "js";
+}
+
+function decode(buffer: Buffer, filePath: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    throw new Error(`governed source is not valid UTF-8: ${filePath}`);
+  }
 }
 
 function parseBaseline(value: unknown): Baseline {
-  if (!value || typeof value !== "object") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("source-size baseline must be an object");
   }
-  const candidate = value as Partial<Baseline>;
-  if (candidate.schemaVersion !== 1) {
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).toSorted();
+  if (keys.join(",") !== "baseCommit,schemaVersion") {
+    throw new Error("source-size baseline may contain only baseCommit and schemaVersion");
+  }
+  if (record.schemaVersion !== 1) {
     throw new Error("source-size baseline schemaVersion must be 1");
   }
-  if (typeof candidate.baseCommit !== "string" || !/^[0-9a-f]{40}$/u.test(candidate.baseCommit)) {
+  if (typeof record.baseCommit !== "string" || !/^[0-9a-f]{40}$/u.test(record.baseCommit)) {
     throw new Error("source-size baseline baseCommit must be a full lowercase commit SHA");
   }
-  if (
-    !candidate.legacyMaxNonCommentLines ||
-    typeof candidate.legacyMaxNonCommentLines !== "object"
-  ) {
-    throw new Error("source-size baseline legacyMaxNonCommentLines must be an object");
+  if (record.baseCommit !== IMMUTABLE_BASE_COMMIT) {
+    throw new Error("source-size baseline baseCommit must match the immutable source-GO skeleton");
   }
-  for (const [filePath, count] of Object.entries(candidate.legacyMaxNonCommentLines)) {
-    if (!isGovernedPath(filePath) || !Number.isSafeInteger(count) || count <= MAX_NEW_FILE_LINES) {
-      throw new Error(`invalid legacy source-size baseline entry: ${filePath}`);
-    }
-  }
-  return candidate as Baseline;
+  return record as Baseline;
 }
 
 async function loadBaseline(root: string): Promise<Baseline> {
-  const baselinePath = join(root, BASELINE_PATH);
-  return parseBaseline(JSON.parse(await readFile(baselinePath, "utf8")) as unknown);
+  return parseBaseline(JSON.parse(await readFile(join(root, BASELINE_PATH), "utf8")) as unknown);
 }
 
 function assertImmutableBase(root: string, baseCommit: string): void {
   const resolved = git(["rev-parse", `${baseCommit}^{commit}`], root).trim();
-  if (resolved !== baseCommit) {
-    throw new Error("source-size baseline baseCommit did not resolve exactly");
-  }
-  if (gitExitCode(["merge-base", "--is-ancestor", baseCommit, "HEAD"], root) !== 0) {
-    throw new Error("source-size baseline baseCommit must be an ancestor of HEAD");
+  if (
+    resolved !== baseCommit ||
+    gitExitCode(["merge-base", "--is-ancestor", baseCommit, "HEAD"], root) !== 0
+  ) {
+    throw new Error("source-size baseCommit must resolve exactly to an ancestor of HEAD");
   }
 }
 
@@ -101,18 +171,16 @@ function parseNameStatus(raw: string): Change[] {
   const changes = new Map<string, Change>();
   for (let index = 0; index < tokens.length - 1; ) {
     const status = tokens[index++];
-    if (!status) {
-      continue;
-    }
     const code = status[0];
     if (code === "R" || code === "C") {
       const oldPath = tokens[index++];
       const newPath = tokens[index++];
-      if (code === "R") {
-        changes.set(newPath, { baselinePath: oldPath, kind: "existing", path: newPath });
-      } else {
-        changes.set(newPath, { kind: "new", path: newPath });
-      }
+      changes.set(
+        newPath,
+        code === "R"
+          ? { baselinePath: oldPath, kind: "existing", path: newPath }
+          : { kind: "new", path: newPath },
+      );
       continue;
     }
     const filePath = tokens[index++];
@@ -123,104 +191,204 @@ function parseNameStatus(raw: string): Change[] {
   return [...changes.values()];
 }
 
-function collectChanges(root: string, baseCommit: string): Change[] {
-  // Do not ask Git to find copies: a copied source file is a new file and gets the 500-line cap.
-  const changes = parseNameStatus(
-    git(["diff", "--name-status", "-z", "--find-renames", baseCommit, "--"], root),
-  );
-  const seen = new Set(changes.map((change) => change.path));
-  for (const filePath of git(["ls-files", "--others", "--exclude-standard", "-z"], root).split(
-    "\0",
-  )) {
-    if (filePath && !seen.has(filePath)) {
-      changes.push({ kind: "new", path: filePath });
-    }
-  }
-  return changes.filter((change) => isGovernedPath(change.path));
+function untrackedPaths(root: string): string[] {
+  const ordinary = git(["ls-files", "--others", "--exclude-standard", "-z"], root);
+  const ignored = git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], root);
+  return `${ordinary}${ignored}`.split("\0").filter(Boolean);
 }
 
-function countNonCommentLines(content: string, extension: string): number {
-  let inBlockComment = false;
+function collectChanges(root: string, baseCommit: string): Change[] {
+  const raw = git(["diff", "--name-status", "-z", "--find-renames", baseCommit, "--"], root);
+  const changes = parseNameStatus(raw);
+  const seen = new Set(changes.map((change) => change.path));
+  for (const filePath of untrackedPaths(root)) {
+    if (!seen.has(filePath)) {
+      changes.push({ kind: "new", path: filePath });
+      seen.add(filePath);
+    }
+  }
+  for (const change of changes) {
+    validatePath(change.path);
+    if (change.baselinePath) {
+      validatePath(change.baselinePath);
+    }
+  }
+  return changes.filter((change) => isSourceLocation(change.path));
+}
+
+function beginsRustRaw(line: string, index: number): string | undefined {
+  const match = /^(?:br|r)(#*)"/u.exec(line.slice(index));
+  return match ? `"${match[1]}` : undefined;
+}
+
+function countNonCommentLines(content: string, language: Language): number {
+  let state: LexState = { kind: "code" };
   let count = 0;
-  for (const originalLine of content.split(/\r?\n/u)) {
-    let line = originalLine.trimStart();
-    while (line) {
-      if (inBlockComment) {
-        const end = line.indexOf("*/");
+  for (const line of content.split(/\r?\n/u)) {
+    let hasCode = state.kind !== "code" && state.kind !== "block";
+    for (let index = 0; index < line.length; ) {
+      if (state.kind === "block") {
+        const end = line.indexOf("*/", index);
         if (end === -1) {
           break;
         }
-        inBlockComment = false;
-        line = line.slice(end + 2).trimStart();
+        state = { kind: "code" };
+        index = end + 2;
         continue;
       }
-      if (
-        line.startsWith("//") ||
-        (HASH_COMMENT_EXTENSIONS.has(extension) && line.startsWith("#") && !line.startsWith("#!"))
-      ) {
+      if (state.kind === "pythonTripleSingle" || state.kind === "pythonTripleDouble") {
+        hasCode = true;
+        const closing = state.kind === "pythonTripleSingle" ? "'''" : '"""';
+        const end = line.indexOf(closing, index);
+        if (end === -1) {
+          break;
+        }
+        state = { kind: "code" };
+        index = end + 3;
+        continue;
+      }
+      if (state.kind === "rustRaw") {
+        hasCode = true;
+        const end = line.indexOf(state.closing, index);
+        if (end === -1) {
+          break;
+        }
+        index = end + state.closing.length;
+        state = { kind: "code" };
+        continue;
+      }
+      if (["single", "double", "template", "rustChar"].includes(state.kind)) {
+        hasCode = true;
+        const closing = state.kind === "double" ? '"' : state.kind === "template" ? "`" : "'";
+        if (line[index] === "\\") {
+          index += 2;
+        } else if (line[index] === closing) {
+          state = { kind: "code" };
+          index++;
+        } else {
+          index++;
+        }
+        continue;
+      }
+
+      const character = line[index];
+      if (/\s/u.test(character)) {
+        index++;
+        continue;
+      }
+      if ((language === "js" || language === "rust") && line.startsWith("//", index)) {
         break;
       }
-      const blockStart = line.indexOf("/*");
-      if (blockStart === 0) {
-        inBlockComment = true;
-        line = line.slice(2);
+      if ((language === "js" || language === "rust") && line.startsWith("/*", index)) {
+        state = { kind: "block" };
+        index += 2;
         continue;
       }
-      count++;
-      if (blockStart > 0 && line.indexOf("*/", blockStart + 2) === -1) {
-        inBlockComment = true;
+      if (language === "hash" && character === "#") {
+        if (index === 0 && line.startsWith("#!")) {
+          hasCode = true;
+        }
+        break;
       }
-      break;
+      if (language === "rust") {
+        const rawClosing = beginsRustRaw(line, index);
+        if (rawClosing) {
+          hasCode = true;
+          state = { closing: rawClosing, kind: "rustRaw" };
+          index += rawClosing.length + (line[index] === "b" ? 2 : 1);
+          continue;
+        }
+      }
+      if (language === "hash" && (line.startsWith("'''", index) || line.startsWith('"""', index))) {
+        hasCode = true;
+        state = { kind: line[index] === "'" ? "pythonTripleSingle" : "pythonTripleDouble" };
+        index += 3;
+        continue;
+      }
+      if (character === "'") {
+        hasCode = true;
+        state = { kind: language === "rust" ? "rustChar" : "single" };
+        index++;
+        continue;
+      }
+      if (character === '"') {
+        hasCode = true;
+        state = { kind: "double" };
+        index++;
+        continue;
+      }
+      if (character === "`") {
+        hasCode = true;
+        state = { kind: "template" };
+        index++;
+        continue;
+      }
+      hasCode = true;
+      index++;
+    }
+    if (hasCode) {
+      count++;
     }
   }
   return count;
 }
 
-async function countFile(root: string, filePath: string): Promise<number> {
-  return countNonCommentLines(
-    await readFile(join(root, filePath), "utf8"),
-    extname(filePath).toLowerCase(),
-  );
+async function readCandidate(
+  root: string,
+  filePath: string,
+): Promise<{ content: string; executable: boolean }> {
+  const absolutePath = join(root, filePath);
+  const before = await lstat(absolutePath);
+  if (!before.isFile()) {
+    throw new Error(`governed path must be a regular file: ${filePath}`);
+  }
+  const handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const after = await handle.stat();
+    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino) {
+      throw new Error(`governed path changed during inspection: ${filePath}`);
+    }
+    return {
+      content: decode(await handle.readFile(), filePath),
+      executable: (after.mode & 0o111) !== 0,
+    };
+  } finally {
+    await handle.close();
+  }
 }
 
-async function refreshLegacyBaseline(root: string, baseline: Baseline): Promise<void> {
-  if (gitExitCode(["diff", "--quiet", baseline.baseCommit, "--"], root) !== 0) {
-    throw new Error("refresh requires tracked source to match the immutable base commit");
-  }
-  const entries: Record<string, number> = {};
-  const paths = git(["ls-tree", "-r", "-z", "--name-only", baseline.baseCommit], root).split("\0");
-  // Sequential reads intentionally bound descriptors for very large repositories.
-  for (const filePath of paths) {
-    if (filePath && isGovernedPath(filePath) && existsSync(join(root, filePath))) {
-      const count = await countFile(root, filePath);
-      if (count > MAX_NEW_FILE_LINES) {
-        entries[filePath] = count;
-      }
-    }
-  }
-  baseline.legacyMaxNonCommentLines = Object.fromEntries(
-    Object.entries(entries).toSorted(([a], [b]) => a.localeCompare(b)),
-  );
-  await writeFile(join(root, BASELINE_PATH), `${JSON.stringify(baseline, null, 2)}\n`, "utf8");
+function isGoverned(filePath: string, content: string, executable: boolean): boolean {
+  const extension = extname(filePath).toLowerCase();
+  return EXTENSIONS.has(extension) || (!extension && (executable || content.startsWith("#!")));
+}
+
+function countBase(root: string, baseCommit: string, filePath: string): number {
+  const content = decode(gitBuffer(["show", `${baseCommit}:${filePath}`], root), filePath);
+  return countNonCommentLines(content, languageFor(filePath, content));
 }
 
 async function check(root: string, baseline: Baseline): Promise<number> {
   const failures: string[] = [];
   let checked = 0;
-  // Sequential reads intentionally bound descriptors for very large repositories.
   for (const change of collectChanges(root, baseline.baseCommit).toSorted((a, b) =>
     a.path.localeCompare(b.path),
   )) {
-    if (!existsSync(join(root, change.path))) {
+    const extension = extname(change.path).toLowerCase();
+    if (extension && !EXTENSIONS.has(extension)) {
+      continue;
+    }
+    const candidate = await readCandidate(root, change.path);
+    if (!isGoverned(change.path, candidate.content, candidate.executable)) {
       continue;
     }
     checked++;
-    const lines = await countFile(root, change.path);
-    const baselinePath = change.baselinePath ?? change.path;
-    const limit =
+    const language = languageFor(change.path, candidate.content);
+    const lines = countNonCommentLines(candidate.content, language);
+    const baseLines =
       change.kind === "existing"
-        ? (baseline.legacyMaxNonCommentLines[baselinePath] ?? MAX_NEW_FILE_LINES)
-        : MAX_NEW_FILE_LINES;
+        ? countBase(root, baseline.baseCommit, change.baselinePath ?? change.path)
+        : MAX_LINES;
+    const limit = Math.max(MAX_LINES, baseLines);
     if (lines > limit) {
       failures.push(`${lines}\t${limit}\t${change.kind}\t${change.path}`);
     }
@@ -235,17 +403,12 @@ async function check(root: string, baseline: Baseline): Promise<number> {
 }
 
 async function main(): Promise<number> {
-  const refresh = process.argv.slice(2).join(" ") === "--refresh-legacy-baseline";
-  if (!refresh && process.argv.length > 2) {
-    throw new Error("usage: check-source-size.ts [--refresh-legacy-baseline]");
+  if (process.argv.length > 2) {
+    throw new Error("usage: check-source-size.ts");
   }
   const root = repositoryRoot();
   const baseline = await loadBaseline(root);
   assertImmutableBase(root, baseline.baseCommit);
-  if (refresh) {
-    await refreshLegacyBaseline(root, baseline);
-    return 0;
-  }
   return check(root, baseline);
 }
 
