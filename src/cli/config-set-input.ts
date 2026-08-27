@@ -5,6 +5,7 @@ import {
   normalizeStringifiedOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import JSON5 from "json5";
+import { assertFiniteConfigNumbers } from "../config/finite-numbers.js";
 
 export type ConfigSetOptions = {
   strictJson?: boolean;
@@ -77,7 +78,7 @@ export function hasProviderBuilderOptions(opts: ConfigSetOptions): boolean {
 
 function parseJson5Raw(raw: string, label: string): unknown {
   try {
-    return JSON5.parse(raw);
+    return assertFiniteConfigNumbers(JSON5.parse(raw));
   } catch (err) {
     throw new Error(`Failed to parse ${label}: ${String(err)}`, { cause: err });
   }

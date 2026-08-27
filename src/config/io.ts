@@ -1,4 +1,3 @@
-// Loads, validates, migrates, snapshots, and writes OpenClaw config files.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -45,6 +44,7 @@ import {
   resolveConfigEnvVars,
 } from "./env-substitution.js";
 import { applyConfigEnvVars, cloneEnvWithPlatformSemantics } from "./env-vars.js";
+import { assertFiniteConfigNumbers, stringifyFiniteConfig } from "./finite-numbers.js";
 import {
   ConfigIncludeError,
   hashConfigIncludeRaw,
@@ -2358,6 +2358,7 @@ export function createConfigIO(
     cfg: OpenClawConfig,
     options: ConfigWriteOptions = {},
   ): Promise<InternalConfigWriteResult> {
+    assertFiniteConfigNumbers(cfg);
     options.assertConfigPathForWrite?.();
     assertConfigWriteAllowedInCurrentMode({ configPath, env: deps.env });
     clearConfigCache();
@@ -2518,12 +2519,11 @@ export function createConfigIO(
     ) as OpenClawConfig;
     const outputConfig = applyUnsetPathsForWrite(tildeRestoredOutputConfig, unsetPaths);
     // Do NOT apply runtime defaults when writing - user config should only contain
-    // explicitly set values. Runtime defaults are applied when loading (issue #6070).
     const stampedOutputConfig = stampConfigVersion(
       outputConfig,
       options.lastTouchedVersionOverride,
     );
-    const json = JSON.stringify(stampedOutputConfig, null, 2).trimEnd().concat("\n");
+    const json = stringifyFiniteConfig(stampedOutputConfig);
     const nextHash = hashConfigRaw(json);
     const previousHash = resolveConfigSnapshotHash(snapshot);
     const changedPathCount = changedPaths?.size;

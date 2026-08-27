@@ -1,4 +1,3 @@
-// Applies scoped config mutations while preserving IO and observer state.
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -13,6 +12,7 @@ import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
 import { maintainConfigBackups } from "./backup-rotation.js";
 import { restoreEnvVarRefs } from "./env-preserve.js";
 import { resolveConfigEnvVars } from "./env-substitution.js";
+import { assertFiniteConfigNumbers } from "./finite-numbers.js";
 import {
   ConfigIncludeError,
   hashConfigIncludeRaw,
@@ -325,7 +325,7 @@ function snapshotProvesBrokenInclude(snapshot: ConfigFileSnapshot, includePath: 
 }
 
 function formatJsonFileValue(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
+  return `${JSON.stringify(assertFiniteConfigNumbers(value), null, 2)}\n`;
 }
 
 type RootBoundIncludeFile = {
@@ -638,7 +638,6 @@ async function tryWriteSingleTopLevelIncludeMutation(params: {
       authoredIncludeValue = parseJsonWithJson5Fallback(previousIncludeRaw);
       parsedInclude = true;
     } catch {
-      // A validated replacement is the repair path for a malformed include.
       if (!snapshotHasBrokenInclude || expectedIncludeHash === undefined) {
         throw new ConfigMutationConflictError("included config changed since last load", {
           currentHash: previousIncludeHash,
@@ -855,6 +854,7 @@ async function replaceConfigFileUnlocked(params: {
   writeOptions?: ConfigWriteOptions;
   io?: ConfigMutationIO;
 }): Promise<ConfigReplaceResult> {
+  assertFiniteConfigNumbers(params.nextConfig);
   const prepared = params.snapshot
     ? { snapshot: params.snapshot, writeOptions: params.writeOptions ?? {} }
     : await readConfigSnapshotForMutation({

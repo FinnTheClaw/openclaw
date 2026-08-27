@@ -1,4 +1,3 @@
-// Config CLI command implementation for get/set/unset/patch/validate and secret refs.
 import fs from "node:fs";
 import { isRecord as isPlainRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
@@ -16,6 +15,7 @@ import {
   readConfigFileSnapshot,
   replaceConfigFile,
 } from "../config/config.js";
+import { assertFiniteConfigNumbers } from "../config/finite-numbers.js";
 import { AUTO_MANAGED_CONFIG_META_PATHS } from "../config/io.meta.js";
 import { formatConfigIssueLines, normalizeConfigIssues } from "../config/issue-format.js";
 import {
@@ -147,7 +147,6 @@ function normalizeAgentDefaultModelValueForConfigMutation(value: unknown): unkno
 }
 
 function normalizeAgentListModelRefsForConfigMutation(value: unknown): unknown {
-  // Config mutation normalizes model refs at write time so later readers see canonical ids.
   if (!Array.isArray(value)) {
     return value;
   }
@@ -446,17 +445,19 @@ function parseValue(raw: string, opts: ConfigSetParseOpts): unknown {
   const trimmed = raw.trim();
   if (opts.strictJson) {
     try {
-      return JSON.parse(trimmed);
+      return assertFiniteConfigNumbers(JSON.parse(trimmed));
     } catch (err) {
       throw new Error(formatStrictJsonParseFailure({ value: raw, cause: err }), { cause: err });
     }
   }
 
+  let parsed: unknown;
   try {
-    return JSON5.parse(trimmed);
+    parsed = JSON5.parse(trimmed);
   } catch {
     return raw;
   }
+  return assertFiniteConfigNumbers(parsed);
 }
 
 function hasOwnPathKey(value: Record<string, unknown>, key: string): boolean {
@@ -1353,7 +1354,6 @@ function buildRefAssignmentOperation(params: {
     requestedPath: params.requestedPath,
     setPath: params.requestedPath,
     value: params.ref,
-    // Only registry-known SecretRef targets have had their schema shape validated here.
     ...(resolved ? { schemaValidated: true } : {}),
     touchedSecretTargetPath: resolved
       ? toDotPath(resolved.pathSegments)
@@ -1488,7 +1488,7 @@ async function readConfigPatchInput(opts: ConfigPatchOptions): Promise<unknown> 
   const sourceLabel = stdin ? "--stdin" : "--file";
   const raw = stdin ? await readStdinText() : fs.readFileSync(file as string, "utf8");
   try {
-    return JSON5.parse(raw);
+    return assertFiniteConfigNumbers(JSON5.parse(raw));
   } catch (err) {
     throw new Error(`Failed to parse ${sourceLabel} as JSON5: ${String(err)}`, { cause: err });
   }
