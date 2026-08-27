@@ -92,7 +92,13 @@ function decode(buffer: Buffer, filePath: string): string {
 }
 
 function countNonblankLines(content: string): number {
-  return content.split("\n").filter((line) => line.trim().length > 0).length;
+  return content
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .replaceAll("\u2028", "\n")
+    .replaceAll("\u2029", "\n")
+    .split("\n")
+    .filter((line) => line.trim().length > 0).length;
 }
 
 function isGoverned(filePath: string, executable: boolean, shebang: boolean): boolean {
@@ -171,28 +177,26 @@ function parseNameStatus(raw: string): Change[] {
   return [...changes.values()];
 }
 
-function collectChanges(root: string, baseCommit: string): Change[] {
-  const working = parseNameStatus(
-    git(["diff", "--name-status", "-z", "--find-renames", baseCommit, "--"], root),
-  );
-  const staged = parseNameStatus(
-    git(["diff", "--cached", "--name-status", "-z", "--find-renames", baseCommit, "--"], root),
-  );
-  const byPath = new Map<string, Change>();
-  for (const change of [...working, ...staged]) {
-    const previous = byPath.get(change.path);
-    byPath.set(
-      change.path,
-      previous?.baselinePath && !change.baselinePath
-        ? { ...change, baselinePath: previous.baselinePath, kind: "existing" }
-        : change,
-    );
+function collectSnapshotChanges(
+  root: string,
+  baseCommit: string,
+  source: "index" | "worktree",
+): Change[] {
+  const diffArguments = ["diff"];
+  if (source === "index") {
+    diffArguments.push("--cached");
   }
-  const ordinary = git(["ls-files", "--others", "--exclude-standard", "-z"], root);
-  const ignored = git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], root);
-  for (const filePath of `${ordinary}${ignored}`.split("\0").filter(Boolean)) {
-    if (!byPath.has(filePath)) {
-      byPath.set(filePath, { kind: "new", origin: "untracked", path: filePath });
+  diffArguments.push("--name-status", "-z", "--find-renames", baseCommit, "--");
+  const byPath = new Map(
+    parseNameStatus(git(diffArguments, root)).map((change) => [change.path, change]),
+  );
+  if (source === "worktree") {
+    const ordinary = git(["ls-files", "--others", "--exclude-standard", "-z"], root);
+    const ignored = git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], root);
+    for (const filePath of `${ordinary}${ignored}`.split("\0").filter(Boolean)) {
+      if (!byPath.has(filePath)) {
+        byPath.set(filePath, { kind: "new", origin: "untracked", path: filePath });
+      }
     }
   }
   const changes = [...byPath.values()];
@@ -280,13 +284,18 @@ async function worktreeRepresentation(
   }
   const handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const after = await handle.stat();
-    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino) {
+    const opened = await handle.stat();
+    if (!sameFile(before, opened)) {
       throw new Error(`working-tree path changed during inspection: ${filePath}`);
     }
     const buffer = await handle.readFile();
+    const read = await handle.stat();
+    const after = await lstat(absolutePath);
+    if (!sameFile(opened, read) || !sameFile(read, after)) {
+      throw new Error(`working-tree path changed during inspection: ${filePath}`);
+    }
     const shebang = buffer.length >= 2 && buffer[0] === 0x23 && buffer[1] === 0x21;
-    const governed = isGoverned(filePath, (after.mode & 0o111) !== 0, shebang);
+    const governed = isGoverned(filePath, (read.mode & 0o111) !== 0, shebang);
     return {
       governed,
       lines: governed ? countNonblankLines(decode(buffer, filePath)) : 0,
@@ -295,6 +304,22 @@ async function worktreeRepresentation(
   } finally {
     await handle.close();
   }
+}
+
+function sameFile(
+  left: Awaited<ReturnType<typeof lstat>>,
+  right: Awaited<ReturnType<typeof lstat>>,
+): boolean {
+  return (
+    left.isFile() &&
+    right.isFile() &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
 }
 
 function baseAllowance(
@@ -326,24 +351,24 @@ async function check(root: string, baseline: Baseline): Promise<number> {
   const failures: string[] = [];
   const index = parseIndexEntries(root);
   let checked = 0;
-  for (const change of collectChanges(root, baseline.baseCommit).toSorted((a, b) =>
-    a.path.localeCompare(b.path),
-  )) {
-    const representations = [
-      indexRepresentation(root, index.get(change.path)),
-      await worktreeRepresentation(root, change.path),
-    ].filter((value): value is Representation => value !== undefined);
-    const governed = representations.filter((value) => value.governed);
-    if (!governed.length) {
-      continue;
-    }
-    checked++;
-    const base =
-      change.kind === "existing"
-        ? baseAllowance(root, baseline.baseCommit, change.baselinePath ?? change.path)
-        : undefined;
-    const limit = base?.governed ? Math.max(MAX_LINES, base.lines) : MAX_LINES;
-    for (const representation of governed) {
+  for (const source of ["index", "worktree"] as const) {
+    const changes = collectSnapshotChanges(root, baseline.baseCommit, source).toSorted((a, b) =>
+      a.path.localeCompare(b.path),
+    );
+    for (const change of changes) {
+      const representation =
+        source === "index"
+          ? indexRepresentation(root, index.get(change.path))
+          : await worktreeRepresentation(root, change.path);
+      if (!representation?.governed) {
+        continue;
+      }
+      checked++;
+      const base =
+        change.kind === "existing"
+          ? baseAllowance(root, baseline.baseCommit, change.baselinePath ?? change.path)
+          : undefined;
+      const limit = base?.governed ? Math.max(MAX_LINES, base.lines) : MAX_LINES;
       if (representation.lines > limit) {
         failures.push(
           `${representation.lines}\t${limit}\t${change.kind}\t${representation.source}\t${change.path}`,
@@ -357,7 +382,7 @@ async function check(root: string, baseline: Baseline): Promise<number> {
     return 1;
   }
   process.stdout.write(
-    `source-size-check: ${checked} changed governed paths within nonblank limits\n`,
+    `source-size-check: ${checked} changed governed representations within nonblank limits\n`,
   );
   return 0;
 }

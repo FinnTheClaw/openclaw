@@ -88,6 +88,8 @@ async function main(): Promise<void> {
     await writeFile(join(cwd, "rename-data.txt"), lines(5000), "utf8");
     await writeFile(join(cwd, "chmod-data.txt"), lines(5000), "utf8");
     await writeFile(join(cwd, "delete-recreate.ts"), lines(501), "utf8");
+    await writeFile(join(cwd, "exploit-index-new.ts"), lines(501), "utf8");
+    await writeFile(join(cwd, "exploit-worktree-new.ts"), lines(501), "utf8");
     assert.equal(
       git(
         [
@@ -97,6 +99,8 @@ async function main(): Promise<void> {
           "rename-data.txt",
           "chmod-data.txt",
           "delete-recreate.ts",
+          "exploit-index-new.ts",
+          "exploit-worktree-new.ts",
         ],
         cwd,
       ).code,
@@ -113,8 +117,38 @@ async function main(): Promise<void> {
     await writeBaseline(cwd, baseCommit);
     assert.equal(check(cwd).code, 0);
 
-    await writeFile(join(cwd, "legacy.ts"), lines(502), "utf8");
+    await writeFile(join(cwd, "index-added.ts"), lines(501), "utf8");
+    assert.equal(git(["add", "index-added.ts"], cwd).code, 0);
+    await rm(join(cwd, "exploit-index-new.ts"));
     let result = check(cwd);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /501\t500\tnew\tindex\tindex-added\.ts/u);
+    assert.equal(
+      git(["reset", "-q", "HEAD", "--", "exploit-index-new.ts", "index-added.ts"], cwd).code,
+      0,
+    );
+    await writeFile(join(cwd, "exploit-index-new.ts"), lines(501), "utf8");
+    await rm(join(cwd, "index-added.ts"), { force: true });
+
+    await rename(join(cwd, "exploit-worktree-new.ts"), join(cwd, "worktree-added.ts"));
+    assert.equal(git(["add", "-A", "exploit-worktree-new.ts", "worktree-added.ts"], cwd).code, 0);
+    await writeFile(join(cwd, "exploit-worktree-new.ts"), lines(501), "utf8");
+    await writeFile(
+      join(cwd, "worktree-added.ts"),
+      lines(501, (index) => `export const changed${index} = "different-${index}";`),
+      "utf8",
+    );
+    result = check(cwd);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /501\t500\tnew\tworktree\tworktree-added\.ts/u);
+    assert.equal(
+      git(["reset", "-q", "HEAD", "--", "exploit-worktree-new.ts", "worktree-added.ts"], cwd).code,
+      0,
+    );
+    await rm(join(cwd, "worktree-added.ts"), { force: true });
+
+    await writeFile(join(cwd, "legacy.ts"), lines(502), "utf8");
+    result = check(cwd);
     assert.equal(result.code, 1);
     assert.match(result.output, /502\t501\texisting\tworktree\tlegacy\.ts/u);
     await writeFile(join(cwd, "legacy.ts"), lines(500), "utf8");
@@ -190,6 +224,24 @@ async function main(): Promise<void> {
     await expectNewFailure(cwd, "custom/triple.py", triple, /custom\/triple\.py/u);
     const shell = `#!/bin/sh\n${lines(500, () => "rm -rf /*")}`;
     await expectNewFailure(cwd, "custom/tool.conf", shell, /custom\/tool\.conf/u);
+    await expectNewFailure(
+      cwd,
+      "custom/bare-cr.ts",
+      Array<string>(501).fill("const value = 1;").join("\r"),
+      /501\t500\tnew\tworktree\tcustom\/bare-cr\.ts/u,
+    );
+    await expectNewFailure(
+      cwd,
+      "custom/crlf.ts",
+      Array<string>(501).fill("const value = 1;").join("\r\n"),
+      /501\t500\tnew\tworktree\tcustom\/crlf\.ts/u,
+    );
+    await expectNewFailure(
+      cwd,
+      "custom/unicode-separators.ts",
+      `${Array<string>(251).fill("const value = 1;").join("\u2028")}\u2029${Array<string>(250).fill("const value = 2;").join("\u2029")}`,
+      /501\t500\tnew\tworktree\tcustom\/unicode-separators\.ts/u,
+    );
 
     for (const extension of ["bash", "zsh", "fish", "swift"]) {
       await expectNewFailure(
