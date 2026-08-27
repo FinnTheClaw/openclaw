@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BehaviorGovernorModuleSelection } from "../config/types.behavior-governor.js";
 import {
   createGatewayBehaviorGovernorModuleLifecycle,
+  GatewayBehaviorGovernorModuleStartupError,
   type GatewayBehaviorGovernorModuleDescriptor,
   type GatewayBehaviorGovernorModuleFactory,
 } from "./behavior-governor-module-lifecycle.js";
@@ -270,5 +271,35 @@ describe("gateway behavior governor module lifecycle", () => {
 
     expect(events.filter((event) => event === "close:C01")).toHaveLength(1);
     expect(events.filter((event) => event === "close:C02")).toHaveLength(2);
+  });
+
+  it("retains a runtime carried by a failed factory until cleanup succeeds", async () => {
+    let closeFailures = 2;
+    const close = vi.fn(() => {
+      if (closeFailures-- > 0) {
+        throw new Error("persistent inner cleanup failure");
+      }
+    });
+    const failed: GatewayBehaviorGovernorModuleDescriptor = {
+      ...descriptor({ id: "C03" }),
+      load: async () => async () => {
+        throw new GatewayBehaviorGovernorModuleStartupError({
+          moduleId: "C03",
+          runtime: { close },
+          cause: new Error("factory activation failed"),
+        });
+      },
+    };
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [failed] });
+
+    await expect(lifecycle.apply([selection("C03")])).rejects.toThrow(
+      "GOVERNOR_MODULE_STARTUP_CLEANUP_FAILED",
+    );
+    await expect(lifecycle.apply([])).rejects.toThrow("GOVERNOR_MODULE_LIFECYCLE_POISONED");
+    await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_MODULE_CLOSE_FAILED");
+    await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_MODULE_CLOSE_FAILED");
+    await lifecycle.close();
+
+    expect(close).toHaveBeenCalledTimes(3);
   });
 });

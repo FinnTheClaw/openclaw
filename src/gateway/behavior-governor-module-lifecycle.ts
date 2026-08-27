@@ -8,6 +8,22 @@ export type GatewayBehaviorGovernorModuleRuntime = Readonly<{
   close: () => void | Promise<void>;
 }>;
 
+export class GatewayBehaviorGovernorModuleStartupError extends Error {
+  readonly moduleId: string;
+  readonly runtime: GatewayBehaviorGovernorModuleRuntime;
+
+  constructor(params: {
+    moduleId: string;
+    runtime: GatewayBehaviorGovernorModuleRuntime;
+    cause: unknown;
+  }) {
+    super("GOVERNOR_MODULE_FACTORY_CLEANUP_INCOMPLETE", { cause: params.cause });
+    this.name = "GatewayBehaviorGovernorModuleStartupError";
+    this.moduleId = params.moduleId;
+    this.runtime = params.runtime;
+  }
+}
+
 /** The lifecycle is the sole activation seam; module imports must stay inert. */
 export type GatewayBehaviorGovernorModuleActivationContext = Readonly<{
   id: string;
@@ -212,8 +228,10 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
     }
     const resolved = resolveModules({ catalog, selections });
     const started: typeof active = [];
+    let startingId: string | undefined;
     try {
       for (const item of resolved) {
+        startingId = item.descriptor.id;
         const create = await item.descriptor.load();
         if (typeof create !== "function") {
           throw new Error("GOVERNOR_MODULE_FACTORY_INVALID");
@@ -227,6 +245,7 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
           throw new Error("GOVERNOR_MODULE_RUNTIME_INVALID");
         }
         started.push({ id: item.selection.id, runtime });
+        startingId = undefined;
       }
     } catch (error) {
       const cleanupErrors: unknown[] = [];
@@ -239,10 +258,16 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
           survivors.push(item);
         }
       }
+      if (
+        error instanceof GatewayBehaviorGovernorModuleStartupError &&
+        error.moduleId === startingId
+      ) {
+        survivors.push({ id: error.moduleId, runtime: error.runtime });
+      }
       // Retain only runtimes whose close failed. Gateway shutdown can retry
       // those survivors without double-closing a runtime that already closed.
       active = survivors.toReversed();
-      if (cleanupErrors.length > 0) {
+      if (cleanupErrors.length > 0 || survivors.length > 0) {
         poisoned = true;
         throw aggregateWithCause(
           [error, ...cleanupErrors],

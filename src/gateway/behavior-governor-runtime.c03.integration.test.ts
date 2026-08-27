@@ -242,12 +242,28 @@ describe("selected C03 behavior module integration", () => {
         expect(callerAggregate).not.toHaveBeenCalled();
         const task = captured!.adapter.controller.store.loadTask(scope!.taskId as never)!;
         const evidence = captured!.adapter.controller.store.listEvidence(scope!.taskId as never);
+        const events = captured!.adapter.controller.store.listEvents(scope!.taskId as never);
+        const failedEffects = events.filter(
+          (event) =>
+            event.eventType === "tool_outcome_recorded" &&
+            (event.payload as { semantic?: string }).semantic === "transient_failure",
+        );
+        const nonGuidanceReplanRequests = events
+          .filter((event) => event.eventType === "runtime_replan_requested")
+          .filter((event) => (event.payload as { guidanceOnly?: boolean }).guidanceOnly !== true);
+        const planChanges = events.filter((event) => event.eventType === "plan_replaced");
         const aggregateEvidence = evidence.find((item) => item.criterionId === "aggregate")!;
         const observationEvidence = evidence.filter((item) => item.criterionId !== "aggregate");
         bridge.dispose();
         await runtime.close();
         expect(task).toMatchObject({ state: "COMPLETED", planVersion: 1 });
+        expect(failedEffects).toHaveLength(1);
+        expect(nonGuidanceReplanRequests).toHaveLength(0);
+        expect(planChanges).toHaveLength(1);
         expect(evidence).toHaveLength(21);
+        expect(new Set(observationEvidence.map((item) => item.criterionId))).toEqual(
+          new Set(observationIds),
+        );
         expect(
           evidence.every(
             (item) =>

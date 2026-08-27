@@ -20,6 +20,16 @@ function configuredModules(config: OpenClawConfig): readonly BehaviorGovernorMod
   return "modules" in value && Array.isArray(value.modules) ? value.modules : [];
 }
 
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(child);
+    }
+  }
+  return value;
+}
+
 export function createGatewayBehaviorGovernorRuntime(params: {
   hostFactory?: GatewayBehaviorGovernorHostFactory;
 }): GatewayBehaviorGovernorRuntime {
@@ -36,9 +46,10 @@ export function createGatewayBehaviorGovernorRuntime(params: {
     if (activeModuleConfig && !isDeepStrictEqual(activeModuleConfig, config)) {
       throw new Error("GOVERNOR_MODULE_RESTART_REQUIRED");
     }
-    const selections = configuredModules(config);
+    const acceptedConfig = deepFreeze(structuredClone(config));
+    const selections = configuredModules(acceptedConfig);
     const priorConfig = activeModuleConfig;
-    activeModuleConfig = config;
+    activeModuleConfig = acceptedConfig;
     try {
       await modules.apply(selections);
     } catch (error) {

@@ -94,4 +94,14 @@ describe("gateway behavior governor runtime", () => {
     );
     await runtime.close();
   });
+
+  it("retains an immutable accepted config snapshot", async () => {
+    const mutable: OpenClawConfig = {};
+    const runtime = createGatewayBehaviorGovernorRuntime({});
+    await runtime.apply(mutable);
+    mutable.experimental = unknownModuleConfig.experimental;
+
+    await runtime.apply({});
+    await runtime.close();
+  });
 });

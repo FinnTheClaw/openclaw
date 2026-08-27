@@ -11,6 +11,7 @@ import {
   type GatewayBehaviorGovernorHostFactory,
   type GatewayBehaviorGovernorLifecycle,
 } from "../behavior-governor-lifecycle.js";
+import { GatewayBehaviorGovernorModuleStartupError } from "../behavior-governor-module-lifecycle.js";
 import type { DeepProductiveLoopActivator } from "./deep-productive-loop.js";
 
 type GovernorSnapshot = NonNullable<ReturnType<typeof getActiveSecretsRuntimeGovernorSnapshot>>;
@@ -34,13 +35,6 @@ const defaultServices: DeepProductiveLoopActivationServices = Object.freeze({
   getSnapshot: getActiveSecretsRuntimeGovernorSnapshot,
   installSigner: installGatewayAcceptanceReceiptSigner,
 });
-
-function aggregateFailure(error: unknown, cleanupErrors: unknown[], code: string): never {
-  if (cleanupErrors.length === 0) {
-    throw error;
-  }
-  throw new AggregateError([error, ...cleanupErrors], code, { cause: error });
-}
 
 function enabledConfig(
   config: OpenClawConfig | undefined,
@@ -79,31 +73,9 @@ export function createDeepProductiveLoopActivator(params: {
     const receiptGeneration = services.getGeneration();
     const lifecycle = services.createLifecycle({ hostFactory: params.hostFactory });
     let signerAttempted = false;
-    try {
-      signerAttempted = true;
-      services.installSigner({ signingKey, generation: snapshot.generation });
-      services.fenceReceipts(receiptGeneration);
-      await lifecycle.apply(config, snapshot);
-    } catch (error) {
-      const cleanupErrors: unknown[] = [];
-      try {
-        await lifecycle.close();
-      } catch (cleanupError) {
-        cleanupErrors.push(cleanupError);
-      }
-      if (signerAttempted) {
-        try {
-          services.clearSigner();
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-      }
-      aggregateFailure(error, cleanupErrors, "GOVERNOR_C03_ACTIVATION_ROLLBACK_FAILED");
-    }
-
     let lifecycleClosed = false;
     let signerCleared = false;
-    return Object.freeze({
+    const runtime = Object.freeze({
       freeze: () => lifecycle.freeze(),
       close: async () => {
         const errors: unknown[] = [];
@@ -115,7 +87,7 @@ export function createDeepProductiveLoopActivator(params: {
             errors.push(error);
           }
         }
-        if (!signerCleared) {
+        if (signerAttempted && !signerCleared) {
           try {
             services.clearSigner();
             signerCleared = true;
@@ -128,5 +100,27 @@ export function createDeepProductiveLoopActivator(params: {
         }
       },
     });
+    try {
+      signerAttempted = true;
+      services.installSigner({ signingKey, generation: snapshot.generation });
+      services.fenceReceipts(receiptGeneration);
+      await lifecycle.apply(config, snapshot);
+    } catch (error) {
+      try {
+        await runtime.close();
+      } catch (cleanupError) {
+        throw new GatewayBehaviorGovernorModuleStartupError({
+          moduleId: context.id,
+          runtime,
+          cause: new AggregateError(
+            [error, cleanupError],
+            "GOVERNOR_C03_ACTIVATION_ROLLBACK_FAILED",
+            { cause: error },
+          ),
+        });
+      }
+      throw error;
+    }
+    return runtime;
   };
 }

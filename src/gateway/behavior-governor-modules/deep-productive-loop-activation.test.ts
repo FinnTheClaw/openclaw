@@ -142,4 +142,37 @@ describe("deep productive loop transactional activation", () => {
     expect(lifecycle.close).toHaveBeenCalledOnce();
     expect(services.clearSigner).toHaveBeenCalledTimes(2);
   });
+
+  it("hands a persistent activation-cleanup survivor to the skeleton", async () => {
+    const { activate, lifecycle, services } = harness();
+    vi.mocked(lifecycle.apply).mockRejectedValue(new Error("activation failed"));
+    vi.mocked(lifecycle.close)
+      .mockRejectedValueOnce(new Error("rollback close failed"))
+      .mockRejectedValueOnce(new Error("shutdown close failed"))
+      .mockResolvedValueOnce(undefined);
+    const modules = createGatewayBehaviorGovernorModuleLifecycle({
+      catalog: [
+        {
+          id: "C03.DEEP_PRODUCTIVE_LOOP",
+          version: "1.0.0",
+          supportedModes: ["shadow", "enforce"],
+          qualifiedModes: ["shadow", "enforce"],
+          dependencies: [],
+          durableBoundaryIds: [],
+          load: async () => createDeepProductiveLoopModule({ activate }),
+        },
+      ],
+    });
+
+    await expect(
+      modules.apply([{ id: "C03.DEEP_PRODUCTIVE_LOOP", version: "1.0.0", mode: "enforce" }]),
+    ).rejects.toThrow("GOVERNOR_MODULE_STARTUP_CLEANUP_FAILED");
+    await expect(modules.apply([])).rejects.toThrow("GOVERNOR_MODULE_LIFECYCLE_POISONED");
+    await expect(modules.close()).rejects.toThrow("GOVERNOR_MODULE_CLOSE_FAILED");
+    await modules.close();
+
+    expect(lifecycle.apply).toHaveBeenCalledOnce();
+    expect(lifecycle.close).toHaveBeenCalledTimes(3);
+    expect(services.clearSigner).toHaveBeenCalledOnce();
+  });
 });

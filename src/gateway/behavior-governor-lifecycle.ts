@@ -153,12 +153,14 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
   let active:
     | {
         key: string;
-        runtime: GovernorHostRuntime;
+        runtime?: GovernorHostRuntime;
         hostClose?: () => void | Promise<void>;
-        closeFailure?: AggregateError;
+        runtimeClosed: boolean;
+        hostClosed: boolean;
       }
     | undefined;
   let initialized = false;
+  let poisoned = false;
   let serial = Promise.resolve();
 
   const closeUnsafe = async () => {
@@ -166,35 +168,42 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     if (!current) {
       return;
     }
-    if (current.closeFailure) {
-      throw current.closeFailure;
-    }
     const errors: unknown[] = [];
-    try {
-      current.runtime.close();
-    } catch (error) {
-      errors.push(error);
+    if (!current.runtimeClosed) {
+      try {
+        current.runtime?.close();
+        current.runtimeClosed = true;
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    try {
-      await current.hostClose?.();
-    } catch (error) {
-      errors.push(error);
+    if (!current.hostClosed) {
+      try {
+        await current.hostClose?.();
+        current.hostClosed = true;
+      } catch (error) {
+        errors.push(error);
+      }
     }
     if (errors.length > 0) {
-      current.closeFailure = new AggregateError(errors, "GOVERNOR_GATEWAY_CLOSE_FAILED");
-      throw current.closeFailure;
+      throw new AggregateError(errors, "GOVERNOR_GATEWAY_CLOSE_FAILED");
     }
     active = undefined;
   };
 
   const freezeUnsafe = () => {
-    active?.runtime.freeze();
+    if (active && !active.runtimeClosed) {
+      active.runtime?.freeze();
+    }
   };
 
   const applyUnsafe = async (
     config: OpenClawConfig,
     secretSnapshot: GatewayBehaviorGovernorSecretSnapshot,
   ) => {
+    if (poisoned) {
+      throw new Error("GOVERNOR_GATEWAY_LIFECYCLE_POISONED");
+    }
     const requestedGovernor = enabledConfig(config);
     if (!requestedGovernor) {
       if (initialized && active) {
@@ -285,18 +294,28 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       if (!runtime) {
         throw new Error("GOVERNOR_GATEWAY_RUNTIME_NOT_CREATED");
       }
-      active = { key, runtime, hostClose: host.close };
+      active = {
+        key,
+        runtime,
+        hostClose: host.close,
+        runtimeClosed: false,
+        hostClosed: !host.close,
+      };
     } catch (error) {
-      const cleanupErrors: unknown[] = [];
-      try {
-        runtime?.close();
-      } catch (cleanupError) {
-        cleanupErrors.push(cleanupError);
+      if (runtime || host?.close) {
+        active = {
+          key,
+          ...(runtime ? { runtime } : {}),
+          ...(host?.close ? { hostClose: host.close } : {}),
+          runtimeClosed: !runtime,
+          hostClosed: !host?.close,
+        };
       }
+      let cleanupFailure: unknown;
       try {
-        await host?.close?.();
+        await closeUnsafe();
       } catch (cleanupError) {
-        cleanupErrors.push(cleanupError);
+        cleanupFailure = cleanupError;
       }
       try {
         if (fs.readdirSync(stateDir).length === 0) {
@@ -305,9 +324,10 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       } catch {
         // Persistent governor state is never recursively removed during recovery.
       }
-      if (cleanupErrors.length > 0) {
+      if (cleanupFailure) {
+        poisoned = true;
         throw aggregateWithCause(
-          [error, ...cleanupErrors],
+          [error, cleanupFailure],
           "GOVERNOR_GATEWAY_STARTUP_CLEANUP_FAILED",
           error,
         );

@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BehaviorGovernorConfig } from "../config/types.behavior-governor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as hostBootstrap from "../security/governor-host-bootstrap.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayBehaviorGovernorLifecycle } from "./behavior-governor-lifecycle.js";
@@ -235,7 +236,9 @@ describe("gateway behavior governor prepared snapshot binding", () => {
             integrations: integrations(false),
             close: () => {
               startupCloseCalls += 1;
-              throw new Error("factory startup cleanup failed");
+              if (startupCloseCalls === 1) {
+                throw new Error("factory startup cleanup failed");
+              }
             },
           }),
         });
@@ -243,6 +246,11 @@ describe("gateway behavior governor prepared snapshot binding", () => {
           startupFailure.apply(configFor(sourceGovernor), snapshotFor(state.stateDir)),
         ).rejects.toBeInstanceOf(AggregateError);
         expect(startupCloseCalls).toBe(1);
+        await expect(
+          startupFailure.apply(configFor(sourceGovernor), snapshotFor(state.stateDir)),
+        ).rejects.toThrow("GOVERNOR_GATEWAY_LIFECYCLE_POISONED");
+        await startupFailure.close();
+        expect(startupCloseCalls).toBe(2);
         expect(fs.existsSync(path.join(state.stateDir, "governor"))).toBe(false);
 
         let closeCalls = 0;
@@ -252,14 +260,56 @@ describe("gateway behavior governor prepared snapshot binding", () => {
             integrations: integrations(),
             close: () => {
               closeCalls += 1;
-              throw new Error("factory close failed");
+              if (closeCalls === 1) {
+                throw new Error("factory close failed");
+              }
             },
           }),
         });
         await closeFailure.apply(configFor(sourceGovernor), snapshotFor(state.stateDir));
         await expect(closeFailure.close()).rejects.toBeInstanceOf(AggregateError);
-        await expect(closeFailure.close()).rejects.toBeInstanceOf(AggregateError);
-        expect(closeCalls).toBe(1);
+        await closeFailure.close();
+        expect(closeCalls).toBe(2);
+      },
+    );
+  });
+
+  it("retries only incomplete runtime and host cleanup resources", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "governor-lifecycle-resource-retry-" },
+      async (state) => {
+        let runtimeFailures = 1;
+        let hostFailures = 2;
+        const runtimeClose = vi.fn(() => {
+          if (runtimeFailures-- > 0) {
+            throw new Error("runtime close failed");
+          }
+        });
+        const hostClose = vi.fn(() => {
+          if (hostFailures-- > 0) {
+            throw new Error("host close failed");
+          }
+        });
+        vi.spyOn(hostBootstrap, "createGovernorHostRuntimeIfEnabled").mockReturnValue({
+          close: runtimeClose,
+          freeze: vi.fn(),
+        } as never);
+        const lifecycle = createGatewayBehaviorGovernorLifecycle({
+          hostFactory: () => ({
+            capabilities: [capability],
+            integrations: integrations(),
+            close: hostClose,
+          }),
+        });
+        await lifecycle.apply(configFor(sourceGovernor), snapshotFor(state.stateDir));
+
+        await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_GATEWAY_CLOSE_FAILED");
+        await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_GATEWAY_CLOSE_FAILED");
+        await lifecycle.close();
+
+        expect(runtimeClose).toHaveBeenCalledTimes(2);
+        expect(hostClose).toHaveBeenCalledTimes(3);
+        vi.restoreAllMocks();
       },
     );
   });
