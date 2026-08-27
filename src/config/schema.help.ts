@@ -1,18 +1,12 @@
 // Defines user-facing config field help text for docs and UI surfaces.
 import { MEDIA_AUDIO_FIELD_HELP } from "./media-audio-field-metadata.js";
+import { BEHAVIOR_GOVERNOR_FIELD_HELP } from "./schema.behavior-governor-metadata.js";
 import { describeTalkSilenceTimeoutDefaults } from "./talk-defaults.js";
 
 export const FIELD_HELP: Record<string, string> = {
   experimental:
     "Explicit preview integrations that remain inert unless their typed enablement and host-owned prerequisites are present.",
-  "experimental.behaviorGovernor":
-    "Host-owned behavior-governor rollout settings. Disabled or absent is inert; enabled startup fails closed until canonical SecretRefs and compiled host bindings are available.",
-  "experimental.behaviorGovernor.mode":
-    'Governor observation mode: "shadow" records decisions without changing tools, effects, continuation, or replies; "enforce" is reserved for a separately authorized rollout.',
-  "experimental.behaviorGovernor.secretRefs":
-    "Canonical SecretRefs resolved by startup secret authority. Plaintext governor secrets are not accepted.",
-  "experimental.behaviorGovernor.agentLoop":
-    "Data-only authenticated scopes, dependency criteria, attested tool bindings, and bounded loop settings. Host code remains the authority.",
+  ...BEHAVIOR_GOVERNOR_FIELD_HELP,
   meta: "Metadata fields automatically maintained by OpenClaw to record write/version history for this config file. Keep these values system-managed and avoid manual edits unless debugging migration history.",
   "meta.lastTouchedVersion": "Auto-set when OpenClaw writes the config.",
   "meta.lastTouchedAt": "ISO timestamp of the last config write (auto-set).",

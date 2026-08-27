@@ -207,7 +207,14 @@ export function getActiveSecretsRuntimeGovernorSnapshot(): {
   }
   const sourceGovernor = activeSnapshot.sourceConfig.experimental?.behaviorGovernor;
   const resolvedGovernor = activeSnapshot.config.experimental?.behaviorGovernor;
-  if (sourceGovernor?.enabled !== true || resolvedGovernor?.enabled !== true) {
+  if (
+    !sourceGovernor ||
+    !("enabled" in sourceGovernor) ||
+    !sourceGovernor.enabled ||
+    !resolvedGovernor ||
+    !("enabled" in resolvedGovernor) ||
+    !resolvedGovernor.enabled
+  ) {
     return null;
   }
   const secretFields = [

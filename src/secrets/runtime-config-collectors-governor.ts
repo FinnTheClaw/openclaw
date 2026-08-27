@@ -21,7 +21,7 @@ export function collectBehaviorGovernorSecretAssignments(params: {
   context: ResolverContext;
 }): void {
   const governor = params.config.experimental?.behaviorGovernor;
-  if (!governor || !governor.enabled) {
+  if (!governor || !("enabled" in governor) || !governor.enabled) {
     return;
   }
   const secretRefs = governor.secretRefs as unknown as Record<string, unknown>;

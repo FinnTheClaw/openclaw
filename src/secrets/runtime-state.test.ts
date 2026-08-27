@@ -123,4 +123,30 @@ describe("secrets runtime state", () => {
     expect(second?.config.secretRefs.identityHmacKey).toBe("identity");
     expect(second?.env.OPENCLAW_STATE_DIR).toBe("fixture-state");
   });
+
+  it("does not expose a legacy secret snapshot for an empty modular plan", () => {
+    const snapshot: PreparedSecretsRuntimeSnapshot = {
+      sourceConfig: { experimental: { behaviorGovernor: { modules: [] } } },
+      config: { experimental: { behaviorGovernor: { modules: [] } } },
+      authStores: [],
+      warnings: [],
+      webTools: {
+        search: { providerSource: "none", diagnostics: [] },
+        fetch: { providerSource: "none", diagnostics: [] },
+        diagnostics: [],
+      },
+    };
+    activateSecretsRuntimeSnapshotState({
+      snapshot,
+      refreshContext: {
+        env: { NODE_ENV: "test" },
+        explicitAgentDirs: null,
+        includeAuthStoreRefs: false,
+        loadablePluginOrigins: new Map(),
+      },
+      refreshHandler: null,
+    });
+
+    expect(getActiveSecretsRuntimeGovernorSnapshot()).toBeNull();
+  });
 });

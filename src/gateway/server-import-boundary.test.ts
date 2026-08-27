@@ -42,6 +42,17 @@ describe("gateway startup import boundaries", () => {
     expect(serverImpl).not.toContain('from "../tasks/task-registry.maintenance.js"');
     expect(serverImpl).toContain('import("../tasks/task-registry.maintenance.js")');
     expect(serverImpl).not.toContain('from "../secrets/runtime.js"');
+    expect(serverImpl).toContain('from "./behavior-governor-runtime.js"');
+    expect(serverImpl).toContain("await behaviorGovernor.apply(config)");
+    const governorRuntime = readSource("src/gateway/behavior-governor-runtime.ts");
+    const governorModuleLifecycle = readSource("src/gateway/behavior-governor-module-lifecycle.ts");
+    const governorModulePlan = readSource("src/gateway/behavior-governor-module-plan.ts");
+    for (const source of [governorRuntime, governorModuleLifecycle, governorModulePlan]) {
+      expect(source).not.toContain("governor-host-bootstrap");
+      expect(source).not.toContain("governor-host-secrets");
+      expect(source).not.toContain("store-lifecycle");
+      expect(source).not.toContain("node:fs");
+    }
     expect(readSource("src/gateway/server-reload-handlers.ts")).not.toContain(
       'from "../secrets/runtime.js"',
     );
@@ -59,7 +70,8 @@ describe("gateway startup import boundaries", () => {
 
   it("marks gateway close before awaiting gateway_stop hooks", () => {
     const serverImpl = readSource("src/gateway/server.impl.ts");
-    const closeStart = /close:\s*async\s*\([^)]*\)\s*=>/u.exec(serverImpl)?.index ?? -1;
+    const closeStart = serverImpl.indexOf("const closeGatewayResources = async");
+    const closeEnd = serverImpl.indexOf("\n  };", closeStart);
     const hookStart = serverImpl.indexOf("runGlobalGatewayStopSafely", closeStart);
     const markStart = serverImpl.indexOf("markClosePreludeStarted();", closeStart);
     const markHelperStart = serverImpl.indexOf("const markClosePreludeStarted = () => {");
@@ -69,8 +81,10 @@ describe("gateway startup import boundaries", () => {
     const postReadyBlock = serverImpl.slice(postReadyStart, postReadyEnd);
 
     expect(closeStart).toBeGreaterThan(-1);
+    expect(closeEnd).toBeGreaterThan(closeStart);
     expect(markStart).toBeGreaterThan(closeStart);
     expect(markStart).toBeLessThan(hookStart);
+    expect(hookStart).toBeLessThan(closeEnd);
     expect(markHelperStart).toBeGreaterThan(-1);
     expect(serverImpl.slice(markHelperStart, markHelperEnd)).toContain(
       "clearPostReadyMaintenanceTimer();",

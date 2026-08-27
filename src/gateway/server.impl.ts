@@ -6,11 +6,6 @@ import {
   getActiveEmbeddedRunCount,
   resolveActiveEmbeddedRunSessionId,
 } from "../agents/embedded-agent-runner/run-state.js";
-import { fencePriorGatewayAcceptanceReceipts } from "../agents/subagent-gateway-acceptance-receipt-recovery.sqlite.js";
-import {
-  clearGatewayAcceptanceReceiptSigner,
-  installGatewayAcceptanceReceiptSigner,
-} from "../agents/subagent-gateway-acceptance-receipt-runtime.js";
 import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.js";
 import {
   getLoadedChannelPluginEntryById,
@@ -32,7 +27,6 @@ import { applyConfigOverrides } from "../config/runtime-overrides.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getActiveCronJobCount } from "../cron/active-jobs.js";
-import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import {
   isDiagnosticsEnabled,
   setDiagnosticsEnabledForProcess,
@@ -65,16 +59,13 @@ import type { RuntimeEnv } from "../runtime.js";
 import {
   clearSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeConfigSnapshot,
-  getActiveSecretsRuntimeGovernorSnapshot,
 } from "../secrets/runtime-state.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
 import { resolveGatewayAuth } from "./auth.js";
-import type {
-  GatewayBehaviorGovernorHostFactory,
-  GatewayBehaviorGovernorLifecycle,
-} from "./behavior-governor-lifecycle.js";
+import type { GatewayBehaviorGovernorHostFactory } from "./behavior-governor-lifecycle.js";
+import { createGatewayBehaviorGovernorRuntime } from "./behavior-governor-runtime.js";
 
 function aggregateWithCause(errors: unknown[], message: string, cause: unknown): AggregateError {
   return new AggregateError(errors, message, { cause });
@@ -545,6 +536,9 @@ export async function startGatewayServer(
   opts: GatewayServerOptions = {},
 ): Promise<GatewayServer> {
   normalizeStateDirEnv(process.env);
+  const behaviorGovernor = createGatewayBehaviorGovernorRuntime(
+    opts.behaviorGovernorHostFactory ? { hostFactory: opts.behaviorGovernorHostFactory } : {},
+  );
   let boundPort!: number;
   // runGatewayLoop calls this after closing the previous server on both fresh
   // and in-process restarts, making retired plugin generations safe to remove.
@@ -1000,7 +994,6 @@ export async function startGatewayServer(
   };
 
   let closePreludeStarted = false;
-  let behaviorGovernorLifecycle: GatewayBehaviorGovernorLifecycle | undefined;
   const applyBehaviorGovernorConfig = async (
     plan: { restartGateway: boolean; changedPaths: readonly string[] } | undefined,
     config: OpenClawConfig,
@@ -1016,49 +1009,10 @@ export async function startGatewayServer(
     ) {
       return;
     }
-    const enabled = config.experimental?.behaviorGovernor?.enabled === true;
-    if (!enabled && !behaviorGovernorLifecycle) {
-      return;
-    }
-    if (!behaviorGovernorLifecycle) {
-      const { createGatewayBehaviorGovernorLifecycle } =
-        await import("./behavior-governor-lifecycle.js");
-      behaviorGovernorLifecycle = createGatewayBehaviorGovernorLifecycle(
-        opts.behaviorGovernorHostFactory ? { hostFactory: opts.behaviorGovernorHostFactory } : {},
-      );
-    }
-    const secretSnapshot = getActiveSecretsRuntimeGovernorSnapshot();
-    if (!secretSnapshot) {
-      throw new Error("GOVERNOR_GATEWAY_SECRET_SNAPSHOT_REQUIRED");
-    }
-    await behaviorGovernorLifecycle.apply(config, {
-      env: secretSnapshot.env,
-      generation: secretSnapshot.generation,
-      sourceConfig: secretSnapshot.sourceConfig,
-      config: secretSnapshot.config,
-    });
-    const receiptSigningKey = secretSnapshot.config.secretRefs.receiptSigningKey;
-    if (typeof receiptSigningKey !== "string" || !receiptSigningKey.trim()) {
-      throw new Error("GOVERNOR_GATEWAY_RECEIPT_SIGNER_INVALID");
-    }
-    installGatewayAcceptanceReceiptSigner({
-      signingKey: receiptSigningKey,
-      generation: secretSnapshot.generation,
-    });
-    fencePriorGatewayAcceptanceReceipts(getAgentEventLifecycleGeneration());
+    await behaviorGovernor.apply(config);
   };
-  const closeBehaviorGovernor = async () => {
-    const lifecycle = behaviorGovernorLifecycle;
-    if (!lifecycle) {
-      return;
-    }
-    await lifecycle.close();
-    behaviorGovernorLifecycle = undefined;
-    clearGatewayAcceptanceReceiptSigner();
-  };
-  const freezeBehaviorGovernor = async () => {
-    await behaviorGovernorLifecycle?.freeze();
-  };
+  const closeBehaviorGovernor = () => behaviorGovernor.close();
+  const freezeBehaviorGovernor = () => behaviorGovernor.freeze();
   let postReadyMaintenanceTimer: ReturnType<typeof setTimeout> | null = null;
   const clearPostReadyMaintenanceTimer = () => {
     if (!postReadyMaintenanceTimer) {

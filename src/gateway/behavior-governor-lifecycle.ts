@@ -79,7 +79,7 @@ const SECRET_ENV_NAMES = {
 
 function enabledConfig(config: OpenClawConfig): EnabledBehaviorGovernorConfig | undefined {
   const value = config.experimental?.behaviorGovernor;
-  return value?.enabled === true ? value : undefined;
+  return value && "enabled" in value && value.enabled ? value : undefined;
 }
 
 function loopConfig(config: EnabledBehaviorGovernorConfig): BehaviorGovernorAgentLoopConfig & {

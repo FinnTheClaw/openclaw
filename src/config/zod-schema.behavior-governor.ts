@@ -59,7 +59,25 @@ const SecretRefsSchema = z
   })
   .strict();
 
-export const BehaviorGovernorConfigSchema = z.discriminatedUnion("enabled", [
+const ModuleSelectionSchema = z
+  .object({
+    id: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Z][A-Z0-9._-]*$/u),
+    mode: z.enum(["shadow", "enforce"]),
+    version: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u),
+  })
+  .strict();
+
+export const BehaviorGovernorConfigSchema = z.union([
   z.object({ enabled: z.literal(false) }).strict(),
   z
     .object({
@@ -69,4 +87,5 @@ export const BehaviorGovernorConfigSchema = z.discriminatedUnion("enabled", [
       agentLoop: AgentLoopSchema,
     })
     .strict(),
+  z.object({ modules: z.array(ModuleSelectionSchema).max(64) }).strict(),
 ]);

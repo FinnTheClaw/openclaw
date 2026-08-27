@@ -35,6 +35,12 @@ export type BehaviorGovernorSecretRefs = Readonly<{
   evidenceAdmissionKeyId?: string;
 }>;
 
+export type BehaviorGovernorModuleSelection = Readonly<{
+  id: string;
+  mode: "shadow" | "enforce";
+  version: string;
+}>;
+
 export type BehaviorGovernorConfig =
   | Readonly<{ enabled: false }>
   | Readonly<{
@@ -42,4 +48,7 @@ export type BehaviorGovernorConfig =
       mode: "shadow" | "enforce";
       secretRefs: BehaviorGovernorSecretRefs;
       agentLoop: BehaviorGovernorAgentLoopConfig;
+    }>
+  | Readonly<{
+      modules: readonly BehaviorGovernorModuleSelection[];
     }>;
