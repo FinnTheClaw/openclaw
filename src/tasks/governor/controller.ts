@@ -326,9 +326,9 @@ export class GovernorController {
   requestRuntimeReplan(
     taskId: GovernorTaskId,
     now: number,
-    reasonCode?: Parameters<typeof requestGovernorRuntimeReplan>[3],
+    request?: Parameters<typeof requestGovernorRuntimeReplan>[3],
   ): GovernorTaskProjection {
-    return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now, reasonCode);
+    return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now, request);
   }
 
   recordRuntimeReplanGuidance(

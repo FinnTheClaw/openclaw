@@ -8,6 +8,10 @@ import {
   createGovernorAgentLoopHostFreeze,
   type GovernorAgentLoopHostLifecycle,
 } from "./governor-agent-loop-admission.js";
+import {
+  advanceGovernorC05FailureReplan,
+  recoverGovernorC05FailureReplan,
+} from "./governor-agent-loop-c05-failure-replan.js";
 import { createGovernorCompletedReplayScope } from "./governor-agent-loop-completed-replay.js";
 import {
   validateGovernorAgentLoopConfiguration,
@@ -98,6 +102,7 @@ function createScope(
     throw new Error("GOVERNOR_AGENT_LOOP_STALE_INGRESS");
   }
   const taskId = route.task.taskId;
+  recoverGovernorC05FailureReplan({ controller: host.controller, taskId, now: input.now });
   if (route.kind === "duplicate" && route.task.state === "COMPLETED") {
     if (host.config.mode === "shadow") {
       return undefined;
@@ -367,7 +372,15 @@ function createScope(
           now: observation.now,
         },
       });
-      if (observation.isError) {
+      const c05 = observation.isError
+        ? advanceGovernorC05FailureReplan({
+            controller: host.controller,
+            taskId,
+            sourceEffectId: state.intent.effectId,
+            now: observation.now + 1,
+          })
+        : undefined;
+      if (observation.isError && c05?.kind !== "replanned" && c05?.kind !== "already_replanned") {
         turnState.toolErrorObserved = true;
         turnState.toolErrorEffectId = state.intent.effectId;
         turnState.skipNextStagnationCheck = true;

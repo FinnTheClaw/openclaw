@@ -34,7 +34,7 @@ export function createGatewayBehaviorGovernorRuntime(params: {
 
   const apply = async (config: OpenClawConfig) => {
     const configured = config.experimental?.behaviorGovernor;
-    const selections = configured && "modules" in configured ? configured.modules : [];
+    const selections = configured && "modules" in configured ? (configured.modules ?? []) : [];
     await modules.apply(selections);
     const enabled = isLegacyGovernorEnabled(config);
     if (!enabled && !legacy) {
