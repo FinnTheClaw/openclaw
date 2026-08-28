@@ -44,11 +44,12 @@ function controller(params: { state?: string; crashAt?: CrashPoint; mutate?: boo
     },
     reconcileRequired: Boolean(params.mutate),
   };
+  const effects = [effect];
   let crashAt = params.crashAt;
   const fake = {
     store: {
       loadTask: () => task,
-      listEffects: () => [effect],
+      listEffects: () => effects,
       listEvents: () => events,
     },
     requestRuntimeReplan: (_id: string, _now: number, request: Record<string, unknown>) => {
@@ -93,6 +94,14 @@ function controller(params: { state?: string; crashAt?: CrashPoint; mutate?: boo
     events,
     task,
     effect,
+    addLaterFailure: (effectId = "effect_c05_later", criterionId = "verify") => {
+      effects.push({
+        ...effect,
+        effectId,
+        criterionId,
+        planVersion: task.planVersion,
+      });
+    },
     resume: () => {
       crashAt = undefined;
     },
@@ -233,6 +242,10 @@ describe("C05 failure replan module", () => {
     ["task", "taskId", "foreign-task"],
     ["plan", "fromPlanVersion", 99],
     ["effect", "sourceEffectId", "foreign-effect"],
+    ["criterion", "sourceCriterionId", "verify"],
+    ["objective", "objectiveRevision", 99],
+    ["generation", "executionGeneration", 99],
+    ["state", "expectedState", "EXECUTING"],
   ])("rejects C05 %s boundary mismatch", async (_label, field, value) => {
     const fixture = controller({ crashAt: "checkpoint" });
     const runtime = await enforce();
@@ -256,6 +269,30 @@ describe("C05 failure replan module", () => {
       }),
     ).toBeUndefined();
     expect(fixture.task.planVersion).toBe(1);
+    await runtime.close();
+  });
+
+  it("gives a later distinct failure its own N to N+1 boundary", async () => {
+    const fixture = controller();
+    const runtime = await enforce();
+    expect(
+      advanceGovernorC05FailureReplan({
+        controller: fixture.controller,
+        taskId: "gtask_c05" as never,
+        sourceEffectId: "effect_c05",
+        now: 10,
+      }),
+    ).toMatchObject({ kind: "replanned", fromPlanVersion: 1, planVersion: 2 });
+    fixture.addLaterFailure();
+    expect(
+      advanceGovernorC05FailureReplan({
+        controller: fixture.controller,
+        taskId: "gtask_c05" as never,
+        sourceEffectId: "effect_c05_later",
+        now: 20,
+      }),
+    ).toMatchObject({ kind: "replanned", fromPlanVersion: 2, planVersion: 3 });
+    expect(fixture.task.planVersion).toBe(3);
     await runtime.close();
   });
 

@@ -92,6 +92,7 @@ function boundaryEffect(
     .find(
       (effect) =>
         effect.effectId === boundary.sourceEffectId &&
+        effect.criterionId === boundary.sourceCriterionId &&
         effect.objectiveRevision === boundary.objectiveRevision &&
         effect.planVersion === boundary.fromPlanVersion &&
         effect.executionGeneration === boundary.executionGeneration &&
@@ -138,6 +139,7 @@ function boundaryFor(
 function matchingBoundary(
   controller: GovernorController,
   task: GovernorTaskProjection,
+  params: Readonly<{ fromPlanVersion: number; sourceEffectId?: string }>,
 ): GovernorC05FailureReplanBoundary | undefined {
   const matches = controller.store
     .listEvents(task.taskId)
@@ -150,6 +152,11 @@ function matchingBoundary(
     )
     .map((event) => c05Payload(event.payload))
     .filter((value): value is GovernorC05FailureReplanBoundary => value !== undefined)
+    .filter(
+      (boundary) =>
+        boundary.fromPlanVersion === params.fromPlanVersion &&
+        (params.sourceEffectId === undefined || boundary.sourceEffectId === params.sourceEffectId),
+    )
     .filter((boundary) => boundaryEffect(controller, task, boundary) !== undefined);
   return matches.length === 1 ? matches[0] : undefined;
 }
@@ -285,7 +292,10 @@ export function advanceGovernorC05FailureReplan(params: {
   if (!effect) {
     return { kind: "not_eligible" };
   }
-  const existing = matchingBoundary(params.controller, task);
+  const existing = matchingBoundary(params.controller, task, {
+    fromPlanVersion: task.planVersion,
+    sourceEffectId: effect.effectId,
+  });
   if (existing) {
     return finishBoundary({ ...params, boundary: existing });
   }
@@ -312,9 +322,17 @@ export function recoverGovernorC05FailureReplan(params: {
   if (!task) {
     return undefined;
   }
-  const boundary = matchingBoundary(params.controller, task);
-  if (boundary) {
-    return finishBoundary({ ...params, boundary });
+  if (task.state === "REPLAN_REQUIRED" || task.state === "PLANNING") {
+    const boundary = matchingBoundary(params.controller, task, {
+      fromPlanVersion: task.planVersion,
+    });
+    return boundary ? finishBoundary({ ...params, boundary }) : undefined;
+  }
+  if (task.state === "READY") {
+    const boundary = matchingBoundary(params.controller, task, {
+      fromPlanVersion: task.planVersion - 1,
+    });
+    return boundary ? finishBoundary({ ...params, boundary }) : undefined;
   }
   if (task.state !== "EXECUTING") {
     return undefined;
@@ -322,15 +340,18 @@ export function recoverGovernorC05FailureReplan(params: {
   const candidates = params.controller.store
     .listEffects(task.taskId)
     .filter((effect) => failedEffect(params.controller, task, effect.effectId) !== undefined);
-  if (candidates.length !== 1) {
-    return undefined;
+  if (candidates.length === 1) {
+    return advanceGovernorC05FailureReplan({
+      controller: params.controller,
+      taskId: params.taskId,
+      sourceEffectId: candidates[0]!.effectId,
+      now: params.now,
+    });
   }
-  return advanceGovernorC05FailureReplan({
-    controller: params.controller,
-    taskId: params.taskId,
-    sourceEffectId: candidates[0]!.effectId,
-    now: params.now,
+  const boundary = matchingBoundary(params.controller, task, {
+    fromPlanVersion: task.planVersion - 1,
   });
+  return boundary ? finishBoundary({ ...params, boundary }) : undefined;
 }
 
 /** Lifecycle-owned activation avoids a close in one runtime clearing another. */
