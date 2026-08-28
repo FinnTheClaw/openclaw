@@ -10,6 +10,7 @@ export type GatewayBehaviorGovernorModuleRuntime = Readonly<{
 
 /** The lifecycle is the sole activation seam; module imports must stay inert. */
 export type GatewayBehaviorGovernorModuleActivationContext = Readonly<{
+  digest?: string;
   id: string;
   mode: BehaviorGovernorModuleSelection["mode"];
   version: string;
@@ -20,6 +21,7 @@ export type GatewayBehaviorGovernorModuleFactory = (
 ) => GatewayBehaviorGovernorModuleRuntime | Promise<GatewayBehaviorGovernorModuleRuntime>;
 
 export type GatewayBehaviorGovernorModuleDescriptor = Readonly<{
+  digest?: string;
   id: string;
   version: string;
   supportedModes: readonly BehaviorGovernorModuleSelection["mode"][];
@@ -75,6 +77,9 @@ function validateCatalog(
   const byId = new Map<string, GatewayBehaviorGovernorModuleDescriptor>();
   for (const descriptor of catalog) {
     assertIdentifier(descriptor.id, MODULE_ID_PATTERN, "GOVERNOR_MODULE_ID_INVALID");
+    if (descriptor.digest !== undefined && !/^[a-f0-9]{64}$/u.test(descriptor.digest)) {
+      throw new Error("GOVERNOR_MODULE_DIGEST_INVALID");
+    }
     assertIdentifier(descriptor.version, VERSION_PATTERN, "GOVERNOR_MODULE_VERSION_INVALID");
     assertModes(descriptor.supportedModes, "GOVERNOR_MODULE_SUPPORTED_MODES_INVALID");
     assertModes(descriptor.qualifiedModes, "GOVERNOR_MODULE_QUALIFIED_MODES_INVALID", true);
@@ -126,6 +131,15 @@ function resolveModules(params: {
     }
     if (descriptor.version !== selection.version) {
       throw new Error("GOVERNOR_MODULE_VERSION_MISMATCH");
+    }
+    if (
+      descriptor.digest !== undefined &&
+      (selection.digest === undefined || selection.digest !== descriptor.digest)
+    ) {
+      throw new Error("GOVERNOR_MODULE_DIGEST_MISMATCH");
+    }
+    if (selection.digest !== undefined && !/^[a-f0-9]{64}$/u.test(selection.digest)) {
+      throw new Error("GOVERNOR_MODULE_DIGEST_INVALID");
     }
     if (!descriptor.supportedModes.includes(selection.mode)) {
       throw new Error("GOVERNOR_MODULE_MODE_UNSUPPORTED");
@@ -219,6 +233,7 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
           throw new Error("GOVERNOR_MODULE_FACTORY_INVALID");
         }
         const runtime = await create({
+          ...(item.selection.digest ? { digest: item.selection.digest } : {}),
           id: item.selection.id,
           mode: item.selection.mode,
           version: item.selection.version,

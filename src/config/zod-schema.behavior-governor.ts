@@ -61,6 +61,10 @@ const SecretRefsSchema = z
 
 const ModuleSelectionSchema = z
   .object({
+    digest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
     id: z
       .string()
       .trim()
@@ -85,6 +89,7 @@ export const BehaviorGovernorConfigSchema = z.union([
       mode: z.enum(["shadow", "enforce"]),
       secretRefs: SecretRefsSchema,
       agentLoop: AgentLoopSchema,
+      modules: z.array(ModuleSelectionSchema).max(64).optional(),
     })
     .strict(),
   z.object({ modules: z.array(ModuleSelectionSchema).max(64) }).strict(),

@@ -1,17 +1,9 @@
-import { fencePriorGatewayAcceptanceReceipts } from "../agents/subagent-gateway-acceptance-receipt-recovery.sqlite.js";
-import {
-  clearGatewayAcceptanceReceiptSigner,
-  installGatewayAcceptanceReceiptSigner,
-} from "../agents/subagent-gateway-acceptance-receipt-runtime.js";
+import { isDeepStrictEqual } from "node:util";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
-import { getActiveSecretsRuntimeGovernorSnapshot } from "../secrets/runtime-state.js";
-import type {
-  GatewayBehaviorGovernorHostFactory,
-  GatewayBehaviorGovernorLifecycle,
-} from "./behavior-governor-lifecycle.js";
+import type { GatewayBehaviorGovernorHostFactory } from "./behavior-governor-lifecycle.js";
 import { createGatewayBehaviorGovernorModuleLifecycle } from "./behavior-governor-module-lifecycle.js";
-import { BUILT_IN_BEHAVIOR_GOVERNOR_MODULES } from "./behavior-governor-module-plan.js";
+import { createBuiltInBehaviorGovernorModules } from "./behavior-governor-module-plan.js";
+import { createC04bAggregateOrderActivator } from "./behavior-governor-modules/c04b-aggregate-order-activation.js";
 
 export type GatewayBehaviorGovernorRuntime = Readonly<{
   apply: (config: OpenClawConfig) => Promise<void>;
@@ -19,59 +11,52 @@ export type GatewayBehaviorGovernorRuntime = Readonly<{
   close: () => Promise<void>;
 }>;
 
-function isLegacyGovernorEnabled(config: OpenClawConfig): boolean {
+function configuredModules(config: OpenClawConfig) {
   const value = config.experimental?.behaviorGovernor;
-  return Boolean(value && "enabled" in value && value.enabled);
+  return value && "modules" in value && Array.isArray(value.modules) ? value.modules : [];
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(child);
+    }
+  }
+  return value;
 }
 
 export function createGatewayBehaviorGovernorRuntime(params: {
   hostFactory?: GatewayBehaviorGovernorHostFactory;
 }): GatewayBehaviorGovernorRuntime {
-  const modules = createGatewayBehaviorGovernorModuleLifecycle({
-    catalog: BUILT_IN_BEHAVIOR_GOVERNOR_MODULES,
+  let activeConfig: OpenClawConfig | undefined;
+  const activateC04bAggregateOrder = createC04bAggregateOrderActivator({
+    getConfig: () => activeConfig,
+    hostFactory: params.hostFactory,
   });
-  let legacy: GatewayBehaviorGovernorLifecycle | undefined;
+  const modules = createGatewayBehaviorGovernorModuleLifecycle({
+    catalog: createBuiltInBehaviorGovernorModules({ activateC04bAggregateOrder }),
+  });
 
   const apply = async (config: OpenClawConfig) => {
-    const configured = config.experimental?.behaviorGovernor;
-    const selections = configured && "modules" in configured ? configured.modules : [];
-    await modules.apply(selections);
-    const enabled = isLegacyGovernorEnabled(config);
-    if (!enabled && !legacy) {
-      return;
+    if (activeConfig && !isDeepStrictEqual(activeConfig, config)) {
+      throw new Error("GOVERNOR_MODULE_RESTART_REQUIRED");
     }
-    if (!legacy) {
-      const { createGatewayBehaviorGovernorLifecycle } =
-        await import("./behavior-governor-lifecycle.js");
-      legacy = createGatewayBehaviorGovernorLifecycle(
-        params.hostFactory ? { hostFactory: params.hostFactory } : {},
-      );
+    const accepted = deepFreeze(structuredClone(config));
+    const prior = activeConfig;
+    activeConfig = accepted;
+    try {
+      await modules.apply(configuredModules(accepted));
+    } catch (error) {
+      activeConfig = prior;
+      throw error;
     }
-    const snapshot = getActiveSecretsRuntimeGovernorSnapshot();
-    if (!snapshot) {
-      throw new Error("GOVERNOR_GATEWAY_SECRET_SNAPSHOT_REQUIRED");
-    }
-    await legacy.apply(config, snapshot);
-    const receiptSigningKey = snapshot.config.secretRefs.receiptSigningKey;
-    if (typeof receiptSigningKey !== "string" || !receiptSigningKey.trim()) {
-      throw new Error("GOVERNOR_GATEWAY_RECEIPT_SIGNER_INVALID");
-    }
-    installGatewayAcceptanceReceiptSigner({
-      signingKey: receiptSigningKey,
-      generation: snapshot.generation,
-    });
-    fencePriorGatewayAcceptanceReceipts(getAgentEventLifecycleGeneration());
   };
 
   const freeze = async () => {
     const errors: unknown[] = [];
     try {
       await modules.freeze();
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      await legacy?.freeze();
     } catch (error) {
       errors.push(error);
     }
@@ -82,23 +67,15 @@ export function createGatewayBehaviorGovernorRuntime(params: {
 
   const close = async () => {
     const errors: unknown[] = [];
-    if (legacy) {
-      try {
-        await legacy.close();
-      } catch (error) {
-        errors.push(error);
-      }
-    }
     try {
       await modules.close();
     } catch (error) {
       errors.push(error);
     }
-    clearGatewayAcceptanceReceiptSigner();
+    activeConfig = undefined;
     if (errors.length > 0) {
       throw new AggregateError(errors, "GOVERNOR_GATEWAY_CLOSE_FAILED");
     }
-    legacy = undefined;
   };
 
   return Object.freeze({ apply, freeze, close });

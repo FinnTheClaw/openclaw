@@ -36,6 +36,7 @@ export type BehaviorGovernorSecretRefs = Readonly<{
 }>;
 
 export type BehaviorGovernorModuleSelection = Readonly<{
+  digest?: string;
   id: string;
   mode: "shadow" | "enforce";
   version: string;
@@ -48,6 +49,7 @@ export type BehaviorGovernorConfig =
       mode: "shadow" | "enforce";
       secretRefs: BehaviorGovernorSecretRefs;
       agentLoop: BehaviorGovernorAgentLoopConfig;
+      modules?: readonly BehaviorGovernorModuleSelection[];
     }>
   | Readonly<{
       modules: readonly BehaviorGovernorModuleSelection[];
