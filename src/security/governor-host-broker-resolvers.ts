@@ -4,9 +4,14 @@ import type {
   GovernorTrustedApprovalResolver,
   GovernorTrustedEvidenceInvalidationResolver,
   GovernorTrustedReceiptResolver,
+  HostGovernorCoreState,
   HostBrokerState,
   HostGovernorReceiptId,
 } from "./governor-host-contracts.js";
+import {
+  isTrustedGovernorCoreEvidenceInvalidationResolver,
+  isTrustedGovernorCoreReceiptResolver,
+} from "./governor-host-core-resolvers.js";
 import type { GovernorHostPersistence } from "./governor-host-persistence.js";
 import type { GovernorSecrets } from "./governor-host-secrets.js";
 
@@ -15,27 +20,27 @@ const EVIDENCE_RESOLVERS = new WeakSet<object>();
 const APPROVAL_RESOLVERS = new WeakSet<object>();
 
 export function isTrustedGovernorReceiptResolver(resolver: GovernorTrustedReceiptResolver) {
-  return RECEIPT_RESOLVERS.has(resolver);
+  return RECEIPT_RESOLVERS.has(resolver) || isTrustedGovernorCoreReceiptResolver(resolver);
 }
 export function isTrustedGovernorEvidenceInvalidationResolver(
   resolver: GovernorTrustedEvidenceInvalidationResolver,
 ) {
-  return EVIDENCE_RESOLVERS.has(resolver);
+  return (
+    EVIDENCE_RESOLVERS.has(resolver) || isTrustedGovernorCoreEvidenceInvalidationResolver(resolver)
+  );
 }
 export function isTrustedGovernorApprovalResolver(resolver: GovernorTrustedApprovalResolver) {
   return APPROVAL_RESOLVERS.has(resolver);
 }
 
-export function createHostBrokerResolvers(params: {
-  state: HostBrokerState;
-  secrets: GovernorSecrets;
-  persistence: GovernorHostPersistence;
+/** Builds only receipt/evidence resolution; it has no owner or delivery authority. */
+export function createHostGovernorCoreResolvers(params: {
+  state: HostGovernorCoreState;
   assertOpen: () => void;
   sign: (key: string, value: GovernorJsonValue) => string;
 }): {
   resolver: GovernorTrustedReceiptResolver;
   evidenceInvalidationResolver: GovernorTrustedEvidenceInvalidationResolver;
-  approvalResolver: GovernorTrustedApprovalResolver;
 } {
   const rawResolver: GovernorTrustedReceiptResolver = Object.freeze({
     resolve: (receiptId, scopeKey) => {
@@ -66,7 +71,6 @@ export function createHostBrokerResolvers(params: {
     },
   }) satisfies GovernorTrustedReceiptResolver;
   RECEIPT_RESOLVERS.add(resolver);
-
   const rawEvidenceInvalidationResolver: GovernorTrustedEvidenceInvalidationResolver =
     Object.freeze({
       resolveEvidenceInvalidation: (receiptId, scopeKey) => {
@@ -88,6 +92,26 @@ export function createHostBrokerResolvers(params: {
     },
   }) satisfies GovernorTrustedEvidenceInvalidationResolver;
   EVIDENCE_RESOLVERS.add(evidenceInvalidationResolver);
+  return { resolver, evidenceInvalidationResolver };
+}
+
+export function createHostBrokerResolvers(params: {
+  state: HostBrokerState;
+  secrets: GovernorSecrets;
+  persistence: GovernorHostPersistence;
+  assertOpen: () => void;
+  sign: (key: string, value: GovernorJsonValue) => string;
+  coreResolvers?: Readonly<{
+    resolver: GovernorTrustedReceiptResolver;
+    evidenceInvalidationResolver: GovernorTrustedEvidenceInvalidationResolver;
+  }>;
+}): {
+  resolver: GovernorTrustedReceiptResolver;
+  evidenceInvalidationResolver: GovernorTrustedEvidenceInvalidationResolver;
+  approvalResolver: GovernorTrustedApprovalResolver;
+} {
+  const { resolver, evidenceInvalidationResolver } =
+    params.coreResolvers ?? createHostGovernorCoreResolvers(params);
 
   const approvalReceiptCurrent = (receipt: GovernorAuthenticatedApprovalReceipt): boolean => {
     const { signature, ...body } = receipt;

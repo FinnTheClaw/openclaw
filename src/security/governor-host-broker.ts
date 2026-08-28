@@ -27,6 +27,10 @@ import type {
   HostGovernorOwnerIngressReceiptId,
 } from "./governor-host-contracts.js";
 import {
+  createGovernorAgentLoopCoreBindings,
+  type GovernorAgentLoopCoreBindings,
+} from "./governor-host-core-bindings.js";
+import {
   createHostGovernorDeliveryBroker,
   isTrustedGovernorDeliveryResolver,
 } from "./governor-host-delivery-broker.js";
@@ -43,7 +47,6 @@ import {
   closeGovernorPhysicalExecutionCoordinator,
   type GovernorTrustedPhysicalExecutionCoordinator,
 } from "./governor-host-physical-execution.js";
-import { createHostReceiptCapabilities } from "./governor-host-receipt-capabilities.js";
 import { isGovernorSecrets, type GovernorSecrets } from "./governor-host-secrets.js";
 import { closeGovernorTaskAuthority } from "./governor-host-task-authority.js";
 export type {
@@ -154,12 +157,9 @@ export function createHostGovernorBroker(params: {
       throw new Error("GOVERNOR_HOST_CAPABILITY_CLOSED");
     }
   };
-  const { submitObservedReceipt, submitEvidenceInvalidation } = createHostReceiptCapabilities({
+  const coreBindings = createGovernorAgentLoopCoreBindings({
+    secrets: params.secrets,
     state,
-    capability,
-    isCapability: (value) => CAPABILITIES.has(value),
-    sign,
-    opaqueId,
   });
   const { submitAuthenticatedApproval, submitApprovalRevocation } = createHostApprovalCapabilities({
     state,
@@ -271,12 +271,16 @@ export function createHostGovernorBroker(params: {
     }
     return revoked;
   };
-  const { resolver, evidenceInvalidationResolver, approvalResolver } = createHostBrokerResolvers({
+  const { approvalResolver } = createHostBrokerResolvers({
     state,
     secrets: params.secrets,
     persistence: params.persistence,
     assertOpen,
     sign,
+    coreResolvers: {
+      resolver: coreBindings.receiptResolver,
+      evidenceInvalidationResolver: coreBindings.evidenceInvalidationResolver,
+    },
   });
   const ownerIngressResolver = createHostOwnerIngressResolver({
     state,
@@ -291,13 +295,17 @@ export function createHostGovernorBroker(params: {
   const memoryAuthority = params.persistence.memoryAuthority;
   const taskAuthority = params.persistence.taskAuthority;
   const capabilities = Object.freeze({
-    submitObservedReceipt: (input: Parameters<typeof submitObservedReceipt>[0]) => {
+    submitObservedReceipt: (
+      input: Parameters<GovernorAgentLoopCoreBindings["submitObservedReceipt"]>[0],
+    ) => {
       assertOpen();
-      return submitObservedReceipt(input);
+      return coreBindings.submitObservedReceipt(input);
     },
-    submitEvidenceInvalidation: (input: Parameters<typeof submitEvidenceInvalidation>[0]) => {
+    submitEvidenceInvalidation: (
+      input: Parameters<GovernorAgentLoopCoreBindings["submitEvidenceInvalidation"]>[0],
+    ) => {
       assertOpen();
-      return submitEvidenceInvalidation(input);
+      return coreBindings.submitEvidenceInvalidation(input);
     },
     submitAuthenticatedApproval: (input: Parameters<typeof submitAuthenticatedApproval>[0]) => {
       assertOpen();
@@ -340,6 +348,11 @@ export function createHostGovernorBroker(params: {
     closing = true;
     const errors: unknown[] = [];
     try {
+      coreBindings.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       deliveryBroker.close();
     } catch (error) {
       errors.push(error);
@@ -367,8 +380,8 @@ export function createHostGovernorBroker(params: {
   };
   return {
     capabilities,
-    resolver,
-    evidenceInvalidationResolver,
+    resolver: coreBindings.receiptResolver,
+    evidenceInvalidationResolver: coreBindings.evidenceInvalidationResolver,
     approvalResolver,
     deliveryResolver: deliveryBroker.resolver,
     ownerIngressResolver,

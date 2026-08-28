@@ -215,13 +215,17 @@ export type GovernorAuthenticatedApprovalRevocation = Readonly<{
   signature: string;
 }>;
 
-export type HostBrokerState = {
+/** Receipt/evidence state shared by the narrow core and the legacy full broker. */
+export type HostGovernorCoreState = {
   readonly key: string;
   readonly receipts: Map<HostGovernorReceiptId, HostReceipt>;
   readonly evidenceInvalidations: Map<
     HostGovernorEvidenceInvalidationReceiptId,
     GovernorAuthenticatedEvidenceInvalidation
   >;
+};
+
+export type HostBrokerState = HostGovernorCoreState & {
   readonly approvals: Map<HostGovernorApprovalReceiptId, GovernorAuthenticatedApprovalReceipt>;
   readonly revocations: Map<
     HostGovernorApprovalRevocationId,

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { governorDigest, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import type {
-  HostBrokerState,
+  HostGovernorCoreState,
   HostGovernorCapabilities,
   HostGovernorEvidenceInvalidationReceiptId,
   HostGovernorReceiptId,
@@ -9,7 +9,7 @@ import type {
 import { assertGovernorEvidenceInvalidationProvenance } from "./governor-host-evidence-invalidation-provenance.js";
 
 export function createHostReceiptCapabilities(params: {
-  state: HostBrokerState;
+  state: HostGovernorCoreState;
   capability: object;
   isCapability: (value: object) => boolean;
   sign: (key: string, value: GovernorJsonValue) => string;
