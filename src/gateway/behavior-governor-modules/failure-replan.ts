@@ -21,6 +21,9 @@ function assertContext(context: GatewayBehaviorGovernorModuleActivationContext):
 export function createFailureReplanModule(): GatewayBehaviorGovernorModuleFactory {
   return async (context) => {
     assertContext(context);
-    return installGovernorC05FailureReplan(context.mode);
+    return installGovernorC05FailureReplan({
+      activationId: context.activationId,
+      mode: context.mode,
+    });
   };
 }

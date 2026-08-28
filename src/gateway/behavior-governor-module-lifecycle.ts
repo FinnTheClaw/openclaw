@@ -10,6 +10,8 @@ export type GatewayBehaviorGovernorModuleRuntime = Readonly<{
 
 /** The lifecycle is the sole activation seam; module imports must stay inert. */
 export type GatewayBehaviorGovernorModuleActivationContext = Readonly<{
+  /** Opaque lifecycle identity; it never crosses a configuration boundary. */
+  activationId: object;
   id: string;
   mode: BehaviorGovernorModuleSelection["mode"];
   version: string;
@@ -190,6 +192,7 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
   catalog: readonly GatewayBehaviorGovernorModuleDescriptor[];
 }): GatewayBehaviorGovernorModuleLifecycle {
   const catalog = validateCatalog(params.catalog);
+  const activationId = Object.freeze({});
   let appliedKey: string | undefined;
   let active: ActiveModule[] = [];
   let poisoned = false;
@@ -219,6 +222,7 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
           throw new Error("GOVERNOR_MODULE_FACTORY_INVALID");
         }
         const runtime = await create({
+          activationId,
           id: item.selection.id,
           mode: item.selection.mode,
           version: item.selection.version,

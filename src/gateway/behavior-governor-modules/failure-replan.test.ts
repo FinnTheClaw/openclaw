@@ -10,59 +10,115 @@ import {
   FAILURE_REPLAN_MODULE_VERSION,
 } from "./failure-replan.js";
 
-function controller(state = "EXECUTING", planVersion = 1) {
-  const events: Array<{ eventType: string; payload: unknown }> = [];
+type CrashPoint = "checkpoint" | "plan" | "start";
+
+function controller(params: { state?: string; crashAt?: CrashPoint; mutate?: boolean } = {}) {
+  const events: Array<Record<string, unknown>> = [];
   const task = {
     taskId: "gtask_c05",
-    state,
-    planVersion,
+    scopeKey: "scope_c05",
+    state: params.state ?? "EXECUTING",
+    planVersion: 1,
+    objectiveRevision: 3,
     executionGeneration: 7,
-    contract: { completionCriteria: [] },
+    contract: {
+      completionCriteria: [
+        { criterionId: "mutate", description: "Mutate" },
+        { criterionId: "verify", description: "Verify", dependsOnCriteria: ["mutate"] },
+      ],
+    },
   } as Record<string, unknown>;
   const effect = {
+    taskId: task.taskId,
     effectId: "effect_c05",
+    criterionId: "mutate",
     capability: "fixture.observe",
-    outcome: { transport: "failed", semantic: "transient_failure" },
+    mutating: params.mutate ?? false,
+    objectiveRevision: task.objectiveRevision,
+    planVersion: task.planVersion,
+    executionGeneration: task.executionGeneration,
+    outcome: {
+      transport: "failed",
+      semantic: "transient_failure",
+      sideEffect: params.mutate ? "unknown" : "none",
+    },
+    reconcileRequired: Boolean(params.mutate),
   };
+  let crashAt = params.crashAt;
   const fake = {
     store: {
       loadTask: () => task,
-      loadEffect: () => effect,
+      listEffects: () => [effect],
       listEvents: () => events,
     },
-    requestRuntimeReplan: (_id: string, _now: number, request: { sourceEffectId: string }) => {
+    requestRuntimeReplan: (_id: string, _now: number, request: Record<string, unknown>) => {
       task.state = "REPLAN_REQUIRED";
-      events.push({ eventType: "runtime_replan_requested", payload: request });
+      events.push({
+        eventType: "runtime_replan_requested",
+        taskId: task.taskId,
+        scopeKey: task.scopeKey,
+        objectiveRevision: task.objectiveRevision,
+        payload: request,
+      });
     },
-    recordCheckpoint: () => undefined,
-    preparePlan: () => {
+    recordCheckpoint: (request: Record<string, unknown>) => {
+      if (crashAt === "checkpoint") {
+        throw new Error("CRASH_CHECKPOINT");
+      }
+      events.push({
+        eventType: "checkpoint_recorded",
+        payload: { checkpointId: request.checkpointId },
+      });
+    },
+    preparePlan: (request: { plan: { steps: readonly { criterionIds: readonly string[] }[] } }) => {
+      if (crashAt === "plan") {
+        throw new Error("CRASH_PLAN");
+      }
       task.planVersion = Number(task.planVersion) + 1;
       task.state = "READY";
+      (task as Record<string, unknown>).preparedCriteria = request.plan.steps.flatMap(
+        (step) => step.criterionIds,
+      );
       return task;
     },
     startExecution: () => {
+      if (crashAt === "start") {
+        throw new Error("CRASH_START");
+      }
       task.state = "EXECUTING";
     },
   };
-  return { controller: fake as unknown as GovernorController, events, task };
+  return {
+    controller: fake as unknown as GovernorController,
+    events,
+    task,
+    effect,
+    resume: () => {
+      crashAt = undefined;
+    },
+  };
+}
+
+async function enforce() {
+  return createFailureReplanModule()({
+    activationId: {},
+    id: FAILURE_REPLAN_MODULE_ID,
+    version: FAILURE_REPLAN_MODULE_VERSION,
+    mode: "enforce",
+  });
 }
 
 describe("C05 failure replan module", () => {
-  it("is import-inert and only the exact selected factory enables N to N+1", async () => {
+  it("is import-inert and persists the complete fenced C05 boundary before planning", async () => {
     const fixture = controller();
     expect(
-      advanceGovernorC05FailureReplan({
+      recoverGovernorC05FailureReplan({
         controller: fixture.controller,
         taskId: "gtask_c05" as never,
-        sourceEffectId: "effect_c05",
         now: 10,
       }),
-    ).toEqual({ kind: "not_eligible" });
-    const runtime = await createFailureReplanModule()({
-      id: FAILURE_REPLAN_MODULE_ID,
-      version: FAILURE_REPLAN_MODULE_VERSION,
-      mode: "enforce",
-    });
+    ).toBeUndefined();
+    const runtime = await enforce();
     expect(
       advanceGovernorC05FailureReplan({
         controller: fixture.controller,
@@ -71,32 +127,97 @@ describe("C05 failure replan module", () => {
         now: 10,
       }),
     ).toMatchObject({ kind: "replanned", fromPlanVersion: 1, planVersion: 2 });
-    expect(
-      advanceGovernorC05FailureReplan({
-        controller: fixture.controller,
-        taskId: "gtask_c05" as never,
+    expect(fixture.events[0]?.payload).toMatchObject({
+      c05FailureReplan: {
+        taskId: "gtask_c05",
         sourceEffectId: "effect_c05",
-        now: 20,
-      }),
-    ).toEqual({ kind: "already_replanned" });
-    expect(fixture.events).toHaveLength(1);
+        fromPlanVersion: 1,
+        objectiveRevision: 3,
+        executionGeneration: 7,
+        expectedState: "REPLAN_REQUIRED",
+      },
+    });
     await runtime.close();
   });
 
-  it("repairs PLANNING once and leaves an already-ready restart transparent", async () => {
-    const fixture = controller("PLANNING", 1);
-    const runtime = await createFailureReplanModule()({
-      id: FAILURE_REPLAN_MODULE_ID,
-      version: FAILURE_REPLAN_MODULE_VERSION,
-      mode: "enforce",
-    });
+  it.each(["checkpoint", "plan", "start"] as const)(
+    "recovers exactly once across the durable %s crash boundary",
+    async (crashAt) => {
+      const fixture = controller({ crashAt });
+      const runtime = await enforce();
+      expect(() =>
+        advanceGovernorC05FailureReplan({
+          controller: fixture.controller,
+          taskId: "gtask_c05" as never,
+          sourceEffectId: "effect_c05",
+          now: 10,
+        }),
+      ).toThrow();
+      fixture.resume();
+      expect(
+        recoverGovernorC05FailureReplan({
+          controller: fixture.controller,
+          taskId: "gtask_c05" as never,
+          now: 20,
+        }),
+      ).toMatchObject({ kind: "replanned", planVersion: 2 });
+      expect(
+        recoverGovernorC05FailureReplan({
+          controller: fixture.controller,
+          taskId: "gtask_c05" as never,
+          now: 30,
+        }),
+      ).toEqual({ kind: "already_replanned" });
+      expect(fixture.task.planVersion).toBe(2);
+      await runtime.close();
+    },
+  );
+
+  it("recovers the EXECUTING-after-observation window and blocks ambiguous physical repeats", async () => {
+    const fixture = controller({ mutate: true });
+    const runtime = await enforce();
     expect(
       recoverGovernorC05FailureReplan({
         controller: fixture.controller,
         taskId: "gtask_c05" as never,
         now: 10,
       }),
-    ).toMatchObject({ kind: "replanned", planVersion: 2 });
+    ).toMatchObject({ kind: "replanned" });
+    expect(fixture.task.preparedCriteria).toEqual(["verify"]);
+    await runtime.close();
+  });
+
+  it.each(["PLANNING", "REPLAN_REQUIRED"])(
+    "ignores foreign %s work without a C05 boundary",
+    async (state) => {
+      const fixture = controller({ state });
+      const runtime = await enforce();
+      expect(
+        recoverGovernorC05FailureReplan({
+          controller: fixture.controller,
+          taskId: "gtask_c05" as never,
+          now: 10,
+        }),
+      ).toBeUndefined();
+      expect(fixture.task.planVersion).toBe(1);
+      await runtime.close();
+    },
+  );
+
+  it("rejects authorization-scope boundary mismatch", async () => {
+    const fixture = controller({ crashAt: "checkpoint" });
+    const runtime = await enforce();
+    expect(() =>
+      advanceGovernorC05FailureReplan({
+        controller: fixture.controller,
+        taskId: "gtask_c05" as never,
+        sourceEffectId: "effect_c05",
+        now: 10,
+      }),
+    ).toThrow();
+    fixture.resume();
+    const event = fixture.events[0]!;
+    (event as { scopeKey: string }).scopeKey = "foreign";
     expect(
       recoverGovernorC05FailureReplan({
         controller: fixture.controller,
@@ -104,16 +225,45 @@ describe("C05 failure replan module", () => {
         now: 20,
       }),
     ).toBeUndefined();
+    expect(fixture.task.planVersion).toBe(1);
     await runtime.close();
   });
 
-  it("keeps shadow selected behavior observational and closes without coupling", async () => {
+  it.each([
+    ["task", "taskId", "foreign-task"],
+    ["plan", "fromPlanVersion", 99],
+    ["effect", "sourceEffectId", "foreign-effect"],
+  ])("rejects C05 %s boundary mismatch", async (_label, field, value) => {
+    const fixture = controller({ crashAt: "checkpoint" });
+    const runtime = await enforce();
+    expect(() =>
+      advanceGovernorC05FailureReplan({
+        controller: fixture.controller,
+        taskId: "gtask_c05" as never,
+        sourceEffectId: "effect_c05",
+        now: 10,
+      }),
+    ).toThrow();
+    fixture.resume();
+    const payload = (fixture.events[0]!.payload as { c05FailureReplan: Record<string, unknown> })
+      .c05FailureReplan;
+    payload[field] = value;
+    expect(
+      recoverGovernorC05FailureReplan({
+        controller: fixture.controller,
+        taskId: "gtask_c05" as never,
+        now: 20,
+      }),
+    ).toBeUndefined();
+    expect(fixture.task.planVersion).toBe(1);
+    await runtime.close();
+  });
+
+  it("keeps parallel lifecycle activations isolated across close and shadow", async () => {
+    const first = await enforce();
+    const second = await enforce();
+    await first.close();
     const fixture = controller();
-    const runtime = await createFailureReplanModule()({
-      id: FAILURE_REPLAN_MODULE_ID,
-      version: FAILURE_REPLAN_MODULE_VERSION,
-      mode: "shadow",
-    });
     expect(
       advanceGovernorC05FailureReplan({
         controller: fixture.controller,
@@ -121,8 +271,21 @@ describe("C05 failure replan module", () => {
         sourceEffectId: "effect_c05",
         now: 10,
       }),
-    ).toEqual({ kind: "not_eligible" });
-    await runtime.close();
-    expect(fixture.events).toEqual([]);
+    ).toMatchObject({ kind: "replanned" });
+    await second.close();
+    const shadow = await createFailureReplanModule()({
+      activationId: {},
+      id: FAILURE_REPLAN_MODULE_ID,
+      version: FAILURE_REPLAN_MODULE_VERSION,
+      mode: "shadow",
+    });
+    expect(
+      recoverGovernorC05FailureReplan({
+        controller: fixture.controller,
+        taskId: "gtask_c05" as never,
+        now: 20,
+      }),
+    ).toBeUndefined();
+    await shadow.close();
   });
 });
