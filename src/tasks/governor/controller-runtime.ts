@@ -7,6 +7,23 @@ import { applyGovernorTransition } from "./state-machine.js";
 import type { GovernorSqliteStore } from "./store.js";
 import type { GovernorTaskId, GovernorTaskProjection } from "./types.js";
 
+export type GovernorC05FailureReplanBoundary = Readonly<{
+  moduleId: "C05.FAILURE_REPLAN";
+  taskId: GovernorTaskId;
+  sourceEffectId: string;
+  sourceCriterionId?: string;
+  checkpointId: string;
+  fromPlanVersion: number;
+  objectiveRevision: number;
+  executionGeneration: number;
+  expectedState: "REPLAN_REQUIRED";
+  effectDisposition: Readonly<{
+    mutating: boolean;
+    sideEffect: "not_applicable" | "none" | "applied" | "unknown";
+    reconcileRequired: boolean;
+  }>;
+}>;
+
 type GovernorRuntimeEventType = Extract<
   GovernorEventType,
   | "runtime_model_turn_recorded"
@@ -29,6 +46,7 @@ export type GovernorRuntimeReplanRequest = Readonly<{
   reasonCode: GovernorRuntimeTransitionReason;
   sourceEffectId?: string;
   checkpointId?: string;
+  c05FailureReplan?: GovernorC05FailureReplanBoundary;
 }>;
 export type GovernorRuntimeBlockReason =
   | "budget_exhausted"
@@ -102,6 +120,17 @@ export function requestGovernorRuntimeReplan(
   request: GovernorRuntimeTransitionReason | GovernorRuntimeReplanRequest = "tool_semantic_failure",
 ): GovernorTaskProjection {
   const details = typeof request === "string" ? { reasonCode: request } : request;
+  const boundary = details.c05FailureReplan;
+  if (
+    boundary &&
+    (details.reasonCode !== "tool_semantic_failure" ||
+      boundary.taskId !== task.taskId ||
+      boundary.sourceEffectId !== details.sourceEffectId ||
+      boundary.checkpointId !== details.checkpointId ||
+      boundary.expectedState !== "REPLAN_REQUIRED")
+  ) {
+    throw new Error("GOVERNOR_C05_REPLAN_BOUNDARY_INVALID");
+  }
   if (task.state !== "EXECUTING") {
     throw new Error("GOVERNOR_RUNTIME_REPLAN_STATE_INVALID");
   }
@@ -122,6 +151,7 @@ export function requestGovernorRuntimeReplan(
       reasonCode: details.reasonCode,
       ...(details.sourceEffectId ? { sourceEffectId: details.sourceEffectId } : {}),
       ...(details.checkpointId ? { checkpointId: details.checkpointId } : {}),
+      ...(boundary ? { c05FailureReplan: boundary } : {}),
     },
     now,
   });
