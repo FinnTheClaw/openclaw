@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, readFile } from "node:fs/promises";
 import { extname, isAbsolute, join } from "node:path";
+import { countSourceLines } from "./source-size-lines.ts";
 
 const MAX_LINES = 500;
 const BASELINE_PATH = "scripts/source-size-baseline.json";
@@ -32,7 +33,13 @@ const GENERATED_UNTRACKED_ROOTS = new Set([
   "build",
   "coverage",
   "dist",
+  "dist-runtime",
   "node_modules",
+]);
+const GENERATED_UNTRACKED_PATHS = new Set([
+  "extensions/canvas/src/host/a2ui/a2ui.bundle.js",
+  "extensions/diffs/assets/viewer-runtime.js",
+  "extensions/diffs-language-pack/assets/viewer-runtime.js",
 ]);
 
 type Baseline = { baseCommit: string; schemaVersion: 1 };
@@ -89,16 +96,6 @@ function decode(buffer: Buffer, filePath: string): string {
   } catch {
     throw new Error(`governed source is not valid UTF-8: ${filePath}`);
   }
-}
-
-function countNonblankLines(content: string): number {
-  return content
-    .replaceAll("\r\n", "\n")
-    .replaceAll("\r", "\n")
-    .replaceAll("\u2028", "\n")
-    .replaceAll("\u2029", "\n")
-    .split("\n")
-    .filter((line) => line.trim().length > 0).length;
 }
 
 function isGoverned(filePath: string, executable: boolean, shebang: boolean): boolean {
@@ -209,7 +206,8 @@ function collectSnapshotChanges(
   return changes.filter(
     (change) =>
       change.origin === "diff" ||
-      !change.path.split("/").some((component) => GENERATED_UNTRACKED_ROOTS.has(component)),
+      (!GENERATED_UNTRACKED_PATHS.has(change.path) &&
+        !change.path.split("/").some((component) => GENERATED_UNTRACKED_ROOTS.has(component))),
   );
 }
 
@@ -260,7 +258,7 @@ function indexRepresentation(
   const governed = isGoverned(entry.path, entry.mode === "100755", shebang);
   return {
     governed,
-    lines: governed ? countNonblankLines(decode(buffer, entry.path)) : 0,
+    lines: governed ? countSourceLines(decode(buffer, entry.path), entry.path) : 0,
     source: "index",
   };
 }
@@ -298,7 +296,7 @@ async function worktreeRepresentation(
     const governed = isGoverned(filePath, (read.mode & 0o111) !== 0, shebang);
     return {
       governed,
-      lines: governed ? countNonblankLines(decode(buffer, filePath)) : 0,
+      lines: governed ? countSourceLines(decode(buffer, filePath), filePath) : 0,
       source: "worktree",
     };
   } finally {
@@ -343,7 +341,7 @@ function baseAllowance(
   const governed = isGoverned(filePath, metadata[0] === "100755", shebang);
   return {
     governed,
-    lines: governed ? countNonblankLines(decode(buffer, filePath)) : 0,
+    lines: governed ? countSourceLines(decode(buffer, filePath), filePath) : 0,
   };
 }
 

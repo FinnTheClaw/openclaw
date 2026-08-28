@@ -155,6 +155,10 @@ function run(command: string, args: string[], options: SpawnSyncOptions = {}): v
   process.exit(result.status ?? 1);
 }
 
+export function runSourceSizeGate(runCommand: typeof run = run): void {
+  runCommand(process.execPath, ["--import", "tsx", "scripts/check-source-size.ts"]);
+}
+
 function runPnpm(args: string[]): void {
   const command = createPnpmRunnerSpawnSpec({
     env: process.env,
@@ -173,6 +177,7 @@ async function writeDistInventory(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  runSourceSizeGate();
   runPnpm(["build"]);
   runPnpm(["ui:build"]);
   ensurePreparedArtifacts();

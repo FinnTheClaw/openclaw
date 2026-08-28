@@ -4,10 +4,12 @@ import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { countSourceLines } from "./source-size-lines.ts";
 
 type Result = { code: number; output: string };
 
 const checker = fileURLToPath(new URL("./check-source-size.ts", import.meta.url));
+const sourceLines = fileURLToPath(new URL("./source-size-lines.ts", import.meta.url));
 const tsxLoader = fileURLToPath(import.meta.resolve("tsx"));
 
 function run(command: string, args: string[], cwd: string): Result {
@@ -33,12 +35,8 @@ function git(args: string[], cwd: string): Result {
   return run("git", args, cwd);
 }
 
-function check(cwd: string): Result {
-  return run(
-    process.execPath,
-    ["--import", tsxLoader, join(cwd, "scripts/check-source-size.ts")],
-    cwd,
-  );
+function check(cwd: string, checkerPath = join(cwd, "scripts/check-source-size.ts")): Result {
+  return run(process.execPath, ["--import", tsxLoader, checkerPath], cwd);
 }
 
 function lines(
@@ -77,13 +75,25 @@ async function removeStaged(cwd: string, filePath: string): Promise<void> {
 async function main(): Promise<void> {
   const cwd = await mkdtemp(join(tmpdir(), "openclaw-source-size-"));
   try {
-    for (const directory of ["scripts", "src", "custom", "vendor", "node_modules/dependency"]) {
+    for (const directory of [
+      "scripts",
+      "src",
+      "custom",
+      "vendor",
+      "node_modules/dependency",
+      "dist-runtime",
+      "extensions/diffs/assets",
+    ]) {
       await mkdir(join(cwd, directory), { recursive: true });
     }
     assert.equal(git(["init", "-q"], cwd).code, 0);
     assert.equal(git(["config", "user.email", "test@example.invalid"], cwd).code, 0);
     assert.equal(git(["config", "user.name", "Source Size Test"], cwd).code, 0);
-    await writeFile(join(cwd, ".gitignore"), "src/ignored.ts\nnode_modules/\n", "utf8");
+    await writeFile(
+      join(cwd, ".gitignore"),
+      "src/ignored.ts\nnode_modules/\nextensions/diffs/assets/viewer-runtime.js\n",
+      "utf8",
+    );
     await writeFile(join(cwd, "legacy.ts"), lines(501), "utf8");
     await writeFile(join(cwd, "rename-data.txt"), lines(5000), "utf8");
     await writeFile(join(cwd, "chmod-data.txt"), lines(5000), "utf8");
@@ -109,13 +119,22 @@ async function main(): Promise<void> {
     assert.equal(git(["commit", "-qm", "baseline"], cwd).code, 0);
     const baseCommit = run("git", ["rev-parse", "HEAD"], cwd).output.trim();
     const checkerSource = await readFile(checker, "utf8");
+    const sourceLinesSource = await readFile(sourceLines, "utf8");
     await writeFile(
       join(cwd, "scripts/check-source-size.ts"),
       checkerSource.replace("e9030d5476e5572a44ba89f653bc5c6c428ea351", baseCommit),
       "utf8",
     );
+    await writeFile(join(cwd, "scripts/source-size-lines.ts"), sourceLinesSource, "utf8");
     await writeBaseline(cwd, baseCommit);
-    assert.equal(check(cwd).code, 0);
+    const initial = check(cwd);
+    assert.equal(initial.code, 0, initial.output);
+
+    assert.equal(countSourceLines("// ordinary comment\nconst value = 1;\n", "example.ts"), 1);
+    assert.equal(countSourceLines("/* block\n * comment\n */\n", "example.rs"), 0);
+    assert.equal(countSourceLines("# ordinary comment\nvalue = 1\n", "example.py"), 1);
+    assert.equal(countSourceLines("# ordinary comment\necho ok\n", "example.sh"), 1);
+    assert.equal(countSourceLines("cat <<'EOF'\n# data, not a comment\nEOF\n", "example.sh"), 3);
 
     await writeFile(join(cwd, "index-added.ts"), lines(501), "utf8");
     assert.equal(git(["add", "index-added.ts"], cwd).code, 0);
@@ -203,19 +222,17 @@ async function main(): Promise<void> {
       lines(501, () => "const x = 1; /*"),
       /custom\/inline\.ts/u,
     );
-    await expectNewFailure(
-      cwd,
-      "custom/comments.ts",
+    await writeFile(
+      join(cwd, "custom/comments.ts"),
       lines(501, () => "// comment"),
-      /custom\/comments\.ts/u,
+      "utf8",
     );
+    assert.equal(check(cwd).code, 0, "comment-only TypeScript lines are excluded");
+    await rm(join(cwd, "custom/comments.ts"));
     const block = ["/*", ...Array<string>(499).fill("* body"), "*/"].join("\n");
-    await expectNewFailure(
-      cwd,
-      "custom/block.ts",
-      block,
-      /501\t500\tnew\tworktree\tcustom\/block\.ts/u,
-    );
+    await writeFile(join(cwd, "custom/block.ts"), block, "utf8");
+    assert.equal(check(cwd).code, 0, "comment-only block lines are excluded");
+    await rm(join(cwd, "custom/block.ts"));
     const template = ["const value = `", ...Array<string>(499).fill("template text"), "`;"].join(
       "\n",
     );
@@ -243,6 +260,28 @@ async function main(): Promise<void> {
       /501\t500\tnew\tworktree\tcustom\/unicode-separators\.ts/u,
     );
 
+    const emfileChecker = join(cwd, "scripts/check-source-size-emfile.ts");
+    await writeFile(
+      emfileChecker,
+      checkerSource
+        .replace("e9030d5476e5572a44ba89f653bc5c6c428ea351", baseCommit)
+        .replace(
+          'import { lstat, open, readFile } from "node:fs/promises";',
+          [
+            'import { lstat, readFile } from "node:fs/promises";',
+            "const open = async () => {",
+            '  const error = Object.assign(new Error("forced descriptor exhaustion"), { code: "EMFILE" });',
+            "  throw error;",
+            "};",
+          ].join("\n"),
+        ),
+      "utf8",
+    );
+    result = check(cwd, emfileChecker);
+    assert.equal(result.code, 1, "descriptor exhaustion must fail closed");
+    assert.match(result.output, /forced descriptor exhaustion/u);
+    await rm(emfileChecker);
+
     for (const extension of ["bash", "zsh", "fish", "swift"]) {
       await expectNewFailure(
         cwd,
@@ -263,6 +302,14 @@ async function main(): Promise<void> {
     await writeFile(join(cwd, "node_modules/dependency/large.ts"), lines(1000), "utf8");
     assert.equal(check(cwd).code, 0, "untracked generated dependency roots remain excluded");
     await rm(join(cwd, "node_modules/dependency/large.ts"));
+
+    await writeFile(join(cwd, "dist-runtime/generated.ts"), lines(1000), "utf8");
+    assert.equal(check(cwd).code, 0, "untracked runtime build output remains excluded");
+    await rm(join(cwd, "dist-runtime/generated.ts"));
+
+    await writeFile(join(cwd, "extensions/diffs/assets/viewer-runtime.js"), lines(1000), "utf8");
+    assert.equal(check(cwd).code, 0, "known ignored generated assets remain excluded");
+    await rm(join(cwd, "extensions/diffs/assets/viewer-runtime.js"));
 
     await writeFile(join(cwd, "custom/target"), "target\n", "utf8");
     await symlink("target", join(cwd, "custom/index-link.ts"));

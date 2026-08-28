@@ -80,10 +80,7 @@ function resolveTimerTimeoutMs(valueMs, fallbackMs = MAX_TIMER_TIMEOUT_MS) {
 }
 
 function resolveOptionalTimerTimeoutMs(valueMs) {
-  if (valueMs === undefined) {
-    return undefined;
-  }
-  return resolveTimerTimeoutMs(valueMs, 1);
+  return valueMs === undefined ? undefined : resolveTimerTimeoutMs(valueMs, 1);
 }
 
 function readOptionValue(argv, index, optionName) {
@@ -711,6 +708,11 @@ async function main() {
     options.outputDir || path.join(".artifacts", "docker-e2e-package"),
   );
   await fs.mkdir(outputDir, { recursive: true });
+
+  // This path disables npm lifecycle scripts, so it invokes prepack's checker itself.
+  await run("node", ["--import", "tsx", "scripts/check-source-size.ts"], sourceDir, {
+    timeoutMs: DEFAULT_PACKAGE_INVENTORY_TIMEOUT_MS,
+  });
 
   if (!options.skipBuild) {
     await buildPackageArtifacts(sourceDir);

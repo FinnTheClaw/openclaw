@@ -1,11 +1,19 @@
 // OpenClaw prepack tests validate package prepack output.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   collectPreparedPrepackErrors,
   resolvePrepackCommandStdio,
   resolvePrepackCommandTimeoutMs,
+  runSourceSizeGate,
   runPrepackCommand,
 } from "../scripts/openclaw-prepack.ts";
+
+const prepackPath = fileURLToPath(new URL("../scripts/openclaw-prepack.ts", import.meta.url));
+const dockerPackagerPath = fileURLToPath(
+  new URL("../scripts/package-openclaw-for-docker.mjs", import.meta.url),
+);
 
 describe("collectPreparedPrepackErrors", () => {
   it("accepts prepared release artifacts", () => {
@@ -27,6 +35,30 @@ describe("collectPreparedPrepackErrors", () => {
 });
 
 describe("runPrepackCommand", () => {
+  it("runs the source-size gate before packaging work", () => {
+    const calls: Array<{ args: string[]; command: string }> = [];
+    runSourceSizeGate((command, args) => {
+      calls.push({ command, args });
+    });
+    expect(calls).toEqual([
+      {
+        command: process.execPath,
+        args: ["--import", "tsx", "scripts/check-source-size.ts"],
+      },
+    ]);
+  });
+
+  it("keeps the root and lifecycle-skipping pack paths gated before build", () => {
+    const prepack = readFileSync(prepackPath, "utf8");
+    const dockerPackager = readFileSync(dockerPackagerPath, "utf8");
+    expect(prepack.indexOf("runSourceSizeGate();")).toBeLessThan(
+      prepack.indexOf('runPnpm(["build"])'),
+    );
+    expect(dockerPackager.indexOf("scripts/check-source-size.ts")).toBeLessThan(
+      dockerPackager.indexOf("await buildPackageArtifacts(sourceDir)"),
+    );
+  });
+
   it("keeps prepack child stdout off npm pack JSON stdout", () => {
     expect(resolvePrepackCommandStdio({ stdio: "inherit" }, { npm_config_json: "true" })).toEqual([
       "inherit",
