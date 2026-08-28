@@ -348,6 +348,9 @@ export function recoverGovernorC05FailureReplan(params: {
       now: params.now,
     });
   }
+  if (candidates.length > 1) {
+    return undefined;
+  }
   const boundary = matchingBoundary(params.controller, task, {
     fromPlanVersion: task.planVersion - 1,
   });
