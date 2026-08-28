@@ -21,6 +21,8 @@ function descriptor(params: {
   qualifiedModes?: readonly BehaviorGovernorModuleSelection["mode"][];
   dependencies?: readonly string[];
   durableBoundaryIds?: readonly string[];
+  requires?: GatewayBehaviorGovernorModuleDescriptor["requires"];
+  governedRunCapabilities?: readonly string[];
   events?: string[];
   failStart?: boolean;
   failLoad?: boolean;
@@ -34,6 +36,8 @@ function descriptor(params: {
     qualifiedModes: params.qualifiedModes ?? ["shadow", "enforce"],
     dependencies: params.dependencies ?? [],
     durableBoundaryIds: params.durableBoundaryIds ?? [],
+    requires: params.requires ?? [],
+    governedRunCapabilities: params.governedRunCapabilities ?? [],
     load: vi.fn(async (): Promise<GatewayBehaviorGovernorModuleFactory> => {
       params.events?.push(`load:${params.id}`);
       if (params.failLoad) {
@@ -72,6 +76,18 @@ describe("gateway behavior governor module lifecycle", () => {
     await lifecycle.close();
 
     expect(available.load).not.toHaveBeenCalled();
+  });
+
+  it("accepts only compiled governed-run requirements and capability IDs", async () => {
+    const governed = descriptor({
+      id: "C01",
+      requires: ["governed-run-core"],
+      governedRunCapabilities: ["fixture.observe"],
+    });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [governed] });
+
+    await lifecycle.apply([selection("C01")]);
+    await lifecycle.close();
   });
 
   it("loads only exact selected modules and preserves their requested mode", async () => {

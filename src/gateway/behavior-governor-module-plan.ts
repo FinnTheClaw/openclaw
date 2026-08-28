@@ -1,4 +1,6 @@
+import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 import type { GatewayBehaviorGovernorModuleDescriptor } from "./behavior-governor-module-lifecycle.js";
+import { createProductionGovernorHostFactory } from "./behavior-governor-production-host.js";
 
 /**
  * Compiled behavior modules remain inert until the matching id and exact-version
@@ -11,3 +13,11 @@ import type { GatewayBehaviorGovernorModuleDescriptor } from "./behavior-governo
 export const BUILT_IN_BEHAVIOR_GOVERNOR_MODULES = Object.freeze(
   [] satisfies readonly GatewayBehaviorGovernorModuleDescriptor[],
 );
+
+/** Production capabilities are compiled beside their declaring descriptor. */
+export const BUILT_IN_GOVERNED_RUN_CAPABILITIES = Object.freeze(
+  [] satisfies readonly GovernorCapabilityDefinition[],
+);
+
+export const createBuiltInProductionGovernorHostFactory = () =>
+  createProductionGovernorHostFactory({ capabilityCatalog: BUILT_IN_GOVERNED_RUN_CAPABILITIES });

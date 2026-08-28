@@ -64,7 +64,7 @@ import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
 import { resolveGatewayAuth } from "./auth.js";
-import type { GatewayBehaviorGovernorHostFactory } from "./behavior-governor-lifecycle.js";
+import { createBuiltInProductionGovernorHostFactory } from "./behavior-governor-module-plan.js";
 import { createGatewayBehaviorGovernorRuntime } from "./behavior-governor-runtime.js";
 
 function aggregateWithCause(errors: unknown[], message: string, cause: unknown): AggregateError {
@@ -520,8 +520,6 @@ export type GatewayServerOptions = {
    * reparsing openclaw.json during server startup.
    */
   startupConfigSnapshotRead?: ReadConfigFileSnapshotWithPluginMetadataResult;
-  /** Internal host-owned binding provider; absent enabled config fails closed. */
-  behaviorGovernorHostFactory?: GatewayBehaviorGovernorHostFactory;
 };
 
 type SetupWizardRunner = NonNullable<GatewayServerOptions["wizardRunner"]>;
@@ -536,9 +534,9 @@ export async function startGatewayServer(
   opts: GatewayServerOptions = {},
 ): Promise<GatewayServer> {
   normalizeStateDirEnv(process.env);
-  const behaviorGovernor = createGatewayBehaviorGovernorRuntime(
-    opts.behaviorGovernorHostFactory ? { hostFactory: opts.behaviorGovernorHostFactory } : {},
-  );
+  const behaviorGovernor = createGatewayBehaviorGovernorRuntime({
+    hostFactory: createBuiltInProductionGovernorHostFactory(),
+  });
   let boundPort!: number;
   // runGatewayLoop calls this after closing the previous server on both fresh
   // and in-process restarts, making retired plugin generations safe to remove.

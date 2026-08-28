@@ -40,6 +40,20 @@ describe("behavior governor config boundary", () => {
     ).toBe(true);
   });
 
+  it("accepts an enabled governed-run plan selected by compiled module identity", () => {
+    expect(
+      OpenClawSchema.safeParse({
+        ...config(),
+        experimental: {
+          behaviorGovernor: {
+            ...config().experimental.behaviorGovernor,
+            modules: [{ id: "C04A.1", mode: "shadow", version: "1.0.0" }],
+          },
+        },
+      }).success,
+    ).toBe(true);
+  });
+
   it("accepts only data-only module selections", () => {
     const module = {
       id: "C04A.1",

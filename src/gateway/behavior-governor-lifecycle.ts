@@ -13,6 +13,7 @@ import type {
   GovernorHostIntegrationConfiguration,
   GovernorHostRuntime,
 } from "../security/governor-host-bootstrap.js";
+import type { GovernorHostCoreRuntime } from "../security/governor-host-core-bootstrap.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 
 type EnabledBehaviorGovernorConfig = Extract<BehaviorGovernorConfig, { enabled: true }>;
@@ -23,6 +24,7 @@ export type GatewayBehaviorGovernorPolicy = Readonly<
 export type GatewayBehaviorGovernorHostFactory = (params: {
   config: GatewayBehaviorGovernorPolicy;
   stateDir: string;
+  requirements: Readonly<{ capabilities: readonly string[] }>;
   secrets: Readonly<{
     identityHmacKey: string;
     evidenceAdmissionKey: string;
@@ -34,7 +36,7 @@ export type GatewayBehaviorGovernorHostFactory = (params: {
 }) =>
   | {
       capabilities: readonly GovernorCapabilityDefinition[];
-      integrations: GovernorHostIntegrationConfiguration;
+      integrations?: GovernorHostIntegrationConfiguration;
       /**
        * Optional host-owned rollback/close for allocations made by the
        * compiled integration factory.  Factories that return no handle must
@@ -45,7 +47,7 @@ export type GatewayBehaviorGovernorHostFactory = (params: {
     }
   | Promise<{
       capabilities: readonly GovernorCapabilityDefinition[];
-      integrations: GovernorHostIntegrationConfiguration;
+      integrations?: GovernorHostIntegrationConfiguration;
       close?: () => void | Promise<void>;
     }>;
 
@@ -53,6 +55,10 @@ export type GatewayBehaviorGovernorLifecycle = Readonly<{
   apply: (
     config: OpenClawConfig,
     secretSnapshot: GatewayBehaviorGovernorSecretSnapshot,
+    params?: Readonly<{
+      requirements: Readonly<{ capabilities: readonly string[] }>;
+      preparePolicy?: (policy: GatewayBehaviorGovernorPolicy) => GatewayBehaviorGovernorPolicy;
+    }>,
   ) => Promise<void>;
   close: () => Promise<void>;
   freeze: () => Promise<void>;
@@ -82,7 +88,9 @@ function enabledConfig(config: OpenClawConfig): EnabledBehaviorGovernorConfig | 
   return value && "enabled" in value && value.enabled ? value : undefined;
 }
 
-function loopConfig(config: EnabledBehaviorGovernorConfig): BehaviorGovernorAgentLoopConfig & {
+function loopConfig(
+  config: Pick<EnabledBehaviorGovernorConfig, "mode" | "agentLoop">,
+): BehaviorGovernorAgentLoopConfig & {
   mode: EnabledBehaviorGovernorConfig["mode"];
 } {
   return { ...config.agentLoop, mode: config.mode };
@@ -153,7 +161,7 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
   let active:
     | {
         key: string;
-        runtime: GovernorHostRuntime;
+        runtime: GovernorHostRuntime | GovernorHostCoreRuntime;
         hostClose?: () => void | Promise<void>;
         closeFailure?: AggregateError;
       }
@@ -194,6 +202,10 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
   const applyUnsafe = async (
     config: OpenClawConfig,
     secretSnapshot: GatewayBehaviorGovernorSecretSnapshot,
+    paramsForApply: Readonly<{
+      requirements: Readonly<{ capabilities: readonly string[] }>;
+      preparePolicy?: (policy: GatewayBehaviorGovernorPolicy) => GatewayBehaviorGovernorPolicy;
+    }> = { requirements: { capabilities: [] } },
   ) => {
     const requestedGovernor = enabledConfig(config);
     if (!requestedGovernor) {
@@ -237,7 +249,10 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       env: secretSnapshot.env,
     });
     const { secretRefs: _secretRefs, ...policy } = governor;
-    const factoryConfig = deepFreeze(structuredClone(policy));
+    const preparedPolicy = paramsForApply.preparePolicy
+      ? paramsForApply.preparePolicy(deepFreeze(structuredClone(policy)))
+      : policy;
+    const factoryConfig = deepFreeze(structuredClone(preparedPolicy));
     try {
       fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
       const resolvedStateRoot = fs.realpathSync(stateRoot);
@@ -263,25 +278,38 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       throw error;
     }
     let host: Awaited<ReturnType<NonNullable<typeof params.hostFactory>>> | undefined;
-    let runtime: GovernorHostRuntime | null = null;
+    let runtime: GovernorHostRuntime | GovernorHostCoreRuntime | null = null;
     try {
       host = await params.hostFactory({
         config: factoryConfig,
         stateDir,
+        requirements: paramsForApply.requirements,
         secrets: resolved.secrets,
       });
-      const { createGovernorHostRuntimeIfEnabled } =
-        await import("../security/governor-host-bootstrap.js");
-      runtime = createGovernorHostRuntimeIfEnabled({
-        enabled: true,
-        env: { ...resolved.env, OPENCLAW_STATE_DIR: stateDir },
-        stateDir,
-        capabilities: host.capabilities,
-        integrations: {
-          ...host.integrations,
-          agentLoop: loopConfig(governor) as GovernorAgentLoopConfiguration,
-        },
-      });
+      if (host.integrations) {
+        const { createGovernorHostRuntimeIfEnabled } =
+          await import("../security/governor-host-bootstrap.js");
+        runtime = createGovernorHostRuntimeIfEnabled({
+          enabled: true,
+          env: { ...resolved.env, OPENCLAW_STATE_DIR: stateDir },
+          stateDir,
+          capabilities: host.capabilities,
+          integrations: {
+            ...host.integrations,
+            agentLoop: loopConfig(factoryConfig) as GovernorAgentLoopConfiguration,
+          },
+        });
+      } else {
+        const { createGovernorHostCoreRuntimeIfEnabled } =
+          await import("../security/governor-host-core-bootstrap.js");
+        runtime = createGovernorHostCoreRuntimeIfEnabled({
+          enabled: true,
+          env: { ...resolved.env, OPENCLAW_STATE_DIR: stateDir },
+          stateDir,
+          capabilities: host.capabilities,
+          agentLoop: loopConfig(factoryConfig) as GovernorAgentLoopConfiguration,
+        });
+      }
       if (!runtime) {
         throw new Error("GOVERNOR_GATEWAY_RUNTIME_NOT_CREATED");
       }
@@ -316,8 +344,15 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     }
   };
 
-  const apply = (config: OpenClawConfig, secretSnapshot: GatewayBehaviorGovernorSecretSnapshot) => {
-    const result = serial.then(() => applyUnsafe(config, secretSnapshot));
+  const apply = (
+    config: OpenClawConfig,
+    secretSnapshot: GatewayBehaviorGovernorSecretSnapshot,
+    paramsForApply?: Readonly<{
+      requirements: Readonly<{ capabilities: readonly string[] }>;
+      preparePolicy?: (policy: GatewayBehaviorGovernorPolicy) => GatewayBehaviorGovernorPolicy;
+    }>,
+  ) => {
+    const result = serial.then(() => applyUnsafe(config, secretSnapshot, paramsForApply));
     serial = result.catch(() => {});
     return result;
   };

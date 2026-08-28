@@ -1,7 +1,13 @@
 import type { BehaviorGovernorModuleSelection } from "../config/types.behavior-governor.js";
+import type { GatewayBehaviorGovernorPolicy } from "./behavior-governor-lifecycle.js";
 
 const MODULE_ID_PATTERN = /^[A-Z][A-Z0-9._-]{0,63}$/u;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
+const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u;
+
+export const GOVERNOR_MODULE_REQUIREMENTS = ["governed-run-core"] as const;
+export type GatewayBehaviorGovernorModuleRequirement =
+  (typeof GOVERNOR_MODULE_REQUIREMENTS)[number];
 
 export type GatewayBehaviorGovernorModuleRuntime = Readonly<{
   freeze?: () => void | Promise<void>;
@@ -26,6 +32,12 @@ export type GatewayBehaviorGovernorModuleDescriptor = Readonly<{
   qualifiedModes: readonly BehaviorGovernorModuleSelection["mode"][];
   dependencies: readonly string[];
   durableBoundaryIds: readonly string[];
+  /** Compiled requirements only; configuration may select but cannot mint them. */
+  requires: readonly GatewayBehaviorGovernorModuleRequirement[];
+  /** Capability IDs resolve exclusively through the server-owned compiled catalog. */
+  governedRunCapabilities: readonly string[];
+  /** Pure, ordered data transform applied before the governed-run core starts. */
+  preparePolicy?: (policy: GatewayBehaviorGovernorPolicy) => GatewayBehaviorGovernorPolicy;
   load: () => Promise<GatewayBehaviorGovernorModuleFactory>;
 }>;
 
@@ -35,7 +47,7 @@ export type GatewayBehaviorGovernorModuleLifecycle = Readonly<{
   close: () => Promise<void>;
 }>;
 
-type ResolvedModule = Readonly<{
+export type ResolvedGatewayBehaviorGovernorModule = Readonly<{
   descriptor: GatewayBehaviorGovernorModuleDescriptor;
   selection: BehaviorGovernorModuleSelection;
 }>;
@@ -92,6 +104,22 @@ function validateCatalog(
     if (new Set(descriptor.durableBoundaryIds).size !== descriptor.durableBoundaryIds.length) {
       throw new Error("GOVERNOR_MODULE_BOUNDARY_DUPLICATE");
     }
+    if (new Set(descriptor.requires).size !== descriptor.requires.length) {
+      throw new Error("GOVERNOR_MODULE_REQUIREMENT_DUPLICATE");
+    }
+    if (
+      new Set(descriptor.governedRunCapabilities).size !== descriptor.governedRunCapabilities.length
+    ) {
+      throw new Error("GOVERNOR_MODULE_CAPABILITY_DUPLICATE");
+    }
+    for (const requirement of descriptor.requires) {
+      if (!(GOVERNOR_MODULE_REQUIREMENTS as readonly string[]).includes(requirement)) {
+        throw new Error("GOVERNOR_MODULE_REQUIREMENT_INVALID");
+      }
+    }
+    for (const capability of descriptor.governedRunCapabilities) {
+      assertIdentifier(capability, CAPABILITY_ID_PATTERN, "GOVERNOR_MODULE_CAPABILITY_INVALID");
+    }
     for (const dependency of descriptor.dependencies) {
       assertIdentifier(dependency, MODULE_ID_PATTERN, "GOVERNOR_MODULE_DEPENDENCY_INVALID");
       if (dependency === descriptor.id) {
@@ -109,7 +137,7 @@ function validateCatalog(
 function resolveModules(params: {
   catalog: ReadonlyMap<string, GatewayBehaviorGovernorModuleDescriptor>;
   selections: readonly BehaviorGovernorModuleSelection[];
-}): ResolvedModule[] {
+}): ResolvedGatewayBehaviorGovernorModule[] {
   const selected = new Map<string, BehaviorGovernorModuleSelection>();
   for (const selection of params.selections) {
     assertIdentifier(selection.id, MODULE_ID_PATTERN, "GOVERNOR_MODULE_ID_INVALID");
@@ -155,7 +183,7 @@ function resolveModules(params: {
 
   const visiting = new Set<string>();
   const visited = new Set<string>();
-  const ordered: ResolvedModule[] = [];
+  const ordered: ResolvedGatewayBehaviorGovernorModule[] = [];
   const visit = (id: string): void => {
     if (visited.has(id)) {
       return;
@@ -176,6 +204,16 @@ function resolveModules(params: {
     visit(id);
   }
   return ordered;
+}
+
+export function resolveGatewayBehaviorGovernorModulePlan(params: {
+  catalog: readonly GatewayBehaviorGovernorModuleDescriptor[];
+  selections: readonly BehaviorGovernorModuleSelection[];
+}): readonly ResolvedGatewayBehaviorGovernorModule[] {
+  return resolveModules({
+    catalog: validateCatalog(params.catalog),
+    selections: params.selections,
+  });
 }
 
 function planKey(selections: readonly BehaviorGovernorModuleSelection[]): string {

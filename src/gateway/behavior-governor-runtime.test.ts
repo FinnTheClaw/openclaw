@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createGatewayBehaviorGovernorRuntime } from "./behavior-governor-runtime.js";
 
@@ -36,6 +36,17 @@ describe("gateway behavior governor runtime", () => {
     const runtime = createGatewayBehaviorGovernorRuntime({});
 
     await expect(runtime.apply(unknownModuleConfig)).rejects.toThrow("GOVERNOR_MODULE_UNKNOWN");
+  });
+
+  it("does not invoke a production host factory for an empty module plan", async () => {
+    const hostFactory = vi.fn();
+    const runtime = createGatewayBehaviorGovernorRuntime({ hostFactory });
+
+    await runtime.apply({ experimental: { behaviorGovernor: { modules: [] } } });
+    await runtime.freeze();
+    await runtime.close();
+
+    expect(hostFactory).not.toHaveBeenCalled();
   });
 
   it("requires restart after the initial empty plan is fixed", async () => {

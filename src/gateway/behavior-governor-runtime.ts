@@ -9,9 +9,15 @@ import { getActiveSecretsRuntimeGovernorSnapshot } from "../secrets/runtime-stat
 import type {
   GatewayBehaviorGovernorHostFactory,
   GatewayBehaviorGovernorLifecycle,
+  GatewayBehaviorGovernorPolicy,
 } from "./behavior-governor-lifecycle.js";
-import { createGatewayBehaviorGovernorModuleLifecycle } from "./behavior-governor-module-lifecycle.js";
+import {
+  createGatewayBehaviorGovernorModuleLifecycle,
+  resolveGatewayBehaviorGovernorModulePlan,
+  type GatewayBehaviorGovernorModuleDescriptor,
+} from "./behavior-governor-module-lifecycle.js";
 import { BUILT_IN_BEHAVIOR_GOVERNOR_MODULES } from "./behavior-governor-module-plan.js";
+import { resolveSelectedGovernorCoreRequirements } from "./behavior-governor-production-host.js";
 
 export type GatewayBehaviorGovernorRuntime = Readonly<{
   apply: (config: OpenClawConfig) => Promise<void>;
@@ -19,39 +25,41 @@ export type GatewayBehaviorGovernorRuntime = Readonly<{
   close: () => Promise<void>;
 }>;
 
-function isLegacyGovernorEnabled(config: OpenClawConfig): boolean {
-  const value = config.experimental?.behaviorGovernor;
-  return Boolean(value && "enabled" in value && value.enabled);
-}
-
 export function createGatewayBehaviorGovernorRuntime(params: {
   hostFactory?: GatewayBehaviorGovernorHostFactory;
+  catalog?: readonly GatewayBehaviorGovernorModuleDescriptor[];
 }): GatewayBehaviorGovernorRuntime {
+  const catalog = params.catalog ?? BUILT_IN_BEHAVIOR_GOVERNOR_MODULES;
   const modules = createGatewayBehaviorGovernorModuleLifecycle({
-    catalog: BUILT_IN_BEHAVIOR_GOVERNOR_MODULES,
+    catalog,
   });
-  let legacy: GatewayBehaviorGovernorLifecycle | undefined;
+  let core: GatewayBehaviorGovernorLifecycle | undefined;
 
   const apply = async (config: OpenClawConfig) => {
     const configured = config.experimental?.behaviorGovernor;
-    const selections = configured && "modules" in configured ? configured.modules : [];
+    const selections = configured && "modules" in configured ? (configured.modules ?? []) : [];
     await modules.apply(selections);
-    const enabled = isLegacyGovernorEnabled(config);
-    if (!enabled && !legacy) {
+    const plan = resolveGatewayBehaviorGovernorModulePlan({ catalog, selections });
+    const requirements = resolveSelectedGovernorCoreRequirements(plan);
+    if (!requirements) {
       return;
     }
-    if (!legacy) {
+    if (!params.hostFactory) {
+      throw new Error("GOVERNOR_GATEWAY_PRODUCTION_HOST_REQUIRED");
+    }
+    if (!core) {
       const { createGatewayBehaviorGovernorLifecycle } =
         await import("./behavior-governor-lifecycle.js");
-      legacy = createGatewayBehaviorGovernorLifecycle(
-        params.hostFactory ? { hostFactory: params.hostFactory } : {},
-      );
+      core = createGatewayBehaviorGovernorLifecycle({ hostFactory: params.hostFactory });
     }
     const snapshot = getActiveSecretsRuntimeGovernorSnapshot();
     if (!snapshot) {
       throw new Error("GOVERNOR_GATEWAY_SECRET_SNAPSHOT_REQUIRED");
     }
-    await legacy.apply(config, snapshot);
+    await core.apply(config, snapshot, {
+      requirements,
+      preparePolicy: (policy) => prepareSelectedPolicy(policy, plan),
+    });
     const receiptSigningKey = snapshot.config.secretRefs.receiptSigningKey;
     if (typeof receiptSigningKey !== "string" || !receiptSigningKey.trim()) {
       throw new Error("GOVERNOR_GATEWAY_RECEIPT_SIGNER_INVALID");
@@ -66,12 +74,12 @@ export function createGatewayBehaviorGovernorRuntime(params: {
   const freeze = async () => {
     const errors: unknown[] = [];
     try {
-      await modules.freeze();
+      await core?.freeze();
     } catch (error) {
       errors.push(error);
     }
     try {
-      await legacy?.freeze();
+      await modules.freeze();
     } catch (error) {
       errors.push(error);
     }
@@ -82,9 +90,9 @@ export function createGatewayBehaviorGovernorRuntime(params: {
 
   const close = async () => {
     const errors: unknown[] = [];
-    if (legacy) {
+    if (core) {
       try {
-        await legacy.close();
+        await core.close();
       } catch (error) {
         errors.push(error);
       }
@@ -98,8 +106,31 @@ export function createGatewayBehaviorGovernorRuntime(params: {
     if (errors.length > 0) {
       throw new AggregateError(errors, "GOVERNOR_GATEWAY_CLOSE_FAILED");
     }
-    legacy = undefined;
+    core = undefined;
   };
 
   return Object.freeze({ apply, freeze, close });
+}
+
+function prepareSelectedPolicy(
+  policy: GatewayBehaviorGovernorPolicy,
+  plan: readonly ReturnType<typeof resolveGatewayBehaviorGovernorModulePlan>[number][],
+): GatewayBehaviorGovernorPolicy {
+  let prepared = policy;
+  for (const module of plan) {
+    if (module.descriptor.preparePolicy) {
+      prepared = module.descriptor.preparePolicy(deepFreeze(structuredClone(prepared)));
+    }
+  }
+  return prepared;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object") {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(child);
+    }
+  }
+  return value;
 }
