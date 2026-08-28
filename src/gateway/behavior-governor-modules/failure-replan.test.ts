@@ -11,8 +11,11 @@ import {
 } from "./failure-replan.js";
 
 type CrashPoint = "checkpoint" | "plan" | "start";
+type SideEffect = "not_applicable" | "none" | "applied" | "unknown";
 
-function controller(params: { state?: string; crashAt?: CrashPoint; mutate?: boolean } = {}) {
+function controller(
+  params: { state?: string; crashAt?: CrashPoint; mutate?: boolean; sideEffect?: SideEffect } = {},
+) {
   const events: Array<Record<string, unknown>> = [];
   const task = {
     taskId: "gtask_c05",
@@ -40,12 +43,14 @@ function controller(params: { state?: string; crashAt?: CrashPoint; mutate?: boo
     outcome: {
       transport: "failed",
       semantic: "transient_failure",
-      sideEffect: params.mutate ? "unknown" : "none",
+      sideEffect: params.sideEffect ?? (params.mutate ? "unknown" : "none"),
     },
     reconcileRequired: Boolean(params.mutate),
   };
   const effects = [effect];
   let crashAt = params.crashAt;
+  let prepareCalls = 0;
+  let startCalls = 0;
   const fake = {
     store: {
       loadTask: () => task,
@@ -72,6 +77,7 @@ function controller(params: { state?: string; crashAt?: CrashPoint; mutate?: boo
       });
     },
     preparePlan: (request: { plan: { steps: readonly { criterionIds: readonly string[] }[] } }) => {
+      prepareCalls += 1;
       if (crashAt === "plan") {
         throw new Error("CRASH_PLAN");
       }
@@ -83,6 +89,7 @@ function controller(params: { state?: string; crashAt?: CrashPoint; mutate?: boo
       return task;
     },
     startExecution: () => {
+      startCalls += 1;
       if (crashAt === "start") {
         throw new Error("CRASH_START");
       }
@@ -94,6 +101,10 @@ function controller(params: { state?: string; crashAt?: CrashPoint; mutate?: boo
     events,
     task,
     effect,
+    effects,
+    get calls() {
+      return { prepare: prepareCalls, start: startCalls };
+    },
     addLaterFailure: (effectId = "effect_c05_later", criterionId = "verify") => {
       effects.push({
         ...effect,
@@ -196,6 +207,20 @@ describe("C05 failure replan module", () => {
     await runtime.close();
   });
 
+  it("does not reintroduce a confirmed mutating criterion", async () => {
+    const fixture = controller({ mutate: true, sideEffect: "applied" });
+    const runtime = await enforce();
+    expect(
+      recoverGovernorC05FailureReplan({
+        controller: fixture.controller,
+        taskId: "gtask_c05" as never,
+        now: 10,
+      }),
+    ).toMatchObject({ kind: "replanned", planVersion: 2 });
+    expect(fixture.task.preparedCriteria).toEqual(["verify"]);
+    await runtime.close();
+  });
+
   it.each(["PLANNING", "REPLAN_REQUIRED"])(
     "ignores foreign %s work without a C05 boundary",
     async (state) => {
@@ -293,6 +318,43 @@ describe("C05 failure replan module", () => {
       }),
     ).toMatchObject({ kind: "replanned", fromPlanVersion: 2, planVersion: 3 });
     expect(fixture.task.planVersion).toBe(3);
+    await runtime.close();
+  });
+
+  it("fails closed for multiple current failures despite a completed prior boundary", async () => {
+    const fixture = controller();
+    const runtime = await enforce();
+    expect(
+      advanceGovernorC05FailureReplan({
+        controller: fixture.controller,
+        taskId: "gtask_c05" as never,
+        sourceEffectId: "effect_c05",
+        now: 10,
+      }),
+    ).toMatchObject({ kind: "replanned", planVersion: 2 });
+    fixture.addLaterFailure("effect_c05_first_current");
+    fixture.addLaterFailure("effect_c05_second_current");
+    const before = { calls: fixture.calls, eventCount: fixture.events.length };
+    expect(
+      recoverGovernorC05FailureReplan({
+        controller: fixture.controller,
+        taskId: "gtask_c05" as never,
+        now: 20,
+      }),
+    ).toBeUndefined();
+    expect(fixture.task).toMatchObject({ planVersion: 2, state: "EXECUTING" });
+    expect(fixture.calls).toEqual(before.calls);
+    expect(fixture.events).toHaveLength(before.eventCount);
+    expect(fixture.effects.slice(-2)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          outcome: expect.objectContaining({ semantic: "transient_failure" }),
+        }),
+        expect.objectContaining({
+          outcome: expect.objectContaining({ semantic: "transient_failure" }),
+        }),
+      ]),
+    );
     await runtime.close();
   });
 
