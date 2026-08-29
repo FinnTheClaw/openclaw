@@ -176,6 +176,7 @@ import {
 import { resolveEmbeddedRunFailureSignal } from "./failure-signal.js";
 import {
   createRunFinnRequestEvidence,
+  resolveFinnRequestEvidenceFromCollector,
   resolveFinnRequestEvidenceMeta,
 } from "./finn-run-evidence.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
@@ -1881,16 +1882,10 @@ async function runEmbeddedAgentInternal(
       let beforeAgentFinalizePendingReason: string | undefined;
       let beforeAgentFinalizeYieldRecoveryAttempts = 0;
       let sameModelIdleTimeoutRetries = 0;
-      // Cost-runaway breaker for #76293. State lives at the run-loop level
-      // on purpose so it survives across attempt boundaries and across
-      // profile/auth retries within this embedded run (a wrapper-local
-      // counter would reset on every iteration). The helper is pure and
-      // unit-tested in run/idle-timeout-breaker.test.ts; the run loop just
-      // feeds it the outcome of each attempt.
+      // The run-level cost breaker survives attempts and auth/profile retries;
+      // its pure policy is tested in run/idle-timeout-breaker.test.ts.
       const idleTimeoutBreakerState = createIdleTimeoutBreakerState();
-      // Post-compaction loop guard for #77474. Armed at each compaction-success
-      // site below; observed from the live tool-outcome path so it can abort
-      // while the post-compaction prompt is still running.
+      // Arm after compaction and observe live tool outcomes to abort an active loop.
       const resolvedLoopDetectionConfig = resolveToolLoopDetectionConfig({
         cfg: params.config,
         agentId: sessionAgentId,
@@ -1934,11 +1929,8 @@ async function runEmbeddedAgentInternal(
       let rateLimitProfileRotations = 0;
       let timeoutCompactionAttempts = 0;
       let codexAppServerRecoveryRetries = 0;
-      // Silent-error retry: non-strict-agentic models (e.g. ollama/glm-5.1) can
-      // end a turn with stopReason="error" + zero output tokens, producing no
-      // user-visible text. This is an orthogonal, model-agnostic resubmission
-      // for errored turns; stopReason="stop" empty zero-token turns use the
-      // visible-answer retry instruction instead.
+      // Retry silent error turns separately from empty successful turns, which use
+      // the visible-answer instruction.
       const MAX_EMPTY_ERROR_RETRIES = 3;
       let emptyErrorRetries = 0;
       const MAX_MISSING_ASSISTANT_RETRIES = 1;
@@ -2256,6 +2248,7 @@ async function runEmbeddedAgentInternal(
                 sessionFile: activeSessionFile,
                 provider,
                 model: model.id,
+                ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                 contextTokens: ctxInfo.tokens,
                 usageAccumulator,
                 lastRunPromptUsage,
@@ -2744,6 +2737,7 @@ async function runEmbeddedAgentInternal(
                 sessionFile: activeSessionFile,
                 provider,
                 model: model.id,
+                ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                 contextTokens: ctxInfo.tokens,
                 usageAccumulator,
                 lastRunPromptUsage,
@@ -3354,6 +3348,7 @@ async function runEmbeddedAgentInternal(
                   sessionFile: activeSessionFile,
                   provider,
                   model: model.id,
+                  ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                   contextTokens: ctxInfo.tokens,
                   usageAccumulator,
                   lastRunPromptUsage,
@@ -3387,6 +3382,7 @@ async function runEmbeddedAgentInternal(
                   sessionFile: activeSessionFile,
                   provider,
                   model: model.id,
+                  ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                   contextTokens: ctxInfo.tokens,
                   usageAccumulator,
                   lastRunPromptUsage,
@@ -3503,6 +3499,7 @@ async function runEmbeddedAgentInternal(
                     sessionFile: activeSessionFile,
                     provider,
                     model: model.id,
+                    ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                     contextTokens: ctxInfo.tokens,
                     usageAccumulator,
                     lastRunPromptUsage,
@@ -3544,6 +3541,7 @@ async function runEmbeddedAgentInternal(
                     sessionFile: activeSessionFile,
                     provider,
                     model: model.id,
+                    ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                     contextTokens: ctxInfo.tokens,
                     usageAccumulator,
                     lastRunPromptUsage,

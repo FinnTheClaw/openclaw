@@ -8,6 +8,17 @@ export function createRunFinnRequestEvidence(): FinnRequestEvidenceCollector {
   return createFinnRequestEvidenceCollector();
 }
 
+export function resolveFinnRequestEvidenceFromCollector(
+  collector: FinnRequestEvidenceCollector,
+): Partial<Pick<AssistantMessage, "finnRequestIds" | "finnRequestIdEvidenceComplete">> {
+  return collector.requestIds.length > 0
+    ? {
+        finnRequestIds: [...collector.requestIds],
+        finnRequestIdEvidenceComplete: collector.complete,
+      }
+    : {};
+}
+
 export function resolveFinnRequestEvidenceMeta(
   assistant: AssistantMessage | undefined,
 ): Partial<Pick<AssistantMessage, "finnRequestIds" | "finnRequestIdEvidenceComplete">> {
