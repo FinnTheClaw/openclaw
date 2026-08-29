@@ -1,0 +1,84 @@
+{
+  "schema": "finn-c05-alistar-local-qwen-campaign-v1",
+  "module": { "id": "C05.FAILURE_REPLAN", "version": "1.0.0", "mode": "enforce" },
+  "caseCount": 100,
+  "caseId": "c05-<scenario.id>-<variant.id>",
+  "expansionOrder": ["scenario", "variant"],
+  "execution": {
+    "target": "fresh-alistar-jake",
+    "modelRequirement": "coordinator-attested local Qwen only",
+    "workspaceRoot": "/store1/finn-c05-campaign",
+    "transport": "installed OpenClaw synthetic non-channel task",
+    "correlationRequirement": ["requestId", "taskId", "backendId", "modelId", "toolTrace"]
+  },
+  "variants": [
+    { "id": "01", "noun": "alder" },
+    { "id": "02", "noun": "birch" },
+    { "id": "03", "noun": "cedar" },
+    { "id": "04", "noun": "dogwood" },
+    { "id": "05", "noun": "elm" },
+    { "id": "06", "noun": "fir" },
+    { "id": "07", "noun": "gingko" },
+    { "id": "08", "noun": "hazel" },
+    { "id": "09", "noun": "ironwood" },
+    { "id": "10", "noun": "juniper" }
+  ],
+  "scenarios": [
+    {
+      "id": "single-nonmutating-failure",
+      "prompt": "Use the governed test tool to read the absent marker <case>; after its expected failure, complete the safe verification action exactly once.",
+      "expect": ["one durable C05 boundary", "plan N to N+1", "one successful replacement observation", "no duplicate effect"]
+    },
+    {
+      "id": "single-mutating-unknown",
+      "prompt": "Create the controlled marker <case>, then report the forced post-write failure and verify the marker without rewriting it.",
+      "expect": ["one durable C05 boundary", "mutating failed criterion excluded from replacement plan", "marker written at most once"]
+    },
+    {
+      "id": "sequential-independent-failures",
+      "prompt": "Perform controlled failing read <case>-a, recover, then controlled failing read <case>-b and recover each independently.",
+      "expect": ["exact N to N+1 then N+1 to N+2", "distinct source effects", "no prior-boundary suppression"]
+    },
+    {
+      "id": "duplicate-observation-replay",
+      "prompt": "Execute one controlled failing read <case>, then replay the same request identity and finish the replacement verification.",
+      "expect": ["one C05 boundary total", "replayed request has no new physical effect", "terminal result remains truthful"]
+    },
+    {
+      "id": "dual-current-failures",
+      "prompt": "Issue two independent controlled failing reads for <case> before accepting either recovery; do not choose a recovery arbitrarily.",
+      "expect": ["no automatic C05 replan", "both failures remain visible", "no plan version change"]
+    },
+    {
+      "id": "successful-control",
+      "prompt": "Read the prepared controlled marker <case> and verify its value with no induced error.",
+      "expect": ["no C05 boundary", "no plan change", "one truthful success"]
+    },
+    {
+      "id": "scope-isolation",
+      "prompt": "Run the controlled failing read <case> in this session only; do not use or repair any marker belonging to another session.",
+      "expect": ["boundary binds current task and scope", "no cross-session replan", "one local replacement plan"]
+    },
+    {
+      "id": "restart-after-boundary",
+      "prompt": "Run the controlled failing read <case>; the installed campaign controller will restart at its declared durable boundary, then finish safely.",
+      "expect": ["one recovered replan", "no zero-replan window", "no N to N+2 transition"]
+    },
+    {
+      "id": "criterion-binding-negative",
+      "prompt": "Run controlled failing read <case> for its declared criterion; do not substitute a similarly named criterion.",
+      "expect": ["source effect and criterion match boundary", "mismatched criterion rejected", "no wrong-criterion removal"]
+    },
+    {
+      "id": "shadow-control",
+      "prompt": "Run controlled failing read <case> while the separate control agent is configured for shadow; report the failure without enforce-mode plan mutation.",
+      "expect": ["no enforce C05 boundary in shadow control", "legacy-visible behavior unchanged", "observation retained only where policy permits"]
+    }
+  ],
+  "acceptance": {
+    "allCasesMustPass": true,
+    "realModelEvidence": "every case has coordinator and backend corroboration for the requested local Qwen model",
+    "forbidden": ["mock", "replayed model response", "provider shim", "live channel traffic", "unbounded host mutation"],
+    "failureDisposition": "demote C05 to development; retain raw evidence; do not promote or enable the module"
+  }
+}

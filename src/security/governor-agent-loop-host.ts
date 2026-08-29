@@ -20,6 +20,7 @@ import {
 import { recoverGovernorAgentLoopGuidance } from "./governor-agent-loop-guidance-recovery.js";
 import { closeGovernorAgentLoopHost } from "./governor-agent-loop-host-close.js";
 import { createGovernorAgentLoopHostReplayResolver } from "./governor-agent-loop-host-replay.js";
+import { createGovernorAgentLoopScopeResolver } from "./governor-agent-loop-host-scope-resolver.js";
 import { installGovernorAgentLoopInertRegistry } from "./governor-agent-loop-inert-registry.js";
 import { createGovernorAgentLoopIngress } from "./governor-agent-loop-ingress.js";
 import {
@@ -484,28 +485,13 @@ export function installGovernorAgentLoopHost(params: {
       }),
   });
 }
-export function resolveHostGovernorAgentLoopScope(
-  input: GovernorAgentLoopRunInput,
-): GovernorAgentLoopRunScope | undefined {
-  const host = activeHost;
-  if (!host) {
-    return undefined;
-  }
-  if (!assertGovernorAgentLoopAdmission(host, host.config.mode)) {
-    return undefined;
-  }
-  if (!isSelectedGovernorAgentLoopScope(host, input)) {
-    return undefined;
-  }
-  try {
-    return createScope(host, input);
-  } catch (error) {
-    if (host.config.mode === "shadow") {
-      return undefined;
-    }
-    throw error;
-  }
-}
+export const resolveHostGovernorAgentLoopScope = createGovernorAgentLoopScopeResolver({
+  active: () => activeHost,
+  admitted: (host) => assertGovernorAgentLoopAdmission(host, host.config.mode),
+  selected: isSelectedGovernorAgentLoopScope,
+  createScope,
+  isShadow: (host) => host.config.mode === "shadow",
+});
 /** Resolves completed ingress without ingesting, allocating, or emitting runtime state. */
 export const resolveHostGovernorCompletedIngressReplay = createGovernorAgentLoopHostReplayResolver(
   () => activeHost,

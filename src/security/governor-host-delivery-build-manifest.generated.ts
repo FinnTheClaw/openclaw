@@ -4324,7 +4324,7 @@ const GOVERNOR_DELIVERY_BUILD_ARTIFACT_DIGESTS = {
   "src/config/zod-schema.approvals.ts":
     "5c88da575c50712509b0a2ebf87e261da4d544a8f8ee5f8852fa9e9a676069a1",
   "src/config/zod-schema.behavior-governor.ts":
-    "688980d66805628da4bdba94e68b443909f2e3d3d0925980a863b8cd4c2348e9",
+    "cda08d16a9a3bdc7994a97abf4646161c44f8f05b95bf1bcb3c0d7d01b1d26c9",
   "src/config/zod-schema.channels-config.ts":
     "ae0d1db6469249b514151fad7ea72e448c0b984e654ffb37e6d2fecdab4351ce",
   "src/config/zod-schema.channels.ts":
@@ -4667,11 +4667,13 @@ const GOVERNOR_DELIVERY_BUILD_ARTIFACT_DIGESTS = {
   "src/gateway/behavior-governor-lifecycle.ts":
     "f6070a2e988d0d89820f2ad83f1e5900ccacc04b373a71b54a1305a86ed37055",
   "src/gateway/behavior-governor-module-lifecycle.ts":
-    "ee4e4e072eaecb25763776c91abe659f217fa50ed6d620203957200bd694634f",
+    "ff9c722cbabd57127a01fc8cd893dadc78f34b9f84a6eca0b7d044694b9a6776",
   "src/gateway/behavior-governor-module-plan.ts":
-    "9e875b90b4e39f05c7e10aa845bdeb926aa59a6c42dfe79bc1bf8b729206acd4",
+    "f0fe0fbcae15ca992b6e3eb81622287bf0ad7320a1bfae9c58d47f0c228dd099",
+  "src/gateway/behavior-governor-modules/failure-replan.ts":
+    "106d5b88f939eaa0c8082322bd3c5f36629da27b6da224a11e3d861dd21b282d",
   "src/gateway/behavior-governor-runtime.ts":
-    "b316b61dc9fa13b2394738eb04b32de120a3cfff92f965bc70d5303f3f6311ee",
+    "595b8c90db8a40266f839199bde08e8b50c67eb1298a24dc30550aeab30963d2",
   "src/gateway/boot-echo-guard.ts":
     "8ee60a5983baa919a3377421c69315ec47083fa31c0ee4fe82d96868a4f70309",
   "src/gateway/call.runtime.ts": "b64c8b08a22a2580995d46596c7139c26d1d47ee4684e472d04e29debbb06648",
@@ -7311,6 +7313,8 @@ const GOVERNOR_DELIVERY_BUILD_ARTIFACT_DIGESTS = {
     "c80f00c46cd729621f8d796f5003dc262299724d548c24ff81a050488ba287df",
   "src/security/governor-agent-loop-admission.ts":
     "9ae08ccf34e8e5526416fee61bcb2fe016bf027c23947c2599cf47a2c59aeef6",
+  "src/security/governor-agent-loop-c05-failure-replan.ts":
+    "70d62a55b5c5cbb73c53b74d6978a55a4c5a260ff006a3b0099beeec64c0494c",
   "src/security/governor-agent-loop-completed-replay.ts":
     "40f0ce3482d86ea216cc704de8013a7323ef506bb8c7cf6057508dd8d9761406",
   "src/security/governor-agent-loop-config.ts":
@@ -7323,8 +7327,10 @@ const GOVERNOR_DELIVERY_BUILD_ARTIFACT_DIGESTS = {
     "17b561249a94fc89d7436b1a4d8b08605e613ef289bb91e34ec8982c24016283",
   "src/security/governor-agent-loop-host-replay.ts":
     "144db1c18b3f43e39fcdd98edc812b0329215c7291c36a85f9da5681a198348a",
+  "src/security/governor-agent-loop-host-scope-resolver.ts":
+    "b419447b57462bdafc756b3565215d9769b7bc483e7579c355db4cca709c8fee",
   "src/security/governor-agent-loop-host.ts":
-    "2f1137aec4006754146686cc50668bb4ed52e9336427dac1177cf8925e3ffb5a",
+    "012db762114089380a3d5d65eccf9fb730a4e5a9a8f8f6657a527bb0e730d2a8",
   "src/security/governor-agent-loop-inert-registry.ts":
     "2678f8d0d4efb64bc3ceda222047a0e40a3f1dae6963a6842e6bee72cca59037",
   "src/security/governor-agent-loop-ingress.ts":
@@ -7784,9 +7790,9 @@ const GOVERNOR_DELIVERY_BUILD_ARTIFACT_DIGESTS = {
   "src/tasks/governor/controller-digest.ts":
     "17b4888c5986edc81913dee386f5322d334e793c2d9e305f2f5fcfc1edd5c9d0",
   "src/tasks/governor/controller-runtime.ts":
-    "c578cf8f3f6c338273d048c03ce07f3f74ced2ef37ef742b833b8ba4d3c9c680",
+    "171d46e6cbdc6e2ce7812f8dfc4c279c8f7b66ddef04d0dd53f198f9db227e9f",
   "src/tasks/governor/controller.ts":
-    "6d53ea209370f2469f2334f4b5fcb79e684e2938ea5b0d1afe6c87fc5730b5da",
+    "9c6047a687a7829154af47217df45928fa6c8f7650c4fdeec55d93a4637c1d05",
   "src/tasks/governor/current-evidence.ts":
     "58a34808942d44939170950efac0b1602b61ee9ed1373b502d2d578e2b15608a",
   "src/tasks/governor/delivery-certification-store.ts":
@@ -8174,4 +8180,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   artifacts: GOVERNOR_DELIVERY_BUILD_ARTIFACTS,
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "087b4fd739dfafbc3f0bb650a08ac3c73bacef15020889865ef329b936d705a2";
+  "6a2dc374242117da5f57abb9d28ae6384b8909d11c3ae97fcbd46b55cac12430";
