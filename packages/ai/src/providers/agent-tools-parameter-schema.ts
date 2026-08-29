@@ -5,11 +5,9 @@
  */
 import { isRecord as isSchemaRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import {
-  normalizeStringEntries,
-  uniqueValues,
-} from "@openclaw/normalization-core/string-normalization";
+import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { TSchema } from "typebox";
+import { mergePropertySchemas } from "./agent-tools-parameter-schema-property-merge.js";
 import { cleanSchemaForGemini } from "./clean-for-gemini.js";
 import { stripUnsupportedSchemaKeywords } from "./schema-keyword-strip.js";
 
@@ -105,67 +103,6 @@ function rememberCachedToolParameterSchema(schema: object, key: string, value: T
 
 function isGeminiModelId(modelId: string): boolean {
   return /(?:^|[/:])gemini(?:$|[-/:.])/.test(modelId);
-}
-
-function extractEnumValues(schema: unknown): unknown[] | undefined {
-  if (!schema || typeof schema !== "object") {
-    return undefined;
-  }
-  const record = schema as Record<string, unknown>;
-  if (Array.isArray(record.enum)) {
-    return record.enum;
-  }
-  if ("const" in record) {
-    return [record.const];
-  }
-  const variants = Array.isArray(record.anyOf)
-    ? record.anyOf
-    : Array.isArray(record.oneOf)
-      ? record.oneOf
-      : null;
-  if (variants) {
-    const values = variants.flatMap((variant) => {
-      const extracted = extractEnumValues(variant);
-      return extracted ?? [];
-    });
-    return values.length > 0 ? values : undefined;
-  }
-  return undefined;
-}
-
-function mergePropertySchemas(existing: unknown, incoming: unknown): unknown {
-  if (!existing) {
-    return incoming;
-  }
-  if (!incoming) {
-    return existing;
-  }
-
-  const existingEnum = extractEnumValues(existing);
-  const incomingEnum = extractEnumValues(incoming);
-  if (existingEnum || incomingEnum) {
-    const values = uniqueValues([...(existingEnum ?? []), ...(incomingEnum ?? [])]);
-    const merged: Record<string, unknown> = {};
-    for (const source of [existing, incoming]) {
-      if (!source || typeof source !== "object") {
-        continue;
-      }
-      const record = source as Record<string, unknown>;
-      for (const key of ["title", "description", "default"]) {
-        if (!(key in merged) && key in record) {
-          merged[key] = record[key];
-        }
-      }
-    }
-    const types = new Set(values.map((value) => typeof value));
-    if (types.size === 1) {
-      merged.type = Array.from(types)[0];
-    }
-    merged.enum = values;
-    return merged;
-  }
-
-  return existing;
 }
 
 type FlattenableVariantKey = "anyOf" | "oneOf";
