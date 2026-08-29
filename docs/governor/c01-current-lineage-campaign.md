@@ -25,9 +25,11 @@ tool dispatch, so it cannot implement C01.
 ## Deterministic source gate
 
 The paired test locks a 100-case corpus: five classes of twenty cover quick direct replies, focused
-read-only discovery, focused effectful planning with no external effect, deep action-count classification,
-and deep branch-count classification. It validates corpus data only; it is not C01 source or
-installed-behavior certification.
+read-only discovery, a simulated action contract confined to an in-memory test record, thirteen concrete
+useful subactions, and four named independent branches. The task facts—not hidden fixture labels—carry
+the classification pressure. Prompts neither prescribe plan-before-tool behavior nor disclose the expected
+class, and they never set a tool-count target. The test validates corpus data only; it is not C01 source
+or installed-behavior certification.
 
 ## Alistar acceptance protocol
 
@@ -39,9 +41,10 @@ installed-behavior certification.
    identity, classification, whether a plan was required, plan-before-tool ordering, tool trace, and
    gateway/coordinator error evidence.
 3. A quick case passes only with direct no-tool behavior. Each focused/deep case passes only when its
-   classification is exact, a plan containing objective/success condition/next discriminating action
-   precedes its first tool dispatch, all effects remain no-side-effect, and no invented evidence or fixed
-   tool-count policy appears. The test does not require a particular number of useful calls.
+   classification is exact and the governor—not model-visible prompting—requires a plan containing
+   objective/success condition/next discriminating action before its first tool dispatch. The simulated
+   effect must remain confined to its disposable in-memory record; all other cases remain no-side-effect.
+   Every named subaction or branch needs evidence, with no invented evidence or fixed tool-count policy.
 4. Require 100/100 passes, backend corroboration for every request, no unexpected gateway or coordinator
    error, and Alistar memory samples before/during/after. Any failure returns C01 to development with no
    promotion-ledger entry.

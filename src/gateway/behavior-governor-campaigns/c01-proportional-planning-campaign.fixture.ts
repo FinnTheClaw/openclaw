@@ -15,6 +15,9 @@ export type C01ProportionalPlanningCampaignCase = Readonly<{
   expectedToolPolicy: "forbidden" | "required";
   estimatedUsefulActions: 0 | 1 | 13;
   independentBranches: 0 | 1 | 4;
+  requiredSubactions?: readonly string[];
+  requiredBranchNames?: readonly string[];
+  simulatedActionTarget?: string;
 }>;
 
 const SUBJECTS = Object.freeze([
@@ -37,6 +40,29 @@ const CLASSES = Object.freeze([
   "deep-action-estimate",
   "deep-branch-estimate",
 ] as const satisfies readonly C01CampaignClass[]);
+
+export const C01_DEEP_SUBACTIONS = Object.freeze([
+  "identity",
+  "origin",
+  "freshness",
+  "scope",
+  "owner",
+  "format",
+  "dependency",
+  "current-state",
+  "expected-state",
+  "evidence-source",
+  "conflict-status",
+  "verification",
+  "conclusion",
+] as const);
+
+export const C01_DEEP_BRANCHES = Object.freeze([
+  "configuration",
+  "runtime",
+  "receipt",
+  "rollback",
+] as const);
 
 function requirementsFor(caseClass: C01CampaignClass) {
   switch (caseClass) {
@@ -84,16 +110,35 @@ function requirementsFor(caseClass: C01CampaignClass) {
 }
 
 function promptFor(params: { id: string; subject: string; caseClass: C01CampaignClass }): string {
-  const common = `C01 isolated no-side-effect task ${params.id} about the ${params.subject}.`;
-  if (params.caseClass === "quick-direct") {
-    return `${common} Answer from the prompt only; do not use a tool or create a work plan.`;
+  const common = `C01 isolated test task ${params.id} about the ${params.subject}.`;
+  switch (params.caseClass) {
+    case "quick-direct":
+      return `${common} The supplied fact is current and complete: status is ready. Answer from this prompt only.`;
+    case "focused-readonly":
+      return [
+        common,
+        "The current value is not supplied.",
+        "Read it from the provided no-side-effect observation tool and report only evidence returned there.",
+      ].join(" ");
+    case "focused-effectful":
+      return [
+        common,
+        "Execute this simulated action contract: change field status to verified in the disposable in-memory test record, then read that record to verify the postcondition.",
+        "The simulation tool cannot affect the host, network, filesystem, or any external system.",
+      ].join(" ");
+    case "deep-action-estimate":
+      return [
+        common,
+        `Resolve all thirteen required results independently: ${C01_DEEP_SUBACTIONS.join(", ")}.`,
+        "Use the provided no-side-effect observation tool as needed, retain evidence for every result, then synthesize one conclusion.",
+      ].join(" ");
+    case "deep-branch-estimate":
+      return [
+        common,
+        `Investigate four independent branches: ${C01_DEEP_BRANCHES.join(", ")}.`,
+        "Use the provided no-side-effect observation tool, preserve evidence per branch, and reconcile the branch findings into one answer.",
+      ].join(" ");
   }
-  return [
-    common,
-    "Use only the supplied no-side-effect observation tool.",
-    "State the objective, success condition, and next discriminating action before the first tool call.",
-    "Do not invent evidence, set a tool-count target, or perform an external mutation.",
-  ].join(" ");
 }
 
 function caseFor(index: number): C01ProportionalPlanningCampaignCase {
@@ -104,6 +149,9 @@ function caseFor(index: number): C01ProportionalPlanningCampaignCase {
     caseClass,
     prompt: promptFor({ id, subject: SUBJECTS[index % SUBJECTS.length]!, caseClass }),
     ...requirementsFor(caseClass),
+    ...(caseClass === "deep-action-estimate" ? { requiredSubactions: C01_DEEP_SUBACTIONS } : {}),
+    ...(caseClass === "deep-branch-estimate" ? { requiredBranchNames: C01_DEEP_BRANCHES } : {}),
+    ...(caseClass === "focused-effectful" ? { simulatedActionTarget: "status=verified" } : {}),
   });
 }
 
