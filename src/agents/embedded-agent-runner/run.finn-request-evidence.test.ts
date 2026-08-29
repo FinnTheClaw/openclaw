@@ -1,4 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { wrapFinnRequestIdEvidenceWithCollector } from "../finn-request-id-evidence.js";
+import type { StreamFn } from "../runtime/index.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import {
   loadRunOverflowCompactionHarness,
@@ -29,8 +31,27 @@ describe("terminal Finn request evidence", () => {
     mockedPickFallbackThinkingLevel.mockReturnValue("low");
     mockedRunEmbeddedAttempt.mockImplementation(async (params) => {
       const attemptParams = params as EmbeddedRunAttemptParams;
-      if (attemptParams.finnRequestEvidence?.requestIds.length === 0) {
-        attemptParams.finnRequestEvidence.requestIds.push("req_retry-terminal-1");
+      if ((attemptParams.finnRequestEvidence?.requestIds.length ?? 2) < 2) {
+        const requestId =
+          "req_retry-terminal-" + (attemptParams.finnRequestEvidence!.requestIds.length + 1);
+        const sentinel = new Error("provider stream sentinel");
+        const providerStream: StreamFn = async (_model, _context, options) => {
+          await options?.onResponse?.(
+            { status: 200, headers: { "x-finn-request-id": requestId } },
+            {} as never,
+          );
+          return {
+            async *[Symbol.asyncIterator]() {},
+            async result() {
+              throw sentinel;
+            },
+          } as never;
+        };
+        const wrapped = await wrapFinnRequestIdEvidenceWithCollector(
+          providerStream,
+          attemptParams.finnRequestEvidence!,
+        )({} as never, {} as never, {} as never);
+        await expect(wrapped.result()).rejects.toBe(sentinel);
       }
       return makeAttemptResult({ promptError: new Error("unsupported reasoning mode") });
     });
@@ -40,7 +61,10 @@ describe("terminal Finn request evidence", () => {
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(32);
     expect(mockedCompactDirect).not.toHaveBeenCalled();
     expect(result.meta.error?.kind).toBe("retry_limit");
-    expect(result.meta.agentMeta?.finnRequestIds).toEqual(["req_retry-terminal-1"]);
+    expect(result.meta.agentMeta?.finnRequestIds).toEqual([
+      "req_retry-terminal-1",
+      "req_retry-terminal-2",
+    ]);
     expect(result.meta.agentMeta?.finnRequestIdEvidenceComplete).toBe(true);
   });
 });
