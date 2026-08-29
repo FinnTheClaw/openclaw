@@ -4,7 +4,6 @@ import { resolveEmbeddedAgentStreamFn } from "./embedded-agent-runner/stream-res
 import {
   createFinnRequestEvidenceCollector,
   readFinnRequestId,
-  requireFinnRequestIdEvidence,
   wrapFinnRequestIdEvidence,
   wrapFinnRequestIdEvidenceWithCollector,
 } from "./finn-request-id-evidence.js";
@@ -68,10 +67,34 @@ describe("Finn request-id evidence", () => {
 
     expect(result.finnRequestIds).toEqual(["req_alpha-42"]);
     expect(result.finnRequestIdEvidenceComplete).toBe(true);
-    expect(requireFinnRequestIdEvidence(result)).toBe("req_alpha-42");
     expect(onResponse).toHaveBeenCalledOnce();
     expect(JSON.stringify(result)).not.toContain("authorization");
     expect(JSON.stringify(result)).not.toContain("x-unrelated");
+  });
+
+  it("preserves exact provider errors from iteration and result", async () => {
+    const sentinel = new Error("provider iterator sentinel");
+    const source: StreamFn = () => ({
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            throw sentinel;
+          },
+        };
+      },
+      async result() {
+        throw sentinel;
+      },
+    });
+    const wrapped = await wrapFinnRequestIdEvidence(source)(model, context);
+    const iterate = async () => {
+      for await (const event of wrapped) {
+        void event;
+      }
+    };
+
+    await expect(iterate()).rejects.toBe(sentinel);
+    await expect(wrapped.result()).rejects.toBe(sentinel);
   });
 
   it.each([undefined, "", "request-1", " req_trimmed", "req_has spaces", "req_\nforged"])(
@@ -84,11 +107,20 @@ describe("Finn request-id evidence", () => {
 
       expect(result.finnRequestIds).toBeUndefined();
       expect(result.finnRequestIdEvidenceComplete).toBeUndefined();
-      expect(() => requireFinnRequestIdEvidence(result)).toThrow(
-        "Expected exactly one complete X-Finn-Request-Id evidence item",
-      );
     },
   );
+
+  it.each([
+    { "X-Finn-Request-Id": "req_one", "x-finn-request-id": "req_two" },
+    { "x-finn-request-id": "req_one", "X-FINN-REQUEST-ID": "malformed" },
+  ])("rejects duplicate or ambiguous header maps", async (headers) => {
+    const result = await resultOf(
+      wrapFinnRequestIdEvidence(sourceWithResponse(headers))(model, context),
+    );
+
+    expect(result).not.toHaveProperty("finnRequestIds");
+    expect(readFinnRequestId(headers)).toBeUndefined();
+  });
 
   it("keeps request evidence associated with its own concurrent turn", async () => {
     const [slowResult, fastResult] = await Promise.all([
@@ -110,23 +142,30 @@ describe("Finn request-id evidence", () => {
     expect(fastResult.finnRequestIds).toEqual(["req_fast"]);
   });
 
-  it("retains ordered multiplicity for retries and makes certification reject it", async () => {
-    const collector = createFinnRequestEvidenceCollector();
-    const source = vi
-      .fn()
-      .mockImplementationOnce(sourceWithResponse({ "x-finn-request-id": "req_first" }))
-      .mockImplementationOnce(sourceWithResponse({ "x-finn-request-id": "req_second" }));
-    const wrapped = wrapFinnRequestIdEvidenceWithCollector(source, collector);
+  it.each(["retry", "failover", "replan"])(
+    "retains ordered multiplicity across %s attempts",
+    async (mode) => {
+      const collector = createFinnRequestEvidenceCollector();
+      const first = resolveEmbeddedAgentStreamFn({
+        currentStreamFn: sourceWithResponse({ "x-finn-request-id": "req_" + mode + "_first" }),
+        sessionId: "session-1",
+        model: model as never,
+        finnRequestEvidence: collector,
+      });
+      const second = resolveEmbeddedAgentStreamFn({
+        currentStreamFn: sourceWithResponse({ "x-finn-request-id": "req_" + mode + "_second" }),
+        sessionId: "session-1",
+        model: model as never,
+        finnRequestEvidence: collector,
+      });
 
-    await resultOf(wrapped(model, context));
-    const retried = await resultOf(wrapped(model, context));
+      await resultOf(first(model, context));
+      const result = await resultOf(second(model, context));
 
-    expect(retried.finnRequestIds).toEqual(["req_first", "req_second"]);
-    expect(retried.finnRequestIdEvidenceComplete).toBe(true);
-    expect(() => requireFinnRequestIdEvidence(retried)).toThrow(
-      "Expected exactly one complete X-Finn-Request-Id evidence item",
-    );
-  });
+      expect(result.finnRequestIds).toEqual(["req_" + mode + "_first", "req_" + mode + "_second"]);
+      expect(result.finnRequestIdEvidenceComplete).toBe(true);
+    },
+  );
 
   it("threads a turn collector through the embedded agent stream resolver", async () => {
     const collector = createFinnRequestEvidenceCollector();
@@ -167,9 +206,23 @@ describe("Finn request-id evidence", () => {
 
     expect(result.finnRequestIds).toEqual(["req_first"]);
     expect(result.finnRequestIdEvidenceComplete).toBe(false);
-    expect(() => requireFinnRequestIdEvidence(result)).toThrow(
-      "Expected exactly one complete X-Finn-Request-Id evidence item",
-    );
+  });
+
+  it("bounds evidence and marks overflow incomplete", async () => {
+    const collector = createFinnRequestEvidenceCollector();
+    let result;
+    for (let index = 0; index < 17; index += 1) {
+      const wrapped = wrapFinnRequestIdEvidenceWithCollector(
+        sourceWithResponse({ "x-finn-request-id": "req_overflow_" + index }),
+        collector,
+      );
+      result = await resultOf(wrapped(model, context));
+    }
+
+    expect(result?.finnRequestIds).toHaveLength(16);
+    expect(result?.finnRequestIds?.[0]).toBe("req_overflow_0");
+    expect(result?.finnRequestIds?.[15]).toBe("req_overflow_15");
+    expect(result?.finnRequestIdEvidenceComplete).toBe(false);
   });
 
   it("leaves non-Finn response evidence absent", async () => {

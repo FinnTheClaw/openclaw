@@ -2,8 +2,7 @@
  * Captures the coordinator's narrow, non-secret request evidence without
  * retaining provider response headers or affecting ordinary provider runs.
  */
-import type { AssistantMessageEvent } from "../llm/types.js";
-import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
+import type { AssistantMessageEvent, AssistantMessageEventStreamLike } from "../llm/types.js";
 import type { StreamFn } from "./runtime/index.js";
 
 const FINN_REQUEST_ID_HEADER = "x-finn-request-id";
@@ -14,32 +13,21 @@ export function readFinnRequestId(headers: unknown): string | undefined {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
     return undefined;
   }
+  let requestId: string | undefined;
   for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {
-    if (name.toLowerCase() !== FINN_REQUEST_ID_HEADER || typeof value !== "string") {
+    if (name.toLowerCase() !== FINN_REQUEST_ID_HEADER) {
       continue;
     }
-    const requestId = value;
-    return FINN_REQUEST_ID_PATTERN.test(requestId) ? requestId : undefined;
+    if (
+      requestId !== undefined ||
+      typeof value !== "string" ||
+      !FINN_REQUEST_ID_PATTERN.test(value)
+    ) {
+      return undefined;
+    }
+    requestId = value;
   }
-  return undefined;
-}
-
-/** Certification callers must reject missing, incomplete, or multiply-issued evidence. */
-export function requireFinnRequestIdEvidence(value: unknown): string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Expected exactly one complete X-Finn-Request-Id evidence item");
-  }
-  const evidence = value as { finnRequestIds?: unknown; finnRequestIdEvidenceComplete?: unknown };
-  if (
-    evidence.finnRequestIdEvidenceComplete === true &&
-    Array.isArray(evidence.finnRequestIds) &&
-    evidence.finnRequestIds.length === 1 &&
-    typeof evidence.finnRequestIds[0] === "string" &&
-    FINN_REQUEST_ID_PATTERN.test(evidence.finnRequestIds[0])
-  ) {
-    return evidence.finnRequestIds[0];
-  }
-  throw new Error("Expected exactly one complete X-Finn-Request-Id evidence item");
+  return requestId;
 }
 
 export type FinnRequestEvidenceCollector = {
@@ -86,22 +74,20 @@ function annotateEvent(event: AssistantMessageEvent, evidence: FinnRequestEviden
 function relayFinnRequestIdEvidence(
   source: Awaited<ReturnType<StreamFn>>,
   currentEvidence: () => FinnRequestEvidence,
-) {
-  const relay = createAssistantMessageEventStream();
-  void (async () => {
-    try {
+): AssistantMessageEventStreamLike {
+  return {
+    async *[Symbol.asyncIterator]() {
       for await (const event of source) {
         annotateEvent(event, currentEvidence());
-        relay.push(event);
+        yield event;
       }
-      relay.end();
-    } catch {
-      // Provider streams encode failures as terminal events. Do not invent a
-      // second error surface if a non-conforming custom stream throws instead.
-      relay.end();
-    }
-  })();
-  return relay;
+    },
+    async result() {
+      const message = await source.result();
+      attachFinnRequestIdEvidence(message, currentEvidence());
+      return message;
+    },
+  };
 }
 
 function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {

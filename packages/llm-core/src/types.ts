@@ -309,7 +309,7 @@ export interface AssistantMessage {
   responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
   /** Bounded, ordered, validated evidence returned by the local Finn coordinator. */
   finnRequestIds?: string[];
-  /** False when any observed coordinator response lacked valid bounded evidence. */
+  /** Observational integrity only; this is not a certification verdict. */
   finnRequestIdEvidenceComplete?: boolean;
   diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
   usage: Usage;

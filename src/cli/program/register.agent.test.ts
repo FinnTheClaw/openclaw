@@ -1,6 +1,7 @@
 // Register agent tests cover agent command registration and option wiring.
 import { Command } from "commander";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { deliverAgentCommandResult } from "../../agents/command/delivery.js";
 import { registerAgentTurnCommand } from "./register.agent-turn.js";
 import { registerAgentsCommands } from "./register.agent.js";
 
@@ -18,6 +19,8 @@ const mocks = vi.hoisted(() => ({
     log: vi.fn(),
     error: vi.fn(),
     exit: vi.fn(),
+    writeStdout: vi.fn(),
+    writeJson: vi.fn(),
   },
 }));
 
@@ -64,6 +67,11 @@ vi.mock("../../global-state.js", () => ({
 
 vi.mock("../../runtime.js", () => ({
   defaultRuntime: mocks.runtime,
+  writeRuntimeJson: (
+    outputRuntime: { writeJson: (value: unknown, space?: number) => void },
+    value: unknown,
+    space = 2,
+  ) => outputRuntime.writeJson(value, space),
 }));
 
 describe("agent command registration", () => {
@@ -105,6 +113,54 @@ describe("agent command registration", () => {
     expect((options as { json?: boolean }).json).toBe(true);
     expect(callRuntime).toBe(runtime);
     expect(deps).toBeUndefined();
+  });
+
+  it("emits request evidence from the direct agent --local --json command envelope", async () => {
+    agentCliCommandMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[0] as Parameters<typeof deliverAgentCommandResult>[0]["opts"];
+      const commandRuntime = args[1] as Parameters<typeof deliverAgentCommandResult>[0]["runtime"];
+      await deliverAgentCommandResult({
+        cfg: {},
+        deps: {},
+        runtime: commandRuntime,
+        opts: options,
+        outboundSession: undefined,
+        sessionEntry: undefined,
+        payloads: [{ text: "local" }],
+        result: {
+          meta: {
+            durationMs: 5,
+            agentMeta: {
+              sessionId: "session-1",
+              provider: "local",
+              model: "qwen",
+              finnRequestIds: ["req_command-42"],
+              finnRequestIdEvidenceComplete: true,
+            },
+          },
+        },
+      });
+    });
+
+    await runCli(["agent", "--message", "ping", "--local", "--json"]);
+
+    expect(runtime.error).not.toHaveBeenCalled();
+    expect(agentCliCommandMock).toHaveBeenCalledOnce();
+    const envelope = runtime.writeJson.mock.calls.at(-1)?.[0];
+    expect(envelope).toEqual({
+      payloads: [{ text: "local", mediaUrl: null }],
+      meta: {
+        durationMs: 5,
+        agentMeta: {
+          sessionId: "session-1",
+          provider: "local",
+          model: "qwen",
+          finnRequestIds: ["req_command-42"],
+          finnRequestIdEvidenceComplete: true,
+        },
+      },
+    });
+    expect(JSON.stringify(envelope)).not.toContain("authorization");
   });
 
   it("runs agent command with verbose disabled for --verbose off", async () => {
