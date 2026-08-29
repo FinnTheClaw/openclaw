@@ -722,7 +722,18 @@ describe("normalizeAgentCommandReplyPayloads", () => {
       outboundSession: undefined,
       sessionEntry: undefined,
       payloads: [{ text: "local" }],
-      result: createResult(),
+      result: createResult({
+        meta: {
+          durationMs: 1,
+          agentMeta: {
+            sessionId: "session-1",
+            provider: "local",
+            model: "qwen",
+            finnRequestIds: ["req_cli-42"],
+            finnRequestIdEvidenceComplete: true,
+          },
+        },
+      }),
     });
 
     expect(runtime.log).not.toHaveBeenCalled();
@@ -731,6 +742,13 @@ describe("normalizeAgentCommandReplyPayloads", () => {
         payloads: [{ text: "local", mediaUrl: null }],
         meta: {
           durationMs: 1,
+          agentMeta: {
+            sessionId: "session-1",
+            provider: "local",
+            model: "qwen",
+            finnRequestIds: ["req_cli-42"],
+            finnRequestIdEvidenceComplete: true,
+          },
           transport: "embedded",
           fallbackFrom: "gateway",
         },

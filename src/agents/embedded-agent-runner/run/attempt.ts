@@ -3013,6 +3013,7 @@ export async function runEmbeddedAttempt(
         resolvedApiKey: params.resolvedApiKey,
         authProfileId: resolveAttemptStreamAuthProfileId(params),
         authStorage: params.authStorage,
+        finnRequestEvidence: params.finnRequestEvidence,
       });
       const providerTextTransforms = resolveProviderTextTransforms({
         provider: params.provider,

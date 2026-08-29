@@ -106,6 +106,7 @@ import {
   formatFastModeAutoProgressText,
   resolveFastModeForElapsed,
 } from "../fast-mode.js";
+import { createFinnRequestEvidenceCollector } from "../finn-request-id-evidence.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { agentHarnessBuildsOpenClawTools, selectAgentHarness } from "../harness/selection.js";
 import { LiveSessionModelSwitchError } from "../live-model-switch-error.js";
@@ -1063,6 +1064,7 @@ async function runEmbeddedAgentInternal(
     return enqueueGlobal(async () => {
       throwIfAborted();
       const started = Date.now();
+      const finnRequestEvidence = createFinnRequestEvidenceCollector();
       const fastModeStarted = params.fastModeStartedAtMs ?? started;
       const fastModeAutoOnSeconds =
         params.fastModeAutoOnSeconds ?? DEFAULT_FAST_MODE_AUTO_ON_SECONDS;
@@ -2517,6 +2519,7 @@ async function runEmbeddedAgentInternal(
               runtimeAuthState ? null : apiKeyInfo,
               params.config,
             ),
+            finnRequestEvidence,
             resolvedApiKey: resolvedStreamApiKey,
             authProfileId: lastProfileId,
             authProfileIdSource: lockedProfileId ? "user" : "auto",
@@ -3979,6 +3982,13 @@ async function runEmbeddedAgentInternal(
             sessionFile: sessionFileUsed,
             provider: reportedModelRef.provider,
             model: reportedModelRef.model,
+            ...(Array.isArray(attemptAssistant?.finnRequestIds)
+              ? {
+                  finnRequestIds: [...attemptAssistant.finnRequestIds],
+                  finnRequestIdEvidenceComplete:
+                    attemptAssistant.finnRequestIdEvidenceComplete === true,
+                }
+              : {}),
             contextTokens: ctxInfo.tokens,
             agentHarnessId: attempt.agentHarnessId,
             usage: usageMeta.usage,

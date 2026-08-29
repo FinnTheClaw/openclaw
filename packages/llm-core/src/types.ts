@@ -307,6 +307,10 @@ export interface AssistantMessage {
   model: string;
   responseModel?: string; // Concrete `chunk.model` when different from the requested `model` (e.g. OpenRouter `auto` -> `anthropic/...`)
   responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
+  /** Bounded, ordered, validated evidence returned by the local Finn coordinator. */
+  finnRequestIds?: string[];
+  /** False when any observed coordinator response lacked valid bounded evidence. */
+  finnRequestIdEvidenceComplete?: boolean;
   diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
   usage: Usage;
   stopReason: StopReason;

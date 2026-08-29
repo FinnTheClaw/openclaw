@@ -38,6 +38,9 @@ export type EmbeddedAgentMeta = {
   sessionFile?: string;
   provider: string;
   model: string;
+  /** Bounded, ordered coordinator evidence from every provider call in this turn. */
+  finnRequestIds?: string[];
+  finnRequestIdEvidenceComplete?: boolean;
   contextTokens?: number;
   agentHarnessId?: string;
   fallbackAttempts?: FallbackAttempt[];
