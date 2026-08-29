@@ -12,7 +12,7 @@ import {
 import {
   runTerminalCompactionScenario,
   runUnknownFenceBatch,
-} from "./subagent-child-dispatch-process-fence.js";
+} from "./subagent-child-dispatch-process-fence.test.js";
 import {
   type ChildDispatchProcessHandle,
   createChildDispatchHarness,
