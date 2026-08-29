@@ -554,7 +554,8 @@ describe("createBundleMcpToolRuntime", () => {
         ],
       }),
     });
-    const tool = expectDefined(runtime.tools[0], "runtime.tools[0] test invariant");
+    const tool = runtime.tools[0]!;
+    expect(tool, "runtime.tools[0] test invariant").toBeDefined();
 
     expect(() =>
       validateToolArguments(tool, {
