@@ -1,0 +1,346 @@
+{
+  "schemaVersion": 2,
+  "candidateHistoryBase": "fd31ce5094014316cfb2ce3f8872708a0087dbc7",
+  "evidenceSources": {
+    "R2-M1": {
+      "reportId": "R2_M1_MEMORY_SEMANTIC_PREFLIGHT",
+      "locator": "openclaw-hardening:audit/R2_M1_MEMORY_SEMANTIC_PREFLIGHT",
+      "sha256": "26b2f8d8b55cd2d6d8d332b16b848ab563192a75e5649535b0e53c96b11e7e92"
+    },
+    "R2-M2": {
+      "reportId": "R2_M2_LIFECYCLE_PREFLIGHT",
+      "locator": "openclaw-hardening:audit/R2_M2_LIFECYCLE_PREFLIGHT",
+      "sha256": "2d9c120ea87912d6a519c371f13c5a7cd04cac86da023de369fce172695fd029"
+    },
+    "R2-M3-M4": {
+      "reportId": "R2_M3_M4_PREFLIGHT",
+      "locator": "openclaw-hardening:audit/R2_M3_M4_PREFLIGHT",
+      "sha256": "5b012091573664926dcec6a50893ddd07c5fe1f9a52dea54012b3858f936477a"
+    }
+  },
+  "entries": [
+    {
+      "id": "DNI-R2-U18404",
+      "upstreamId": "U18404",
+      "upstreamCommit": "61a47996d5bc55fec8a36372d995b44a20796305",
+      "stablePatchId": "17c36807ef9a63fb0db91e6112a63e10b8b59cdd",
+      "patchSha256": "c3610a475c7f501574f65e07efb5141e6bce4c9707f3c3d9a3a80d3fb9f4e0b9",
+      "reason": "Memory Core workspace and index rewrites would create a second durable memory authority.",
+      "duplicatedAuthority": {
+        "domain": "governed-memory",
+        "ownerBoundary": "memory-authority-owner"
+      },
+      "allowedSemanticReuse": "Test interrupted derived-materializer cleanup without allowing retired facts to reappear.",
+      "evidence": { "source": "R2-M1", "anchor": "U18404" }
+    },
+    {
+      "id": "DNI-R2-U18420",
+      "upstreamId": "U18420",
+      "upstreamCommit": "0fdae639d1fda5583f221bfa93c01f7af29e8ff2",
+      "stablePatchId": "18513eea50ccf648ff1cc38c6e78475d10d5f0a9",
+      "patchSha256": "ac01df389adf6068a454bca0a9b686371a8f00c8e8d7a6ef880d728fbfedf9eb",
+      "reason": "Consolidation lineage would introduce a competing durable memory writer.",
+      "duplicatedAuthority": {
+        "domain": "governed-memory",
+        "ownerBoundary": "memory-authority-owner"
+      },
+      "allowedSemanticReuse": "Test that derived projections cannot resurrect a retired fact.",
+      "evidence": { "source": "R2-M1", "anchor": "U18420" }
+    },
+    {
+      "id": "DNI-R2-U18452",
+      "upstreamId": "U18452",
+      "upstreamCommit": "cf7f06e69e2320682d87560a1913692b90aaef91",
+      "stablePatchId": "0a7cdca896d70e2bdf5aba5aed8f49c29724ffa0",
+      "patchSha256": "206ffc9da6a98b89fca4048f63575cc5f3836701411f985febab3d440a5fa84e",
+      "reason": "Active Memory recall runner would become an unauthorized prompt and memory reader.",
+      "duplicatedAuthority": {
+        "domain": "governed-memory",
+        "ownerBoundary": "memory-current-eligibility"
+      },
+      "allowedSemanticReuse": "Test that ambient recall cannot replace a completed governed result.",
+      "evidence": { "source": "R2-M1", "anchor": "U18452" }
+    },
+    {
+      "id": "DNI-R2-U18629",
+      "upstreamId": "U18629",
+      "upstreamCommit": "3797c383e34918fede75579aad06c080336e7619",
+      "stablePatchId": "cbd647f55f928fa17bd666cb00b9e8162c807842",
+      "patchSha256": "e37787d1ae14c4c3b69f92c7a09722f3bd6233433d3c54650165f5772d771b9b",
+      "reason": "Tool-result pairing alone would bypass current host-admitted evidence authority.",
+      "duplicatedAuthority": {
+        "domain": "governed-memory",
+        "ownerBoundary": "memory-recall"
+      },
+      "allowedSemanticReuse": "Test rejection of unbound assistant text, timeout partials, and stale evidence.",
+      "evidence": { "source": "R2-M1", "anchor": "U18629" }
+    },
+    {
+      "id": "DNI-R2-U18652",
+      "upstreamId": "U18652",
+      "upstreamCommit": "14d6bb81ad7e998ee3ac54f3fb06e67be157c1d2",
+      "stablePatchId": "17f35ac5b2beeaa9facb0b23c3fa4930d44f5460",
+      "patchSha256": "9db560695eaa8faee5998b8d314346f518f917fe238e2b1f546f3b25d17abc74",
+      "reason": "REM and diary provenance tables would create a second memory schema and writer.",
+      "duplicatedAuthority": {
+        "domain": "governed-memory",
+        "ownerBoundary": "memory-authority-owner"
+      },
+      "allowedSemanticReuse": "Test that late backfill cannot promote a retired source.",
+      "evidence": { "source": "R2-M1", "anchor": "U18652" }
+    },
+    {
+      "id": "DNI-R2-U18792",
+      "upstreamId": "U18792",
+      "upstreamCommit": "c2a0e706e7a4ea849cd3f470e8e9f4d62f9849ea",
+      "stablePatchId": "8fbc2b6baf552ff86b1d82d67b8fa54fe9fbcd92",
+      "patchSha256": "7428d0fb50101d6721d7f143d5ed09e7b2d7f5d23d2815411def7be9da26e062",
+      "reason": "Gateway recall lifecycle would introduce a second prompt/error memory boundary.",
+      "duplicatedAuthority": {
+        "domain": "governed-memory",
+        "ownerBoundary": "memory-recall"
+      },
+      "allowedSemanticReuse": "Test that recall failures stay observable but never become prompt material.",
+      "evidence": { "source": "R2-M1", "anchor": "U18792" }
+    },
+    {
+      "id": "DNI-R2-U18296",
+      "upstreamId": "U18296",
+      "upstreamCommit": "bcb5403d5757b6df045160db7ea805e93aabe3a5",
+      "stablePatchId": "0c299bedf2599462a618c7ab578a2f7097fda967",
+      "patchSha256": "2976238d82e8b798035c09a05d580aa27ac9434ad8e760cce6eaeae7e4aebdfd",
+      "reason": "A second child admission registry would compete with governed fanout and receipt authority.",
+      "duplicatedAuthority": {
+        "domain": "governed-child-fanout",
+        "ownerBoundary": "fanout-owner"
+      },
+      "allowedSemanticReuse": "Test ambiguous child dispatch against the existing receipt fence.",
+      "evidence": { "source": "R2-M2", "anchor": "U18296" }
+    },
+    {
+      "id": "DNI-R2-U18305",
+      "upstreamId": "U18305",
+      "upstreamCommit": "fdefa6733da2caaa278c40ea2ef43aa5ae14206b",
+      "stablePatchId": "5120bd129b8bdb7d6c30ce9b790495a8d74dd009",
+      "patchSha256": "7cc1ad9c5ab9c649bb5a519890e0d79d91a15ff32097928d0d057ffbe7ed2199",
+      "reason": "Requester-settle delivery state would compete with the governed outbox owner.",
+      "duplicatedAuthority": {
+        "domain": "governed-delivery",
+        "ownerBoundary": "outbox-owner"
+      },
+      "allowedSemanticReuse": "Test bounded deferral and terminal delivery immutability.",
+      "evidence": { "source": "R2-M2", "anchor": "U18305" }
+    },
+    {
+      "id": "DNI-R2-U18667",
+      "upstreamId": "U18667",
+      "upstreamCommit": "82343d9f2fe9b66e25477645bbf13eb0f881b166",
+      "stablePatchId": "853855d0e292323ae4600bd6595488e8413afb9d",
+      "patchSha256": "2f892833980f39e5beb7aaf2dd63b3883d020f566813bd90d398679776842b4f",
+      "reason": "Core queue drain ownership would create a second durable lifecycle owner.",
+      "duplicatedAuthority": {
+        "domain": "governed-lifecycle",
+        "ownerBoundary": "task-ingress-recovery"
+      },
+      "allowedSemanticReuse": "Test abort after drain restores exact original order once.",
+      "evidence": { "source": "R2-M2", "anchor": "U18667" }
+    },
+    {
+      "id": "DNI-R2-U18710",
+      "upstreamId": "U18710",
+      "upstreamCommit": "16c35b2df8325a3d3ca7d9a1ce4804718ac0f822",
+      "stablePatchId": "087190efe7098269c58a926a76fe42720f10040f",
+      "patchSha256": "c0b958c5cecc23a9c16fae974c7fc56d241d406395bc4e4d5dbe2f00f52597df",
+      "reason": "Completion wake delivery state would compete with governed outbox provenance.",
+      "duplicatedAuthority": {
+        "domain": "governed-delivery",
+        "ownerBoundary": "outbox-owner"
+      },
+      "allowedSemanticReuse": "Test hidden and direct completion share one delivery provenance.",
+      "evidence": { "source": "R2-M2", "anchor": "U18710" }
+    },
+    {
+      "id": "DNI-R2-U18743",
+      "upstreamId": "U18743",
+      "upstreamCommit": "af74c9c0e0048823371cce5aeb185f66088e507c",
+      "stablePatchId": "563af1abfe05004251ccb07322080a76c03d50fa",
+      "patchSha256": "0f8c4aa80963cb4dfea02f5813b3bd1215d7a5f1a77440a31ec20558dcad2aa6",
+      "reason": "Embedded fallback finalizers would become a second terminal and cancellation authority.",
+      "duplicatedAuthority": {
+        "domain": "governed-lifecycle",
+        "ownerBoundary": "action-intent-owner"
+      },
+      "allowedSemanticReuse": "Test fallback cancellation against the existing generation fence.",
+      "evidence": { "source": "R2-M2", "anchor": "U18743" }
+    },
+    {
+      "id": "DNI-R2-U18959",
+      "upstreamId": "U18959",
+      "upstreamCommit": "d3abf4ae60f5b2f9e562bd52e64a4c46fb7a082e",
+      "stablePatchId": "d771be8b6537d3022a18534037a58df63ce4702f",
+      "patchSha256": "a7f53f47f4d6fce8a4cb6c07d40dd13d90dba3a05e3f39cc9aaa7bfeffb9ba20",
+      "reason": "End-of-turn steer queue state would create a second logical prompt owner.",
+      "duplicatedAuthority": {
+        "domain": "governed-lifecycle",
+        "ownerBoundary": "task-ingress-recovery"
+      },
+      "allowedSemanticReuse": "Test successor adoption or one terminal cancellation.",
+      "evidence": { "source": "R2-M2", "anchor": "U18959" }
+    },
+    {
+      "id": "DNI-R2-U19064",
+      "upstreamId": "U19064",
+      "upstreamCommit": "7e2111e46a654a54acb2b3b3c5d277ae29589300",
+      "stablePatchId": "b6838f2d58f4d2596e436a2c4e17a1aff007ec5e",
+      "patchSha256": "3ac1e7b06bb84b2cd2f6f25d64c3499b29918238b012a2b83bfbd279ce62ff02",
+      "reason": "Host-thaw recovery would add a channel lifecycle owner without governed active-work authority.",
+      "duplicatedAuthority": {
+        "domain": "governed-lifecycle",
+        "ownerBoundary": "task-authority-owner"
+      },
+      "allowedSemanticReuse": "Test a read-only active-work fence before channel recovery.",
+      "evidence": { "source": "R2-M2", "anchor": "U19064" }
+    },
+    {
+      "id": "DNI-R2-U19187",
+      "upstreamId": "U19187",
+      "upstreamCommit": "7fc93d88013e7263cf6634c37efc5bf930e21ef7",
+      "stablePatchId": "8a854770cf599b520246be824e75bfcfa9c96971",
+      "patchSha256": "290a252c7793b38ad17e9f286e77f7ffb0e374e71134a0972fcf4e9966d9fa96",
+      "reason": "Stuck-session recovery would add a competing queue and finalizer owner.",
+      "duplicatedAuthority": {
+        "domain": "governed-lifecycle",
+        "ownerBoundary": "task-startup-reconciliation"
+      },
+      "allowedSemanticReuse": "Test generation-scoped stale recovery without replay or deletion.",
+      "evidence": { "source": "R2-M2", "anchor": "U19187" }
+    },
+    {
+      "id": "DNI-R2-U18281",
+      "upstreamId": "U18281",
+      "upstreamCommit": "abbe09ef56191811a6fa515fea0cb9e439faecb7",
+      "stablePatchId": "096671e724047364db892be2f281a879c352f2a6",
+      "patchSha256": "29f4b534c62b9661a0c39bd7f119197ae698e76943785e7642224d8aa57aa31c",
+      "reason": "Hook delivery state would bypass the governed outbox receipt owner.",
+      "duplicatedAuthority": {
+        "domain": "governed-delivery",
+        "ownerBoundary": "outbox-owner"
+      },
+      "allowedSemanticReuse": "Test execution success and delivery failure as separate facts.",
+      "evidence": { "source": "R2-M3-M4", "anchor": "U18281" }
+    },
+    {
+      "id": "DNI-R2-U18580",
+      "upstreamId": "U18580",
+      "upstreamCommit": "13125bf33f20b4d37d5977e3f901c25be08deab2",
+      "stablePatchId": "246cfa012ab2a82c592f98b5ec066c507037238d",
+      "patchSha256": "6e10f81fec6a03ee0e3bbbed2fda26f99cb23f5ad61d8f91821d4d7d8c9e269d",
+      "reason": "The cron delivery redesign would create a second delivery and finalization authority.",
+      "duplicatedAuthority": {
+        "domain": "governed-delivery",
+        "ownerBoundary": "outbox-owner"
+      },
+      "allowedSemanticReuse": "Test sent, unknown, not-sent, and suppressed outcomes through the outbox.",
+      "evidence": { "source": "R2-M3-M4", "anchor": "U18580" }
+    },
+    {
+      "id": "DNI-R2-U18906",
+      "upstreamId": "U18906",
+      "upstreamCommit": "7e05bd49ea0dcd41bbdab986da9850fc3be5e24f",
+      "stablePatchId": "3405b7ba918dda040d8897379312956b9476babd",
+      "patchSha256": "640768bde97d7dd07d88e95ba37ed2dc642c5cb63f0ccb8b4515a983fe42b80f",
+      "reason": "Core provider fallback would compete with the governed terminal and cancellation lifecycle.",
+      "duplicatedAuthority": {
+        "domain": "governed-lifecycle",
+        "ownerBoundary": "action-intent-owner"
+      },
+      "allowedSemanticReuse": "Add one host-normalized terminal request-ceiling outcome after the bridge exists.",
+      "evidence": { "source": "R2-M3-M4", "anchor": "U18906" }
+    },
+    {
+      "id": "DNI-R2-U18409",
+      "upstreamId": "U18409",
+      "upstreamCommit": "213804d77046ce5d0e3cae84fa0fc4742625f064",
+      "stablePatchId": "f550e6e77173f4cdca531789bbf3c098ea0176a9",
+      "patchSha256": "e137fb7c9b0f2bd45b09f2fd413a0e3d2d53d98d448b7e2a5c36168f99d788f4",
+      "reason": "Provider-specific redactors would duplicate the one governed ingress boundary.",
+      "duplicatedAuthority": {
+        "domain": "governed-ingress",
+        "ownerBoundary": "task-ingress-recovery"
+      },
+      "allowedSemanticReuse": "Test reflected credentials through one pre-ingress redaction adapter.",
+      "evidence": { "source": "R2-M3-M4", "anchor": "U18409" }
+    },
+    {
+      "id": "DNI-R2-U18445",
+      "upstreamId": "U18445",
+      "upstreamCommit": "01bff26fa529c131f92ab5efd34db39ff121ebb0",
+      "stablePatchId": "58c27ec3bbe037ed606bea1ae0060adccd9f5b30",
+      "patchSha256": "2e758275d9f24573ae87f7da138a8977197707c8aa84bc0191db3dcac164d8b5",
+      "reason": "Per-tool metadata policy would duplicate the governed resource and ingress owner.",
+      "duplicatedAuthority": {
+        "domain": "governed-ingress",
+        "ownerBoundary": "task-ingress-recovery"
+      },
+      "allowedSemanticReuse": "Test aggregate and field bounds at the host ingress adapter.",
+      "evidence": { "source": "R2-M3-M4", "anchor": "U18445" }
+    },
+    {
+      "id": "DNI-R2-U18525",
+      "upstreamId": "U18525",
+      "upstreamCommit": "8a6089687a494171583b20e73b9c5b106a5a791a",
+      "stablePatchId": "dd172a896814da3e5c5a1d1a044308c22110986d",
+      "patchSha256": "ce3fbc521aa8e35271d59f6cc9947d046e8bca05f008534ce8c8066e5f7bc93e",
+      "reason": "Operator approval cursor storage would create unused competing approval persistence.",
+      "duplicatedAuthority": {
+        "domain": "governed-approval",
+        "ownerBoundary": "approval-owner"
+      },
+      "allowedSemanticReuse": "None until an explicit public continuation API is designed and reviewed.",
+      "evidence": { "source": "R2-M3-M4", "anchor": "U18525" }
+    },
+    {
+      "id": "DNI-R2-U18535",
+      "upstreamId": "U18535",
+      "upstreamCommit": "365df5496dd67652f32f6addf1312c789c794020",
+      "stablePatchId": "5dd7e3f4ac895d28b081d8c7d77dadef9ac6979a",
+      "patchSha256": "261bb38ca4c6185ae37bd427041d83f5b537bfb92f673781f049291ffffdaecd",
+      "reason": "Visible-message cursor schema would create a shared transcript authority without a governed owner.",
+      "duplicatedAuthority": {
+        "domain": "governed-task-state",
+        "ownerBoundary": "task-authority-owner"
+      },
+      "allowedSemanticReuse": "None until a reviewed public continuation contract exists.",
+      "evidence": { "source": "R2-M3-M4", "anchor": "U18535" }
+    },
+    {
+      "id": "DNI-R2-U18921",
+      "upstreamId": "U18921",
+      "upstreamCommit": "151fbaad45adac60d6a684e8680551173d8f38a0",
+      "stablePatchId": "cd10d793d6e915a37307312b6939a9f33a1f114c",
+      "patchSha256": "b206f41704a266d317034873b28eeedac0cdda0d23bb60aab90bc542ddc8bc1b",
+      "reason": "Scheduled shell alias persistence would duplicate exact tool identity and ticket authority.",
+      "duplicatedAuthority": {
+        "domain": "governed-tool-authority",
+        "ownerBoundary": "action-intent-owner"
+      },
+      "allowedSemanticReuse": "Test exact host-created object and ticket binding only.",
+      "evidence": { "source": "R2-M3-M4", "anchor": "U18921" }
+    },
+    {
+      "id": "DNI-R2-U19229",
+      "upstreamId": "U19229",
+      "upstreamCommit": "b3add942de18991b3dbe80c9874ee058a34e3da0",
+      "stablePatchId": "a33c82eb74c9471f4876f6c92b67105972389b92",
+      "patchSha256": "359b05bbccdc4d162c3b10d52bc9c1b116da7b702b058bcc499839c35dd0ef32",
+      "reason": "Shared transcript migration would create a second nested-evidence and cursor authority.",
+      "duplicatedAuthority": {
+        "domain": "governed-evidence",
+        "ownerBoundary": "task-audit-event"
+      },
+      "allowedSemanticReuse": "Later add only a bounded governor-owned nested evidence envelope if tests prove it necessary.",
+      "evidence": { "source": "R2-M3-M4", "anchor": "U19229" }
+    }
+  ],
+  "supersessions": []
+}

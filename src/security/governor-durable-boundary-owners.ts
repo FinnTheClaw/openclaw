@@ -14,7 +14,7 @@ export const GOVERNOR_DURABLE_OWNER_BOUNDARIES: readonly GovernorDurableBoundary
   ),
   boundary(
     "task-commit-recovery",
-    "src/tasks/governor/store.ts",
+    "src/tasks/governor/store-recovery.ts",
     "runRecoverableTaskWrite",
     "read-write",
     ["runOpenClawStateWriteTransaction", "tasks.reconcilePrimary"],
@@ -212,8 +212,8 @@ export const GOVERNOR_DURABLE_OWNER_BOUNDARIES: readonly GovernorDurableBoundary
   ),
   boundary(
     "host-delivery-primary-write",
-    "src/security/governor-host-delivery-persistence.ts",
-    "writePrimaryCertification",
+    "src/security/governor-host-delivery-primary.ts",
+    "writePrimaryDeliveryCertification",
     "write",
     ["insertInto", "certification_signature"],
   ),
