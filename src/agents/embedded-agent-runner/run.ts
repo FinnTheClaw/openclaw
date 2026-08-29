@@ -106,7 +106,6 @@ import {
   formatFastModeAutoProgressText,
   resolveFastModeForElapsed,
 } from "../fast-mode.js";
-import { createFinnRequestEvidenceCollector } from "../finn-request-id-evidence.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { agentHarnessBuildsOpenClawTools, selectAgentHarness } from "../harness/selection.js";
 import { LiveSessionModelSwitchError } from "../live-model-switch-error.js";
@@ -175,6 +174,10 @@ import {
   hasOutboundDeliveryEvidence,
 } from "./delivery-evidence.js";
 import { resolveEmbeddedRunFailureSignal } from "./failure-signal.js";
+import {
+  createRunFinnRequestEvidence,
+  resolveFinnRequestEvidenceMeta,
+} from "./finn-run-evidence.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModelAsync } from "./model.js";
@@ -422,8 +425,7 @@ function resolveCompletedSynchronousToolResultProgress(attempt: EmbeddedRunAttem
       }
     }
     if (!requestedToolCallIds.every((id) => completedToolCallIds.has(id))) {
-      // The latest requested tool batch is incomplete. Do not fall back to an
-      // older successful batch and misclassify stale progress as current.
+      // Do not misclassify an older successful batch as current when the latest batch is incomplete.
       return null;
     }
     const durableProgressCalls = requestedToolCalls.filter(isDurableProgressToolCall);
@@ -548,8 +550,7 @@ function buildBeforeAgentFinalizeYieldRecoveryPrompt(reason: string): string {
 
 function resolveEmbeddedRunLaneTimeoutMs(timeoutMs: number): number {
   const defaultLaneTimeoutMs = DEFAULT_AGENT_TIMEOUT_MS + EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS;
-  // "No timeout" resolves to the timer-safe MAX_TIMER sentinel upstream.
-  // Lane ownership still caps at the default agent deadline in that case.
+  // Even when "no timeout" maps to MAX_TIMER, lane ownership retains the default deadline.
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs >= MAX_TIMER_TIMEOUT_MS) {
     return defaultLaneTimeoutMs;
   }
@@ -829,8 +830,7 @@ async function runEmbeddedAgentInternal(
   const paramsBase = applyAgentRunSessionTargetIdentity(paramsInput);
   let lifecycleGeneration = paramsBase.lifecycleGeneration!;
   const queuedLifecycleGeneration = getAgentEventLifecycleGeneration();
-  // Resolve sessionKey early so all downstream consumers (hooks, LCM, compaction)
-  // receive a non-null key even when callers omit it. See #60552.
+  // Resolve sessionKey early so all consumers receive a non-null key (issue 60552).
   const effectiveSessionKey = backfillSessionKey({
     config: paramsBase.config,
     sessionId: paramsBase.sessionId,
@@ -1064,7 +1064,7 @@ async function runEmbeddedAgentInternal(
     return enqueueGlobal(async () => {
       throwIfAborted();
       const started = Date.now();
-      const finnRequestEvidence = createFinnRequestEvidenceCollector();
+      const finnRequestEvidence = createRunFinnRequestEvidence();
       const fastModeStarted = params.fastModeStartedAtMs ?? started;
       const fastModeAutoOnSeconds =
         params.fastModeAutoOnSeconds ?? DEFAULT_FAST_MODE_AUTO_ON_SECONDS;
@@ -1706,8 +1706,7 @@ async function runEmbeddedAgentInternal(
         modelId,
         model: effectiveModel,
       });
-      // Hooks can replace the model after outer selection. Revalidate here so the
-      // final model/runtime never receives an unsupported thinking level.
+      // Revalidate hook-replaced models before they receive thinking configuration.
       const initialThinkLevel = modelSelectionChangedByHook
         ? (resolveCandidateThinkingLevel({
             cfg: params.config,
@@ -1815,9 +1814,7 @@ async function runEmbeddedAgentInternal(
           ? advancePluginHarnessAuthProfile
           : advanceAuthProfile;
 
-      // Plugin harnesses own their model transport/auth. Running OpenClaw's generic
-      // auth bootstrap here can turn synthetic provider markers into real
-      // vendor-token refresh attempts before the plugin gets control.
+      // Plugin harnesses own transport/auth; generic bootstrap must not refresh synthetic providers.
       if (!pluginHarnessOwnsTransport || pluginHarnessNeedsOpenClawAuthBootstrap) {
         await initializeAuthProfile();
       } else if (lockedProfileId) {
@@ -1956,8 +1953,7 @@ async function runEmbeddedAgentInternal(
           return;
         }
         activeSessionId = nextSessionId;
-        // Keep every active-run owner on the rotated identity. Restart recovery
-        // uses the reply registry while lifecycle persistence uses run context.
+        // Keep reply-recovery and lifecycle owners on the rotated identity.
         params.replyOperation?.updateSessionId(activeSessionId);
         params.onSessionIdChanged?.(activeSessionId);
         registerAgentRunContext(params.runId, {
@@ -3982,13 +3978,7 @@ async function runEmbeddedAgentInternal(
             sessionFile: sessionFileUsed,
             provider: reportedModelRef.provider,
             model: reportedModelRef.model,
-            ...(Array.isArray(attemptAssistant?.finnRequestIds)
-              ? {
-                  finnRequestIds: [...attemptAssistant.finnRequestIds],
-                  finnRequestIdEvidenceComplete:
-                    attemptAssistant.finnRequestIdEvidenceComplete === true,
-                }
-              : {}),
+            ...resolveFinnRequestEvidenceMeta(attemptAssistant),
             contextTokens: ctxInfo.tokens,
             agentHarnessId: attempt.agentHarnessId,
             usage: usageMeta.usage,
