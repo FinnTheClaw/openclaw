@@ -1,6 +1,7 @@
 // Coverage for incomplete-turn safety, retry instructions, and liveness states.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { installAtomicFinalResponsePolicy } from "./atomic-final-response-policy.js";
 import {
   hasCommittedMessagingToolDeliveryEvidence,
   hasOutboundDeliveryEvidence,
@@ -79,6 +80,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     prompt?: string;
     transcriptPrompt?: string;
     suppressNextUserMessagePersistence?: boolean;
+    thinkLevel?: string;
   } {
     // Continuation prompt assertions read the exact prompt passed to the runner
     // attempt rather than derived result metadata.
@@ -90,6 +92,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       prompt?: string;
       transcriptPrompt?: string;
       suppressNextUserMessagePersistence?: boolean;
+      thinkLevel?: string;
     };
   }
 
@@ -714,6 +717,48 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     const secondCall = runAttemptCall(1);
     expect(secondCall.prompt).toContain(REASONING_ONLY_RETRY_INSTRUCTION);
     expectWarnMessageWith("reasoning-only assistant turn detected");
+  });
+
+  it("does not amplify an enforce-mode C06b direct no-tool reasoning-only turn", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValue(
+      makeAttemptResult({
+        assistantTexts: [],
+        lastAssistant: {
+          role: "assistant",
+          stopReason: "end_turn",
+          provider: "remote-llm",
+          model: "local-model",
+          content: [
+            {
+              type: "thinking",
+              thinking: "internal reasoning",
+              thinkingSignature: JSON.stringify({ id: "rs_atomic", type: "reasoning" }),
+            },
+          ],
+        } as unknown as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+    const runtime = installAtomicFinalResponsePolicy("enforce");
+
+    try {
+      const result = await runEmbeddedAgent({
+        ...overflowBaseRunParams,
+        config: { ...overflowBaseRunParams.config, tools: { deny: ["*"] } },
+        provider: "remote-llm",
+        model: "local-model",
+        thinkLevel: "high",
+        runId: "run-c06b-atomic-no-amplification",
+      });
+
+      expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+      expect(runAttemptCall(0)).toMatchObject({ thinkLevel: "off" });
+      expect(result.payloads?.[0]?.isError).toBe(true);
+      expect(result.payloads?.[0]?.text).toContain("Please try again");
+      expectNoWarnMessageWith("with visible-answer continuation");
+    } finally {
+      runtime.close();
+    }
   });
 
   it("returns NO_REPLY without retrying reasoning-only assistant turns when silence is allowed", async () => {

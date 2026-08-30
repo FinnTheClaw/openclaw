@@ -154,6 +154,7 @@ import { DEFAULT_AGENT_TIMEOUT_MS } from "../timeout.js";
 import { resolveToolLoopDetectionConfig } from "../tool-loop-detection-config.js";
 import { deriveContextPromptTokens, normalizeUsage, type UsageLike } from "../usage.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
+import { resolveAtomicFinalResponsePolicy } from "./atomic-final-response-policy.js";
 import { runPostCompactionSideEffects } from "./compaction-hooks.js";
 import { buildEmbeddedCompactionRuntimeContext } from "./compaction-runtime-context.js";
 import {
@@ -1706,7 +1707,7 @@ async function runEmbeddedAgentInternal(
       });
       // Hooks can replace the model after outer selection. Revalidate here so the
       // final model/runtime never receives an unsupported thinking level.
-      const initialThinkLevel = modelSelectionChangedByHook
+      const configuredThinkLevel = modelSelectionChangedByHook
         ? (resolveCandidateThinkingLevel({
             cfg: params.config,
             provider,
@@ -1727,6 +1728,19 @@ async function runEmbeddedAgentInternal(
             agentRuntime: agentHarness.id,
           }) ?? requestedThinkLevel)
         : requestedThinkLevel;
+      const atomicFinalResponsePolicy = resolveAtomicFinalResponsePolicy({
+        trigger: params.trigger,
+        spawnedBy: params.spawnedBy,
+        modelRun: params.modelRun,
+        disableTools: params.disableTools,
+        clientToolCount: params.clientTools?.length ?? 0,
+        toolsAllow: params.toolsAllow,
+        config: params.config,
+        silentExpected: params.silentExpected,
+        allowEmptyAssistantReplyAsSilent: params.allowEmptyAssistantReplyAsSilent,
+        resolvedThinkLevel: configuredThinkLevel,
+      });
+      const initialThinkLevel = atomicFinalResponsePolicy?.thinkLevel ?? configuredThinkLevel;
       let thinkLevel = initialThinkLevel;
       const attemptedThinking = new Set<ThinkLevel>();
       let apiKeyInfo: ApiKeyInfo | null = null;
@@ -1847,8 +1861,10 @@ async function runEmbeddedAgentInternal(
         modelId,
       });
       const executionContract = strictAgenticActive ? "strict-agentic" : "default";
-      const maxReasoningOnlyRetryAttempts = DEFAULT_REASONING_ONLY_RETRY_LIMIT;
-      const maxEmptyResponseRetryAttempts = DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT;
+      const maxReasoningOnlyRetryAttempts =
+        atomicFinalResponsePolicy?.continuationRetryLimit ?? DEFAULT_REASONING_ONLY_RETRY_LIMIT;
+      const maxEmptyResponseRetryAttempts =
+        atomicFinalResponsePolicy?.continuationRetryLimit ?? DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT;
 
       const MAX_TIMEOUT_COMPACTION_ATTEMPTS = 2;
       const MAX_OVERFLOW_COMPACTION_ATTEMPTS = 3;
@@ -1940,9 +1956,9 @@ async function runEmbeddedAgentInternal(
       // user-visible text. This is an orthogonal, model-agnostic resubmission
       // for errored turns; stopReason="stop" empty zero-token turns use the
       // visible-answer retry instruction instead.
-      const MAX_EMPTY_ERROR_RETRIES = 3;
+      const maxEmptyErrorRetries = atomicFinalResponsePolicy?.continuationRetryLimit ?? 3;
       let emptyErrorRetries = 0;
-      const MAX_MISSING_ASSISTANT_RETRIES = 1;
+      const maxMissingAssistantRetries = atomicFinalResponsePolicy?.continuationRetryLimit ?? 1;
       let missingAssistantRetryAttempts = 0;
       const overloadFailoverBackoffMs = resolveOverloadFailoverBackoffMs(params.config);
       const overloadProfileRotationLimit = resolveOverloadProfileRotationLimit(params.config);
@@ -3781,12 +3797,12 @@ async function runEmbeddedAgentInternal(
             !timedOut &&
             silentErrorRetryReason &&
             shouldRetrySilentErrorAssistantTurn({ attempt, assistant: attemptAssistant }) &&
-            emptyErrorRetries < MAX_EMPTY_ERROR_RETRIES
+            emptyErrorRetries < maxEmptyErrorRetries
           ) {
             emptyErrorRetries += 1;
             log.warn(
               `[empty-error-retry] stopReason=error non-visible-output; resubmitting ` +
-                `attempt=${emptyErrorRetries}/${MAX_EMPTY_ERROR_RETRIES} ` +
+                `attempt=${emptyErrorRetries}/${maxEmptyErrorRetries} ` +
                 `provider=${attemptAssistant?.provider ?? provider} ` +
                 `model=${attemptAssistant?.model ?? model.id} ` +
                 `sessionKey=${params.sessionKey ?? params.sessionId}`,
@@ -4270,12 +4286,12 @@ async function runEmbeddedAgentInternal(
               timedOut,
               attempt,
             }) &&
-            missingAssistantRetryAttempts < MAX_MISSING_ASSISTANT_RETRIES
+            missingAssistantRetryAttempts < maxMissingAssistantRetries
           ) {
             missingAssistantRetryAttempts += 1;
             log.warn(
               `missing assistant terminal message detected: runId=${params.runId} sessionId=${params.sessionId} ` +
-                `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${missingAssistantRetryAttempts}/${MAX_MISSING_ASSISTANT_RETRIES} with same prompt`,
+                `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${missingAssistantRetryAttempts}/${maxMissingAssistantRetries} with same prompt`,
             );
             continue;
           }
@@ -4612,7 +4628,7 @@ async function runEmbeddedAgentInternal(
                 `tools=${attempt.toolMetas?.length ?? 0} replaySafe=${replayMetadata.replaySafe ? "yes" : "no"} ` +
                 `compactions=${attemptCompactionCount} reasoningRetries=${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts} ` +
                 `emptyRetries=${emptyResponseRetryAttempts}/${maxEmptyResponseRetryAttempts} ` +
-                `missingAssistantRetries=${missingAssistantRetryAttempts}/${MAX_MISSING_ASSISTANT_RETRIES} — ` +
+                `missingAssistantRetries=${missingAssistantRetryAttempts}/${maxMissingAssistantRetries} — ` +
                 (terminalToolPresentation
                   ? "surfacing tool-authored terminal presentation"
                   : "surfacing error to user"),

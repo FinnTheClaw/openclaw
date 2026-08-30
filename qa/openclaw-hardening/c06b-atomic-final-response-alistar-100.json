@@ -1,0 +1,66 @@
+{
+  "schema": "finn-c06b-atomic-final-response-alistar-v1",
+  "campaignFeature": "C06b Finish verification",
+  "requestBudgetFeature": "C02 Simple efficiency",
+  "module": { "id": "C06B.FINAL-RESPONSE", "version": "1.0.0", "mode": "enforce" },
+  "caseCount": 100,
+  "expansionOrder": ["scenario", "variant"],
+  "execution": {
+    "target": "fresh-alistar-jake",
+    "transport": "installed OpenClaw agent loop",
+    "tools": "explicitly denied",
+    "session": "fresh unique session per case",
+    "modelRequirement": "coordinator-attested local Qwen on Narya",
+    "retryPolicy": "never rerun a case and never issue a visible-answer continuation"
+  },
+  "variants": [
+    { "id": "01", "token": "alder", "left": 2, "right": 7 },
+    { "id": "02", "token": "birch", "left": 3, "right": 8 },
+    { "id": "03", "token": "cedar", "left": 4, "right": 9 },
+    { "id": "04", "token": "dogwood", "left": 5, "right": 10 },
+    { "id": "05", "token": "elm", "left": 6, "right": 11 },
+    { "id": "06", "token": "fir", "left": 7, "right": 12 },
+    { "id": "07", "token": "gingko", "left": 8, "right": 13 },
+    { "id": "08", "token": "hazel", "left": 9, "right": 14 },
+    { "id": "09", "token": "ironwood", "left": 10, "right": 15 },
+    { "id": "10", "token": "juniper", "left": 11, "right": 16 }
+  ],
+  "scenarios": [
+    { "id": "literal", "prompt": "Reply with exactly: <token>", "expected": "<token>" },
+    { "id": "uppercase", "prompt": "Reply with only the uppercase form of <token>.", "expectedTransform": "uppercase(token)" },
+    { "id": "reverse", "prompt": "Reply with only <token> reversed character by character.", "expectedTransform": "reverse(token)" },
+    { "id": "sum", "prompt": "Reply with only the integer sum of <left> and <right>.", "expectedTransform": "left+right" },
+    { "id": "difference", "prompt": "Reply with only <right> minus <left>.", "expectedTransform": "right-left" },
+    { "id": "product", "prompt": "Reply with only the integer product of <left> and <right>.", "expectedTransform": "left*right" },
+    { "id": "last-letter", "prompt": "Reply with only the last letter of <token>.", "expectedTransform": "last(token)" },
+    { "id": "length", "prompt": "Reply with only the number of letters in <token>.", "expectedTransform": "length(token)" },
+    { "id": "wrapped", "prompt": "Reply with <token> between one pair of square brackets and nothing else.", "expectedTransform": "'['+token+']'" },
+    { "id": "choice", "prompt": "Reply with only <token>, choosing it over the distractor 'maple'.", "expected": "<token>" }
+  ],
+  "perCaseEvidence": [
+    "caseId",
+    "expectedAssistantTextDigest",
+    "visibleAssistantTextDigest",
+    "requestId",
+    "runId",
+    "modelId",
+    "backendModelId",
+    "node",
+    "stopReason",
+    "toolCount",
+    "continuationRetryCount"
+  ],
+  "acceptance": {
+    "passedCases": 100,
+    "failedCases": 0,
+    "totalModelRequestsMaximum": 100,
+    "modelRequestsPerCase": 1,
+    "reasoningOnlyFinals": 0,
+    "continuationRetries": 0,
+    "toolCalls": 0,
+    "gatewayRestarts": 0,
+    "everyVisibleDigestMatchesExpectedAssistantTextDigest": true,
+    "everyRequestHasCoordinatorAndNaryaCorroboration": true,
+    "failureDisposition": "demote C06b to development and leave the module disabled"
+  }
+}
