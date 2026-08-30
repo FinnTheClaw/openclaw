@@ -563,7 +563,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "package.json",
-      sha256: "a857bca973b0a21d3be5ced0a8e755e49ae1bdd7f0ac5e54210f9ace9a72c00b",
+      sha256: "add7f25f6107c67f348227e913659347b553d36334ab7329806fa709509f66cc",
     },
     {
       path: "packages/agent-core/src/agent-loop.ts",
@@ -4179,7 +4179,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-child-intent-store-lifecycle.sqlite.ts",
-      sha256: "bf9fbbc30e27c6db7689c10d60dae2e4ee41fa7cf606a26d7e67cda6291e24c4",
+      sha256: "82b514bd75713f0c1789f2f37a3b50ce14a0973ed643b85e5426c1624e585826",
     },
     {
       path: "src/agents/subagent-child-intent-store.sqlite.ts",
@@ -4215,7 +4215,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-gateway-acceptance-receipt-auth.ts",
-      sha256: "a20bb54d74cb6259df397fcf341802e1fc6b8ab4525b86be7dedc547a70c90ef",
+      sha256: "46dfc0b0cc4000c17c7f8a5863548052933e0d6aa0905bb794a9f7d7b7c299d3",
     },
     {
       path: "src/agents/subagent-gateway-acceptance-receipt-persistence-values.ts",
@@ -4235,7 +4235,15 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-gateway-acceptance-receipt-store.sqlite.ts",
-      sha256: "69631132e5c2d32785b0848f386b1ef3f12da3a56788063863cf1038db98b96f",
+      sha256: "a9d409da3a3f2c168b6da11c0248c7bd4237ba14d7c385ab332f6310377be587",
+    },
+    {
+      path: "src/agents/subagent-gateway-acceptance-receipt-transitions.sqlite.ts",
+      sha256: "4cff5ac8b1e2f462e77e9851a63cf6e1a49e1be998b5c5f02ab166ed07831a0f",
+    },
+    {
+      path: "src/agents/subagent-gateway-child-intent-binding.sqlite.ts",
+      sha256: "ab8ba1db91c03e2faed70365bbc2aeec6dbfce2cbfaf66326058bec0a50540a4",
     },
     {
       path: "src/agents/subagent-governed-admission.ts",
@@ -4299,7 +4307,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-registry-run-manager.ts",
-      sha256: "6ca3b2ef85989938841433b32c81ad789cf63a805546285adcb24c5192b31e14",
+      sha256: "e9e5252a121f63c85de6d02dc69d2c4907f151943f31801b9f15873baf37f8b6",
     },
     {
       path: "src/agents/subagent-registry-runtime.ts",
@@ -4315,7 +4323,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-registry.store.sqlite.ts",
-      sha256: "0ae54411f356e732ebcb8d655d8df91af7e09a229107da6ae3cdc7c1fb95ffb2",
+      sha256: "ae857df9fc0010f23b11b7eedc25406b522f8e9d50defdaa2f6c46e11c1c963c",
     },
     {
       path: "src/agents/subagent-registry.store.ts",
@@ -4323,7 +4331,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-registry.ts",
-      sha256: "b66a3deedb907843d923356d6eab66a48ba74b77e83a4e689c41d0d132178ef5",
+      sha256: "c633ab927dcdaa13a9a19ca8dfe3b45cae6f1e22439c0957f9ee1939e5e2581a",
     },
     {
       path: "src/agents/subagent-requester-store-key.ts",
@@ -4379,7 +4387,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-spawn.ts",
-      sha256: "9ae9acc6adae6fd2c6f56804290924c73159ede11c73e4cd36da9c176d427613",
+      sha256: "0e52957524ae2209078a4297947ba42a41c1a8d8ed27d01606aec44351bc68be",
     },
     {
       path: "src/agents/subagent-spawn.types.ts",
@@ -8582,8 +8590,12 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "022f943857e5a0063db2f84da3dcf3b6604086455bfc53e9c57d6dde761afaaa",
     },
     {
+      path: "src/config/schema.behavior-governor-metadata.ts",
+      sha256: "7d8578aac3d1bda695615f3ba3d524a71544fe2cde9a6f22e7c253a4e6e75693",
+    },
+    {
       path: "src/config/schema.help.ts",
-      sha256: "5c6ffdbde40c7ab7c2d01e2c9a0f76b4cc8409bc0f56eb0ce3dd6cc16f2e70f6",
+      sha256: "8708a6125cda1e9273a2b715d2bce120fa9082931eb9a28b245f95896084ca0c",
     },
     {
       path: "src/config/schema.hints.ts",
@@ -8591,7 +8603,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/config/schema.labels.ts",
-      sha256: "14004a301af2e40f3f5fc42de96b140a952737df03e0e7860ee45e93207e8b87",
+      sha256: "282f0daddd90673999f41a7a9b128cee356fe969c552f486752ad6aa7ad92526",
     },
     {
       path: "src/config/schema.shared.ts",
@@ -9091,7 +9103,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/config/zod-schema.behavior-governor.ts",
-      sha256: "44244b4b15658ffa87a071bf3c8b899a8a3a27a9ff55b872ccc536e6d18de553",
+      sha256: "688980d66805628da4bdba94e68b443909f2e3d3d0925980a863b8cd4c2348e9",
     },
     {
       path: "src/config/zod-schema.channels-config.ts",
@@ -9923,7 +9935,19 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/behavior-governor-lifecycle.ts",
-      sha256: "e84d650617b7a81143a6e2389489afaeb0be272d8bacb605aa3db06bc9c30972",
+      sha256: "f6070a2e988d0d89820f2ad83f1e5900ccacc04b373a71b54a1305a86ed37055",
+    },
+    {
+      path: "src/gateway/behavior-governor-module-lifecycle.ts",
+      sha256: "ee4e4e072eaecb25763776c91abe659f217fa50ed6d620203957200bd694634f",
+    },
+    {
+      path: "src/gateway/behavior-governor-module-plan.ts",
+      sha256: "9e875b90b4e39f05c7e10aa845bdeb926aa59a6c42dfe79bc1bf8b729206acd4",
+    },
+    {
+      path: "src/gateway/behavior-governor-runtime.ts",
+      sha256: "b316b61dc9fa13b2394738eb04b32de120a3cfff92f965bc70d5303f3f6311ee",
     },
     {
       path: "src/gateway/boot-echo-guard.ts",
@@ -10519,7 +10543,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/server-methods/agent.ts",
-      sha256: "4542088a8cc17aba46804272af96fe7378672a9871bffb6ba75dcfc83bf9c732",
+      sha256: "968deaa5ca7eb9b357c8badce4da19dde165c4769e8b5b90376ff09a0958e4ac",
     },
     {
       path: "src/gateway/server-methods/agents-config-mutations.ts",
@@ -10999,7 +11023,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/server.impl.ts",
-      sha256: "98e8666e87c16189c669e5e3daf814a878b91aff44f2ab7aec084a4a68654793",
+      sha256: "ff411061d71b5b7552c66a6aba2a9d7967d573ca5e9fb5614995cbc399d12f89",
     },
     {
       path: "src/gateway/server.ts",
@@ -15543,7 +15567,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/secrets/runtime-config-collectors-governor.ts",
-      sha256: "140dcdb042cde52abb920ecd41c99d359ee23bae1cd19c04b855754d6ab3353d",
+      sha256: "3099c592bfd3028ec15939940c0ed19e4e1b9cc44fbe77457737dcfb68dcc1cd",
     },
     {
       path: "src/secrets/runtime-config-collectors-plugins.ts",
@@ -15583,7 +15607,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/secrets/runtime-state.ts",
-      sha256: "c33b08db637975839e0d9aaf9d3008c6c5d1ca9281712ed8c8f80be582b07c51",
+      sha256: "006d9e3159af7ccaeaeb0d80d3928b716479032b14036545fa344069e2b35773",
     },
     {
       path: "src/secrets/runtime-web-tools-fallback.runtime.ts",
@@ -17672,4 +17696,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "8c00eeca706c7be94f9f7236f0cb79eb746c1e1b15990bac84b6c038672cb030";
+  "b70027d12e0281f01ab6f3bc432a751f842794964035ba0c2df37eaa65917ee4";
