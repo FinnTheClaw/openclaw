@@ -13,7 +13,6 @@ import { parseGovernorCheckpointRow } from "./checkpoint-store.js";
 import type { GovernorEvidenceRecord } from "./evidence.js";
 import { governorDb, parseEffectRow, parseEventRow, parseEvidenceRow } from "./store-codec.js";
 import { loadGovernorTask } from "./store-queries.js";
-import type { GovernorSqliteStore } from "./store.js";
 import type { GovernorTaskAuthorityStore } from "./task-authority.js";
 import {
   opaqueGovernorReference,
@@ -27,6 +26,8 @@ type Registration = Readonly<{
   identity: GovernorIdentityContext;
   verifyEvidence: (evidence: GovernorEvidenceRecord) => void;
 }>;
+
+type GovernorC02StoreRegistrationTarget = object;
 
 const REGISTRATIONS = new WeakMap<object, Registration>();
 
@@ -43,7 +44,7 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 
 /** @internal Registers constructor-owned state; no task-facing store method is added. */
 export function registerGovernorC02Store(
-  store: GovernorSqliteStore,
+  store: GovernorC02StoreRegistrationTarget,
   registration: Registration,
 ): void {
   if (REGISTRATIONS.has(store)) {
@@ -54,7 +55,7 @@ export function registerGovernorC02Store(
 
 /** @internal Runs validation/signing inside one existing-store lock and never returns raw rows. */
 export function withGovernorC02AtomicSnapshot<T>(params: {
-  store: GovernorSqliteStore;
+  store: GovernorC02StoreRegistrationTarget;
   taskId: GovernorTaskId;
   consume: (snapshot: GovernorC02StoreSnapshot) => T;
 }): T {
