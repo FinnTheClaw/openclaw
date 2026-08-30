@@ -1,6 +1,6 @@
 // LLM Core type module defines shared TypeScript contracts.
 export type { AssistantMessageDiagnostic, DiagnosticErrorInfo } from "./utils/diagnostics.js";
-import type { AssistantMessageDiagnostic } from "./utils/diagnostics.js";
+import type { AssistantMessageMetadata } from "./assistant-message-metadata.js";
 
 /** Provider API families with first-class request/stream adapters in OpenClaw. */
 export type KnownApi =
@@ -299,15 +299,12 @@ export interface UserMessage {
 }
 
 /** Assistant turn, including provider identity and final stop state. */
-export interface AssistantMessage {
+export interface AssistantMessage extends AssistantMessageMetadata {
   role: "assistant";
   content: (TextContent | ThinkingContent | ToolCall)[];
   api: Api;
   provider: Provider;
   model: string;
-  responseModel?: string; // Concrete `chunk.model` when different from the requested `model` (e.g. OpenRouter `auto` -> `anthropic/...`)
-  responseId?: string; // Provider-specific response/message identifier when the upstream API exposes one
-  diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
   usage: Usage;
   stopReason: StopReason;
   errorMessage?: string;

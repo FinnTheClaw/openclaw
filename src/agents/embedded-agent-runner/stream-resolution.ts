@@ -5,6 +5,10 @@ import { getApiProvider } from "@openclaw/ai/internal/runtime";
 import { stripSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
 import { streamSimple } from "../../llm/stream.js";
 import { createAnthropicVertexStreamFnForModel } from "../anthropic-vertex-stream.js";
+import {
+  type FinnRequestEvidenceCollector,
+  wrapFinnRequestIdEvidenceWithCollector,
+} from "../finn-request-id-evidence.js";
 import { createBoundaryAwareStreamFnForModel } from "../provider-transport-stream.js";
 import type { StreamFn } from "../runtime/index.js";
 import type { EmbeddedRunAttemptParams } from "./run/types.js";
@@ -125,28 +129,35 @@ export function resolveEmbeddedAgentStreamFn(params: {
   resolvedApiKey?: string;
   authProfileId?: string;
   authStorage?: { getApiKey(provider: string): Promise<string | undefined> };
+  finnRequestEvidence?: FinnRequestEvidenceCollector;
 }): StreamFn {
+  const withFinnEvidence = (streamFn: StreamFn) =>
+    params.finnRequestEvidence
+      ? wrapFinnRequestIdEvidenceWithCollector(streamFn, params.finnRequestEvidence)
+      : streamFn;
   if (params.providerStreamFn) {
-    return wrapEmbeddedAgentStreamFn(params.providerStreamFn, {
-      runSignal: params.signal,
-      resolvedApiKey: params.resolvedApiKey,
-      authProfileId: params.authProfileId,
-      authStorage: params.authStorage,
-      providerId: params.model.provider,
-      promptCacheKey: params.promptCacheKey,
-      transformContext: (context) =>
-        context.systemPrompt
-          ? {
-              ...context,
-              systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt),
-            }
-          : context,
-    });
+    return withFinnEvidence(
+      wrapEmbeddedAgentStreamFn(params.providerStreamFn, {
+        runSignal: params.signal,
+        resolvedApiKey: params.resolvedApiKey,
+        authProfileId: params.authProfileId,
+        authStorage: params.authStorage,
+        providerId: params.model.provider,
+        promptCacheKey: params.promptCacheKey,
+        transformContext: (context) =>
+          context.systemPrompt
+            ? {
+                ...context,
+                systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt),
+              }
+            : context,
+      }),
+    );
   }
 
   const currentStreamFn = params.currentStreamFn ?? streamSimple;
   if (params.model.provider === "anthropic-vertex") {
-    return createAnthropicVertexStreamFnForModel(params.model);
+    return withFinnEvidence(createAnthropicVertexStreamFnForModel(params.model));
   }
 
   const openClawNativeCodexResponsesStreamFn = resolveOpenClawNativeCodexResponsesStreamFn({
@@ -154,22 +165,24 @@ export function resolveEmbeddedAgentStreamFn(params: {
     currentStreamFn: params.currentStreamFn,
   });
   if (openClawNativeCodexResponsesStreamFn) {
-    return wrapEmbeddedAgentStreamFn(openClawNativeCodexResponsesStreamFn, {
-      runSignal: params.signal,
-      resolvedApiKey: params.resolvedApiKey,
-      authProfileId: params.authProfileId,
-      authStorage: params.authStorage,
-      providerId: params.model.provider,
-      sessionId: params.sessionId,
-      promptCacheKey: params.promptCacheKey,
-      transformContext: (context) =>
-        context.systemPrompt
-          ? {
-              ...context,
-              systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt),
-            }
-          : context,
-    });
+    return withFinnEvidence(
+      wrapEmbeddedAgentStreamFn(openClawNativeCodexResponsesStreamFn, {
+        runSignal: params.signal,
+        resolvedApiKey: params.resolvedApiKey,
+        authProfileId: params.authProfileId,
+        authStorage: params.authStorage,
+        providerId: params.model.provider,
+        sessionId: params.sessionId,
+        promptCacheKey: params.promptCacheKey,
+        transformContext: (context) =>
+          context.systemPrompt
+            ? {
+                ...context,
+                systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt),
+              }
+            : context,
+      }),
+    );
   }
 
   if (
@@ -196,29 +209,33 @@ export function resolveEmbeddedAgentStreamFn(params: {
       // inject the resolved runtime key for them. Without this wrap, OAuth
       // providers (e.g. openai/gpt-5.5 over ChatGPT OAuth) hit the Responses API with an
       // empty bearer and fail with 401 Missing bearer auth header.
-      return wrapEmbeddedAgentStreamFn(boundaryAwareStreamFn, {
-        runSignal: params.signal,
-        resolvedApiKey: params.resolvedApiKey,
-        authProfileId: params.authProfileId,
-        authStorage: params.authStorage,
-        providerId: params.model.provider,
-        promptCacheKey: params.promptCacheKey,
-      });
+      return withFinnEvidence(
+        wrapEmbeddedAgentStreamFn(boundaryAwareStreamFn, {
+          runSignal: params.signal,
+          resolvedApiKey: params.resolvedApiKey,
+          authProfileId: params.authProfileId,
+          authStorage: params.authStorage,
+          providerId: params.model.provider,
+          promptCacheKey: params.promptCacheKey,
+        }),
+      );
     }
   }
 
   const promptCacheKey = params.promptCacheKey?.trim();
   if (!promptCacheKey) {
-    return currentStreamFn;
+    return withFinnEvidence(currentStreamFn);
   }
-  return wrapEmbeddedAgentStreamFn(currentStreamFn, {
-    runSignal: params.signal,
-    resolvedApiKey: undefined,
-    authProfileId: undefined,
-    authStorage: undefined,
-    providerId: params.model.provider,
-    promptCacheKey,
-  });
+  return withFinnEvidence(
+    wrapEmbeddedAgentStreamFn(currentStreamFn, {
+      runSignal: params.signal,
+      resolvedApiKey: undefined,
+      authProfileId: undefined,
+      authStorage: undefined,
+      providerId: params.model.provider,
+      promptCacheKey,
+    }),
+  );
 }
 
 export const testing = {

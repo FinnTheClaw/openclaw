@@ -537,9 +537,7 @@ type PreflightRecoveryBudgetSnapshot = Pick<
   "estimatedPromptTokens" | "promptBudgetBeforeReserve" | "overflowTokens"
 >;
 
-// Carries the measured prompt budget into the outer recovery loop. The synthetic
-// precheck error is only a routing signal, so compaction engines need these
-// fields to compact against the prompt OpenClaw actually rendered.
+// Carry measured prompt budget through the synthetic routing error into compaction.
 function buildPreflightRecoveryBudgetSnapshot(snapshot: PreflightRecoveryBudgetSnapshot) {
   return {
     estimatedPromptTokens: snapshot.estimatedPromptTokens,
@@ -3013,6 +3011,7 @@ export async function runEmbeddedAttempt(
         resolvedApiKey: params.resolvedApiKey,
         authProfileId: resolveAttemptStreamAuthProfileId(params),
         authStorage: params.authStorage,
+        finnRequestEvidence: params.finnRequestEvidence,
       });
       const providerTextTransforms = resolveProviderTextTransforms({
         provider: params.provider,

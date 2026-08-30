@@ -20,6 +20,7 @@ import type {
   MessagingToolSend,
   MessagingToolSourceReplyPayload,
 } from "../../embedded-agent-messaging.types.js";
+import type { FinnRequestEvidenceCollector } from "../../finn-request-id-evidence.js";
 import type { AgentRunTimeoutPhase } from "../../run-timeout-attribution.js";
 import type { AgentRuntimePlan } from "../../runtime-plan/types.js";
 import type { AgentMessage } from "../../runtime/index.js";
@@ -97,6 +98,8 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   /** Supplies run-global model-call ordering for parallel tool outcomes. */
   allocateToolOutcomeOrdinal?: (toolCallId?: string) => number;
   model: Model;
+  /** Turn-scoped coordinator evidence shared across retries and replans. */
+  finnRequestEvidence?: FinnRequestEvidenceCollector;
   authStorage: AuthStorage;
   /** Auth profile store already resolved during startup for this attempt. */
   authProfileStore: AuthProfileStore;

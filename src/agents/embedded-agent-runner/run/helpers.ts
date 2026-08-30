@@ -242,6 +242,8 @@ export function buildErrorAgentMeta(params: {
   sessionFile?: string;
   provider: string;
   model: string;
+  finnRequestIds?: string[];
+  finnRequestIdEvidenceComplete?: boolean;
   contextTokens?: number;
   usageAccumulator: UsageAccumulator;
   lastRunPromptUsage: UsageSnapshot | undefined;
@@ -259,6 +261,10 @@ export function buildErrorAgentMeta(params: {
     ...(params.sessionFile ? { sessionFile: params.sessionFile } : {}),
     provider: params.provider,
     model: params.model,
+    ...(params.finnRequestIds ? { finnRequestIds: [...params.finnRequestIds] } : {}),
+    ...(params.finnRequestIds
+      ? { finnRequestIdEvidenceComplete: params.finnRequestIdEvidenceComplete === true }
+      : {}),
     ...(params.contextTokens ? { contextTokens: params.contextTokens } : {}),
     ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
     ...(usageMeta.lastCallUsage ? { lastCallUsage: usageMeta.lastCallUsage } : {}),

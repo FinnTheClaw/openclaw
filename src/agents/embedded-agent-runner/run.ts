@@ -174,6 +174,11 @@ import {
   hasOutboundDeliveryEvidence,
 } from "./delivery-evidence.js";
 import { resolveEmbeddedRunFailureSignal } from "./failure-signal.js";
+import {
+  createRunFinnRequestEvidence,
+  resolveFinnRequestEvidenceFromCollector,
+  resolveFinnRequestEvidenceMeta,
+} from "./finn-run-evidence.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModelAsync } from "./model.js";
@@ -421,8 +426,7 @@ function resolveCompletedSynchronousToolResultProgress(attempt: EmbeddedRunAttem
       }
     }
     if (!requestedToolCallIds.every((id) => completedToolCallIds.has(id))) {
-      // The latest requested tool batch is incomplete. Do not fall back to an
-      // older successful batch and misclassify stale progress as current.
+      // Do not misclassify an older successful batch as current when the latest batch is incomplete.
       return null;
     }
     const durableProgressCalls = requestedToolCalls.filter(isDurableProgressToolCall);
@@ -547,8 +551,7 @@ function buildBeforeAgentFinalizeYieldRecoveryPrompt(reason: string): string {
 
 function resolveEmbeddedRunLaneTimeoutMs(timeoutMs: number): number {
   const defaultLaneTimeoutMs = DEFAULT_AGENT_TIMEOUT_MS + EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS;
-  // "No timeout" resolves to the timer-safe MAX_TIMER sentinel upstream.
-  // Lane ownership still caps at the default agent deadline in that case.
+  // Even when "no timeout" maps to MAX_TIMER, lane ownership retains the default deadline.
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs >= MAX_TIMER_TIMEOUT_MS) {
     return defaultLaneTimeoutMs;
   }
@@ -828,8 +831,7 @@ async function runEmbeddedAgentInternal(
   const paramsBase = applyAgentRunSessionTargetIdentity(paramsInput);
   let lifecycleGeneration = paramsBase.lifecycleGeneration!;
   const queuedLifecycleGeneration = getAgentEventLifecycleGeneration();
-  // Resolve sessionKey early so all downstream consumers (hooks, LCM, compaction)
-  // receive a non-null key even when callers omit it. See #60552.
+  // Resolve sessionKey early so all consumers receive a non-null key (issue 60552).
   const effectiveSessionKey = backfillSessionKey({
     config: paramsBase.config,
     sessionId: paramsBase.sessionId,
@@ -1063,6 +1065,7 @@ async function runEmbeddedAgentInternal(
     return enqueueGlobal(async () => {
       throwIfAborted();
       const started = Date.now();
+      const finnRequestEvidence = createRunFinnRequestEvidence();
       const fastModeStarted = params.fastModeStartedAtMs ?? started;
       const fastModeAutoOnSeconds =
         params.fastModeAutoOnSeconds ?? DEFAULT_FAST_MODE_AUTO_ON_SECONDS;
@@ -1704,8 +1707,7 @@ async function runEmbeddedAgentInternal(
         modelId,
         model: effectiveModel,
       });
-      // Hooks can replace the model after outer selection. Revalidate here so the
-      // final model/runtime never receives an unsupported thinking level.
+      // Revalidate hook-replaced models before they receive thinking configuration.
       const initialThinkLevel = modelSelectionChangedByHook
         ? (resolveCandidateThinkingLevel({
             cfg: params.config,
@@ -1813,9 +1815,7 @@ async function runEmbeddedAgentInternal(
           ? advancePluginHarnessAuthProfile
           : advanceAuthProfile;
 
-      // Plugin harnesses own their model transport/auth. Running OpenClaw's generic
-      // auth bootstrap here can turn synthetic provider markers into real
-      // vendor-token refresh attempts before the plugin gets control.
+      // Plugin harnesses own transport/auth; generic bootstrap must not refresh synthetic providers.
       if (!pluginHarnessOwnsTransport || pluginHarnessNeedsOpenClawAuthBootstrap) {
         await initializeAuthProfile();
       } else if (lockedProfileId) {
@@ -1882,16 +1882,10 @@ async function runEmbeddedAgentInternal(
       let beforeAgentFinalizePendingReason: string | undefined;
       let beforeAgentFinalizeYieldRecoveryAttempts = 0;
       let sameModelIdleTimeoutRetries = 0;
-      // Cost-runaway breaker for #76293. State lives at the run-loop level
-      // on purpose so it survives across attempt boundaries and across
-      // profile/auth retries within this embedded run (a wrapper-local
-      // counter would reset on every iteration). The helper is pure and
-      // unit-tested in run/idle-timeout-breaker.test.ts; the run loop just
-      // feeds it the outcome of each attempt.
+      // The run-level cost breaker survives attempts and auth/profile retries;
+      // its pure policy is tested in run/idle-timeout-breaker.test.ts.
       const idleTimeoutBreakerState = createIdleTimeoutBreakerState();
-      // Post-compaction loop guard for #77474. Armed at each compaction-success
-      // site below; observed from the live tool-outcome path so it can abort
-      // while the post-compaction prompt is still running.
+      // Arm after compaction and observe live tool outcomes to abort an active loop.
       const resolvedLoopDetectionConfig = resolveToolLoopDetectionConfig({
         cfg: params.config,
         agentId: sessionAgentId,
@@ -1935,11 +1929,8 @@ async function runEmbeddedAgentInternal(
       let rateLimitProfileRotations = 0;
       let timeoutCompactionAttempts = 0;
       let codexAppServerRecoveryRetries = 0;
-      // Silent-error retry: non-strict-agentic models (e.g. ollama/glm-5.1) can
-      // end a turn with stopReason="error" + zero output tokens, producing no
-      // user-visible text. This is an orthogonal, model-agnostic resubmission
-      // for errored turns; stopReason="stop" empty zero-token turns use the
-      // visible-answer retry instruction instead.
+      // Retry silent error turns separately from empty successful turns, which use
+      // the visible-answer instruction.
       const MAX_EMPTY_ERROR_RETRIES = 3;
       let emptyErrorRetries = 0;
       const MAX_MISSING_ASSISTANT_RETRIES = 1;
@@ -1954,8 +1945,7 @@ async function runEmbeddedAgentInternal(
           return;
         }
         activeSessionId = nextSessionId;
-        // Keep every active-run owner on the rotated identity. Restart recovery
-        // uses the reply registry while lifecycle persistence uses run context.
+        // Keep reply-recovery and lifecycle owners on the rotated identity.
         params.replyOperation?.updateSessionId(activeSessionId);
         params.onSessionIdChanged?.(activeSessionId);
         registerAgentRunContext(params.runId, {
@@ -2258,6 +2248,7 @@ async function runEmbeddedAgentInternal(
                 sessionFile: activeSessionFile,
                 provider,
                 model: model.id,
+                ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                 contextTokens: ctxInfo.tokens,
                 usageAccumulator,
                 lastRunPromptUsage,
@@ -2517,6 +2508,7 @@ async function runEmbeddedAgentInternal(
               runtimeAuthState ? null : apiKeyInfo,
               params.config,
             ),
+            finnRequestEvidence,
             resolvedApiKey: resolvedStreamApiKey,
             authProfileId: lastProfileId,
             authProfileIdSource: lockedProfileId ? "user" : "auto",
@@ -2745,6 +2737,7 @@ async function runEmbeddedAgentInternal(
                 sessionFile: activeSessionFile,
                 provider,
                 model: model.id,
+                ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                 contextTokens: ctxInfo.tokens,
                 usageAccumulator,
                 lastRunPromptUsage,
@@ -3355,6 +3348,7 @@ async function runEmbeddedAgentInternal(
                   sessionFile: activeSessionFile,
                   provider,
                   model: model.id,
+                  ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                   contextTokens: ctxInfo.tokens,
                   usageAccumulator,
                   lastRunPromptUsage,
@@ -3388,6 +3382,7 @@ async function runEmbeddedAgentInternal(
                   sessionFile: activeSessionFile,
                   provider,
                   model: model.id,
+                  ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                   contextTokens: ctxInfo.tokens,
                   usageAccumulator,
                   lastRunPromptUsage,
@@ -3504,6 +3499,7 @@ async function runEmbeddedAgentInternal(
                     sessionFile: activeSessionFile,
                     provider,
                     model: model.id,
+                    ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                     contextTokens: ctxInfo.tokens,
                     usageAccumulator,
                     lastRunPromptUsage,
@@ -3545,6 +3541,7 @@ async function runEmbeddedAgentInternal(
                     sessionFile: activeSessionFile,
                     provider,
                     model: model.id,
+                    ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
                     contextTokens: ctxInfo.tokens,
                     usageAccumulator,
                     lastRunPromptUsage,
@@ -3979,6 +3976,7 @@ async function runEmbeddedAgentInternal(
             sessionFile: sessionFileUsed,
             provider: reportedModelRef.provider,
             model: reportedModelRef.model,
+            ...resolveFinnRequestEvidenceMeta(attemptAssistant),
             contextTokens: ctxInfo.tokens,
             agentHarnessId: attempt.agentHarnessId,
             usage: usageMeta.usage,
