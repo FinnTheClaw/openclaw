@@ -1,11 +1,10 @@
 import crypto from "node:crypto";
-import { expect, it } from "vitest";
 import type { AgentTool } from "../../packages/agent-core/src/types.js";
-import { normalizeToolParameters } from "../agents/agent-tools.schema.js";
-import { canonicalGovernorJson } from "../tasks/governor/canonical-json.js";
-import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
-import { GOVERNOR_C02_HOST_REGISTRATION } from "./governor-c02-runtime-attestation.js";
-import type { GovernorHostRuntime } from "./governor-host-bootstrap.js";
+import { normalizeToolParameters } from "../../src/agents/agent-tools.schema.js";
+import { GOVERNOR_C02_HOST_REGISTRATION } from "../../src/security/governor-c02-runtime-attestation.js";
+import type { GovernorHostRuntime } from "../../src/security/governor-host-bootstrap.js";
+import { canonicalGovernorJson } from "../../src/tasks/governor/canonical-json.js";
+import type { GovernorCapabilityDefinition } from "../../src/tasks/governor/capability-registry.js";
 
 const HOSTS = new WeakMap<
   GovernorHostRuntime,
@@ -73,7 +72,3 @@ export function normalizedC02GatewayRegistry(): readonly AgentTool[] {
     });
   return Object.freeze([tool("read", "path"), tool("exec", "command")]);
 }
-
-it("provides the exact normalized gateway read and exec fixture", () => {
-  expect(normalizedC02GatewayRegistry().map((tool) => tool.name)).toEqual(["read", "exec"]);
-});

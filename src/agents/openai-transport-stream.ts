@@ -65,7 +65,7 @@ import type {
 } from "openai/resources/responses/responses.js";
 import type { ModelCompatConfig } from "../config/types.models.js";
 import { sha256Hex, sha256HexPrefix } from "../infra/crypto-digest.js";
-import type { Api, Context, Model, Usage } from "../llm/types.js";
+import type { Api, Context, Model, StreamOptions, Usage } from "../llm/types.js";
 import "../llm/ai-transport-host.js";
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
 import { redactIdentifier } from "../logging/redact-identifier.js";
@@ -100,6 +100,7 @@ import {
   resolveOpenAIResponsesPayloadPolicy,
 } from "./openai-responses-payload-policy.js";
 import { resolveReplayableResponsesMessageId } from "./openai-responses-replay.js";
+import { withOpenAISdkResponse } from "./openai-sdk-response.js";
 import { resolveOpenAIStrictToolSetting } from "./openai-strict-tool-setting.js";
 import { resolveProviderEndpoint } from "./provider-attribution.js";
 import { resolveProviderRequestPolicyConfig } from "./provider-request-config.js";
@@ -1002,26 +1003,21 @@ async function createResponsesStreamWithEncryptedContentRetry(params: {
   request: OpenAIResponsesRequestParams;
   requestOptions: unknown;
   model: Model;
+  onResponse?: StreamOptions["onResponse"];
 }): Promise<AsyncIterable<unknown>> {
-  try {
-    return (await params.client.responses.create(
-      params.request as never,
-      params.requestOptions as never,
-    )) as unknown as AsyncIterable<unknown>;
-  } catch (error) {
-    const retryRequest = stripResponsesRequestEncryptedContent(params.request);
-    if (!isInvalidEncryptedContentError(error) || retryRequest === params.request) {
-      throw error;
-    }
-    log.warn(
-      `[responses] retrying without encrypted reasoning content provider=${params.model.provider} ` +
-        `api=${params.model.api} model=${params.model.id}`,
-    );
-    return (await params.client.responses.create(
-      retryRequest as never,
-      params.requestOptions as never,
-    )) as unknown as AsyncIterable<unknown>;
-  }
+  return (await withOpenAISdkResponse(
+    params.client.responses.create(params.request as never, params.requestOptions as never),
+    params.model,
+    params.onResponse,
+    (error) => {
+      const retryRequest = stripResponsesRequestEncryptedContent(params.request);
+      if (!isInvalidEncryptedContentError(error) || retryRequest === params.request) {
+        return undefined;
+      }
+      log.warn("[responses] retrying without encrypted reasoning content");
+      return params.client.responses.create(retryRequest as never, params.requestOptions as never);
+    },
+  )) as unknown as AsyncIterable<unknown>;
 }
 
 export function resolveAzureOpenAIApiVersion(env = process.env): string {
@@ -2088,6 +2084,7 @@ export function createOpenAIResponsesTransportStreamFn(): StreamFn {
           request: params,
           requestOptions,
           model,
+          onResponse: options?.onResponse,
         });
         emitModelTransportDebug(
           log,
@@ -2580,9 +2577,10 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
             `baseUrl=${formatModelTransportDebugBaseUrl(model.baseUrl)} timeoutMs=${safeDebugValue(requestOptions?.timeout)} ` +
             `apiKey=${apiKey ? "present" : "missing"} ${summarizeResponsesPayload(params)}`,
         );
-        const responseStream = (await client.responses.create(
-          params as never,
-          requestOptions,
+        const responseStream = (await withOpenAISdkResponse(
+          client.responses.create(params as never, requestOptions),
+          model,
+          options?.onResponse,
         )) as unknown as AsyncIterable<unknown>;
         emitModelTransportDebug(
           log,
@@ -2839,9 +2837,11 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
           options as OpenAICompletionsOptions | undefined,
         );
         firstEventAbort = createFirstStreamEventAbortController(options?.signal);
-        const responseStream = (await client.chat.completions.create(
-          params as never,
-          buildOpenAISdkRequestOptions(model, firstEventAbort.signal),
+        const requestOptions = buildOpenAISdkRequestOptions(model, firstEventAbort.signal);
+        const responseStream = (await withOpenAISdkResponse(
+          client.chat.completions.create(params as never, requestOptions),
+          model,
+          options?.onResponse,
         )) as unknown as AsyncIterable<ChatCompletionChunk>;
         stream.push({ type: "start", partial: output as never });
         await processOpenAICompletionsStream(responseStream, output, model, stream, {

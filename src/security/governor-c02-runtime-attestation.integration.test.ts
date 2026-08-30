@@ -1,6 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentTool } from "../../packages/agent-core/src/types.js";
+import {
+  bindGovernorC02TestHost,
+  governorC02TestEnvironment,
+  governorC02TestHostRegistration,
+  normalizedC02GatewayRegistry,
+} from "../../test/helpers/governor-c02-runtime.js";
 import { onAgentEvent, type AgentEventPayload } from "../infra/agent-events.js";
 import { closeOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -12,12 +18,6 @@ import type {
   GovernorAgentLoopRunInput,
   GovernorAgentLoopRunScope,
 } from "./governor-agent-loop-types.js";
-import {
-  bindGovernorC02TestHost,
-  governorC02TestEnvironment,
-  governorC02TestHostRegistration,
-  normalizedC02GatewayRegistry,
-} from "./governor-c02-runtime-test-fixture.test.js";
 import {
   createGovernorHostRuntimeIfEnabled,
   type GovernorHostRuntime,

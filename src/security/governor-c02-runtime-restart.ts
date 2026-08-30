@@ -109,7 +109,9 @@ export function assertGovernorC02RestartCheckpoint(params: {
     checkpoint.objectiveRevision !== task.objectiveRevision ||
     checkpoint.planVersion !== task.planVersion ||
     checkpoint.taskVersion !== binding.taskVersion ||
-    checkpoint.taskVersion > task.taskVersion ||
+    (params.phase === "pre-aggregate"
+      ? checkpoint.taskVersion !== task.taskVersion
+      : checkpoint.taskVersion > task.taskVersion) ||
     checkpoint.discardedAssumptions.length !== 0 ||
     checkpoint.unresolvedQuestions.length !== 1 ||
     checkpoint.unresolvedQuestions[0] !== "gateway restart required" ||

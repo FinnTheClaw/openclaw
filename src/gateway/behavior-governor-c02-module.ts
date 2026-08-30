@@ -114,6 +114,9 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
         let disposed = false;
         const scope: GovernorAgentLoopRunScope = Object.freeze({
           ...resolved,
+          get disposition() {
+            return resolved!.disposition;
+          },
           dispose() {
             if (disposed) {
               return;
