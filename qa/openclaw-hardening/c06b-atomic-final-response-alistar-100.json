@@ -10,6 +10,7 @@
     "transport": "installed OpenClaw agent loop",
     "tools": "explicitly denied",
     "session": "fresh unique session per case",
+    "hostContract": "trusted atomicFinalResponseContract carrying the per-case expectedAssistantTextDigest",
     "modelRequirement": "coordinator-attested local Qwen on Narya",
     "retryPolicy": "never rerun a case and never issue a visible-answer continuation"
   },

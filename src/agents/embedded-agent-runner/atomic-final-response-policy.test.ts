@@ -6,6 +6,7 @@ import {
 } from "./atomic-final-response-policy.js";
 
 let close: (() => void) | undefined;
+const trustedContract = { expectedAssistantTextDigest: "a".repeat(64) };
 
 afterEach(() => {
   close?.();
@@ -24,6 +25,7 @@ describe("atomic final-response policy", () => {
         trigger: "user",
         clientToolCount: 0,
         config: { tools: { deny: ["*"] } },
+        atomicFinalResponseContract: trustedContract,
         resolvedThinkLevel: "high",
       }),
     ).toEqual({ thinkLevel: "off", continuationRetryLimit: 0, requireVisibleFinal: true });
@@ -38,6 +40,7 @@ describe("atomic final-response policy", () => {
           trigger: "manual",
           disableTools: true,
           clientToolCount: 0,
+          atomicFinalResponseContract: trustedContract,
           resolvedThinkLevel,
         })?.thinkLevel,
       ).toBe(resolvedThinkLevel);
@@ -54,7 +57,36 @@ describe("atomic final-response policy", () => {
   ] as const)("is inert for %s turns", (kind, input) => {
     activate(kind === "shadow" ? "shadow" : "enforce");
     expect(
-      resolveAtomicFinalResponsePolicy({ ...input, resolvedThinkLevel: "high" }),
+      resolveAtomicFinalResponsePolicy({
+        ...input,
+        atomicFinalResponseContract: trustedContract,
+        resolvedThinkLevel: "high",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("preserves high reasoning for an ordinary direct no-tool turn without host intent", () => {
+    activate();
+    expect(
+      resolveAtomicFinalResponsePolicy({
+        trigger: "user",
+        disableTools: true,
+        clientToolCount: 0,
+        resolvedThinkLevel: "high",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("rejects a malformed exact-response contract", () => {
+    activate();
+    expect(
+      resolveAtomicFinalResponsePolicy({
+        trigger: "user",
+        disableTools: true,
+        clientToolCount: 0,
+        atomicFinalResponseContract: { expectedAssistantTextDigest: "from prompt text" },
+        resolvedThinkLevel: "high",
+      }),
     ).toBeUndefined();
   });
 
@@ -69,6 +101,7 @@ describe("atomic final-response policy", () => {
         disableTools: true,
         clientToolCount: 0,
         config,
+        atomicFinalResponseContract: trustedContract,
         resolvedThinkLevel: "high",
       }),
     ).toBeUndefined();
@@ -85,6 +118,7 @@ describe("atomic final-response policy", () => {
         trigger: "user",
         disableTools: true,
         clientToolCount: 0,
+        atomicFinalResponseContract: trustedContract,
         resolvedThinkLevel: "high",
       }),
     ).toBeDefined();

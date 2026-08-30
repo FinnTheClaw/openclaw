@@ -42,6 +42,11 @@ export type { ClientToolDefinition } from "../../command/shared-types.js";
 
 export type EmbeddedRunTrigger = "cron" | "heartbeat" | "manual" | "memory" | "overflow" | "user";
 
+export type AtomicFinalResponseContract = Readonly<{
+  /** Host-computed SHA-256 of the exact visible assistant response expected for this run. */
+  expectedAssistantTextDigest: string;
+}>;
+
 type ReasoningStreamPayload = Pick<
   ReplyPayload,
   "text" | "mediaUrls" | "isReasoning" | "isReasoningSnapshot"
@@ -162,6 +167,8 @@ export type RunEmbeddedAgentParams = {
   clientTools?: ClientToolDefinition[];
   /** Disable built-in tools for this run (LLM-only mode). */
   disableTools?: boolean;
+  /** Trusted host-only exact-response intent. User prompt text cannot populate this contract. */
+  atomicFinalResponseContract?: AtomicFinalResponseContract;
   provider?: string;
   model?: string;
   /** Effective model fallback chain for this session attempt. Undefined uses config defaults. */

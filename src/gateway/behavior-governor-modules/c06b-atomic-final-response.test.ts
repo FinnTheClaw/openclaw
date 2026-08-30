@@ -19,6 +19,7 @@ describe("C06b atomic final-response module", () => {
       trigger: "user" as const,
       disableTools: true,
       clientToolCount: 0,
+      atomicFinalResponseContract: { expectedAssistantTextDigest: "a".repeat(64) },
       resolvedThinkLevel: "high" as const,
     };
     expect(resolveAtomicFinalResponsePolicy(input)).toBeUndefined();
@@ -48,6 +49,7 @@ describe("C06b atomic final-response module", () => {
         trigger: "user",
         disableTools: true,
         clientToolCount: 0,
+        atomicFinalResponseContract: { expectedAssistantTextDigest: "a".repeat(64) },
         resolvedThinkLevel: "high",
       }),
     ).toBeUndefined();

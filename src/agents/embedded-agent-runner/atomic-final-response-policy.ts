@@ -1,6 +1,6 @@
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { EmbeddedRunTrigger } from "./run/params.js";
+import type { AtomicFinalResponseContract, EmbeddedRunTrigger } from "./run/params.js";
 
 export type AtomicFinalResponseMode = "shadow" | "enforce";
 
@@ -9,6 +9,7 @@ type AtomicFinalResponseInput = Readonly<{
   spawnedBy?: string | null;
   modelRun?: boolean;
   disableTools?: boolean;
+  atomicFinalResponseContract?: AtomicFinalResponseContract;
   clientToolCount: number;
   toolsAllow?: readonly string[];
   config?: OpenClawConfig;
@@ -32,12 +33,18 @@ function explicitlyDeniesAllTools(input: AtomicFinalResponseInput): boolean {
   return input.config?.tools?.deny?.includes("*") === true;
 }
 
+function hasTrustedAtomicFinalContract(input: AtomicFinalResponseInput): boolean {
+  const digest = input.atomicFinalResponseContract?.expectedAssistantTextDigest;
+  return typeof digest === "string" && /^[a-f0-9]{64}$/u.test(digest);
+}
+
 function isDirectAtomicTurn(input: AtomicFinalResponseInput): boolean {
   const trigger = input.trigger ?? "user";
   const governor = input.config?.experimental?.behaviorGovernor;
   const legacyPlanAuthority = Boolean(governor && "enabled" in governor && governor.enabled);
   return (
     (trigger === "user" || trigger === "manual") &&
+    hasTrustedAtomicFinalContract(input) &&
     !input.spawnedBy &&
     input.modelRun !== true &&
     input.clientToolCount === 0 &&

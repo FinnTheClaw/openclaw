@@ -1733,6 +1733,7 @@ async function runEmbeddedAgentInternal(
         spawnedBy: params.spawnedBy,
         modelRun: params.modelRun,
         disableTools: params.disableTools,
+        atomicFinalResponseContract: params.atomicFinalResponseContract,
         clientToolCount: params.clientTools?.length ?? 0,
         toolsAllow: params.toolsAllow,
         config: params.config,
