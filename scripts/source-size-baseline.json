@@ -1,4 +1,7 @@
 {
   "schemaVersion": 1,
-  "baseCommit": "e9030d5476e5572a44ba89f653bc5c6c428ea351"
+  "baseCommit": "e9030d5476e5572a44ba89f653bc5c6c428ea351",
+  "generatedDataFileMaxLines": {
+    "src/security/governor-host-delivery-build-manifest.generated.ts": 17699
+  }
 }

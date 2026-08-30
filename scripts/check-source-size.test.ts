@@ -84,12 +84,18 @@ async function main(): Promise<void> {
     assert.equal(git(["config", "user.email", "test@example.invalid"], cwd).code, 0);
     assert.equal(git(["config", "user.name", "Source Size Test"], cwd).code, 0);
     await writeFile(join(cwd, ".gitignore"), "src/ignored.ts\nnode_modules/\n", "utf8");
+    await mkdir(join(cwd, "src/security"), { recursive: true });
     await writeFile(join(cwd, "legacy.ts"), lines(501), "utf8");
     await writeFile(join(cwd, "rename-data.txt"), lines(5000), "utf8");
     await writeFile(join(cwd, "chmod-data.txt"), lines(5000), "utf8");
     await writeFile(join(cwd, "delete-recreate.ts"), lines(501), "utf8");
     await writeFile(join(cwd, "exploit-index-new.ts"), lines(501), "utf8");
     await writeFile(join(cwd, "exploit-worktree-new.ts"), lines(501), "utf8");
+    await writeFile(
+      join(cwd, "src/security/governor-host-delivery-build-manifest.generated.ts"),
+      lines(17_675),
+      "utf8",
+    );
     assert.equal(
       git(
         [
@@ -101,6 +107,7 @@ async function main(): Promise<void> {
           "delete-recreate.ts",
           "exploit-index-new.ts",
           "exploit-worktree-new.ts",
+          "src/security/governor-host-delivery-build-manifest.generated.ts",
         ],
         cwd,
       ).code,
@@ -116,6 +123,20 @@ async function main(): Promise<void> {
     );
     await writeBaseline(cwd, baseCommit);
     assert.equal(check(cwd).code, 0);
+
+    const manifestPath = "src/security/governor-host-delivery-build-manifest.generated.ts";
+    await writeBaseline(cwd, baseCommit, { generatedDataFileMaxLines: { [manifestPath]: 17_699 } });
+    await writeFile(join(cwd, manifestPath), lines(17_699), "utf8");
+    assert.equal(check(cwd).code, 0, "the exact generated-data ceiling is accepted");
+    await writeFile(join(cwd, manifestPath), lines(17_700), "utf8");
+    const generatedLimitFailure = check(cwd);
+    assert.equal(generatedLimitFailure.code, 1);
+    assert.match(
+      generatedLimitFailure.output,
+      /17700\t17699\texisting\tworktree\tsrc\/security\/governor-host-delivery-build-manifest\.generated\.ts/u,
+    );
+    await writeFile(join(cwd, manifestPath), lines(17_675), "utf8");
+    await writeBaseline(cwd, baseCommit);
 
     await writeFile(join(cwd, "index-added.ts"), lines(501), "utf8");
     assert.equal(git(["add", "index-added.ts"], cwd).code, 0);
@@ -293,7 +314,7 @@ async function main(): Promise<void> {
     await writeBaseline(cwd, baseCommit, { legacyMaxNonCommentLines: { "legacy.ts": 9999 } });
     result = check(cwd);
     assert.equal(result.code, 1);
-    assert.match(result.output, /may contain only baseCommit and schemaVersion/u);
+    assert.match(result.output, /source-size baseline has unsupported fields/u);
   } finally {
     await rm(cwd, { force: true, recursive: true });
   }
