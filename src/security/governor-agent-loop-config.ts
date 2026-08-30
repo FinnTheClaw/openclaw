@@ -27,6 +27,7 @@ export type GovernorAgentLoopToolBinding = Readonly<{
 }>;
 
 export type GovernorAgentLoopConfiguration = Readonly<{
+  moduleIdentity?: Readonly<{ id: string; version: string }>;
   mode: GovernorAgentLoopMode;
   scopes: readonly Readonly<{ sessionKey: string; agentId?: string }>[];
   criteria: readonly GovernorAgentLoopCriterion[];
@@ -81,6 +82,7 @@ export function validateGovernorAgentLoopConfiguration(
     throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
   }
   assertKeys(safeInput, [
+    "moduleIdentity",
     "mode",
     "scopes",
     "criteria",
@@ -88,6 +90,12 @@ export function validateGovernorAgentLoopConfiguration(
     "maxTurns",
     "expectedAssistantTextDigest",
   ]);
+  const moduleIdentity = safeInput.moduleIdentity;
+  if (moduleIdentity) {
+    assertKeys(moduleIdentity, ["id", "version"]);
+    assertString(moduleIdentity.id);
+    assertString(moduleIdentity.version);
+  }
   if (!Array.isArray(safeInput.criteria) || !Array.isArray(safeInput.toolBindings)) {
     throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
   }
@@ -258,6 +266,11 @@ export function validateGovernorAgentLoopConfiguration(
     throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
   }
   return Object.freeze({
+    ...(moduleIdentity
+      ? {
+          moduleIdentity: Object.freeze({ id: moduleIdentity.id, version: moduleIdentity.version }),
+        }
+      : {}),
     mode: safeInput.mode,
     scopes: Object.freeze(scopes),
     criteria: Object.freeze(criteria),

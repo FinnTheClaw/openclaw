@@ -1,5 +1,4 @@
 import type { AgentTool } from "../../packages/agent-core/src/types.js";
-import { emitAgentEvent } from "../infra/agent-events.js";
 import { governorDigest, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
 import type { GovernorCapabilityDefinition } from "../tasks/governor/capability-registry.js";
 import type { GovernorController } from "../tasks/governor/controller.js";
@@ -13,7 +12,6 @@ import type {
 import { createGovernorC02AttestationAuthority } from "./governor-c02-runtime-attestation-authority.js";
 import {
   CHECKPOINT_PREFIX,
-  FINN_REQUEST_ID,
   SHA256,
   type Candidate,
   type GovernorC02AttestationAuthority,
@@ -22,11 +20,19 @@ import {
   fail,
 } from "./governor-c02-runtime-attestation-model.js";
 import { validateGovernorC02Snapshot } from "./governor-c02-runtime-attestation-validation.js";
+import { recordGovernorC02RestartCheckpoint } from "./governor-c02-runtime-checkpoint.js";
+import {
+  loadDurableFinnRequestIds,
+  mergeFreshFinnRequestIds,
+} from "./governor-c02-runtime-finn-evidence.js";
+import {
+  parseGovernorC02RestartBinding,
+  validateGovernorC02RestartSnapshot,
+  type GovernorC02RestartBinding,
+} from "./governor-c02-runtime-restart.js";
 import {
   C02_CRITERIA_TEMPLATE,
   C02_MAX_TURNS,
-  C02_SIMPLE_EFFICIENCY_ID,
-  C02_SIMPLE_EFFICIENCY_VERSION,
   evaluateGovernorC02Policy,
   governorC02RunBindingDigest,
   prepareGovernorC02Run,
@@ -60,34 +66,6 @@ function criterionValue(args: unknown, key: string): string | undefined {
   const record = dataRecord(args);
   const value = record?.[key];
   return typeof value === "string" ? value : undefined;
-}
-
-function requireFinnRequestIds(
-  value: unknown,
-  complete: unknown,
-  prior: readonly string[] = [],
-): readonly string[] {
-  try {
-    if (
-      complete !== true ||
-      !Array.isArray(value) ||
-      Object.getOwnPropertySymbols(value).length > 0 ||
-      Object.entries(Object.getOwnPropertyDescriptors(value)).some(
-        ([key, descriptor]) =>
-          key !== "length" &&
-          (!/^(0|[1-9][0-9]*)$/u.test(key) || !descriptor.enumerable || !("value" in descriptor)),
-      ) ||
-      value.length !== prior.length + 1 ||
-      value.some((item) => typeof item !== "string" || !FINN_REQUEST_ID.test(item)) ||
-      new Set(value).size !== value.length ||
-      prior.some((item, index) => value[index] !== item)
-    ) {
-      fail();
-    }
-    return Object.freeze([...value] as string[]);
-  } catch {
-    fail();
-  }
 }
 
 /** @internal Creates only standard run scopes; no raw issuer, verifier, snapshot, or result escapes. */
@@ -131,18 +109,8 @@ function createGovernorC02AttestationOwner(params: {
       if (activeTasks.has(taskId) || issuedTasks.has(taskId)) {
         throw new Error("GOVERNOR_C02_ATTESTATION_TASK_ALREADY_BOUND");
       }
-      activeTasks.add(taskId);
       const currentTask = params.store.loadTask(taskId as never);
-      type RestartBinding = Readonly<{
-        taskId: string;
-        sessionId: string;
-        systemdInvocationId: string;
-        gatewayInvocationId: string;
-        hostDescriptorDigest: string;
-        modulePlanDigest: string;
-        installedToolDigest: string;
-      }>;
-      let restartBinding: RestartBinding | undefined;
+      let restartBinding: GovernorC02RestartBinding | undefined;
       for (const checkpoint of params.store.checkpoints.list(taskId as never)) {
         const fact = checkpoint.verifiedFacts.find((item) =>
           item.claim.startsWith(CHECKPOINT_PREFIX),
@@ -151,7 +119,7 @@ function createGovernorC02AttestationOwner(params: {
           continue;
         }
         try {
-          const parsed = JSON.parse(fact.claim.slice(CHECKPOINT_PREFIX.length)) as RestartBinding;
+          const parsed = parseGovernorC02RestartBinding(fact.claim);
           if (
             governorDigest(parsed as unknown as GovernorJsonValue) !== fact.evidenceDigest ||
             parsed.taskId !== taskId ||
@@ -173,21 +141,15 @@ function createGovernorC02AttestationOwner(params: {
       let restartValidated = false;
       let checkpointPending = false;
       const admittedCriteria = new WeakMap<object, string>();
-      let coordinatorRequestIds: readonly string[] = [];
-      for (const event of params.store.listEvents(taskId as never)) {
-        const payload = dataRecord(event.payload);
-        if (
-          payload &&
-          event.eventType === "runtime_model_turn_recorded" &&
-          payload.executionGeneration === currentTask?.executionGeneration
-        ) {
-          coordinatorRequestIds = requireFinnRequestIds(
-            payload.finnRequestIds,
-            payload.finnRequestIdEvidenceComplete,
-            coordinatorRequestIds,
-          );
-        }
-      }
+      const durableRequestIds = loadDurableFinnRequestIds(
+        params.store.listEvents(taskId as never),
+        currentTask?.executionGeneration,
+      );
+      let runRequestIds: readonly string[] = [];
+      // Materialize caller-owned scope properties before acquiring task ownership so
+      // hostile getters cannot strand activeTasks during construction.
+      const baseScope = { ...input.scope };
+      activeTasks.add(taskId);
       const currentCandidate = (): Candidate => {
         if (!prepared) {
           throw new Error("GOVERNOR_C02_ATTESTATION_TOOLS_UNPREPARED");
@@ -303,11 +265,10 @@ function createGovernorC02AttestationOwner(params: {
           if (restartBinding.installedToolDigest !== prepared.hostToolRegistryDigest) {
             fail();
           }
-          restartValidated = true;
         }
       };
       const scope: GovernorAgentLoopRunScope = Object.freeze({
-        ...input.scope,
+        ...baseScope,
         get disposition() {
           return checkpointPending ? "checkpoint_pending" : "runnable";
         },
@@ -319,7 +280,7 @@ function createGovernorC02AttestationOwner(params: {
             throw new Error("GOVERNOR_C02_ATTESTATION_TOOLS_UNPREPARED");
           }
           const handleIndex = governed.findIndex((tool) => tool.name === request.toolName);
-          if (handleIndex === undefined || handleIndex < 0 || !request.tool) {
+          if (handleIndex < 0 || !request.tool) {
             fail();
           }
           attestor.assertBound(handles[handleIndex]!, request.tool);
@@ -351,8 +312,27 @@ function createGovernorC02AttestationOwner(params: {
           if (decision.attempted.kind === "block") {
             return { kind: "block", reasonCode: decision.attempted.reasonCode };
           }
-          if (checkpointPending || (attempted === "c02-aggregate" && !restartValidated)) {
+          if (checkpointPending || (attempted === "c02-aggregate" && !restartBinding)) {
             return { kind: "block", reasonCode: "C02_RESTART_CHECKPOINT_REQUIRED" };
+          }
+          if (attempted === "c02-aggregate" && !restartValidated) {
+            const currentPrepared = prepared;
+            withGovernorC02AtomicSnapshot({
+              store: params.store,
+              taskId: taskId as never,
+              consume: (snapshot) =>
+                validateGovernorC02RestartSnapshot({
+                  store: params.store,
+                  run: input.run,
+                  prepared: currentPrepared,
+                  modulePlanDigest: input.modulePlanDigest,
+                  initialGatewayInvocationId: restartBinding!.gatewayInvocationId,
+                  systemdInvocationId,
+                  snapshot,
+                  phase: "pre-aggregate",
+                }),
+            });
+            restartValidated = true;
           }
           const hostDecision = input.scope.beforeTool(request);
           if (hostDecision.kind === "allow" && hostDecision.ticket && attempted) {
@@ -392,7 +372,11 @@ function createGovernorC02AttestationOwner(params: {
           ) {
             fail();
           }
-          const binding: RestartBinding = Object.freeze({
+          const checkpointTask = params.store.loadTask(taskId as never);
+          if (!checkpointTask) {
+            fail();
+          }
+          const binding: GovernorC02RestartBinding = Object.freeze({
             taskId,
             sessionId: input.run.sessionId,
             systemdInvocationId,
@@ -400,55 +384,28 @@ function createGovernorC02AttestationOwner(params: {
             hostDescriptorDigest: input.hostDescriptorDigest,
             modulePlanDigest: input.modulePlanDigest,
             installedToolDigest: prepared.hostToolRegistryDigest,
+            sourceHighwater: checkpointTask.authenticatedSourceSequence,
+            taskVersion: checkpointTask.taskVersion + 1,
+            objectiveRevision: checkpointTask.objectiveRevision,
+            planVersion: checkpointTask.planVersion,
+            executionGeneration: checkpointTask.executionGeneration,
           });
-          const recorded = params.controller.recordCheckpoint({
-            taskId: taskId as never,
-            checkpointId: `c02-restart-${taskId}`,
-            verifiedFacts: [
-              {
-                claim: `${CHECKPOINT_PREFIX}${JSON.stringify(binding)}`,
-                evidenceDigest: governorDigest(binding as unknown as GovernorJsonValue),
-              },
-              { claim: "c02-observe-b-admitted", evidenceDigest: evidence.evidenceDigest },
-            ],
-            discardedAssumptions: [],
-            unresolvedQuestions: ["gateway restart required"],
-            nextDiscriminatingAction: "restart gateway then execute c02-aggregate",
+          recordGovernorC02RestartCheckpoint({
+            controller: params.controller,
+            taskId,
+            run: input.run,
+            systemdInvocationId,
+            hostDescriptorDigest: input.hostDescriptorDigest,
+            modulePlanDigest: input.modulePlanDigest,
+            prepared,
+            binding,
+            toolCallId: observation.toolCallId,
+            effectId: evidencePayload.effectId,
+            resultDigest: evidencePayload.resultDigest,
+            evidenceDigest: evidence.evidenceDigest,
             now: observation.now + 1,
           });
           checkpointPending = true;
-          emitAgentEvent({
-            runId: input.run.runId,
-            stream: "governor_checkpoint",
-            sessionKey: input.run.sessionKey,
-            sessionId: input.run.sessionId,
-            agentId: input.run.agentId,
-            data: {
-              schema: "openclaw.governor-c02-checkpoint-ready/v1",
-              phase: "checkpoint-ready",
-              moduleId: C02_SIMPLE_EFFICIENCY_ID,
-              moduleVersion: C02_SIMPLE_EFFICIENCY_VERSION,
-              taskId,
-              opaqueSessionId: recorded.task.scope.sessionId,
-              toolCallId: observation.toolCallId,
-              effectId: evidencePayload.effectId,
-              toolName: "read",
-              criterionId: "c02-observe-b",
-              resultDigest: evidencePayload.resultDigest,
-              evidenceDigest: evidence.evidenceDigest,
-              sourceHighwater: recorded.task.authenticatedSourceSequence,
-              taskVersion: recorded.task.taskVersion,
-              checkpointId: recorded.checkpoint.checkpointId,
-              checkpointDigest: governorDigest(recorded.checkpoint as unknown as GovernorJsonValue),
-              checkpointCreatedAt: recorded.checkpoint.createdAt,
-              gatewayInvocationId: input.run.runId,
-              systemdInvocationId,
-              hostDescriptorDigest: input.hostDescriptorDigest,
-              modulePlanDigest: input.modulePlanDigest,
-              runBindingDigest: prepared.runBindingDigest,
-              installedToolDigest: prepared.hostToolRegistryDigest,
-            },
-          });
           await new Promise<void>((resolve) => {
             if (observation.signal?.aborted) {
               resolve();
@@ -458,12 +415,20 @@ function createGovernorC02AttestationOwner(params: {
           });
         },
         afterTurn(turn) {
-          coordinatorRequestIds = requireFinnRequestIds(
-            turn.finnRequestIds,
-            turn.finnRequestIdEvidenceComplete,
-            coordinatorRequestIds,
+          const requestIds = mergeFreshFinnRequestIds({
+            value: turn.finnRequestIds,
+            complete: turn.finnRequestIdEvidenceComplete,
+            freshPrior: runRequestIds,
+            durablePrior: durableRequestIds,
+          });
+          runRequestIds = requestIds.fresh;
+          const decision = input.scope.afterTurn(
+            Object.freeze({
+              ...turn,
+              finnRequestIds: requestIds.merged,
+              finnRequestIdEvidenceComplete: true,
+            }),
           );
-          const decision = input.scope.afterTurn(turn);
           if (decision.kind === "complete" && !sealed) {
             const candidate = currentCandidate();
             const result = params.authority.issue(candidate);

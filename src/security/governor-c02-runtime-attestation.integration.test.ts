@@ -1,7 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentTool } from "../../packages/agent-core/src/types.js";
-import { normalizeToolParameters } from "../agents/agent-tools.schema.js";
 import { onAgentEvent, type AgentEventPayload } from "../infra/agent-events.js";
 import { closeOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -13,6 +12,7 @@ import type {
   GovernorAgentLoopRunInput,
   GovernorAgentLoopRunScope,
 } from "./governor-agent-loop-types.js";
+import { normalizedC02GatewayRegistry } from "./governor-c02-runtime-test-fixture.js";
 import {
   createGovernorHostRuntimeIfEnabled,
   type GovernorHostRuntime,
@@ -38,6 +38,7 @@ const capabilities = [
 ];
 
 const config: GovernorAgentLoopConfiguration = {
+  moduleIdentity: { id: "c02-simple-efficiency", version: "v1" },
   mode: "enforce",
   scopes: [{ sessionKey: "c02-session-key", agentId: "c02-agent" }],
   criteria: [
@@ -136,23 +137,6 @@ function runtime(stateDir: string, systemdInvocationId = "c02-systemd-a"): Gover
   return created;
 }
 
-function normalizedGatewayRegistry(): readonly AgentTool[] {
-  const tool = (name: "read" | "exec", argument: "path" | "command"): AgentTool =>
-    normalizeToolParameters({
-      name,
-      label: name,
-      description: `Gateway-installed ${name}`,
-      parameters: {
-        type: "object",
-        properties: { [argument]: { type: "string" } },
-        required: [argument],
-        additionalProperties: false,
-      },
-      execute: async () => ({ content: [{ type: "text", text: "fixture" }], details: null }),
-    });
-  return Object.freeze([tool("read", "path"), tool("exec", "command")]);
-}
-
 function scope(
   host: GovernorHostRuntime,
   input = run(),
@@ -186,7 +170,7 @@ function scope(
     throw error;
   }
   try {
-    wrapped.prepareTools?.(binding.installedTools ?? normalizedGatewayRegistry());
+    wrapped.prepareTools?.(binding.installedTools ?? normalizedC02GatewayRegistry());
   } catch (error) {
     wrapped.dispose();
     throw error;
@@ -199,7 +183,11 @@ async function action(
   index: number,
   toolName: "read" | "exec",
   args: Record<string, string>,
-  options: Readonly<{ signal?: AbortSignal; recordTurn?: boolean }> = {},
+  options: Readonly<{
+    signal?: AbortSignal;
+    recordTurn?: boolean;
+    finnRequestIds?: readonly string[];
+  }> = {},
 ): Promise<void> {
   const tool = target.governedTools().find((item) => item.name === toolName);
   const now = 200 + index * 10;
@@ -230,7 +218,9 @@ async function action(
       assistantText: "",
       assistantStopReason: "toolUse",
       toolCallCount: 1,
-      finnRequestIds: Array.from({ length: index }, (_, request) => `req_c02_${request + 1}`),
+      finnRequestIds:
+        options.finnRequestIds ??
+        Array.from({ length: index }, (_, request) => `req_c02_${request + 1}`),
       finnRequestIdEvidenceComplete: true,
       now: now + 2,
     }),
@@ -238,13 +228,19 @@ async function action(
 }
 
 async function complete(target: GovernorAgentLoopRunScope): Promise<void> {
-  await action(target, 3, "exec", { command: "/usr/bin/python3 -c 'print(3)'" });
+  await action(
+    target,
+    3,
+    "exec",
+    { command: "/usr/bin/python3 -c 'print(3)'" },
+    { finnRequestIds: ["req_c02_post_1"] },
+  );
   expect(
     target.afterTurn({
       assistantText: "done",
       assistantStopReason: "stop",
       toolCallCount: 0,
-      finnRequestIds: ["req_c02_1", "req_c02_2", "req_c02_3", "req_c02_4"],
+      finnRequestIds: ["req_c02_post_1", "req_c02_post_2"],
       finnRequestIdEvidenceComplete: true,
       now: 240,
     }),
@@ -258,16 +254,6 @@ async function checkpointAndRestart(stateDir: string): Promise<{
   await createCheckpoint(stateDir);
   const host = runtime(stateDir, "c02-systemd-b");
   const target = scope(host, run(1, "c02-gateway-b"));
-  expect(
-    target.afterTurn({
-      assistantText: "",
-      assistantStopReason: "toolUse",
-      toolCallCount: 1,
-      finnRequestIds: ["req_c02_1", "req_c02_2"],
-      finnRequestIdEvidenceComplete: true,
-      now: 222,
-    }),
-  ).toMatchObject({ kind: "continue" });
   return { host, target };
 }
 
@@ -336,6 +322,16 @@ async function createCheckpoint(stateDir: string): Promise<AgentEventPayload> {
     toolName: "read",
   });
   expect(first.disposition).toBe("checkpoint_pending");
+  expect(
+    first.afterTurn({
+      assistantText: "",
+      assistantStopReason: "toolUse",
+      toolCallCount: 1,
+      finnRequestIds: ["req_c02_1", "req_c02_2"],
+      finnRequestIdEvidenceComplete: true,
+      now: 222,
+    }),
+  ).toMatchObject({ kind: "continue" });
   shutdown.abort();
   await pending;
   unsubscribe();
@@ -353,6 +349,12 @@ describe("runtime-owned C02 attestation integration", () => {
       async (state) => {
         const { host, target } = await checkpointAndRestart(state.stateDir);
         await complete(target);
+        expect(target.terminalEvidence?.().coordinatorRequestIds).toEqual([
+          "req_c02_1",
+          "req_c02_2",
+          "req_c02_post_1",
+          "req_c02_post_2",
+        ]);
         expect(() => target.assertTerminal()).not.toThrow();
         expect(() => target.assertTerminal()).not.toThrow();
         target.dispose();
@@ -393,8 +395,8 @@ describe("runtime-owned C02 attestation integration", () => {
 
   it("rejects missing and duplicate installed read or exec identities", async () => {
     for (const tools of [
-      normalizedGatewayRegistry().slice(0, 1),
-      [...normalizedGatewayRegistry(), normalizedGatewayRegistry()[0]!],
+      normalizedC02GatewayRegistry().slice(0, 1),
+      [...normalizedC02GatewayRegistry(), normalizedC02GatewayRegistry()[0]!],
     ]) {
       await withOpenClawTestState(
         { layout: "state-only", prefix: "c02-attestation-registry-" },
@@ -405,6 +407,22 @@ describe("runtime-owned C02 attestation integration", () => {
         },
       );
     }
+  });
+
+  it("releases construction ownership after failed tool preparation and retries cleanly", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "c02-attestation-construction-retry-" },
+      async (state) => {
+        const host = runtime(state.stateDir);
+        expect(() =>
+          scope(host, run(), { installedTools: normalizedC02GatewayRegistry().slice(0, 1) }),
+        ).toThrow();
+        const retried = scope(host);
+        expect(retried.governedTools().map((tool) => tool.name)).toEqual(["read", "exec"]);
+        retried.dispose();
+        host.close();
+      },
+    );
   });
 
   it("requires a changed agent and service invocation with unchanged release and plan", async () => {

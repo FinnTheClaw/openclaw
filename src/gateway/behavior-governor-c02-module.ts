@@ -50,6 +50,10 @@ function config(
   agentId: string,
 ): GovernorAgentLoopConfiguration {
   return Object.freeze({
+    moduleIdentity: Object.freeze({
+      id: C02_SIMPLE_EFFICIENCY_ID,
+      version: C02_SIMPLE_EFFICIENCY_VERSION,
+    }),
     mode,
     scopes: Object.freeze([Object.freeze({ sessionKey, agentId })]),
     criteria: Object.freeze(

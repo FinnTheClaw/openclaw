@@ -30,8 +30,17 @@ function asThrownError(value: unknown, fallback: string): Error {
   return value instanceof Error ? value : new Error(fallback);
 }
 
+function preparationCleanupFailure(error: unknown, cleanupError: unknown): AggregateError {
+  return new AggregateError(
+    [error, cleanupError],
+    "GOVERNOR_AGENT_LOOP_PREPARATION_CLEANUP_FAILED",
+    { cause: error },
+  );
+}
+
 export type GovernorLoopBridge = Readonly<{
   assertTerminal(): void;
+  terminalEvidence(): Readonly<Record<string, unknown>> | undefined;
   dispose(): void;
 }>;
 
@@ -43,7 +52,20 @@ export function installGovernorLoopBridge(params: {
   if (!isGovernorAgentLoopRunScope(params.scope)) {
     throw new Error("GOVERNOR_AGENT_LOOP_SCOPE_INVALID");
   }
-  params.scope.prepareTools?.(Object.freeze([...params.agent.state.tools]));
+  try {
+    params.scope.prepareTools?.(Object.freeze([...params.agent.state.tools]));
+  } catch (error) {
+    let cleanupError: unknown;
+    try {
+      params.scope.dispose();
+    } catch (caught) {
+      cleanupError = caught;
+    }
+    if (cleanupError !== undefined) {
+      throw preparationCleanupFailure(error, cleanupError);
+    }
+    throw error;
+  }
   const now = params.now ?? Date.now;
   const tickets = new Map<string, GovernorAgentLoopToolTicket | undefined>();
   const priorBefore = params.agent.beforeToolCall;
@@ -53,6 +75,7 @@ export function installGovernorLoopBridge(params: {
   const governedTools = new Map(params.scope.governedTools().map((tool) => [tool.name, tool]));
   let stoppedReason: string | undefined;
   let terminalRequested = false;
+  let hostTerminalEvidence: Readonly<Record<string, unknown>> | undefined;
   const shouldStopAfterTurn = async (
     context: Parameters<NonNullable<Agent["shouldStopAfterTurn"]>>[0],
   ) => {
@@ -157,7 +180,6 @@ export function installGovernorLoopBridge(params: {
       const terminalMessage = event.message as AgentMessage & {
         finnRequestIds?: readonly string[];
         finnRequestIdEvidenceComplete?: boolean;
-        governorEvidence?: Readonly<Record<string, unknown>>;
       };
       const decision = params.scope.afterTurn({
         assistantText: assistantText(event.message),
@@ -195,7 +217,7 @@ export function installGovernorLoopBridge(params: {
       } else if (decision.kind === "complete") {
         const evidence = params.scope.terminalEvidence?.();
         if (evidence) {
-          terminalMessage.governorEvidence = evidence;
+          hostTerminalEvidence = evidence;
         }
         terminalRequested = true;
         params.agent.removeSteeringKey(governorSteeringKey);
@@ -214,6 +236,9 @@ export function installGovernorLoopBridge(params: {
         throw new Error(stoppedReason);
       }
       params.scope.assertTerminal();
+    },
+    terminalEvidence() {
+      return hostTerminalEvidence;
     },
     dispose() {
       if (disposed) {

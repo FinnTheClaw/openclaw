@@ -4,7 +4,6 @@ import { governorAgentLoopToolImplementationDigest } from "./governor-agent-loop
 import type { GovernorAgentLoopRunInput } from "./governor-agent-loop-types.js";
 import {
   CANDIDATES,
-  CHECKPOINT_PREFIX,
   FINN_REQUEST_ID,
   SCHEMA,
   SHA256,
@@ -16,6 +15,7 @@ import {
   exactKeys,
   fail,
 } from "./governor-c02-runtime-attestation-model.js";
+import { validateGovernorC02RestartSnapshot } from "./governor-c02-runtime-restart.js";
 import {
   assertGovernorC02PreparedRun,
   C02_CRITERIA_TEMPLATE,
@@ -143,60 +143,10 @@ export function validateGovernorC02Snapshot(params: {
   }
 
   const checkpoint = checkpoints[0]!;
-  const bindingFact = checkpoint.verifiedFacts.find((fact) =>
-    fact.claim.startsWith(CHECKPOINT_PREFIX),
-  );
-  const observeFact = checkpoint.verifiedFacts.find(
-    (fact) => fact.claim === "c02-observe-b-admitted",
-  );
-  let checkpointBinding: Readonly<Record<string, unknown>> | undefined;
-  try {
-    checkpointBinding = bindingFact
-      ? dataRecord(JSON.parse(bindingFact.claim.slice(CHECKPOINT_PREFIX.length)))
-      : undefined;
-  } catch {
-    fail();
-  }
-  if (
-    !bindingFact ||
-    !observeFact ||
-    checkpoint.verifiedFacts.length !== 2 ||
-    !checkpointBinding ||
-    !exactKeys(checkpointBinding, [
-      "taskId",
-      "sessionId",
-      "systemdInvocationId",
-      "gatewayInvocationId",
-      "hostDescriptorDigest",
-      "modulePlanDigest",
-      "installedToolDigest",
-    ]) ||
-    checkpoint.checkpointId !== `c02-restart-${task.taskId}` ||
-    checkpoint.taskId !== task.taskId ||
-    checkpoint.objectiveRevision !== task.objectiveRevision ||
-    checkpoint.planVersion !== task.planVersion ||
-    checkpoint.taskVersion <= 0 ||
-    checkpoint.taskVersion > task.taskVersion ||
-    checkpoint.discardedAssumptions.length !== 0 ||
-    checkpoint.unresolvedQuestions.length !== 1 ||
-    checkpoint.unresolvedQuestions[0] !== "gateway restart required" ||
-    checkpoint.nextDiscriminatingAction !== "restart gateway then execute c02-aggregate" ||
-    checkpoint.competingHypotheses.length !== 0 ||
-    checkpointBinding.taskId !== task.taskId ||
-    checkpointBinding.sessionId !== params.run.sessionId ||
-    checkpointBinding.systemdInvocationId === params.systemdInvocationId ||
-    checkpointBinding.gatewayInvocationId !== params.initialGatewayInvocationId ||
-    checkpointBinding.hostDescriptorDigest !== params.prepared.hostDescriptorDigest ||
-    checkpointBinding.modulePlanDigest !== params.modulePlanDigest ||
-    checkpointBinding.installedToolDigest !== params.prepared.hostToolRegistryDigest ||
-    bindingFact.evidenceDigest !==
-      governorDigest(checkpointBinding as unknown as GovernorJsonValue) ||
-    observeFact.evidenceDigest !== evidence[1]?.evidenceDigest ||
-    checkpoint.createdAt <= (evidence[1]?.observedAt ?? Number.MAX_SAFE_INTEGER) ||
-    checkpoint.createdAt >= (intents[2]?.createdAt ?? -1)
-  ) {
-    fail();
-  }
+  const checkpointBinding = validateGovernorC02RestartSnapshot({
+    ...params,
+    phase: "terminal",
+  });
 
   const turnMetadata: GovernorJsonValue[] = [];
   let coordinatorRequestIds: readonly string[] = [];
@@ -234,10 +184,7 @@ export function validateGovernorC02Snapshot(params: {
       payload.executionGeneration !== task.executionGeneration ||
       payload.satisfiedCriteria !== Math.min(index + 1, 3) ||
       payload.remainingCriteria !== Math.max(2 - index, 0) ||
-      typeof payload.stopReason !== "string" ||
-      payload.stopReason.length === 0 ||
-      payload.stopReason === "error" ||
-      payload.stopReason === "aborted" ||
+      payload.stopReason !== (index < 3 ? "toolUse" : "stop") ||
       typeof payload.assistantTextDigest !== "string" ||
       !SHA256.test(payload.assistantTextDigest) ||
       typeof payload.progressDigest !== "string" ||

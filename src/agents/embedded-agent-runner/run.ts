@@ -179,6 +179,7 @@ import {
   resolveFinnRequestEvidenceFromCollector,
   resolveFinnRequestEvidenceMeta,
 } from "./finn-run-evidence.js";
+import { resolveGovernorLoopAttemptEvidence } from "./governor-loop-evidence-channel.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModelAsync } from "./model.js";
@@ -3977,8 +3978,8 @@ async function runEmbeddedAgentInternal(
             provider: reportedModelRef.provider,
             model: reportedModelRef.model,
             ...resolveFinnRequestEvidenceMeta(attemptAssistant),
-            ...(attemptAssistant?.governorEvidence
-              ? { governorEvidence: attemptAssistant.governorEvidence }
+            ...(resolveGovernorLoopAttemptEvidence(attempt)
+              ? { governorEvidence: resolveGovernorLoopAttemptEvidence(attempt) }
               : {}),
             contextTokens: ctxInfo.tokens,
             agentHarnessId: attempt.agentHarnessId,

@@ -8,6 +8,7 @@ import {
   type GovernorAgentLoopProgressSnapshot,
 } from "./governor-agent-loop-progress.js";
 import type { GovernorAgentLoopTurnDecision } from "./governor-agent-loop-types.js";
+import { isExactGovernorC02Module } from "./governor-c02-module-identity.js";
 
 export type GovernorAgentLoopTurnState = {
   turns: number;
@@ -67,11 +68,7 @@ export function recordGovernorAgentLoopTurn(params: {
     }
   }
   state.priorProgressFingerprint = state.progress.fingerprint;
-  const recordsC02Source = params.config.toolBindings.every(
-    (binding) =>
-      binding.implementationId === "installed-tool:read" ||
-      binding.implementationId === "installed-tool:exec",
-  );
+  const recordsC02Source = isExactGovernorC02Module(params.config);
   params.controller.recordRuntimeEvent({
     taskId: params.taskId,
     eventType: "runtime_model_turn_recorded",
