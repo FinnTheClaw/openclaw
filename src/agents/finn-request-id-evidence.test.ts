@@ -4,9 +4,9 @@ import { resolveEmbeddedAgentStreamFn } from "./embedded-agent-runner/stream-res
 import {
   createFinnRequestEvidenceCollector,
   readFinnRequestId,
-  wrapFinnRequestIdEvidence,
-  wrapFinnRequestIdEvidenceWithCollector,
+  wrapFinnRequestIdEvidenceWithCollector as wrapBoundFinnRequestIdEvidence,
 } from "./finn-request-id-evidence.js";
+import { markBuiltInProviderTransport } from "./finn-request-id-transport.js";
 import type { StreamFn } from "./runtime/index.js";
 
 type Headers = Record<string, unknown>;
@@ -22,6 +22,25 @@ const nonFinnModel = {
   baseUrl: "https://models.example.test/v1",
 } as Parameters<StreamFn>[0];
 const context = { messages: [] } as Parameters<StreamFn>[1];
+
+function wrapFinnRequestIdEvidenceWithCollector(
+  source: StreamFn,
+  collector: ReturnType<typeof createFinnRequestEvidenceCollector>,
+): StreamFn {
+  markBuiltInProviderTransport(source);
+  return wrapBoundFinnRequestIdEvidence(source, collector, {
+    selectedStreamFn: source,
+    resolvedModel: model,
+  });
+}
+
+function wrapFinnRequestIdEvidence(source: StreamFn): StreamFn {
+  return wrapFinnRequestIdEvidenceWithCollector(source, createFinnRequestEvidenceCollector());
+}
+
+function trustedProviderStream(source: StreamFn): StreamFn {
+  return markBuiltInProviderTransport(source);
+}
 
 async function resultOf(stream: ReturnType<StreamFn>) {
   return (await stream).result();
@@ -157,13 +176,19 @@ describe("Finn request-id evidence", () => {
     async (mode) => {
       const collector = createFinnRequestEvidenceCollector();
       const first = resolveEmbeddedAgentStreamFn({
-        currentStreamFn: sourceWithResponse({ "x-finn-request-id": "req_" + mode + "_first" }),
+        providerStreamFn: trustedProviderStream(
+          sourceWithResponse({ "x-finn-request-id": "req_" + mode + "_first" }),
+        ),
+        currentStreamFn: undefined,
         sessionId: "session-1",
         model: model as never,
         finnRequestEvidence: collector,
       });
       const second = resolveEmbeddedAgentStreamFn({
-        currentStreamFn: sourceWithResponse({ "x-finn-request-id": "req_" + mode + "_second" }),
+        providerStreamFn: trustedProviderStream(
+          sourceWithResponse({ "x-finn-request-id": "req_" + mode + "_second" }),
+        ),
+        currentStreamFn: undefined,
         sessionId: "session-1",
         model: model as never,
         finnRequestEvidence: collector,
@@ -180,7 +205,10 @@ describe("Finn request-id evidence", () => {
   it("threads a turn collector through the embedded agent stream resolver", async () => {
     const collector = createFinnRequestEvidenceCollector();
     const resolved = resolveEmbeddedAgentStreamFn({
-      currentStreamFn: sourceWithResponse({ "x-finn-request-id": "req_resolved" }),
+      providerStreamFn: trustedProviderStream(
+        sourceWithResponse({ "x-finn-request-id": "req_resolved" }),
+      ),
+      currentStreamFn: undefined,
       sessionId: "session-1",
       model: model as never,
       finnRequestEvidence: collector,

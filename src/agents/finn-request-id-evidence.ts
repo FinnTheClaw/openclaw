@@ -7,6 +7,7 @@ import type {
   AssistantMessageEventStreamLike,
   Model,
 } from "../llm/types.js";
+import { isBuiltInProviderTransport } from "./finn-request-id-transport.js";
 import type { StreamFn } from "./runtime/index.js";
 
 const FINN_REQUEST_ID_HEADER = "x-finn-request-id";
@@ -36,20 +37,31 @@ type FinnRequestEvidenceSnapshot = Readonly<{
 
 type MutableAttempt = {
   route: FinnCoordinatorRouteIdentity;
-  closed: boolean;
+  responseCount: number;
+  finished: boolean;
 };
 
 type MutableCollectorState = {
   attempts: MutableAttempt[];
   requests: FinnRequestEvidenceEntry[];
   seenRequestIds: Set<string>;
-  sawNonCoordinatorAttempt: boolean;
-  overflowed: boolean;
+  invalid: boolean;
 };
+
+type FinnRequestAttemptObserver = Readonly<{
+  observeResponse: (headers: unknown) => void;
+  finish: () => void;
+  fail: () => void;
+}>;
 
 export type FinnRequestEvidenceCollector = Readonly<{
   snapshot: () => FinnRequestEvidenceSnapshot;
-  beginAttempt: (model: Model) => ((headers: unknown) => void) | undefined;
+  beginAttempt: (route: FinnCoordinatorRouteIdentity | undefined) => FinnRequestAttemptObserver;
+}>;
+
+type FinnRequestEvidenceTransportBinding = Readonly<{
+  selectedStreamFn: StreamFn;
+  resolvedModel: Model;
 }>;
 
 /** Returns only the coordinator's syntactically valid request identifier. */
@@ -106,9 +118,8 @@ function snapshotCollector(state: MutableCollectorState): FinnRequestEvidenceSna
   const hasCoordinatorAttempt = state.attempts.length > 0;
   const complete =
     hasCoordinatorAttempt &&
-    !state.sawNonCoordinatorAttempt &&
-    !state.overflowed &&
-    state.attempts.every((attempt) => attempt.closed);
+    !state.invalid &&
+    state.attempts.every((attempt) => attempt.finished && attempt.responseCount === 1);
   const requests = Object.freeze([...state.requests]);
   return Object.freeze({
     requests,
@@ -123,20 +134,26 @@ export function createFinnRequestEvidenceCollector(): FinnRequestEvidenceCollect
     attempts: [],
     requests: [],
     seenRequestIds: new Set(),
-    sawNonCoordinatorAttempt: false,
-    overflowed: false,
+    invalid: false,
   };
   return Object.freeze({
     snapshot: () => snapshotCollector(state),
-    beginAttempt: (model: Model) => {
-      const route = resolveFinnCoordinatorRoute(model);
+    beginAttempt: (route: FinnCoordinatorRouteIdentity | undefined) => {
       if (!route) {
-        state.sawNonCoordinatorAttempt = true;
-        return undefined;
+        state.invalid = true;
+        return Object.freeze({
+          observeResponse: () => undefined,
+          finish: () => undefined,
+          fail: () => undefined,
+        });
       }
-      const attempt = { route, closed: false };
+      const attempt = { route, responseCount: 0, finished: false };
       state.attempts.push(attempt);
-      return (headers: unknown) => observeResponse(state, attempt, headers);
+      return Object.freeze({
+        observeResponse: (headers: unknown) => observeResponse(state, attempt, headers),
+        finish: () => finishAttempt(state, attempt),
+        fail: () => failAttempt(state, attempt),
+      });
     },
   });
 }
@@ -146,20 +163,39 @@ function observeResponse(
   attempt: MutableAttempt,
   headers: unknown,
 ): void {
+  if (attempt.finished || attempt.responseCount > 0) {
+    state.invalid = true;
+  }
+  attempt.responseCount += 1;
   const requestId = readFinnRequestId(headers);
   if (!requestId) {
+    state.invalid = true;
     return;
   }
-  attempt.closed = true;
   if (state.seenRequestIds.has(requestId)) {
     return;
   }
   if (state.requests.length >= MAX_FINN_REQUEST_IDS) {
-    state.overflowed = true;
+    state.invalid = true;
     return;
   }
   state.seenRequestIds.add(requestId);
   state.requests.push(Object.freeze({ requestId, route: attempt.route }));
+}
+
+function finishAttempt(state: MutableCollectorState, attempt: MutableAttempt): void {
+  if (attempt.finished) {
+    return;
+  }
+  attempt.finished = true;
+  if (attempt.responseCount !== 1) {
+    state.invalid = true;
+  }
+}
+
+function failAttempt(state: MutableCollectorState, attempt: MutableAttempt): void {
+  state.invalid = true;
+  attempt.finished = true;
 }
 
 function attachFinnRequestIdEvidence(
@@ -195,18 +231,36 @@ function annotateEvent(event: AssistantMessageEvent, evidence: FinnRequestEviden
 function relayFinnRequestIdEvidence(
   source: Awaited<ReturnType<StreamFn>>,
   collector: FinnRequestEvidenceCollector,
+  attempt: FinnRequestAttemptObserver,
 ): AssistantMessageEventStreamLike {
   return {
     async *[Symbol.asyncIterator]() {
-      for await (const event of source) {
-        annotateEvent(event, collector.snapshot());
-        yield event;
+      try {
+        for await (const event of source) {
+          if (event.type === "done") {
+            attempt.finish();
+          } else if (event.type === "error") {
+            attempt.fail();
+          }
+          annotateEvent(event, collector.snapshot());
+          yield event;
+        }
+        attempt.finish();
+      } catch (error) {
+        attempt.fail();
+        throw error;
       }
     },
     async result() {
-      const message = await source.result();
-      attachFinnRequestIdEvidence(message, collector.snapshot());
-      return message;
+      try {
+        const message = await source.result();
+        attempt.finish();
+        attachFinnRequestIdEvidence(message, collector.snapshot());
+        return message;
+      } catch (error) {
+        attempt.fail();
+        throw error;
+      }
     },
   };
 }
@@ -215,27 +269,47 @@ function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
   return typeof (value as PromiseLike<T> | undefined)?.then === "function";
 }
 
-export function wrapFinnRequestIdEvidence(streamFn: StreamFn): StreamFn {
-  return wrapFinnRequestIdEvidenceWithCollector(streamFn, createFinnRequestEvidenceCollector());
-}
-
 export function wrapFinnRequestIdEvidenceWithCollector(
   streamFn: StreamFn,
   collector: FinnRequestEvidenceCollector,
+  binding?: FinnRequestEvidenceTransportBinding,
 ): StreamFn {
+  const boundRoute =
+    binding && isBuiltInProviderTransport(binding.selectedStreamFn)
+      ? resolveFinnCoordinatorRoute(binding.resolvedModel)
+      : undefined;
   return (model, context, options) => {
-    // Opening before the transport call makes throws/rejections observable as unfinished attempts.
-    const observeAttemptResponse = collector.beginAttempt(model);
+    const invocationRoute = resolveFinnCoordinatorRoute(model);
+    const route =
+      boundRoute &&
+      invocationRoute &&
+      boundRoute.provider === invocationRoute.provider &&
+      boundRoute.baseUrl === invocationRoute.baseUrl &&
+      boundRoute.route === invocationRoute.route
+        ? boundRoute
+        : undefined;
+    const attempt = collector.beginAttempt(route);
     const originalOnResponse = options?.onResponse;
-    const source = streamFn(model, context, {
-      ...options,
-      onResponse: async (response, responseModel) => {
-        observeAttemptResponse?.(response.headers);
-        await originalOnResponse?.(response, responseModel);
-      },
-    });
+    let source: ReturnType<StreamFn>;
+    try {
+      source = streamFn(model, context, {
+        ...options,
+        onResponse: async (response, responseModel) => {
+          attempt.observeResponse(response.headers);
+          await originalOnResponse?.(response, responseModel);
+        },
+      });
+    } catch (error) {
+      attempt.fail();
+      throw error;
+    }
     const relay = (resolved: Awaited<ReturnType<StreamFn>>) =>
-      relayFinnRequestIdEvidence(resolved, collector);
-    return isPromiseLike(source) ? Promise.resolve(source).then(relay) : relay(source);
+      relayFinnRequestIdEvidence(resolved, collector, attempt);
+    return isPromiseLike(source)
+      ? Promise.resolve(source).then(relay, (error: unknown) => {
+          attempt.fail();
+          throw error;
+        })
+      : relay(source);
   };
 }

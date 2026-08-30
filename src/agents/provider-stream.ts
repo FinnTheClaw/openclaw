@@ -7,6 +7,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { Api, Model } from "../llm/types.js";
 import { resolveProviderStreamFn } from "../plugins/provider-runtime.js";
 import { ensureCustomApiRegistered } from "./custom-api-registry.js";
+import { markBuiltInProviderTransport } from "./finn-request-id-transport.js";
 import {
   unwrapHeaderSentinelsForProviderEgress,
   unwrapModelHeaderSentinelsForProviderEgress,
@@ -56,6 +57,9 @@ export function registerProviderStreamForModel<TApi extends Api>(params: {
           env: params.env,
         },
       );
+  if (transportFallback) {
+    markBuiltInProviderTransport(transportFallback);
+  }
   const streamFn = providerStreamFn
     ? wrapPluginProviderStream(providerStreamFn)
     : transportFallback && params.model.api === "google-generative-ai"

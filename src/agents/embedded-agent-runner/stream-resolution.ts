@@ -131,9 +131,13 @@ export function resolveEmbeddedAgentStreamFn(params: {
   authStorage?: { getApiKey(provider: string): Promise<string | undefined> };
   finnRequestEvidence?: FinnRequestEvidenceCollector;
 }): StreamFn {
-  const withFinnEvidence = (streamFn: StreamFn) =>
+  const withFinnEvidence = (streamFn: StreamFn, selectedStreamFn?: StreamFn) =>
     params.finnRequestEvidence
-      ? wrapFinnRequestIdEvidenceWithCollector(streamFn, params.finnRequestEvidence)
+      ? wrapFinnRequestIdEvidenceWithCollector(
+          streamFn,
+          params.finnRequestEvidence,
+          selectedStreamFn ? { selectedStreamFn, resolvedModel: params.model } : undefined,
+        )
       : streamFn;
   if (params.providerStreamFn) {
     return withFinnEvidence(
@@ -152,6 +156,7 @@ export function resolveEmbeddedAgentStreamFn(params: {
               }
             : context,
       }),
+      params.providerStreamFn,
     );
   }
 

@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { wrapFinnRequestIdEvidenceWithCollector } from "../finn-request-id-evidence.js";
+import { markBuiltInProviderTransport } from "../finn-request-id-transport.js";
 import type { StreamFn } from "../runtime/index.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import {
@@ -53,9 +54,11 @@ describe("terminal Finn request evidence", () => {
             },
           } as never;
         };
+        markBuiltInProviderTransport(providerStream);
         const wrapped = await wrapFinnRequestIdEvidenceWithCollector(
           providerStream,
           attemptParams.finnRequestEvidence!,
+          { selectedStreamFn: providerStream, resolvedModel: coordinatorModel },
         )(coordinatorModel, {} as never, {} as never);
         await expect(wrapped.result()).rejects.toBe(sentinel);
       }
@@ -71,6 +74,6 @@ describe("terminal Finn request evidence", () => {
       "req_retry-terminal-1",
       "req_retry-terminal-2",
     ]);
-    expect(result.meta.agentMeta?.finnRequestIdEvidenceComplete).toBe(true);
+    expect(result.meta.agentMeta?.finnRequestIdEvidenceComplete).toBe(false);
   });
 });
