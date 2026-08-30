@@ -9,7 +9,12 @@ import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { prepareBehaviorGovernorModuleHostSnapshot } from "../secrets/runtime-module-host.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import { createGovernorAgentLoopScopeProvider } from "../security/governor-agent-loop-scope-provider.js";
+import {
+  C02_SIMPLE_EFFICIENCY_ID,
+  C02_SIMPLE_EFFICIENCY_VERSION,
+} from "../security/governor-c02-simple-efficiency-policy.js";
 import { createGovernorHostRuntimeIfEnabled } from "../security/governor-host-bootstrap.js";
+import { governorDigest } from "../tasks/governor/canonical-json.js";
 import type {
   GatewayBehaviorGovernorModuleAgentLoop,
   GatewayBehaviorGovernorModuleRunInput,
@@ -122,6 +127,7 @@ function secretEnvironment(
     OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: snapshot.secrets.receiptSigningKey,
     OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY: snapshot.secrets.ledgerSigningKey,
     OPENCLAW_GOVERNOR_DEPLOYMENT_ID: snapshot.secrets.deploymentIdentity,
+    INVOCATION_ID: process.env.INVOCATION_ID,
   };
 }
 
@@ -130,6 +136,7 @@ async function acquireDescriptorHost(
   gatewayConfig: OpenClawConfig,
 ): Promise<GatewayBehaviorGovernorModuleHostLease> {
   const snapshot = await prepareBehaviorGovernorModuleHostSnapshot(descriptor.secretRefs);
+  const hostDescriptorDigest = governorDigest(descriptor as never);
   const stateDir = path.join(snapshot.stateDir, "governor");
   const runtime = createGovernorHostRuntimeIfEnabled({
     enabled: true,
@@ -205,7 +212,21 @@ async function acquireDescriptorHost(
                 ) {
                   throw new Error("GOVERNOR_MODULE_HOST_MODE_MISMATCH");
                 }
-                return authority.resolveRunScope(input, proof);
+                const scope = authority.resolveRunScope(input, proof);
+                if (
+                  scope &&
+                  activation.id === C02_SIMPLE_EFFICIENCY_ID &&
+                  activation.version === C02_SIMPLE_EFFICIENCY_VERSION
+                ) {
+                  return runtime.wrapC02Scope({
+                    scope,
+                    run: input.run,
+                    config,
+                    modulePlanDigest: proof.planDigest,
+                    hostDescriptorDigest,
+                  });
+                }
+                return scope;
               },
               freeze: authority.freeze,
               close() {

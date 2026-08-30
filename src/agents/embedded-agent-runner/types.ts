@@ -42,6 +42,8 @@ export type EmbeddedAgentMeta = {
   finnRequestIds?: readonly string[];
   /** Observational integrity only; this is not a certification verdict. */
   finnRequestIdEvidenceComplete?: boolean;
+  /** Host-verified, metadata-only behavior-governor terminal evidence. */
+  governorEvidence?: Readonly<Record<string, unknown>>;
   contextTokens?: number;
   agentHarnessId?: string;
   fallbackAttempts?: FallbackAttempt[];

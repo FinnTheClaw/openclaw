@@ -110,7 +110,7 @@ export function installGovernorLoopBridge(params: {
       priorError = error;
     }
     try {
-      params.scope.afterTool({
+      await params.scope.afterTool({
         ticket: tickets.get(context.toolCall.id),
         toolCallId: context.toolCall.id,
         toolName: context.toolCall.name,
@@ -124,6 +124,7 @@ export function installGovernorLoopBridge(params: {
               details: priorResult?.details ?? context.result.details ?? null,
             },
         isError: priorThrew ? true : (priorResult?.isError ?? context.isError),
+        signal,
         now: now(),
       });
     } catch (error) {
@@ -153,6 +154,11 @@ export function installGovernorLoopBridge(params: {
       return;
     }
     try {
+      const terminalMessage = event.message as AgentMessage & {
+        finnRequestIds?: readonly string[];
+        finnRequestIdEvidenceComplete?: boolean;
+        governorEvidence?: Readonly<Record<string, unknown>>;
+      };
       const decision = params.scope.afterTurn({
         assistantText: assistantText(event.message),
         assistantStopReason: assistantStopReason(event.message),
@@ -160,6 +166,14 @@ export function installGovernorLoopBridge(params: {
           event.message.role === "assistant" && Array.isArray(event.message.content)
             ? event.message.content.filter((item) => item.type === "toolCall").length
             : 0,
+        ...(terminalMessage.finnRequestIds
+          ? { finnRequestIds: [...terminalMessage.finnRequestIds] }
+          : {}),
+        ...(terminalMessage.finnRequestIds
+          ? {
+              finnRequestIdEvidenceComplete: terminalMessage.finnRequestIdEvidenceComplete === true,
+            }
+          : {}),
         now: now(),
       });
       if (params.scope.mode === "shadow") {
@@ -179,6 +193,10 @@ export function installGovernorLoopBridge(params: {
         stoppedReason = decision.reasonCode;
         params.scope.interrupt({ now: now() });
       } else if (decision.kind === "complete") {
+        const evidence = params.scope.terminalEvidence?.();
+        if (evidence) {
+          terminalMessage.governorEvidence = evidence;
+        }
         terminalRequested = true;
         params.agent.removeSteeringKey(governorSteeringKey);
       }
@@ -204,7 +222,11 @@ export function installGovernorLoopBridge(params: {
       disposed = true;
       let interruptError: unknown;
       try {
-        if (params.scope.mode !== "shadow" && !terminalRequested) {
+        if (
+          params.scope.mode !== "shadow" &&
+          params.scope.disposition !== "checkpoint_pending" &&
+          !terminalRequested
+        ) {
           params.scope.interrupt({ now: now() });
         }
       } catch (error) {

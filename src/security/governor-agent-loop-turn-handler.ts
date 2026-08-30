@@ -17,6 +17,9 @@ export type GovernorAgentLoopTurnState = {
   skipNextStagnationCheck: boolean;
   toolErrorObserved: boolean;
   toolErrorEffectId?: string;
+  lastObservedEffectId?: string;
+  lastObservedToolName?: string;
+  lastObservedResultDigest?: string;
   terminal: boolean;
   terminalReason?: string;
 };
@@ -32,6 +35,8 @@ export function recordGovernorAgentLoopTurn(params: {
     assistantText: string;
     assistantStopReason?: string;
     toolCallCount: number;
+    finnRequestIds?: readonly string[];
+    finnRequestIdEvidenceComplete?: boolean;
     now: number;
   };
 }): GovernorAgentLoopTurnDecision {
@@ -62,6 +67,11 @@ export function recordGovernorAgentLoopTurn(params: {
     }
   }
   state.priorProgressFingerprint = state.progress.fingerprint;
+  const recordsC02Source = params.config.toolBindings.every(
+    (binding) =>
+      binding.implementationId === "installed-tool:read" ||
+      binding.implementationId === "installed-tool:exec",
+  );
   params.controller.recordRuntimeEvent({
     taskId: params.taskId,
     eventType: "runtime_model_turn_recorded",
@@ -75,9 +85,21 @@ export function recordGovernorAgentLoopTurn(params: {
       satisfiedCriteria: state.progress.satisfiedCriteria.length,
       remainingCriteria: state.progress.remainingCriteria.length,
       progressDigest: state.progress.fingerprint,
+      ...(recordsC02Source
+        ? {
+            sourceEffectId: state.lastObservedEffectId ?? null,
+            sourceToolName: state.lastObservedToolName ?? null,
+            sourceResultDigest: state.lastObservedResultDigest ?? null,
+            finnRequestIds: [...(turn.finnRequestIds ?? [])],
+            finnRequestIdEvidenceComplete: turn.finnRequestIdEvidenceComplete === true,
+          }
+        : {}),
     },
     now: turn.now,
   });
+  state.lastObservedEffectId = undefined;
+  state.lastObservedToolName = undefined;
+  state.lastObservedResultDigest = undefined;
   if (params.config.mode === "shadow") {
     if (turn.toolCallCount === 0) {
       params.controller.recordRuntimeEvent({

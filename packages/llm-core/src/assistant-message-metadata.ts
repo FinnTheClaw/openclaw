@@ -10,6 +10,8 @@ export interface AssistantMessageMetadata {
   finnRequestIds?: readonly string[];
   /** Observational integrity only; this is not a certification verdict. */
   finnRequestIdEvidenceComplete?: boolean;
+  /** Host-verified, metadata-only behavior-governor terminal evidence. */
+  governorEvidence?: Readonly<Record<string, unknown>>;
   /** Redacted provider/runtime diagnostics for failures and recoveries. */
   diagnostics?: AssistantMessageDiagnostic[];
 }

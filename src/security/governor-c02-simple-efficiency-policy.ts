@@ -270,6 +270,17 @@ export function governorC02ToolRegistryDigest(
   );
 }
 
+/** Internal runtime brand check; clones and stale mutable preparations fail closed. */
+export function assertGovernorC02PreparedRun(run: GovernorC02PreparedRun): void {
+  if (
+    !preparedRuns.has(run) ||
+    governorC02ToolRegistryDigest(run.registeredTools) !== run.hostToolRegistryDigest ||
+    governorC02RunBindingDigest(run) !== run.runBindingDigest
+  ) {
+    throw new Error("GOVERNOR_C02_PREPARED_RUN_INVALID");
+  }
+}
+
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -283,13 +294,7 @@ function deepFreeze<T>(value: T): T {
 export function evaluateGovernorC02Policy(
   input: GovernorC02PolicyInput,
 ): GovernorC02PolicyDecision {
-  if (
-    !preparedRuns.has(input.run) ||
-    governorC02ToolRegistryDigest(input.run.registeredTools) !== input.run.hostToolRegistryDigest ||
-    governorC02RunBindingDigest(input.run) !== input.run.runBindingDigest
-  ) {
-    throw new Error("GOVERNOR_C02_PREPARED_RUN_INVALID");
-  }
+  assertGovernorC02PreparedRun(input.run);
   const byId = validate(input);
   const eligibleCriterionIds = Object.freeze(
     input.criteria

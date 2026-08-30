@@ -35,7 +35,7 @@ export type GovernorAgentLoopTurnDecision =
 export type GovernorAgentLoopRunScope = Readonly<{
   taskId: string;
   mode: GovernorAgentLoopMode;
-  disposition?: "runnable" | "completed_replay";
+  disposition?: "runnable" | "completed_replay" | "checkpoint_pending";
   prepareTools?(tools: readonly AgentTool[]): void;
   beforeTool(input: {
     toolCallId: string;
@@ -50,16 +50,20 @@ export type GovernorAgentLoopRunScope = Readonly<{
     toolName: string;
     result: unknown;
     isError: boolean;
+    signal?: AbortSignal;
     now: number;
-  }): void;
+  }): void | Promise<void>;
   afterTurn(input: {
     assistantText: string;
     assistantStopReason?: string;
     toolCallCount: number;
+    finnRequestIds?: readonly string[];
+    finnRequestIdEvidenceComplete?: boolean;
     now: number;
   }): GovernorAgentLoopTurnDecision;
   interrupt(input: { now: number }): void;
   assertTerminal(): void;
+  terminalEvidence?(): Readonly<Record<string, unknown>>;
   governedTools(): readonly AgentTool[];
   dispose(): void;
 }>;

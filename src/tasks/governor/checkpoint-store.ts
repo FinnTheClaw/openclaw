@@ -33,7 +33,8 @@ export function bindGovernorCheckpoint(
   };
 }
 
-function parseCheckpoint(row: GovernorCheckpointRow): GovernorCheckpoint {
+/** @internal Reuses the canonical checkpoint row binding inside existing-store transactions. */
+export function parseGovernorCheckpointRow(row: GovernorCheckpointRow): GovernorCheckpoint {
   const checkpoint = parseGovernorStoredJson(
     row.checkpoint_json,
     "log",
@@ -74,6 +75,6 @@ export class GovernorCheckpointStore {
         .where("task_id", "=", taskId)
         .orderBy("created_at", "asc")
         .orderBy("checkpoint_id", "asc"),
-    ).rows.map(parseCheckpoint);
+    ).rows.map(parseGovernorCheckpointRow);
   }
 }

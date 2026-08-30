@@ -13,11 +13,11 @@ import {
   validateGovernorAgentLoopConfiguration,
   type GovernorAgentLoopConfiguration,
 } from "./governor-agent-loop-config.js";
-import { recoverGovernorAgentLoopGuidance } from "./governor-agent-loop-guidance-recovery.js";
 import { closeGovernorAgentLoopHost } from "./governor-agent-loop-host-close.js";
 import { createGovernorAgentLoopHostReplayResolver } from "./governor-agent-loop-host-replay.js";
 import { installGovernorAgentLoopInertRegistry } from "./governor-agent-loop-inert-registry.js";
 import { createGovernorAgentLoopIngress } from "./governor-agent-loop-ingress.js";
+import { createGovernorAgentLoopInstalledInventory } from "./governor-agent-loop-installed-inventory.js";
 import {
   buildGovernorAgentLoopProgress,
   formatGovernorAlreadySatisfiedReason,
@@ -35,7 +35,6 @@ import {
   recordGovernorAgentLoopToolObservation,
   type GovernorAgentLoopTicketState,
 } from "./governor-agent-loop-task.js";
-import { createGovernorAgentLoopTools } from "./governor-agent-loop-tool-bindings.js";
 import {
   governorAgentLoopToolImplementationDigest,
   matchesHostGovernorAgentLoopTool,
@@ -132,23 +131,22 @@ function createScope(
     toolErrorObserved: false,
     terminal: currentTask.state === "COMPLETED",
   };
-  if (
-    recoverGovernorAgentLoopGuidance({
-      controller: host.controller,
-      taskId,
-      progressDigest: progress.fingerprint,
-      now: input.now,
-    })
-  ) {
-    turnState.replannedAfterStagnation = true;
-  }
-  const governedTools = createGovernorAgentLoopTools(host.config);
-  const governedToolsByName = new Map(governedTools.map((tool) => [tool.name, tool]));
+  const inventory = createGovernorAgentLoopInstalledInventory({
+    config: host.config,
+    controller: host.controller,
+    taskId,
+    executionGeneration: currentTask.executionGeneration,
+    turns,
+    turnState,
+    progressDigest: progress.fingerprint,
+    now: input.now,
+  });
   const pendingTickets = new Set<object>();
   let disposed = false;
   const scope: GovernorAgentLoopRunScope = Object.freeze({
     taskId,
     mode: host.config.mode,
+    prepareTools: inventory.prepare,
     beforeTool(request) {
       const binding = host.config.toolBindings.find((item) => item.toolName === request.toolName);
       if (!binding) {
@@ -179,11 +177,12 @@ function createScope(
       }
       if (
         !request.tool ||
-        request.tool !== governedToolsByName.get(binding.toolName) ||
-        !matchesHostGovernorAgentLoopTool(request.tool, {
-          toolName: binding.toolName,
-          implementationId: binding.implementationId,
-        })
+        request.tool !== inventory.find(binding.toolName) ||
+        (!inventory.installed &&
+          !matchesHostGovernorAgentLoopTool(request.tool, {
+            toolName: binding.toolName,
+            implementationId: binding.implementationId,
+          }))
       ) {
         return { kind: "block", reasonCode: "GOVERNOR_TOOL_IMPLEMENTATION_MISMATCH" };
       }
@@ -363,6 +362,7 @@ function createScope(
           now: observation.now,
         },
       });
+      inventory.record(state.intent.effectId, observation.toolName, observation.result);
       if (observation.isError) {
         turnState.toolErrorObserved = true;
         turnState.toolErrorEffectId = state.intent.effectId;
@@ -411,7 +411,7 @@ function createScope(
       }
     },
     governedTools() {
-      return governedTools;
+      return inventory.tools();
     },
     dispose() {
       if (disposed) {

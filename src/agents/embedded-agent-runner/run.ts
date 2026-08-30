@@ -3977,6 +3977,9 @@ async function runEmbeddedAgentInternal(
             provider: reportedModelRef.provider,
             model: reportedModelRef.model,
             ...resolveFinnRequestEvidenceMeta(attemptAssistant),
+            ...(attemptAssistant?.governorEvidence
+              ? { governorEvidence: attemptAssistant.governorEvidence }
+              : {}),
             contextTokens: ctxInfo.tokens,
             agentHarnessId: attempt.agentHarnessId,
             usage: usageMeta.usage,

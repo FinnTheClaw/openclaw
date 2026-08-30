@@ -7,12 +7,16 @@ import { governorDigest } from "../tasks/governor/canonical-json.js";
 export type GovernorAgentLoopToolImplementationId =
   | "disposable-aggregate-v1"
   | "disposable-observation-fail-once-v1"
-  | "disposable-observation-v1";
+  | "disposable-observation-v1"
+  | "installed-tool:exec"
+  | "installed-tool:read";
 
 const IMPLEMENTATION_IDS = new Set<GovernorAgentLoopToolImplementationId>([
   "disposable-aggregate-v1",
   "disposable-observation-fail-once-v1",
   "disposable-observation-v1",
+  "installed-tool:exec",
+  "installed-tool:read",
 ]);
 type GovernorAgentLoopToolIdentity = Readonly<{
   implementationId: GovernorAgentLoopToolImplementationId;

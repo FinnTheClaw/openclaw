@@ -189,7 +189,11 @@ function createCompositeScope(
   const scope: GovernorAgentLoopRunScope = Object.freeze({
     taskId: input.runId,
     mode: enforce.length > 0 ? "enforce" : "shadow",
-    disposition: "runnable",
+    get disposition() {
+      return components.some((component) => component.scope.disposition === "checkpoint_pending")
+        ? "checkpoint_pending"
+        : "runnable";
+    },
     prepareTools(installedTools): void {
       const exactTools = Object.freeze([...installedTools]);
       collectErrors(components, (component) => component.scope.prepareTools?.(exactTools));
@@ -223,7 +227,7 @@ function createCompositeScope(
       ticketState.set(opaque, tickets);
       return { kind: "allow", ticket: Object.freeze({ opaque }) };
     },
-    afterTool(toolInput): void {
+    async afterTool(toolInput): Promise<void> {
       const tickets = toolInput.ticket ? ticketState.get(toolInput.ticket.opaque) : undefined;
       if (toolInput.ticket && !tickets) {
         throw new Error("GOVERNOR_MODULE_AGENT_LOOP_TICKET_INVALID");
@@ -231,15 +235,25 @@ function createCompositeScope(
       if (toolInput.ticket) {
         ticketState.delete(toolInput.ticket.opaque);
       }
-      collectErrors(components, (component) => {
-        component.scope.afterTool(
-          Object.freeze({
-            ...toolInput,
-            result: detachedObservation(toolInput.result),
-            ticket: tickets?.get(component.scope),
-          }),
-        );
-      });
+      const errors: unknown[] = [];
+      for (const component of components) {
+        try {
+          await component.scope.afterTool(
+            Object.freeze({
+              ...toolInput,
+              result: detachedObservation(toolInput.result),
+              ticket: tickets?.get(component.scope),
+            }),
+          );
+        } catch (error) {
+          if (component.activation.mode === "enforce") {
+            errors.push(error);
+          }
+        }
+      }
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "GOVERNOR_MODULE_AGENT_LOOP_HOOK_FAILED");
+      }
     },
     afterTurn(turnInput): GovernorAgentLoopTurnDecision {
       const decisions: GovernorAgentLoopTurnDecision[] = [];
@@ -264,6 +278,20 @@ function createCompositeScope(
     assertTerminal(): void {
       collectErrors(enforce, (component) => component.scope.assertTerminal());
     },
+    ...(enforce.some((component) => component.scope.terminalEvidence)
+      ? {
+          terminalEvidence(): Readonly<Record<string, unknown>> {
+            const evidence = enforce.flatMap((component) => {
+              const value = component.scope.terminalEvidence?.();
+              return value ? [value] : [];
+            });
+            if (evidence.length !== 1) {
+              throw new Error("GOVERNOR_MODULE_AGENT_LOOP_TERMINAL_EVIDENCE_INVALID");
+            }
+            return evidence[0]!;
+          },
+        }
+      : {}),
     governedTools(): readonly AgentTool[] {
       return governedTools;
     },

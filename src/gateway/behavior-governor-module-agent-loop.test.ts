@@ -301,7 +301,7 @@ describe("gateway behavior governor module agent-loop consumer", () => {
     await lifecycle.apply([selection("c01", "shadow"), selection("c02")]);
     const resolved = resolveGovernorAgentLoopRunScope(runInput())!;
 
-    resolved.afterTool({
+    await resolved.afterTool({
       toolCallId: "tool-1",
       toolName: "read",
       result: actualResult,
