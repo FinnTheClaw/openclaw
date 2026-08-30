@@ -7,13 +7,11 @@ import {
 import {
   isGovernorAgentLoopRunScope,
   resolveGovernorAgentLoopRunScope,
+  type GovernorAgentLoopRunInput,
+  type GovernorAgentLoopRunScope,
+  type GovernorAgentLoopToolDecision,
+  type GovernorAgentLoopTurnDecision,
 } from "../security/governor-agent-loop-readonly.js";
-import type {
-  GovernorAgentLoopRunInput,
-  GovernorAgentLoopRunScope,
-  GovernorAgentLoopToolDecision,
-  GovernorAgentLoopTurnDecision,
-} from "../security/governor-agent-loop-types.js";
 import type { GatewayBehaviorGovernorModuleRunInput } from "./behavior-governor-module-agent-loop.js";
 import {
   createGatewayBehaviorGovernorModuleLifecycle,
@@ -164,6 +162,100 @@ describe("gateway behavior governor module agent-loop consumer", () => {
     });
     expect(shadow.beforeTool).toHaveBeenCalledOnce();
     expect(enforce.beforeTool).toHaveBeenCalledOnce();
+
+    resolved.dispose();
+    await lifecycle.close();
+  });
+
+  it("isolates deeply immutable before-tool arguments for every component", async () => {
+    const actualArgs = { nested: { value: "pristine" } };
+    const observations: unknown[] = [];
+    const makeObserver = (mode: BehaviorGovernorModuleSelection["mode"]) => {
+      return {
+        ...scope({ mode }),
+        beforeTool: vi.fn((input): GovernorAgentLoopToolDecision => {
+          observations.push(input.args);
+          expect(Object.isFrozen(input)).toBe(true);
+          expect(Object.isFrozen(input.args)).toBe(true);
+          expect(Object.isFrozen((input.args as typeof actualArgs).nested)).toBe(true);
+          expect(Reflect.set((input.args as typeof actualArgs).nested, "value", "poison")).toBe(
+            false,
+          );
+          return { kind: "allow" };
+        }),
+      } satisfies GovernorAgentLoopRunScope;
+    };
+    const shadow = makeObserver("shadow");
+    const enforce = makeObserver("enforce");
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      catalog: [
+        descriptor({ id: "C01", mode: "shadow", resolve: () => shadow }),
+        descriptor({ id: "C02", resolve: () => enforce }),
+      ],
+    });
+    await lifecycle.apply([selection("C01", "shadow"), selection("C02")]);
+    const resolved = resolveGovernorAgentLoopRunScope(runInput())!;
+
+    expect(
+      resolved.beforeTool({
+        toolCallId: "tool-1",
+        toolName: "read",
+        args: actualArgs,
+        tool: undefined,
+        now: 11,
+      }),
+    ).toEqual({ kind: "allow" });
+    expect(actualArgs.nested.value).toBe("pristine");
+    expect(observations).toHaveLength(2);
+    expect(observations[0]).not.toBe(actualArgs);
+    expect(observations[1]).not.toBe(actualArgs);
+    expect(observations[0]).not.toBe(observations[1]);
+
+    resolved.dispose();
+    await lifecycle.close();
+  });
+
+  it("isolates deeply immutable after-tool results for every component", async () => {
+    const actualResult = { content: [{ type: "text", text: "pristine" }], details: { count: 1 } };
+    const observations: unknown[] = [];
+    const makeObserver = (mode: BehaviorGovernorModuleSelection["mode"]) => {
+      return {
+        ...scope({ mode }),
+        afterTool: vi.fn((input) => {
+          observations.push(input.result);
+          expect(Object.isFrozen(input)).toBe(true);
+          expect(Object.isFrozen(input.result)).toBe(true);
+          expect(Object.isFrozen((input.result as typeof actualResult).content)).toBe(true);
+          expect(Object.isFrozen((input.result as typeof actualResult).content[0])).toBe(true);
+          expect(
+            Reflect.set((input.result as typeof actualResult).content[0], "text", "poison"),
+          ).toBe(false);
+        }),
+      } satisfies GovernorAgentLoopRunScope;
+    };
+    const shadow = makeObserver("shadow");
+    const enforce = makeObserver("enforce");
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      catalog: [
+        descriptor({ id: "C01", mode: "shadow", resolve: () => shadow }),
+        descriptor({ id: "C02", resolve: () => enforce }),
+      ],
+    });
+    await lifecycle.apply([selection("C01", "shadow"), selection("C02")]);
+    const resolved = resolveGovernorAgentLoopRunScope(runInput())!;
+
+    resolved.afterTool({
+      toolCallId: "tool-1",
+      toolName: "read",
+      result: actualResult,
+      isError: false,
+      now: 11,
+    });
+    expect(actualResult.content[0]?.text).toBe("pristine");
+    expect(observations).toHaveLength(2);
+    expect(observations[0]).not.toBe(actualResult);
+    expect(observations[1]).not.toBe(actualResult);
+    expect(observations[0]).not.toBe(observations[1]);
 
     resolved.dispose();
     await lifecycle.close();

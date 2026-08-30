@@ -10,7 +10,7 @@ import type {
   GovernorAgentLoopToolDecision,
   GovernorAgentLoopToolTicket,
   GovernorAgentLoopTurnDecision,
-} from "../security/governor-agent-loop-types.js";
+} from "../security/governor-agent-loop-readonly.js";
 
 export type GatewayBehaviorGovernorModuleActivation = Readonly<{
   id: string;
@@ -102,6 +102,21 @@ function collectErrors(
   }
 }
 
+function deepFreezeObservation<T>(value: T, seen = new WeakSet<object>()): T {
+  if (!value || typeof value !== "object" || seen.has(value)) {
+    return value;
+  }
+  seen.add(value);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreezeObservation(child, seen);
+  }
+  return Object.freeze(value);
+}
+
+function detachedObservation<T>(value: T): T {
+  return deepFreezeObservation(structuredClone(value));
+}
+
 function disposeScopes(scopes: readonly GovernorAgentLoopRunScope[]): unknown[] {
   const errors: unknown[] = [];
   for (const scope of scopes.toReversed()) {
@@ -173,7 +188,15 @@ function createCompositeScope(
       const tickets = new Map<GovernorAgentLoopRunScope, GovernorAgentLoopToolTicket | undefined>();
       let blocked: Extract<GovernorAgentLoopToolDecision, { kind: "block" }> | undefined;
       collectErrors(components, (component) => {
-        const decision = component.scope.beforeTool(toolInput);
+        const decision = component.scope.beforeTool(
+          Object.freeze({
+            ...toolInput,
+            args: detachedObservation(toolInput.args),
+            // Tool implementations are host-owned identity capabilities. Keep the
+            // canonical readonly reference; never clone or project executable tools.
+            tool: toolInput.tool,
+          }),
+        );
         tickets.set(component.scope, decision.kind === "allow" ? decision.ticket : undefined);
         if (component.activation.mode === "enforce" && decision.kind === "block") {
           blocked ??= decision;
@@ -198,10 +221,13 @@ function createCompositeScope(
         ticketState.delete(toolInput.ticket.opaque);
       }
       collectErrors(components, (component) => {
-        component.scope.afterTool({
-          ...toolInput,
-          ticket: tickets?.get(component.scope),
-        });
+        component.scope.afterTool(
+          Object.freeze({
+            ...toolInput,
+            result: detachedObservation(toolInput.result),
+            ticket: tickets?.get(component.scope),
+          }),
+        );
       });
     },
     afterTurn(turnInput): GovernorAgentLoopTurnDecision {
@@ -276,7 +302,7 @@ export function installGatewayBehaviorGovernorModuleAgentLoop(
           const priorScopes = components.map((component) => component.scope);
           const scopes = candidate ? [...priorScopes, candidate] : priorScopes;
           if (module.activation.mode === "enforce") {
-            throwResolutionFailure(error, scopes);
+            return throwResolutionFailure(error, scopes);
           }
           if (candidate) {
             disposeScopes([candidate]);
@@ -289,7 +315,7 @@ export function installGatewayBehaviorGovernorModuleAgentLoop(
       try {
         return createCompositeScope(run, components, issuedScopes);
       } catch (error) {
-        throwResolutionFailure(
+        return throwResolutionFailure(
           error,
           components.map((component) => component.scope),
         );
