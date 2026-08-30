@@ -22,11 +22,16 @@ import {
 const TEST_HOST_PROVIDER = {
   acquire: vi.fn(async () => ({
     capability: {
-      agentLoop: {
-        createScopeProvider: () => {
-          throw new Error("TEST_SCOPE_PROVIDER_UNUSED");
+      forActivation: () => ({
+        agentLoop: {
+          createScopeProvider: () => {
+            throw new Error("TEST_SCOPE_PROVIDER_UNUSED");
+          },
+          createRunBinding: () => {
+            throw new Error("TEST_RUN_BINDING_UNUSED");
+          },
         },
-      },
+      }),
     },
     freeze: vi.fn(),
     close: vi.fn(),

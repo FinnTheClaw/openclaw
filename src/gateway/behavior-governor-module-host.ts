@@ -18,23 +18,41 @@ import {
   loadGatewayBehaviorGovernorModuleHostDescriptor,
   type GatewayBehaviorGovernorModuleHostDescriptor,
 } from "./behavior-governor-module-host-descriptor.js";
+import {
+  createGatewayBehaviorGovernorModuleRunBindingAuthority,
+  type GatewayBehaviorGovernorModuleRunBinding,
+  type GatewayBehaviorGovernorModuleRunBindingInput,
+  type GatewayBehaviorGovernorModuleRunBindingToken,
+} from "./behavior-governor-module-run-bindings.js";
 
-export type GatewayBehaviorGovernorModuleScopeProvider = GatewayBehaviorGovernorModuleAgentLoop &
-  Readonly<{
-    freeze: () => void;
-    close: () => void;
-  }>;
+export type GatewayBehaviorGovernorModuleScopeProvider = Readonly<{
+  resolveRunScope: (
+    input: GatewayBehaviorGovernorModuleRunInput,
+    token: GatewayBehaviorGovernorModuleRunBindingToken,
+  ) => ReturnType<GatewayBehaviorGovernorModuleAgentLoop["resolveRunScope"]>;
+  freeze: () => void;
+  close: () => void;
+}>;
 
 export type GatewayBehaviorGovernorModuleHostCapability = Readonly<{
   agentLoop: Readonly<{
     createScopeProvider: (
       config: GovernorAgentLoopConfiguration,
     ) => GatewayBehaviorGovernorModuleScopeProvider;
+    createRunBinding: (
+      input: GatewayBehaviorGovernorModuleRunBindingInput,
+    ) => GatewayBehaviorGovernorModuleRunBinding;
   }>;
 }>;
 
+export type GatewayBehaviorGovernorModuleHostLeaseCapability = Readonly<{
+  forActivation: (
+    activation: GatewayBehaviorGovernorModuleRunInput["activation"],
+  ) => GatewayBehaviorGovernorModuleHostCapability;
+}>;
+
 export type GatewayBehaviorGovernorModuleHostLease = Readonly<{
-  capability: GatewayBehaviorGovernorModuleHostCapability;
+  capability: GatewayBehaviorGovernorModuleHostLeaseCapability;
   freeze: () => void | Promise<void>;
   close: () => void | Promise<void>;
 }>;
@@ -80,6 +98,9 @@ async function acquireDescriptorHost(
     throw new Error("GOVERNOR_MODULE_HOST_RUNTIME_NOT_CREATED");
   }
   const children = new Set<GatewayBehaviorGovernorModuleScopeProvider>();
+  const authorities = new Set<
+    ReturnType<typeof createGatewayBehaviorGovernorModuleRunBindingAuthority>
+  >();
   let frozen = false;
   let closed = false;
   try {
@@ -93,40 +114,60 @@ async function acquireDescriptorHost(
     clearGatewayAcceptanceReceiptSigner();
     throw error;
   }
-  const capability: GatewayBehaviorGovernorModuleHostCapability = Object.freeze({
-    agentLoop: Object.freeze({
-      createScopeProvider(config: GovernorAgentLoopConfiguration) {
-        if (frozen || closed) {
-          throw new Error("GOVERNOR_MODULE_HOST_ADMISSION_FROZEN");
-        }
-        const owned = createGovernorAgentLoopScopeProvider({
-          controller: runtime.adapter.controller,
-          submitObservedReceipt: runtime.owners.evidence.submitObservedReceipt,
-          capabilities: descriptor.capabilities,
-          config,
-        });
-        let childClosed = false;
-        const child: GatewayBehaviorGovernorModuleScopeProvider = Object.freeze({
-          resolveRunScope(input: GatewayBehaviorGovernorModuleRunInput) {
-            if (input.activation.mode !== config.mode) {
-              throw new Error("GOVERNOR_MODULE_HOST_MODE_MISMATCH");
+  const createOwnedProvider = (config: GovernorAgentLoopConfiguration) =>
+    createGovernorAgentLoopScopeProvider({
+      controller: runtime.adapter.controller,
+      submitObservedReceipt: runtime.owners.evidence.submitObservedReceipt,
+      capabilities: descriptor.capabilities,
+      config,
+    });
+  const capability: GatewayBehaviorGovernorModuleHostLeaseCapability = Object.freeze({
+    forActivation(activation) {
+      if (frozen || closed) {
+        throw new Error("GOVERNOR_MODULE_HOST_ADMISSION_FROZEN");
+      }
+      const authority = createGatewayBehaviorGovernorModuleRunBindingAuthority({ activation });
+      authorities.add(authority);
+      return Object.freeze({
+        agentLoop: Object.freeze({
+          createScopeProvider(config: GovernorAgentLoopConfiguration) {
+            if (frozen || closed) {
+              throw new Error("GOVERNOR_MODULE_HOST_ADMISSION_FROZEN");
             }
-            return owned.resolveRunScope(input.run);
+            const owned = createOwnedProvider(config);
+            let childClosed = false;
+            const child: GatewayBehaviorGovernorModuleScopeProvider = Object.freeze({
+              resolveRunScope(
+                input: GatewayBehaviorGovernorModuleRunInput,
+                token: GatewayBehaviorGovernorModuleRunBindingToken,
+              ) {
+                if (
+                  input.activation.id !== activation.id ||
+                  input.activation.version !== activation.version ||
+                  input.activation.mode !== activation.mode ||
+                  input.activation.mode !== config.mode
+                ) {
+                  throw new Error("GOVERNOR_MODULE_HOST_MODE_MISMATCH");
+                }
+                return authority.resolveRunScope(input, token, owned);
+              },
+              freeze: owned.freeze,
+              close() {
+                if (childClosed) {
+                  return;
+                }
+                owned.close();
+                childClosed = true;
+                children.delete(child);
+              },
+            });
+            children.add(child);
+            return child;
           },
-          freeze: owned.freeze,
-          close() {
-            if (childClosed) {
-              return;
-            }
-            owned.close();
-            childClosed = true;
-            children.delete(child);
-          },
-        });
-        children.add(child);
-        return child;
-      },
-    }),
+          createRunBinding: authority.createRunBinding,
+        }),
+      });
+    },
   });
   return Object.freeze({
     capability,
@@ -135,6 +176,9 @@ async function acquireDescriptorHost(
         return;
       }
       frozen = true;
+      for (const authority of authorities) {
+        authority.freeze();
+      }
       for (const child of children) {
         child.freeze();
       }
@@ -146,6 +190,14 @@ async function acquireDescriptorHost(
       }
       frozen = true;
       const errors: unknown[] = [];
+      for (const authority of [...authorities].toReversed()) {
+        try {
+          authority.close();
+          authorities.delete(authority);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
       for (const child of [...children].toReversed()) {
         try {
           child.close();
@@ -153,14 +205,14 @@ async function acquireDescriptorHost(
           errors.push(error);
         }
       }
-      if (children.size === 0) {
+      if (children.size === 0 && authorities.size === 0) {
         try {
           runtime.close();
         } catch (error) {
           errors.push(error);
         }
       }
-      if (errors.length > 0 || children.size > 0) {
+      if (errors.length > 0 || children.size > 0 || authorities.size > 0) {
         throw new AggregateError(errors, "GOVERNOR_MODULE_HOST_CLOSE_FAILED");
       }
       clearGatewayAcceptanceReceiptSigner();

@@ -66,7 +66,7 @@ const ModuleSelectionSchema = z
       .trim()
       .min(1)
       .max(64)
-      .regex(/^[A-Z][A-Z0-9._-]*$/u),
+      .regex(/^[a-z][a-z0-9._-]*$/u),
     mode: z.enum(["shadow", "enforce"]),
     version: z
       .string()

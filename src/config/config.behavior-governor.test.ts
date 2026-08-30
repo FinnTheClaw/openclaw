@@ -42,7 +42,7 @@ describe("behavior governor config boundary", () => {
 
   it("accepts only data-only module selections", () => {
     const module = {
-      id: "C04A.1",
+      id: "c04a.1",
       mode: "shadow",
       version: "1.0.0",
     };
@@ -53,6 +53,10 @@ describe("behavior governor config boundary", () => {
     ).toBe(true);
     for (const replacement of [
       { ...module, id: "../../module" },
+      { ...module, id: "C04A.1" },
+      { ...module, id: "c04A.1" },
+      { ...module, id: "c04a/1" },
+      { ...module, id: "c04a\uFF0E1" },
       { ...module, mode: "disabled" },
       { ...module, version: "" },
       { ...module, implementationDigest: "a".repeat(64) },

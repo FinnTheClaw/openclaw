@@ -253,7 +253,9 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
           mode: item.selection.mode,
           version: item.selection.version,
         });
-        const runtime = await create(Object.freeze({ ...activation, host: acquired.capability }));
+        const runtime = await create(
+          Object.freeze({ ...activation, host: acquired.capability.forActivation(activation) }),
+        );
         if (!runtime || typeof runtime.close !== "function") {
           throw new Error("GOVERNOR_MODULE_RUNTIME_INVALID");
         }
@@ -285,6 +287,7 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
         acquired = undefined;
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
+        host = acquired;
       }
       // Retain only runtimes whose close failed. Gateway shutdown can retry
       // those survivors without double-closing a runtime that already closed.

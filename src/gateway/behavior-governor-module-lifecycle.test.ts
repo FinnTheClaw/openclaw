@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BehaviorGovernorModuleSelection } from "../config/types.behavior-governor.js";
+import { OpenClawSchema } from "../config/zod-schema.js";
 import {
   createGatewayBehaviorGovernorModuleLifecycle,
   type GatewayBehaviorGovernorModuleDescriptor,
@@ -9,11 +10,16 @@ import {
 const TEST_HOST_PROVIDER = {
   acquire: vi.fn(async () => ({
     capability: {
-      agentLoop: {
-        createScopeProvider: () => {
-          throw new Error("TEST_SCOPE_PROVIDER_UNUSED");
+      forActivation: () => ({
+        agentLoop: {
+          createScopeProvider: () => {
+            throw new Error("TEST_SCOPE_PROVIDER_UNUSED");
+          },
+          createRunBinding: () => {
+            throw new Error("TEST_RUN_BINDING_UNUSED");
+          },
         },
-      },
+      }),
     },
     freeze: vi.fn(),
     close: vi.fn(),
@@ -93,6 +99,30 @@ describe("gateway behavior governor module lifecycle", () => {
     expect(acquire).not.toHaveBeenCalled();
   });
 
+  it("runs the exact lowercase module selection accepted by persisted config", async () => {
+    const item = descriptor({ id: "c02.deep-loop" });
+    const parsed = OpenClawSchema.parse({
+      experimental: {
+        behaviorGovernor: {
+          modules: [{ id: "c02.deep-loop", mode: "enforce", version: "1.0.0" }],
+        },
+      },
+    });
+    const configured = parsed.experimental?.behaviorGovernor;
+    if (!configured || !("modules" in configured)) {
+      throw new Error("expected parsed modular configuration");
+    }
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [item],
+    });
+
+    await lifecycle.apply(configured.modules);
+
+    expect(item.load).toHaveBeenCalledOnce();
+    await lifecycle.close();
+  });
+
   it("acquires one host after validation and releases it after modules", async () => {
     const events: string[] = [];
     const gatewayConfig = { gateway: { mode: "local" } } as const;
@@ -101,11 +131,16 @@ describe("gateway behavior governor module lifecycle", () => {
       expect(input).toEqual({ gatewayConfig });
       return {
         capability: {
-          agentLoop: {
-            createScopeProvider: () => {
-              throw new Error("TEST_SCOPE_PROVIDER_UNUSED");
+          forActivation: () => ({
+            agentLoop: {
+              createScopeProvider: () => {
+                throw new Error("TEST_SCOPE_PROVIDER_UNUSED");
+              },
+              createRunBinding: () => {
+                throw new Error("TEST_RUN_BINDING_UNUSED");
+              },
             },
-          },
+          }),
         },
         freeze: () => {
           events.push("freeze:host");
@@ -312,6 +347,33 @@ describe("gateway behavior governor module lifecycle", () => {
       "start:c02:shadow",
       "close:c01",
     ]);
+  });
+
+  it("retains an acquired host whose startup rollback close failed", async () => {
+    let failures = 1;
+    const close = vi.fn(() => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("host close failed");
+      }
+    });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: {
+        acquire: async () => ({
+          capability: (await TEST_HOST_PROVIDER.acquire()).capability,
+          freeze: vi.fn(),
+          close,
+        }),
+      },
+      catalog: [descriptor({ id: "c01", failStart: true })],
+    });
+
+    await expect(lifecycle.apply([selection("c01")])).rejects.toThrow(
+      "GOVERNOR_MODULE_STARTUP_CLEANUP_FAILED",
+    );
+    expect(close).toHaveBeenCalledOnce();
+    await lifecycle.close();
+    expect(close).toHaveBeenCalledTimes(2);
   });
 
   it.each([
