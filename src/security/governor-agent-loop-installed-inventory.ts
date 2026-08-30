@@ -8,7 +8,6 @@ import { createGovernorAgentLoopTools } from "./governor-agent-loop-tool-binding
 import type { GovernorAgentLoopTurnState } from "./governor-agent-loop-turn-handler.js";
 import { governorAgentLoopTopLevelString } from "./governor-agent-loop-values.js";
 import { safeGovernorAgentLoopValue } from "./governor-agent-loop-values.js";
-import { isExactGovernorC02Module } from "./governor-c02-module-identity.js";
 
 export function createGovernorAgentLoopInstalledInventory(params: {
   config: GovernorAgentLoopConfiguration;
@@ -30,7 +29,7 @@ export function createGovernorAgentLoopInstalledInventory(params: {
   ) {
     params.turnState.replannedAfterStagnation = true;
   }
-  const installed = isExactGovernorC02Module(params.config);
+  const installed = params.config.hostCapabilities?.installedToolInventory === true;
   if (installed) {
     const effects = params.controller.store
       .listEffects(params.taskId)

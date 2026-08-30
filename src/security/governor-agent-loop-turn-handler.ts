@@ -8,7 +8,6 @@ import {
   type GovernorAgentLoopProgressSnapshot,
 } from "./governor-agent-loop-progress.js";
 import type { GovernorAgentLoopTurnDecision } from "./governor-agent-loop-types.js";
-import { isExactGovernorC02Module } from "./governor-c02-module-identity.js";
 
 export type GovernorAgentLoopTurnState = {
   turns: number;
@@ -68,7 +67,7 @@ export function recordGovernorAgentLoopTurn(params: {
     }
   }
   state.priorProgressFingerprint = state.progress.fingerprint;
-  const recordsC02Source = isExactGovernorC02Module(params.config);
+  const recordsToolProvenance = params.config.hostCapabilities?.toolTurnProvenance === true;
   params.controller.recordRuntimeEvent({
     taskId: params.taskId,
     eventType: "runtime_model_turn_recorded",
@@ -82,7 +81,7 @@ export function recordGovernorAgentLoopTurn(params: {
       satisfiedCriteria: state.progress.satisfiedCriteria.length,
       remainingCriteria: state.progress.remainingCriteria.length,
       progressDigest: state.progress.fingerprint,
-      ...(recordsC02Source
+      ...(recordsToolProvenance
         ? {
             sourceEffectId: state.lastObservedEffectId ?? null,
             sourceToolName: state.lastObservedToolName ?? null,

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import { fencePriorGatewayAcceptanceReceipts } from "../agents/subagent-gateway-acceptance-receipt-recovery.sqlite.js";
 import {
@@ -9,12 +10,8 @@ import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { prepareBehaviorGovernorModuleHostSnapshot } from "../secrets/runtime-module-host.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import { createGovernorAgentLoopScopeProvider } from "../security/governor-agent-loop-scope-provider.js";
-import {
-  C02_SIMPLE_EFFICIENCY_ID,
-  C02_SIMPLE_EFFICIENCY_VERSION,
-} from "../security/governor-c02-simple-efficiency-policy.js";
 import { createGovernorHostRuntimeIfEnabled } from "../security/governor-host-bootstrap.js";
-import { governorDigest } from "../tasks/governor/canonical-json.js";
+import { canonicalGovernorJson, governorDigest } from "../tasks/governor/canonical-json.js";
 import type {
   GatewayBehaviorGovernorModuleAgentLoop,
   GatewayBehaviorGovernorModuleRunInput,
@@ -23,6 +20,7 @@ import {
   loadGatewayBehaviorGovernorModuleHostDescriptor,
   type GatewayBehaviorGovernorModuleHostDescriptor,
 } from "./behavior-governor-module-host-descriptor.js";
+import type { GatewayBehaviorGovernorModuleHostRegistration } from "./behavior-governor-module-host-registration.js";
 import {
   createGatewayBehaviorGovernorModuleRunBindingAuthority,
   type GatewayBehaviorGovernorModuleRunBinding,
@@ -53,6 +51,7 @@ export type GatewayBehaviorGovernorModuleHostCapability = Readonly<{
 export type GatewayBehaviorGovernorModuleHostLeaseCapability = Readonly<{
   forActivation: (
     activation: GatewayBehaviorGovernorModuleRunInput["activation"],
+    registration?: GatewayBehaviorGovernorModuleHostRegistration,
   ) => GatewayBehaviorGovernorModuleHostCapability;
 }>;
 
@@ -152,6 +151,9 @@ async function acquireDescriptorHost(
     throw new Error("GOVERNOR_MODULE_HOST_RUNTIME_NOT_CREATED");
   }
   const children = new Set<GatewayBehaviorGovernorModuleScopeProvider>();
+  const registrations = new Set<
+    ReturnType<GatewayBehaviorGovernorModuleHostRegistration["bind"]>
+  >();
   let frozen = false;
   let closed = false;
   try {
@@ -182,9 +184,29 @@ async function acquireDescriptorHost(
       config,
     });
   const capability: GatewayBehaviorGovernorModuleHostLeaseCapability = Object.freeze({
-    forActivation(activation) {
+    forActivation(activation, registration) {
       if (frozen || closed) {
         throw new Error("GOVERNOR_MODULE_HOST_ADMISSION_FROZEN");
+      }
+      if (
+        registration &&
+        (registration.id !== activation.id || registration.version !== activation.version)
+      ) {
+        throw new Error("GOVERNOR_MODULE_HOST_REGISTRATION_MISMATCH");
+      }
+      const registered = registration?.bind({
+        controller: runtime.adapter.controller,
+        store: runtime.adapter.controller.store,
+        capabilities: descriptor.capabilities,
+        systemdInvocationId: process.env.INVOCATION_ID,
+        seal: (value) =>
+          crypto
+            .createHmac("sha256", snapshot.secrets.receiptSigningKey)
+            .update(canonicalGovernorJson(value))
+            .digest("hex"),
+      });
+      if (registered) {
+        registrations.add(registered);
       }
       return Object.freeze({
         agentLoop: Object.freeze({
@@ -213,12 +235,8 @@ async function acquireDescriptorHost(
                   throw new Error("GOVERNOR_MODULE_HOST_MODE_MISMATCH");
                 }
                 const scope = authority.resolveRunScope(input, proof);
-                if (
-                  scope &&
-                  activation.id === C02_SIMPLE_EFFICIENCY_ID &&
-                  activation.version === C02_SIMPLE_EFFICIENCY_VERSION
-                ) {
-                  return runtime.wrapC02Scope({
+                if (scope && registered) {
+                  return registered.wrap({
                     scope,
                     run: input.run,
                     config,
@@ -270,7 +288,15 @@ async function acquireDescriptorHost(
           errors.push(error);
         }
       }
-      if (children.size === 0) {
+      for (const registration of [...registrations].toReversed()) {
+        try {
+          registration.close();
+          registrations.delete(registration);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (children.size === 0 && registrations.size === 0) {
         try {
           runtime.close();
         } catch (error) {

@@ -289,7 +289,6 @@ import {
 } from "../extra-params.js";
 import { prepareGooglePromptCacheStreamFn } from "../google-prompt-cache.js";
 import { installGovernorLoopBridge, type GovernorLoopBridge } from "../governor-loop-bridge.js";
-import { bindGovernorLoopAttemptEvidence } from "../governor-loop-evidence-channel.js";
 import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "../history.js";
 import { log } from "../logger.js";
 import { buildEmbeddedMessageActionDiscoveryInput } from "../message-action-discovery-input.js";
@@ -6014,70 +6013,66 @@ export async function runEmbeddedAttempt(
       });
       trajectoryEndRecorded = true;
 
-      return bindGovernorLoopAttemptEvidence(
-        {
-          replayMetadata,
-          itemLifecycle: getItemLifecycle(),
-          setTerminalLifecycleMeta,
-          aborted,
-          externalAbort,
-          timedOut,
-          idleTimedOut,
-          timedOutDuringCompaction,
-          timedOutDuringToolExecution,
-          timedOutByRunBudget,
-          promptError,
-          promptErrorSource,
-          preflightRecovery,
-          sessionIdUsed,
-          sessionFileUsed,
-          diagnosticTrace,
-          bootstrapPromptWarningSignaturesSeen: bootstrapPromptWarning.warningSignaturesSeen,
-          bootstrapPromptWarningSignature: bootstrapPromptWarning.signature,
-          systemPromptReport,
-          finalPromptText,
-          messagesSnapshot,
-          ...(beforeAgentFinalizeRevisionReason ? { beforeAgentFinalizeRevisionReason } : {}),
-          ...(beforeAgentFinalizeRevisionExhaustedReason
-            ? { beforeAgentFinalizeRevisionExhaustedReason }
-            : {}),
-          assistantTexts,
-          lastAssistantTextMessageIndex: getLastAssistantTextMessageIndex(),
-          toolMetas: toolMetasNormalized,
-          acceptedSessionSpawns,
-          lastAssistant,
-          currentAttemptAssistant,
-          lastToolError,
-          didSendViaMessagingTool: didSendViaMessagingTool(),
-          didDeliverSourceReplyViaMessageTool,
-          didSendDeterministicApprovalPrompt: didSendDeterministicApprovalPromptNow,
-          messagingToolSentTexts: getMessagingToolSentTexts(),
-          messagingToolSentMediaUrls: getMessagingToolSentMediaUrls(),
-          messagingToolSentTargets: getMessagingToolSentTargets(),
-          messagingToolSourceReplyPayloads,
-          heartbeatToolResponse,
-          toolMediaUrls: pendingToolMediaReply?.mediaUrls,
-          toolAudioAsVoice: pendingToolMediaReply?.audioAsVoice,
-          toolTrustedLocalMedia: pendingToolMediaReply?.trustedLocalMedia,
-          hasToolMediaBlockReply: hasToolMediaBlockReplyNow,
-          successfulCronAdds: getSuccessfulCronAdds(),
-          cloudCodeAssistFormatError: Boolean(
-            lastAssistant?.errorMessage && isCloudCodeAssistFormatError(lastAssistant.errorMessage),
-          ),
-          attemptUsage,
-          promptCache,
-          contextBudgetStatus,
-          compactionCount: getCompactionCount(),
-          compactionTokensAfter: getLastCompactionTokensAfter(),
-          // Client tool calls detected (OpenResponses hosted tools).
-          // Stay `undefined` (not `[]`) when none were detected so downstream
-          // truthiness predicates keep working without a `.length` check.
-          clientToolCalls:
-            completedClientToolCalls.length > 0 ? completedClientToolCalls : undefined,
-          yieldDetected: yieldDetected || undefined,
-        },
-        governorLoopBridge?.terminalEvidence(),
-      );
+      return {
+        replayMetadata,
+        itemLifecycle: getItemLifecycle(),
+        setTerminalLifecycleMeta,
+        aborted,
+        externalAbort,
+        timedOut,
+        idleTimedOut,
+        timedOutDuringCompaction,
+        timedOutDuringToolExecution,
+        timedOutByRunBudget,
+        promptError,
+        promptErrorSource,
+        preflightRecovery,
+        sessionIdUsed,
+        sessionFileUsed,
+        diagnosticTrace,
+        bootstrapPromptWarningSignaturesSeen: bootstrapPromptWarning.warningSignaturesSeen,
+        bootstrapPromptWarningSignature: bootstrapPromptWarning.signature,
+        systemPromptReport,
+        finalPromptText,
+        messagesSnapshot,
+        ...(beforeAgentFinalizeRevisionReason ? { beforeAgentFinalizeRevisionReason } : {}),
+        ...(beforeAgentFinalizeRevisionExhaustedReason
+          ? { beforeAgentFinalizeRevisionExhaustedReason }
+          : {}),
+        assistantTexts,
+        lastAssistantTextMessageIndex: getLastAssistantTextMessageIndex(),
+        toolMetas: toolMetasNormalized,
+        acceptedSessionSpawns,
+        lastAssistant,
+        currentAttemptAssistant,
+        lastToolError,
+        didSendViaMessagingTool: didSendViaMessagingTool(),
+        didDeliverSourceReplyViaMessageTool,
+        didSendDeterministicApprovalPrompt: didSendDeterministicApprovalPromptNow,
+        messagingToolSentTexts: getMessagingToolSentTexts(),
+        messagingToolSentMediaUrls: getMessagingToolSentMediaUrls(),
+        messagingToolSentTargets: getMessagingToolSentTargets(),
+        messagingToolSourceReplyPayloads,
+        heartbeatToolResponse,
+        toolMediaUrls: pendingToolMediaReply?.mediaUrls,
+        toolAudioAsVoice: pendingToolMediaReply?.audioAsVoice,
+        toolTrustedLocalMedia: pendingToolMediaReply?.trustedLocalMedia,
+        hasToolMediaBlockReply: hasToolMediaBlockReplyNow,
+        successfulCronAdds: getSuccessfulCronAdds(),
+        cloudCodeAssistFormatError: Boolean(
+          lastAssistant?.errorMessage && isCloudCodeAssistFormatError(lastAssistant.errorMessage),
+        ),
+        attemptUsage,
+        promptCache,
+        contextBudgetStatus,
+        compactionCount: getCompactionCount(),
+        compactionTokensAfter: getLastCompactionTokensAfter(),
+        // Client tool calls detected (OpenResponses hosted tools).
+        // Stay `undefined` (not `[]`) when none were detected so downstream
+        // truthiness predicates keep working without a `.length` check.
+        clientToolCalls: completedClientToolCalls.length > 0 ? completedClientToolCalls : undefined,
+        yieldDetected: yieldDetected || undefined,
+      };
     } finally {
       if (trajectoryRecorder && !trajectoryEndRecorded) {
         trajectoryRecorder.recordEvent("session.ended", {

@@ -12,7 +12,12 @@ import type {
   GovernorAgentLoopRunInput,
   GovernorAgentLoopRunScope,
 } from "./governor-agent-loop-types.js";
-import { normalizedC02GatewayRegistry } from "./governor-c02-runtime-test-fixture.js";
+import {
+  bindGovernorC02TestHost,
+  governorC02TestEnvironment,
+  governorC02TestHostRegistration,
+  normalizedC02GatewayRegistry,
+} from "./governor-c02-runtime-test-fixture.test.js";
 import {
   createGovernorHostRuntimeIfEnabled,
   type GovernorHostRuntime,
@@ -39,6 +44,7 @@ const capabilities = [
 
 const config: GovernorAgentLoopConfiguration = {
   moduleIdentity: { id: "c02-simple-efficiency", version: "v1" },
+  hostCapabilities: { installedToolInventory: true, toolTurnProvenance: true },
   mode: "enforce",
   scopes: [{ sessionKey: "c02-session-key", agentId: "c02-agent" }],
   criteria: [
@@ -90,24 +96,10 @@ const run = (sourceSequence = 1, runId = "c02-gateway-a"): GovernorAgentLoopRunI
   now: 100,
 });
 
-function environment(systemdInvocationId = "c02-systemd-a"): NodeJS.ProcessEnv {
-  return {
-    NODE_ENV: "test",
-    OPENCLAW_EXPERIMENTAL_BEHAVIOR_GOVERNOR: "1",
-    OPENCLAW_GOVERNOR_IDENTITY_HMAC_KEY: "c02-identity-key-long",
-    OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY: "c02-evidence-key-long",
-    OPENCLAW_GOVERNOR_EVIDENCE_ADMISSION_KEY_ID: "c02-evidence-v1",
-    OPENCLAW_GOVERNOR_HOST_RECEIPT_HMAC_KEY: "c02-receipt-key-long",
-    OPENCLAW_GOVERNOR_HOST_LEDGER_HMAC_KEY: "c02-ledger-key-long",
-    OPENCLAW_GOVERNOR_DEPLOYMENT_ID: "c02-deployment-long",
-    INVOCATION_ID: systemdInvocationId,
-  };
-}
-
 function runtime(stateDir: string, systemdInvocationId = "c02-systemd-a"): GovernorHostRuntime {
   const created = createGovernorHostRuntimeIfEnabled({
     enabled: true,
-    env: environment(systemdInvocationId),
+    env: governorC02TestEnvironment(systemdInvocationId),
     stateDir,
     capabilities,
     integrations: {
@@ -134,6 +126,7 @@ function runtime(stateDir: string, systemdInvocationId = "c02-systemd-a"): Gover
   if (!created) {
     throw new Error("C02 runtime unavailable");
   }
+  bindGovernorC02TestHost(created, capabilities, systemdInvocationId);
   return created;
 }
 
@@ -158,7 +151,7 @@ function scope(
   }
   let wrapped: GovernorAgentLoopRunScope;
   try {
-    wrapped = host.wrapC02Scope({
+    wrapped = governorC02TestHostRegistration(host).wrap({
       scope: base,
       run: input,
       config,
@@ -479,7 +472,7 @@ describe("runtime-owned C02 attestation integration", () => {
           await complete(target);
           const database = new DatabaseSync(
             resolveOpenClawStateSqlitePath({
-              ...environment(),
+              ...governorC02TestEnvironment(),
               OPENCLAW_STATE_DIR: state.stateDir,
             }),
           );

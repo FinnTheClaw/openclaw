@@ -3,7 +3,6 @@ import type { GovernorSqliteStore } from "../tasks/governor/store.js";
 import { governorAgentLoopToolImplementationDigest } from "./governor-agent-loop-tools.js";
 import type { GovernorAgentLoopRunInput } from "./governor-agent-loop-types.js";
 import {
-  CANDIDATES,
   FINN_REQUEST_ID,
   SCHEMA,
   SHA256,
@@ -15,7 +14,7 @@ import {
   exactKeys,
   fail,
 } from "./governor-c02-runtime-attestation-model.js";
-import { validateGovernorC02RestartSnapshot } from "./governor-c02-runtime-restart.js";
+import { assertGovernorC02RestartCheckpoint } from "./governor-c02-runtime-restart.js";
 import {
   assertGovernorC02PreparedRun,
   C02_CRITERIA_TEMPLATE,
@@ -67,8 +66,13 @@ export function validateGovernorC02Snapshot(params: {
   initialGatewayInvocationId: string;
   systemdInvocationId: string;
   snapshot: GovernorC02StoreSnapshot;
-}): Candidate {
+  candidates: WeakSet<object>;
+  phase?: "pre-aggregate" | "terminal";
+}): Candidate | undefined {
   assertGovernorC02PreparedRun(params.prepared);
+  const phase = params.phase ?? "terminal";
+  const expectedActionCount = phase === "pre-aggregate" ? 2 : 3;
+  const expectedTurnCount = phase === "pre-aggregate" ? 2 : 4;
   const { task, highwater, events, intents, effects, evidence, checkpoints } = params.snapshot;
   const opaque = (kind: string, value: string) => params.store.opaqueReference(kind, value);
   const expectedScope = {
@@ -82,8 +86,9 @@ export function validateGovernorC02Snapshot(params: {
   };
   const sourceMessageRef = opaque(`source-message:${task.scopeKey}`, params.run.sourceMessageId);
   if (
-    task.state !== "COMPLETED" ||
-    task.terminalAt === undefined ||
+    (phase === "terminal"
+      ? task.state !== "COMPLETED" || task.terminalAt === undefined
+      : task.state === "COMPLETED" || task.terminalAt !== undefined) ||
     task.flowId !== opaque("flow-id", params.initialGatewayInvocationId) ||
     governorDigest(task.scope as unknown as GovernorJsonValue) !==
       governorDigest(expectedScope as unknown as GovernorJsonValue) ||
@@ -133,19 +138,19 @@ export function validateGovernorC02Snapshot(params: {
     sourceEvent.payloadDigest !== governorDigest(sourceEvent.payload) ||
     sourceEvent.createdAt < task.createdAt ||
     sourceEvent.createdAt > task.updatedAt ||
-    turns.length !== 4 ||
-    intents.length !== 3 ||
-    effects.length !== 3 ||
-    evidence.length !== 3 ||
+    turns.length !== expectedTurnCount ||
+    intents.length !== expectedActionCount ||
+    effects.length !== expectedActionCount ||
+    evidence.length !== expectedActionCount ||
     checkpoints.length !== 1
   ) {
     fail();
   }
 
   const checkpoint = checkpoints[0]!;
-  const checkpointBinding = validateGovernorC02RestartSnapshot({
+  const checkpointBinding = assertGovernorC02RestartCheckpoint({
     ...params,
-    phase: "terminal",
+    phase,
   });
 
   const turnMetadata: GovernorJsonValue[] = [];
@@ -179,17 +184,17 @@ export function validateGovernorC02Snapshot(params: {
       event.taskVersion > task.taskVersion ||
       event.payloadDigest !== governorDigest(event.payload) ||
       payload.turn !== index + 1 ||
-      payload.toolCallCount !== (index < 3 ? 1 : 0) ||
+      payload.toolCallCount !== (index < expectedActionCount ? 1 : 0) ||
       payload.planVersion !== task.planVersion ||
       payload.executionGeneration !== task.executionGeneration ||
       payload.satisfiedCriteria !== Math.min(index + 1, 3) ||
       payload.remainingCriteria !== Math.max(2 - index, 0) ||
-      payload.stopReason !== (index < 3 ? "toolUse" : "stop") ||
+      payload.stopReason !== (index < expectedActionCount ? "toolUse" : "stop") ||
       typeof payload.assistantTextDigest !== "string" ||
       !SHA256.test(payload.assistantTextDigest) ||
       typeof payload.progressDigest !== "string" ||
       !SHA256.test(payload.progressDigest) ||
-      (index < 3
+      (index < expectedActionCount
         ? typeof payload.sourceEffectId !== "string" ||
           typeof payload.sourceToolName !== "string" ||
           typeof payload.sourceResultDigest !== "string" ||
@@ -224,7 +229,7 @@ export function validateGovernorC02Snapshot(params: {
   const evidenceMetadata: GovernorJsonValue[] = [];
   const targets: string[] = [];
   const toolResults: Body["toolResults"][number][] = [];
-  for (const [index, expected] of C02_CRITERIA_TEMPLATE.entries()) {
+  for (const [index, expected] of C02_CRITERIA_TEMPLATE.slice(0, expectedActionCount).entries()) {
     const intent = intents[index];
     const effect = effects[index];
     const item = evidence[index];
@@ -351,7 +356,10 @@ export function validateGovernorC02Snapshot(params: {
       resultDigest: payload.resultDigest,
     });
   }
-  if (task.terminalAt < turns[3]!.createdAt || task.updatedAt !== task.terminalAt) {
+  if (phase === "pre-aggregate") {
+    return undefined;
+  }
+  if (task.terminalAt! < turns[3]!.createdAt || task.updatedAt !== task.terminalAt) {
     fail();
   }
   const body = deepFreeze({
@@ -401,6 +409,6 @@ export function validateGovernorC02Snapshot(params: {
     opaqueActionTargets: targets,
     toolResults,
   }) as Candidate;
-  CANDIDATES.add(body);
+  params.candidates.add(body);
   return body;
 }

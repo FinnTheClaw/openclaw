@@ -6,6 +6,7 @@ import {
   type GatewayBehaviorGovernorModuleAgentLoop,
   type GatewayBehaviorGovernorModuleAgentLoopHandle,
 } from "./behavior-governor-module-agent-loop.js";
+import type { GatewayBehaviorGovernorModuleHostRegistration } from "./behavior-governor-module-host-registration.js";
 import {
   takeGatewayBehaviorGovernorModuleHostAcquisitionCleanup,
   type GatewayBehaviorGovernorModuleHostCapability,
@@ -39,6 +40,7 @@ export type GatewayBehaviorGovernorModuleDescriptor = Readonly<{
   qualifiedModes: readonly BehaviorGovernorModuleSelection["mode"][];
   dependencies: readonly string[];
   durableBoundaryIds: readonly string[];
+  hostRegistration?: GatewayBehaviorGovernorModuleHostRegistration;
   load: () => Promise<GatewayBehaviorGovernorModuleFactory>;
 }>;
 
@@ -255,7 +257,10 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
           version: item.selection.version,
         });
         const runtime = await create(
-          Object.freeze({ ...activation, host: acquired.capability.forActivation(activation) }),
+          Object.freeze({
+            ...activation,
+            host: acquired.capability.forActivation(activation, item.descriptor.hostRegistration),
+          }),
         );
         if (!runtime || typeof runtime.close !== "function") {
           throw new Error("GOVERNOR_MODULE_RUNTIME_INVALID");

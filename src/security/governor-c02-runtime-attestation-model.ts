@@ -13,8 +13,6 @@ export const SCHEMA = "openclaw.governor-c02-runtime-attestation/v1" as const;
 export const SHA256 = /^[a-f0-9]{64}$/u;
 export const FINN_REQUEST_ID = /^req_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 export const CHECKPOINT_PREFIX = "c02-runtime-binding:";
-export const CANDIDATES = new WeakSet<object>();
-export const ISSUED = new WeakSet<object>();
 
 export type GovernorC02StoreSnapshot = Readonly<{
   task: GovernorTaskProjection;
@@ -137,3 +135,10 @@ export function exactKeys(
 ): boolean {
   return Object.keys(value).toSorted().join("\0") === [...keys].toSorted().join("\0");
 }
+
+export function governorC02TimingSafeEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+import crypto from "node:crypto";

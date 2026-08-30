@@ -31,6 +31,7 @@ vi.mock("../secrets/runtime-module-host.js", () => ({
 }));
 vi.mock("../security/governor-host-bootstrap.js", () => ({
   createGovernorHostRuntimeIfEnabled: vi.fn(() => ({
+    adapter: { controller: { store: {} } },
     freeze: vi.fn(),
     close: state.closeRuntime,
   })),
@@ -130,5 +131,20 @@ describe("gateway behavior governor module host acquisition rollback", () => {
     await lifecycle.close();
     expect(state.closeRuntime).toHaveBeenCalledTimes(3);
     expect(state.clearSigner).toHaveBeenCalledTimes(3);
+  });
+
+  it("binds a leaf-owned exact registration without feature policy in the neutral host", async () => {
+    const close = vi.fn();
+    const bind = vi.fn(() => ({ wrap: vi.fn(), close }));
+    const provider = createGatewayBehaviorGovernorModuleHostProvider("/managed/descriptor.json");
+    const lease = await provider.acquire({ gatewayConfig: {} });
+    lease.capability.forActivation({ id: "fixture-module", version: "v1", mode: "enforce" }, {
+      id: "fixture-module",
+      version: "v1",
+      bind,
+    } as never);
+    expect(bind).toHaveBeenCalledOnce();
+    lease.close();
+    expect(close).toHaveBeenCalledOnce();
   });
 });

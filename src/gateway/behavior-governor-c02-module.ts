@@ -1,5 +1,6 @@
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import type { GovernorAgentLoopRunScope } from "../security/governor-agent-loop-readonly.js";
+import { GOVERNOR_C02_HOST_REGISTRATION } from "../security/governor-c02-runtime-attestation.js";
 import {
   C02_CRITERIA_TEMPLATE,
   C02_MAX_TURNS,
@@ -53,6 +54,10 @@ function config(
     moduleIdentity: Object.freeze({
       id: C02_SIMPLE_EFFICIENCY_ID,
       version: C02_SIMPLE_EFFICIENCY_VERSION,
+    }),
+    hostCapabilities: Object.freeze({
+      installedToolInventory: true,
+      toolTurnProvenance: true,
     }),
     mode,
     scopes: Object.freeze([Object.freeze({ sessionKey, agentId })]),
@@ -154,5 +159,6 @@ export const C02_BEHAVIOR_GOVERNOR_MODULE = Object.freeze({
   qualifiedModes: Object.freeze(["enforce"] as const),
   dependencies: Object.freeze([]),
   durableBoundaryIds: Object.freeze([]),
+  hostRegistration: GOVERNOR_C02_HOST_REGISTRATION,
   load: async () => createC02Module,
 }) satisfies GatewayBehaviorGovernorModuleDescriptor;

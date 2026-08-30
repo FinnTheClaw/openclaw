@@ -28,6 +28,10 @@ export type GovernorAgentLoopToolBinding = Readonly<{
 
 export type GovernorAgentLoopConfiguration = Readonly<{
   moduleIdentity?: Readonly<{ id: string; version: string }>;
+  hostCapabilities?: Readonly<{
+    installedToolInventory: boolean;
+    toolTurnProvenance: boolean;
+  }>;
   mode: GovernorAgentLoopMode;
   scopes: readonly Readonly<{ sessionKey: string; agentId?: string }>[];
   criteria: readonly GovernorAgentLoopCriterion[];
@@ -83,6 +87,7 @@ export function validateGovernorAgentLoopConfiguration(
   }
   assertKeys(safeInput, [
     "moduleIdentity",
+    "hostCapabilities",
     "mode",
     "scopes",
     "criteria",
@@ -110,6 +115,15 @@ export function validateGovernorAgentLoopConfiguration(
         new Set(dependsOnCriteria).size !== dependsOnCriteria.length)
     ) {
       throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
+    }
+    if (safeInput.hostCapabilities) {
+      assertKeys(safeInput.hostCapabilities, ["installedToolInventory", "toolTurnProvenance"]);
+      if (
+        typeof safeInput.hostCapabilities.installedToolInventory !== "boolean" ||
+        typeof safeInput.hostCapabilities.toolTurnProvenance !== "boolean"
+      ) {
+        throw new Error("GOVERNOR_AGENT_LOOP_CONFIG_INVALID");
+      }
     }
     return Object.freeze({
       criterionId: assertString(item.criterionId),
@@ -270,6 +284,9 @@ export function validateGovernorAgentLoopConfiguration(
       ? {
           moduleIdentity: Object.freeze({ id: moduleIdentity.id, version: moduleIdentity.version }),
         }
+      : {}),
+    ...(safeInput.hostCapabilities
+      ? { hostCapabilities: Object.freeze({ ...safeInput.hostCapabilities }) }
       : {}),
     mode: safeInput.mode,
     scopes: Object.freeze(scopes),
