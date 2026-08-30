@@ -142,6 +142,69 @@ describe("installed governor tool attestor", () => {
     );
   });
 
+  it("revalidates executable behavior identities before matching a tool", () => {
+    const mutations: Array<(value: AgentTool) => void> = [
+      (value) => {
+        value.execute = async () => ({
+          content: [{ type: "text", text: "changed" }],
+          details: null,
+        });
+      },
+      (value) => {
+        value.prepareArguments = (args) => args as never;
+      },
+      (value) => {
+        value.executionMode = "sequential";
+      },
+    ];
+    for (const mutate of mutations) {
+      const read = tool("read");
+      const attestor = createGovernorInstalledToolAttestor();
+      const handle = attestor.attest({ tool: read, expected: identity(read) });
+      mutate(read);
+      expect(() => attestor.assertBound(handle, read)).toThrow(
+        "GOVERNOR_INSTALLED_TOOL_BINDING_MISMATCH",
+      );
+      expect(() => attestor.governedTools([handle])).toThrow(
+        "GOVERNOR_INSTALLED_TOOL_BINDING_MISMATCH",
+      );
+    }
+  });
+
+  it("preserves own __proto__ schema keys and rejects unsupported own properties", () => {
+    const schema = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(schema, "__proto__", {
+      value: { type: "string" },
+      enumerable: true,
+      configurable: true,
+    });
+    const first = governorInstalledToolDefinitionDigest(tool("read", schema));
+    Object.defineProperty(schema, "__proto__", {
+      value: { type: "number" },
+      enumerable: true,
+      configurable: true,
+    });
+    expect(governorInstalledToolDefinitionDigest(tool("read", schema))).not.toBe(first);
+
+    const nonEnumerable = { type: "object" };
+    Object.defineProperty(nonEnumerable, "hidden", { value: true });
+    const symbolKey = { type: "object", [Symbol("hostile")]: true };
+    const extraArray = [{ type: "string" }];
+    Object.defineProperty(extraArray, "hidden", { value: true });
+    const symbolArray = [{ type: "string" }];
+    Object.defineProperty(symbolArray, Symbol("hostile"), { value: true, enumerable: true });
+    const accessorArray = [{ type: "string" }];
+    Object.defineProperty(accessorArray, "0", {
+      enumerable: true,
+      get: () => ({ type: "number" }),
+    });
+    for (const hostile of [nonEnumerable, symbolKey, extraArray, symbolArray, accessorArray]) {
+      expect(() => governorInstalledToolDefinitionDigest(tool("read", hostile))).toThrow(
+        "GOVERNOR_INSTALLED_TOOL_SCHEMA_INVALID",
+      );
+    }
+  });
+
   it("rejects duplicate handles and all use after close", () => {
     const read = tool("read");
     const attestor = createGovernorInstalledToolAttestor();
