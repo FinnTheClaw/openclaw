@@ -6,8 +6,6 @@ import { extname, isAbsolute, join } from "node:path";
 const MAX_LINES = 500;
 const BASELINE_PATH = "scripts/source-size-baseline.json";
 const IMMUTABLE_BASE_COMMIT = "e9030d5476e5572a44ba89f653bc5c6c428ea351";
-const GENERATED_DATA_FILE = "src/security/governor-host-delivery-build-manifest.generated.ts";
-const GENERATED_DATA_FILE_MAX_LINES = 17_699;
 const EXTENSIONS = new Set([
   ".bash",
   ".cjs",
@@ -39,7 +37,6 @@ const GENERATED_UNTRACKED_ROOTS = new Set([
 
 type Baseline = {
   baseCommit: string;
-  generatedDataFileMaxLines?: Record<string, number>;
   schemaVersion: 1;
 };
 type Change = {
@@ -116,12 +113,7 @@ function parseBaseline(value: unknown): Baseline {
     throw new Error("source-size baseline must be an object");
   }
   const record = value as Record<string, unknown>;
-  if (
-    ![
-      "baseCommit,schemaVersion",
-      "baseCommit,generatedDataFileMaxLines,schemaVersion",
-    ].includes(Object.keys(record).toSorted().join(","))
-  ) {
+  if (Object.keys(record).toSorted().join(",") !== "baseCommit,schemaVersion") {
     throw new Error("source-size baseline has unsupported fields");
   }
   if (record.schemaVersion !== 1) {
@@ -133,25 +125,7 @@ function parseBaseline(value: unknown): Baseline {
   if (record.baseCommit !== IMMUTABLE_BASE_COMMIT) {
     throw new Error("source-size baseline baseCommit must match the immutable source-GO skeleton");
   }
-  const allowance = record.generatedDataFileMaxLines;
-  if (allowance !== undefined) {
-    if (
-      !allowance ||
-      typeof allowance !== "object" ||
-      Array.isArray(allowance) ||
-      Object.keys(allowance).join(",") !== GENERATED_DATA_FILE ||
-      allowance[GENERATED_DATA_FILE] !== GENERATED_DATA_FILE_MAX_LINES
-    ) {
-      throw new Error("source-size generated data allowance must be the exact governor manifest ceiling");
-    }
-  }
   return record as Baseline;
-}
-
-function generatedDataFileLimit(baseline: Baseline, change: Change): number | undefined {
-  return change.kind === "existing" && change.path === GENERATED_DATA_FILE
-    ? baseline.generatedDataFileMaxLines?.[GENERATED_DATA_FILE]
-    : undefined;
 }
 
 async function loadBaseline(root: string): Promise<Baseline> {
@@ -397,9 +371,7 @@ async function check(root: string, baseline: Baseline): Promise<number> {
         change.kind === "existing"
           ? baseAllowance(root, baseline.baseCommit, change.baselinePath ?? change.path)
           : undefined;
-      const limit =
-        generatedDataFileLimit(baseline, change) ??
-        (base?.governed ? Math.max(MAX_LINES, base.lines) : MAX_LINES);
+      const limit = base?.governed ? Math.max(MAX_LINES, base.lines) : MAX_LINES;
       if (representation.lines > limit) {
         failures.push(
           `${representation.lines}\t${limit}\t${change.kind}\t${representation.source}\t${change.path}`,

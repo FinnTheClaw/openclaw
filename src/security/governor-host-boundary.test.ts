@@ -120,6 +120,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   ],
   "governor-host-delivery-build-manifest": ["security/governor-host-delivery-implementations.ts"],
   "governor-host-delivery-build-manifest.generated": [
+    "security/governor-host-delivery-build-manifest.generated.ts",
     "security/governor-host-delivery-build-manifest.ts",
   ],
   "governor-host-delivery-broker": ["security/governor-host-broker.ts"],

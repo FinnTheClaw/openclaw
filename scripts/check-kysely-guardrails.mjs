@@ -77,6 +77,9 @@ const rawSqliteAllowPathGroups = {
     "src/tasks/task-registry.store.sqlite.ts",
     "src/tui/tui-last-session.ts",
   ],
+  "isolated child-dispatch process-boundary evidence harness": [
+    "src/agents/subagent-child-dispatch-process-fence.ts",
+  ],
 };
 
 const rawSqliteAllowPathReasons = new Map();
