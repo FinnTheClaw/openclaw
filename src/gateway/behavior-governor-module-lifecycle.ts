@@ -6,10 +6,11 @@ import {
   type GatewayBehaviorGovernorModuleAgentLoop,
   type GatewayBehaviorGovernorModuleAgentLoopHandle,
 } from "./behavior-governor-module-agent-loop.js";
-import type {
-  GatewayBehaviorGovernorModuleHostCapability,
-  GatewayBehaviorGovernorModuleHostLease,
-  GatewayBehaviorGovernorModuleHostProvider,
+import {
+  takeGatewayBehaviorGovernorModuleHostAcquisitionCleanup,
+  type GatewayBehaviorGovernorModuleHostCapability,
+  type GatewayBehaviorGovernorModuleHostLease,
+  type GatewayBehaviorGovernorModuleHostProvider,
 } from "./behavior-governor-module-host.js";
 
 const MODULE_ID_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/u;
@@ -272,6 +273,7 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
         ),
       );
     } catch (error) {
+      acquired ??= takeGatewayBehaviorGovernorModuleHostAcquisitionCleanup(error);
       const cleanupErrors: unknown[] = [];
       const survivors: typeof active = [];
       for (const item of started.toReversed()) {

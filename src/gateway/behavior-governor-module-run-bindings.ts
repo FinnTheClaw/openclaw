@@ -1,6 +1,11 @@
 import type { GovernorAgentLoopScopeProvider } from "../security/governor-agent-loop-scope-provider.js";
 import type { GovernorAgentLoopRunScope } from "../security/governor-agent-loop-types.js";
-import { governorDigest } from "../tasks/governor/canonical-json.js";
+import {
+  canonicalGovernorJson,
+  governorDigest,
+  type GovernorJsonValue,
+} from "../tasks/governor/canonical-json.js";
+import { assertGovernorPersistedJson } from "../tasks/governor/persistence-guard.js";
 import type {
   GatewayBehaviorGovernorModuleActivation,
   GatewayBehaviorGovernorModuleRunInput,
@@ -10,36 +15,36 @@ declare const runBindingTokenBrand: unique symbol;
 export type GatewayBehaviorGovernorModuleRunBindingToken = Readonly<{
   [runBindingTokenBrand]: true;
 }>;
-
-export type GatewayBehaviorGovernorModuleRunBinding = Readonly<{
+export type GatewayBehaviorGovernorModuleRunBindingProof = Readonly<{
   token: GatewayBehaviorGovernorModuleRunBindingToken;
+  planDigest: string;
+  plan: GovernorJsonValue;
+}>;
+export type GatewayBehaviorGovernorModuleRunBinding = Readonly<{
+  proof: GatewayBehaviorGovernorModuleRunBindingProof;
   close: () => void;
 }>;
-
 export type GatewayBehaviorGovernorModuleRunBindingInput = Readonly<{
   run: GatewayBehaviorGovernorModuleRunInput["run"];
   planDigest: string;
-  plan: Readonly<object>;
+  plan: unknown;
 }>;
-
 export type GatewayBehaviorGovernorModuleRunBindingAuthority = Readonly<{
   createRunBinding: (
     input: GatewayBehaviorGovernorModuleRunBindingInput,
   ) => GatewayBehaviorGovernorModuleRunBinding;
   resolveRunScope: (
     input: GatewayBehaviorGovernorModuleRunInput,
-    token: GatewayBehaviorGovernorModuleRunBindingToken,
-    provider: GovernorAgentLoopScopeProvider,
+    proof: GatewayBehaviorGovernorModuleRunBindingProof,
   ) => GovernorAgentLoopRunScope | undefined;
   freeze: () => void;
   close: () => void;
 }>;
 
 type BindingRecord = {
-  provider?: GovernorAgentLoopScopeProvider;
   identityDigest: string;
   planDigest: string;
-  plan: Readonly<object>;
+  plan: GovernorJsonValue;
   consumed: boolean;
   closed: boolean;
 };
@@ -70,18 +75,45 @@ function runIdentityDigest(run: GatewayBehaviorGovernorModuleRunInput["run"]): s
   });
 }
 
+function deepFreeze(value: GovernorJsonValue): GovernorJsonValue {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function canonicalPlan(plan: unknown): GovernorJsonValue {
+  const safe = assertGovernorPersistedJson("log", plan);
+  return deepFreeze(JSON.parse(canonicalGovernorJson(safe)) as GovernorJsonValue);
+}
+
 export function createGatewayBehaviorGovernorModuleRunBindingAuthority(params: {
   activation: GatewayBehaviorGovernorModuleActivation;
+  provider: GovernorAgentLoopScopeProvider;
 }): GatewayBehaviorGovernorModuleRunBindingAuthority {
   const records = new Map<object, BindingRecord>();
   let frozen = false;
   let closed = false;
+  let providerClosed = false;
+
+  const closeProvider = (): void => {
+    if (providerClosed) {
+      return;
+    }
+    params.provider.close();
+    providerClosed = true;
+  };
 
   const closeRecord = (token: object, record: BindingRecord): void => {
     if (record.closed) {
       return;
     }
-    record.provider?.close();
+    if (record.consumed) {
+      closeProvider();
+    }
     record.closed = true;
     records.delete(token);
   };
@@ -91,54 +123,56 @@ export function createGatewayBehaviorGovernorModuleRunBindingAuthority(params: {
       if (frozen || closed) {
         throw new Error("GOVERNOR_MODULE_RUN_BINDING_FROZEN");
       }
-      if (!PLAN_DIGEST.test(input.planDigest) || !input.plan || !Object.isFrozen(input.plan)) {
+      const plan = canonicalPlan(input.plan);
+      const planDigest = governorDigest(plan);
+      if (!PLAN_DIGEST.test(input.planDigest) || input.planDigest !== planDigest) {
         throw new Error("GOVERNOR_MODULE_RUN_BINDING_PLAN_INVALID");
       }
       const token = Object.freeze({}) as GatewayBehaviorGovernorModuleRunBindingToken;
       const record: BindingRecord = {
         identityDigest: runIdentityDigest(input.run),
-        planDigest: input.planDigest,
-        plan: input.plan,
+        planDigest,
+        plan,
         consumed: false,
         closed: false,
       };
       records.set(token, record);
-      return Object.freeze({ token, close: () => closeRecord(token, record) });
+      const proof = Object.freeze({ token, planDigest, plan });
+      return Object.freeze({ proof, close: () => closeRecord(token, record) });
     },
-    resolveRunScope(input, token, provider) {
+    resolveRunScope(input, proof) {
       if (frozen || closed) {
         throw new Error("GOVERNOR_MODULE_RUN_BINDING_FROZEN");
       }
-      const record = token && typeof token === "object" ? records.get(token) : undefined;
+      const record =
+        proof?.token && typeof proof.token === "object" ? records.get(proof.token) : undefined;
       if (
         !record ||
         record.closed ||
         record.consumed ||
         !sameActivation(params.activation, input.activation) ||
         record.identityDigest !== runIdentityDigest(input.run) ||
-        !PLAN_DIGEST.test(record.planDigest) ||
-        !Object.isFrozen(record.plan)
+        proof.plan !== record.plan ||
+        proof.planDigest !== record.planDigest ||
+        governorDigest(proof.plan) !== record.planDigest
       ) {
         throw new Error("GOVERNOR_MODULE_RUN_BINDING_INVALID");
       }
       record.consumed = true;
-      record.provider = provider;
       try {
-        const scope = provider.resolveRunScope(input.run);
+        const scope = params.provider.resolveRunScope(input.run);
         if (!scope) {
           throw new Error("GOVERNOR_MODULE_RUN_BINDING_SCOPE_MISMATCH");
         }
         return scope;
       } catch (error) {
-        closeRecord(token, record);
+        closeRecord(proof.token, record);
         throw error;
       }
     },
     freeze() {
       frozen = true;
-      for (const record of records.values()) {
-        record.provider?.freeze();
-      }
+      params.provider.freeze();
     },
     close() {
       if (closed) {
@@ -156,6 +190,7 @@ export function createGatewayBehaviorGovernorModuleRunBindingAuthority(params: {
       if (errors.length > 0 || records.size > 0) {
         throw new AggregateError(errors, "GOVERNOR_MODULE_RUN_BINDING_CLOSE_FAILED");
       }
+      closeProvider();
       closed = true;
     },
   });
