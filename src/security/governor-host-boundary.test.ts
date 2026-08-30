@@ -10,6 +10,7 @@ const authorityModules = [
   "governor-agent-loop-host",
   "governor-agent-loop-host-replay",
   "governor-agent-loop-progress",
+  "governor-agent-loop-scope-provider",
   "governor-agent-loop-task",
   "governor-agent-loop-tools",
   "governor-agent-loop-types",
@@ -44,6 +45,9 @@ const forbiddenAuthority =
 
 const allowedAuthorityImporters: Record<(typeof authorityModules)[number], readonly string[]> = {
   "governor-agent-loop-admission": [
+    // Reviewed feature-neutral seam: it borrows host admission for scoped runs
+    // but cannot construct or own the controller, store, or acceptance signer.
+    "security/governor-agent-loop-scope-provider.ts",
     "security/governor-host-bootstrap.ts",
     "security/governor-agent-loop-host-replay.ts",
     "security/governor-agent-loop-host.ts",
@@ -51,10 +55,12 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   "governor-agent-loop-config": [
     "security/governor-agent-loop-admission.ts",
     "gateway/behavior-governor-lifecycle.ts",
+    "gateway/behavior-governor-module-host.ts",
     "security/governor-agent-loop-completed-replay.ts",
     "security/governor-agent-loop-contract.ts",
     "security/governor-agent-loop-progress.ts",
     "security/governor-agent-loop-replay-lookup.ts",
+    "security/governor-agent-loop-scope-provider.ts",
     "security/governor-agent-loop-types.ts",
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-ingress.ts",
@@ -64,10 +70,17 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   ],
   "governor-agent-loop-host-replay": ["security/governor-agent-loop-host.ts"],
   "governor-agent-loop-contract": ["security/governor-agent-loop-ingress.ts"],
-  "governor-agent-loop-host": ["security/governor-host-bootstrap.ts"],
+  "governor-agent-loop-host": [
+    "security/governor-agent-loop-scope-provider.ts",
+    "security/governor-host-bootstrap.ts",
+  ],
   "governor-agent-loop-progress": [
     "security/governor-agent-loop-host.ts",
     "security/governor-agent-loop-turn-handler.ts",
+  ],
+  "governor-agent-loop-scope-provider": [
+    "gateway/behavior-governor-module-host.ts",
+    "gateway/behavior-governor-module-run-bindings.ts",
   ],
   "governor-agent-loop-task": ["security/governor-agent-loop-host.ts"],
   "governor-agent-loop-tools": [
@@ -87,6 +100,8 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-agent-loop-scope-token.ts",
     "security/governor-agent-loop-terminal-replay.ts",
     "security/governor-agent-loop-turn-handler.ts",
+    "gateway/behavior-governor-module-run-bindings.ts",
+    "security/governor-agent-loop-scope-provider.ts",
   ],
   "governor-agent-loop-values": [
     "security/governor-agent-loop-host.ts",
@@ -105,7 +120,11 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-host-ledger-storage.ts",
   ],
   "governor-host-ledger-storage": ["security/governor-host-anti-rollback-ledger.ts"],
-  "governor-host-bootstrap": ["gateway/behavior-governor-lifecycle.ts"],
+  "governor-host-bootstrap": [
+    "gateway/behavior-governor-lifecycle.ts",
+    "gateway/behavior-governor-module-host-descriptor.ts",
+    "gateway/behavior-governor-module-host.ts",
+  ],
   "governor-host-broker": [
     "security/governor-host-bootstrap.ts",
     "security/governor-host-readonly.ts",
@@ -197,13 +216,50 @@ describe("governor host authority boundary", () => {
 
   it("allows authority modules only through the explicit whole-source dependency map", () => {
     const productionFiles = files(root);
+    const differences: Array<{
+      moduleName: string;
+      missingFromMap: string[];
+      staleInMap: string[];
+    }> = [];
     for (const moduleName of authorityModules) {
       const importers = productionFiles
         .filter((file) => fs.readFileSync(file, "utf8").includes(`/${moduleName}.js`))
         .map((file) => path.relative(root, file).replaceAll("\\", "/"))
         .toSorted();
-      expect(importers, moduleName).toEqual([...allowedAuthorityImporters[moduleName]].toSorted());
+      const expected = [...allowedAuthorityImporters[moduleName]].toSorted();
+      const missingFromMap = importers.filter((file) => !expected.includes(file));
+      const staleInMap = expected.filter((file) => !importers.includes(file));
+      if (missingFromMap.length > 0 || staleInMap.length > 0) {
+        differences.push({ moduleName, missingFromMap, staleInMap });
+      }
     }
+    expect(differences).toEqual([]);
+  });
+
+  it("keeps the reviewed module mechanics feature-neutral and authority-bounded", () => {
+    const read = (relative: string) => fs.readFileSync(path.join(root, relative), "utf8");
+    const nonOwners = [
+      "security/governor-agent-loop-scope-provider.ts",
+      "gateway/behavior-governor-module-run-bindings.ts",
+      "gateway/behavior-governor-module-host-descriptor.ts",
+    ].map(read);
+    for (const source of nonOwners) {
+      expect(source).not.toMatch(
+        /\b(?:new GovernorController|GovernorSqliteStore|createGovernorStoreDependencies|installGatewayAcceptanceReceiptSigner)\b/u,
+      );
+      expect(source).not.toContain("c02-simple-efficiency");
+    }
+    expect(nonOwners[0]).toContain("import type { GovernorController }");
+
+    // The module host is the existing gateway-owned lease over the shared host and
+    // signer. It must not construct a second controller/store or become C02 policy.
+    const moduleHost = read("gateway/behavior-governor-module-host.ts");
+    expect(moduleHost).toContain("createGovernorHostRuntimeIfEnabled");
+    expect(moduleHost).toContain("installGatewayAcceptanceReceiptSigner");
+    expect(moduleHost).not.toMatch(
+      /\b(?:new GovernorController|GovernorSqliteStore|createGovernorStoreDependencies)\b/u,
+    );
+    expect(moduleHost).not.toContain("c02-simple-efficiency");
   });
 
   it("keeps ambient process secrets out of the broker, persistence, and governor stores", () => {
