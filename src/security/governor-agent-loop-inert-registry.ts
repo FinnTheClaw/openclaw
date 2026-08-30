@@ -12,6 +12,9 @@ type Callbacks = Readonly<{
 let active: { token: object; callbacks: Callbacks } | undefined;
 
 export function installGovernorAgentLoopInertRegistry(callbacks: Callbacks): object {
+  if (active) {
+    throw new Error("GOVERNOR_AGENT_LOOP_REGISTRY_ALREADY_ACTIVE");
+  }
   const token = {};
   active = { token, callbacks };
   return token;
