@@ -15,6 +15,11 @@ import {
 import type { EmbeddedRunAttemptParams } from "./run/types.js";
 
 let runEmbeddedAgent: typeof import("./run.js").runEmbeddedAgent;
+const coordinatorModel = {
+  provider: "remote-llm",
+  id: "moira/brain",
+  baseUrl: "http://127.0.0.1:8300/v1",
+} as Parameters<StreamFn>[0];
 
 describe("terminal Finn request evidence", () => {
   beforeAll(async () => {
@@ -31,9 +36,10 @@ describe("terminal Finn request evidence", () => {
     mockedPickFallbackThinkingLevel.mockReturnValue("low");
     mockedRunEmbeddedAttempt.mockImplementation(async (params) => {
       const attemptParams = params as EmbeddedRunAttemptParams;
-      if ((attemptParams.finnRequestEvidence?.requestIds.length ?? 2) < 2) {
+      if ((attemptParams.finnRequestEvidence?.snapshot().requestIds.length ?? 2) < 2) {
         const requestId =
-          "req_retry-terminal-" + (attemptParams.finnRequestEvidence!.requestIds.length + 1);
+          "req_retry-terminal-" +
+          (attemptParams.finnRequestEvidence!.snapshot().requestIds.length + 1);
         const sentinel = new Error("provider stream sentinel");
         const providerStream: StreamFn = async (_model, _context, options) => {
           await options?.onResponse?.(
@@ -50,7 +56,7 @@ describe("terminal Finn request evidence", () => {
         const wrapped = await wrapFinnRequestIdEvidenceWithCollector(
           providerStream,
           attemptParams.finnRequestEvidence!,
-        )({} as never, {} as never, {} as never);
+        )(coordinatorModel, {} as never, {} as never);
         await expect(wrapped.result()).rejects.toBe(sentinel);
       }
       return makeAttemptResult({ promptError: new Error("unsupported reasoning mode") });

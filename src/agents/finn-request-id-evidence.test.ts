@@ -11,7 +11,16 @@ import type { StreamFn } from "./runtime/index.js";
 
 type Headers = Record<string, unknown>;
 
-const model = { provider: "local", model: "qwen" } as unknown as Parameters<StreamFn>[0];
+const model = {
+  provider: "remote-llm",
+  id: "moira/brain",
+  baseUrl: "http://127.0.0.1:8300/v1",
+} as unknown as Parameters<StreamFn>[0];
+const nonFinnModel = {
+  ...model,
+  provider: "custom",
+  baseUrl: "https://models.example.test/v1",
+} as Parameters<StreamFn>[0];
 const context = { messages: [] } as Parameters<StreamFn>[1];
 
 async function resultOf(stream: ReturnType<StreamFn>) {
@@ -19,10 +28,10 @@ async function resultOf(stream: ReturnType<StreamFn>) {
 }
 
 function sourceWithResponse(headers: Headers, delayMs = 0): StreamFn {
-  return (_model, _context, options) => {
+  return (responseModel, _context, options) => {
     const stream = createAssistantMessageEventStream();
     void (async () => {
-      await options?.onResponse?.({ status: 200, headers } as never, model as never);
+      await options?.onResponse?.({ status: 200, headers } as never, responseModel);
       if (delayMs > 0) {
         await new Promise<void>((resolve) => {
           setTimeout(resolve, delayMs);
@@ -98,15 +107,15 @@ describe("Finn request-id evidence", () => {
   });
 
   it.each([undefined, "", "request-1", " req_trimmed", "req_has spaces", "req_\nforged"])(
-    "omits malformed or missing evidence (%p) without failing the agent turn",
+    "marks malformed or missing coordinator evidence incomplete (%p)",
     async (value) => {
       const headers = value === undefined ? {} : { "x-finn-request-id": value };
       const result = await resultOf(
         wrapFinnRequestIdEvidence(sourceWithResponse(headers))(model, context),
       );
 
-      expect(result.finnRequestIds).toBeUndefined();
-      expect(result.finnRequestIdEvidenceComplete).toBeUndefined();
+      expect(result.finnRequestIds).toEqual([]);
+      expect(result.finnRequestIdEvidenceComplete).toBe(false);
     },
   );
 
@@ -118,7 +127,8 @@ describe("Finn request-id evidence", () => {
       wrapFinnRequestIdEvidence(sourceWithResponse(headers))(model, context),
     );
 
-    expect(result).not.toHaveProperty("finnRequestIds");
+    expect(result.finnRequestIds).toEqual([]);
+    expect(result.finnRequestIdEvidenceComplete).toBe(false);
     expect(readFinnRequestId(headers)).toBeUndefined();
   });
 
@@ -143,7 +153,7 @@ describe("Finn request-id evidence", () => {
   });
 
   it.each(["retry", "failover", "replan"])(
-    "retains ordered multiplicity across %s attempts",
+    "retains first-seen request order across %s attempts",
     async (mode) => {
       const collector = createFinnRequestEvidenceCollector();
       const first = resolveEmbeddedAgentStreamFn({
@@ -225,7 +235,7 @@ describe("Finn request-id evidence", () => {
     expect(result?.finnRequestIdEvidenceComplete).toBe(false);
   });
 
-  it("preserves duplicate request order without mutating earlier evidence snapshots", async () => {
+  it("deduplicates request ids without mutating earlier evidence snapshots", async () => {
     const collector = createFinnRequestEvidenceCollector();
     const wrapped = wrapFinnRequestIdEvidenceWithCollector(
       sourceWithResponse({ "x-finn-request-id": "req_repeat" }),
@@ -236,7 +246,7 @@ describe("Finn request-id evidence", () => {
     const second = await resultOf(wrapped(model, context));
 
     expect(first.finnRequestIds).toEqual(["req_repeat"]);
-    expect(second.finnRequestIds).toEqual(["req_repeat", "req_repeat"]);
+    expect(second.finnRequestIds).toEqual(["req_repeat"]);
     expect(first.finnRequestIdEvidenceComplete).toBe(true);
     expect(second.finnRequestIdEvidenceComplete).toBe(true);
   });
@@ -245,10 +255,25 @@ describe("Finn request-id evidence", () => {
     const result = await resultOf(
       wrapFinnRequestIdEvidence(sourceWithResponse({}))(model, context, {
         headers: {
-          "X-Finn-Request-ID": "req_forged",
+          "X-Finn-Request-ID": "req_forged-request",
           "x-client-request-id": "req_client-forged",
         },
       }),
+    );
+
+    expect(result.finnRequestIds).toEqual([]);
+    expect(result.finnRequestIdEvidenceComplete).toBe(false);
+  });
+
+  it("ignores a caller-selected expected coordinator origin", async () => {
+    const result = await resultOf(
+      wrapFinnRequestIdEvidence(sourceWithResponse({ "x-finn-request-id": "req_forged-response" }))(
+        nonFinnModel,
+        context,
+        {
+          expectedFinnOrigin: "http://127.0.0.1:8300/v1",
+        } as never,
+      ),
     );
 
     expect(result).not.toHaveProperty("finnRequestIds");
@@ -258,12 +283,129 @@ describe("Finn request-id evidence", () => {
   it("leaves non-Finn response evidence absent", async () => {
     const result = await resultOf(
       wrapFinnRequestIdEvidence(
-        sourceWithResponse({ "x-request-id": "provider-123", "x-other": "safe" }),
-      )(model, context),
+        sourceWithResponse({ "x-finn-request-id": "req_forged", "x-other": "safe" }),
+      )(nonFinnModel, context),
     );
 
     expect(result).not.toHaveProperty("finnRequestIds");
     expect(result).not.toHaveProperty("finnRequestIdEvidenceComplete");
     expect(readFinnRequestId({ "x-request-id": "provider-123" })).toBeUndefined();
+  });
+
+  it.each([
+    { provider: "custom" },
+    { provider: "remote-llm-lookalike" },
+    { baseUrl: "https://127.0.0.1:8300/v1" },
+    { baseUrl: "http://localhost:8300/v1" },
+    { baseUrl: "http://127.0.0.1.evil.test:8300/v1" },
+    { baseUrl: "http://user@127.0.0.1:8300/v1" },
+    { baseUrl: "http://127.0.0.1:8301/v1" },
+    { baseUrl: "http://127.0.0.1:8300/v1/" },
+    { baseUrl: "http://127.0.0.1:8300/v1/chat" },
+    { baseUrl: "http://127.0.0.1:8300/v1?route=moira/brain" },
+    { baseUrl: "http://127.0.0.1:8300/v1#moira/brain" },
+    { id: "moira/brain/extra" },
+    { id: "other/brain" },
+  ])("rejects a non-canonical coordinator identity (%j)", async (override) => {
+    const result = await resultOf(
+      wrapFinnRequestIdEvidence(sourceWithResponse({ "x-finn-request-id": "req_forged" }))(
+        { ...model, ...override },
+        context,
+      ),
+    );
+
+    expect(result).not.toHaveProperty("finnRequestIds");
+    expect(result).not.toHaveProperty("finnRequestIdEvidenceComplete");
+  });
+
+  it("binds a frozen route identity into each immutable internal snapshot", async () => {
+    const collector = createFinnRequestEvidenceCollector();
+    const result = await resultOf(
+      wrapFinnRequestIdEvidenceWithCollector(
+        sourceWithResponse({ "x-finn-request-id": "req_bound" }),
+        collector,
+      )(model, context),
+    );
+    const snapshot = collector.snapshot();
+
+    expect(snapshot.requests).toEqual([
+      {
+        requestId: "req_bound",
+        route: {
+          provider: "remote-llm",
+          baseUrl: "http://127.0.0.1:8300/v1",
+          route: "moira/brain",
+        },
+      },
+    ]);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.requests)).toBe(true);
+    expect(Object.isFrozen(snapshot.requests[0]?.route)).toBe(true);
+    expect(Object.isFrozen(result.finnRequestIds)).toBe(true);
+    expect(() => (result.finnRequestIds as string[]).push("req_mutated")).toThrow();
+    expect(collector.snapshot().requestIds).toEqual(["req_bound"]);
+  });
+
+  it("collapses duplicate ids while preserving first-seen order", async () => {
+    const collector = createFinnRequestEvidenceCollector();
+    const ids = ["req_second", "req_first", "req_second", "req_third", "req_first"];
+    let result;
+    for (const requestId of ids) {
+      result = await resultOf(
+        wrapFinnRequestIdEvidenceWithCollector(
+          sourceWithResponse({ "x-finn-request-id": requestId }),
+          collector,
+        )(model, context),
+      );
+    }
+
+    expect(result?.finnRequestIds).toEqual(["req_second", "req_first", "req_third"]);
+    expect(result?.finnRequestIdEvidenceComplete).toBe(true);
+  });
+
+  it("leaves pre-response throws and rejections as unfinished attempts", async () => {
+    const collector = createFinnRequestEvidenceCollector();
+    await resultOf(
+      wrapFinnRequestIdEvidenceWithCollector(
+        sourceWithResponse({ "x-finn-request-id": "req_prior" }),
+        collector,
+      )(model, context),
+    );
+    const syncSentinel = new Error("sync pre-response sentinel");
+    const asyncSentinel = new Error("async pre-response sentinel");
+    const syncThrow: StreamFn = () => {
+      throw syncSentinel;
+    };
+    const asyncReject: StreamFn = async () => {
+      throw asyncSentinel;
+    };
+
+    expect(() =>
+      wrapFinnRequestIdEvidenceWithCollector(syncThrow, collector)(model, context),
+    ).toThrow(syncSentinel);
+    await expect(
+      wrapFinnRequestIdEvidenceWithCollector(asyncReject, collector)(model, context),
+    ).rejects.toBe(asyncSentinel);
+    expect(collector.snapshot().requestIds).toEqual(["req_prior"]);
+    expect(collector.snapshot().complete).toBe(false);
+  });
+
+  it("marks evidence incomplete when fallback leaves the coordinator route", async () => {
+    const collector = createFinnRequestEvidenceCollector();
+    await resultOf(
+      wrapFinnRequestIdEvidenceWithCollector(
+        sourceWithResponse({ "x-finn-request-id": "req_primary" }),
+        collector,
+      )(model, context),
+    );
+    const fallback = await resultOf(
+      wrapFinnRequestIdEvidenceWithCollector(
+        sourceWithResponse({ "x-finn-request-id": "req_forged-fallback" }),
+        collector,
+      )(nonFinnModel, context),
+    );
+
+    expect(fallback.finnRequestIds).toEqual(["req_primary"]);
+    expect(fallback.finnRequestIdEvidenceComplete).toBe(false);
   });
 });

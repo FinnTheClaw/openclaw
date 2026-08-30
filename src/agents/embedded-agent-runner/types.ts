@@ -39,7 +39,7 @@ export type EmbeddedAgentMeta = {
   provider: string;
   model: string;
   /** Bounded, ordered coordinator evidence from every provider call in this turn. */
-  finnRequestIds?: string[];
+  finnRequestIds?: readonly string[];
   /** Observational integrity only; this is not a certification verdict. */
   finnRequestIdEvidenceComplete?: boolean;
   contextTokens?: number;

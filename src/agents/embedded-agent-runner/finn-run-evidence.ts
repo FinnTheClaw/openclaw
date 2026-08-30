@@ -11,10 +11,11 @@ export function createRunFinnRequestEvidence(): FinnRequestEvidenceCollector {
 export function resolveFinnRequestEvidenceFromCollector(
   collector: FinnRequestEvidenceCollector,
 ): Partial<Pick<AssistantMessage, "finnRequestIds" | "finnRequestIdEvidenceComplete">> {
-  return collector.requestIds.length > 0
+  const evidence = collector.snapshot();
+  return evidence.hasCoordinatorAttempt
     ? {
-        finnRequestIds: [...collector.requestIds],
-        finnRequestIdEvidenceComplete: collector.complete,
+        finnRequestIds: evidence.requestIds,
+        finnRequestIdEvidenceComplete: evidence.complete,
       }
     : {};
 }
@@ -24,7 +25,7 @@ export function resolveFinnRequestEvidenceMeta(
 ): Partial<Pick<AssistantMessage, "finnRequestIds" | "finnRequestIdEvidenceComplete">> {
   return Array.isArray(assistant?.finnRequestIds)
     ? {
-        finnRequestIds: [...assistant.finnRequestIds],
+        finnRequestIds: Object.freeze([...assistant.finnRequestIds]),
         finnRequestIdEvidenceComplete: assistant.finnRequestIdEvidenceComplete === true,
       }
     : {};

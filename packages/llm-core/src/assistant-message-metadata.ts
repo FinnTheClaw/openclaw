@@ -7,7 +7,7 @@ export interface AssistantMessageMetadata {
   /** Provider-specific response identifier when exposed upstream. */
   responseId?: string;
   /** Bounded, ordered, validated evidence returned by the local Finn coordinator. */
-  finnRequestIds?: string[];
+  finnRequestIds?: readonly string[];
   /** Observational integrity only; this is not a certification verdict. */
   finnRequestIdEvidenceComplete?: boolean;
   /** Redacted provider/runtime diagnostics for failures and recoveries. */
