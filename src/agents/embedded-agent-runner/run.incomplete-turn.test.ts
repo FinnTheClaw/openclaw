@@ -1,7 +1,6 @@
 // Coverage for incomplete-turn safety, retry instructions, and liveness states.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
-import { installAtomicFinalResponsePolicy } from "./atomic-final-response-policy.js";
 import {
   hasCommittedMessagingToolDeliveryEvidence,
   hasOutboundDeliveryEvidence,
@@ -42,6 +41,7 @@ import {
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 
 let runEmbeddedAgent: typeof import("./run.js").runEmbeddedAgent;
+let installAtomicFinalResponsePolicy: typeof import("./atomic-final-response-policy.js").installAtomicFinalResponsePolicy;
 
 function resolveIncompleteTurnPayloadText(
   params: Omit<Parameters<typeof resolveIncompleteTurnPayloadTextCore>[0], "externalAbort"> & {
@@ -56,6 +56,7 @@ function resolveIncompleteTurnPayloadText(
 describe("runEmbeddedAgent incomplete-turn safety", () => {
   beforeAll(async () => {
     ({ runEmbeddedAgent } = await loadRunOverflowCompactionHarness());
+    ({ installAtomicFinalResponsePolicy } = await import("./atomic-final-response-policy.js"));
     await warmRunOverflowCompactionHarness(runEmbeddedAgent);
   });
 
