@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AgentTool } from "../../packages/agent-core/src/types.js";
 import type { BehaviorGovernorModuleSelection } from "../config/types.behavior-governor.js";
 import {
   clearGovernorAgentLoopInertRegistry,
@@ -17,6 +18,20 @@ import {
   createGatewayBehaviorGovernorModuleLifecycle,
   type GatewayBehaviorGovernorModuleDescriptor,
 } from "./behavior-governor-module-lifecycle.js";
+
+const TEST_HOST_PROVIDER = {
+  acquire: vi.fn(async () => ({
+    capability: {
+      agentLoop: {
+        createScopeProvider: () => {
+          throw new Error("TEST_SCOPE_PROVIDER_UNUSED");
+        },
+      },
+    },
+    freeze: vi.fn(),
+    close: vi.fn(),
+  })),
+};
 
 function runInput(): GovernorAgentLoopRunInput {
   return {
@@ -82,8 +97,11 @@ function descriptor(params: {
 
 describe("gateway behavior governor module agent-loop consumer", () => {
   it("keeps an empty module plan registry-free", async () => {
-    const item = descriptor({ id: "C06B", resolve: vi.fn() });
-    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [item] });
+    const item = descriptor({ id: "c06b", resolve: vi.fn() });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [item],
+    });
 
     await lifecycle.apply([]);
 
@@ -98,21 +116,24 @@ describe("gateway behavior governor module agent-loop consumer", () => {
       afterTurn: { kind: "continue", message: "verify" },
     });
     const item = descriptor({
-      id: "C06B",
+      id: "c06b",
       resolve: (input) => {
         received = input;
         return component;
       },
     });
-    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [item] });
-    await lifecycle.apply([selection("C06B")]);
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [item],
+    });
+    await lifecycle.apply([selection("c06b")]);
 
     const resolved = resolveGovernorAgentLoopRunScope(runInput());
 
     expect(resolved).toBeDefined();
     expect(isGovernorAgentLoopRunScope(resolved!)).toBe(true);
     expect(received).toEqual({
-      activation: { id: "C06B", mode: "enforce", version: "1.0.0" },
+      activation: { id: "c06b", mode: "enforce", version: "1.0.0" },
       run: runInput(),
     });
     expect(Object.isFrozen(received)).toBe(true);
@@ -128,6 +149,34 @@ describe("gateway behavior governor module agent-loop consumer", () => {
     expect(resolveGovernorAgentLoopRunScope(runInput())).toBeUndefined();
   });
 
+  it("prepares module scopes with the exact installed tool inventory", async () => {
+    const installed = { name: "read" } as AgentTool;
+    let prepared: readonly unknown[] | undefined;
+    let governed: readonly AgentTool[] = [];
+    const component = {
+      ...scope({ mode: "enforce" }),
+      prepareTools: vi.fn((tools: readonly AgentTool[]) => {
+        prepared = tools;
+        governed = tools;
+      }),
+      governedTools: vi.fn(() => governed),
+    } satisfies GovernorAgentLoopRunScope;
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [descriptor({ id: "c02", resolve: () => component })],
+    });
+    await lifecycle.apply([selection("c02")]);
+    const resolved = resolveGovernorAgentLoopRunScope(runInput())!;
+
+    resolved.prepareTools?.([installed]);
+
+    expect(prepared?.[0]).toBe(installed);
+    expect(Object.isFrozen(prepared)).toBe(true);
+    expect(resolved.governedTools()).toEqual([installed]);
+    resolved.dispose();
+    await lifecycle.close();
+  });
+
   it("lets shadow modules observe without changing enforce decisions", async () => {
     const shadow = scope({
       mode: "shadow",
@@ -139,12 +188,13 @@ describe("gateway behavior governor module agent-loop consumer", () => {
       afterTurn: { kind: "continue", message: "collect more evidence" },
     });
     const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
       catalog: [
-        descriptor({ id: "C01", mode: "shadow", resolve: () => shadow }),
-        descriptor({ id: "C02", resolve: () => enforce }),
+        descriptor({ id: "c01", mode: "shadow", resolve: () => shadow }),
+        descriptor({ id: "c02", resolve: () => enforce }),
       ],
     });
-    await lifecycle.apply([selection("C01", "shadow"), selection("C02")]);
+    await lifecycle.apply([selection("c01", "shadow"), selection("c02")]);
     const resolved = resolveGovernorAgentLoopRunScope(runInput())!;
 
     expect(
@@ -188,12 +238,13 @@ describe("gateway behavior governor module agent-loop consumer", () => {
     const shadow = makeObserver("shadow");
     const enforce = makeObserver("enforce");
     const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
       catalog: [
-        descriptor({ id: "C01", mode: "shadow", resolve: () => shadow }),
-        descriptor({ id: "C02", resolve: () => enforce }),
+        descriptor({ id: "c01", mode: "shadow", resolve: () => shadow }),
+        descriptor({ id: "c02", resolve: () => enforce }),
       ],
     });
-    await lifecycle.apply([selection("C01", "shadow"), selection("C02")]);
+    await lifecycle.apply([selection("c01", "shadow"), selection("c02")]);
     const resolved = resolveGovernorAgentLoopRunScope(runInput())!;
 
     expect(
@@ -236,12 +287,13 @@ describe("gateway behavior governor module agent-loop consumer", () => {
     const shadow = makeObserver("shadow");
     const enforce = makeObserver("enforce");
     const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
       catalog: [
-        descriptor({ id: "C01", mode: "shadow", resolve: () => shadow }),
-        descriptor({ id: "C02", resolve: () => enforce }),
+        descriptor({ id: "c01", mode: "shadow", resolve: () => shadow }),
+        descriptor({ id: "c02", resolve: () => enforce }),
       ],
     });
-    await lifecycle.apply([selection("C01", "shadow"), selection("C02")]);
+    await lifecycle.apply([selection("c01", "shadow"), selection("c02")]);
     const resolved = resolveGovernorAgentLoopRunScope(runInput())!;
 
     resolved.afterTool({
@@ -263,18 +315,19 @@ describe("gateway behavior governor module agent-loop consumer", () => {
 
   it("fails closed on conflicting enforce turn directives", async () => {
     const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
       catalog: [
         descriptor({
-          id: "C01",
+          id: "c01",
           resolve: () => scope({ mode: "enforce", afterTurn: { kind: "continue", message: "a" } }),
         }),
         descriptor({
-          id: "C02",
+          id: "c02",
           resolve: () => scope({ mode: "enforce", afterTurn: { kind: "continue", message: "b" } }),
         }),
       ],
     });
-    await lifecycle.apply([selection("C01"), selection("C02")]);
+    await lifecycle.apply([selection("c01"), selection("c02")]);
     const resolved = resolveGovernorAgentLoopRunScope(runInput())!;
 
     expect(() => resolved.afterTurn({ assistantText: "", toolCallCount: 0, now: 12 })).toThrow(
@@ -287,14 +340,15 @@ describe("gateway behavior governor module agent-loop consumer", () => {
 
   it("rejects a module that attempts to own completed replay", async () => {
     const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
       catalog: [
         descriptor({
-          id: "C01",
+          id: "c01",
           resolve: () => scope({ mode: "enforce", disposition: "completed_replay" }),
         }),
       ],
     });
-    await lifecycle.apply([selection("C01")]);
+    await lifecycle.apply([selection("c01")]);
 
     expect(() => resolveGovernorAgentLoopRunScope(runInput())).toThrow(
       "GOVERNOR_MODULE_AGENT_LOOP_REPLAY_OWNER_FORBIDDEN",
@@ -311,10 +365,11 @@ describe("gateway behavior governor module agent-loop consumer", () => {
       isScope: (candidate) => candidate === original,
     });
     const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
-      catalog: [descriptor({ id: "C01", resolve: () => scope({ mode: "enforce" }) })],
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [descriptor({ id: "c01", resolve: () => scope({ mode: "enforce" }) })],
     });
     try {
-      await expect(lifecycle.apply([selection("C01")])).rejects.toThrow(
+      await expect(lifecycle.apply([selection("c01")])).rejects.toThrow(
         "GOVERNOR_AGENT_LOOP_REGISTRY_ALREADY_ACTIVE",
       );
       expect(resolveGovernorAgentLoopRunScope(runInput())).toBe(original);

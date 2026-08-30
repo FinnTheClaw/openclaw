@@ -1,12 +1,19 @@
 import type { BehaviorGovernorModuleSelection } from "../config/types.behavior-governor.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   installGatewayBehaviorGovernorModuleAgentLoop,
   type GatewayBehaviorGovernorModuleActivation,
   type GatewayBehaviorGovernorModuleAgentLoop,
   type GatewayBehaviorGovernorModuleAgentLoopHandle,
 } from "./behavior-governor-module-agent-loop.js";
+import type {
+  GatewayBehaviorGovernorModuleHostCapability,
+  GatewayBehaviorGovernorModuleHostLease,
+  GatewayBehaviorGovernorModuleHostProvider,
+} from "./behavior-governor-module-host.js";
 
-const MODULE_ID_PATTERN = /^[A-Z][A-Z0-9._-]{0,63}$/u;
+const MODULE_ID_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/u;
+const BOUNDARY_ID_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/u;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 
 export type GatewayBehaviorGovernorModuleRuntime = Readonly<{
@@ -17,7 +24,8 @@ export type GatewayBehaviorGovernorModuleRuntime = Readonly<{
 
 /** The lifecycle is the sole activation seam; module imports must stay inert. */
 export type GatewayBehaviorGovernorModuleActivationContext =
-  GatewayBehaviorGovernorModuleActivation;
+  GatewayBehaviorGovernorModuleActivation &
+    Readonly<{ host: GatewayBehaviorGovernorModuleHostCapability }>;
 
 export type GatewayBehaviorGovernorModuleFactory = (
   context: GatewayBehaviorGovernorModuleActivationContext,
@@ -34,7 +42,10 @@ export type GatewayBehaviorGovernorModuleDescriptor = Readonly<{
 }>;
 
 export type GatewayBehaviorGovernorModuleLifecycle = Readonly<{
-  apply: (selections: readonly BehaviorGovernorModuleSelection[]) => Promise<void>;
+  apply: (
+    selections: readonly BehaviorGovernorModuleSelection[],
+    gatewayConfig?: OpenClawConfig,
+  ) => Promise<void>;
   freeze: () => Promise<void>;
   close: () => Promise<void>;
 }>;
@@ -45,7 +56,7 @@ type ResolvedModule = Readonly<{
 }>;
 
 type ActiveModule = Readonly<{
-  activation: GatewayBehaviorGovernorModuleActivationContext;
+  activation: GatewayBehaviorGovernorModuleActivation;
   runtime: GatewayBehaviorGovernorModuleRuntime;
 }>;
 
@@ -103,7 +114,7 @@ function validateCatalog(
       }
     }
     for (const boundary of descriptor.durableBoundaryIds) {
-      assertIdentifier(boundary, MODULE_ID_PATTERN, "GOVERNOR_MODULE_BOUNDARY_INVALID");
+      assertIdentifier(boundary, BOUNDARY_ID_PATTERN, "GOVERNOR_MODULE_BOUNDARY_INVALID");
     }
     byId.set(descriptor.id, descriptor);
   }
@@ -192,16 +203,21 @@ function planKey(selections: readonly BehaviorGovernorModuleSelection[]): string
 
 export function createGatewayBehaviorGovernorModuleLifecycle(params: {
   catalog: readonly GatewayBehaviorGovernorModuleDescriptor[];
+  hostProvider?: GatewayBehaviorGovernorModuleHostProvider;
 }): GatewayBehaviorGovernorModuleLifecycle {
   const catalog = validateCatalog(params.catalog);
   let appliedKey: string | undefined;
   let active: ActiveModule[] = [];
   let agentLoop: GatewayBehaviorGovernorModuleAgentLoopHandle | undefined;
+  let host: GatewayBehaviorGovernorModuleHostLease | undefined;
   let poisoned = false;
   let closed = false;
   let serial = Promise.resolve();
 
-  const applyUnsafe = async (selections: readonly BehaviorGovernorModuleSelection[]) => {
+  const applyUnsafe = async (
+    selections: readonly BehaviorGovernorModuleSelection[],
+    gatewayConfig: OpenClawConfig,
+  ) => {
     if (closed) {
       throw new Error("GOVERNOR_MODULE_LIFECYCLE_CLOSED");
     }
@@ -216,19 +232,28 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
       throw new Error("GOVERNOR_MODULE_RESTART_REQUIRED");
     }
     const resolved = resolveModules({ catalog, selections });
+    if (resolved.length === 0) {
+      appliedKey = key;
+      return;
+    }
+    if (!params.hostProvider) {
+      throw new Error("GOVERNOR_MODULE_HOST_PROVIDER_REQUIRED");
+    }
+    let acquired: GatewayBehaviorGovernorModuleHostLease | undefined;
     const started: typeof active = [];
     try {
+      acquired = await params.hostProvider.acquire({ gatewayConfig });
       for (const item of resolved) {
         const create = await item.descriptor.load();
         if (typeof create !== "function") {
           throw new Error("GOVERNOR_MODULE_FACTORY_INVALID");
         }
-        const activation = Object.freeze({
+        const activation: GatewayBehaviorGovernorModuleActivation = Object.freeze({
           id: item.selection.id,
           mode: item.selection.mode,
           version: item.selection.version,
         });
-        const runtime = await create(activation);
+        const runtime = await create(Object.freeze({ ...activation, host: acquired.capability }));
         if (!runtime || typeof runtime.close !== "function") {
           throw new Error("GOVERNOR_MODULE_RUNTIME_INVALID");
         }
@@ -255,6 +280,12 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
           survivors.push(item);
         }
       }
+      try {
+        await acquired?.close();
+        acquired = undefined;
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
       // Retain only runtimes whose close failed. Gateway shutdown can retry
       // those survivors without double-closing a runtime that already closed.
       active = survivors.toReversed();
@@ -269,6 +300,7 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
       throw error;
     }
     active = started;
+    host = acquired;
     appliedKey = key;
   };
 
@@ -281,6 +313,11 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
       } catch (error) {
         errors.push(error);
       }
+    }
+    try {
+      await host?.freeze();
+    } catch (error) {
+      errors.push(error);
     }
     if (errors.length > 0) {
       throw new AggregateError(errors, "GOVERNOR_MODULE_FREEZE_FAILED");
@@ -304,6 +341,12 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
       }
     }
     active = survivors.toReversed();
+    try {
+      await host?.close();
+      host = undefined;
+    } catch (error) {
+      errors.push(error);
+    }
     if (errors.length > 0) {
       throw new AggregateError(errors, "GOVERNOR_MODULE_CLOSE_FAILED");
     }
@@ -320,7 +363,8 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
   };
 
   return Object.freeze({
-    apply: (selections) => enqueue(() => applyUnsafe(selections)),
+    apply: (selections, gatewayConfig = {}) =>
+      enqueue(() => applyUnsafe(selections, gatewayConfig)),
     freeze: () => enqueue(freezeUnsafe),
     close: () => enqueue(closeUnsafe),
   });

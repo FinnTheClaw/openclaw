@@ -621,11 +621,10 @@ export async function runGatewayCommand(opts: GatewayRunOpts, hooks: GatewayRunR
   if (rawStreamPath) {
     process.env.OPENCLAW_RAW_STREAM_PATH = rawStreamPath;
   }
+  const behaviorGovernorHostDescriptor = toOptionString(opts.behaviorGovernorHostDescriptor);
 
   const startupTrace = createGatewayCliStartupTrace();
 
-  // The heaviest part of gateway startup is loading the server module tree
-  // (channels, plugins, HTTP stack, etc.). Show a spinner so the user sees
   // progress instead of a silent 15-20 s pause (especially on Windows/NTFS).
   const { startGatewayServer } = await startupTrace.measure("cli.server-import", () =>
     withProgress(
@@ -1024,6 +1023,7 @@ export async function runGatewayCommand(opts: GatewayRunOpts, hooks: GatewayRunR
             : {}),
           ...(envSidecarStartupMode !== "start" ? { sidecarStartup: envSidecarStartupMode } : {}),
           ...(channelAutostartSuppression ? { channelAutostartSuppression } : {}),
+          ...(behaviorGovernorHostDescriptor ? { behaviorGovernorHostDescriptor } : {}),
         });
       },
     });

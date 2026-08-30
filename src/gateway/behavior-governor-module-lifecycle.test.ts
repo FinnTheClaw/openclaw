@@ -6,6 +6,20 @@ import {
   type GatewayBehaviorGovernorModuleFactory,
 } from "./behavior-governor-module-lifecycle.js";
 
+const TEST_HOST_PROVIDER = {
+  acquire: vi.fn(async () => ({
+    capability: {
+      agentLoop: {
+        createScopeProvider: () => {
+          throw new Error("TEST_SCOPE_PROVIDER_UNUSED");
+        },
+      },
+    },
+    freeze: vi.fn(),
+    close: vi.fn(),
+  })),
+};
+
 function selection(
   id: string,
   mode: BehaviorGovernorModuleSelection["mode"] = "shadow",
@@ -63,8 +77,12 @@ function descriptor(params: {
 
 describe("gateway behavior governor module lifecycle", () => {
   it("keeps an empty plan inert even when compiled modules are available", async () => {
-    const available = descriptor({ id: "C01" });
-    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [available] });
+    const available = descriptor({ id: "c01" });
+    const acquire = vi.fn(TEST_HOST_PROVIDER.acquire);
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: { acquire },
+      catalog: [available],
+    });
 
     await lifecycle.apply([]);
     await lifecycle.apply([]);
@@ -72,54 +90,106 @@ describe("gateway behavior governor module lifecycle", () => {
     await lifecycle.close();
 
     expect(available.load).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it("acquires one host after validation and releases it after modules", async () => {
+    const events: string[] = [];
+    const gatewayConfig = { gateway: { mode: "local" } } as const;
+    const acquire = vi.fn(async (input: unknown) => {
+      events.push("acquire:host");
+      expect(input).toEqual({ gatewayConfig });
+      return {
+        capability: {
+          agentLoop: {
+            createScopeProvider: () => {
+              throw new Error("TEST_SCOPE_PROVIDER_UNUSED");
+            },
+          },
+        },
+        freeze: () => {
+          events.push("freeze:host");
+        },
+        close: () => {
+          events.push("close:host");
+        },
+      };
+    });
+    const item = descriptor({ id: "c01", events });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: { acquire },
+      catalog: [item],
+    });
+
+    await lifecycle.apply([selection("c01")], gatewayConfig);
+    await lifecycle.apply([selection("c01")], gatewayConfig);
+    await lifecycle.freeze();
+    await lifecycle.close();
+
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(events).toEqual([
+      "acquire:host",
+      "load:c01",
+      "start:c01:shadow",
+      "freeze:c01",
+      "freeze:host",
+      "close:c01",
+      "close:host",
+    ]);
   });
 
   it("loads only exact selected modules and preserves their requested mode", async () => {
     const events: string[] = [];
-    const c01 = descriptor({ id: "C01", events });
-    const c02 = descriptor({ id: "C02", events });
-    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [c01, c02] });
+    const c01 = descriptor({ id: "c01", events });
+    const c02 = descriptor({ id: "c02", events });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [c01, c02],
+    });
 
-    await lifecycle.apply([selection("C02", "enforce")]);
+    await lifecycle.apply([selection("c02", "enforce")]);
     await lifecycle.freeze();
     await lifecycle.close();
 
     expect(c01.load).not.toHaveBeenCalled();
-    expect(events).toEqual(["load:C02", "start:C02:enforce", "freeze:C02", "close:C02"]);
+    expect(events).toEqual(["load:c02", "start:c02:enforce", "freeze:c02", "close:c02"]);
   });
 
   it("starts dependencies first and freezes and closes in reverse order", async () => {
     const events: string[] = [];
-    const c01 = descriptor({ id: "C01", events });
+    const c01 = descriptor({ id: "c01", events });
     const c02 = descriptor({
-      id: "C02",
-      dependencies: ["C01"],
+      id: "c02",
+      dependencies: ["c01"],
       events,
     });
-    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [c02, c01] });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [c02, c01],
+    });
 
-    await lifecycle.apply([selection("C02"), selection("C01")]);
+    await lifecycle.apply([selection("c02"), selection("c01")]);
     await lifecycle.freeze();
     await lifecycle.close();
 
     expect(events).toEqual([
-      "load:C01",
-      "start:C01:shadow",
-      "load:C02",
-      "start:C02:shadow",
-      "freeze:C02",
-      "freeze:C01",
-      "close:C02",
-      "close:C01",
+      "load:c01",
+      "start:c01:shadow",
+      "load:c02",
+      "start:c02:shadow",
+      "freeze:c02",
+      "freeze:c01",
+      "close:c02",
+      "close:c01",
     ]);
   });
 
   it.each([
     {
       name: "unsupported enforce mode",
-      selection: selection("C01", "enforce"),
+      selection: selection("c01", "enforce"),
       descriptor: descriptor({
-        id: "C01",
+        id: "c01",
         supportedModes: ["shadow"],
         qualifiedModes: ["shadow"],
       }),
@@ -127,9 +197,9 @@ describe("gateway behavior governor module lifecycle", () => {
     },
     {
       name: "unqualified shadow mode",
-      selection: selection("C01"),
+      selection: selection("c01"),
       descriptor: descriptor({
-        id: "C01",
+        id: "c01",
         supportedModes: ["shadow"],
         qualifiedModes: [],
       }),
@@ -138,7 +208,10 @@ describe("gateway behavior governor module lifecycle", () => {
   ])(
     "rejects $name before loading code",
     async ({ selection: moduleSelection, descriptor: item, code }) => {
-      const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [item] });
+      const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+        hostProvider: TEST_HOST_PROVIDER,
+        catalog: [item],
+      });
 
       await expect(lifecycle.apply([moduleSelection])).rejects.toThrow(code);
       expect(item.load).not.toHaveBeenCalled();
@@ -149,46 +222,46 @@ describe("gateway behavior governor module lifecycle", () => {
     {
       name: "unknown module",
       catalog: [] as GatewayBehaviorGovernorModuleDescriptor[],
-      selections: [selection("C01")],
+      selections: [selection("c01")],
       code: "GOVERNOR_MODULE_UNKNOWN",
     },
     {
       name: "duplicate selection",
-      catalog: [descriptor({ id: "C01" })],
-      selections: [selection("C01"), selection("C01")],
+      catalog: [descriptor({ id: "c01" })],
+      selections: [selection("c01"), selection("c01")],
       code: "GOVERNOR_MODULE_SELECTION_DUPLICATE",
     },
     {
       name: "version mismatch",
-      catalog: [descriptor({ id: "C01", version: "2.0.0" })],
-      selections: [selection("C01")],
+      catalog: [descriptor({ id: "c01", version: "2.0.0" })],
+      selections: [selection("c01")],
       code: "GOVERNOR_MODULE_VERSION_MISMATCH",
     },
     {
       name: "missing dependency",
-      catalog: [descriptor({ id: "C01", dependencies: ["C02"] })],
-      selections: [selection("C01")],
+      catalog: [descriptor({ id: "c01", dependencies: ["c02"] })],
+      selections: [selection("c01")],
       code: "GOVERNOR_MODULE_DEPENDENCY_MISSING",
     },
     {
       name: "durable boundary conflict",
       catalog: [
-        descriptor({ id: "C01", durableBoundaryIds: ["TASK-STATE"] }),
+        descriptor({ id: "c01", durableBoundaryIds: ["TASK-STATE"] }),
         descriptor({
-          id: "C02",
+          id: "c02",
           durableBoundaryIds: ["TASK-STATE"],
         }),
       ],
-      selections: [selection("C01"), selection("C02")],
+      selections: [selection("c01"), selection("c02")],
       code: "GOVERNOR_MODULE_BOUNDARY_CONFLICT",
     },
     {
       name: "dependency cycle",
       catalog: [
-        descriptor({ id: "C01", dependencies: ["C02"] }),
-        descriptor({ id: "C02", dependencies: ["C01"] }),
+        descriptor({ id: "c01", dependencies: ["c02"] }),
+        descriptor({ id: "c02", dependencies: ["c01"] }),
       ],
-      selections: [selection("C01"), selection("C02")],
+      selections: [selection("c01"), selection("c02")],
       code: "GOVERNOR_MODULE_DEPENDENCY_CYCLE",
     },
   ])("rejects $name before loading code", async ({ catalog, selections, code }) => {
@@ -201,11 +274,14 @@ describe("gateway behavior governor module lifecycle", () => {
   });
 
   it("requires a restart for a changed selection after the initial plan", async () => {
-    const c01 = descriptor({ id: "C01" });
-    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [c01] });
+    const c01 = descriptor({ id: "c01" });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [c01],
+    });
 
     await lifecycle.apply([]);
-    await expect(lifecycle.apply([selection("C01")])).rejects.toThrow(
+    await expect(lifecycle.apply([selection("c01")])).rejects.toThrow(
       "GOVERNOR_MODULE_RESTART_REQUIRED",
     );
     expect(c01.load).not.toHaveBeenCalled();
@@ -214,61 +290,70 @@ describe("gateway behavior governor module lifecycle", () => {
 
   it("rolls back already-started modules when a later factory fails", async () => {
     const events: string[] = [];
-    const c01 = descriptor({ id: "C01", events });
+    const c01 = descriptor({ id: "c01", events });
     const c02 = descriptor({
-      id: "C02",
-      dependencies: ["C01"],
+      id: "c02",
+      dependencies: ["c01"],
       events,
       failStart: true,
     });
-    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [c01, c02] });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [c01, c02],
+    });
 
-    await expect(lifecycle.apply([selection("C01"), selection("C02")])).rejects.toThrow(
-      "start failed: C02",
+    await expect(lifecycle.apply([selection("c01"), selection("c02")])).rejects.toThrow(
+      "start failed: c02",
     );
     expect(events).toEqual([
-      "load:C01",
-      "start:C01:shadow",
-      "load:C02",
-      "start:C02:shadow",
-      "close:C01",
+      "load:c01",
+      "start:c01:shadow",
+      "load:c02",
+      "start:c02:shadow",
+      "close:c01",
     ]);
   });
 
   it.each([
-    { name: "factory", failStart: true, expectedEvent: "start:C03:shadow" },
-    { name: "load", failLoad: true, expectedEvent: "load:C03" },
+    { name: "factory", failStart: true, expectedEvent: "start:c03:shadow" },
+    { name: "load", failLoad: true, expectedEvent: "load:c03" },
   ])("poisons after a later $name failure retains only unclosed runtimes", async (failure) => {
     const events: string[] = [];
-    const c01 = descriptor({ id: "C01", events });
-    const c02 = descriptor({ id: "C02", events, closeFailures: 1 });
-    const c03 = descriptor({ id: "C03", events, ...failure });
-    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [c01, c02, c03] });
+    const c01 = descriptor({ id: "c01", events });
+    const c02 = descriptor({ id: "c02", events, closeFailures: 1 });
+    const c03 = descriptor({ id: "c03", events, ...failure });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [c01, c02, c03],
+    });
 
     await expect(
-      lifecycle.apply([selection("C01"), selection("C02"), selection("C03")]),
+      lifecycle.apply([selection("c01"), selection("c02"), selection("c03")]),
     ).rejects.toThrow("GOVERNOR_MODULE_STARTUP_CLEANUP_FAILED");
-    await expect(lifecycle.apply([selection("C01")])).rejects.toThrow(
+    await expect(lifecycle.apply([selection("c01")])).rejects.toThrow(
       "GOVERNOR_MODULE_LIFECYCLE_POISONED",
     );
     await lifecycle.close();
 
-    expect(events.filter((event) => event === "close:C01")).toHaveLength(1);
-    expect(events.filter((event) => event === "close:C02")).toHaveLength(2);
+    expect(events.filter((event) => event === "close:c01")).toHaveLength(1);
+    expect(events.filter((event) => event === "close:c02")).toHaveLength(2);
     expect(events).toContain(failure.expectedEvent);
   });
 
   it("retries only runtimes whose prior gateway close failed", async () => {
     const events: string[] = [];
-    const c01 = descriptor({ id: "C01", events });
-    const c02 = descriptor({ id: "C02", events, closeFailures: 1 });
-    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({ catalog: [c01, c02] });
+    const c01 = descriptor({ id: "c01", events });
+    const c02 = descriptor({ id: "c02", events, closeFailures: 1 });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [c01, c02],
+    });
 
-    await lifecycle.apply([selection("C01"), selection("C02")]);
+    await lifecycle.apply([selection("c01"), selection("c02")]);
     await expect(lifecycle.close()).rejects.toThrow("GOVERNOR_MODULE_CLOSE_FAILED");
     await lifecycle.close();
 
-    expect(events.filter((event) => event === "close:C01")).toHaveLength(1);
-    expect(events.filter((event) => event === "close:C02")).toHaveLength(2);
+    expect(events.filter((event) => event === "close:c01")).toHaveLength(1);
+    expect(events.filter((event) => event === "close:c02")).toHaveLength(2);
   });
 });

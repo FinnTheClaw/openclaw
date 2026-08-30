@@ -47,6 +47,7 @@ import {
 import type {
   GovernorAgentLoopRunInput,
   GovernorAgentLoopRunScope,
+  GovernorAgentLoopScopeHost,
 } from "./governor-agent-loop-types.js";
 import {
   governorAgentLoopTopLevelString,
@@ -61,16 +62,11 @@ export type {
   GovernorAgentLoopTurnDecision,
 } from "./governor-agent-loop-types.js";
 export type { GovernorAgentLoopConfiguration } from "./governor-agent-loop-config.js";
-type ActiveHost = Readonly<{
-  config: GovernorAgentLoopConfiguration;
-  controller: GovernorController;
-  submitObservedReceipt: HostGovernorCapabilities["submitObservedReceipt"];
-  scopes: Set<GovernorAgentLoopRunScope>;
-}>;
+export type { GovernorAgentLoopScopeHost } from "./governor-agent-loop-types.js";
 const TICKETS = new WeakMap<object, GovernorAgentLoopTicketState>();
-let activeHost: ActiveHost | undefined;
+let activeHost: GovernorAgentLoopScopeHost | undefined;
 function createScope(
-  host: ActiveHost,
+  host: GovernorAgentLoopScopeHost,
   input: GovernorAgentLoopRunInput,
 ): GovernorAgentLoopRunScope | undefined {
   if (!assertGovernorAgentLoopAdmission(host, host.config.mode)) {
@@ -436,7 +432,25 @@ function createScope(
   host.scopes.add(scope);
   return scope;
 }
-/** Trusted bootstrap-only activation. The lifecycle handle owns this exact host. */
+export function resolveGovernorAgentLoopScopeForHost(
+  host: GovernorAgentLoopScopeHost,
+  input: GovernorAgentLoopRunInput,
+): GovernorAgentLoopRunScope | undefined {
+  if (!assertGovernorAgentLoopAdmission(host, host.config.mode)) {
+    return undefined;
+  }
+  if (!isSelectedGovernorAgentLoopScope(host, input)) {
+    return undefined;
+  }
+  try {
+    return createScope(host, input);
+  } catch (error) {
+    if (host.config.mode === "shadow") {
+      return undefined;
+    }
+    throw error;
+  }
+}
 export function installGovernorAgentLoopHost(params: {
   controller: GovernorController;
   submitObservedReceipt: HostGovernorCapabilities["submitObservedReceipt"];
@@ -478,22 +492,8 @@ export function resolveHostGovernorAgentLoopScope(
   if (!host) {
     return undefined;
   }
-  if (!assertGovernorAgentLoopAdmission(host, host.config.mode)) {
-    return undefined;
-  }
-  if (!isSelectedGovernorAgentLoopScope(host, input)) {
-    return undefined;
-  }
-  try {
-    return createScope(host, input);
-  } catch (error) {
-    if (host.config.mode === "shadow") {
-      return undefined;
-    }
-    throw error;
-  }
+  return resolveGovernorAgentLoopScopeForHost(host, input);
 }
-/** Resolves completed ingress without ingesting, allocating, or emitting runtime state. */
 export const resolveHostGovernorCompletedIngressReplay = createGovernorAgentLoopHostReplayResolver(
   () => activeHost,
 );

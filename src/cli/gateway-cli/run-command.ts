@@ -1,5 +1,5 @@
 // Gateway run command option registration and lazy handoff to runtime startup.
-import type { Command } from "commander";
+import { Option, type Command } from "commander";
 import type { GatewayRunOpts } from "./run-options.js";
 import { resolveGatewayRunOptions } from "./run-options.js";
 import { getGatewayRunRuntimeHooks } from "./runtime-hooks.js";
@@ -61,6 +61,12 @@ export function addGatewayRunCommand(cmd: Command, hooks: GatewayRunCommandHooks
     .option("--compact", 'Alias for "--ws-log compact"', false)
     .option("--raw-stream", "Log raw model stream events to jsonl", false)
     .option("--raw-stream-path <path>", "Raw stream jsonl path")
+    .addOption(
+      new Option(
+        "--behavior-governor-host-descriptor <path>",
+        "Internal managed behavior-governor module host descriptor",
+      ).hideHelp(),
+    )
     .action(async (opts, command) => {
       const resolved = resolveGatewayRunOptions(opts, command);
       await hooks.beforeRun?.(resolved);

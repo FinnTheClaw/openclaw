@@ -7,7 +7,7 @@ const unknownModuleConfig = {
     behaviorGovernor: {
       modules: [
         {
-          id: "C01",
+          id: "c01",
           mode: "shadow",
           version: "1.0.0",
         },

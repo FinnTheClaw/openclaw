@@ -43,6 +43,7 @@ export function installGovernorLoopBridge(params: {
   if (!isGovernorAgentLoopRunScope(params.scope)) {
     throw new Error("GOVERNOR_AGENT_LOOP_SCOPE_INVALID");
   }
+  params.scope.prepareTools?.(Object.freeze([...params.agent.state.tools]));
   const now = params.now ?? Date.now;
   const tickets = new Map<string, GovernorAgentLoopToolTicket | undefined>();
   const priorBefore = params.agent.beforeToolCall;

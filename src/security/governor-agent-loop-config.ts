@@ -58,6 +58,7 @@ function assertKeys(value: object, allowed: readonly string[]): void {
 export function validateGovernorAgentLoopConfiguration(
   input: GovernorAgentLoopConfiguration,
   capabilities: readonly GovernorCapabilityDefinition[],
+  options: Readonly<{ requireExpectedAssistantTextDigest?: boolean }> = {},
 ): GovernorAgentLoopConfiguration {
   let safeInput: GovernorAgentLoopConfiguration;
   try {
@@ -248,7 +249,9 @@ export function validateGovernorAgentLoopConfiguration(
     });
   });
   if (
-    (safeInput.mode === "enforce" && safeInput.expectedAssistantTextDigest === undefined) ||
+    (safeInput.mode === "enforce" &&
+      options.requireExpectedAssistantTextDigest !== false &&
+      safeInput.expectedAssistantTextDigest === undefined) ||
     (safeInput.expectedAssistantTextDigest !== undefined &&
       !/^[a-f0-9]{64}$/u.test(safeInput.expectedAssistantTextDigest))
   ) {

@@ -10,6 +10,10 @@ import type {
   GatewayBehaviorGovernorHostFactory,
   GatewayBehaviorGovernorLifecycle,
 } from "./behavior-governor-lifecycle.js";
+import {
+  createGatewayBehaviorGovernorModuleHostProvider,
+  type GatewayBehaviorGovernorModuleHostProvider,
+} from "./behavior-governor-module-host.js";
 import { createGatewayBehaviorGovernorModuleLifecycle } from "./behavior-governor-module-lifecycle.js";
 import { BUILT_IN_BEHAVIOR_GOVERNOR_MODULES } from "./behavior-governor-module-plan.js";
 
@@ -19,6 +23,24 @@ export type GatewayBehaviorGovernorRuntime = Readonly<{
   close: () => Promise<void>;
 }>;
 
+export function createGatewayBehaviorGovernorRuntimeForServer(params: {
+  behaviorGovernorHostFactory?: GatewayBehaviorGovernorHostFactory;
+  behaviorGovernorHostDescriptor?: string;
+}): GatewayBehaviorGovernorRuntime {
+  return createGatewayBehaviorGovernorRuntime({
+    ...(params.behaviorGovernorHostFactory
+      ? { hostFactory: params.behaviorGovernorHostFactory }
+      : {}),
+    ...(params.behaviorGovernorHostDescriptor
+      ? {
+          moduleHostProvider: createGatewayBehaviorGovernorModuleHostProvider(
+            params.behaviorGovernorHostDescriptor,
+          ),
+        }
+      : {}),
+  });
+}
+
 function isLegacyGovernorEnabled(config: OpenClawConfig): boolean {
   const value = config.experimental?.behaviorGovernor;
   return Boolean(value && "enabled" in value && value.enabled);
@@ -26,16 +48,18 @@ function isLegacyGovernorEnabled(config: OpenClawConfig): boolean {
 
 export function createGatewayBehaviorGovernorRuntime(params: {
   hostFactory?: GatewayBehaviorGovernorHostFactory;
+  moduleHostProvider?: GatewayBehaviorGovernorModuleHostProvider;
 }): GatewayBehaviorGovernorRuntime {
   const modules = createGatewayBehaviorGovernorModuleLifecycle({
     catalog: BUILT_IN_BEHAVIOR_GOVERNOR_MODULES,
+    ...(params.moduleHostProvider ? { hostProvider: params.moduleHostProvider } : {}),
   });
   let legacy: GatewayBehaviorGovernorLifecycle | undefined;
 
   const apply = async (config: OpenClawConfig) => {
     const configured = config.experimental?.behaviorGovernor;
     const selections = configured && "modules" in configured ? configured.modules : [];
-    await modules.apply(selections);
+    await modules.apply(selections, config);
     const enabled = isLegacyGovernorEnabled(config);
     if (!enabled && !legacy) {
       return;

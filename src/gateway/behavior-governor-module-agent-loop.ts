@@ -167,23 +167,34 @@ function createCompositeScope(
     object,
     ReadonlyMap<GovernorAgentLoopRunScope, GovernorAgentLoopToolTicket | undefined>
   >();
-  const tools: AgentTool[] = [];
-  const toolNames = new Set<string>();
-  for (const component of enforce) {
-    for (const tool of component.tools) {
-      if (toolNames.has(tool.name)) {
-        throw new Error("GOVERNOR_MODULE_AGENT_LOOP_TOOL_CONFLICT");
+  const collectGovernedTools = (): readonly AgentTool[] => {
+    const tools: AgentTool[] = [];
+    const toolNames = new Set<string>();
+    for (const component of enforce) {
+      for (const tool of component.scope.governedTools()) {
+        if (!tool?.name?.trim()) {
+          throw new Error("GOVERNOR_MODULE_AGENT_LOOP_TOOLS_INVALID");
+        }
+        if (toolNames.has(tool.name)) {
+          throw new Error("GOVERNOR_MODULE_AGENT_LOOP_TOOL_CONFLICT");
+        }
+        toolNames.add(tool.name);
+        tools.push(tool);
       }
-      toolNames.add(tool.name);
-      tools.push(tool);
     }
-  }
-  const governedTools = Object.freeze(tools);
+    return Object.freeze(tools);
+  };
+  let governedTools = collectGovernedTools();
   let disposed = false;
   const scope: GovernorAgentLoopRunScope = Object.freeze({
     taskId: input.runId,
     mode: enforce.length > 0 ? "enforce" : "shadow",
     disposition: "runnable",
+    prepareTools(installedTools): void {
+      const exactTools = Object.freeze([...installedTools]);
+      collectErrors(components, (component) => component.scope.prepareTools?.(exactTools));
+      governedTools = collectGovernedTools();
+    },
     beforeTool(toolInput): GovernorAgentLoopToolDecision {
       const tickets = new Map<GovernorAgentLoopRunScope, GovernorAgentLoopToolTicket | undefined>();
       let blocked: Extract<GovernorAgentLoopToolDecision, { kind: "block" }> | undefined;

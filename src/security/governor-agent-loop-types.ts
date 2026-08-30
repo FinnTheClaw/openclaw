@@ -1,5 +1,10 @@
 import type { AgentTool } from "../../packages/agent-core/src/types.js";
-import type { GovernorAgentLoopMode } from "./governor-agent-loop-config.js";
+import type { GovernorController } from "../tasks/governor/controller.js";
+import type {
+  GovernorAgentLoopConfiguration,
+  GovernorAgentLoopMode,
+} from "./governor-agent-loop-config.js";
+import type { HostGovernorCapabilities } from "./governor-host-contracts.js";
 
 export type GovernorAgentLoopRunInput = Readonly<{
   runId: string;
@@ -31,6 +36,7 @@ export type GovernorAgentLoopRunScope = Readonly<{
   taskId: string;
   mode: GovernorAgentLoopMode;
   disposition?: "runnable" | "completed_replay";
+  prepareTools?(tools: readonly AgentTool[]): void;
   beforeTool(input: {
     toolCallId: string;
     toolName: string;
@@ -56,4 +62,11 @@ export type GovernorAgentLoopRunScope = Readonly<{
   assertTerminal(): void;
   governedTools(): readonly AgentTool[];
   dispose(): void;
+}>;
+
+export type GovernorAgentLoopScopeHost = Readonly<{
+  config: GovernorAgentLoopConfiguration;
+  controller: GovernorController;
+  submitObservedReceipt: HostGovernorCapabilities["submitObservedReceipt"];
+  scopes: Set<GovernorAgentLoopRunScope>;
 }>;

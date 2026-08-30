@@ -21,6 +21,7 @@ export type GatewayRunOpts = {
   compact?: boolean;
   rawStream?: boolean;
   rawStreamPath?: unknown;
+  behaviorGovernorHostDescriptor?: unknown;
   dev?: boolean;
   reset?: boolean;
 };
@@ -35,6 +36,7 @@ const GATEWAY_RUN_VALUE_KEYS = [
   "tailscale",
   "wsLog",
   "rawStreamPath",
+  "behaviorGovernorHostDescriptor",
 ] as const;
 
 const GATEWAY_RUN_BOOLEAN_KEYS = [
