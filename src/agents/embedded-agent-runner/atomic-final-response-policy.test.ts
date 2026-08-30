@@ -29,7 +29,7 @@ describe("atomic final-response policy", () => {
     ).toEqual({ thinkLevel: "off", continuationRetryLimit: 0, requireVisibleFinal: true });
   });
 
-  it.each(["off", "minimal", "low", "medium"] as const)(
+  it.each(["off", "minimal", "low", "medium", "adaptive"] as const)(
     "preserves an already bounded %s thinking level",
     (resolvedThinkLevel) => {
       activate();

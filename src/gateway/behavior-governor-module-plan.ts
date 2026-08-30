@@ -11,7 +11,7 @@ import {
  * and records it in its ledger; this runtime never self-attests module code.
  * Factories receive their typed activation context only after selection and
  * return the cleanup handle owned by this lifecycle, never import-time state.
- * The first skeleton intentionally ships empty.
+ * Catalog membership does not activate a module; only an exact config selection does.
  */
 export const BUILT_IN_BEHAVIOR_GOVERNOR_MODULES = Object.freeze([
   Object.freeze({

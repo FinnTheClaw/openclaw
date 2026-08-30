@@ -50,7 +50,7 @@ function isDirectAtomicTurn(input: AtomicFinalResponseInput): boolean {
 }
 
 function suppressHighThinking(level: ThinkLevel): ThinkLevel {
-  return ["high", "xhigh", "adaptive", "max", "ultra"].includes(level) ? "off" : level;
+  return ["high", "xhigh", "max", "ultra"].includes(level) ? "off" : level;
 }
 
 /** Installs the C06b final-response policy without creating a second retry owner. */
