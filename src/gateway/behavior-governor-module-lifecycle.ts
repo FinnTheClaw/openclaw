@@ -1,19 +1,23 @@
 import type { BehaviorGovernorModuleSelection } from "../config/types.behavior-governor.js";
+import {
+  installGatewayBehaviorGovernorModuleAgentLoop,
+  type GatewayBehaviorGovernorModuleActivation,
+  type GatewayBehaviorGovernorModuleAgentLoop,
+  type GatewayBehaviorGovernorModuleAgentLoopHandle,
+} from "./behavior-governor-module-agent-loop.js";
 
 const MODULE_ID_PATTERN = /^[A-Z][A-Z0-9._-]{0,63}$/u;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 
 export type GatewayBehaviorGovernorModuleRuntime = Readonly<{
+  agentLoop?: GatewayBehaviorGovernorModuleAgentLoop;
   freeze?: () => void | Promise<void>;
   close: () => void | Promise<void>;
 }>;
 
 /** The lifecycle is the sole activation seam; module imports must stay inert. */
-export type GatewayBehaviorGovernorModuleActivationContext = Readonly<{
-  id: string;
-  mode: BehaviorGovernorModuleSelection["mode"];
-  version: string;
-}>;
+export type GatewayBehaviorGovernorModuleActivationContext =
+  GatewayBehaviorGovernorModuleActivation;
 
 export type GatewayBehaviorGovernorModuleFactory = (
   context: GatewayBehaviorGovernorModuleActivationContext,
@@ -41,7 +45,7 @@ type ResolvedModule = Readonly<{
 }>;
 
 type ActiveModule = Readonly<{
-  id: string;
+  activation: GatewayBehaviorGovernorModuleActivationContext;
   runtime: GatewayBehaviorGovernorModuleRuntime;
 }>;
 
@@ -192,6 +196,7 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
   const catalog = validateCatalog(params.catalog);
   let appliedKey: string | undefined;
   let active: ActiveModule[] = [];
+  let agentLoop: GatewayBehaviorGovernorModuleAgentLoopHandle | undefined;
   let poisoned = false;
   let closed = false;
   let serial = Promise.resolve();
@@ -218,16 +223,27 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
         if (typeof create !== "function") {
           throw new Error("GOVERNOR_MODULE_FACTORY_INVALID");
         }
-        const runtime = await create({
+        const activation = Object.freeze({
           id: item.selection.id,
           mode: item.selection.mode,
           version: item.selection.version,
         });
+        const runtime = await create(activation);
         if (!runtime || typeof runtime.close !== "function") {
           throw new Error("GOVERNOR_MODULE_RUNTIME_INVALID");
         }
-        started.push({ id: item.selection.id, runtime });
+        if (runtime.agentLoop && typeof runtime.agentLoop.resolveRunScope !== "function") {
+          throw new Error("GOVERNOR_MODULE_AGENT_LOOP_INVALID");
+        }
+        started.push({ activation, runtime });
       }
+      agentLoop = installGatewayBehaviorGovernorModuleAgentLoop(
+        started.flatMap((item) =>
+          item.runtime.agentLoop
+            ? [{ activation: item.activation, agentLoop: item.runtime.agentLoop }]
+            : [],
+        ),
+      );
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       const survivors: typeof active = [];
@@ -258,6 +274,7 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
 
   const freezeUnsafe = async () => {
     const errors: unknown[] = [];
+    agentLoop?.freeze();
     for (const item of active.toReversed()) {
       try {
         await item.runtime.freeze?.();
@@ -275,6 +292,8 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
       return;
     }
     const errors: unknown[] = [];
+    agentLoop?.close();
+    agentLoop = undefined;
     const survivors: typeof active = [];
     for (const item of active.toReversed()) {
       try {
