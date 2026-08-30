@@ -35,6 +35,11 @@ export type GovernorInstalledToolAttestor = Readonly<{
 type Entry = Readonly<{
   tool: AgentTool;
   identity: GovernorInstalledToolIdentity;
+  behavior: Readonly<{
+    execute: AgentTool["execute"];
+    prepareArguments: AgentTool["prepareArguments"];
+    executionMode: AgentTool["executionMode"];
+  }>;
 }>;
 
 function validText(value: string, max: number): boolean {
@@ -72,10 +77,25 @@ function cloneSchema(value: unknown): GovernorJsonValue {
     active.add(item);
     try {
       if (Array.isArray(item)) {
-        if (Object.keys(item).length !== item.length) {
+        const descriptors = Object.getOwnPropertyDescriptors(item);
+        if (
+          Object.getOwnPropertySymbols(item).length > 0 ||
+          Object.keys(descriptors).some(
+            (key) => key !== "length" && !/^(0|[1-9][0-9]*)$/u.test(key),
+          ) ||
+          item.length !== Object.keys(descriptors).length - 1
+        ) {
           throw new Error("GOVERNOR_INSTALLED_TOOL_SCHEMA_INVALID");
         }
-        return item.map((child) => visit(child, depth + 1));
+        const result: GovernorJsonValue[] = [];
+        for (let index = 0; index < item.length; index += 1) {
+          const descriptor = descriptors[String(index)];
+          if (!descriptor?.enumerable || !("value" in descriptor)) {
+            throw new Error("GOVERNOR_INSTALLED_TOOL_SCHEMA_INVALID");
+          }
+          result.push(visit(descriptor.value, depth + 1));
+        }
+        return result;
       }
       const prototype = Object.getPrototypeOf(item);
       if (prototype !== Object.prototype && prototype !== null) {
@@ -85,13 +105,18 @@ function cloneSchema(value: unknown): GovernorJsonValue {
         throw new Error("GOVERNOR_INSTALLED_TOOL_SCHEMA_INVALID");
       }
       const descriptors = Object.getOwnPropertyDescriptors(item);
-      const result: Record<string, GovernorJsonValue> = {};
+      const result = Object.create(null) as Record<string, GovernorJsonValue>;
       for (const key of Object.keys(descriptors).toSorted()) {
         const descriptor = descriptors[key];
         if (!descriptor?.enumerable || !("value" in descriptor)) {
           throw new Error("GOVERNOR_INSTALLED_TOOL_SCHEMA_INVALID");
         }
-        result[key] = visit(descriptor.value, depth + 1);
+        Object.defineProperty(result, key, {
+          value: visit(descriptor.value, depth + 1),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
       }
       if (result.truncated === true || result.reason === "trajectory-depth-limit") {
         throw new Error("GOVERNOR_INSTALLED_TOOL_SCHEMA_TRUNCATED");
@@ -166,6 +191,9 @@ export function createGovernorInstalledToolAttestor(): GovernorInstalledToolAtte
       entry.tool !== tool ||
       byTool.get(tool) !== entry ||
       tool.name !== entry.identity.toolName ||
+      tool.execute !== entry.behavior.execute ||
+      tool.prepareArguments !== entry.behavior.prepareArguments ||
+      tool.executionMode !== entry.behavior.executionMode ||
       governorInstalledToolDefinitionDigest(tool) !== entry.identity.toolDefinitionDigest
     ) {
       throw new Error("GOVERNOR_INSTALLED_TOOL_BINDING_MISMATCH");
@@ -182,13 +210,27 @@ export function createGovernorInstalledToolAttestor(): GovernorInstalledToolAtte
         throw new Error("GOVERNOR_INSTALLED_TOOL_DUPLICATE");
       }
       if (
+        typeof input.tool.execute !== "function" ||
+        (input.tool.prepareArguments !== undefined &&
+          typeof input.tool.prepareArguments !== "function") ||
+        (input.tool.executionMode !== undefined &&
+          input.tool.executionMode !== "sequential" &&
+          input.tool.executionMode !== "parallel") ||
         input.tool.name !== identity.toolName ||
         governorInstalledToolDefinitionDigest(input.tool) !== identity.toolDefinitionDigest
       ) {
         throw new Error("GOVERNOR_INSTALLED_TOOL_BINDING_MISMATCH");
       }
       const handle = Object.freeze({}) as OpaqueInstalledToolHandle;
-      const entry = Object.freeze({ tool: input.tool, identity });
+      const entry = Object.freeze({
+        tool: input.tool,
+        identity,
+        behavior: Object.freeze({
+          execute: input.tool.execute,
+          prepareArguments: input.tool.prepareArguments,
+          executionMode: input.tool.executionMode,
+        }),
+      });
       byTool.set(input.tool, entry);
       byHandle.set(handle, entry);
       names.add(identity.toolName);
