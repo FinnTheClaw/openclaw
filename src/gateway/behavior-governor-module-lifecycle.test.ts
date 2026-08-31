@@ -2,10 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import type { BehaviorGovernorModuleSelection } from "../config/types.behavior-governor.js";
 import { OpenClawSchema } from "../config/zod-schema.js";
 import {
+  C11_SHADOW_TRANSPARENCY_ID,
+  C11_SHADOW_TRANSPARENCY_VERSION,
+} from "./behavior-governor-c11-shadow-transparency-module.js";
+import {
   createGatewayBehaviorGovernorModuleLifecycle,
   type GatewayBehaviorGovernorModuleDescriptor,
   type GatewayBehaviorGovernorModuleFactory,
 } from "./behavior-governor-module-lifecycle.js";
+import { BUILT_IN_BEHAVIOR_GOVERNOR_MODULES } from "./behavior-governor-module-plan.js";
 
 const TEST_HOST_PROVIDER = {
   acquire: vi.fn(async () => ({
@@ -97,6 +102,57 @@ describe("gateway behavior governor module lifecycle", () => {
 
     expect(available.load).not.toHaveBeenCalled();
     expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it("selects C11 only from the built-in catalog in qualified shadow mode", async () => {
+    const activations: BehaviorGovernorModuleSelection[] = [];
+    const capability = {
+      agentLoop: {
+        createScopeProvider: () => {
+          throw new Error("TEST_C11_SCOPE_PROVIDER_UNUSED");
+        },
+      },
+    };
+    const acquire = vi.fn(async () => ({
+      capability: {
+        forActivation: (activation: BehaviorGovernorModuleSelection) => {
+          activations.push(activation);
+          return capability;
+        },
+      },
+      freeze: vi.fn(),
+      close: vi.fn(),
+    }));
+    const selected = {
+      id: C11_SHADOW_TRANSPARENCY_ID,
+      version: C11_SHADOW_TRANSPARENCY_VERSION,
+      mode: "shadow",
+    } as const;
+
+    const defaultOff = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: { acquire },
+      catalog: BUILT_IN_BEHAVIOR_GOVERNOR_MODULES,
+    });
+    await defaultOff.apply([]);
+    expect(acquire).not.toHaveBeenCalled();
+    await defaultOff.close();
+
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: { acquire },
+      catalog: BUILT_IN_BEHAVIOR_GOVERNOR_MODULES,
+    });
+    await lifecycle.apply([selected]);
+    expect(activations).toEqual([selected]);
+    await lifecycle.close();
+
+    const unqualified = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: { acquire },
+      catalog: BUILT_IN_BEHAVIOR_GOVERNOR_MODULES,
+    });
+    await expect(unqualified.apply([{ ...selected, mode: "enforce" }])).rejects.toThrow(
+      "GOVERNOR_MODULE_MODE_UNSUPPORTED",
+    );
+    expect(acquire).toHaveBeenCalledOnce();
   });
 
   it("runs the exact lowercase module selection accepted by persisted config", async () => {
