@@ -385,7 +385,7 @@ describe("C03 deep productive loop module", () => {
     });
   });
 
-  it("rebinds selected C03 state after restart and blocks foreign unfinished work", async () => {
+  it("rebinds selected C03 state after restart, isolates a new run, and blocks foreign work", async () => {
     await withOpenClawTestState({ layout: "state-only", prefix: "c03-restart-" }, async (state) => {
       activateSecrets(state.stateDir);
       const descriptorPath = await prepareLifecycleFiles(state.stateDir);
@@ -467,7 +467,36 @@ describe("C03 deep productive loop module", () => {
           sourceMessageId: "c03-foreign-message",
         }),
       ).toThrow("GOVERNOR_AGENT_LOOP_STALE_INGRESS");
+      const independentScope = resolveGovernorAgentLoopRunScope({
+        ...run(),
+        runId: "c03-independent-run",
+        sessionKey: "c03-independent-session",
+        sessionId: "c03-independent-session-id",
+        agentId: "c03-independent-agent",
+        sourceMessageId: "c03-independent-message",
+        sourceSequence: 3,
+        now: 204,
+      })!;
+      independentScope.prepareTools?.([read, exec]);
+      expect(independentScope.taskId).not.toBe(taskId);
+      const independentFirst = independentScope.beforeTool({
+        toolCallId: "c03-independent-observe-1",
+        toolName: "read",
+        args: { path: "/case/c03/observe-01.txt" },
+        tool: read,
+        now: 205,
+      });
+      expect(independentFirst.kind).toBe("allow");
+      await independentScope.afterTool({
+        ticket: independentFirst.kind === "allow" ? independentFirst.ticket : undefined,
+        toolCallId: "c03-independent-observe-1",
+        toolName: "read",
+        result: { value: "independent observe-01" },
+        isError: false,
+        now: 206,
+      });
       resumedScope.dispose();
+      independentScope.dispose();
       await resumedLifecycle.close();
     });
   });
