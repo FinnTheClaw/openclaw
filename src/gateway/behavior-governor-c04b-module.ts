@@ -15,11 +15,17 @@ const PLAN = Object.freeze({
   maxTurns: 8,
   criteria: Object.freeze([
     Object.freeze({ criterionId: "c04b-observe-a", dependsOn: Object.freeze([]) }),
-    Object.freeze({ criterionId: "c04b-observe-b", dependsOn: Object.freeze([]) }),
-    Object.freeze({ criterionId: "c04b-observe-c", dependsOn: Object.freeze([]) }),
+    Object.freeze({
+      criterionId: "c04b-observe-b",
+      dependsOn: Object.freeze(["c04b-observe-a"]),
+    }),
+    Object.freeze({
+      criterionId: "c04b-observe-c",
+      dependsOn: Object.freeze(["c04b-observe-b"]),
+    }),
     Object.freeze({
       criterionId: "c04b-aggregate",
-      dependsOn: Object.freeze(["c04b-observe-a", "c04b-observe-b", "c04b-observe-c"]),
+      dependsOn: Object.freeze(["c04b-observe-c"]),
     }),
   ]),
   bindings: Object.freeze([

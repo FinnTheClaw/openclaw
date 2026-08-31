@@ -87,7 +87,7 @@ function runtime(stateDir: string): GovernorHostRuntime {
   return created;
 }
 
-function run(): GovernorAgentLoopRunInput {
+function run(overrides: Partial<GovernorAgentLoopRunInput> = {}): GovernorAgentLoopRunInput {
   return {
     runId: "c04b-run",
     sessionKey: "c04b-session-key",
@@ -102,10 +102,14 @@ function run(): GovernorAgentLoopRunInput {
     sourceSequence: 1,
     prompt: "run exact c04b campaign",
     now: 100,
+    ...overrides,
   };
 }
 
-async function scope(host: GovernorHostRuntime): Promise<{
+async function scope(
+  host: GovernorHostRuntime,
+  input = run(),
+): Promise<{
   close: () => void;
   scope: GovernorAgentLoopRunScope;
 }> {
@@ -130,7 +134,7 @@ async function scope(host: GovernorHostRuntime): Promise<{
       },
     },
   });
-  const resolved = module.agentLoop?.resolveRunScope({ activation, run: run() });
+  const resolved = module.agentLoop?.resolveRunScope({ activation, run: input });
   if (!resolved) {
     module.close();
     throw new Error("C04B scope unavailable");
@@ -138,11 +142,15 @@ async function scope(host: GovernorHostRuntime): Promise<{
   return { close: module.close, scope: resolved };
 }
 
-async function observe(
+function observeAdmission(
   target: GovernorAgentLoopRunScope,
   label: string,
   index: number,
-): Promise<void> {
+): Readonly<{
+  decision: ReturnType<GovernorAgentLoopRunScope["beforeTool"]>;
+  now: number;
+  tool: NonNullable<ReturnType<GovernorAgentLoopRunScope["governedTools"]>[number]>;
+}> {
   const tool = target.governedTools().find((candidate) => candidate.name === "observe");
   if (!tool) {
     throw new Error("C04B observe tool unavailable");
@@ -155,6 +163,15 @@ async function observe(
     tool,
     now,
   });
+  return { decision, now, tool };
+}
+
+async function observe(
+  target: GovernorAgentLoopRunScope,
+  label: string,
+  index: number,
+): Promise<void> {
+  const { decision, now, tool } = observeAdmission(target, label, index);
   expect(decision).toMatchObject({ kind: "allow" });
   if (decision.kind !== "allow" || !decision.ticket) {
     throw new Error("C04B observation not admitted");
@@ -202,33 +219,144 @@ describe("C04b aggregate-order behavior governor module", () => {
     await lifecycle.close();
   });
 
-  it("blocks aggregation until all three distinct observations succeed", async () => {
+  it("requires the canonical observe-a to observe-b to observe-c to aggregate chain", async () => {
     await withOpenClawTestState({ layout: "state-only", prefix: "c04b-order-" }, async (state) => {
       const host = runtime(state.stateDir);
       const target = await scope(host);
       try {
-        expect(aggregateDecision(target.scope, 1)).toMatchObject({
+        expect(observeAdmission(target.scope, "observe-b", 1).decision).toMatchObject({
           kind: "block",
           reasonCode: expect.stringContaining(
-            "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-aggregate",
+            "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-observe-b",
           ),
         });
-        await observe(target.scope, "observe-c", 1);
-        await observe(target.scope, "observe-a", 2);
-        expect(aggregateDecision(target.scope, 2)).toMatchObject({
+        expect(observeAdmission(target.scope, "observe-c", 2).decision).toMatchObject({
           kind: "block",
           reasonCode: expect.stringContaining(
-            "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-aggregate",
+            "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-observe-c",
           ),
         });
-        await observe(target.scope, "observe-b", 3);
-        expect(aggregateDecision(target.scope, 3)).toMatchObject({ kind: "allow" });
+        expect(aggregateDecision(target.scope, 1)).toMatchObject({ kind: "block" });
+        await observe(target.scope, "observe-a", 3);
+        expect(observeAdmission(target.scope, "observe-c", 4).decision).toMatchObject({
+          kind: "block",
+          reasonCode: expect.stringContaining(
+            "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-observe-c",
+          ),
+        });
+        await observe(target.scope, "observe-b", 5);
+        await observe(target.scope, "observe-c", 6);
+        expect(aggregateDecision(target.scope, 2)).toMatchObject({ kind: "allow" });
       } finally {
         target.scope.dispose();
         target.close();
         host.close();
       }
     });
+  });
+
+  it("rejects duplicate observations and foreign or substituted host tools", async () => {
+    await withOpenClawTestState({ layout: "state-only", prefix: "c04b-tools-" }, async (state) => {
+      const host = runtime(state.stateDir);
+      const target = await scope(host);
+      try {
+        const observeTool = target.scope.governedTools().find((tool) => tool.name === "observe");
+        const aggregateTool = target.scope
+          .governedTools()
+          .find((tool) => tool.name === "aggregate");
+        if (!observeTool || !aggregateTool) {
+          throw new Error("C04B governed tools unavailable");
+        }
+        for (const tool of [Object.freeze({ ...observeTool }), aggregateTool]) {
+          expect(
+            target.scope.beforeTool({
+              toolCallId: `c04b-substituted-${tool.name}`,
+              toolName: "observe",
+              args: { label: "observe-a" },
+              tool,
+              now: 200,
+            }),
+          ).toMatchObject({ kind: "block", reasonCode: "GOVERNOR_TOOL_IMPLEMENTATION_MISMATCH" });
+        }
+        await observe(target.scope, "observe-a", 1);
+        expect(observeAdmission(target.scope, "observe-a", 2).decision).toMatchObject({
+          kind: "block",
+          reasonCode: expect.stringContaining("GOVERNOR_CRITERION_ALREADY_SATISFIED"),
+        });
+      } finally {
+        target.scope.dispose();
+        target.close();
+        host.close();
+      }
+    });
+  });
+
+  it("rejects cross-session evidence and recomputes the canonical chain after host restart", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "c04b-binding-" },
+      async (state) => {
+        const input = run({ sourceMessageId: "c04b-restart", sourceSequence: 2 });
+        let host = runtime(state.stateDir);
+        const first = await scope(host, input);
+        try {
+          const admission = observeAdmission(first.scope, "observe-a", 1);
+          expect(admission.decision).toMatchObject({ kind: "allow" });
+          if (admission.decision.kind !== "allow" || !admission.decision.ticket) {
+            throw new Error("C04B observation not admitted");
+          }
+          const ticket = admission.decision.ticket;
+          const foreign = await scope(
+            host,
+            run({
+              runId: "c04b-foreign-run",
+              sessionKey: "c04b-foreign-session-key",
+              sessionId: "c04b-foreign-session",
+              sourceMessageId: "c04b-foreign-message",
+              sourceSequence: 3,
+            }),
+          );
+          try {
+            expect(() =>
+              foreign.scope.afterTool({
+                ticket,
+                toolCallId: "c04b-observe-observe-a",
+                toolName: "observe",
+                result: { content: [{ type: "text", text: "foreign" }], details: null },
+                isError: false,
+                now: admission.now + 1,
+              }),
+            ).toThrow("GOVERNOR_ACTION_INTENT_NOT_FOUND");
+          } finally {
+            foreign.scope.dispose();
+            foreign.close();
+          }
+          await first.scope.afterTool({
+            ticket,
+            toolCallId: "c04b-observe-observe-a",
+            toolName: "observe",
+            result: await admission.tool.execute("c04b-observe-observe-a", { label: "observe-a" }),
+            isError: false,
+            now: admission.now + 2,
+          });
+        } finally {
+          first.scope.dispose();
+          first.close();
+          host.close();
+        }
+        closeOpenClawStateDatabase();
+        host = runtime(state.stateDir);
+        const recovered = await scope(host, input);
+        try {
+          await observe(recovered.scope, "observe-b", 4);
+          await observe(recovered.scope, "observe-c", 5);
+          expect(aggregateDecision(recovered.scope, 6)).toMatchObject({ kind: "allow" });
+        } finally {
+          recovered.scope.dispose();
+          recovered.close();
+          host.close();
+        }
+      },
+    );
   });
 
   it("does not treat a failed observation or an unknown label as completed evidence", async () => {
@@ -273,9 +401,13 @@ describe("C04b aggregate-order behavior governor module", () => {
             isError: true,
             now: 211,
           });
-          await observe(target.scope, "observe-b", 2);
-          await observe(target.scope, "observe-c", 3);
-          expect(aggregateDecision(target.scope, 4)).toMatchObject({
+          expect(observeAdmission(target.scope, "observe-b", 2).decision).toMatchObject({
+            kind: "block",
+            reasonCode: expect.stringContaining(
+              "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-observe-b",
+            ),
+          });
+          expect(aggregateDecision(target.scope, 3)).toMatchObject({
             kind: "block",
             reasonCode: expect.stringContaining(
               "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-aggregate",
