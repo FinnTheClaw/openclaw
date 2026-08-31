@@ -2,16 +2,17 @@
 
 ## Status
 
-This is an inert campaign preparation, not a C03 module or release candidate. It cannot select,
-activate, close, or alter a governor. Historical C03 evidence is accepted for campaign accounting,
-but the modular reconstruction remains source NO-GO.
+`c03-deep-productive-loop@v1` is a compiled, default-off modular governor feature. It is inert
+without its exact lowercase id, version, and `enforce` selection; it neither self-activates nor
+changes an unselected governor. Historical C03 evidence remains campaign-accounting evidence, not
+a release result.
 
 The accepted historical behavior is an exact 24-turn durable trace: twenty canonical unique
 successful observations, one transient failure followed by one non-guidance replan and retry, one
 premature-finish rejection, then exactly one post-success aggregate. Every physical action has one
 paired effect and outcome; no invented key, duplicate label, orphan outcome, count drift, or
-reordering is allowed. Current `948b` still has an empty module catalog and only the broad legacy
-host route.
+reordering is allowed. The current lineage has the shared selected-module catalog and host route;
+C03 adds only its narrow policy configuration to that existing seam.
 
 ## Missing skeleton capability
 
@@ -28,7 +29,8 @@ turns 1–24 in exact order, canonical labels `observe-01` through `observe-20` 
 success, an immediately adjacent failure→non-guidance-replan→same-key retry sequence, one
 incomplete-finish rejection, and the aggregate as turn 24. Explicit negative oracles reject
 duplicate labels, invented keys, missing action/effect/outcome pairing, changed order/value, and
-wrong event count. This validates campaign data only; it is not installed C03 certification.
+wrong event count. This validates campaign data and complements the selected-module source
+lifecycle proof; it is not installed C03 certification.
 
 ## Alistar acceptance protocol
 

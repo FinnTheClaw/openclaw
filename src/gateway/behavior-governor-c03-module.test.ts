@@ -1,4 +1,11 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createEmptyRuntimeWebToolsMetadata } from "../secrets/runtime-fast-path.js";
+import {
+  activateSecretsRuntimeSnapshotState,
+  clearSecretsRuntimeSnapshot,
+} from "../secrets/runtime-state.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import { resolveGovernorAgentLoopRunScope } from "../security/governor-agent-loop-readonly.js";
 import { createGovernorAgentLoopTool } from "../security/governor-agent-loop-tools.js";
@@ -8,7 +15,14 @@ import { governorDigest } from "../tasks/governor/canonical-json.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { C03_BEHAVIOR_GOVERNOR_MODULE } from "./behavior-governor-c03-module.js";
 import { C03_CANONICAL_OBSERVATION_KEYS } from "./behavior-governor-campaigns/c03-deep-loop-campaign.fixture.js";
+import {
+  BEHAVIOR_GOVERNOR_MODULE_HOST_SCHEMA,
+  BEHAVIOR_GOVERNOR_MODULE_HOST_SECRET_FILE,
+  BEHAVIOR_GOVERNOR_MODULE_HOST_SECRET_PROVIDER,
+} from "./behavior-governor-module-host-descriptor.js";
+import { createGatewayBehaviorGovernorModuleHostProvider } from "./behavior-governor-module-host.js";
 import type { GatewayBehaviorGovernorModuleActivationContext } from "./behavior-governor-module-lifecycle.js";
+import { createGatewayBehaviorGovernorModuleLifecycle } from "./behavior-governor-module-lifecycle.js";
 import { BUILT_IN_BEHAVIOR_GOVERNOR_MODULES } from "./behavior-governor-module-plan.js";
 
 const capabilities = Object.freeze([
@@ -140,7 +154,99 @@ function integrations(config: GovernorAgentLoopConfiguration) {
   };
 }
 
-afterEach(() => closeOpenClawStateDatabase());
+const lifecycleSecrets = Object.freeze({
+  identityHmacKey: "c03-lifecycle-identity-key",
+  evidenceAdmissionKey: "c03-lifecycle-evidence-key",
+  receiptSigningKey: "c03-lifecycle-receipt-key",
+  ledgerSigningKey: "c03-lifecycle-ledger-key",
+  deploymentIdentity: "c03-lifecycle-deployment",
+});
+
+async function prepareLifecycleFiles(stateDir: string): Promise<string> {
+  const privateDir = path.join(stateDir, "private");
+  await fs.mkdir(privateDir, { recursive: true, mode: 0o700 });
+  await fs.writeFile(
+    path.join(privateDir, BEHAVIOR_GOVERNOR_MODULE_HOST_SECRET_FILE),
+    JSON.stringify(lifecycleSecrets),
+    { mode: 0o600 },
+  );
+  const ref = (id: keyof typeof lifecycleSecrets) => ({
+    source: "file" as const,
+    provider: BEHAVIOR_GOVERNOR_MODULE_HOST_SECRET_PROVIDER,
+    id: `/${id}`,
+  });
+  const descriptorPath = path.join(stateDir, "c03-module-host.json");
+  await fs.writeFile(
+    descriptorPath,
+    JSON.stringify({
+      schema: BEHAVIOR_GOVERNOR_MODULE_HOST_SCHEMA,
+      secretRefs: {
+        identityHmacKey: ref("identityHmacKey"),
+        evidenceAdmissionKey: ref("evidenceAdmissionKey"),
+        evidenceAdmissionKeyId: "c03-evidence-v1",
+        receiptSigningKey: ref("receiptSigningKey"),
+        ledgerSigningKey: ref("ledgerSigningKey"),
+        deploymentIdentity: ref("deploymentIdentity"),
+      },
+      capabilities,
+      integrations: {
+        evidenceOwnerId: "c03-evidence-owner",
+        approvalOwnerId: "c03-approval-owner",
+        deliveryOwnerId: "c03-delivery-owner",
+        ownerIngressOwnerId: "c03-ingress-owner",
+        childOwnerId: "c03-child-owner",
+        ownerIngressBindings: integrations(await c03Config()).ownerIngressBindings,
+        deliveries: [
+          {
+            implementationId: "openclaw.canary.disposable.v1",
+            config: { mode: "shadow", sinkId: "disposable-v1" },
+            generation: 0,
+          },
+        ],
+      },
+    }),
+    { mode: 0o600 },
+  );
+  return descriptorPath;
+}
+
+function activateSecrets(stateDir: string): void {
+  activateSecretsRuntimeSnapshotState({
+    snapshot: {
+      sourceConfig: {},
+      config: {},
+      authStores: [],
+      warnings: [],
+      webTools: createEmptyRuntimeWebToolsMetadata(),
+    },
+    refreshContext: {
+      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+      explicitAgentDirs: null,
+      includeAuthStoreRefs: false,
+      loadablePluginOrigins: new Map(),
+    },
+    refreshHandler: null,
+  });
+}
+
+async function activateC03Lifecycle(descriptorPath: string, invocationId: string) {
+  process.env.INVOCATION_ID = invocationId;
+  const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+    catalog: [C03_BEHAVIOR_GOVERNOR_MODULE],
+    hostProvider: createGatewayBehaviorGovernorModuleHostProvider(descriptorPath),
+  });
+  await lifecycle.apply([{ id: "c03-deep-productive-loop", version: "v1", mode: "enforce" }]);
+  return lifecycle;
+}
+
+const priorInvocationId = process.env.INVOCATION_ID;
+
+afterEach(() => {
+  closeOpenClawStateDatabase();
+  clearSecretsRuntimeSnapshot();
+  if (priorInvocationId === undefined) delete process.env.INVOCATION_ID;
+  else process.env.INVOCATION_ID = priorInvocationId;
+});
 
 describe("C03 deep productive loop module", () => {
   it("is compiled but inert without an exact selection", () => {
@@ -276,6 +382,93 @@ describe("C03 deep productive loop module", () => {
       expect(runtime.adapter.controller.store.listEffects(scope.taskId as never)).toHaveLength(22);
       scope.dispose();
       runtime.close();
+    });
+  });
+
+  it("rebinds selected C03 state after restart and blocks foreign unfinished work", async () => {
+    await withOpenClawTestState({ layout: "state-only", prefix: "c03-restart-" }, async (state) => {
+      activateSecrets(state.stateDir);
+      const descriptorPath = await prepareLifecycleFiles(state.stateDir);
+      const read = createGovernorAgentLoopTool({
+        toolName: "read",
+        implementationId: "installed-tool:read",
+        argumentName: "path",
+      });
+      const exec = createGovernorAgentLoopTool({
+        toolName: "exec",
+        implementationId: "installed-tool:exec",
+      });
+      const firstLifecycle = await activateC03Lifecycle(descriptorPath, "c03-restart-a");
+      const firstScope = resolveGovernorAgentLoopRunScope(run())!;
+      firstScope.prepareTools?.([read, exec]);
+      const first = firstScope.beforeTool({
+        toolCallId: "c03-restart-observe-1",
+        toolName: "read",
+        args: { path: "/case/c03/observe-01.txt" },
+        tool: read,
+        now: 101,
+      });
+      expect(first.kind).toBe("allow");
+      await firstScope.afterTool({
+        ticket: first.kind === "allow" ? first.ticket : undefined,
+        toolCallId: "c03-restart-observe-1",
+        toolName: "read",
+        result: { value: "observe-01" },
+        isError: false,
+        now: 102,
+      });
+      expect(
+        firstScope.afterTurn({ assistantText: "working", toolCallCount: 1, now: 103 }),
+      ).toMatchObject({
+        kind: "continue",
+      });
+      const taskId = firstScope.taskId;
+      firstScope.dispose();
+      await firstLifecycle.close();
+
+      const resumedLifecycle = await activateC03Lifecycle(descriptorPath, "c03-restart-b");
+      const resumedScope = resolveGovernorAgentLoopRunScope({
+        ...run(),
+        sourceSequence: 2,
+        now: 200,
+      })!;
+      resumedScope.prepareTools?.([read, exec]);
+      expect(resumedScope.taskId).toBe(taskId);
+      expect(
+        resumedScope.beforeTool({
+          toolCallId: "c03-restart-duplicate",
+          toolName: "read",
+          args: { path: "/case/c03/observe-01.txt" },
+          tool: read,
+          now: 201,
+        }),
+      ).toMatchObject({ kind: "block" });
+      const next = resumedScope.beforeTool({
+        toolCallId: "c03-restart-observe-2",
+        toolName: "read",
+        args: { path: "/case/c03/observe-02.txt" },
+        tool: read,
+        now: 202,
+      });
+      expect(next.kind).toBe("allow");
+      await resumedScope.afterTool({
+        ticket: next.kind === "allow" ? next.ticket : undefined,
+        toolCallId: "c03-restart-observe-2",
+        toolName: "read",
+        result: { value: "observe-02" },
+        isError: false,
+        now: 203,
+      });
+
+      expect(() =>
+        resolveGovernorAgentLoopRunScope({
+          ...run(),
+          runId: "c03-foreign-run",
+          sourceMessageId: "c03-foreign-message",
+        }),
+      ).toThrow("GOVERNOR_AGENT_LOOP_STALE_INGRESS");
+      resumedScope.dispose();
+      await resumedLifecycle.close();
     });
   });
 });
