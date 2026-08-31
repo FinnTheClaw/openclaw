@@ -252,8 +252,14 @@ describe("C04b aggregate-order behavior governor module", () => {
               ),
             });
             await observe(target.scope, order[1], 4);
-            await observe(target.scope, order[2], 5);
-            expect(aggregateDecision(target.scope, 6)).toMatchObject({ kind: "allow" });
+            expect(aggregateDecision(target.scope, 5)).toMatchObject({
+              kind: "block",
+              reasonCode: expect.stringContaining(
+                "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-aggregate",
+              ),
+            });
+            await observe(target.scope, order[2], 6);
+            expect(aggregateDecision(target.scope, 7)).toMatchObject({ kind: "allow" });
           } finally {
             target.scope.dispose();
             target.close();
