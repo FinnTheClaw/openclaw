@@ -1,4 +1,5 @@
 import { C02_BEHAVIOR_GOVERNOR_MODULE } from "./behavior-governor-c02-module.js";
+import { C11_SHADOW_TRANSPARENCY_BEHAVIOR_GOVERNOR_MODULE } from "./behavior-governor-c11-shadow-transparency-module.js";
 import type { GatewayBehaviorGovernorModuleDescriptor } from "./behavior-governor-module-lifecycle.js";
 
 /**
@@ -11,4 +12,5 @@ import type { GatewayBehaviorGovernorModuleDescriptor } from "./behavior-governo
  */
 export const BUILT_IN_BEHAVIOR_GOVERNOR_MODULES = Object.freeze([
   C02_BEHAVIOR_GOVERNOR_MODULE,
+  C11_SHADOW_TRANSPARENCY_BEHAVIOR_GOVERNOR_MODULE,
 ] satisfies readonly GatewayBehaviorGovernorModuleDescriptor[]);
