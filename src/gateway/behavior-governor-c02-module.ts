@@ -1,5 +1,4 @@
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
-import type { GovernorAgentLoopRunScope } from "../security/governor-agent-loop-readonly.js";
 import { GOVERNOR_C02_HOST_REGISTRATION } from "../security/governor-c02-runtime-attestation.js";
 import {
   C02_CRITERIA_TEMPLATE,
@@ -8,7 +7,7 @@ import {
   C02_SIMPLE_EFFICIENCY_VERSION,
 } from "../security/governor-c02-simple-efficiency-policy.js";
 import { governorDigest } from "../tasks/governor/canonical-json.js";
-import type { GatewayBehaviorGovernorModuleRunInput } from "./behavior-governor-module-agent-loop.js";
+import { createGatewayBehaviorGovernorModuleGovernedRunConsumer } from "./behavior-governor-module-governed-run.js";
 import type {
   GatewayBehaviorGovernorModuleDescriptor,
   GatewayBehaviorGovernorModuleFactory,
@@ -82,76 +81,10 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
     throw new Error("GOVERNOR_C02_MODE_UNQUALIFIED");
   }
   const mode = context.mode;
-  const scopes = new Set<GovernorAgentLoopRunScope>();
-  let closed = false;
-  return Object.freeze({
-    agentLoop: Object.freeze({
-      resolveRunScope(input: GatewayBehaviorGovernorModuleRunInput) {
-        if (closed) {
-          throw new Error("GOVERNOR_C02_MODULE_CLOSED");
-        }
-        const provider = context.host.agentLoop.createScopeProvider(
-          config(mode, input.run.sessionKey, input.run.agentId),
-        );
-        const binding = provider.createRunBinding({
-          run: input.run,
-          planDigest: PLAN_DIGEST,
-          plan: PLAN,
-        });
-        let resolved: GovernorAgentLoopRunScope | undefined;
-        try {
-          resolved = provider.resolveRunScope(input, binding.proof);
-          if (!resolved) {
-            binding.close();
-            provider.close();
-            return undefined;
-          }
-        } catch (error) {
-          binding.close();
-          provider.close();
-          throw error;
-        }
-        let disposed = false;
-        const scope: GovernorAgentLoopRunScope = Object.freeze({
-          ...resolved,
-          get disposition() {
-            return resolved!.disposition;
-          },
-          dispose() {
-            if (disposed) {
-              return;
-            }
-            disposed = true;
-            try {
-              resolved!.dispose();
-            } finally {
-              binding.close();
-              provider.close();
-              scopes.delete(scope);
-            }
-          },
-        });
-        scopes.add(scope);
-        return scope;
-      },
-    }),
-    close() {
-      if (closed) {
-        return;
-      }
-      const errors: unknown[] = [];
-      for (const scope of [...scopes].toReversed()) {
-        try {
-          scope.dispose();
-        } catch (error) {
-          errors.push(error);
-        }
-      }
-      if (errors.length > 0 || scopes.size > 0) {
-        throw new AggregateError(errors, "GOVERNOR_C02_MODULE_CLOSE_FAILED");
-      }
-      closed = true;
-    },
+  return createGatewayBehaviorGovernorModuleGovernedRunConsumer(context, {
+    config: (run) => config(mode, run.sessionKey, run.agentId),
+    plan: PLAN,
+    planDigest: PLAN_DIGEST,
   });
 };
 

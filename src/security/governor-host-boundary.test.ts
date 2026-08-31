@@ -54,6 +54,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
   ],
   "governor-agent-loop-config": [
     "gateway/behavior-governor-c02-module.ts",
+    "gateway/behavior-governor-module-governed-run.ts",
     "gateway/behavior-governor-module-host-registration.ts",
     "security/governor-agent-loop-admission.ts",
     "gateway/behavior-governor-lifecycle.ts",
@@ -95,6 +96,7 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-c02-runtime-attestation-validation.ts",
   ],
   "governor-agent-loop-types": [
+    "gateway/behavior-governor-module-governed-run.ts",
     "gateway/behavior-governor-module-host-registration.ts",
     "security/governor-agent-loop-completed-replay.ts",
     "security/governor-agent-loop-host-close.ts",
@@ -253,6 +255,7 @@ describe("governor host authority boundary", () => {
     const read = (relative: string) => fs.readFileSync(path.join(root, relative), "utf8");
     const nonOwners = [
       "security/governor-agent-loop-scope-provider.ts",
+      "gateway/behavior-governor-module-governed-run.ts",
       "gateway/behavior-governor-module-run-bindings.ts",
       "gateway/behavior-governor-module-host-descriptor.ts",
     ].map(read);
