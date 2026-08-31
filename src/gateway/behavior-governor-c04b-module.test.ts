@@ -40,6 +40,15 @@ const capabilities = Object.freeze([
   },
 ]);
 
+const OBSERVATION_ORDERS = Object.freeze([
+  Object.freeze(["observe-a", "observe-b", "observe-c"]),
+  Object.freeze(["observe-a", "observe-c", "observe-b"]),
+  Object.freeze(["observe-b", "observe-a", "observe-c"]),
+  Object.freeze(["observe-b", "observe-c", "observe-a"]),
+  Object.freeze(["observe-c", "observe-a", "observe-b"]),
+  Object.freeze(["observe-c", "observe-b", "observe-a"]),
+] as const);
+
 function environment(): NodeJS.ProcessEnv {
   return {
     NODE_ENV: "test",
@@ -219,41 +228,41 @@ describe("C04b aggregate-order behavior governor module", () => {
     await lifecycle.close();
   });
 
-  it("requires the canonical observe-a to observe-b to observe-c to aggregate chain", async () => {
-    await withOpenClawTestState({ layout: "state-only", prefix: "c04b-order-" }, async (state) => {
-      const host = runtime(state.stateDir);
-      const target = await scope(host);
-      try {
-        expect(observeAdmission(target.scope, "observe-b", 1).decision).toMatchObject({
-          kind: "block",
-          reasonCode: expect.stringContaining(
-            "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-observe-b",
-          ),
-        });
-        expect(observeAdmission(target.scope, "observe-c", 2).decision).toMatchObject({
-          kind: "block",
-          reasonCode: expect.stringContaining(
-            "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-observe-c",
-          ),
-        });
-        expect(aggregateDecision(target.scope, 1)).toMatchObject({ kind: "block" });
-        await observe(target.scope, "observe-a", 3);
-        expect(observeAdmission(target.scope, "observe-c", 4).decision).toMatchObject({
-          kind: "block",
-          reasonCode: expect.stringContaining(
-            "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-observe-c",
-          ),
-        });
-        await observe(target.scope, "observe-b", 5);
-        await observe(target.scope, "observe-c", 6);
-        expect(aggregateDecision(target.scope, 2)).toMatchObject({ kind: "allow" });
-      } finally {
-        target.scope.dispose();
-        target.close();
-        host.close();
-      }
-    });
-  });
+  it.each(OBSERVATION_ORDERS)(
+    "accepts the trusted observation cohort in %s -> %s -> %s order and blocks aggregate until complete",
+    async (first, second, third) => {
+      const order = [first, second, third] as const;
+      await withOpenClawTestState(
+        { layout: "state-only", prefix: `c04b-order-${order.join("-")}-` },
+        async (state) => {
+          const host = runtime(state.stateDir);
+          const target = await scope(host);
+          try {
+            expect(aggregateDecision(target.scope, 1)).toMatchObject({
+              kind: "block",
+              reasonCode: expect.stringContaining(
+                "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-aggregate",
+              ),
+            });
+            await observe(target.scope, order[0], 2);
+            expect(aggregateDecision(target.scope, 3)).toMatchObject({
+              kind: "block",
+              reasonCode: expect.stringContaining(
+                "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-aggregate",
+              ),
+            });
+            await observe(target.scope, order[1], 4);
+            await observe(target.scope, order[2], 5);
+            expect(aggregateDecision(target.scope, 6)).toMatchObject({ kind: "allow" });
+          } finally {
+            target.scope.dispose();
+            target.close();
+            host.close();
+          }
+        },
+      );
+    },
+  );
 
   it("rejects duplicate observations and foreign or substituted host tools", async () => {
     await withOpenClawTestState({ layout: "state-only", prefix: "c04b-tools-" }, async (state) => {
@@ -291,7 +300,7 @@ describe("C04b aggregate-order behavior governor module", () => {
     });
   });
 
-  it("rejects cross-session evidence and recomputes the canonical chain after host restart", async () => {
+  it("rejects cross-run evidence and recomputes the trusted cohort after host restart", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "c04b-binding-" },
       async (state) => {
@@ -347,8 +356,8 @@ describe("C04b aggregate-order behavior governor module", () => {
         host = runtime(state.stateDir);
         const recovered = await scope(host, input);
         try {
-          await observe(recovered.scope, "observe-b", 4);
-          await observe(recovered.scope, "observe-c", 5);
+          await observe(recovered.scope, "observe-c", 4);
+          await observe(recovered.scope, "observe-b", 5);
           expect(aggregateDecision(recovered.scope, 6)).toMatchObject({ kind: "allow" });
         } finally {
           recovered.scope.dispose();
@@ -401,13 +410,7 @@ describe("C04b aggregate-order behavior governor module", () => {
             isError: true,
             now: 211,
           });
-          expect(observeAdmission(target.scope, "observe-b", 2).decision).toMatchObject({
-            kind: "block",
-            reasonCode: expect.stringContaining(
-              "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-observe-b",
-            ),
-          });
-          expect(aggregateDecision(target.scope, 3)).toMatchObject({
+          expect(aggregateDecision(target.scope, 2)).toMatchObject({
             kind: "block",
             reasonCode: expect.stringContaining(
               "GOVERNOR_TOOL_DEPENDENCY_UNSATISFIED:c04b-aggregate",
