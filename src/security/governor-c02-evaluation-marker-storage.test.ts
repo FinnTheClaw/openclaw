@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseC02EvaluationSession } from "./governor-c02-evaluation.js";
 import { createC02EvaluationRestartMarkers } from "./governor-c02-local-evaluator.js";
 
@@ -16,7 +16,10 @@ describe("C02 evaluation marker storage", () => {
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("keeps publication in the held Linux directory or fails closed after a parent swap", () => {
+  it.each([
+    "after parent validation before child open",
+    "after child open before leaf publication",
+  ])("fails closed without publishing into a replacement root: %s", (interleaving) => {
     const item = parseC02EvaluationSession("c02-eval:C02-F-001:efefefefefefefefefefefef");
     if (!item) {
       throw new Error("expected evaluation");
@@ -25,27 +28,25 @@ describe("C02 evaluation marker storage", () => {
     const moved = path.join(stateDir, "moved-state");
     const pending = `c02-f-001-${item.requestNonce}.pending.json`;
     fs.mkdirSync(root, { mode: 0o700 });
-    const mkdir = fs.mkdirSync.bind(fs);
     let swapped = false;
-    const spy = vi.spyOn(fs, "mkdirSync").mockImplementation((...args) => {
-      const result = mkdir(...args);
-      if (!swapped && typeof args[0] === "string" && args[0].endsWith("/governor")) {
+    const swap = () => {
+      if (!swapped) {
         fs.renameSync(root, moved);
-        mkdir(root, { mode: 0o700 });
+        fs.mkdirSync(root, { mode: 0o700 });
         swapped = true;
       }
-      return result;
-    });
-    let armed = false;
-    try {
-      armed = createC02EvaluationRestartMarkers({ stateDir: root }).arm(item, 0);
-    } finally {
-      spy.mockRestore();
-    }
+    };
+    const hooks =
+      interleaving === "after parent validation before child open"
+        ? { afterParentValidationBeforeChildOpen: (name: string) => name === "governor" && swap() }
+        : { afterChildOpenBeforeLeafPublication: swap };
+    const armed = createC02EvaluationRestartMarkers({ stateDir: root, testHooks: hooks }).arm(
+      item,
+      0,
+    );
     expect(swapped).toBe(true);
-    if (armed) {
-      expect(fs.existsSync(path.join(moved, "governor", "c02-eval-restarts", pending))).toBe(true);
-    }
+    expect(armed).toBe(false);
     expect(fs.existsSync(path.join(root, "governor", "c02-eval-restarts", pending))).toBe(false);
+    expect(fs.existsSync(path.join(moved, "governor", "c02-eval-restarts", pending))).toBe(false);
   });
 });

@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
+import {
+  assertC02MarkerDirectoryStable,
+  c02MarkerLeaf,
+  createOrOpenC02MarkerChild,
+  openC02MarkerDirectory,
+  withC02MarkerAncestors,
+  type C02MarkerDirectoryAnchor,
+  type C02MarkerTestHooks,
+} from "./governor-c02-evaluation-marker-anchor.js";
 import type { C02Evaluation } from "./governor-c02-evaluation.js";
 
 const MAX_MARKER_BYTES = 256;
@@ -20,7 +29,6 @@ type RestartMarker = Readonly<{
   requestNonce: string;
 }>;
 type MarkerStatus = "none" | "pending" | "completed" | "invalid";
-type DirectoryAnchor = Readonly<{ descriptor: number; namespace: string }>;
 
 export type C02EvaluationRestartMarkers = Readonly<{
   start: (
@@ -36,83 +44,11 @@ function sameEntry(left: fs.Stats, right: fs.Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-function directoryFlags(): number {
-  const constants = fs.constants as Readonly<Record<string, number | undefined>>;
-  if (typeof constants.O_NOFOLLOW !== "number" || typeof constants.O_DIRECTORY !== "number") {
-    throw new Error("C02_RESTART_MARKER_FD_ANCHOR_UNAVAILABLE");
-  }
-  return fs.constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-}
-
-function assertPrivateDirectory(stat: fs.Stats): void {
-  const currentUid = process.getuid?.();
-  if (
-    !stat.isDirectory() ||
-    (stat.mode & 0o077) !== 0 ||
-    (currentUid !== undefined && stat.uid !== currentUid && stat.uid !== 0)
-  ) {
-    throw new Error("C02_RESTART_MARKER_DIRECTORY_INVALID");
-  }
-}
-
-function namespaceFor(descriptor: number, expected: fs.Stats, directPath: string): string {
-  if (process.platform !== "linux") {
-    return directPath;
-  }
-  const candidate = `/proc/self/fd/${descriptor}`;
-  try {
-    const probe = fs.openSync(candidate, fs.constants.O_RDONLY);
-    try {
-      if (sameEntry(fs.fstatSync(probe), expected)) {
-        return candidate;
-      }
-    } finally {
-      fs.closeSync(probe);
-    }
-  } catch {
-    // Alistar's Linux runtime requires this fd namespace for C02 F publication.
-  }
-  throw new Error("C02_RESTART_MARKER_FD_ANCHOR_UNAVAILABLE");
-}
-
-function openDirectory(file: string, privateMode: boolean): DirectoryAnchor {
-  const descriptor = fs.openSync(file, directoryFlags());
-  try {
-    let stat = fs.fstatSync(descriptor);
-    const pathStat = fs.lstatSync(file);
-    if (pathStat.isSymbolicLink() || !sameEntry(stat, pathStat)) {
-      throw new Error("C02_RESTART_MARKER_DIRECTORY_INVALID");
-    }
-    if (privateMode) {
-      fs.fchmodSync(descriptor, 0o700);
-      stat = fs.fstatSync(descriptor);
-    }
-    assertPrivateDirectory(stat);
-    const finalPathStat = fs.lstatSync(file);
-    if (finalPathStat.isSymbolicLink() || !sameEntry(stat, finalPathStat)) {
-      throw new Error("C02_RESTART_MARKER_DIRECTORY_INVALID");
-    }
-    return Object.freeze({ descriptor, namespace: namespaceFor(descriptor, stat, file) });
-  } catch (error) {
-    fs.closeSync(descriptor);
-    throw error;
-  }
-}
-
-function createOrOpenChild(parent: DirectoryAnchor, name: string): DirectoryAnchor {
-  const child = path.join(parent.namespace, name);
-  try {
-    fs.mkdirSync(child, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      throw error;
-    }
-  }
-  assertStableAnchor(parent);
-  return openDirectory(child, true);
-}
-
-function withMarkerDirectory<T>(stateDir: string, action: (directory: DirectoryAnchor) => T): T {
+function withMarkerDirectory<T>(
+  stateDir: string,
+  action: (directory: C02MarkerDirectoryAnchor) => T,
+  hooks?: C02MarkerTestHooks,
+): T {
   const rootPath = path.resolve(stateDir);
   try {
     fs.mkdirSync(rootPath, { mode: 0o700 });
@@ -121,12 +57,15 @@ function withMarkerDirectory<T>(stateDir: string, action: (directory: DirectoryA
       throw error;
     }
   }
-  const root = openDirectory(rootPath, true);
+  const root = openC02MarkerDirectory(rootPath, true);
   try {
-    const governor = createOrOpenChild(root, "governor");
+    const governor = createOrOpenC02MarkerChild(root, "governor", hooks);
     try {
-      const marker = createOrOpenChild(governor, MARKER_DIRECTORY);
+      const openedMarker = createOrOpenC02MarkerChild(governor, MARKER_DIRECTORY, hooks);
+      const marker = withC02MarkerAncestors(openedMarker, [root, governor]);
       try {
+        hooks?.afterChildOpenBeforeLeafPublication?.();
+        assertC02MarkerDirectoryStable(marker);
         return action(marker);
       } finally {
         fs.closeSync(marker.descriptor);
@@ -160,21 +99,6 @@ function markerPaths(evaluation: C02Evaluation) {
   return { pending: `${base}.pending.json`, completed: `${base}.completed.json` };
 }
 
-function assertStableAnchor(directory: DirectoryAnchor): void {
-  if (process.platform !== "linux") {
-    const stat = fs.fstatSync(directory.descriptor);
-    const pathStat = fs.lstatSync(directory.namespace);
-    if (pathStat.isSymbolicLink() || !sameEntry(stat, pathStat)) {
-      throw new Error("C02_RESTART_MARKER_FD_ANCHOR_INVALID");
-    }
-  }
-}
-
-function leaf(directory: DirectoryAnchor, name: string): string {
-  assertStableAnchor(directory);
-  return path.join(directory.namespace, name);
-}
-
 function markerPayload(evaluation: C02Evaluation): RestartMarker {
   assertRestartEvaluation(evaluation);
   return Object.freeze({
@@ -187,11 +111,11 @@ function markerPayload(evaluation: C02Evaluation): RestartMarker {
 }
 
 function readMarker(
-  directory: DirectoryAnchor,
+  directory: C02MarkerDirectoryAnchor,
   name: string,
   evaluation: C02Evaluation,
 ): "absent" | "valid" | "invalid" {
-  const file = leaf(directory, name);
+  const file = c02MarkerLeaf(directory, name);
   let descriptor: number;
   try {
     descriptor = fs.openSync(
@@ -223,7 +147,7 @@ function readMarker(
       marker.requestNonce === evaluation.requestNonce
         ? "valid"
         : "invalid";
-    assertStableAnchor(directory);
+    assertC02MarkerDirectoryStable(directory);
     return valid;
   } catch {
     return "invalid";
@@ -232,7 +156,7 @@ function readMarker(
   }
 }
 
-function syncDirectory(directory: DirectoryAnchor): void {
+function syncDirectory(directory: C02MarkerDirectoryAnchor): void {
   try {
     fs.fsyncSync(directory.descriptor);
   } catch (error) {
@@ -244,11 +168,11 @@ function syncDirectory(directory: DirectoryAnchor): void {
       throw error;
     }
   }
-  assertStableAnchor(directory);
+  assertC02MarkerDirectoryStable(directory);
 }
 
-function removeIfSameFile(directory: DirectoryAnchor, name: string): void {
-  const file = leaf(directory, name);
+function removeIfSameFile(directory: C02MarkerDirectoryAnchor, name: string): void {
+  const file = c02MarkerLeaf(directory, name);
   const descriptor = fs.openSync(
     file,
     fs.constants.O_RDONLY | (fs.constants as Record<string, number>).O_NOFOLLOW,
@@ -259,8 +183,9 @@ function removeIfSameFile(directory: DirectoryAnchor, name: string): void {
     if (!stat.isFile() || pathStat.isSymbolicLink() || !sameEntry(stat, pathStat)) {
       throw new Error("C02_RESTART_MARKER_FILE_INVALID");
     }
+    assertC02MarkerDirectoryStable(directory);
     fs.unlinkSync(file);
-    assertStableAnchor(directory);
+    assertC02MarkerDirectoryStable(directory);
   } finally {
     fs.closeSync(descriptor);
   }
@@ -288,7 +213,10 @@ function deadOwnedWriter(stat: fs.Stats, name: string, now: number): boolean {
   }
 }
 
-function inspectMarker(directory: DirectoryAnchor, evaluation: C02Evaluation): MarkerStatus {
+function inspectMarker(
+  directory: C02MarkerDirectoryAnchor,
+  evaluation: C02Evaluation,
+): MarkerStatus {
   const paths = markerPaths(evaluation);
   const pending = readMarker(directory, paths.pending, evaluation);
   const completed = readMarker(directory, paths.completed, evaluation);
@@ -309,13 +237,13 @@ function inspectMarker(directory: DirectoryAnchor, evaluation: C02Evaluation): M
   return pending === "valid" ? "pending" : "none";
 }
 
-function cleanOrphansAndMakeRoom(directory: DirectoryAnchor): boolean {
+function cleanOrphansAndMakeRoom(directory: C02MarkerDirectoryAnchor): boolean {
   const now = Date.now();
   const owned: string[] = [];
-  const directoryPath = leaf(directory, ".");
+  const directoryPath = c02MarkerLeaf(directory, ".");
   for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
     if (OWNED_TEMP.test(entry.name)) {
-      const stat = fs.lstatSync(leaf(directory, entry.name));
+      const stat = fs.lstatSync(c02MarkerLeaf(directory, entry.name));
       if (stat.isFile() && !stat.isSymbolicLink() && deadOwnedWriter(stat, entry.name, now)) {
         removeIfSameFile(directory, entry.name);
       }
@@ -330,7 +258,7 @@ function cleanOrphansAndMakeRoom(directory: DirectoryAnchor): boolean {
   const completed = owned
     .filter((name) => OWNED_COMPLETED.test(name))
     .flatMap((name) => {
-      const stat = fs.lstatSync(leaf(directory, name));
+      const stat = fs.lstatSync(c02MarkerLeaf(directory, name));
       return stat.isFile() && !stat.isSymbolicLink() ? [{ name, mtimeMs: stat.mtimeMs }] : [];
     })
     .toSorted((left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name));
@@ -348,13 +276,16 @@ function cleanOrphansAndMakeRoom(directory: DirectoryAnchor): boolean {
   return count < MAX_MARKERS;
 }
 
-function writePendingMarker(directory: DirectoryAnchor, evaluation: C02Evaluation): boolean {
+function writePendingMarker(
+  directory: C02MarkerDirectoryAnchor,
+  evaluation: C02Evaluation,
+): boolean {
   const paths = markerPaths(evaluation);
   if (inspectMarker(directory, evaluation) !== "none" || !cleanOrphansAndMakeRoom(directory)) {
     return false;
   }
   const tempName = `.${markerBase(evaluation)}.${process.pid}.${randomUUID()}.tmp`;
-  const temporary = leaf(directory, tempName);
+  const temporary = c02MarkerLeaf(directory, tempName);
   let descriptor: number | undefined;
   try {
     descriptor = fs.openSync(
@@ -373,7 +304,9 @@ function writePendingMarker(directory: DirectoryAnchor, evaluation: C02Evaluatio
     if (!stat.isFile() || pathStat.isSymbolicLink() || !sameEntry(stat, pathStat)) {
       return false;
     }
-    fs.linkSync(temporary, leaf(directory, paths.pending));
+    const pending = c02MarkerLeaf(directory, paths.pending);
+    assertC02MarkerDirectoryStable(directory);
+    fs.linkSync(temporary, pending);
     syncDirectory(directory);
     return true;
   } catch {
@@ -383,13 +316,17 @@ function writePendingMarker(directory: DirectoryAnchor, evaluation: C02Evaluatio
       fs.closeSync(descriptor);
     }
     try {
+      assertC02MarkerDirectoryStable(directory);
       fs.unlinkSync(temporary);
       syncDirectory(directory);
     } catch {}
   }
 }
 
-function completePendingMarker(directory: DirectoryAnchor, evaluation: C02Evaluation): boolean {
+function completePendingMarker(
+  directory: C02MarkerDirectoryAnchor,
+  evaluation: C02Evaluation,
+): boolean {
   const paths = markerPaths(evaluation);
   if (
     readMarker(directory, paths.pending, evaluation) !== "valid" ||
@@ -398,7 +335,10 @@ function completePendingMarker(directory: DirectoryAnchor, evaluation: C02Evalua
     return false;
   }
   try {
-    fs.linkSync(leaf(directory, paths.pending), leaf(directory, paths.completed));
+    const pending = c02MarkerLeaf(directory, paths.pending);
+    const completed = c02MarkerLeaf(directory, paths.completed);
+    assertC02MarkerDirectoryStable(directory);
+    fs.linkSync(pending, completed);
     syncDirectory(directory);
     removeIfSameFile(directory, paths.pending);
     syncDirectory(directory);
@@ -411,6 +351,7 @@ function completePendingMarker(directory: DirectoryAnchor, evaluation: C02Evalua
 /** C02-only bounded restart state; completed files enforce a recent, immediate replay horizon. */
 export function createC02EvaluationRestartMarkers(params?: {
   stateDir?: string;
+  testHooks?: C02MarkerTestHooks;
 }): C02EvaluationRestartMarkers {
   const claims = new Set<string>();
   const stateDir = params?.stateDir ?? resolveStateDir();
@@ -439,7 +380,11 @@ export function createC02EvaluationRestartMarkers(params?: {
       try {
         return (
           generation === 0 &&
-          withMarkerDirectory(stateDir, (directory) => writePendingMarker(directory, evaluation))
+          withMarkerDirectory(
+            stateDir,
+            (directory) => writePendingMarker(directory, evaluation),
+            params?.testHooks,
+          )
         );
       } catch {
         return false;
