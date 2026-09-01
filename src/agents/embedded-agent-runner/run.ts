@@ -878,6 +878,7 @@ async function runEmbeddedAgentInternal(
       sessionFile: paramsBase.sessionFile,
       provider: paramsBase.provider,
       model: paramsBase.model,
+      completedC02ReplayTaskId: earlyReplayTaskId,
     });
   }
   const runSessionTarget = await resolveAgentRunSessionTarget({
@@ -1058,6 +1059,7 @@ async function runEmbeddedAgentInternal(
         sessionFile: params.sessionFile,
         provider: params.provider,
         model: params.model,
+        completedC02ReplayTaskId: laneReplayTaskId,
       });
     }
     // Same-session reads below must see any prior deferred transcript rewrite.
@@ -2425,6 +2427,7 @@ async function runEmbeddedAgentInternal(
               provider,
               model: modelId,
               agentHarnessId: agentHarness.id,
+              completedC02ReplayTaskId: governorAgentLoopScope.taskId,
             });
           }
           const rawAttempt = await runEmbeddedAttemptWithBackend({
@@ -4230,9 +4233,11 @@ async function runEmbeddedAgentInternal(
           const c02Match = c02RecoveryScope
             ? /^c02-eval-(c02-[a-f]-[0-9]{3})-([a-f0-9]{24})$/iu.exec(params.sessionId)
             : null;
-          const c02Ledger = (globalThis as typeof globalThis & {
-            __openclawC02EvaluationActionLedgers?: Map<string, { stage: number }>;
-          }).__openclawC02EvaluationActionLedgers;
+          const c02Ledger = (
+            globalThis as typeof globalThis & {
+              __openclawC02EvaluationActionLedgers?: Map<string, { stage: number }>;
+            }
+          ).__openclawC02EvaluationActionLedgers;
           const c02Stage = c02Match
             ? c02Ledger?.get(`c02-eval-session:${c02Match[1]}:${c02Match[2]}`)?.stage
             : undefined;
@@ -4271,7 +4276,8 @@ async function runEmbeddedAgentInternal(
             reasoningOnlyRetryAttempts < maxReasoningOnlyRetryAttempts
           ) {
             reasoningOnlyRetryAttempts += 1;
-            reasoningOnlyRetryInstruction = c02RecoveryInstruction ?? nextReasoningOnlyRetryInstruction;
+            reasoningOnlyRetryInstruction =
+              c02RecoveryInstruction ?? nextReasoningOnlyRetryInstruction;
             log.warn(
               `reasoning-only assistant turn detected: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts} ` +

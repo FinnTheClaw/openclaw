@@ -126,7 +126,7 @@ export function createGovernorC02EvaluationScope(params: {
       if (
         admittedStage === undefined ||
         admittedStage !== inFlightStage ||
-        admittedStage !== params.actionLedger?.reservedStage
+        (params.actionLedger !== undefined && admittedStage !== params.actionLedger.reservedStage)
       ) {
         return;
       }
