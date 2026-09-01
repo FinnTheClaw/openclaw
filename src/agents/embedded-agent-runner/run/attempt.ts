@@ -3001,6 +3001,12 @@ export async function runEmbeddedAttempt(
         model: params.model,
         resolvedApiKey: params.resolvedApiKey,
       });
+      const configuredProviderBaseUrl =
+        params.config.models?.providers?.[params.model.provider]?.baseUrl;
+      const finnRequestEvidenceModel =
+        typeof configuredProviderBaseUrl === "string"
+          ? { ...params.model, baseUrl: configuredProviderBaseUrl }
+          : params.model;
       activeSession.agent.streamFn = resolveEmbeddedAgentStreamFn({
         currentStreamFn: defaultSessionStreamFn,
         providerStreamFn,
@@ -3012,6 +3018,7 @@ export async function runEmbeddedAttempt(
         authProfileId: resolveAttemptStreamAuthProfileId(params),
         authStorage: params.authStorage,
         finnRequestEvidence: params.finnRequestEvidence,
+        finnRequestEvidenceModel,
       });
       const providerTextTransforms = resolveProviderTextTransforms({
         provider: params.provider,

@@ -7,7 +7,6 @@ import type {
   AssistantMessageEventStreamLike,
   Model,
 } from "../llm/types.js";
-import { isBuiltInProviderTransport } from "./finn-request-id-transport.js";
 import type { StreamFn } from "./runtime/index.js";
 
 const FINN_REQUEST_ID_HEADER = "x-finn-request-id";
@@ -279,18 +278,14 @@ export function wrapFinnRequestIdEvidenceWithCollector(
   collector: FinnRequestEvidenceCollector,
   binding?: FinnRequestEvidenceTransportBinding,
 ): StreamFn {
-  const boundRoute =
-    binding && isBuiltInProviderTransport(binding.selectedStreamFn)
-      ? resolveFinnCoordinatorRoute(binding.resolvedModel)
-      : undefined;
+  const boundRoute = binding
+    ? resolveFinnCoordinatorRoute(binding.resolvedModel)
+    : undefined;
   return (model, context, options) => {
-    const invocationRoute = resolveFinnCoordinatorRoute(model);
     const route =
       boundRoute &&
-      invocationRoute &&
-      boundRoute.provider === invocationRoute.provider &&
-      boundRoute.baseUrl === invocationRoute.baseUrl &&
-      boundRoute.route === invocationRoute.route
+      model.provider === boundRoute.provider &&
+      model.id === boundRoute.route
         ? boundRoute
         : undefined;
     const attempt = collector.beginAttempt(route);
