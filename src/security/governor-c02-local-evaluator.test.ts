@@ -129,6 +129,24 @@ describe("C02 local evaluator", () => {
     value.dispose();
   });
 
+  it("keeps an exact C02 action path available after extra local-model turns", async () => {
+    const item = evaluation("A", "121212121212121212121212", "008");
+    const value = scope(item);
+    for (let now = 11; now < 31; now += 1) {
+      expect(value.afterTurn({ assistantText: "", toolCallCount: 0, now })).toEqual({
+        kind: "continue",
+        message: "Continue with the eligible action.",
+      });
+    }
+    await complete(value, "read", { path: item.alphaPath }, 31);
+    await complete(value, "read", { path: item.betaPath }, 33);
+    await complete(value, "exec", { command: "/usr/bin/python3 -c 'print(3)'" }, 35);
+    expect(value.afterTurn({ assistantText: "", toolCallCount: 1, now: 37 })).toEqual({
+      kind: "complete",
+    });
+    value.dispose();
+  });
+
   it("preserves B's one-time redundant-action pressure", async () => {
     const item = evaluation("B", "222222222222222222222222");
     const value = scope(item);

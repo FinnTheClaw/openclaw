@@ -13,7 +13,6 @@ import { C02_AGGREGATE_COMMAND, type C02Evaluation } from "./governor-c02-evalua
 export { createC02EvaluationRestartMarkers, type C02EvaluationRestartMarkers };
 
 const CONTINUE_MESSAGE = "Continue with the eligible action.";
-const MAX_TURNS = 8;
 type EvaluationAction = "observe-a" | "observe-b" | "aggregate";
 
 function actionFor(
@@ -70,7 +69,6 @@ export function createGovernorC02EvaluationScope(params: {
   let installedTools: readonly AgentTool[] = Object.freeze([]);
   let stage = Math.max(restart.resumed ? 2 : 0, params.actionLedger?.stage ?? 0);
   let inFlightStage: number | undefined = params.actionLedger?.reservedStage;
-  let turns = 0;
   let pressurePending = false;
   let pressureIssued = false;
   let restartTransitionFailed = false;
@@ -156,15 +154,11 @@ export function createGovernorC02EvaluationScope(params: {
       }
     },
     afterTurn() {
-      turns += 1;
       if (checkpointPending()) {
         return { kind: "interrupt" as const, reasonCode: "C02_RESTART_REQUIRED" };
       }
       if (stage >= 3) {
         return { kind: "complete" as const };
-      }
-      if (turns > MAX_TURNS) {
-        return { kind: "stop" as const, reasonCode: "C02_TURN_LIMIT" };
       }
       if (pressurePending && !pressureIssued) {
         pressurePending = false;
