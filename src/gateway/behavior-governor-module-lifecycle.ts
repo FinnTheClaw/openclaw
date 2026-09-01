@@ -27,7 +27,7 @@ export type GatewayBehaviorGovernorModuleRuntime = Readonly<{
 /** The lifecycle is the sole activation seam; module imports must stay inert. */
 export type GatewayBehaviorGovernorModuleActivationContext =
   GatewayBehaviorGovernorModuleActivation &
-    Readonly<{ host: GatewayBehaviorGovernorModuleHostCapability }>;
+    Readonly<{ host?: GatewayBehaviorGovernorModuleHostCapability }>;
 
 export type GatewayBehaviorGovernorModuleFactory = (
   context: GatewayBehaviorGovernorModuleActivationContext,
@@ -36,6 +36,8 @@ export type GatewayBehaviorGovernorModuleFactory = (
 export type GatewayBehaviorGovernorModuleDescriptor = Readonly<{
   id: string;
   version: string;
+  /** Defaults to true so existing modules retain the host-backed lifecycle. */
+  requiresHost?: boolean;
   supportedModes: readonly BehaviorGovernorModuleSelection["mode"][];
   qualifiedModes: readonly BehaviorGovernorModuleSelection["mode"][];
   dependencies: readonly string[];
@@ -94,6 +96,9 @@ function validateCatalog(
   for (const descriptor of catalog) {
     assertIdentifier(descriptor.id, MODULE_ID_PATTERN, "GOVERNOR_MODULE_ID_INVALID");
     assertIdentifier(descriptor.version, VERSION_PATTERN, "GOVERNOR_MODULE_VERSION_INVALID");
+    if (descriptor.requiresHost !== undefined && typeof descriptor.requiresHost !== "boolean") {
+      throw new Error("GOVERNOR_MODULE_REQUIRES_HOST_INVALID");
+    }
     assertModes(descriptor.supportedModes, "GOVERNOR_MODULE_SUPPORTED_MODES_INVALID");
     assertModes(descriptor.qualifiedModes, "GOVERNOR_MODULE_QUALIFIED_MODES_INVALID", true);
     for (const mode of descriptor.qualifiedModes) {
@@ -239,13 +244,16 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
       appliedKey = key;
       return;
     }
-    if (!params.hostProvider) {
+    const requiresHost = resolved.some((item) => item.descriptor.requiresHost !== false);
+    if (requiresHost && !params.hostProvider) {
       throw new Error("GOVERNOR_MODULE_HOST_PROVIDER_REQUIRED");
     }
     let acquired: GatewayBehaviorGovernorModuleHostLease | undefined;
     const started: typeof active = [];
     try {
-      acquired = await params.hostProvider.acquire({ gatewayConfig });
+      if (requiresHost) {
+        acquired = await params.hostProvider!.acquire({ gatewayConfig });
+      }
       for (const item of resolved) {
         const create = await item.descriptor.load();
         if (typeof create !== "function") {
@@ -259,7 +267,14 @@ export function createGatewayBehaviorGovernorModuleLifecycle(params: {
         const runtime = await create(
           Object.freeze({
             ...activation,
-            host: acquired.capability.forActivation(activation, item.descriptor.hostRegistration),
+            ...(item.descriptor.requiresHost !== false
+              ? {
+                  host: acquired!.capability.forActivation(
+                    activation,
+                    item.descriptor.hostRegistration,
+                  ),
+                }
+              : {}),
           }),
         );
         if (!runtime || typeof runtime.close !== "function") {

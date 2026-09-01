@@ -83,7 +83,11 @@ async function main(): Promise<void> {
     assert.equal(git(["init", "-q"], cwd).code, 0);
     assert.equal(git(["config", "user.email", "test@example.invalid"], cwd).code, 0);
     assert.equal(git(["config", "user.name", "Source Size Test"], cwd).code, 0);
-    await writeFile(join(cwd, ".gitignore"), "src/ignored.ts\nnode_modules/\n", "utf8");
+    await writeFile(
+      join(cwd, ".gitignore"),
+      "src/ignored.ts\nnode_modules/\ndist-runtime/\n",
+      "utf8",
+    );
     await mkdir(join(cwd, "src/security"), { recursive: true });
     await writeFile(join(cwd, "legacy.ts"), lines(501), "utf8");
     await writeFile(join(cwd, "rename-data.txt"), lines(5000), "utf8");
@@ -264,6 +268,19 @@ async function main(): Promise<void> {
     await writeFile(join(cwd, "node_modules/dependency/large.ts"), lines(1000), "utf8");
     assert.equal(check(cwd).code, 0, "untracked generated dependency roots remain excluded");
     await rm(join(cwd, "node_modules/dependency/large.ts"));
+
+    await mkdir(join(cwd, "dist-runtime/generated"), { recursive: true });
+    await writeFile(join(cwd, "dist-runtime/generated/target.d.ts"), "export {};\n", "utf8");
+    await symlink("target.d.ts", join(cwd, "dist-runtime/generated/generated-link.d.ts"));
+    assert.equal(
+      check(cwd).code,
+      0,
+      "ignored generated dist-runtime links remain excluded before regular-file inspection",
+    );
+    await rm(join(cwd, "dist-runtime/generated/generated-link.d.ts"));
+    await rm(join(cwd, "dist-runtime/generated/target.d.ts"));
+    await rm(join(cwd, "dist-runtime/generated"), { recursive: true });
+    await rm(join(cwd, "dist-runtime"), { recursive: true });
 
     await writeFile(join(cwd, "custom/target"), "target\n", "utf8");
     await symlink("target", join(cwd, "custom/index-link.ts"));

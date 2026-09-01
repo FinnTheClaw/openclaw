@@ -10,6 +10,10 @@ import { isMainThread, parentPort, Worker, workerData } from "node:worker_thread
 import { parse as parseYaml } from "yaml";
 import { listChangedPathsFromGit, listStagedChangedPaths } from "./changed-lanes.mjs";
 import { resolveNpmRunner } from "./npm-runner.mjs";
+import {
+  restoreCurrentPnpmLockedPackages as restorePnpmLockedPackages,
+  shrinkwrapMatchesCurrentPnpmLockTopology,
+} from "./npm-shrinkwrap-provenance.mjs";
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u;
@@ -717,6 +721,7 @@ function generateShrinkwrap(packageDir, options = {}) {
   try {
     const packageJson = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"));
     const currentShrinkwrap = readCurrentShrinkwrap(packageDir);
+    const pnpmLockPackages = readPnpmLockPackages();
     const shrinkwrapOverrides = mergeOverrides(
       options.useCurrentShrinkwrapOverrides
         ? readCurrentShrinkwrapOverrides(packageDir, declaredPackageDependencies(packageJson))
@@ -752,6 +757,15 @@ function generateShrinkwrap(packageDir, options = {}) {
         ),
       ),
       currentShrinkwrap,
+      pnpmLockPackages,
+      {
+        preserveCurrentResolvedGraph: shrinkwrapMatchesCurrentPnpmLockTopology({
+          rootDir: ROOT_DIR,
+          packageDir,
+          packageLabel: packageLabel(packageDir),
+          shrinkwrapPath: shrinkwrapPathForPackage(packageDir),
+        }),
+      },
     );
     assertShrinkwrapMatchesPnpmLock(generated);
     return `${JSON.stringify(generated, null, 2)}\n`;
@@ -1007,54 +1021,19 @@ function restoreCurrentPnpmLockedPackages(
   generated,
   current,
   pnpmLockPackages = readPnpmLockPackages(),
+  { preserveCurrentResolvedGraph = false } = {},
 ) {
-  if (!current) {
-    return generated;
-  }
-  const generatedPackages = generated?.packages;
-  const currentPackages = current?.packages;
-  if (
-    !generatedPackages ||
-    typeof generatedPackages !== "object" ||
-    !currentPackages ||
-    typeof currentPackages !== "object"
-  ) {
-    return generated;
-  }
-
-  for (const [lockPath, metadata] of Object.entries(generatedPackages)) {
-    if (lockPath === "" || !metadata || typeof metadata !== "object" || !metadata.version) {
-      continue;
-    }
-    const packageName = metadata.name ?? packageNameForLockPath(lockPath);
-    if (!packageName || pnpmLockPackages.has(`${packageName}@${metadata.version}`)) {
-      continue;
-    }
-
-    const currentMetadata = currentPackages[lockPath];
-    const currentPackageName = currentMetadata?.name ?? packageNameForLockPath(lockPath);
-    if (
-      !currentMetadata ||
-      typeof currentMetadata !== "object" ||
-      !currentMetadata.version ||
-      currentPackageName !== packageName ||
-      !isStablePatchDrift(metadata.version, currentMetadata.version) ||
-      !versionSatisfiesSimpleSpec(
-        currentMetadata.version,
-        dependencySpecForLockPath(generatedPackages, lockPath, packageName),
-      ) ||
-      !pnpmLockPackages.has(`${packageName}@${currentMetadata.version}`)
-    ) {
-      continue;
-    }
-
-    // npm can float transitive patch ranges beyond pnpm's lock when one package
-    // name has multiple locked major lines. Keep the existing shrinkwrap entry
-    // when it still matches the canonical pnpm lock.
-    generatedPackages[lockPath] = currentMetadata;
-  }
-
-  return generated;
+  return restorePnpmLockedPackages({
+    generated,
+    current,
+    pnpmLockPackages,
+    preserveCurrentResolvedGraph,
+    collectPnpmLockViolations,
+    dependencySpecForLockPath,
+    isStablePatchDrift,
+    packageNameForLockPath,
+    versionSatisfiesSimpleSpec,
+  });
 }
 
 function assertShrinkwrapMatchesPnpmLock(shrinkwrap) {

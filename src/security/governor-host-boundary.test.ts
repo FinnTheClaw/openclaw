@@ -53,7 +53,6 @@ const allowedAuthorityImporters: Record<(typeof authorityModules)[number], reado
     "security/governor-agent-loop-host.ts",
   ],
   "governor-agent-loop-config": [
-    "gateway/behavior-governor-c02-module.ts",
     "gateway/behavior-governor-module-host-registration.ts",
     "security/governor-agent-loop-admission.ts",
     "gateway/behavior-governor-lifecycle.ts",
