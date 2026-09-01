@@ -4,6 +4,7 @@ import type {
   GovernorAgentLoopRunInput,
   GovernorAgentLoopRunScope,
 } from "../security/governor-agent-loop-readonly.js";
+import { C02_RESTART_REGISTRATION } from "../security/governor-c02-restart-guard.js";
 import {
   C02_SIMPLE_EFFICIENCY_ID,
   C02_SIMPLE_EFFICIENCY_VERSION,
@@ -108,6 +109,20 @@ function requiredScope(scope: GovernorAgentLoopRunScope | undefined): GovernorAg
   return scope;
 }
 
+function restartRegistration(processInstanceId: string, events: Array<Record<string, unknown>>) {
+  const recordRuntimeEvent = vi.fn((event: Record<string, unknown>) => {
+    events.push(event);
+  });
+  const registration = C02_RESTART_REGISTRATION.bind({
+    processInstanceId,
+    controller: { recordRuntimeEvent },
+    store: { listEvents: () => events },
+    capabilities: [],
+    seal: vi.fn(),
+  } as never);
+  return { registration, recordRuntimeEvent };
+}
+
 describe("C02 behavior governor module", () => {
   it("is inert for every ordinary Finn session", async () => {
     const test = await harness();
@@ -167,13 +182,101 @@ describe("C02 behavior governor module", () => {
     expect(scope).toBeDefined();
     expect(test.configurations).toHaveLength(1);
     expect(test.bindings[0]?.run).toMatchObject({
-      sessionKey: `agent:alistar:${requestSession}`,
+      sessionKey: requestSession,
       sessionId: "c02-eval-session:C02-A-002:abcdef0123456789abcdef01",
       sourceMessageId: "c02-eval-source:C02-A-002:abcdef0123456789abcdef01",
     });
 
     scope?.dispose();
     await test.runtime.close();
+  });
+
+  it("enforces and resumes the restart guard for a real agent-scoped F session", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const requestSession = `${C02_EVALUATION_SESSION_PREFIX}C02-F-002:abcdef0123456789abcdef02`;
+    const firstTicket = Object.freeze({ opaque: {} });
+    const firstTest = await harness(() =>
+      baseScope({ beforeTool: () => ({ kind: "allow", ticket: firstTicket }) }),
+    );
+    const firstModuleScope = requiredScope(
+      firstTest.runtime.agentLoop?.resolveRunScope(
+        moduleInput(`agent:alistar:${requestSession}`, "run-before-restart"),
+      ),
+    );
+    const firstHost = restartRegistration("process-1", events);
+    const firstGuarded = firstHost.registration.wrap({
+      scope: firstModuleScope,
+      run: firstTest.bindings[0]?.run,
+      config: firstTest.configurations[0],
+      modulePlanDigest: "a".repeat(64),
+      hostDescriptorDigest: "b".repeat(64),
+    } as never);
+    const beta = firstGuarded.beforeTool({
+      toolCallId: "tool-beta",
+      toolName: "read",
+      args: { path: "/case/C02-F-002/beta.txt" },
+      tool: undefined,
+      now: 11,
+    });
+    expect(beta.kind).toBe("allow");
+    await expect(
+      firstGuarded.afterTool({
+        ...(beta.kind === "allow" ? { ticket: beta.ticket } : {}),
+        toolCallId: "tool-beta",
+        toolName: "read",
+        result: "beta",
+        isError: false,
+        now: 12,
+      }),
+    ).rejects.toThrow("C02_RESTART_SIGNAL_REQUIRED");
+    expect(firstGuarded.disposition).toBe("checkpoint_pending");
+    expect(
+      firstGuarded.beforeTool({
+        toolCallId: "tool-aggregate",
+        toolName: "exec",
+        args: { command: "/usr/bin/python3 -c 'print(3)'" },
+        tool: undefined,
+        now: 13,
+      }),
+    ).toEqual({ kind: "block", reasonCode: "C02_RESTART_REQUIRED" });
+
+    firstGuarded.dispose();
+    firstHost.registration.close();
+    await firstTest.runtime.close();
+
+    const secondTest = await harness();
+    const secondModuleScope = requiredScope(
+      secondTest.runtime.agentLoop?.resolveRunScope(
+        moduleInput(`agent:alistar:${requestSession}`, "run-after-restart"),
+      ),
+    );
+    const secondHost = restartRegistration("process-2", events);
+    const secondGuarded = secondHost.registration.wrap({
+      scope: secondModuleScope,
+      run: secondTest.bindings[0]?.run,
+      config: secondTest.configurations[0],
+      modulePlanDigest: "a".repeat(64),
+      hostDescriptorDigest: "b".repeat(64),
+    } as never);
+
+    expect(events.map((event) => event.payload)).toEqual([
+      {
+        kind: "c02_restart_required",
+        moduleId: "c02-simple-efficiency",
+        processInstanceId: "process-1",
+      },
+      {
+        kind: "c02_restart_resumed",
+        moduleId: "c02-simple-efficiency",
+        processInstanceId: "process-2",
+        requiredProcessInstanceId: "process-1",
+      },
+    ]);
+    expect(secondGuarded.disposition).toBe("runnable");
+
+    secondGuarded.dispose();
+    secondHost.registration.close();
+    await secondTest.runtime.close();
   });
 
   it("uses disjoint fixture paths for concurrent request-binding cases", async () => {

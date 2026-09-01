@@ -100,6 +100,7 @@ function stableGovernorRun(
 ): GovernorAgentLoopRunInput {
   return Object.freeze({
     ...run,
+    sessionKey: `${C02_EVALUATION_SESSION_PREFIX}${evaluation.caseId}:${evaluation.requestNonce}`,
     sessionId: evaluation.stableSessionId,
     conversationId: evaluation.stableSessionId,
     sourceMessageId: evaluation.stableSourceMessageId,
