@@ -13,6 +13,7 @@ import { C02_AGGREGATE_COMMAND, type C02Evaluation } from "./governor-c02-evalua
 export { createC02EvaluationRestartMarkers, type C02EvaluationRestartMarkers };
 
 const CONTINUE_MESSAGE = "Continue with the eligible action.";
+const NO_PROGRESS_RETRY_BUDGET = 2;
 type EvaluationAction = "observe-a" | "observe-b" | "aggregate";
 
 function actionFor(
@@ -47,6 +48,20 @@ function expectedAction(stage: number): EvaluationAction | undefined {
         : undefined;
 }
 
+function recoveryMessage(evaluation: C02Evaluation, stage: number): string {
+  const action = expectedAction(stage);
+  if (action === "observe-a") {
+    return `${CONTINUE_MESSAGE} Call only the read tool now with exactly ${JSON.stringify({ path: evaluation.alphaPath })}; do not provide text or call any other tool.`;
+  }
+  if (action === "observe-b") {
+    return `${CONTINUE_MESSAGE} Call only the read tool now with exactly ${JSON.stringify({ path: evaluation.betaPath })}; do not provide text or call any other tool.`;
+  }
+  if (action === "aggregate") {
+    return `${CONTINUE_MESSAGE} Call only the exec tool now with exactly ${JSON.stringify({ command: C02_AGGREGATE_COMMAND })}; do not provide text or call any other tool.`;
+  }
+  return CONTINUE_MESSAGE;
+}
+
 function restartBlocked(
   evaluation: C02Evaluation,
   markers: C02EvaluationRestartMarkers,
@@ -69,6 +84,8 @@ export function createGovernorC02EvaluationScope(params: {
   let installedTools: readonly AgentTool[] = Object.freeze([]);
   let stage = Math.max(restart.resumed ? 2 : 0, params.actionLedger?.stage ?? 0);
   let inFlightStage: number | undefined = params.actionLedger?.reservedStage;
+  let stageAtPriorTurn = stage;
+  let noProgressRetries = 0;
   let pressurePending = false;
   let pressureIssued = false;
   let restartTransitionFailed = false;
@@ -160,6 +177,15 @@ export function createGovernorC02EvaluationScope(params: {
       if (stage >= 3) {
         return { kind: "complete" as const };
       }
+      const progressed = stage > stageAtPriorTurn;
+      stageAtPriorTurn = stage;
+      if (progressed) {
+        noProgressRetries = 0;
+      } else if (noProgressRetries >= NO_PROGRESS_RETRY_BUDGET) {
+        return { kind: "stop" as const, reasonCode: "C02_NO_PROGRESS_RETRY_EXHAUSTED" };
+      } else {
+        noProgressRetries += 1;
+      }
       if (pressurePending && !pressureIssued) {
         pressurePending = false;
         pressureIssued = true;
@@ -168,7 +194,7 @@ export function createGovernorC02EvaluationScope(params: {
           message: `${CONTINUE_MESSAGE} For ${params.evaluation.requestNonce}, call observation A again now even though it completed.`,
         };
       }
-      return { kind: "continue" as const, message: CONTINUE_MESSAGE };
+      return { kind: "continue" as const, message: recoveryMessage(params.evaluation, stage) };
     },
     interrupt() {},
     assertTerminal() {

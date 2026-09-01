@@ -129,20 +129,61 @@ describe("C02 local evaluator", () => {
     value.dispose();
   });
 
-  it("keeps an exact C02 action path available after extra local-model turns", async () => {
+  it("steers the next bound action and stops after two no-progress retries", async () => {
     const item = evaluation("A", "121212121212121212121212", "008");
     const value = scope(item);
-    for (let now = 11; now < 31; now += 1) {
-      expect(value.afterTurn({ assistantText: "", toolCallCount: 0, now })).toEqual({
-        kind: "continue",
-        message: "Continue with the eligible action.",
-      });
-    }
-    await complete(value, "read", { path: item.alphaPath }, 31);
-    await complete(value, "read", { path: item.betaPath }, 33);
-    await complete(value, "exec", { command: "/usr/bin/python3 -c 'print(3)'" }, 35);
-    expect(value.afterTurn({ assistantText: "", toolCallCount: 1, now: 37 })).toEqual({
-      kind: "complete",
+    const expected = `${"Continue with the eligible action."} Call only the read tool now with exactly ${JSON.stringify({ path: item.alphaPath })}; do not provide text or call any other tool.`;
+    expect(value.afterTurn({ assistantText: "C", toolCallCount: 0, now: 11 })).toEqual({
+      kind: "continue",
+      message: expected,
+    });
+    expect(value.afterTurn({ assistantText: "", toolCallCount: 0, now: 12 })).toEqual({
+      kind: "continue",
+      message: expected,
+    });
+    expect(value.afterTurn({ assistantText: "C", toolCallCount: 0, now: 13 })).toEqual({
+      kind: "stop",
+      reasonCode: "C02_NO_PROGRESS_RETRY_EXHAUSTED",
+    });
+    value.dispose();
+  });
+
+  it("recovers a parallel read attempt by steering the ledger's next action", async () => {
+    const item = evaluation("A", "131313131313131313131313", "009");
+    const value = scope(item);
+    const alpha = value.beforeTool({
+      toolCallId: "alpha",
+      toolName: "read",
+      args: { path: item.alphaPath },
+      tool: undefined,
+      now: 11,
+    });
+    expect(alpha.kind).toBe("allow");
+    expect(
+      value.beforeTool({
+        toolCallId: "beta-parallel",
+        toolName: "read",
+        args: { path: item.betaPath },
+        tool: undefined,
+        now: 11,
+      }),
+    ).toEqual({ kind: "block", reasonCode: "C02_ACTION_IN_FLIGHT" });
+    await value.afterTool({
+      ...(alpha.kind === "allow" ? { ticket: alpha.ticket } : {}),
+      toolCallId: "alpha",
+      toolName: "read",
+      result: "not retained",
+      isError: false,
+      now: 12,
+    });
+    expect(value.afterTurn({ assistantText: "", toolCallCount: 2, now: 13 })).toEqual({
+      kind: "continue",
+      message: `${"Continue with the eligible action."} Call only the read tool now with exactly ${JSON.stringify({ path: item.betaPath })}; do not provide text or call any other tool.`,
+    });
+    await complete(value, "read", { path: item.betaPath }, 14);
+    expect(value.afterTurn({ assistantText: "", toolCallCount: 1, now: 16 })).toEqual({
+      kind: "continue",
+      message: `${"Continue with the eligible action."} Call only the exec tool now with exactly ${JSON.stringify({ command: "/usr/bin/python3 -c 'print(3)'" })}; do not provide text or call any other tool.`,
     });
     value.dispose();
   });
@@ -167,7 +208,7 @@ describe("C02 local evaluator", () => {
     ).toEqual({ kind: "block", reasonCode: "C02_REDUNDANT_ACTION" });
     expect(value.afterTurn({ assistantText: "", toolCallCount: 0, now: 15 })).toEqual({
       kind: "continue",
-      message: "Continue with the eligible action.",
+      message: `${"Continue with the eligible action."} Call only the read tool now with exactly ${JSON.stringify({ path: item.betaPath })}; do not provide text or call any other tool.`,
     });
     value.dispose();
   });
