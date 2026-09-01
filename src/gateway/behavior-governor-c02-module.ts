@@ -21,6 +21,13 @@ export { C02_EVALUATION_SESSION_PREFIX } from "../security/governor-c02-evaluati
 // C02 evaluation markers are local to this compiled module; ordinary sessions cannot address them.
 const evaluationRestartMarkers = createC02EvaluationRestartMarkers();
 
+function parseC02EvaluationRunSession(sessionKey: string | undefined) {
+  const direct = sessionKey ? parseC02EvaluationSession(sessionKey) : undefined;
+  if (direct) return direct;
+  const safe = /^c02-eval-(c02-[a-f]-[0-9]{3})-([a-f0-9]{24})$/iu.exec(sessionKey ?? "");
+  return safe ? parseC02EvaluationSession(`c02-eval:${safe[1]}:${safe[2]}`) : undefined;
+}
+
 const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
   if (context.mode !== "enforce") {
     throw new Error("GOVERNOR_C02_MODE_UNQUALIFIED");
@@ -41,9 +48,7 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
           throw new Error("GOVERNOR_C02_MODULE_CLOSED");
         }
         const requestSessionKey = toAgentRequestSessionKey(input.run.sessionKey);
-        const evaluation = requestSessionKey
-          ? parseC02EvaluationSession(requestSessionKey)
-          : undefined;
+        const evaluation = parseC02EvaluationRunSession(requestSessionKey);
         if (evaluation) {
           const identityReserved = !activeEvaluations.has(evaluation.stableSessionId);
           if (identityReserved) {
