@@ -3,6 +3,20 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 
+// Every module that can alter an npm-shrinkwrap output or the npm command that
+// produces it. A change to one of these paths plus a shrinkwrap must use the
+// prior shrinkwrap revision as provenance, never the candidate itself.
+export const SHRINKWRAP_OUTPUT_LOGIC_PATHS = new Set([
+  "scripts/generate-npm-shrinkwrap.mjs",
+  "scripts/npm-runner.mjs",
+  "scripts/npm-shrinkwrap-provenance.mjs",
+  "scripts/windows-cmd-helpers.mjs",
+]);
+
+export function changesShrinkwrapOutputLogic(changedPaths) {
+  return changedPaths.some((changedPath) => SHRINKWRAP_OUTPUT_LOGIC_PATHS.has(changedPath));
+}
+
 export function canonicalizeResolutionInput(value) {
   if (Array.isArray(value)) {
     return value.map((entry) => canonicalizeResolutionInput(entry));
@@ -94,7 +108,7 @@ export function provenanceShrinkwrapRevision(rootDir, relativeShrinkwrapPath) {
     return null;
   }
   const changedPaths = git(["diff-tree", "--no-commit-id", "--name-only", "-r", candidateRevision]);
-  if (!changedPaths.split("\n").includes("scripts/generate-npm-shrinkwrap.mjs")) {
+  if (!changesShrinkwrapOutputLogic(changedPaths.split("\n"))) {
     return candidateRevision;
   }
   const sourceRevision = git([

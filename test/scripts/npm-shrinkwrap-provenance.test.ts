@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { restoreCurrentPnpmLockedPackages } from "../../scripts/generate-npm-shrinkwrap.mjs";
 import {
+  changesShrinkwrapOutputLogic,
   pnpmResolutionTopology,
   shrinkwrapLeaves,
 } from "../../scripts/npm-shrinkwrap-provenance.mjs";
@@ -103,5 +104,17 @@ describe("npm-shrinkwrap provenance", () => {
     });
     expect(shrinkwrapLeaves(metadataOnly)).toEqual(shrinkwrapLeaves(source));
     expect(shrinkwrapLeaves(changedLeaf)).not.toEqual(shrinkwrapLeaves(source));
+  });
+
+  it("treats every output-logic module as a provenance boundary", () => {
+    expect(
+      changesShrinkwrapOutputLogic([
+        "scripts/npm-shrinkwrap-provenance.mjs",
+        "extensions/memory-lancedb/npm-shrinkwrap.json",
+      ]),
+    ).toBe(true);
+    expect(changesShrinkwrapOutputLogic(["scripts/npm-runner.mjs"])).toBe(true);
+    expect(changesShrinkwrapOutputLogic(["scripts/windows-cmd-helpers.mjs"])).toBe(true);
+    expect(changesShrinkwrapOutputLogic(["scripts/changed-lanes.mjs"])).toBe(false);
   });
 });
