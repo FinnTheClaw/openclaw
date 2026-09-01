@@ -13,13 +13,14 @@ import type { StreamFn } from "./runtime/index.js";
 const FINN_REQUEST_ID_HEADER = "x-finn-request-id";
 const FINN_REQUEST_ID_PATTERN = /^req_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 const FINN_COORDINATOR_PROVIDER = "remote-llm";
-const FINN_COORDINATOR_BASE_URL = "http://127.0.0.1:8300/v1";
+const FINN_COORDINATOR_LOCAL_BASE_URL = "http://127.0.0.1:8300/v1";
+const FINN_COORDINATOR_EDGE_BASE_URL = "https://coordinator.tinolafarms.com:8443/v1";
 const FINN_COORDINATOR_ROUTE_PATTERN = /^moira\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const MAX_FINN_REQUEST_IDS = 16;
 
 type FinnCoordinatorRouteIdentity = Readonly<{
   provider: typeof FINN_COORDINATOR_PROVIDER;
-  baseUrl: typeof FINN_COORDINATOR_BASE_URL;
+  baseUrl: typeof FINN_COORDINATOR_LOCAL_BASE_URL | typeof FINN_COORDINATOR_EDGE_BASE_URL;
   route: string;
 }>;
 
@@ -87,18 +88,22 @@ export function readFinnRequestId(headers: unknown): string | undefined {
 }
 
 function resolveFinnCoordinatorRoute(model: Model): FinnCoordinatorRouteIdentity | undefined {
+  const baseUrl = model.baseUrl;
   if (
     model.provider !== FINN_COORDINATOR_PROVIDER ||
-    model.baseUrl !== FINN_COORDINATOR_BASE_URL ||
+    (baseUrl !== FINN_COORDINATOR_LOCAL_BASE_URL && baseUrl !== FINN_COORDINATOR_EDGE_BASE_URL) ||
     !FINN_COORDINATOR_ROUTE_PATTERN.test(model.id)
   ) {
     return undefined;
   }
-  const url = new URL(model.baseUrl);
+  const url = new URL(baseUrl);
+  const isLocal = url.protocol === "http:" && url.hostname === "127.0.0.1" && url.port === "8300";
+  const isEdge =
+    url.protocol === "https:" &&
+    url.hostname === "coordinator.tinolafarms.com" &&
+    url.port === "8443";
   if (
-    url.protocol !== "http:" ||
-    url.hostname !== "127.0.0.1" ||
-    url.port !== "8300" ||
+    (!isLocal && !isEdge) ||
     url.pathname !== "/v1" ||
     url.username ||
     url.password ||
@@ -109,7 +114,7 @@ function resolveFinnCoordinatorRoute(model: Model): FinnCoordinatorRouteIdentity
   }
   return Object.freeze({
     provider: FINN_COORDINATOR_PROVIDER,
-    baseUrl: FINN_COORDINATOR_BASE_URL,
+    baseUrl,
     route: model.id,
   });
 }

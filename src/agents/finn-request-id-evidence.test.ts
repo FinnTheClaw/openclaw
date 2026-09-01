@@ -26,11 +26,12 @@ const context = { messages: [] } as Parameters<StreamFn>[1];
 function wrapFinnRequestIdEvidenceWithCollector(
   source: StreamFn,
   collector: ReturnType<typeof createFinnRequestEvidenceCollector>,
+  resolvedModel: Parameters<StreamFn>[0] = model,
 ): StreamFn {
   markBuiltInProviderTransport(source);
   return wrapBoundFinnRequestIdEvidence(source, collector, {
     selectedStreamFn: source,
-    resolvedModel: model,
+    resolvedModel,
   });
 }
 
@@ -320,6 +321,34 @@ describe("Finn request-id evidence", () => {
     expect(readFinnRequestId({ "x-request-id": "provider-123" })).toBeUndefined();
   });
 
+  it("captures request evidence from the provisioned Alistar coordinator edge", async () => {
+    const edgeModel = {
+      ...model,
+      baseUrl: "https://coordinator.tinolafarms.com:8443/v1",
+    } as Parameters<StreamFn>[0];
+    const collector = createFinnRequestEvidenceCollector();
+    const result = await resultOf(
+      wrapFinnRequestIdEvidenceWithCollector(
+        sourceWithResponse({ "x-finn-request-id": "req_alistar-edge" }),
+        collector,
+        edgeModel,
+      )(edgeModel, context),
+    );
+
+    expect(result.finnRequestIds).toEqual(["req_alistar-edge"]);
+    expect(result.finnRequestIdEvidenceComplete).toBe(true);
+    expect(collector.snapshot().requests).toEqual([
+      {
+        requestId: "req_alistar-edge",
+        route: {
+          provider: "remote-llm",
+          baseUrl: "https://coordinator.tinolafarms.com:8443/v1",
+          route: "moira/brain",
+        },
+      },
+    ]);
+  });
+
   it.each([
     { provider: "custom" },
     { provider: "remote-llm-lookalike" },
@@ -332,6 +361,9 @@ describe("Finn request-id evidence", () => {
     { baseUrl: "http://127.0.0.1:8300/v1/chat" },
     { baseUrl: "http://127.0.0.1:8300/v1?route=moira/brain" },
     { baseUrl: "http://127.0.0.1:8300/v1#moira/brain" },
+    { baseUrl: "https://coordinator.tinolafarms.com/v1" },
+    { baseUrl: "https://coordinator.tinolafarms.com:8443/v1/" },
+    { baseUrl: "https://coordinator.tinolafarms.com.evil.test:8443/v1" },
     { id: "moira/brain/extra" },
     { id: "other/brain" },
   ])("rejects a non-canonical coordinator identity (%j)", async (override) => {

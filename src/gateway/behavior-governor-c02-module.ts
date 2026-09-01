@@ -1,3 +1,4 @@
+import { toAgentRequestSessionKey } from "../routing/session-key.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import type {
   GovernorAgentLoopRunInput,
@@ -239,7 +240,10 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
         if (closed) {
           throw new Error("GOVERNOR_C02_MODULE_CLOSED");
         }
-        const evaluation = parseC02EvaluationSession(input.run.sessionKey);
+        const requestSessionKey = toAgentRequestSessionKey(input.run.sessionKey);
+        const evaluation = requestSessionKey
+          ? parseC02EvaluationSession(requestSessionKey)
+          : undefined;
         if (!evaluation) {
           return undefined;
         }

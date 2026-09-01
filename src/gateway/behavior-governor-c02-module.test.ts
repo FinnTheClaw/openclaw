@@ -47,9 +47,9 @@ function baseScope(
     taskId: "task-1",
     mode: "enforce",
     disposition: "runnable",
-    beforeTool: params.beforeTool ?? vi.fn(() => ({ kind: "allow" })),
+    beforeTool: params.beforeTool ?? vi.fn(() => ({ kind: "allow" }) as const),
     afterTool: vi.fn(),
-    afterTurn: params.afterTurn ?? vi.fn(() => ({ kind: "complete" })),
+    afterTurn: params.afterTurn ?? vi.fn(() => ({ kind: "complete" }) as const),
     interrupt: vi.fn(),
     assertTerminal: vi.fn(),
     governedTools: vi.fn(() => []),
@@ -154,6 +154,25 @@ describe("C02 behavior governor module", () => {
     scope?.dispose();
     expect(test.bindingCloses[0]).toHaveBeenCalledOnce();
     expect(test.providerCloses[0]).toHaveBeenCalledOnce();
+    await test.runtime.close();
+  });
+
+  it("activates through the real agent-scoped gateway session key", async () => {
+    const test = await harness();
+    const requestSession = `${C02_EVALUATION_SESSION_PREFIX}C02-A-002:abcdef0123456789abcdef01`;
+    const scope = test.runtime.agentLoop?.resolveRunScope(
+      moduleInput(`agent:alistar:${requestSession}`),
+    );
+
+    expect(scope).toBeDefined();
+    expect(test.configurations).toHaveLength(1);
+    expect(test.bindings[0]?.run).toMatchObject({
+      sessionKey: `agent:alistar:${requestSession}`,
+      sessionId: "c02-eval-session:C02-A-002:abcdef0123456789abcdef01",
+      sourceMessageId: "c02-eval-source:C02-A-002:abcdef0123456789abcdef01",
+    });
+
+    scope?.dispose();
     await test.runtime.close();
   });
 

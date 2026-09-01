@@ -28,9 +28,9 @@ function scope(
     taskId: "task-1",
     mode: "enforce",
     disposition: "runnable",
-    beforeTool: vi.fn(() => ({ kind: "allow", ticket })),
+    beforeTool: vi.fn(() => ({ kind: "allow", ticket }) as const),
     afterTool,
-    afterTurn: vi.fn(() => ({ kind: "complete" })),
+    afterTurn: vi.fn(() => ({ kind: "complete" }) as const),
     interrupt: vi.fn(),
     assertTerminal: vi.fn(),
     governedTools: vi.fn(() => []),
@@ -177,7 +177,9 @@ describe("C02 restart guard", () => {
     const test = host("process-1", events);
     const underlying = scope(
       undefined,
-      vi.fn(() => timeline.push("outcome")),
+      vi.fn(() => {
+        timeline.push("outcome");
+      }),
     );
     test.recordRuntimeEvent.mockImplementation((event: Record<string, unknown>) => {
       timeline.push("marker");

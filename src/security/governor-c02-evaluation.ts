@@ -1,7 +1,7 @@
 export const C02_EVALUATION_SESSION_PREFIX = "c02-eval:";
 export const C02_AGGREGATE_COMMAND = "/usr/bin/python3 -c 'print(3)'";
 
-const SESSION = /^c02-eval:(C02-([A-F])-[0-9]{3}):([a-f0-9]{24})$/u;
+const SESSION = /^c02-eval:(c02-([a-f])-[0-9]{3}):([a-f0-9]{24})$/iu;
 
 export type C02Evaluation = Readonly<{
   caseId: string;
@@ -19,14 +19,16 @@ export function parseC02EvaluationSession(sessionKey: string): C02Evaluation | u
   if (!match) {
     return undefined;
   }
-  const [, caseId, family, requestNonce] = match;
-  if (!caseId || !family || !requestNonce) {
+  const [, rawCaseId, rawFamily, requestNonce] = match;
+  if (!rawCaseId || !rawFamily || !requestNonce) {
     return undefined;
   }
+  const caseId = rawCaseId.toUpperCase();
+  const family = rawFamily.toUpperCase() as C02Evaluation["family"];
   const stableIdentity = `${caseId}:${requestNonce}`;
   return Object.freeze({
     caseId,
-    family: family as C02Evaluation["family"],
+    family,
     requestNonce,
     alphaPath: `/case/${caseId}/alpha.txt`,
     betaPath: `/case/${caseId}/beta.txt`,
