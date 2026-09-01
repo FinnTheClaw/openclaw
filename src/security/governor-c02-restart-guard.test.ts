@@ -66,7 +66,7 @@ function wrap(
   } as never);
 }
 
-async function observeB(guarded: GovernorAgentLoopRunScope, signal?: AbortSignal) {
+async function observeB(guarded: GovernorAgentLoopRunScope, signal?: AbortSignal, isError = false) {
   const decision = guarded.beforeTool({
     toolCallId: "tool-b",
     toolName: "read",
@@ -82,7 +82,7 @@ async function observeB(guarded: GovernorAgentLoopRunScope, signal?: AbortSignal
     toolCallId: "tool-b",
     toolName: "read",
     result: "beta",
-    isError: false,
+    isError,
     ...(signal ? { signal } : {}),
     now: 12,
   });
@@ -198,6 +198,25 @@ describe("C02 restart guard", () => {
     test.registration.close();
   });
 
+  it("does not arm a restart when the admitted B observation fails", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const underlyingAfterTool = vi.fn();
+    const test = host("process-1", events);
+    const guarded = wrap(
+      test.registration,
+      "c02-eval:C02-F-001:888888888888888888888888",
+      scope(undefined, underlyingAfterTool),
+    );
+
+    await observeB(guarded, undefined, true);
+    expect(underlyingAfterTool).toHaveBeenCalledOnce();
+    expect(events).toEqual([]);
+    expect(guarded.disposition).toBe("runnable");
+
+    guarded.dispose();
+    test.registration.close();
+  });
+
   it("allows resume only under a changed gateway process instance", async () => {
     const events: Array<Record<string, unknown>> = [
       {
@@ -234,6 +253,37 @@ describe("C02 restart guard", () => {
 
     resumed.dispose();
     restartedHost.registration.close();
+  });
+
+  it("keeps an older process blocked after a successor also requires restart", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const firstHost = host("process-1", events);
+    const first = wrap(firstHost.registration, "c02-eval:C02-F-001:999999999999999999999999");
+    const firstAbort = new AbortController();
+    firstAbort.abort();
+    await observeB(first, firstAbort.signal);
+
+    const secondHost = host("process-2", events);
+    const second = wrap(secondHost.registration, "c02-eval:C02-F-001:999999999999999999999999");
+    const secondAbort = new AbortController();
+    secondAbort.abort();
+    await observeB(second, secondAbort.signal);
+
+    expect(first.disposition).toBe("checkpoint_pending");
+    expect(
+      first.beforeTool({
+        toolCallId: "tool-stale-aggregate",
+        toolName: "exec",
+        args: { command: "/usr/bin/python3 -c 'print(3)'" },
+        tool: undefined,
+        now: 14,
+      }),
+    ).toEqual({ kind: "block", reasonCode: "C02_RESTART_REQUIRED" });
+
+    second.dispose();
+    secondHost.registration.close();
+    first.dispose();
+    firstHost.registration.close();
   });
 
   it("settles a pending restart wait when its scope closes", async () => {

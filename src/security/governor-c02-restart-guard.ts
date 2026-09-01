@@ -67,10 +67,12 @@ export const C02_RESTART_REGISTRATION: GatewayBehaviorGovernorModuleHostRegistra
               .filter((event) => event.eventType === EVENT_TYPE)
               .map((event) => restartPayload(event.payload))
               .filter((value): value is RestartPayload => value !== undefined);
-          const latestMarker = (): RestartPayload | undefined =>
-            restartHistory().findLast((value) => value.kind === RESTART_REQUIRED);
           const restartPending = (): boolean =>
-            latestMarker()?.processInstanceId === host.processInstanceId;
+            restartHistory().some(
+              (value) =>
+                value.kind === RESTART_REQUIRED &&
+                value.processInstanceId === host.processInstanceId,
+            );
           const prior = restartHistory();
           const marker = prior.findLast((value) => value.kind === RESTART_REQUIRED);
           if (
@@ -121,6 +123,14 @@ export const C02_RESTART_REGISTRATION: GatewayBehaviorGovernorModuleHostRegistra
                 isObject(request.args) &&
                 request.args.path === evaluation.betaPath
               ) {
+                betaTickets.add(decision.ticket.opaque);
+              }
+              return decision;
+            },
+            async afterTool(observation) {
+              const ticket = observation.ticket?.opaque;
+              const observedB = ticket ? betaTickets.has(ticket) : false;
+              if (observedB && !observation.isError) {
                 host.controller.recordRuntimeEvent({
                   taskId,
                   eventType: EVENT_TYPE,
@@ -129,15 +139,9 @@ export const C02_RESTART_REGISTRATION: GatewayBehaviorGovernorModuleHostRegistra
                     moduleId: C02_SIMPLE_EFFICIENCY_ID,
                     processInstanceId: host.processInstanceId,
                   },
-                  now: request.now,
+                  now: observation.now,
                 });
-                betaTickets.add(decision.ticket.opaque);
               }
-              return decision;
-            },
-            async afterTool(observation) {
-              const ticket = observation.ticket?.opaque;
-              const observedB = ticket ? betaTickets.has(ticket) : false;
               await input.scope.afterTool(observation);
               if (ticket) {
                 betaTickets.delete(ticket);
