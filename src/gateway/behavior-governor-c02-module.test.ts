@@ -92,6 +92,34 @@ describe("C02 behavior governor module", () => {
     await runtime.close();
   });
 
+  it("blocks a duplicate evaluation scope before either scope can execute a second tool", async () => {
+    const runtime = await createRuntime();
+    const session = `${C02_EVALUATION_SESSION_PREFIX}C02-F-001:999999999999999999999999`;
+    const first = required(
+      runtime.agentLoop?.resolveRunScope({ activation: ACTIVATION, run: run(session, "first") }),
+    );
+    const duplicate = required(
+      runtime.agentLoop?.resolveRunScope({
+        activation: ACTIVATION,
+        run: run(session, "duplicate"),
+      }),
+    );
+    expect(first.disposition).toBe("runnable");
+    expect(duplicate.disposition).toBe("checkpoint_pending");
+    expect(
+      duplicate.beforeTool({
+        toolCallId: "blocked-before-tool",
+        toolName: "read",
+        args: { path: "/case/C02-F-001/alpha.txt" },
+        tool: undefined,
+        now: 11,
+      }),
+    ).toEqual({ kind: "block", reasonCode: "C02_RESTART_REQUIRED" });
+    first.dispose();
+    duplicate.dispose();
+    await runtime.close();
+  });
+
   it("persists the F checkpoint across a module reload without the generic host registration", async () => {
     const session = `${C02_EVALUATION_SESSION_PREFIX}C02-F-001:fedcba9876543210fedcba98`;
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "c02-module-reload-"));
