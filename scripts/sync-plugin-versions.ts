@@ -25,7 +25,13 @@ type SyncPluginVersionsOptions = {
 };
 
 const OPENCLAW_VERSION_RANGE_RE = /^>=\d{4}\.\d{1,2}\.\d{1,2}(?:[-.][^"\s]+)?$/u;
+const NUMERIC_CORRECTION_PRERELEASE_RE = /^(\d{4}\.\d{1,2}\.\d{1,2})-\d+$/u;
 const VERSION_ALIGNED_PACKAGE_DIRS = ["packages/ai"] as const;
+
+function compatibilityFloorForVersion(targetVersion: string): string {
+  const correctionPrerelease = targetVersion.match(NUMERIC_CORRECTION_PRERELEASE_RE);
+  return correctionPrerelease ? `${correctionPrerelease[1]}-0` : targetVersion;
+}
 
 function syncOpenClawDependencyRange(
   deps: Record<string, string> | undefined,
@@ -108,6 +114,7 @@ export function syncPluginVersions(
   if (!targetVersion) {
     throw new Error("Root package.json missing version.");
   }
+  const compatibilityFloor = compatibilityFloorForVersion(targetVersion);
 
   const extensionsDir = join(rootDir, "extensions");
   const dirs = readdirSync(extensionsDir, { withFileTypes: true }).filter((entry) =>
@@ -155,11 +162,17 @@ export function syncPluginVersions(
     }
 
     const versionChanged = pkg.version !== targetVersion;
-    const devDependencyChanged = syncOpenClawDependencyRange(pkg.devDependencies, targetVersion);
-    const peerDependencyChanged = syncOpenClawDependencyRange(pkg.peerDependencies, targetVersion);
+    const devDependencyChanged = syncOpenClawDependencyRange(
+      pkg.devDependencies,
+      compatibilityFloor,
+    );
+    const peerDependencyChanged = syncOpenClawDependencyRange(
+      pkg.peerDependencies,
+      compatibilityFloor,
+    );
     // minHostVersion is a compatibility floor, not release alignment metadata.
     // Keep it stable unless the owning plugin intentionally raises it.
-    const pluginApiChanged = syncPluginApiVersion(pkg, targetVersion);
+    const pluginApiChanged = syncPluginApiVersion(pkg, compatibilityFloor);
     const buildOpenClawVersionChanged = syncBuildOpenClawVersion(pkg, targetVersion);
     const packageChanged =
       versionChanged ||

@@ -131,6 +131,62 @@ describe("syncPluginVersions", () => {
     expect(unchangedPackage.openclaw?.compat?.pluginApi).toBe(">=2026.4.1");
   });
 
+  it.each([
+    ["2026.7.1", ">=2026.7.1"],
+    ["2026.7.1-beta.2", ">=2026.7.1-beta.2"],
+    ["2026.7.1-39", ">=2026.7.1-0"],
+  ])(
+    "writes %s bundled plugin compatibility constraints as %s",
+    (rootVersion, expectedCompatibilityFloor) => {
+      const rootDir = makeTempDir(tempDirs, "openclaw-sync-plugin-versions-compatibility-");
+
+      writeJson(path.join(rootDir, "package.json"), {
+        name: "openclaw",
+        version: rootVersion,
+      });
+      writeJson(path.join(rootDir, "extensions/matrix/package.json"), {
+        name: "@openclaw/matrix",
+        version: "2026.7.0",
+        devDependencies: {
+          openclaw: ">=2026.7.0",
+        },
+        peerDependencies: {
+          openclaw: ">=2026.7.0",
+        },
+        openclaw: {
+          compat: {
+            pluginApi: ">=2026.7.0",
+          },
+          build: {
+            openclawVersion: "2026.7.0",
+          },
+        },
+      });
+
+      syncPluginVersions(rootDir);
+
+      expect(
+        JSON.parse(fs.readFileSync(path.join(rootDir, "extensions/matrix/package.json"), "utf8")),
+      ).toMatchObject({
+        version: rootVersion,
+        devDependencies: {
+          openclaw: expectedCompatibilityFloor,
+        },
+        peerDependencies: {
+          openclaw: expectedCompatibilityFloor,
+        },
+        openclaw: {
+          compat: {
+            pluginApi: expectedCompatibilityFloor,
+          },
+          build: {
+            openclawVersion: rootVersion,
+          },
+        },
+      });
+    },
+  );
+
   it("uses the base release version for beta changelog entries", () => {
     const rootDir = makeTempDir(tempDirs, "openclaw-sync-plugin-versions-beta-changelog-");
 
