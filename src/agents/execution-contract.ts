@@ -39,7 +39,7 @@ export function stripProviderPrefix(modelId: string): string {
 const STRICT_AGENTIC_MODEL_ID_PATTERN = /^gpt-5(?:[.o-]|$)/i;
 const C02_EVALUATION_RUN_SESSION_KEY = /(?:^|:)c02-eval-(c02-[a-f]-[0-9]{3})-([a-f0-9]{24})$/iu;
 
-function isC02EvaluationRunSession(sessionKey: string | undefined): boolean {
+export function isC02EvaluationRunSession(sessionKey: string | undefined): boolean {
   return typeof sessionKey === "string" && C02_EVALUATION_RUN_SESSION_KEY.test(sessionKey);
 }
 

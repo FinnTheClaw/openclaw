@@ -639,7 +639,8 @@ function shouldSkipNonVisibleTurnRetry(params: {
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
     hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
-    resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects,
+    (!params.allowPostToolReasoningOnlyRecovery &&
+      resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects),
   );
 }
 
@@ -691,6 +692,7 @@ export function resolveReasoningOnlyRetryInstruction(params: {
   modelId?: string;
   modelApi?: string;
   executionContract?: string;
+  allowPostToolReasoningOnlyRecovery?: boolean;
   aborted: boolean;
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;

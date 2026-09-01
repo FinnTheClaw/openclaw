@@ -93,7 +93,10 @@ import {
   parseImageSizeError,
   pickFallbackThinkingLevel,
 } from "../embedded-agent-helpers.js";
-import { isStrictAgenticExecutionContractActive } from "../execution-contract.js";
+import {
+  isC02EvaluationRunSession,
+  isStrictAgenticExecutionContractActive,
+} from "../execution-contract.js";
 import {
   coerceToFailoverError,
   describeFailoverError,
@@ -4223,6 +4226,7 @@ async function runEmbeddedAgentInternal(
             );
             continue;
           }
+          const c02RecoveryScope = isC02EvaluationRunSession(params.sessionId);
           const nextReasoningOnlyRetryInstruction = emptyAssistantReplyIsSilent
             ? null
             : resolveReasoningOnlyRetryInstruction({
@@ -4230,6 +4234,7 @@ async function runEmbeddedAgentInternal(
                 modelId: activeErrorContext.model,
                 modelApi: effectiveModel.api,
                 executionContract,
+                allowPostToolReasoningOnlyRecovery: c02RecoveryScope,
                 aborted,
                 timedOut,
                 attempt,
