@@ -21,6 +21,7 @@ import {
   resolvePackageDirs,
   resolveShrinkwrapJobs,
   restoreCurrentPnpmLockedPackages,
+  shrinkwrapLeaves,
   runBoundedTasks,
   shouldUseLegacyPeerDepsForShrinkwrap,
   shrinkwrapPackageDirsForChangedPaths,
@@ -370,8 +371,34 @@ describe("generate-npm-shrinkwrap", () => {
     };
 
     const fingerprint = pnpmResolutionTopology(baseline, "extensions/example");
-    expect(fingerprint).not.toBe(pnpmResolutionTopology(changedReachableEdge, "extensions/example"));
+    expect(fingerprint).not.toBe(
+      pnpmResolutionTopology(changedReachableEdge, "extensions/example"),
+    );
     expect(fingerprint).toBe(pnpmResolutionTopology(changedUnreachableEntry, "extensions/example"));
+  });
+
+  it("compares provenance against shrinkwrap leaves rather than mutable root metadata", () => {
+    const source = JSON.stringify({
+      packages: {
+        "": { version: "1.0.0", dependencies: { foo: "^1.0.0" } },
+        "node_modules/foo": { version: "1.1.0", integrity: "foo-one" },
+      },
+    });
+    const metadataOnlyCandidate = JSON.stringify({
+      packages: {
+        "": { version: "1.0.1", dependencies: { foo: "^1.0.0" } },
+        "node_modules/foo": { version: "1.1.0", integrity: "foo-one" },
+      },
+    });
+    const changedLeafCandidate = JSON.stringify({
+      packages: {
+        "": { version: "1.0.1", dependencies: { foo: "^1.0.0" } },
+        "node_modules/foo": { version: "1.2.0", integrity: "foo-two" },
+      },
+    });
+
+    expect(shrinkwrapLeaves(metadataOnlyCandidate)).toEqual(shrinkwrapLeaves(source));
+    expect(shrinkwrapLeaves(changedLeafCandidate)).not.toEqual(shrinkwrapLeaves(source));
   });
 
   it("does not restore versions that no longer satisfy the dependency edge", () => {
