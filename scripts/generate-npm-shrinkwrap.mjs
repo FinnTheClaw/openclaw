@@ -1079,8 +1079,45 @@ function pnpmResolutionTopology(lockfile, importerPath) {
   }
 
   return JSON.stringify(
-    canonicalizeResolutionInput({ importer, packages: collectedPackages, snapshots: collectedSnapshots }),
+    canonicalizeResolutionInput({
+      importer,
+      packages: collectedPackages,
+      snapshots: collectedSnapshots,
+    }),
   );
+}
+
+function shrinkwrapLeaves(shrinkwrapText) {
+  const packages = JSON.parse(shrinkwrapText)?.packages ?? {};
+  return canonicalizeResolutionInput(
+    Object.fromEntries(Object.entries(packages).filter(([lockPath]) => lockPath !== "")),
+  );
+}
+
+function provenanceShrinkwrapRevision(relativeShrinkwrapPath) {
+  const git = (args) =>
+    execFileSync("git", args, {
+      cwd: ROOT_DIR,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  const candidateRevision = git(["log", "-1", "--format=%H", "HEAD", "--", relativeShrinkwrapPath]);
+  if (!/^[0-9a-f]{40}$/u.test(candidateRevision)) {
+    return null;
+  }
+  const changedPaths = git(["diff-tree", "--no-commit-id", "--name-only", "-r", candidateRevision]);
+  if (!changedPaths.split("\n").includes("scripts/generate-npm-shrinkwrap.mjs")) {
+    return candidateRevision;
+  }
+  const sourceRevision = git([
+    "log",
+    "-1",
+    "--format=%H",
+    `${candidateRevision}^`,
+    "--",
+    relativeShrinkwrapPath,
+  ]);
+  return /^[0-9a-f]{40}$/u.test(sourceRevision) ? sourceRevision : null;
 }
 
 function shrinkwrapMatchesCurrentPnpmLockTopology(packageDir) {
@@ -1091,12 +1128,8 @@ function shrinkwrapMatchesCurrentPnpmLockTopology(packageDir) {
   }
 
   try {
-    const revision = execFileSync("git", ["log", "-1", "--format=%H", "--", relativeShrinkwrapPath], {
-      cwd: ROOT_DIR,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (!/^[0-9a-f]{40}$/u.test(revision)) {
+    const revision = provenanceShrinkwrapRevision(relativeShrinkwrapPath);
+    if (!revision) {
       return false;
     }
     const gitShow = (pathAtRevision) =>
@@ -1104,13 +1137,17 @@ function shrinkwrapMatchesCurrentPnpmLockTopology(packageDir) {
         cwd: ROOT_DIR,
         stdio: ["ignore", "pipe", "ignore"],
       });
-    const priorTopology = pnpmResolutionTopology(parseYaml(gitShow("pnpm-lock.yaml").toString("utf8")), packageLabel(packageDir));
+    const priorTopology = pnpmResolutionTopology(
+      parseYaml(gitShow("pnpm-lock.yaml").toString("utf8")),
+      packageLabel(packageDir),
+    );
     const currentTopology = pnpmResolutionTopology(
       parseYaml(readFileSync(path.join(ROOT_DIR, "pnpm-lock.yaml"), "utf8")),
       packageLabel(packageDir),
     );
     return (
-      Buffer.compare(readFileSync(shrinkwrapPath), gitShow(relativeShrinkwrapPath)) === 0 &&
+      JSON.stringify(shrinkwrapLeaves(readFileSync(shrinkwrapPath, "utf8"))) ===
+        JSON.stringify(shrinkwrapLeaves(gitShow(relativeShrinkwrapPath).toString("utf8"))) &&
       priorTopology !== null &&
       priorTopology === currentTopology
     );
@@ -1141,12 +1178,15 @@ function restoreCurrentPnpmLockedPackages(
 
   if (
     preserveCurrentResolvedGraph &&
-    resolutionInputsForRoot(generatedPackages[""]) === resolutionInputsForRoot(currentPackages[""]) &&
+    resolutionInputsForRoot(generatedPackages[""]) ===
+      resolutionInputsForRoot(currentPackages[""]) &&
     collectPnpmLockViolations({ packages: currentPackages }, pnpmLockPackages).length === 0
   ) {
     generated.packages = {
       "": generatedPackages[""],
-      ...Object.fromEntries(Object.entries(currentPackages).filter(([lockPath]) => lockPath !== "")),
+      ...Object.fromEntries(
+        Object.entries(currentPackages).filter(([lockPath]) => lockPath !== ""),
+      ),
     };
     return generated;
   }
@@ -1591,11 +1631,13 @@ export {
   packageJsonForShrinkwrap,
   packageDependencyInputsChanged,
   pnpmResolutionTopology,
+  provenanceShrinkwrapRevision,
   pnpmLockOverrideVersionForVersions,
   parsePnpmPackageKey,
   parseLockPackagePath,
   readShrinkwrapOverrides,
   restoreCurrentPnpmLockedPackages,
+  shrinkwrapLeaves,
   shrinkwrapMatchesCurrentPnpmLockTopology,
   shouldUseLegacyPeerDepsForShrinkwrap,
   shrinkwrapPackageDirsForChangedPaths,
