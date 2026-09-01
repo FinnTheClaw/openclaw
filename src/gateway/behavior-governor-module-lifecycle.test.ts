@@ -418,4 +418,34 @@ describe("gateway behavior governor module lifecycle", () => {
     expect(events.filter((event) => event === "close:c01")).toHaveLength(1);
     expect(events.filter((event) => event === "close:c02")).toHaveLength(2);
   });
+
+  it("does not acquire a generic host for a selected hostless module", async () => {
+    const acquire = vi.fn(async () => {
+      throw new Error("host must remain unacquired");
+    });
+    const factory = vi.fn(async (input: Parameters<GatewayBehaviorGovernorModuleFactory>[0]) => {
+      expect(input.host).toBeUndefined();
+      return { close: vi.fn() };
+    });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: { acquire },
+      catalog: [
+        {
+          id: "c02",
+          version: "1.0.0",
+          requiresHost: false,
+          supportedModes: ["shadow"],
+          qualifiedModes: ["shadow"],
+          dependencies: [],
+          durableBoundaryIds: [],
+          load: vi.fn(async () => factory),
+        },
+      ],
+    });
+
+    await lifecycle.apply([selection("c02")]);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(factory).toHaveBeenCalledOnce();
+    await lifecycle.close();
+  });
 });
