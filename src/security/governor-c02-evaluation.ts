@@ -25,11 +25,12 @@ export function parseC02EvaluationSession(sessionKey: string): C02Evaluation | u
   }
   const caseId = rawCaseId.toUpperCase();
   const family = rawFamily.toUpperCase() as C02Evaluation["family"];
-  const stableIdentity = `${caseId}:${requestNonce}`;
+  const canonicalRequestNonce = requestNonce.toLowerCase();
+  const stableIdentity = `${caseId}:${canonicalRequestNonce}`;
   return Object.freeze({
     caseId,
     family,
-    requestNonce,
+    requestNonce: canonicalRequestNonce,
     alphaPath: `/case/${caseId}/alpha.txt`,
     betaPath: `/case/${caseId}/beta.txt`,
     stableSourceMessageId: `c02-eval-source:${stableIdentity}`,

@@ -54,11 +54,11 @@ function scope(
 
 function markerPaths(stateDir: string, item: C02Evaluation) {
   const directory = path.join(stateDir, "governor", "c02-eval-restarts");
-  const base = `${item.caseId.toLowerCase()}-${item.family.toLowerCase()}-${item.requestNonce}`;
+  const base = `${item.caseId.toLowerCase()}-${item.requestNonce}`;
   return {
     directory,
     pending: path.join(directory, `${base}.pending.json`),
-    consumed: path.join(directory, `${base}.consumed.json`),
+    completed: path.join(directory, `${base}.completed.json`),
   };
 }
 
@@ -66,6 +66,16 @@ function writeRawPendingMarker(stateDir: string, item: C02Evaluation, payload: u
   const paths = markerPaths(stateDir, item);
   fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
   fs.writeFileSync(paths.pending, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
+}
+
+function markerPayload(item: C02Evaluation) {
+  return {
+    kind: "c02-eval-restart",
+    phase: "beta-complete",
+    caseId: item.caseId,
+    family: "F",
+    requestNonce: item.requestNonce,
+  };
 }
 
 async function complete(
@@ -354,5 +364,95 @@ describe("C02 local evaluator", () => {
     const markers = createC02EvaluationRestartMarkers({ stateDir });
     expect(markers.arm(item, 0)).toBe(true);
     expect(markers.arm(item, 0)).toBe(false);
+  });
+
+  it("keeps a resumed checkpoint retryable after its claimant exits before aggregate", () => {
+    const item = evaluation("F", "cccccccccccccccccccccccc");
+    const firstProcess = createC02EvaluationRestartMarkers({ stateDir });
+    expect(firstProcess.arm(item, 0)).toBe(true);
+    expect(firstProcess.start(item)).toMatchObject({
+      generation: 1,
+      resumed: true,
+      blocked: false,
+    });
+    firstProcess.release(item, 1);
+
+    const successor = createC02EvaluationRestartMarkers({ stateDir });
+    expect(successor.start(item)).toMatchObject({ generation: 1, resumed: true, blocked: false });
+    expect(successor.complete(item, 1)).toBe(true);
+  });
+
+  it("does not clobber a completion destination that appears during the transition", () => {
+    const item = evaluation("F", "dddddddddddddddddddddddd");
+    const markers = createC02EvaluationRestartMarkers({ stateDir });
+    expect(markers.arm(item, 0)).toBe(true);
+    expect(markers.start(item)).toMatchObject({ generation: 1, resumed: true, blocked: false });
+    const paths = markerPaths(stateDir, item);
+    const preexisting = JSON.stringify(markerPayload(item));
+    fs.writeFileSync(paths.completed, preexisting, { encoding: "utf8", mode: 0o600 });
+
+    expect(markers.complete(item, 1)).toBe(false);
+    expect(fs.readFileSync(paths.completed, "utf8")).toBe(preexisting);
+    expect(fs.existsSync(paths.pending)).toBe(true);
+  });
+
+  it.each(["state root", "governor ancestor"])("fails closed for a symlinked %s", (kind) => {
+    const item = evaluation("F", "eeeeeeeeeeeeeeeeeeeeeeee");
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "c02-symlink-target-"));
+    try {
+      const root = path.join(stateDir, "nested-state");
+      if (kind === "state root") {
+        fs.symlinkSync(target, root);
+      } else {
+        fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+        fs.symlinkSync(target, path.join(root, "governor"));
+      }
+      expect(createC02EvaluationRestartMarkers({ stateDir: root }).start(item)).toMatchObject({
+        blocked: true,
+      });
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it("canonicalizes an uppercase nonce before creating its marker", () => {
+    const item = evaluation("F", "ABCDEFABCDEFABCDEFABCDEF");
+    expect(item.requestNonce).toBe("abcdefabcdefabcdefabcdef");
+    const markers = createC02EvaluationRestartMarkers({ stateDir });
+    expect(markers.arm(item, 0)).toBe(true);
+    expect(markers.start(item)).toMatchObject({ generation: 1, resumed: true, blocked: false });
+  });
+
+  it("cleans exact orphan temporaries and evicts only old completed markers", () => {
+    const first = evaluation("F", "000000000000000000000001");
+    const paths = markerPaths(stateDir, first);
+    fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
+    const orphan = path.join(
+      paths.directory,
+      ".c02-f-001-000000000000000000000001.99.123e4567-e89b-12d3-a456-426614174000.tmp",
+    );
+    fs.writeFileSync(orphan, "orphan", { encoding: "utf8", mode: 0o600 });
+    const markers = createC02EvaluationRestartMarkers({ stateDir });
+    expect(markers.arm(first, 0)).toBe(true);
+    expect(fs.existsSync(orphan)).toBe(false);
+    expect(fs.statSync(paths.directory).mode & 0o077).toBe(0);
+    expect(fs.statSync(paths.pending).mode & 0o077).toBe(0);
+
+    for (let index = 2; index <= 130; index += 1) {
+      const item = evaluation(
+        "F",
+        index.toString(16).padStart(24, "0"),
+        index.toString().padStart(3, "0"),
+      );
+      expect(markers.arm(item, 0)).toBe(true);
+      expect(markers.start(item)).toMatchObject({ generation: 1, resumed: true, blocked: false });
+      expect(markers.complete(item, 1)).toBe(true);
+    }
+    const retained = evaluation("F", (130).toString(16).padStart(24, "0"), "130");
+    expect(markers.start(retained)).toMatchObject({ blocked: true });
+    const markerFiles = fs
+      .readdirSync(paths.directory)
+      .filter((name) => name.endsWith(".pending.json") || name.endsWith(".completed.json"));
+    expect(markerFiles.length).toBeLessThanOrEqual(128);
   });
 });
