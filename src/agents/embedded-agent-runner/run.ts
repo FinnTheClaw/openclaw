@@ -3976,7 +3976,7 @@ async function runEmbeddedAgentInternal(
             sessionFile: sessionFileUsed,
             provider: reportedModelRef.provider,
             model: reportedModelRef.model,
-            ...resolveFinnRequestEvidenceMeta(attemptAssistant),
+            ...resolveFinnRequestEvidenceFromCollector(finnRequestEvidence),
             contextTokens: ctxInfo.tokens,
             agentHarnessId: attempt.agentHarnessId,
             usage: usageMeta.usage,
