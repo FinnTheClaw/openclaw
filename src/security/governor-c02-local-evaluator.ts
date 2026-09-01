@@ -62,12 +62,13 @@ export function createGovernorC02EvaluationScope(params: {
   evaluation: C02Evaluation;
   restartMarkers: C02EvaluationRestartMarkers;
   identityReserved?: boolean;
+  actionLedger?: { stage: number };
   onDispose?: (scope: GovernorAgentLoopRunScope) => void;
 }): GovernorAgentLoopRunScope {
   const restart = params.restartMarkers.start(params.evaluation);
   const pending = new WeakMap<object, number>();
   let installedTools: readonly AgentTool[] = Object.freeze([]);
-  let stage = restart.resumed ? 2 : 0;
+  let stage = Math.max(restart.resumed ? 2 : 0, params.actionLedger?.stage ?? 0);
   let inFlightStage: number | undefined;
   let turns = 0;
   let pressurePending = false;
@@ -128,6 +129,9 @@ export function createGovernorC02EvaluationScope(params: {
       }
       const completed = expectedAction(stage);
       stage += 1;
+      if (params.actionLedger) {
+        params.actionLedger.stage = stage;
+      }
       if (completed === "observe-a" && params.evaluation.family === "B") {
         pressurePending = true;
       }

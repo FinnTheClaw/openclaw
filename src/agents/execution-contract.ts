@@ -37,6 +37,11 @@ export function stripProviderPrefix(modelId: string): string {
  * Does NOT cover `gpt-4.5`, `gpt-6`, or any non-gpt-5 family member.
  */
 const STRICT_AGENTIC_MODEL_ID_PATTERN = /^gpt-5(?:[.o-]|$)/i;
+const C02_EVALUATION_RUN_SESSION_KEY = /(?:^|:)c02-eval-(c02-[a-f]-[0-9]{3})-([a-f0-9]{24})$/iu;
+
+function isC02EvaluationRunSession(sessionKey: string | undefined): boolean {
+  return typeof sessionKey === "string" && C02_EVALUATION_RUN_SESSION_KEY.test(sessionKey);
+}
 
 /**
  * Supported provider + model combinations where strict-agentic is the intended
@@ -96,6 +101,9 @@ function resolveEffectiveExecutionContract(params: {
     agentId: params.agentId ?? undefined,
   });
   const explicit = resolveAgentExecutionContract(params.config, sessionAgentId);
+  if (isC02EvaluationRunSession(params.sessionKey)) {
+    return "strict-agentic";
+  }
   // strict-agentic is a GPT-5-family OpenAI runtime contract
   // regardless of whether it was set explicitly or auto-activated. On an
   // unsupported provider/model pair the contract is inert either way, so

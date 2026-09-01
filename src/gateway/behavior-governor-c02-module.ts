@@ -34,6 +34,7 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
   }
   const scopes = new Set<GovernorAgentLoopRunScope>();
   const activeEvaluations = new Set<string>();
+  const evaluationActionLedgers = new Map<string, { stage: number }>();
   let closed = false;
 
   const retain = (scope: GovernorAgentLoopRunScope): GovernorAgentLoopRunScope => {
@@ -50,6 +51,8 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
         const requestSessionKey = toAgentRequestSessionKey(input.run.sessionKey);
         const evaluation = parseC02EvaluationRunSession(requestSessionKey);
         if (evaluation) {
+          const actionLedger = evaluationActionLedgers.get(evaluation.stableSessionId) ?? { stage: 0 };
+          evaluationActionLedgers.set(evaluation.stableSessionId, actionLedger);
           const identityReserved = !activeEvaluations.has(evaluation.stableSessionId);
           if (identityReserved) {
             activeEvaluations.add(evaluation.stableSessionId);
@@ -60,10 +63,14 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
             evaluation,
             restartMarkers: evaluationRestartMarkers,
             identityReserved,
+            actionLedger,
             onDispose() {
               scopes.delete(scope);
               if (identityReserved) {
                 activeEvaluations.delete(evaluation.stableSessionId);
+              }
+              if (actionLedger.stage >= 3) {
+                evaluationActionLedgers.delete(evaluation.stableSessionId);
               }
             },
           });
