@@ -124,12 +124,14 @@ function restartRegistration(processInstanceId: string, events: Array<Record<str
 }
 
 describe("C02 behavior governor module", () => {
-  it("is inert for every ordinary Finn session", async () => {
+  it("installs the ordinary-session production profile without a C02 evaluation provider", async () => {
     const test = await harness();
 
-    expect(test.runtime.agentLoop?.resolveRunScope(moduleInput("agent:main:main"))).toBeUndefined();
+    const scope = test.runtime.agentLoop?.resolveRunScope(moduleInput("agent:main:main"));
+    expect(scope).toBeDefined();
     expect(test.configurations).toHaveLength(0);
 
+    scope?.dispose();
     await test.runtime.close();
   });
 

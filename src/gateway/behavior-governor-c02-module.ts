@@ -12,6 +12,7 @@ import {
   parseC02EvaluationSession,
   type C02Evaluation,
 } from "../security/governor-c02-evaluation.js";
+import { createGovernorC02ProductionProfileScope } from "../security/governor-c02-production-profile.js";
 import { C02_RESTART_REGISTRATION } from "../security/governor-c02-restart-guard.js";
 import {
   C02_CRITERIA_TEMPLATE,
@@ -246,7 +247,11 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
           ? parseC02EvaluationSession(requestSessionKey)
           : undefined;
         if (!evaluation) {
-          return undefined;
+          const scope = createGovernorC02ProductionProfileScope(input.run, (disposed) => {
+            scopes.delete(disposed);
+          });
+          scopes.add(scope);
+          return scope;
         }
         const run = stableGovernorRun(input.run, evaluation);
         const plan = createPlan(evaluation);
