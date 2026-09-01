@@ -50,6 +50,18 @@ describe("plugin npm runtime build planning", () => {
     }
   });
 
+  it("emits prerelease-aware OpenClaw peer compatibility for the LanceDB memory plugin", () => {
+    const plan = expectPluginNpmRuntimeBuildPlan(
+      resolvePluginNpmRuntimeBuildPlan({
+        repoRoot,
+        packageDir: path.join(repoRoot, "extensions", "memory-lancedb"),
+      }),
+    );
+
+    expect(plan.packageJson.openclaw.compat.pluginApi).toBe(">=2026.7.1-0");
+    expect(plan.packagePeerMetadata.peerDependencies.openclaw).toBe(">=2026.7.1-0");
+  });
+
   it("includes top-level public runtime surfaces and root-build-excluded plugins", () => {
     const qqbotPlan = resolvePluginNpmRuntimeBuildPlan({
       repoRoot,
