@@ -13,6 +13,7 @@ const MAX_DEPTH = 16;
 const MAX_ENTRIES = 256;
 
 type SuccessfulCall = Readonly<{ toolName: string; argsDigest: string }>;
+type PendingCall = SuccessfulCall & Readonly<{ admissionEpoch: number }>;
 
 function canonicalArgs(value: unknown, depth = 0): GovernorJsonValue | undefined {
   if (depth > MAX_DEPTH) {
@@ -94,10 +95,12 @@ export function createGovernorC02ProductionProfileScope(
   run: GovernorAgentLoopRunInput,
   onDispose?: (scope: GovernorAgentLoopRunScope) => void,
 ): GovernorAgentLoopRunScope {
-  const pending = new WeakMap<object, SuccessfulCall>();
+  const pending = new WeakMap<object, PendingCall>();
   let installedTools: readonly AgentTool[] = Object.freeze([]);
   let candidate: SuccessfulCall | undefined;
+  let admissionEpoch = 0;
   let reactivePending = false;
+  let reactiveIssued = false;
   let disposed = false;
 
   let scope: GovernorAgentLoopRunScope;
@@ -111,15 +114,16 @@ export function createGovernorC02ProductionProfileScope(
     beforeTool(request) {
       const identity = callIdentity(request.toolName, request.args);
       if (identity && candidate && sameCall(candidate, identity)) {
-        reactivePending = true;
+        reactivePending ||= !reactiveIssued;
         return { kind: "block" as const, reasonCode: C02_REDUNDANT_SUCCESSFUL_TOOL_CALL };
       }
       candidate = undefined;
+      admissionEpoch += 1;
       if (!identity) {
         return { kind: "allow" as const };
       }
       const opaque = {};
-      pending.set(opaque, identity);
+      pending.set(opaque, { ...identity, admissionEpoch });
       return { kind: "allow" as const, ticket: Object.freeze({ opaque }) };
     },
     afterTool(observation) {
@@ -127,13 +131,14 @@ export function createGovernorC02ProductionProfileScope(
       if (observation.ticket) {
         pending.delete(observation.ticket.opaque);
       }
-      if (identity && !observation.isError) {
+      if (identity && !observation.isError && identity.admissionEpoch === admissionEpoch) {
         candidate = identity;
       }
     },
     afterTurn() {
       if (reactivePending) {
         reactivePending = false;
+        reactiveIssued = true;
         return { kind: "continue" as const, message: REACTIVE_MESSAGE };
       }
       return { kind: "complete" as const };
@@ -150,6 +155,7 @@ export function createGovernorC02ProductionProfileScope(
       disposed = true;
       candidate = undefined;
       reactivePending = false;
+      reactiveIssued = false;
       onDispose?.(scope);
     },
   });

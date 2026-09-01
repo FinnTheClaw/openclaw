@@ -100,6 +100,29 @@ describe("C02 ordinary-session production profile", () => {
     expect(allowed(target, "read", { path: "/a" }, "retry-old").kind).toBe("allow");
   });
 
+  it("does not let an out-of-order older completion replace the current candidate", () => {
+    const retained = scope();
+    const first = allowed(retained, "read", { path: "/a" }, "first");
+    const second = allowed(retained, "read", { path: "/b" }, "second");
+    successful(retained, second, "read", "second");
+    successful(retained, first, "read", "first");
+    expect(allowed(retained, "read", { path: "/b" }, "repeat-second").kind).toBe("block");
+
+    const stale = scope("stale");
+    const staleFirst = allowed(stale, "read", { path: "/a" }, "first");
+    const staleSecond = allowed(stale, "read", { path: "/b" }, "second");
+    successful(stale, staleSecond, "read", "second");
+    successful(stale, staleFirst, "read", "first");
+    expect(allowed(stale, "read", { path: "/a" }, "repeat-first").kind).toBe("allow");
+
+    const ordered = scope("ordered");
+    const orderedFirst = allowed(ordered, "read", { path: "/a" }, "first");
+    const orderedSecond = allowed(ordered, "read", { path: "/b" }, "second");
+    successful(ordered, orderedFirst, "read", "first");
+    successful(ordered, orderedSecond, "read", "second");
+    expect(allowed(ordered, "read", { path: "/b" }, "repeat-second").kind).toBe("block");
+  });
+
   it("keeps concurrent runs and their candidates isolated", () => {
     const first = scope("first");
     const second = scope("second");
@@ -139,6 +162,10 @@ describe("C02 ordinary-session production profile", () => {
       message: "A duplicate successful tool call was blocked. Continue with a different action.",
     });
     expect(target.afterTurn({ assistantText: "", toolCallCount: 0, now: 5 })).toEqual({
+      kind: "complete",
+    });
+    expect(allowed(target, "read", { path: "/a" }, "duplicate-three").kind).toBe("block");
+    expect(target.afterTurn({ assistantText: "", toolCallCount: 0, now: 6 })).toEqual({
       kind: "complete",
     });
   });
