@@ -68,6 +68,7 @@ export type GatewayBehaviorGovernorModuleHostProvider = Readonly<{
 }>;
 
 const acquisitionCleanupLeases = new WeakMap<object, GatewayBehaviorGovernorModuleHostLease>();
+const PROCESS_INSTANCE_ID = `${process.pid}:${crypto.randomUUID()}`;
 
 export function takeGatewayBehaviorGovernorModuleHostAcquisitionCleanup(
   error: unknown,
@@ -198,6 +199,7 @@ async function acquireDescriptorHost(
         controller: runtime.adapter.controller,
         store: runtime.adapter.controller.store,
         capabilities: descriptor.capabilities,
+        processInstanceId: PROCESS_INSTANCE_ID,
         systemdInvocationId: process.env.INVOCATION_ID,
         seal: (value) =>
           crypto

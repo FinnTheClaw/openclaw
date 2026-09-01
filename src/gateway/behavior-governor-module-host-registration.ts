@@ -16,6 +16,7 @@ export type GatewayBehaviorGovernorModuleHostRegistration = Readonly<{
       controller: GovernorController;
       store: GovernorSqliteStore;
       capabilities: readonly GovernorCapabilityDefinition[];
+      processInstanceId: string;
       systemdInvocationId?: string;
       seal: (value: GovernorJsonValue) => string;
     }>,

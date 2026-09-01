@@ -28,7 +28,7 @@ function graph(satisfied: readonly string[] = []): readonly GovernorC02Criterion
     {
       criterionId: "c02-observe-b",
       action: "observe",
-      dependsOn: [],
+      dependsOn: ["c02-observe-a"],
       satisfied: done.has("c02-observe-b"),
     },
     {
@@ -142,7 +142,7 @@ describe("C02 simple-efficiency v1 policy", () => {
     const run = prepared();
     expect(evaluate(run, graph())).toMatchObject({
       requestId: "run-1",
-      eligibleCriterionIds: ["c02-observe-a", "c02-observe-b"],
+      eligibleCriterionIds: ["c02-observe-a"],
     });
     expect(evaluate(run, graph(["c02-observe-a"]))).toMatchObject({
       eligibleCriterionIds: ["c02-observe-b"],

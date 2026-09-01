@@ -1,0 +1,196 @@
+import { describe, expect, it, vi } from "vitest";
+import type { GovernorAgentLoopRunScope } from "./governor-agent-loop-types.js";
+import { C02_RESTART_REGISTRATION } from "./governor-c02-restart-guard.js";
+
+function run(sessionKey: string) {
+  return {
+    runId: "run-1",
+    sessionKey,
+    sessionId: "stable-session",
+    agentId: "main",
+    workspaceId: "workspace-1",
+    channel: "local",
+    accountId: "default",
+    principalId: "owner",
+    conversationId: "stable-session",
+    sourceMessageId: "stable-source",
+    sourceSequence: 1,
+    prompt: "C02 evaluation",
+    now: 10,
+  } as const;
+}
+
+function scope(ticket = Object.freeze({ opaque: {} })): GovernorAgentLoopRunScope {
+  return {
+    taskId: "task-1",
+    mode: "enforce",
+    disposition: "runnable",
+    beforeTool: vi.fn(() => ({ kind: "allow", ticket })),
+    afterTool: vi.fn(),
+    afterTurn: vi.fn(() => ({ kind: "complete" })),
+    interrupt: vi.fn(),
+    assertTerminal: vi.fn(),
+    governedTools: vi.fn(() => []),
+    dispose: vi.fn(),
+  };
+}
+
+function host(processInstanceId: string, events: Array<Record<string, unknown>>) {
+  const recordRuntimeEvent = vi.fn((event: Record<string, unknown>) => {
+    events.push({ eventType: event.eventType, payload: event.payload });
+  });
+  const registration = C02_RESTART_REGISTRATION.bind({
+    processInstanceId,
+    controller: { recordRuntimeEvent },
+    store: { listEvents: () => events },
+    capabilities: [],
+    seal: vi.fn(),
+  } as never);
+  return { registration, recordRuntimeEvent };
+}
+
+function wrap(
+  registration: ReturnType<typeof C02_RESTART_REGISTRATION.bind>,
+  sessionKey: string,
+  underlying = scope(),
+) {
+  return registration.wrap({
+    scope: underlying,
+    run: run(sessionKey),
+    config: {},
+    modulePlanDigest: "a".repeat(64),
+    hostDescriptorDigest: "b".repeat(64),
+  } as never);
+}
+
+async function observeB(guarded: GovernorAgentLoopRunScope, signal?: AbortSignal) {
+  const decision = guarded.beforeTool({
+    toolCallId: "tool-b",
+    toolName: "read",
+    args: { path: "/case/C02-F-001/beta.txt" },
+    tool: undefined,
+    now: 11,
+  });
+  if (decision.kind !== "allow") {
+    throw new Error("expected beta admission");
+  }
+  return guarded.afterTool({
+    ticket: decision.ticket,
+    toolCallId: "tool-b",
+    toolName: "read",
+    result: "beta",
+    isError: false,
+    ...(signal ? { signal } : {}),
+    now: 12,
+  });
+}
+
+describe("C02 restart guard", () => {
+  it("leaves every non-F evaluation scope unchanged", () => {
+    const events: Array<Record<string, unknown>> = [];
+    const test = host("process-1", events);
+    const underlying = scope();
+
+    expect(wrap(test.registration, "c02-eval:C02-A-001:111111111111111111111111", underlying)).toBe(
+      underlying,
+    );
+
+    test.registration.close();
+  });
+
+  it("persists restart-required state and fails closed without an abort signal", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const test = host("process-1", events);
+    const guarded = wrap(test.registration, "c02-eval:C02-F-001:222222222222222222222222");
+
+    await expect(observeB(guarded)).rejects.toThrow("C02_RESTART_SIGNAL_REQUIRED");
+    expect(guarded.disposition).toBe("checkpoint_pending");
+    expect(events).toContainEqual({
+      eventType: "runtime_tool_observed",
+      payload: {
+        kind: "c02_restart_required",
+        moduleId: "c02-simple-efficiency",
+        processInstanceId: "process-1",
+      },
+    });
+
+    guarded.dispose();
+    test.registration.close();
+  });
+
+  it("blocks same-process re-resolution after B", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const firstHost = host("process-1", events);
+    const first = wrap(firstHost.registration, "c02-eval:C02-F-001:333333333333333333333333");
+    await expect(observeB(first)).rejects.toThrow("C02_RESTART_SIGNAL_REQUIRED");
+    first.dispose();
+
+    const sameProcess = wrap(firstHost.registration, "c02-eval:C02-F-001:333333333333333333333333");
+    expect(sameProcess.disposition).toBe("checkpoint_pending");
+    expect(
+      sameProcess.beforeTool({
+        toolCallId: "tool-aggregate",
+        toolName: "exec",
+        args: { command: "/usr/bin/python3 -c 'print(3)'" },
+        tool: undefined,
+        now: 13,
+      }),
+    ).toEqual({ kind: "block", reasonCode: "C02_RESTART_REQUIRED" });
+
+    sameProcess.dispose();
+    firstHost.registration.close();
+  });
+
+  it("allows resume only under a changed gateway process instance", async () => {
+    const events: Array<Record<string, unknown>> = [
+      {
+        eventType: "runtime_tool_observed",
+        payload: {
+          kind: "c02_restart_required",
+          moduleId: "c02-simple-efficiency",
+          processInstanceId: "process-1",
+        },
+      },
+    ];
+    const restartedHost = host("process-2", events);
+    const resumed = wrap(restartedHost.registration, "c02-eval:C02-F-001:444444444444444444444444");
+
+    expect(resumed.disposition).toBe("runnable");
+    expect(
+      resumed.beforeTool({
+        toolCallId: "tool-aggregate",
+        toolName: "exec",
+        args: { command: "/usr/bin/python3 -c 'print(3)'" },
+        tool: undefined,
+        now: 13,
+      }),
+    ).toMatchObject({ kind: "allow" });
+    expect(events).toContainEqual({
+      eventType: "runtime_tool_observed",
+      payload: {
+        kind: "c02_restart_resumed",
+        moduleId: "c02-simple-efficiency",
+        processInstanceId: "process-2",
+        requiredProcessInstanceId: "process-1",
+      },
+    });
+
+    resumed.dispose();
+    restartedHost.registration.close();
+  });
+
+  it("settles a pending restart wait when its scope closes", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const test = host("process-1", events);
+    const guarded = wrap(test.registration, "c02-eval:C02-F-001:555555555555555555555555");
+    const controller = new AbortController();
+    const pending = observeB(guarded, controller.signal);
+    await Promise.resolve();
+
+    expect(guarded.disposition).toBe("checkpoint_pending");
+    guarded.dispose();
+    await pending;
+
+    test.registration.close();
+  });
+});

@@ -89,7 +89,7 @@ describe("gateway behavior governor module host acquisition rollback", () => {
     expect(cleanup).toBeDefined();
     expect(() => cleanup?.close()).toThrow(closeError);
     expect(state.clearSigner).toHaveBeenCalledTimes(2);
-    cleanup?.close();
+    await cleanup?.close();
     expect(state.closeRuntime).toHaveBeenCalledTimes(3);
     expect(state.clearSigner).toHaveBeenCalledTimes(3);
   });
@@ -144,7 +144,9 @@ describe("gateway behavior governor module host acquisition rollback", () => {
       bind,
     } as never);
     expect(bind).toHaveBeenCalledOnce();
-    lease.close();
+    const registrationHost = bind.mock.calls[0]?.[0] as { processInstanceId?: string } | undefined;
+    expect(registrationHost?.processInstanceId).toMatch(/^[0-9]+:[0-9a-f-]{36}$/u);
+    await lease.close();
     expect(close).toHaveBeenCalledOnce();
   });
 });

@@ -8,7 +8,11 @@ export const C02_COMPLETION_VERIFICATION = "none" as const;
 
 export const C02_CRITERIA_TEMPLATE = Object.freeze([
   Object.freeze({ criterionId: "c02-observe-a", action: "observe", dependsOn: Object.freeze([]) }),
-  Object.freeze({ criterionId: "c02-observe-b", action: "observe", dependsOn: Object.freeze([]) }),
+  Object.freeze({
+    criterionId: "c02-observe-b",
+    action: "observe",
+    dependsOn: Object.freeze(["c02-observe-a"]),
+  }),
   Object.freeze({
     criterionId: "c02-aggregate",
     action: "aggregate",
@@ -138,7 +142,7 @@ function validText(value: string, max: number): boolean {
     value.length > 0 &&
     value.length <= max &&
     value === value.trim() &&
-    ![...value].some((character) => {
+    !Array.from(value).some((character) => {
       const code = character.codePointAt(0) ?? 0;
       return code <= 31 || code === 127;
     })
