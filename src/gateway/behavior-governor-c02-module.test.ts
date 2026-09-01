@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import type {
   GovernorAgentLoopRunInput,
   GovernorAgentLoopRunScope,
@@ -89,61 +92,76 @@ describe("C02 behavior governor module", () => {
     await runtime.close();
   });
 
-  it("preserves the F restart checkpoint without the generic host registration", async () => {
+  it("persists the F checkpoint across a module reload without the generic host registration", async () => {
     const session = `${C02_EVALUATION_SESSION_PREFIX}C02-F-001:fedcba9876543210fedcba98`;
-    const firstRuntime = await createRuntime();
-    const first = required(
-      firstRuntime.agentLoop?.resolveRunScope({
-        activation: ACTIVATION,
-        run: run(session, "before-restart"),
-      }),
-    );
-    for (const [toolName, args] of [
-      ["read", { path: "/case/C02-F-001/alpha.txt" }],
-      ["read", { path: "/case/C02-F-001/beta.txt" }],
-    ] as const) {
-      const allowed = first.beforeTool({
-        toolCallId: toolName,
-        toolName,
-        args,
-        tool: undefined,
-        now: 11,
-      });
-      expect(allowed.kind).toBe("allow");
-      await first.afterTool({
-        ...(allowed.kind === "allow" ? { ticket: allowed.ticket } : {}),
-        toolCallId: toolName,
-        toolName,
-        result: "ok",
-        isError: false,
-        now: 12,
-      });
-    }
-    expect(first.disposition).toBe("checkpoint_pending");
-    expect(first.afterTurn({ assistantText: "", toolCallCount: 1, now: 13 })).toEqual({
-      kind: "interrupt",
-      reasonCode: "C02_RESTART_REQUIRED",
-    });
-    first.dispose();
-    await firstRuntime.close();
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "c02-module-reload-"));
+    const priorStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    try {
+      vi.resetModules();
+      const firstModule = await import("./behavior-governor-c02-module.js");
+      const firstFactory = await firstModule.C02_BEHAVIOR_GOVERNOR_MODULE.load();
+      const firstRuntime = await firstFactory(ACTIVATION);
+      const first = required(
+        firstRuntime.agentLoop?.resolveRunScope({
+          activation: ACTIVATION,
+          run: run(session, "before-restart"),
+        }),
+      );
+      for (const [toolName, args] of [
+        ["read", { path: "/case/C02-F-001/alpha.txt" }],
+        ["read", { path: "/case/C02-F-001/beta.txt" }],
+      ] as const) {
+        const allowed = first.beforeTool({
+          toolCallId: toolName,
+          toolName,
+          args,
+          tool: undefined,
+          now: 11,
+        });
+        expect(allowed.kind).toBe("allow");
+        await first.afterTool({
+          ...(allowed.kind === "allow" ? { ticket: allowed.ticket } : {}),
+          toolCallId: toolName,
+          toolName,
+          result: "ok",
+          isError: false,
+          now: 12,
+        });
+      }
+      expect(first.disposition).toBe("checkpoint_pending");
+      first.dispose();
+      await firstRuntime.close();
 
-    const resumedRuntime = await createRuntime();
-    const resumed = required(
-      resumedRuntime.agentLoop?.resolveRunScope({
-        activation: ACTIVATION,
-        run: run(session, "after-restart"),
-      }),
-    );
-    expect(
-      resumed.beforeTool({
-        toolCallId: "aggregate",
-        toolName: "exec",
-        args: { command: "/usr/bin/python3 -c 'print(3)'" },
-        tool: undefined,
-        now: 14,
-      }),
-    ).toMatchObject({ kind: "allow" });
-    resumed.dispose();
-    await resumedRuntime.close();
+      vi.resetModules();
+      const resumedModule = await import("./behavior-governor-c02-module.js");
+      const resumedFactory = await resumedModule.C02_BEHAVIOR_GOVERNOR_MODULE.load();
+      const resumedRuntime = await resumedFactory(ACTIVATION);
+      const resumed = required(
+        resumedRuntime.agentLoop?.resolveRunScope({
+          activation: ACTIVATION,
+          run: run(session, "after-restart"),
+        }),
+      );
+      expect(
+        resumed.beforeTool({
+          toolCallId: "aggregate",
+          toolName: "exec",
+          args: { command: "/usr/bin/python3 -c 'print(3)'" },
+          tool: undefined,
+          now: 14,
+        }),
+      ).toMatchObject({ kind: "allow" });
+      resumed.dispose();
+      await resumedRuntime.close();
+    } finally {
+      vi.resetModules();
+      if (priorStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = priorStateDir;
+      }
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });

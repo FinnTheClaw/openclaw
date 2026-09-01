@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type {
   GovernorAgentLoopRunInput,
   GovernorAgentLoopRunScope,
@@ -49,6 +52,22 @@ function scope(
   });
 }
 
+function markerPaths(stateDir: string, item: C02Evaluation) {
+  const directory = path.join(stateDir, "governor", "c02-eval-restarts");
+  const base = `${item.caseId.toLowerCase()}-${item.family.toLowerCase()}-${item.requestNonce}`;
+  return {
+    directory,
+    pending: path.join(directory, `${base}.pending.json`),
+    consumed: path.join(directory, `${base}.consumed.json`),
+  };
+}
+
+function writeRawPendingMarker(stateDir: string, item: C02Evaluation, payload: unknown): void {
+  const paths = markerPaths(stateDir, item);
+  fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(paths.pending, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
+}
+
 async function complete(
   scope: GovernorAgentLoopRunScope,
   toolName: string,
@@ -77,6 +96,16 @@ async function complete(
 }
 
 describe("C02 local evaluator", () => {
+  let stateDir: string;
+
+  beforeEach(() => {
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "c02-evaluator-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+
   it("preserves A ordered completion", async () => {
     const item = evaluation("A", "111111111111111111111111");
     const value = scope(item);
@@ -173,8 +202,7 @@ describe("C02 local evaluator", () => {
 
   it("preserves F with one strict beta-complete marker and one resume", async () => {
     const item = evaluation("F", "777777777777777777777777");
-    const markers = createC02EvaluationRestartMarkers();
-    const first = scope(item, markers);
+    const first = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
     await complete(first, "read", { path: item.alphaPath }, 11);
     await complete(first, "read", { path: item.betaPath }, 13);
     expect(first.disposition).toBe("checkpoint_pending");
@@ -193,15 +221,138 @@ describe("C02 local evaluator", () => {
     ).toEqual({ kind: "block", reasonCode: "C02_RESTART_REQUIRED" });
     first.dispose();
 
-    const resumed = scope(item, markers);
+    const resumed = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
     await complete(resumed, "exec", { command: "/usr/bin/python3 -c 'print(3)'" }, 17);
     expect(resumed.afterTurn({ assistantText: "", toolCallCount: 1, now: 19 })).toEqual({
       kind: "complete",
     });
     resumed.dispose();
 
-    const replay = scope(item, markers);
+    const replay = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
     expect(replay.disposition).toBe("checkpoint_pending");
     replay.dispose();
+  });
+
+  it("allows only one concurrent F scope to claim the restart marker", async () => {
+    const item = evaluation("F", "888888888888888888888888");
+    const first = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
+    const second = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
+    await complete(first, "read", { path: item.alphaPath }, 11);
+    await complete(second, "read", { path: item.alphaPath }, 12);
+    const firstBeta = first.beforeTool({
+      toolCallId: "first-beta",
+      toolName: "read",
+      args: { path: item.betaPath },
+      tool: undefined,
+      now: 13,
+    });
+    const secondBeta = second.beforeTool({
+      toolCallId: "second-beta",
+      toolName: "read",
+      args: { path: item.betaPath },
+      tool: undefined,
+      now: 14,
+    });
+    expect(firstBeta.kind).toBe("allow");
+    expect(secondBeta.kind).toBe("allow");
+    await first.afterTool({
+      ...(firstBeta.kind === "allow" ? { ticket: firstBeta.ticket } : {}),
+      toolCallId: "first-beta",
+      toolName: "read",
+      result: "not retained",
+      isError: false,
+      now: 15,
+    });
+    expect(
+      second.afterTool({
+        ...(secondBeta.kind === "allow" ? { ticket: secondBeta.ticket } : {}),
+        toolCallId: "second-beta",
+        toolName: "read",
+        result: "not retained",
+        isError: false,
+        now: 16,
+      }),
+    ).toBeUndefined();
+    expect(second.disposition).toBe("checkpoint_pending");
+    expect(second.afterTurn({ assistantText: "", toolCallCount: 1, now: 17 })).toEqual({
+      kind: "interrupt",
+      reasonCode: "C02_RESTART_REQUIRED",
+    });
+    const resumed = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
+    expect(
+      resumed.beforeTool({
+        toolCallId: "aggregate",
+        toolName: "exec",
+        args: { command: "/usr/bin/python3 -c 'print(3)'" },
+        tool: undefined,
+        now: 18,
+      }),
+    ).toMatchObject({ kind: "allow" });
+    first.dispose();
+    second.dispose();
+    resumed.dispose();
+  });
+
+  it.each([
+    {
+      name: "wrong family",
+      payload: (item: C02Evaluation) => ({
+        kind: "c02-eval-restart",
+        phase: "beta-complete",
+        caseId: item.caseId,
+        family: "A",
+        requestNonce: item.requestNonce,
+      }),
+    },
+    {
+      name: "wrong nonce",
+      payload: (item: C02Evaluation) => ({
+        kind: "c02-eval-restart",
+        phase: "beta-complete",
+        caseId: item.caseId,
+        family: "F",
+        requestNonce: "999999999999999999999999",
+      }),
+    },
+    {
+      name: "stale phase",
+      payload: (item: C02Evaluation) => ({
+        kind: "c02-eval-restart",
+        phase: "alpha-complete",
+        caseId: item.caseId,
+        family: "F",
+        requestNonce: item.requestNonce,
+      }),
+    },
+    { name: "malformed JSON", payload: () => "not-json" },
+  ])("fails closed for a $name marker", ({ payload }) => {
+    const item = evaluation("F", "aaaaaaaaaaaaaaaaaaaaaaaa");
+    const paths = markerPaths(stateDir, item);
+    fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
+    if (payload === "not-json") {
+      fs.writeFileSync(paths.pending, payload, { encoding: "utf8", mode: 0o600 });
+    } else {
+      writeRawPendingMarker(stateDir, item, payload(item));
+    }
+    const value = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
+    expect(value.disposition).toBe("checkpoint_pending");
+    value.dispose();
+  });
+
+  it("fails closed for a symlink marker and rejects a duplicate arm", () => {
+    const item = evaluation("F", "bbbbbbbbbbbbbbbbbbbbbbbb");
+    const paths = markerPaths(stateDir, item);
+    fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
+    const target = path.join(stateDir, "marker-target.json");
+    fs.writeFileSync(target, "{}", "utf8");
+    fs.symlinkSync(target, paths.pending);
+    const blocked = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
+    expect(blocked.disposition).toBe("checkpoint_pending");
+    blocked.dispose();
+
+    fs.unlinkSync(paths.pending);
+    const markers = createC02EvaluationRestartMarkers({ stateDir });
+    expect(markers.arm(item, 0)).toBe(true);
+    expect(markers.arm(item, 0)).toBe(false);
   });
 });
