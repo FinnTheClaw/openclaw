@@ -26,6 +26,7 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
     throw new Error("GOVERNOR_C02_MODE_UNQUALIFIED");
   }
   const scopes = new Set<GovernorAgentLoopRunScope>();
+  const activeEvaluations = new Set<string>();
   let closed = false;
 
   const retain = (scope: GovernorAgentLoopRunScope): GovernorAgentLoopRunScope => {
@@ -44,13 +45,21 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
           ? parseC02EvaluationSession(requestSessionKey)
           : undefined;
         if (evaluation) {
+          const identityReserved = !activeEvaluations.has(evaluation.stableSessionId);
+          if (identityReserved) {
+            activeEvaluations.add(evaluation.stableSessionId);
+          }
           let scope: GovernorAgentLoopRunScope;
           scope = createGovernorC02EvaluationScope({
             run: input.run,
             evaluation,
             restartMarkers: evaluationRestartMarkers,
+            identityReserved,
             onDispose() {
               scopes.delete(scope);
+              if (identityReserved) {
+                activeEvaluations.delete(evaluation.stableSessionId);
+              }
             },
           });
           return retain(scope);

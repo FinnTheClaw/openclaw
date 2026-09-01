@@ -202,6 +202,38 @@ describe("C02 local evaluator", () => {
     value.dispose();
   });
 
+  it("reserves one in-flight stage per scope", async () => {
+    const item = evaluation("A", "454545454545454545454545");
+    const value = scope(item);
+    const first = value.beforeTool({
+      toolCallId: "alpha-first",
+      toolName: "read",
+      args: { path: item.alphaPath },
+      tool: undefined,
+      now: 11,
+    });
+    expect(first.kind).toBe("allow");
+    expect(
+      value.beforeTool({
+        toolCallId: "alpha-duplicate",
+        toolName: "read",
+        args: { path: item.alphaPath },
+        tool: undefined,
+        now: 12,
+      }),
+    ).toEqual({ kind: "block", reasonCode: "C02_ACTION_IN_FLIGHT" });
+    await value.afterTool({
+      ...(first.kind === "allow" ? { ticket: first.ticket } : {}),
+      toolCallId: "alpha-first",
+      toolName: "read",
+      result: "not retained",
+      isError: true,
+      now: 13,
+    });
+    await complete(value, "read", { path: item.alphaPath }, 14);
+    value.dispose();
+  });
+
   it("preserves E fixture isolation", () => {
     const first = evaluation("E", "555555555555555555555555");
     const second = evaluation("E", "666666666666666666666666", "002");
@@ -334,15 +366,15 @@ describe("C02 local evaluator", () => {
         requestNonce: item.requestNonce,
       }),
     },
-    { name: "malformed JSON", payload: () => "not-json" },
-  ])("fails closed for a $name marker", ({ payload }) => {
+    { name: "malformed JSON", payload: () => undefined, raw: "not-json" },
+  ])("fails closed for a $name marker", ({ payload, raw }) => {
     const item = evaluation("F", "aaaaaaaaaaaaaaaaaaaaaaaa");
     const paths = markerPaths(stateDir, item);
     fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
-    if (payload === "not-json") {
-      fs.writeFileSync(paths.pending, payload, { encoding: "utf8", mode: 0o600 });
+    if (raw !== undefined) {
+      fs.writeFileSync(paths.pending, raw, { encoding: "utf8", mode: 0o600 });
     } else {
-      writeRawPendingMarker(stateDir, item, payload(item));
+      writeRawPendingMarker(stateDir, item, payload!(item));
     }
     const value = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
     expect(value.disposition).toBe("checkpoint_pending");
@@ -396,6 +428,18 @@ describe("C02 local evaluator", () => {
     expect(fs.existsSync(paths.pending)).toBe(true);
   });
 
+  it("treats a link-before-unlink crash pair as completed and repairs pending lazily", () => {
+    const item = evaluation("F", "dededededededededededede");
+    const markers = createC02EvaluationRestartMarkers({ stateDir });
+    expect(markers.arm(item, 0)).toBe(true);
+    const paths = markerPaths(stateDir, item);
+    fs.linkSync(paths.pending, paths.completed);
+
+    expect(markers.start(item)).toMatchObject({ blocked: true });
+    expect(fs.existsSync(paths.pending)).toBe(false);
+    expect(fs.existsSync(paths.completed)).toBe(true);
+  });
+
   it.each(["state root", "governor ancestor"])("fails closed for a symlinked %s", (kind) => {
     const item = evaluation("F", "eeeeeeeeeeeeeeeeeeeeeeee");
     const target = fs.mkdtempSync(path.join(os.tmpdir(), "c02-symlink-target-"));
@@ -423,18 +467,25 @@ describe("C02 local evaluator", () => {
     expect(markers.start(item)).toMatchObject({ generation: 1, resumed: true, blocked: false });
   });
 
-  it("cleans exact orphan temporaries and evicts only old completed markers", () => {
+  it("cleans only stale dead-writer temps and evicts only old completed markers", () => {
     const first = evaluation("F", "000000000000000000000001");
     const paths = markerPaths(stateDir, first);
     fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
     const orphan = path.join(
       paths.directory,
-      ".c02-f-001-000000000000000000000001.99.123e4567-e89b-12d3-a456-426614174000.tmp",
+      ".c02-f-001-000000000000000000000001.999999.123e4567-e89b-12d3-a456-426614174000.tmp",
     );
     fs.writeFileSync(orphan, "orphan", { encoding: "utf8", mode: 0o600 });
+    fs.utimesSync(orphan, new Date(0), new Date(0));
+    const live = path.join(
+      paths.directory,
+      `.c02-f-001-000000000000000000000001.${process.pid}.123e4567-e89b-12d3-a456-426614174001.tmp`,
+    );
+    fs.writeFileSync(live, "live", { encoding: "utf8", mode: 0o600 });
     const markers = createC02EvaluationRestartMarkers({ stateDir });
     expect(markers.arm(first, 0)).toBe(true);
     expect(fs.existsSync(orphan)).toBe(false);
+    expect(fs.existsSync(live)).toBe(true);
     expect(fs.statSync(paths.directory).mode & 0o077).toBe(0);
     expect(fs.statSync(paths.pending).mode & 0o077).toBe(0);
 
@@ -450,6 +501,8 @@ describe("C02 local evaluator", () => {
     }
     const retained = evaluation("F", (130).toString(16).padStart(24, "0"), "130");
     expect(markers.start(retained)).toMatchObject({ blocked: true });
+    const evicted = evaluation("F", (2).toString(16).padStart(24, "0"), "002");
+    expect(markers.start(evicted)).toMatchObject({ generation: 0, blocked: false });
     const markerFiles = fs
       .readdirSync(paths.directory)
       .filter((name) => name.endsWith(".pending.json") || name.endsWith(".completed.json"));
