@@ -1003,6 +1003,41 @@ function dependencySpecForLockPath(packages, lockPath, dependencyName) {
   );
 }
 
+function canonicalizeResolutionInput(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => canonicalizeResolutionInput(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .toSorted(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalizeResolutionInput(entry)]),
+  );
+}
+
+function resolutionInputsForRoot(metadata) {
+  return JSON.stringify(
+    ["dependencies", "optionalDependencies", "overrides"].map((field) => [
+      field,
+      canonicalizeResolutionInput(metadata?.[field] ?? {}),
+    ]),
+  );
+}
+
+function canPreserveCurrentResolvedGraph(generatedPackages, currentPackages, pnpmLockPackages) {
+  const generatedRoot = generatedPackages?.[""];
+  const currentRoot = currentPackages?.[""];
+  if (!generatedRoot || !currentRoot) {
+    return false;
+  }
+  if (resolutionInputsForRoot(generatedRoot) !== resolutionInputsForRoot(currentRoot)) {
+    return false;
+  }
+  return collectPnpmLockViolations({ packages: currentPackages }, pnpmLockPackages).length === 0;
+}
+
 function restoreCurrentPnpmLockedPackages(
   generated,
   current,
@@ -1019,6 +1054,14 @@ function restoreCurrentPnpmLockedPackages(
     !currentPackages ||
     typeof currentPackages !== "object"
   ) {
+    return generated;
+  }
+
+  if (canPreserveCurrentResolvedGraph(generatedPackages, currentPackages, pnpmLockPackages)) {
+    generated.packages = {
+      "": generatedPackages[""],
+      ...Object.fromEntries(Object.entries(currentPackages).filter(([lockPath]) => lockPath !== "")),
+    };
     return generated;
   }
 

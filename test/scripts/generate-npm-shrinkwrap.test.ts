@@ -290,6 +290,52 @@ describe("generate-npm-shrinkwrap", () => {
     });
   });
 
+  it("preserves a validated current leaf graph across metadata-only root changes", () => {
+    const generated = {
+      packages: {
+        "": {
+          version: "2026.7.1-39",
+          dependencies: { "lru-cache": "^11.5.0" },
+          peerDependencies: { openclaw: ">=2026.7.1-0" },
+        },
+        "node_modules/lru-cache": {
+          version: "11.5.1",
+          resolved: "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.1.tgz",
+          integrity: "sha512-resolver-churn",
+        },
+      },
+    };
+    const current = {
+      packages: {
+        "": {
+          version: "2026.7.1",
+          dependencies: { "lru-cache": "^11.5.0" },
+          peerDependencies: { openclaw: ">=2026.7.1" },
+        },
+        "node_modules/lru-cache": {
+          version: "11.5.0",
+          resolved: "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.0.tgz",
+          integrity: "sha512-current",
+        },
+        "node_modules/lru-memoizer/node_modules/lru-cache": {
+          version: "6.0.0",
+          resolved: "https://registry.npmjs.org/lru-cache/-/lru-cache-6.0.0.tgz",
+          integrity: "sha512-nested-current",
+        },
+      },
+    };
+    const pnpmPackages = new Set(["lru-cache@11.5.0", "lru-cache@6.0.0"]);
+
+    expect(restoreCurrentPnpmLockedPackages(generated, current, pnpmPackages)).toEqual({
+      packages: {
+        "": generated.packages[""],
+        "node_modules/lru-cache": current.packages["node_modules/lru-cache"],
+        "node_modules/lru-memoizer/node_modules/lru-cache":
+          current.packages["node_modules/lru-memoizer/node_modules/lru-cache"],
+      },
+    });
+  });
+
   it("does not restore versions that no longer satisfy the dependency edge", () => {
     const generated = {
       packages: {
