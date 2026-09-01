@@ -280,6 +280,7 @@ type ApiKeyInfo = ResolvedProviderAuth;
 const MAX_SAME_MODEL_IDLE_TIMEOUT_RETRIES = 1;
 const EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS = 30_000;
 const EMBEDDED_RUN_LANE_HEARTBEAT_MS = EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS / 2;
+const C02_EVALUATION_MAX_OUTPUT_TOKENS = 512;
 const MID_TURN_PRECHECK_CONTINUATION_PROMPT =
   "Continue from the current transcript after the latest tool result. Do not repeat the original user request, and do not rerun completed tools unless the transcript shows they are still needed.";
 const COMPLETED_TOOL_RESULT_CONTINUATION_PROMPT =
@@ -288,6 +289,22 @@ const MAX_COMPLETED_TOOL_RESULT_CONTINUATIONS = 2;
 const READ_ONLY_TOOL_ERROR_CONTINUATION_PROMPT =
   "The latest read-only tool call failed, and its error is recorded in the current transcript. Diagnose the concrete error and continue with one corrected or bounded alternative; do not repeat the identical failing call. Produce a user-visible answer after recovery, or explicitly report the remaining blocker if the corrected alternative also fails.";
 const MAX_READ_ONLY_TOOL_ERROR_CONTINUATIONS = 1;
+
+export function resolveC02EvaluationStreamParams(
+  sessionId: string,
+  streamParams: RunEmbeddedAgentParams["streamParams"],
+): RunEmbeddedAgentParams["streamParams"] {
+  if (!isC02EvaluationRunSession(sessionId)) {
+    return streamParams;
+  }
+  return {
+    ...streamParams,
+    maxTokens: Math.min(
+      streamParams?.maxTokens ?? C02_EVALUATION_MAX_OUTPUT_TOKENS,
+      C02_EVALUATION_MAX_OUTPUT_TOKENS,
+    ),
+  };
+}
 const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
   "The previous attempt compacted the conversation context before producing a final user-visible answer. Continue from the compacted transcript and produce the final answer now. Do not restart from scratch, do not repeat completed work, and do not rerun tools unless the transcript clearly lacks required evidence.";
 const NO_REAL_CONVERSATION_MESSAGES_REASON = "no real conversation messages";
@@ -2602,7 +2619,7 @@ async function runEmbeddedAgentInternal(
             extraSystemPrompt: params.extraSystemPrompt,
             sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
             inputProvenance: params.inputProvenance,
-            streamParams: params.streamParams,
+            streamParams: resolveC02EvaluationStreamParams(activeSessionId, params.streamParams),
             modelRun: params.modelRun,
             promptMode: params.promptMode,
             ownerNumbers: params.ownerNumbers,
