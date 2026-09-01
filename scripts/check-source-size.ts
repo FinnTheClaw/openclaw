@@ -32,6 +32,7 @@ const GENERATED_UNTRACKED_ROOTS = new Set([
   "build",
   "coverage",
   "dist",
+  "dist-runtime",
   "node_modules",
 ]);
 
