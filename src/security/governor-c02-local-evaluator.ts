@@ -62,14 +62,14 @@ export function createGovernorC02EvaluationScope(params: {
   evaluation: C02Evaluation;
   restartMarkers: C02EvaluationRestartMarkers;
   identityReserved?: boolean;
-  actionLedger?: { stage: number };
+  actionLedger?: { stage: number; reservedStage?: number };
   onDispose?: (scope: GovernorAgentLoopRunScope) => void;
 }): GovernorAgentLoopRunScope {
   const restart = params.restartMarkers.start(params.evaluation);
   const pending = new WeakMap<object, number>();
   let installedTools: readonly AgentTool[] = Object.freeze([]);
   let stage = Math.max(restart.resumed ? 2 : 0, params.actionLedger?.stage ?? 0);
-  let inFlightStage: number | undefined;
+  let inFlightStage: number | undefined = params.actionLedger?.reservedStage;
   let turns = 0;
   let pressurePending = false;
   let pressureIssued = false;
@@ -96,7 +96,7 @@ export function createGovernorC02EvaluationScope(params: {
       if (checkpointPending()) {
         return { kind: "block", reasonCode: "C02_RESTART_REQUIRED" };
       }
-      if (inFlightStage !== undefined) {
+      if (inFlightStage !== undefined || params.actionLedger?.reservedStage !== undefined) {
         return { kind: "block", reasonCode: "C02_ACTION_IN_FLIGHT" };
       }
       const action = actionFor(params.evaluation, request.toolName, request.args);
@@ -113,6 +113,9 @@ export function createGovernorC02EvaluationScope(params: {
       const opaque = {};
       pending.set(opaque, stage);
       inFlightStage = stage;
+      if (params.actionLedger) {
+        params.actionLedger.reservedStage = stage;
+      }
       return { kind: "allow", ticket: Object.freeze({ opaque }) };
     },
     afterTool(observation) {
@@ -120,10 +123,17 @@ export function createGovernorC02EvaluationScope(params: {
       if (observation.ticket) {
         pending.delete(observation.ticket.opaque);
       }
-      if (admittedStage === undefined || admittedStage !== inFlightStage) {
+      if (
+        admittedStage === undefined ||
+        admittedStage !== inFlightStage ||
+        admittedStage !== params.actionLedger?.reservedStage
+      ) {
         return;
       }
       inFlightStage = undefined;
+      if (params.actionLedger) {
+        params.actionLedger.reservedStage = undefined;
+      }
       if (observation.isError || admittedStage !== stage) {
         return;
       }

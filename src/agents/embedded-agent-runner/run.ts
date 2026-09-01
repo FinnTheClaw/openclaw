@@ -1846,7 +1846,7 @@ async function runEmbeddedAgentInternal(
         provider,
         modelId,
       });
-      const executionContract = strictAgenticActive ? "strict-agentic" : "default";
+      let executionContract = strictAgenticActive ? "strict-agentic" : "default";
       const maxReasoningOnlyRetryAttempts = DEFAULT_REASONING_ONLY_RETRY_LIMIT;
       const maxEmptyResponseRetryAttempts = DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT;
 
@@ -2410,6 +2410,9 @@ async function runEmbeddedAgentInternal(
             prompt,
             now: Date.now(),
           });
+          if (governorAgentLoopScope?.taskId.startsWith("c02-eval-session:")) {
+            executionContract = "strict-agentic";
+          }
           if (governorAgentLoopScope?.disposition === "completed_replay") {
             governorAgentLoopScope.dispose();
             return createEmbeddedCompletedReplayResult({
