@@ -10,6 +10,10 @@ import { isMainThread, parentPort, Worker, workerData } from "node:worker_thread
 import { parse as parseYaml } from "yaml";
 import { listChangedPathsFromGit, listStagedChangedPaths } from "./changed-lanes.mjs";
 import { resolveNpmRunner } from "./npm-runner.mjs";
+import {
+  restoreCurrentPnpmLockedPackages as restorePnpmLockedPackages,
+  shrinkwrapMatchesCurrentPnpmLockTopology,
+} from "./npm-shrinkwrap-provenance.mjs";
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u;
@@ -754,7 +758,14 @@ function generateShrinkwrap(packageDir, options = {}) {
       ),
       currentShrinkwrap,
       pnpmLockPackages,
-      { preserveCurrentResolvedGraph: shrinkwrapMatchesCurrentPnpmLockTopology(packageDir) },
+      {
+        preserveCurrentResolvedGraph: shrinkwrapMatchesCurrentPnpmLockTopology({
+          rootDir: ROOT_DIR,
+          packageDir,
+          packageLabel: packageLabel(packageDir),
+          shrinkwrapPath: shrinkwrapPathForPackage(packageDir),
+        }),
+      },
     );
     assertShrinkwrapMatchesPnpmLock(generated);
     return `${JSON.stringify(generated, null, 2)}\n`;
@@ -1006,224 +1017,23 @@ function dependencySpecForLockPath(packages, lockPath, dependencyName) {
   );
 }
 
-function canonicalizeResolutionInput(value) {
-  if (Array.isArray(value)) {
-    return value.map((entry) => canonicalizeResolutionInput(entry));
-  }
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  return Object.fromEntries(
-    Object.entries(value)
-      .toSorted(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => [key, canonicalizeResolutionInput(entry)]),
-  );
-}
-
-function resolutionInputsForRoot(metadata) {
-  return JSON.stringify(
-    ["dependencies", "optionalDependencies", "overrides"].map((field) => [
-      field,
-      canonicalizeResolutionInput(metadata?.[field] ?? {}),
-    ]),
-  );
-}
-
-function pnpmDependencyVersion(value) {
-  if (typeof value === "string") {
-    return value;
-  }
-  return typeof value?.version === "string" ? value.version : null;
-}
-
-function pnpmResolutionTopology(lockfile, importerPath) {
-  const importer = lockfile?.importers?.[importerPath];
-  if (!importer || typeof importer !== "object") {
-    return null;
-  }
-  const snapshots = lockfile.snapshots ?? {};
-  const packages = lockfile.packages ?? {};
-  const collectedSnapshots = {};
-  const collectedPackages = {};
-  const pending = [];
-  const seen = new Set();
-  const collectDependencies = (metadata) => {
-    for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-      for (const [name, value] of Object.entries(metadata?.[field] ?? {})) {
-        const version = pnpmDependencyVersion(value);
-        if (version && !version.startsWith("link:") && !version.startsWith("workspace:")) {
-          pending.push([name, version]);
-        }
-      }
-    }
-  };
-  collectDependencies(importer);
-
-  while (pending.length > 0) {
-    const [name, version] = pending.pop();
-    const snapshotKey = snapshots[`${name}@${version}`] ? `${name}@${version}` : version;
-    if (seen.has(snapshotKey)) {
-      continue;
-    }
-    seen.add(snapshotKey);
-    const snapshot = snapshots[snapshotKey];
-    if (!snapshot || typeof snapshot !== "object") {
-      return null;
-    }
-    collectedSnapshots[snapshotKey] = snapshot;
-    const packageKey = snapshotKey.replace(/\(.+$/u, "");
-    if (packages[packageKey]) {
-      collectedPackages[packageKey] = packages[packageKey];
-    }
-    collectDependencies(snapshot);
-  }
-
-  return JSON.stringify(
-    canonicalizeResolutionInput({
-      importer,
-      packages: collectedPackages,
-      snapshots: collectedSnapshots,
-    }),
-  );
-}
-
-function shrinkwrapLeaves(shrinkwrapText) {
-  const packages = JSON.parse(shrinkwrapText)?.packages ?? {};
-  return canonicalizeResolutionInput(
-    Object.fromEntries(Object.entries(packages).filter(([lockPath]) => lockPath !== "")),
-  );
-}
-
-function provenanceShrinkwrapRevision(relativeShrinkwrapPath) {
-  const git = (args) =>
-    execFileSync("git", args, {
-      cwd: ROOT_DIR,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  const candidateRevision = git(["log", "-1", "--format=%H", "HEAD", "--", relativeShrinkwrapPath]);
-  if (!/^[0-9a-f]{40}$/u.test(candidateRevision)) {
-    return null;
-  }
-  const changedPaths = git(["diff-tree", "--no-commit-id", "--name-only", "-r", candidateRevision]);
-  if (!changedPaths.split("\n").includes("scripts/generate-npm-shrinkwrap.mjs")) {
-    return candidateRevision;
-  }
-  const sourceRevision = git([
-    "log",
-    "-1",
-    "--format=%H",
-    `${candidateRevision}^`,
-    "--",
-    relativeShrinkwrapPath,
-  ]);
-  return /^[0-9a-f]{40}$/u.test(sourceRevision) ? sourceRevision : null;
-}
-
-function shrinkwrapMatchesCurrentPnpmLockTopology(packageDir) {
-  const shrinkwrapPath = shrinkwrapPathForPackage(packageDir);
-  const relativeShrinkwrapPath = path.relative(ROOT_DIR, shrinkwrapPath).replaceAll(path.sep, "/");
-  if (!relativeShrinkwrapPath || relativeShrinkwrapPath.startsWith("../")) {
-    return false;
-  }
-
-  try {
-    const revision = provenanceShrinkwrapRevision(relativeShrinkwrapPath);
-    if (!revision) {
-      return false;
-    }
-    const gitShow = (pathAtRevision) =>
-      execFileSync("git", ["show", `${revision}:${pathAtRevision}`], {
-        cwd: ROOT_DIR,
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-    const priorTopology = pnpmResolutionTopology(
-      parseYaml(gitShow("pnpm-lock.yaml").toString("utf8")),
-      packageLabel(packageDir),
-    );
-    const currentTopology = pnpmResolutionTopology(
-      parseYaml(readFileSync(path.join(ROOT_DIR, "pnpm-lock.yaml"), "utf8")),
-      packageLabel(packageDir),
-    );
-    return (
-      JSON.stringify(shrinkwrapLeaves(readFileSync(shrinkwrapPath, "utf8"))) ===
-        JSON.stringify(shrinkwrapLeaves(gitShow(relativeShrinkwrapPath).toString("utf8"))) &&
-      priorTopology !== null &&
-      priorTopology === currentTopology
-    );
-  } catch {
-    return false;
-  }
-}
-
 function restoreCurrentPnpmLockedPackages(
   generated,
   current,
   pnpmLockPackages = readPnpmLockPackages(),
   { preserveCurrentResolvedGraph = false } = {},
 ) {
-  if (!current) {
-    return generated;
-  }
-  const generatedPackages = generated?.packages;
-  const currentPackages = current?.packages;
-  if (
-    !generatedPackages ||
-    typeof generatedPackages !== "object" ||
-    !currentPackages ||
-    typeof currentPackages !== "object"
-  ) {
-    return generated;
-  }
-
-  if (
-    preserveCurrentResolvedGraph &&
-    resolutionInputsForRoot(generatedPackages[""]) ===
-      resolutionInputsForRoot(currentPackages[""]) &&
-    collectPnpmLockViolations({ packages: currentPackages }, pnpmLockPackages).length === 0
-  ) {
-    generated.packages = {
-      "": generatedPackages[""],
-      ...Object.fromEntries(
-        Object.entries(currentPackages).filter(([lockPath]) => lockPath !== ""),
-      ),
-    };
-    return generated;
-  }
-
-  for (const [lockPath, metadata] of Object.entries(generatedPackages)) {
-    if (lockPath === "" || !metadata || typeof metadata !== "object" || !metadata.version) {
-      continue;
-    }
-    const packageName = metadata.name ?? packageNameForLockPath(lockPath);
-    if (!packageName || pnpmLockPackages.has(`${packageName}@${metadata.version}`)) {
-      continue;
-    }
-
-    const currentMetadata = currentPackages[lockPath];
-    const currentPackageName = currentMetadata?.name ?? packageNameForLockPath(lockPath);
-    if (
-      !currentMetadata ||
-      typeof currentMetadata !== "object" ||
-      !currentMetadata.version ||
-      currentPackageName !== packageName ||
-      !isStablePatchDrift(metadata.version, currentMetadata.version) ||
-      !versionSatisfiesSimpleSpec(
-        currentMetadata.version,
-        dependencySpecForLockPath(generatedPackages, lockPath, packageName),
-      ) ||
-      !pnpmLockPackages.has(`${packageName}@${currentMetadata.version}`)
-    ) {
-      continue;
-    }
-
-    // npm can float transitive patch ranges beyond pnpm's lock when one package
-    // name has multiple locked major lines. Keep the existing shrinkwrap entry
-    // when it still matches the canonical pnpm lock.
-    generatedPackages[lockPath] = currentMetadata;
-  }
-
-  return generated;
+  return restorePnpmLockedPackages({
+    generated,
+    current,
+    pnpmLockPackages,
+    preserveCurrentResolvedGraph,
+    collectPnpmLockViolations,
+    dependencySpecForLockPath,
+    isStablePatchDrift,
+    packageNameForLockPath,
+    versionSatisfiesSimpleSpec,
+  });
 }
 
 function assertShrinkwrapMatchesPnpmLock(shrinkwrap) {
@@ -1630,15 +1440,11 @@ export {
   normalizeNpmVersionDrift,
   packageJsonForShrinkwrap,
   packageDependencyInputsChanged,
-  pnpmResolutionTopology,
-  provenanceShrinkwrapRevision,
   pnpmLockOverrideVersionForVersions,
   parsePnpmPackageKey,
   parseLockPackagePath,
   readShrinkwrapOverrides,
   restoreCurrentPnpmLockedPackages,
-  shrinkwrapLeaves,
-  shrinkwrapMatchesCurrentPnpmLockTopology,
   shouldUseLegacyPeerDepsForShrinkwrap,
   shrinkwrapPackageDirsForChangedPaths,
 };

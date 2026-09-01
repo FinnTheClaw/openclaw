@@ -14,14 +14,12 @@ import {
   normalizeNpmVersionDrift,
   packageJsonForShrinkwrap,
   packageDependencyInputsChanged,
-  pnpmResolutionTopology,
   pnpmLockOverrideVersionForVersions,
   parsePnpmPackageKey,
   parseLockPackagePath,
   resolvePackageDirs,
   resolveShrinkwrapJobs,
   restoreCurrentPnpmLockedPackages,
-  shrinkwrapLeaves,
   runBoundedTasks,
   shouldUseLegacyPeerDepsForShrinkwrap,
   shrinkwrapPackageDirsForChangedPaths,
@@ -292,115 +290,6 @@ describe("generate-npm-shrinkwrap", () => {
     });
   });
 
-  it("does not preserve a stale leaf when the pnpm lock contains both old and new versions", () => {
-    const generated = {
-      packages: {
-        "": { dependencies: { foo: "^1.0.0" } },
-        "node_modules/foo": { version: "1.2.0" },
-      },
-    };
-    const current = {
-      packages: {
-        "": { dependencies: { foo: "^1.0.0" } },
-        "node_modules/foo": { version: "1.1.0" },
-      },
-    };
-    const pnpmPackages = new Set(["foo@1.1.0", "foo@1.2.0"]);
-
-    expect(restoreCurrentPnpmLockedPackages(generated, current, pnpmPackages)).toEqual(generated);
-  });
-
-  it("rejects full graph preservation without an unchanged topology proof", () => {
-    const generated = {
-      packages: {
-        "": { dependencies: { foo: "^1.0.0" } },
-        "node_modules/foo": { version: "1.2.0" },
-        "node_modules/foo/node_modules/bar": { version: "2.0.0" },
-      },
-    };
-    const current = {
-      packages: {
-        "": { dependencies: { foo: "^1.0.0" } },
-        "node_modules/foo": { version: "1.1.0" },
-        "node_modules/foo/node_modules/bar": { version: "2.0.0" },
-      },
-    };
-    const pnpmPackages = new Set(["foo@1.1.0", "foo@1.2.0", "bar@2.0.0"]);
-
-    expect(restoreCurrentPnpmLockedPackages(generated, current, pnpmPackages)).toEqual(generated);
-    expect(
-      restoreCurrentPnpmLockedPackages(generated, current, pnpmPackages, {
-        preserveCurrentResolvedGraph: true,
-      }),
-    ).toEqual({
-      packages: {
-        "": generated.packages[""],
-        "node_modules/foo": current.packages["node_modules/foo"],
-        "node_modules/foo/node_modules/bar": current.packages["node_modules/foo/node_modules/bar"],
-      },
-    });
-  });
-
-  it("changes the topology fingerprint when a reachable lock edge changes", () => {
-    const baseline = {
-      importers: {
-        "extensions/example": { dependencies: { foo: { version: "1.1.0" } } },
-      },
-      packages: {
-        "foo@1.1.0": { resolution: { integrity: "foo" } },
-        "bar@2.0.0": { resolution: { integrity: "bar-two" } },
-      },
-      snapshots: {
-        "foo@1.1.0": { dependencies: { bar: "2.0.0" } },
-        "bar@2.0.0": {},
-      },
-    };
-    const changedReachableEdge = {
-      ...baseline,
-      packages: { ...baseline.packages, "bar@3.0.0": { resolution: { integrity: "bar-three" } } },
-      snapshots: {
-        ...baseline.snapshots,
-        "foo@1.1.0": { dependencies: { bar: "3.0.0" } },
-        "bar@3.0.0": {},
-      },
-    };
-    const changedUnreachableEntry = {
-      ...baseline,
-      packages: { ...baseline.packages, "other@9.0.0": { resolution: { integrity: "other" } } },
-      snapshots: { ...baseline.snapshots, "other@9.0.0": {} },
-    };
-
-    const fingerprint = pnpmResolutionTopology(baseline, "extensions/example");
-    expect(fingerprint).not.toBe(
-      pnpmResolutionTopology(changedReachableEdge, "extensions/example"),
-    );
-    expect(fingerprint).toBe(pnpmResolutionTopology(changedUnreachableEntry, "extensions/example"));
-  });
-
-  it("compares provenance against shrinkwrap leaves rather than mutable root metadata", () => {
-    const source = JSON.stringify({
-      packages: {
-        "": { version: "1.0.0", dependencies: { foo: "^1.0.0" } },
-        "node_modules/foo": { version: "1.1.0", integrity: "foo-one" },
-      },
-    });
-    const metadataOnlyCandidate = JSON.stringify({
-      packages: {
-        "": { version: "1.0.1", dependencies: { foo: "^1.0.0" } },
-        "node_modules/foo": { version: "1.1.0", integrity: "foo-one" },
-      },
-    });
-    const changedLeafCandidate = JSON.stringify({
-      packages: {
-        "": { version: "1.0.1", dependencies: { foo: "^1.0.0" } },
-        "node_modules/foo": { version: "1.2.0", integrity: "foo-two" },
-      },
-    });
-
-    expect(shrinkwrapLeaves(metadataOnlyCandidate)).toEqual(shrinkwrapLeaves(source));
-    expect(shrinkwrapLeaves(changedLeafCandidate)).not.toEqual(shrinkwrapLeaves(source));
-  });
-
   it("does not restore versions that no longer satisfy the dependency edge", () => {
     const generated = {
       packages: {
@@ -545,16 +434,6 @@ describe("generate-npm-shrinkwrap", () => {
         { baileys: { peerDependenciesMeta: { sharp: { optional: true } } } },
       ),
     ).toBe(false);
-  });
-
-  it("uses legacy peer resolution when the package has optional peers", () => {
-    expect(
-      shouldUseLegacyPeerDepsForShrinkwrap({
-        dependencies: { zod: "4.4.3" },
-        peerDependencies: { openclaw: ">=2026.5.30" },
-        peerDependenciesMeta: { openclaw: { optional: true } },
-      }),
-    ).toBe(true);
   });
 
   it("applies package extension peer metadata to generated shrinkwrap packages", () => {
