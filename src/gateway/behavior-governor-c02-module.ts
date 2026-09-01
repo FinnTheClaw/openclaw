@@ -34,7 +34,8 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
   }
   const scopes = new Set<GovernorAgentLoopRunScope>();
   const activeEvaluations = new Set<string>();
-  const evaluationActionLedgers = new Map<string, { stage: number; reservedStage?: number }>();
+  const c02Global = globalThis as typeof globalThis & { __openclawC02EvaluationActionLedgers?: Map<string, { stage: number; reservedStage?: number }> };
+  const evaluationActionLedgers = (c02Global.__openclawC02EvaluationActionLedgers ??= new Map<string, { stage: number; reservedStage?: number }>());
   let closed = false;
 
   const retain = (scope: GovernorAgentLoopRunScope): GovernorAgentLoopRunScope => {

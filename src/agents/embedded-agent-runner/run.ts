@@ -4227,6 +4227,21 @@ async function runEmbeddedAgentInternal(
             continue;
           }
           const c02RecoveryScope = isC02EvaluationRunSession(params.sessionId);
+          const c02Match = c02RecoveryScope
+            ? /^c02-eval-(c02-[a-f]-[0-9]{3})-([a-f0-9]{24})$/iu.exec(params.sessionId)
+            : null;
+          const c02Ledger = (globalThis as typeof globalThis & {
+            __openclawC02EvaluationActionLedgers?: Map<string, { stage: number }>;
+          }).__openclawC02EvaluationActionLedgers;
+          const c02Stage = c02Match
+            ? c02Ledger?.get(`c02-eval-session:${c02Match[1]}:${c02Match[2]}`)?.stage
+            : undefined;
+          const c02RecoveryInstruction =
+            c02Stage === undefined
+              ? undefined
+              : c02Stage < 3
+                ? "Continue the current C02 contract by executing only its next eligible planned action. Do not provide a visible answer yet."
+                : "The current C02 aggregate action is complete. Do not call tools. Reply with exactly C02_COMPLETE as visible text.";
           const nextReasoningOnlyRetryInstruction = emptyAssistantReplyIsSilent
             ? null
             : resolveReasoningOnlyRetryInstruction({
@@ -4256,7 +4271,7 @@ async function runEmbeddedAgentInternal(
             reasoningOnlyRetryAttempts < maxReasoningOnlyRetryAttempts
           ) {
             reasoningOnlyRetryAttempts += 1;
-            reasoningOnlyRetryInstruction = nextReasoningOnlyRetryInstruction;
+            reasoningOnlyRetryInstruction = c02RecoveryInstruction ?? nextReasoningOnlyRetryInstruction;
             log.warn(
               `reasoning-only assistant turn detected: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts} ` +
