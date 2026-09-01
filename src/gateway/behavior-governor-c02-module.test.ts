@@ -164,4 +164,41 @@ describe("C02 behavior governor module", () => {
       fs.rmSync(stateDir, { recursive: true, force: true });
     }
   });
+
+  it("keeps normal agent-scoped channel keys outside the exact C02 evaluation namespace", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "c02-normal-session-"));
+    const priorStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    try {
+      vi.resetModules();
+      const module = await import("./behavior-governor-c02-module.js");
+      const factory = await module.C02_BEHAVIOR_GOVERNOR_MODULE.load();
+      const runtime = await factory(ACTIVATION);
+      for (const sessionKey of [
+        "agent:main:main",
+        "agent:main:signal:group:friends",
+        "agent:main:imessage:chat:family",
+        "signal:group:friends",
+      ]) {
+        const value = required(
+          runtime.agentLoop?.resolveRunScope({
+            activation: ACTIVATION,
+            run: run(sessionKey, `normal-${sessionKey}`),
+          }),
+        );
+        expect(value.taskId).toBe(`normal-${sessionKey}`);
+        value.dispose();
+      }
+      expect(fs.existsSync(path.join(stateDir, "governor", "c02-eval-restarts"))).toBe(false);
+      await runtime.close();
+    } finally {
+      vi.resetModules();
+      if (priorStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = priorStateDir;
+      }
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
 });

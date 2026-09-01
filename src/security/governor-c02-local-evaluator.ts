@@ -15,6 +15,9 @@ const MAX_TURNS = 8;
 const MAX_MARKER_BYTES = 256;
 const MAX_MARKERS = 128;
 const MARKER_DIRECTORY = "c02-eval-restarts";
+const OWNED_MARKER = /^c02-f-[0-9]{3}-[a-f0-9]{24}\.(?:pending|completed)\.json$/u;
+const OWNED_COMPLETED = /^c02-f-[0-9]{3}-[a-f0-9]{24}\.completed\.json$/u;
+const OWNED_TEMP = /^\.c02-f-[0-9]{3}-[a-f0-9]{24}\.[0-9]+\.[a-f0-9-]{36}\.tmp$/u;
 
 type EvaluationAction = "observe-a" | "observe-b" | "aggregate";
 type RestartMarker = Readonly<{
@@ -26,8 +29,8 @@ type RestartMarker = Readonly<{
 }>;
 type MarkerStatus =
   | Readonly<{ kind: "none" }>
-  | Readonly<{ kind: "pending"; path: string }>
-  | Readonly<{ kind: "consumed" }>
+  | Readonly<{ kind: "pending" }>
+  | Readonly<{ kind: "completed" }>
   | Readonly<{ kind: "invalid" }>;
 
 export type C02EvaluationRestartMarkers = Readonly<{
@@ -35,6 +38,8 @@ export type C02EvaluationRestartMarkers = Readonly<{
     evaluation: C02Evaluation,
   ) => Readonly<{ generation: number; resumed: boolean; blocked: boolean }>;
   arm: (evaluation: C02Evaluation, generation: number) => boolean;
+  complete: (evaluation: C02Evaluation, generation: number) => boolean;
+  release: (evaluation: C02Evaluation, generation: number) => void;
   isStale: (evaluation: C02Evaluation, generation: number) => boolean;
 }>;
 
@@ -51,21 +56,37 @@ function assertRestartEvaluation(evaluation: C02Evaluation): void {
 
 function markerBase(evaluation: C02Evaluation): string {
   assertRestartEvaluation(evaluation);
-  return `${evaluation.caseId.toLowerCase()}-${evaluation.family.toLowerCase()}-${evaluation.requestNonce}`;
+  return `${evaluation.caseId.toLowerCase()}-${evaluation.requestNonce}`;
 }
 
-function markerDirectory(stateDir: string): string {
-  const root = path.resolve(stateDir);
-  const directory = path.resolve(root, "governor", MARKER_DIRECTORY);
-  if (path.relative(root, directory).startsWith("..")) {
-    throw new Error("C02_RESTART_MARKER_PATH_INVALID");
+function ensureDirectory(directory: string): void {
+  try {
+    fs.mkdirSync(directory, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
   }
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error("C02_RESTART_MARKER_DIRECTORY_INVALID");
   }
   fs.chmodSync(directory, 0o700);
+  if ((fs.lstatSync(directory).mode & 0o077) !== 0) {
+    throw new Error("C02_RESTART_MARKER_DIRECTORY_PERMISSIONS_INVALID");
+  }
+}
+
+function markerDirectory(stateDir: string): string {
+  const root = path.resolve(stateDir);
+  const governor = path.join(root, "governor");
+  const directory = path.join(governor, MARKER_DIRECTORY);
+  if (path.relative(root, directory).startsWith("..")) {
+    throw new Error("C02_RESTART_MARKER_PATH_INVALID");
+  }
+  ensureDirectory(root);
+  ensureDirectory(governor);
+  ensureDirectory(directory);
   return directory;
 }
 
@@ -74,12 +95,12 @@ function markerPaths(
   evaluation: C02Evaluation,
 ): Readonly<{
   pending: string;
-  consumed: string;
+  completed: string;
 }> {
   const base = markerBase(evaluation);
   return Object.freeze({
     pending: path.join(directory, `${base}.pending.json`),
-    consumed: path.join(directory, `${base}.consumed.json`),
+    completed: path.join(directory, `${base}.completed.json`),
   });
 }
 
@@ -88,12 +109,14 @@ function readMarker(file: string, evaluation: C02Evaluation): "absent" | "valid"
   try {
     stat = fs.lstatSync(file);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return "absent";
-    }
-    return "invalid";
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "invalid";
   }
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_MARKER_BYTES) {
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.size > MAX_MARKER_BYTES ||
+    (stat.mode & 0o077) !== 0
+  ) {
     return "invalid";
   }
   try {
@@ -102,9 +125,8 @@ function readMarker(file: string, evaluation: C02Evaluation): "absent" | "valid"
       return "invalid";
     }
     const marker = value as Partial<RestartMarker>;
-    const keys = Object.keys(marker).toSorted();
     if (
-      keys.join(",") !== "caseId,family,kind,phase,requestNonce" ||
+      Object.keys(marker).toSorted().join(",") !== "caseId,family,kind,phase,requestNonce" ||
       marker.kind !== "c02-eval-restart" ||
       marker.phase !== "beta-complete" ||
       marker.caseId !== evaluation.caseId ||
@@ -122,20 +144,18 @@ function readMarker(file: string, evaluation: C02Evaluation): "absent" | "valid"
 function inspectMarker(directory: string, evaluation: C02Evaluation): MarkerStatus {
   const paths = markerPaths(directory, evaluation);
   const pending = readMarker(paths.pending, evaluation);
-  const consumed = readMarker(paths.consumed, evaluation);
+  const completed = readMarker(paths.completed, evaluation);
   if (
     pending === "invalid" ||
-    consumed === "invalid" ||
-    (pending === "valid" && consumed === "valid")
+    completed === "invalid" ||
+    (pending === "valid" && completed === "valid")
   ) {
     return Object.freeze({ kind: "invalid" });
   }
-  if (consumed === "valid") {
-    return Object.freeze({ kind: "consumed" });
+  if (completed === "valid") {
+    return Object.freeze({ kind: "completed" });
   }
-  return pending === "valid"
-    ? Object.freeze({ kind: "pending", path: paths.pending })
-    : Object.freeze({ kind: "none" });
+  return pending === "valid" ? Object.freeze({ kind: "pending" }) : Object.freeze({ kind: "none" });
 }
 
 function markerPayload(evaluation: C02Evaluation): RestartMarker {
@@ -149,60 +169,97 @@ function markerPayload(evaluation: C02Evaluation): RestartMarker {
   });
 }
 
-function writePendingMarker(directory: string, evaluation: C02Evaluation): void {
-  const paths = markerPaths(directory, evaluation);
-  if (inspectMarker(directory, evaluation).kind !== "none") {
-    throw new Error("C02_RESTART_MARKER_DUPLICATE");
+function cleanOrphansAndMakeRoom(directory: string): boolean {
+  const entries = fs.readdirSync(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!OWNED_TEMP.test(entry.name)) {
+      continue;
+    }
+    const file = path.join(directory, entry.name);
+    const stat = fs.lstatSync(file);
+    if (stat.isFile() && !stat.isSymbolicLink()) {
+      fs.unlinkSync(file);
+    }
   }
-  const markers = fs.readdirSync(directory).filter((name) => name.includes(".json"));
-  if (markers.length >= MAX_MARKERS) {
-    throw new Error("C02_RESTART_MARKER_CAPACITY");
+  const owned = fs.readdirSync(directory).filter((name) => OWNED_MARKER.test(name));
+  if (owned.length < MAX_MARKERS) {
+    return true;
+  }
+  const completed = owned
+    .filter((name) => OWNED_COMPLETED.test(name))
+    .flatMap((name) => {
+      const file = path.join(directory, name);
+      const stat = fs.lstatSync(file);
+      return stat.isFile() && !stat.isSymbolicLink() ? [{ file, mtimeMs: stat.mtimeMs }] : [];
+    })
+    .toSorted((left, right) => left.mtimeMs - right.mtimeMs || left.file.localeCompare(right.file));
+  let count = owned.length;
+  for (const marker of completed) {
+    if (count < MAX_MARKERS) {
+      break;
+    }
+    fs.unlinkSync(marker.file);
+    count -= 1;
+  }
+  return count < MAX_MARKERS;
+}
+
+function writePendingMarker(directory: string, evaluation: C02Evaluation): boolean {
+  const paths = markerPaths(directory, evaluation);
+  if (inspectMarker(directory, evaluation).kind !== "none" || !cleanOrphansAndMakeRoom(directory)) {
+    return false;
   }
   const temporary = path.join(
     directory,
     `.${markerBase(evaluation)}.${process.pid}.${randomUUID()}.tmp`,
   );
-  const descriptor = fs.openSync(
-    temporary,
-    fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
-    0o600,
-  );
+  let descriptor: number | undefined;
   try {
+    descriptor = fs.openSync(
+      temporary,
+      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+      0o600,
+    );
     fs.writeFileSync(descriptor, JSON.stringify(markerPayload(evaluation)), "utf8");
     fs.fsyncSync(descriptor);
-  } finally {
     fs.closeSync(descriptor);
-  }
-  try {
+    descriptor = undefined;
     fs.linkSync(temporary, paths.pending);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error("C02_RESTART_MARKER_DUPLICATE");
-    }
-    throw error;
+    return true;
+  } catch {
+    return false;
   } finally {
-    fs.unlinkSync(temporary);
+    if (descriptor !== undefined) {
+      fs.closeSync(descriptor);
+    }
+    try {
+      fs.unlinkSync(temporary);
+    } catch {}
   }
 }
 
-function consumePendingMarker(
-  directory: string,
-  evaluation: C02Evaluation,
-  pending: string,
-): boolean {
-  const consumed = markerPaths(directory, evaluation).consumed;
+function completePendingMarker(directory: string, evaluation: C02Evaluation): boolean {
+  const paths = markerPaths(directory, evaluation);
+  if (
+    readMarker(paths.pending, evaluation) !== "valid" ||
+    readMarker(paths.completed, evaluation) !== "absent"
+  ) {
+    return false;
+  }
   try {
-    fs.renameSync(pending, consumed);
+    fs.linkSync(paths.pending, paths.completed);
+    fs.unlinkSync(paths.pending);
+    return readMarker(paths.completed, evaluation) === "valid";
   } catch {
     return false;
   }
-  return readMarker(consumed, evaluation) === "valid";
 }
 
 /** C02-only restart metadata is bounded identity/phase state, never tool arguments or results. */
 export function createC02EvaluationRestartMarkers(params?: {
   stateDir?: string;
 }): C02EvaluationRestartMarkers {
+  const claims = new Set<string>();
   const directory = () => markerDirectory(params?.stateDir ?? resolveStateDir());
   return Object.freeze({
     start(evaluation) {
@@ -210,14 +267,14 @@ export function createC02EvaluationRestartMarkers(params?: {
         return Object.freeze({ generation: 0, resumed: false, blocked: false });
       }
       try {
-        const root = directory();
-        const marker = inspectMarker(root, evaluation);
+        const marker = inspectMarker(directory(), evaluation);
         if (marker.kind === "none") {
           return Object.freeze({ generation: 0, resumed: false, blocked: false });
         }
-        if (marker.kind !== "pending" || !consumePendingMarker(root, evaluation, marker.path)) {
+        if (marker.kind !== "pending" || claims.has(markerBase(evaluation))) {
           return Object.freeze({ generation: 1, resumed: false, blocked: true });
         }
+        claims.add(markerBase(evaluation));
         return Object.freeze({ generation: 1, resumed: true, blocked: false });
       } catch {
         return Object.freeze({ generation: 1, resumed: false, blocked: true });
@@ -225,13 +282,28 @@ export function createC02EvaluationRestartMarkers(params?: {
     },
     arm(evaluation, generation) {
       try {
-        if (generation !== 0) {
-          return false;
-        }
-        writePendingMarker(directory(), evaluation);
-        return true;
+        return generation === 0 && writePendingMarker(directory(), evaluation);
       } catch {
         return false;
+      }
+    },
+    complete(evaluation, generation) {
+      try {
+        if (generation !== 1 || !claims.has(markerBase(evaluation))) {
+          return false;
+        }
+        const completed = completePendingMarker(directory(), evaluation);
+        if (completed) {
+          claims.delete(markerBase(evaluation));
+        }
+        return completed;
+      } catch {
+        return false;
+      }
+    },
+    release(evaluation, generation) {
+      if (generation === 1) {
+        claims.delete(markerBase(evaluation));
       }
     },
     isStale(evaluation, generation) {
@@ -243,7 +315,10 @@ export function createC02EvaluationRestartMarkers(params?: {
         if (marker.kind === "none") {
           return generation !== 0;
         }
-        return generation !== 1;
+        if (marker.kind === "pending" || marker.kind === "completed") {
+          return generation !== 1;
+        }
+        return true;
       } catch {
         return true;
       }
@@ -294,10 +369,7 @@ function restartBlocked(
   return evaluation.restartAfterObserveB && markers.isStale(evaluation, generation);
 }
 
-/**
- * Evaluation behavior is intentionally local. It preserves C02 A-F order and the
- * F restart checkpoint without acquiring the generic receipt/ledger host.
- */
+/** Evaluation behavior is local and preserves C02 A-F without acquiring the generic host. */
 export function createGovernorC02EvaluationScope(params: {
   run: GovernorAgentLoopRunInput;
   evaluation: C02Evaluation;
@@ -311,13 +383,13 @@ export function createGovernorC02EvaluationScope(params: {
   let turns = 0;
   let pressurePending = false;
   let pressureIssued = false;
-  let restartArmFailed = false;
+  let restartTransitionFailed = false;
   let disposed = false;
   let scope: GovernorAgentLoopRunScope;
 
   const checkpointPending = () =>
     restart.blocked ||
-    restartArmFailed ||
+    restartTransitionFailed ||
     restartBlocked(params.evaluation, params.restartMarkers, restart.generation);
 
   scope = Object.freeze({
@@ -362,7 +434,13 @@ export function createGovernorC02EvaluationScope(params: {
         pressurePending = true;
       }
       if (completed === "observe-b" && params.evaluation.restartAfterObserveB) {
-        restartArmFailed = !params.restartMarkers.arm(params.evaluation, restart.generation);
+        restartTransitionFailed = !params.restartMarkers.arm(params.evaluation, restart.generation);
+      }
+      if (completed === "aggregate" && params.evaluation.restartAfterObserveB) {
+        restartTransitionFailed = !params.restartMarkers.complete(
+          params.evaluation,
+          restart.generation,
+        );
       }
     },
     afterTurn() {
@@ -403,6 +481,7 @@ export function createGovernorC02EvaluationScope(params: {
         return;
       }
       disposed = true;
+      params.restartMarkers.release(params.evaluation, restart.generation);
       params.onDispose?.(scope);
     },
   });
