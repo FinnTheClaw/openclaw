@@ -61,13 +61,18 @@ export const C02_RESTART_REGISTRATION: GatewayBehaviorGovernorModuleHostRegistra
             return input.scope;
           }
           const taskId = createGovernorTaskId(input.scope.taskId);
-          const prior = host.store
-            .listEvents(taskId)
-            .filter((event) => event.eventType === EVENT_TYPE)
-            .map((event) => restartPayload(event.payload))
-            .filter((value): value is RestartPayload => value !== undefined);
+          const restartHistory = (): readonly RestartPayload[] =>
+            host.store
+              .listEvents(taskId)
+              .filter((event) => event.eventType === EVENT_TYPE)
+              .map((event) => restartPayload(event.payload))
+              .filter((value): value is RestartPayload => value !== undefined);
+          const latestMarker = (): RestartPayload | undefined =>
+            restartHistory().findLast((value) => value.kind === RESTART_REQUIRED);
+          const restartPending = (): boolean =>
+            latestMarker()?.processInstanceId === host.processInstanceId;
+          const prior = restartHistory();
           const marker = prior.findLast((value) => value.kind === RESTART_REQUIRED);
-          let restartPending = marker?.processInstanceId === host.processInstanceId;
           if (
             marker &&
             marker.processInstanceId !== host.processInstanceId &&
@@ -102,10 +107,10 @@ export const C02_RESTART_REGISTRATION: GatewayBehaviorGovernorModuleHostRegistra
           const scope: GovernorAgentLoopRunScope = Object.freeze({
             ...input.scope,
             get disposition() {
-              return restartPending ? "checkpoint_pending" : input.scope.disposition;
+              return restartPending() ? "checkpoint_pending" : input.scope.disposition;
             },
             beforeTool(request) {
-              if (restartPending) {
+              if (restartPending()) {
                 return { kind: "block", reasonCode: "C02_RESTART_REQUIRED" };
               }
               const decision = input.scope.beforeTool(request);
@@ -116,6 +121,16 @@ export const C02_RESTART_REGISTRATION: GatewayBehaviorGovernorModuleHostRegistra
                 isObject(request.args) &&
                 request.args.path === evaluation.betaPath
               ) {
+                host.controller.recordRuntimeEvent({
+                  taskId,
+                  eventType: EVENT_TYPE,
+                  payload: {
+                    kind: RESTART_REQUIRED,
+                    moduleId: C02_SIMPLE_EFFICIENCY_ID,
+                    processInstanceId: host.processInstanceId,
+                  },
+                  now: request.now,
+                });
                 betaTickets.add(decision.ticket.opaque);
               }
               return decision;
@@ -130,17 +145,6 @@ export const C02_RESTART_REGISTRATION: GatewayBehaviorGovernorModuleHostRegistra
               if (observation.isError || !observedB) {
                 return;
               }
-              host.controller.recordRuntimeEvent({
-                taskId,
-                eventType: EVENT_TYPE,
-                payload: {
-                  kind: RESTART_REQUIRED,
-                  moduleId: C02_SIMPLE_EFFICIENCY_ID,
-                  processInstanceId: host.processInstanceId,
-                },
-                now: observation.now,
-              });
-              restartPending = true;
               const signal = observation.signal;
               if (!signal) {
                 throw new Error("C02_RESTART_SIGNAL_REQUIRED");
@@ -159,7 +163,7 @@ export const C02_RESTART_REGISTRATION: GatewayBehaviorGovernorModuleHostRegistra
               });
             },
             afterTurn(turn) {
-              return restartPending
+              return restartPending()
                 ? { kind: "interrupt", reasonCode: "C02_RESTART_REQUIRED" }
                 : input.scope.afterTurn(turn);
             },

@@ -20,13 +20,16 @@ function run(sessionKey: string) {
   } as const;
 }
 
-function scope(ticket = Object.freeze({ opaque: {} })): GovernorAgentLoopRunScope {
+function scope(
+  ticket = Object.freeze({ opaque: {} }),
+  afterTool: GovernorAgentLoopRunScope["afterTool"] = vi.fn(),
+): GovernorAgentLoopRunScope {
   return {
     taskId: "task-1",
     mode: "enforce",
     disposition: "runnable",
     beforeTool: vi.fn(() => ({ kind: "allow", ticket })),
-    afterTool: vi.fn(),
+    afterTool,
     afterTurn: vi.fn(() => ({ kind: "complete" })),
     interrupt: vi.fn(),
     assertTerminal: vi.fn(),
@@ -139,6 +142,60 @@ describe("C02 restart guard", () => {
 
     sameProcess.dispose();
     firstHost.registration.close();
+  });
+
+  it("blocks an already-open same-process scope as soon as another scope arms B", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const test = host("process-1", events);
+    const session = "c02-eval:C02-F-001:666666666666666666666666";
+    const first = wrap(test.registration, session);
+    const overlapping = wrap(test.registration, session);
+    const controller = new AbortController();
+
+    const pending = observeB(first, controller.signal);
+    expect(overlapping.disposition).toBe("checkpoint_pending");
+    expect(
+      overlapping.beforeTool({
+        toolCallId: "tool-aggregate",
+        toolName: "exec",
+        args: { command: "/usr/bin/python3 -c 'print(3)'" },
+        tool: undefined,
+        now: 13,
+      }),
+    ).toEqual({ kind: "block", reasonCode: "C02_RESTART_REQUIRED" });
+
+    controller.abort();
+    await pending;
+    first.dispose();
+    overlapping.dispose();
+    test.registration.close();
+  });
+
+  it("durably arms the restart before the generic B outcome can commit", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const timeline: string[] = [];
+    const test = host("process-1", events);
+    const underlying = scope(
+      undefined,
+      vi.fn(() => timeline.push("outcome")),
+    );
+    test.recordRuntimeEvent.mockImplementation((event: Record<string, unknown>) => {
+      timeline.push("marker");
+      events.push({ eventType: event.eventType, payload: event.payload });
+    });
+    const guarded = wrap(
+      test.registration,
+      "c02-eval:C02-F-001:777777777777777777777777",
+      underlying,
+    );
+    const controller = new AbortController();
+    controller.abort();
+
+    await observeB(guarded, controller.signal);
+    expect(timeline).toEqual(["marker", "outcome"]);
+
+    guarded.dispose();
+    test.registration.close();
   });
 
   it("allows resume only under a changed gateway process instance", async () => {
