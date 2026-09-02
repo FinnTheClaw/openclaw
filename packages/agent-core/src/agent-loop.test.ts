@@ -1013,6 +1013,43 @@ describe("agentLoop tool termination", () => {
     expect(endEvent?.executionStarted).toBe(false);
   });
 
+  it("blocks an invalid call through the validation-failure hook without execution", async () => {
+    const executed: string[] = [];
+    const streamFn: StreamFn = () => {
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        const message = makeAssistantMessage([
+          { type: "toolCall", id: "call-exec", name: "exec", arguments: { cmd: "bad" } },
+        ]);
+        stream.push({ type: "done", reason: "toolUse", message });
+        stream.end();
+      });
+      return stream;
+    };
+    const tool: AgentTool = {
+      ...makeTool("exec", executed),
+      parameters: Type.Object({ command: Type.String() }, { additionalProperties: false }),
+    };
+    const probe = vi.fn(async ({ args }: { args: unknown }) => {
+      expect(args).toEqual({ cmd: "bad" });
+      return { block: true, reason: "c02-blocked" };
+    });
+    const events = await collectEvents(
+      agentLoop(
+        [{ role: "user", content: "hello", timestamp: 1 }],
+        { systemPrompt: "", messages: [], tools: [tool] },
+        { ...config, beforeToolCallOnValidationFailure: probe },
+        undefined,
+        streamFn,
+      ),
+    );
+    expect(executed).toEqual([]);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(events.find((event) => event.type === "tool_execution_end")).toMatchObject({
+      executionStarted: false,
+    });
+  });
+
   it("marks argument validation failures with typed provenance", async () => {
     const executed: string[] = [];
     let turn = 0;

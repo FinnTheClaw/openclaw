@@ -69,6 +69,7 @@ export function installGovernorLoopBridge(params: {
   const now = params.now ?? Date.now;
   const tickets = new Map<string, GovernorAgentLoopToolTicket | undefined>();
   const priorBefore = params.agent.beforeToolCall;
+  const priorBeforeValidation = params.agent.beforeToolCallOnValidationFailure;
   const priorAfter = params.agent.afterToolCall;
   const priorResolveDeferredTool = params.agent.resolveDeferredTool;
   const priorShouldStop = params.agent.shouldStopAfterTurn;
@@ -146,6 +147,44 @@ export function installGovernorLoopBridge(params: {
     }
   };
 
+  const beforeToolCallOnValidationFailure: NonNullable<
+    Agent["beforeToolCallOnValidationFailure"]
+  > = async (context, signal) => {
+    const prior = await priorBeforeValidation?.(context, signal);
+    if (prior?.block || !c02EvaluationScope || params.scope.mode !== "enforce") {
+      return prior;
+    }
+    try {
+      const decision = params.scope.beforeTool({
+        toolCallId: context.toolCall.id,
+        toolName: context.toolCall.name,
+        args: context.args,
+        tool: context.tool,
+        now: now(),
+      });
+      if (decision.kind === "block") {
+        return { block: true, reason: decision.reasonCode } satisfies BeforeToolCallResult;
+      }
+      await params.scope.afterTool({
+        ticket: decision.ticket,
+        toolCallId: context.toolCall.id,
+        toolName: context.toolCall.name,
+        result: {
+          content: [{ type: "text", text: "C02_PREVALIDATION_SCHEMA_REJECTED" }],
+          details: null,
+        },
+        isError: true,
+        signal,
+        now: now(),
+      });
+      return { block: true, reason: "C02_ACTION_NOT_ELIGIBLE" } satisfies BeforeToolCallResult;
+    } catch (error) {
+      if (params.scope.mode === "shadow") {
+        return prior;
+      }
+      throw error;
+    }
+  };
   const afterToolCall: NonNullable<Agent["afterToolCall"]> = async (context, signal) => {
     let priorResult: AfterToolCallResult | undefined;
     let priorThrew = false;
@@ -193,6 +232,7 @@ export function installGovernorLoopBridge(params: {
   };
 
   params.agent.beforeToolCall = beforeToolCall;
+  params.agent.beforeToolCallOnValidationFailure = beforeToolCallOnValidationFailure;
   params.agent.afterToolCall = afterToolCall;
   params.agent.resolveDeferredTool = resolveDeferredTool;
   if (params.scope.mode === "enforce") {
@@ -291,6 +331,9 @@ export function installGovernorLoopBridge(params: {
       unsubscribe();
       if (params.agent.beforeToolCall === beforeToolCall) {
         params.agent.beforeToolCall = priorBefore;
+      }
+      if (params.agent.beforeToolCallOnValidationFailure === beforeToolCallOnValidationFailure) {
+        params.agent.beforeToolCallOnValidationFailure = priorBeforeValidation;
       }
       if (params.agent.afterToolCall === afterToolCall) {
         params.agent.afterToolCall = priorAfter;

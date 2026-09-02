@@ -277,6 +277,15 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
   ) => Promise<BeforeToolCallResult | undefined>;
 
   /**
+   * Called only when an already-resolved tool call fails schema validation.
+   * A block prevents the generic validation result without executing the tool.
+   */
+  beforeToolCallOnValidationFailure?: (
+    context: BeforeToolCallContext,
+    signal?: AbortSignal,
+  ) => Promise<BeforeToolCallResult | undefined>;
+
+  /**
    * Hydrates an already-authorized tool that was deferred out of the current
    * provider-visible tool set. Return undefined for every other unknown name so
    * the loop keeps the normal "Tool <name> not found" result. Thrown or rejected

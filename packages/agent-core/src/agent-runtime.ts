@@ -59,6 +59,7 @@ export class Agent {
     context: BeforeToolCallContext,
     signal?: AbortSignal,
   ) => Promise<BeforeToolCallResult | undefined>;
+  public beforeToolCallOnValidationFailure?: AgentLoopConfig["beforeToolCallOnValidationFailure"];
   public resolveDeferredTool?: AgentLoopConfig["resolveDeferredTool"];
   public afterToolCall?: (
     context: AfterToolCallContext,
@@ -339,6 +340,7 @@ export class Agent {
       maxRetryDelayMs: this.maxRetryDelayMs,
       toolExecution: this.toolExecution,
       beforeToolCall: this.beforeToolCall,
+      beforeToolCallOnValidationFailure: this.beforeToolCallOnValidationFailure,
       resolveDeferredTool: this.resolveDeferredTool,
       afterToolCall: this.afterToolCall,
       prepareNextTurn: this.prepareNextTurn

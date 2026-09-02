@@ -1118,6 +1118,30 @@ async function prepareToolCall(
   try {
     validatedArgs = validateToolArguments(tool, preparedToolCall);
   } catch (error) {
+    const validationBlock = await config.beforeToolCallOnValidationFailure?.(
+      {
+        assistantMessage,
+        toolCall,
+        args: preparedToolCall.arguments,
+        tool,
+        context: currentContext,
+      },
+      signal,
+    );
+    if (signal?.aborted) {
+      return {
+        kind: "immediate",
+        result: createErrorToolResult("Operation aborted"),
+        isError: true,
+      };
+    }
+    if (validationBlock?.block) {
+      return {
+        kind: "immediate",
+        result: createErrorToolResult(validationBlock.reason || "Tool execution was blocked"),
+        isError: true,
+      };
+    }
     const originalError = error instanceof Error ? error.message : String(error);
     const validationFailure = recordArgumentValidationFailure(
       argumentValidationFailures,
