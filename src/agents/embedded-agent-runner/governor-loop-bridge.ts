@@ -177,6 +177,9 @@ export function installGovernorLoopBridge(params: {
         signal,
         now: now(),
       });
+      if (c02EvaluationScope && params.scope.mode === "enforce") {
+        context.context.tools = [...params.scope.governedTools()];
+      }
       refreshC02ToolInventory();
     } catch (error) {
       if (params.scope.mode !== "shadow") {
