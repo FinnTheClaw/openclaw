@@ -96,10 +96,7 @@ export function installGovernorLoopBridge(params: {
     if (prior || !c02EvaluationScope || params.scope.mode !== "enforce") {
       return prior;
     }
-    if (
-      context.toolCall.name !== "exec" ||
-      !params.scope.governedTools().some((tool) => tool.name === "exec")
-    ) {
+    if (context.toolCall.name !== "exec") {
       return undefined;
     }
     return installedToolsByName.get("exec");
