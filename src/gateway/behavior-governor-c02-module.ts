@@ -45,6 +45,17 @@ const createC02Module: GatewayBehaviorGovernorModuleFactory = (context) => {
 
   return Object.freeze({
     agentLoop: Object.freeze({
+      resolveCompletedReplay({ run }) {
+        const requestSessionKey = toAgentRequestSessionKey(run.sessionKey);
+        const evaluation = parseC02EvaluationRunSession(requestSessionKey);
+        if (!evaluation) {
+          return undefined;
+        }
+        const ledger = evaluationActionLedgers.get(evaluation.stableSessionId);
+        return ledger?.stage === 3 && ledger.reservedStage === undefined
+          ? evaluation.stableSessionId
+          : undefined;
+      },
       resolveRunScope(input: GatewayBehaviorGovernorModuleRunInput) {
         if (closed) {
           throw new Error("GOVERNOR_C02_MODULE_CLOSED");

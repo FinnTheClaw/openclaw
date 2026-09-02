@@ -7,6 +7,7 @@ import {
 } from "../security/governor-agent-loop-inert-registry.js";
 import {
   isGovernorAgentLoopRunScope,
+  resolveGovernorCompletedIngressReplay,
   resolveGovernorAgentLoopRunScope,
   type GovernorAgentLoopRunInput,
   type GovernorAgentLoopRunScope,
@@ -85,6 +86,7 @@ function descriptor(params: {
   id: string;
   mode?: BehaviorGovernorModuleSelection["mode"];
   resolve: (input: GatewayBehaviorGovernorModuleRunInput) => GovernorAgentLoopRunScope | undefined;
+  replay?: (input: GatewayBehaviorGovernorModuleRunInput) => string | undefined;
 }): GatewayBehaviorGovernorModuleDescriptor {
   return {
     id: params.id,
@@ -94,13 +96,34 @@ function descriptor(params: {
     dependencies: [],
     durableBoundaryIds: [],
     load: async () => async () => ({
-      agentLoop: { resolveRunScope: params.resolve },
+      agentLoop: {
+        resolveRunScope: params.resolve,
+        ...(params.replay ? { resolveCompletedReplay: params.replay } : {}),
+      },
       close: vi.fn(),
     }),
   };
 }
 
 describe("gateway behavior governor module agent-loop consumer", () => {
+  it("delegates completed replay only to the active selected module", async () => {
+    const replay = vi.fn(() => "c02-eval-session:C02-B-001:0123456789abcdef01234567");
+    const item = descriptor({ id: "c02", resolve: vi.fn(), replay });
+    const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({
+      hostProvider: TEST_HOST_PROVIDER,
+      catalog: [item],
+    });
+    await lifecycle.apply([selection("c02")]);
+
+    expect(resolveGovernorCompletedIngressReplay(runInput())).toBe(
+      "c02-eval-session:C02-B-001:0123456789abcdef01234567",
+    );
+    expect(replay).toHaveBeenCalledWith({
+      activation: { id: "c02", mode: "enforce", version: "1.0.0" },
+      run: runInput(),
+    });
+    await lifecycle.close();
+  });
   it("keeps an empty module plan registry-free", async () => {
     const item = descriptor({ id: "c06b", resolve: vi.fn() });
     const lifecycle = createGatewayBehaviorGovernorModuleLifecycle({

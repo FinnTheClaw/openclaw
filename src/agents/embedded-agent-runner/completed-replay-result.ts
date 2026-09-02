@@ -72,14 +72,14 @@ function resolveCompletedC02Replay(input: {
   }
   const caseId = match[1].toUpperCase();
   const nonce = match[2].toLowerCase();
-  const sessionId = `c02-eval-${caseId.toLowerCase()}-${nonce}`;
-  if (input.sessionId !== sessionId) {
+  const canonicalSessionId = `c02-eval-${caseId.toLowerCase()}-${nonce}`;
+  if (input.sessionId.toLowerCase() !== canonicalSessionId) {
     return undefined;
   }
   return {
     feature: "c02-simple-efficiency",
     version: "v1",
-    sessionId,
+    sessionId: input.sessionId,
     taskId: `c02-eval-session:${caseId}:${nonce}`,
     completedStage: 3,
     output: "C02_COMPLETE",

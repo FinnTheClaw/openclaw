@@ -27,6 +27,8 @@ export type GatewayBehaviorGovernorModuleAgentLoop = Readonly<{
   resolveRunScope: (
     input: GatewayBehaviorGovernorModuleRunInput,
   ) => GovernorAgentLoopRunScope | undefined;
+  /** Returns a completed task only when this module owns the exact prior run. */
+  resolveCompletedReplay?: (input: GatewayBehaviorGovernorModuleRunInput) => string | undefined;
 }>;
 
 export type ActiveGatewayBehaviorGovernorAgentLoopModule = Readonly<{
@@ -360,7 +362,21 @@ export function installGatewayBehaviorGovernorModuleAgentLoop(
         );
       }
     },
-    resolveCompletedReplay: () => undefined,
+    resolveCompletedReplay: (input) => {
+      if (frozen || closed) {
+        return undefined;
+      }
+      const run = Object.freeze({ ...input });
+      for (const module of modules) {
+        const taskId = module.agentLoop.resolveCompletedReplay?.(
+          Object.freeze({ activation: module.activation, run }),
+        );
+        if (taskId) {
+          return taskId;
+        }
+      }
+      return undefined;
+    },
     isScope: (scope) => issuedScopes.has(scope),
   });
   return Object.freeze({

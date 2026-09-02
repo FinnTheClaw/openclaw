@@ -52,6 +52,34 @@ async function createRuntime() {
 }
 
 describe("C02 behavior governor module", () => {
+  it("replays only a completed canonical C02 ledger task", async () => {
+    const runtime = await createRuntime();
+    const session = `${C02_EVALUATION_SESSION_PREFIX}c02-b-001:0123456789abcdef01234567`;
+    const input = { activation: ACTIVATION, run: run(session) };
+    expect(runtime.agentLoop?.resolveCompletedReplay?.(input)).toBeUndefined();
+    const scope = required(runtime.agentLoop?.resolveRunScope(input));
+    for (const [toolName, args] of [
+      ["read", { path: "/case/C02-B-001/alpha.txt" }],
+      ["read", { path: "/case/C02-B-001/beta.txt" }],
+      ["exec", { command: "/usr/bin/python3 -c 'print(3)'" }],
+    ] as const) {
+      const decision = scope.beforeTool({ toolCallId: toolName, toolName, args, tool: undefined, now: 11 });
+      expect(decision.kind).toBe("allow");
+      await scope.afterTool({
+        ...(decision.kind === "allow" ? { ticket: decision.ticket } : {}),
+        toolCallId: toolName,
+        toolName,
+        result: "ok",
+        isError: false,
+        now: 12,
+      });
+    }
+    scope.dispose();
+    expect(runtime.agentLoop?.resolveCompletedReplay?.(input)).toBe(
+      "c02-eval-session:C02-B-001:0123456789abcdef01234567",
+    );
+    await runtime.close();
+  });
   it("is explicitly hostless while keeping the normal production profile", async () => {
     expect(C02_BEHAVIOR_GOVERNOR_MODULE.requiresHost).toBe(false);
     const runtime = await createRuntime();

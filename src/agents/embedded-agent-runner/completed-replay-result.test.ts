@@ -36,6 +36,20 @@ describe("createEmbeddedCompletedReplayResult", () => {
     });
   });
 
+  it("normalizes only identity comparison while preserving the caller session spelling", () => {
+    const upperCaseSessionId = `c02-eval-C02-B-002-${nonce}`;
+    expect(
+      createEmbeddedCompletedReplayResult({
+        sessionId: upperCaseSessionId,
+        startedAt: Date.now(),
+        completedC02ReplayTaskId: taskId,
+      }),
+    ).toMatchObject({
+      payloads: [{ text: "C02_COMPLETE" }],
+      meta: { agentMeta: { governedReplay: { sessionId: upperCaseSessionId, taskId } } },
+    });
+  });
+
   it("keeps noncanonical and unrelated completed replays unchanged", () => {
     expect(result(`c02-eval-session:C02-B-002:${"0".repeat(24)}`)).toMatchObject({
       meta: { terminalReplyKind: "silent-empty", livenessState: "working" },

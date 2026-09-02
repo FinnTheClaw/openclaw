@@ -70,7 +70,9 @@ export function installGovernorLoopBridge(params: {
   const tickets = new Map<string, GovernorAgentLoopToolTicket | undefined>();
   const priorBefore = params.agent.beforeToolCall;
   const priorAfter = params.agent.afterToolCall;
+  const priorResolveDeferredTool = params.agent.resolveDeferredTool;
   const priorShouldStop = params.agent.shouldStopAfterTurn;
+  const installedToolsByName = new Map(params.agent.state.tools.map((tool) => [tool.name, tool]));
   let toolInventoryLease: Readonly<{ restore(): void }> | undefined;
   const governedTools = new Map(params.scope.governedTools().map((tool) => [tool.name, tool]));
   let stoppedReason: string | undefined;
@@ -85,12 +87,37 @@ export function installGovernorLoopBridge(params: {
     return (await priorShouldStop?.(context)) === true;
   };
   const governorSteeringKey = "openclaw-governor-progress";
+  const c02EvaluationScope = params.scope.taskId.startsWith("c02-eval-session:");
+  const resolveDeferredTool: NonNullable<Agent["resolveDeferredTool"]> = async (
+    context,
+    signal,
+  ) => {
+    const prior = await priorResolveDeferredTool?.(context, signal);
+    if (prior || !c02EvaluationScope || params.scope.mode !== "enforce") {
+      return prior;
+    }
+    if (
+      context.toolCall.name !== "exec" ||
+      !params.scope.governedTools().some((tool) => tool.name === "exec")
+    ) {
+      return undefined;
+    }
+    return installedToolsByName.get("exec");
+  };
+  const refreshC02ToolInventory = () => {
+    if (!c02EvaluationScope || params.scope.mode !== "enforce") {
+      return;
+    }
+    toolInventoryLease?.restore();
+    toolInventoryLease = params.agent.installToolInventory([...params.scope.governedTools()]);
+  };
   if (params.scope.mode === "enforce") {
     const legacyTools = params.agent.state.tools.filter((tool) => !governedTools.has(tool.name));
-    toolInventoryLease = params.agent.installToolInventory([
-      ...legacyTools,
-      ...governedTools.values(),
-    ]);
+    toolInventoryLease = params.agent.installToolInventory(
+      c02EvaluationScope
+        ? [...governedTools.values()]
+        : [...legacyTools, ...governedTools.values()],
+    );
   }
 
   const beforeToolCall: NonNullable<Agent["beforeToolCall"]> = async (context, signal) => {
@@ -150,6 +177,7 @@ export function installGovernorLoopBridge(params: {
         signal,
         now: now(),
       });
+      refreshC02ToolInventory();
     } catch (error) {
       if (params.scope.mode !== "shadow") {
         throw error;
@@ -166,6 +194,7 @@ export function installGovernorLoopBridge(params: {
 
   params.agent.beforeToolCall = beforeToolCall;
   params.agent.afterToolCall = afterToolCall;
+  params.agent.resolveDeferredTool = resolveDeferredTool;
   if (params.scope.mode === "enforce") {
     params.agent.shouldStopAfterTurn = shouldStopAfterTurn;
   }
@@ -265,6 +294,9 @@ export function installGovernorLoopBridge(params: {
       }
       if (params.agent.afterToolCall === afterToolCall) {
         params.agent.afterToolCall = priorAfter;
+      }
+      if (params.agent.resolveDeferredTool === resolveDeferredTool) {
+        params.agent.resolveDeferredTool = priorResolveDeferredTool;
       }
       if (params.agent.shouldStopAfterTurn === shouldStopAfterTurn) {
         params.agent.shouldStopAfterTurn = priorShouldStop;
