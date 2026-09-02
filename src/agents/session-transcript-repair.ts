@@ -82,7 +82,7 @@ function isCompleteJsonObject(value: string): boolean {
   }
 }
 
-function isFinalizedOpenAIResponsesToolCall(
+export function isFinalizedOpenAIResponsesToolCall(
   message: AgentMessage,
   block: RawToolCallBlock,
 ): boolean {
@@ -104,6 +104,26 @@ function isFinalizedOpenAIResponsesToolCall(
 
   const separator = block.id.indexOf("|");
   return separator > 0 && separator < block.id.length - 1;
+}
+
+
+export function dropUnfinalizedOpenAIResponsesToolCalls(message: AgentMessage): AgentMessage {
+  if (message.role !== "assistant" || !Array.isArray(message.content)) {
+    return message;
+  }
+  let changed = false;
+  const content = message.content.filter((block) => {
+    if (
+      !isRawToolCallBlock(block) ||
+      !hasPartialJson(block) ||
+      isFinalizedOpenAIResponsesToolCall(message, block)
+    ) {
+      return true;
+    }
+    changed = true;
+    return false;
+  });
+  return changed ? { ...message, content } : message;
 }
 
 function sanitizeToolCallBlock(block: RawToolCallBlock): RawToolCallBlock {

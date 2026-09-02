@@ -1227,6 +1227,32 @@ describe("wrapStreamFnTrimToolCallNames", () => {
     expect(finalToolCall.name).toBe("read");
   });
 
+  it("drops an unfinished OpenAI Responses partial before dispatch", async () => {
+    const baseFn = () =>
+      createFakeStream({
+        events: [],
+        resultMessage: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [
+            {
+              type: "toolCall",
+              id: "chatcmpl-tool-abcd|fc_1234",
+              name: "read",
+              arguments: { path: "/bad" },
+              partialJson: "{\"path\":",
+            },
+          ],
+        },
+      });
+    const wrapped = wrapStreamFnTrimToolCallNames(baseFn as never, new Set(["read"]));
+    const stream = await Promise.resolve(
+      wrapped({ api: "openai-responses" } as never, {} as never, {} as never),
+    );
+    const message = requireRecord(await stream.result(), "result message");
+    expect(message.content).toEqual([]);
+  });
+
   it("recovers malformed non-blank names when id is missing", async () => {
     const finalToolCall = { type: "toolCall", name: "functionsread3" };
     const finalMessage = { role: "assistant", content: [finalToolCall] };

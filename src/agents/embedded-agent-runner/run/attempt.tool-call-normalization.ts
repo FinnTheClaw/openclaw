@@ -21,7 +21,10 @@ import {
   validateGeminiTurns,
 } from "../../embedded-agent-helpers.js";
 import type { AgentMessage, StreamFn } from "../../runtime/index.js";
-import { sanitizeToolUseResultPairing } from "../../session-transcript-repair.js";
+import {
+  dropUnfinalizedOpenAIResponsesToolCalls,
+  sanitizeToolUseResultPairing,
+} from "../../session-transcript-repair.js";
 import {
   extractToolCallsFromAssistant,
   extractToolResultIds,
@@ -1060,7 +1063,11 @@ export function wrapStreamFnPromoteStandaloneTextToolCalls(
 function wrapStreamTrimToolCallNames(
   stream: AssistantStream,
   allowedToolNames?: Set<string>,
-  options?: { unknownToolThreshold?: number; state?: UnknownToolLoopGuardState },
+  options?: {
+    unknownToolThreshold?: number;
+    state?: UnknownToolLoopGuardState;
+    dropUnfinalizedOpenAIResponsesToolCalls?: boolean;
+  },
 ): AssistantStream {
   const unknownToolGuardState = options?.state ?? {
     count: 0,
@@ -1069,7 +1076,10 @@ function wrapStreamTrimToolCallNames(
   let streamAttemptAlreadyCounted = false;
   const originalResult = stream.result.bind(stream);
   stream.result = async () => {
-    const message = await originalResult();
+    const rawMessage = await originalResult();
+    const message = options?.dropUnfinalizedOpenAIResponsesToolCalls
+      ? dropUnfinalizedOpenAIResponsesToolCalls(rawMessage)
+      : rawMessage;
     trimWhitespaceFromToolCallNamesInMessage(message, allowedToolNames);
     guardUnknownToolLoopInMessage(message, unknownToolGuardState, {
       allowedToolNames,
@@ -1120,18 +1130,20 @@ export function wrapStreamFnTrimToolCallNames(
   };
   return (model, context, streamOptions) => {
     const maybeStream = baseFn(model, context, streamOptions);
-    if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
-      return Promise.resolve(maybeStream).then((stream) =>
-        wrapStreamTrimToolCallNames(stream, allowedToolNames, {
-          unknownToolThreshold: guardOptions?.unknownToolThreshold,
-          state: unknownToolGuardState,
-        }),
-      );
-    }
-    return wrapStreamTrimToolCallNames(maybeStream, allowedToolNames, {
+    const trimOptions = {
       unknownToolThreshold: guardOptions?.unknownToolThreshold,
       state: unknownToolGuardState,
-    });
+      dropUnfinalizedOpenAIResponsesToolCalls:
+        model.api === "openai-responses" ||
+        model.api === "openai-chatgpt-responses" ||
+        model.api === "azure-openai-responses",
+    };
+    if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
+      return Promise.resolve(maybeStream).then((stream) =>
+        wrapStreamTrimToolCallNames(stream, allowedToolNames, trimOptions),
+      );
+    }
+    return wrapStreamTrimToolCallNames(maybeStream, allowedToolNames, trimOptions);
   };
 }
 
