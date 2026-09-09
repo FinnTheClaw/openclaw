@@ -1,6 +1,9 @@
 import type { Model } from "@openclaw/llm-core";
 import { describe, expect, it } from "vitest";
-import { buildOpenAIResponsesCompactSystemMessage } from "./openai-responses-params-internal.js";
+import {
+  buildOpenAIResponsesCompactSystemMessage,
+  buildOpenAIResponsesParams,
+} from "./openai-responses-params-internal.js";
 
 const reasoningModel = {
   id: "gpt-5.6-luna",
@@ -40,5 +43,109 @@ describe("buildOpenAIResponsesCompactSystemMessage", () => {
       "Retain the conversation.",
     );
     expect(message.role).toBe("system");
+  });
+});
+
+describe("buildOpenAIResponsesParams reasoning capabilities", () => {
+  const customModel = {
+    ...reasoningModel,
+    id: "local-reasoner",
+    provider: "custom-provider",
+    baseUrl: "https://proxy.example.com/v1",
+    compat: {
+      supportsReasoningEffort: true,
+      supportedReasoningEfforts: ["none", "low", "high"],
+    },
+  } satisfies Model<"openai-responses">;
+  const context = {
+    messages: [{ role: "user" as const, content: "Reply briefly.", timestamp: 0 }],
+  };
+
+  it.each([
+    {
+      name: "preserves explicitly supported none on a custom route",
+      model: customModel,
+      options: { reasoningEffort: "none" },
+      expected: { effort: "none" },
+    },
+    {
+      name: "preserves explicit none through the reasoning alias",
+      model: customModel,
+      options: { reasoning: "none" },
+      expected: { effort: "none" },
+    },
+    {
+      name: "maps explicit off to the declared none capability",
+      model: customModel,
+      options: { reasoningEffort: "off" },
+      expected: { effort: "none" },
+    },
+    {
+      name: "keeps omitted custom-route options distinct from explicit none",
+      model: customModel,
+      options: undefined,
+      expected: undefined,
+    },
+    {
+      name: "keeps empty custom-route options distinct from explicit none",
+      model: customModel,
+      options: {},
+      expected: undefined,
+    },
+    {
+      name: "preserves supported enabled reasoning",
+      model: customModel,
+      options: { reasoningEffort: "high" },
+      expected: { effort: "high", summary: "auto" },
+    },
+    {
+      name: "keeps unsupported custom-route none omitted",
+      model: {
+        ...customModel,
+        compat: { supportsReasoningEffort: true, supportedReasoningEfforts: ["low", "high"] },
+      },
+      options: { reasoningEffort: "none" },
+      expected: undefined,
+    },
+    {
+      name: "respects explicitly disabled reasoning support",
+      model: {
+        ...customModel,
+        compat: { ...customModel.compat, supportsReasoningEffort: false },
+      },
+      options: { reasoningEffort: "none" },
+      expected: undefined,
+    },
+    {
+      name: "does not infer custom-route none support from a native model name",
+      model: { ...reasoningModel, baseUrl: customModel.baseUrl },
+      options: { reasoningEffort: "none" },
+      expected: undefined,
+    },
+    {
+      name: "preserves the native OpenAI omitted-effort default",
+      model: reasoningModel,
+      options: undefined,
+      expected: { effort: "none" },
+    },
+    {
+      name: "preserves native OpenAI explicit none",
+      model: reasoningModel,
+      options: { reasoningEffort: "none" },
+      expected: { effort: "none" },
+    },
+  ] satisfies Array<{
+    name: string;
+    model: Model;
+    options: Parameters<typeof buildOpenAIResponsesParams>[2];
+    expected: { effort: string; summary?: string } | undefined;
+  }>)("$name", ({ model, options, expected }) => {
+    const params = buildOpenAIResponsesParams(model, context, options);
+    expect(params.reasoning).toEqual(expected);
+    if (expected?.effort === "high") {
+      expect(params.include).toEqual(["reasoning.encrypted_content"]);
+    } else {
+      expect(params).not.toHaveProperty("include");
+    }
   });
 });

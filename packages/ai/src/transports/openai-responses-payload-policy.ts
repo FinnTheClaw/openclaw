@@ -56,6 +56,7 @@ type OpenAIResponsesEndpointClass =
 type OpenAIResponsesPayloadPolicy = {
   allowsServiceTier: boolean;
   compactThreshold: number | undefined;
+  defaultReasoningEffort: "none" | undefined;
   explicitStore: boolean | undefined;
   shouldStripDisabledReasoningPayload: boolean;
   shouldStripInputStatus: boolean;
@@ -404,9 +405,14 @@ export function resolveOpenAIResponsesPayloadPolicy(
           ? true
           : undefined;
   const isResponsesApi = isOpenAIResponsesApi(normalizeOptionalLowercaseString(model.api));
+  // A custom route must declare disabled-effort support; a native model name
+  // alone cannot establish what a compatible endpoint accepts.
   const shouldStripDisabledReasoningPayload =
     isResponsesApi &&
-    (!capabilities.usesKnownNativeOpenAIRoute || !supportsOpenAIReasoningEffort(model, "none"));
+    !supportsOpenAIReasoningEffort(
+      capabilities.usesKnownNativeOpenAIRoute ? model : { compat: model.compat },
+      "none",
+    );
   // Strict OpenAI-compatible Responses endpoints reject output-only fields
   // such as `status` on replayed input items. Strip them for non-native routes.
   const shouldStripInputStatus = isResponsesApi && !capabilities.usesKnownNativeOpenAIRoute;
@@ -432,6 +438,13 @@ export function resolveOpenAIResponsesPayloadPolicy(
   return {
     allowsServiceTier: capabilities.allowsOpenAIServiceTier,
     compactThreshold: serverCompactionPlan.threshold,
+    // Preserve native defaults without turning an omitted custom-route effort into none.
+    defaultReasoningEffort:
+      isResponsesApi &&
+      capabilities.usesKnownNativeOpenAIRoute &&
+      !shouldStripDisabledReasoningPayload
+        ? "none"
+        : undefined,
     explicitStore,
     shouldStripDisabledReasoningPayload,
     shouldStripInputStatus,

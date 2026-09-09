@@ -389,16 +389,8 @@ export function buildOpenAIResponsesParams(
           params.include = ["reasoning.encrypted_content"];
         }
       }
-    } else if (model.provider !== "github-copilot") {
-      const reasoningEffort = resolveOpenAIReasoningEffortForModel({
-        model,
-        effort: "none",
-      });
-      if (reasoningEffort) {
-        params.reasoning = {
-          effort: reasoningEffort,
-        };
-      }
+    } else if (model.provider !== "github-copilot" && payloadPolicy.defaultReasoningEffort) {
+      params.reasoning = { effort: payloadPolicy.defaultReasoningEffort };
     }
   }
   applyOpenAIResponsesPayloadPolicy(params as Record<string, unknown>, payloadPolicy);
