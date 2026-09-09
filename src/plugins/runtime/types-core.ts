@@ -246,6 +246,8 @@ type LlmCompleteCommonParams = {
   maxTokens?: number;
   /** Advisory sampling hint; runtime owners without an equivalent control may ignore it. */
   temperature?: number;
+  /** Optional constrained-output format; unsupported runtime owners may ignore it. */
+  responseFormat?: import("../../llm/types.js").StreamOptions["responseFormat"];
   /** Requested reasoning effort; the host normalizes it for the selected model. */
   reasoning?: import("../../auto-reply/thinking.js").ThinkLevel;
   systemPrompt?: string;

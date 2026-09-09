@@ -26,6 +26,7 @@ import type {
   AssistantMessage,
   Model,
   ModelThinkingLevel,
+  StreamOptions,
   ThinkingLevel as SimpleCompletionThinkingLevel,
 } from "../llm/types.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
@@ -89,6 +90,7 @@ type AllowedMissingApiKeyMode = ResolvedProviderAuth["mode"];
 type SimpleCompletionModelOptions = {
   maxTokens?: number;
   temperature?: number;
+  responseFormat?: StreamOptions["responseFormat"];
   reasoning?: ThinkLevel | SimpleCompletionThinkingLevel;
   strictReasoningTags?: boolean;
   signal?: AbortSignal;
@@ -694,7 +696,9 @@ function normalizeSimpleCompletionReasoning(
     case undefined:
       return undefined;
     case "off":
-      return resolveClaudeSonnet5ModelIdentity(model) || resolveClaudeOpus5ModelIdentity(model)
+      return resolveClaudeSonnet5ModelIdentity(model) ||
+        resolveClaudeOpus5ModelIdentity(model) ||
+        supportsOpenAIReasoningEffort(model, "none")
         ? "off"
         : undefined;
     case "adaptive":

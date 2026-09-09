@@ -55,6 +55,7 @@ import { isCloudflareProvider, resolveCloudflareBaseUrl } from "./cloudflare.js"
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { finalizeOpenAICompletionsToolCalls } from "./openai-completions-tool-calls.js";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.js";
+import { supportsOpenAIReasoningEffort } from "./openai-reasoning-effort.js";
 import {
   resolveOpenAICompletionsResponseFormat,
   shouldOmitOllamaCompatResponseFormat,
@@ -276,7 +277,9 @@ export const streamSimpleOpenAICompletions: StreamFunction<
     : undefined;
   const reasoningEffort =
     clampedReasoning === "off"
-      ? undefined
+      ? supportsOpenAIReasoningEffort(model, "none")
+        ? "none"
+        : undefined
       : clampedReasoning === "max"
         ? "xhigh"
         : clampedReasoning;
@@ -526,7 +529,9 @@ function buildParams(
     // OpenAI-style reasoning_effort
     params.reasoning_effort = reasoningEffort;
   } else if (model.reasoning && compat.supportsReasoningEffort) {
-    if (typeof offReasoningEffort === "string") {
+    if (reasoningEffort === "none") {
+      params.reasoning_effort = reasoningEffort;
+    } else if (typeof offReasoningEffort === "string") {
       params.reasoning_effort = offReasoningEffort;
     }
   }

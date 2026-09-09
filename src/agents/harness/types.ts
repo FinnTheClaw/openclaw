@@ -176,6 +176,7 @@ type AgentHarnessIsolatedCompletionParams = {
   streamParams?: {
     maxTokens?: number;
     temperature?: number;
+    responseFormat?: import("../../llm/types.js").StreamOptions["responseFormat"];
   };
 };
 export type AgentHarnessIsolatedCompletionAuthorization =

@@ -121,6 +121,7 @@ describe("runtime.llm.complete isolated agent runtime", () => {
       llm.complete({
         messages: [{ role: "user", content: "Return JSON" }],
         systemPrompt: "JSON only",
+        responseFormat: { type: "object", properties: { answer: { type: "string" } } },
         reasoning: "high",
         execution: {
           mode: "isolated-agent-runtime",
@@ -141,7 +142,11 @@ describe("runtime.llm.complete isolated agent runtime", () => {
       prompt: "Return JSON",
       timeoutMs: 12_000,
       thinkLevel: "high",
-      streamParams: { maxTokens: undefined, temperature: undefined },
+      streamParams: {
+        maxTokens: undefined,
+        temperature: undefined,
+        responseFormat: { type: "object", properties: { answer: { type: "string" } } },
+      },
     });
     expect(result).toMatchObject({
       text: "isolated",

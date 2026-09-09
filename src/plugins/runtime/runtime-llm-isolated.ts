@@ -154,6 +154,9 @@ export async function runIsolatedAgentRuntimeCompletion(params: {
         streamParams: {
           maxTokens: asFiniteNumber(params.request.maxTokens),
           temperature: asFiniteNumber(params.request.temperature),
+          ...(params.request.responseFormat !== undefined
+            ? { responseFormat: params.request.responseFormat }
+            : {}),
         },
       });
     })();

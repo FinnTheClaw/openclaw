@@ -29,6 +29,9 @@ export async function runHostPreparedIsolatedCompletion(
     options: {
       maxTokens: params.streamParams?.maxTokens,
       temperature: params.streamParams?.temperature,
+      ...(params.streamParams?.responseFormat !== undefined
+        ? { responseFormat: params.streamParams.responseFormat }
+        : {}),
       reasoning: params.thinkLevel,
       // Title callers must select strict parsing before transport recovery loses tag provenance.
       strictReasoningTags: params.outputTextPolicy === "strict-visible",

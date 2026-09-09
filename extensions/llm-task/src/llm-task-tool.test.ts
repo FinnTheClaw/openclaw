@@ -162,6 +162,7 @@ describe("llm-task tool (json-only)", () => {
     };
     const res = await tool.execute("id", { prompt: "return foo", schema });
     expect(resultJson(res)).toEqual({ foo: "bar" });
+    expect(firstIsolatedCompletionCall().responseFormat).toEqual(schema);
   });
 
   it("validates caller schemas with repeated $id independently across calls", async () => {

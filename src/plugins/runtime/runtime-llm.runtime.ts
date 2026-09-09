@@ -611,6 +611,7 @@ export function createRuntimeLlm(
         options: {
           maxTokens: asFiniteNumber(params.maxTokens),
           temperature: asFiniteNumber(params.temperature),
+          ...(params.responseFormat !== undefined ? { responseFormat: params.responseFormat } : {}),
           ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
           signal: params.signal,
         },

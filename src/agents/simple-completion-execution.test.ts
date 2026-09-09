@@ -86,7 +86,7 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
     ["gpt-5.4", "ultra", "xhigh"],
     ["gpt-5.6-terra", "max", "max"],
     ["gpt-5.6-terra", "ultra", "max"],
-    ["gpt-5.4", "off", undefined],
+    ["gpt-5.4", "off", "off"],
   ] as const)("maps %s reasoning %s to %s", async (id, reasoning, expected) => {
     const model: Model =
       id === "gpt-5.4"
@@ -113,6 +113,40 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
       },
     ]);
   });
+
+  it.each([
+    { reasoning: "off", supported: true, expected: "off" },
+    { reasoning: undefined, supported: true, expected: undefined },
+    { reasoning: "high", supported: true, expected: "high" },
+    { reasoning: "off", supported: false, expected: undefined },
+  ] as const)(
+    "keeps explicit $reasoning distinct with none support=$supported",
+    async ({ reasoning, supported, expected }) => {
+      const model = {
+        ...baseModel,
+        provider: "custom-provider",
+        id: "custom-model",
+        name: "Custom model",
+        api: "openai-completions",
+        compat: {
+          supportsReasoningEffort: true,
+          supportedReasoningEfforts: supported
+            ? ["none", "low", "medium", "high"]
+            : ["low", "medium", "high"],
+        },
+      } satisfies Model<"openai-completions">;
+      await completeWithPreparedSimpleCompletionModel({
+        model,
+        auth: { apiKey: "test", source: "models.json", mode: "api-key" },
+        context,
+        options: { reasoning },
+      });
+      expect(completionRequests()[0]?.options).toEqual({
+        ...(expected ? { reasoning: expected } : {}),
+        apiKey: "test",
+      });
+    },
+  );
 
   it("carries strict visibility internally without adding a wire option", async () => {
     await completeWithPreparedSimpleCompletionModel({

@@ -663,6 +663,10 @@ describe("runtime.llm.complete", () => {
       ],
       temperature: 0.2,
       maxTokens: 64,
+      responseFormat: {
+        type: "json_schema",
+        json_schema: { name: "answer", strict: false, schema: { type: "object" } },
+      },
       reasoning: "ultra",
       purpose: "test-purpose",
     });
@@ -687,6 +691,10 @@ describe("runtime.llm.complete", () => {
     expectFields(requireRecord(completionArg.options, "completion options"), {
       maxTokens: 64,
       temperature: 0.2,
+      responseFormat: {
+        type: "json_schema",
+        json_schema: { name: "answer", strict: false, schema: { type: "object" } },
+      },
       reasoning: "ultra",
     });
     expectFields(requireRecord(result, "completion result"), {

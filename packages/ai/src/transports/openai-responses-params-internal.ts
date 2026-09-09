@@ -13,6 +13,7 @@ import {
   supportsOpenAITemperature,
   type OpenAIApiReasoningEffort,
 } from "../providers/openai-reasoning-effort.js";
+import { resolveOpenAICompletionsResponseFormat } from "../providers/openai-response-format.js";
 import {
   projectOpenAITools,
   reconcileOpenAIResponsesToolChoice,
@@ -247,6 +248,11 @@ function ensureOpenAIResponsesNonEmptyInput(messages: ResponseInput, context: Co
 function resolveOpenAIResponsesTextFormat(
   responseFormat: Record<string, unknown>,
 ): ResponseFormatTextConfig {
+  // Keep native Responses formats intact; normalize raw schemas with the shared OpenAI name.
+  responseFormat =
+    responseFormat.type === "json_schema"
+      ? responseFormat
+      : (resolveOpenAICompletionsResponseFormat(responseFormat, true) ?? responseFormat);
   if (
     responseFormat.type === "json_schema" &&
     responseFormat.json_schema &&
