@@ -38,6 +38,40 @@ const EMPTY_RESPONSE_RETRY_INSTRUCTION =
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch.";
 
+/** Keep the last reasoning-only retry request-local on explicitly enabled Chat routes. */
+export function resolveReasoningOnlyRetryStreamParams(params: {
+  modelApi?: string;
+  reasoningOnlyAttempts: number;
+  modelParams?: Record<string, unknown>;
+  defaultParams?: Record<string, unknown>;
+  agentParams?: Record<string, unknown>;
+  streamParams?: Record<string, unknown>;
+}): Record<string, unknown> | undefined {
+  const kwargs = (source?: Record<string, unknown>): Record<string, unknown> => {
+    const value = source?.chat_template_kwargs ?? source?.chatTemplateKwargs;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  };
+  if (
+    params.modelApi !== "openai-completions" ||
+    params.reasoningOnlyAttempts !== DEFAULT_REASONING_ONLY_RETRY_LIMIT ||
+    kwargs(params.modelParams).enable_thinking !== true
+  ) {
+    return params.streamParams;
+  }
+  return {
+    ...params.streamParams,
+    chat_template_kwargs: {
+      ...kwargs(params.defaultParams),
+      ...kwargs(params.modelParams),
+      ...kwargs(params.agentParams),
+      ...kwargs(params.streamParams),
+      enable_thinking: false,
+    },
+  };
+}
+
 export function shouldRetrySilentErrorAssistantTurn(params: {
   attempt: Pick<
     EmbeddedRunAttemptResult,

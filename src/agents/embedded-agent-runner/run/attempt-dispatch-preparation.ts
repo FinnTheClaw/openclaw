@@ -5,6 +5,7 @@ import type { resolveContextEngine } from "../../../context-engine/registry.js";
 import { attachModelProviderRuntimePluginHandle } from "../../../plugins/provider-hook-runtime.js";
 import { createTrajectoryRuntimeRecorder } from "../../../trajectory/runtime.js";
 import { agentHarnessBuildsOpenClawTools } from "../../harness/selection.js";
+import { resolveModelExtraParamSources } from "../../model-extra-params.js";
 import { recordAdmittedModelRoutingDecision } from "../../model-routing-decision.js";
 import { buildAgentRuntimePlan } from "../../runtime-plan/build.js";
 import { createEmbeddedRunReplayState } from "../replay-state.js";
@@ -13,6 +14,7 @@ import { EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE } from "./attempt-stage-timing.js";
 import { resolveAttemptDispatchApiKey } from "./auth-store.js";
 import type { PreparedEmbeddedRunInput } from "./execution-context.js";
 import { resolveEmbeddedAttemptBasePrompt } from "./helpers.js";
+import { resolveReasoningOnlyRetryStreamParams } from "./incomplete-turn-recovery.js";
 import { dispatchEmbeddedRunAttempt } from "./run-attempt-dispatch.js";
 import type { prepareEmbeddedRunRuntime } from "./runtime-preparation.js";
 import { CODEX_HARNESS_ID, resolveAttemptTrajectoryAttribution } from "./runtime-resolution.js";
@@ -144,6 +146,17 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
   if (!input.startupStagesEmitted) {
     startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
   }
+  const attemptStreamParams = resolveReasoningOnlyRetryStreamParams({
+    modelApi: effectiveModel.api,
+    reasoningOnlyAttempts: terminalRetryState.reasoningOnlyAttempts,
+    ...resolveModelExtraParamSources({
+      config: params.config,
+      provider,
+      modelId,
+      agentId: workspaceResolution.agentId,
+    }),
+    streamParams: params.streamParams,
+  });
   const runtimePlan = buildAgentRuntimePlan({
     provider,
     modelId,
@@ -159,7 +172,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     agentDir,
     agentId: workspaceResolution.agentId,
     thinkingLevel: mapThinkingLevelForProvider(runtime.thinkLevel),
-    extraParamsOverride: { ...params.streamParams, fastMode: attemptFastMode },
+    extraParamsOverride: { ...attemptStreamParams, fastMode: attemptFastMode },
   });
   const trajectoryAttribution = resolveAttemptTrajectoryAttribution({
     model: effectiveModel,
@@ -222,7 +235,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     fallbackReason: params.modelRoutingProvenance?.fallbackReason,
   });
   const dispatchedAttempt = await dispatchEmbeddedRunAttempt({
-    params,
+    params: { ...params, streamParams: attemptStreamParams },
     permissionChange: input.permissionChange,
     runStartedAtMs: runInput.startedAtMs,
     transcriptOwnership: params.sessionManager

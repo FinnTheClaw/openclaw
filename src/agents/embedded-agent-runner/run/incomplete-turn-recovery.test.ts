@@ -6,6 +6,7 @@ import {
 import {
   resolveEmptyResponseRetryInstruction,
   resolveReasoningOnlyRetryInstruction,
+  resolveReasoningOnlyRetryStreamParams,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
 import { resolveIncompleteTurnPayloadText } from "./incomplete-turn-resolution.js";
@@ -308,5 +309,79 @@ describe("incomplete-turn recovery policy", () => {
         attempt,
       }),
     ).toBe(false);
+  });
+});
+
+describe("reasoning-only retry stream params", () => {
+  const modelParams = { chat_template_kwargs: { enable_thinking: true, model_option: "kept" } };
+  it.each([0, 1, 3])("leaves attempt %s unchanged", (reasoningOnlyAttempts) => {
+    const streamParams = { temperature: 0.5 };
+    expect(
+      resolveReasoningOnlyRetryStreamParams({
+        modelApi: "openai-completions",
+        reasoningOnlyAttempts,
+        modelParams,
+        streamParams,
+      }),
+    ).toBe(streamParams);
+  });
+  it.each([undefined, false, "true"])(
+    "requires explicit model opt-in, not %s",
+    (enable_thinking) => {
+      expect(
+        resolveReasoningOnlyRetryStreamParams({
+          modelApi: "openai-completions",
+          reasoningOnlyAttempts: 2,
+          modelParams: { chat_template_kwargs: { enable_thinking } },
+          defaultParams: modelParams,
+        }),
+      ).toBeUndefined();
+    },
+  );
+  it("does not change Responses requests", () => {
+    expect(
+      resolveReasoningOnlyRetryStreamParams({
+        modelApi: "openai-responses",
+        reasoningOnlyAttempts: 2,
+        modelParams,
+      }),
+    ).toBeUndefined();
+  });
+  it("preserves kwargs and request controls without mutating inputs", () => {
+    const streamParams = {
+      temperature: 0.5,
+      tool_choice: "auto",
+      chatTemplateKwargs: { request_option: "kept" },
+    };
+    const before = structuredClone({ modelParams, streamParams });
+    expect(
+      resolveReasoningOnlyRetryStreamParams({
+        modelApi: "openai-completions",
+        reasoningOnlyAttempts: 2,
+        modelParams,
+        defaultParams: { chat_template_kwargs: { default_option: 1 } },
+        agentParams: { chatTemplateKwargs: { agent_option: 2 } },
+        streamParams,
+      }),
+    ).toEqual({
+      ...streamParams,
+      chat_template_kwargs: {
+        default_option: 1,
+        model_option: "kept",
+        agent_option: 2,
+        request_option: "kept",
+        enable_thinking: false,
+      },
+    });
+    expect({ modelParams, streamParams }).toEqual(before);
+  });
+  it("accepts the configured camel-case alias", () => {
+    expect(
+      resolveReasoningOnlyRetryStreamParams({
+        modelApi: "openai-completions",
+        reasoningOnlyAttempts: 2,
+        modelParams: { chatTemplateKwargs: { enable_thinking: true } },
+      }),
+    ).toEqual({ chat_template_kwargs: { enable_thinking: false } });
   });
 });
