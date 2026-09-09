@@ -1,0 +1,17 @@
+--- a/dist/terminal.js
++++ b/dist/terminal.js
+@@ -108,7 +108,13 @@
+         // Refresh terminal dimensions - they may be stale after suspend/resume
+         // (SIGWINCH is lost while process is stopped). Unix only.
+         if (process.platform !== "win32") {
+-            process.kill(process.pid, "SIGWINCH");
++            try {
++                process.kill(process.pid, "SIGWINCH");
++            } catch (error) {
++                // Container policy may deny this optional startup size refresh.
++                // The normal stdout resize listener remains registered above.
++                if (error?.code !== "EACCES" && error?.code !== "EPERM") throw error;
++            }
+         }
+         // On Windows, enable ENABLE_VIRTUAL_TERMINAL_INPUT so the console sends
+         // VT escape sequences (e.g. \x1b[Z for Shift+Tab) instead of raw console
