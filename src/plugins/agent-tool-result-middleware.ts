@@ -7,6 +7,7 @@ import type {
 } from "./agent-tool-result-middleware-types.js";
 import type { PluginAgentToolResultMiddlewareRegistration } from "./registry-types.js";
 import { getActivePluginRegistry } from "./runtime.js";
+import { getPluginRuntimeGenerationRegistry } from "./runtime/generation-scope.js";
 import {
   createPluginToolMatcherScope,
   normalizePluginToolMatcher,
@@ -116,11 +117,13 @@ export function agentToolResultMiddlewareRegistrationCoversTool(
 export function getAgentToolResultMiddlewareMatcherScope(
   runtime: AgentToolResultMiddlewareRuntime,
 ): PluginToolMatcherScope | undefined {
-  const matchers = (getActivePluginRegistry()?.agentToolResultMiddlewares ?? []).flatMap(
-    (registration) =>
-      readAgentToolResultMiddlewareScopes(registration)
-        .filter((scope) => scope.runtimes.includes(runtime))
-        .map((scope) => scope.matcher),
+  const matchers = (
+    (getPluginRuntimeGenerationRegistry() ?? getActivePluginRegistry())
+      ?.agentToolResultMiddlewares ?? []
+  ).flatMap((registration) =>
+    readAgentToolResultMiddlewareScopes(registration)
+      .filter((scope) => scope.runtimes.includes(runtime))
+      .map((scope) => scope.matcher),
   );
   return createPluginToolMatcherScope(matchers);
 }
@@ -129,8 +132,8 @@ export function listAgentToolResultMiddlewares(
   runtime: AgentToolResultMiddlewareRuntime,
 ): AgentToolResultMiddleware[] {
   return (
-    getActivePluginRegistry()
-      ?.agentToolResultMiddlewares?.filter((entry) => entry.runtimes.includes(runtime))
+    (getPluginRuntimeGenerationRegistry() ?? getActivePluginRegistry())?.agentToolResultMiddlewares
+      ?.filter((entry) => entry.runtimes.includes(runtime))
       .map((entry) => entry.handler) ?? []
   );
 }

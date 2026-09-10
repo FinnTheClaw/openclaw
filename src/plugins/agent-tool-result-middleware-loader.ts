@@ -9,6 +9,7 @@ import { listAgentToolResultMiddlewares } from "./agent-tool-result-middleware.j
 import { loadPluginRegistryHandle } from "./loader.js";
 import type { PluginAgentToolResultMiddlewareOwner, PluginRegistry } from "./registry-types.js";
 import { getActivePluginRegistry } from "./runtime.js";
+import { getPluginRuntimeGenerationRegistry } from "./runtime/generation-scope.js";
 
 const log = createSubsystemLogger("plugins/agent-tool-result-middleware");
 
@@ -59,7 +60,8 @@ export async function loadAgentToolResultMiddlewaresForRuntime(params: {
   const activeHandlers = listAgentToolResultMiddlewares(params.runtime);
 
   try {
-    const activeRegistry = getActivePluginRegistry();
+    // Tool feedback must use the same prepared run registry as prompt hooks.
+    const activeRegistry = getPluginRuntimeGenerationRegistry() ?? getActivePluginRegistry();
     const owners = listMiddlewareOwners({
       registry: activeRegistry,
       runtime: params.runtime,

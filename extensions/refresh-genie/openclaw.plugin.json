@@ -1,0 +1,33 @@
+{
+  "id": "refresh-genie",
+  "name": "Refresh Genie",
+  "description": "Nonblocking semantic coaching after scoped memory changes.",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "agentToolResultMiddleware": [
+      "openclaw"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "model": {
+        "type": "string",
+        "description": "Optional logical checker route; otherwise inherits the configured agent primary."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120000
+      },
+      "maxTokens": {
+        "type": "integer",
+        "minimum": 64,
+        "maximum": 16384
+      }
+    },
+    "additionalProperties": false
+  }
+}
