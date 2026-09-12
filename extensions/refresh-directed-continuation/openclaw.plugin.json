@@ -1,0 +1,13 @@
+{
+  "id": "refresh-directed-continuation",
+  "name": "Refresh Directed Continuation",
+  "description": "Bounded evidence-directed continuation for explicit zero-tool memory requests.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}
