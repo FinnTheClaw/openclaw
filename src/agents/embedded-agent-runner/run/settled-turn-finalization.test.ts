@@ -12,12 +12,17 @@ import {
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import type { EmbeddedRunAttemptWithReceiptEvidence } from "./attempt-result.js";
+import { buildAttemptReplayMetadata } from "./attempt-terminal-evidence.js";
 import { EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS } from "./lane-runtime.js";
 import { buildEmbeddedRunPayloads } from "./payloads.js";
 import { prepareTerminalWithSettledTurnFinalization } from "./settled-turn-finalization.js";
 import { createSettledFinalizationTestInput } from "./settled-turn-finalization.test-support.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
-import { resolveSettledTurnFinalizationRequest } from "./terminal-resolution.js";
+import {
+  resolveEmbeddedRunTerminal,
+  resolveSettledTurnFinalizationRequest,
+} from "./terminal-resolution.js";
+import { makeTerminalInput } from "./terminal-resolution.test-support.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 const backendMocks = vi.hoisted(() => ({
@@ -328,6 +333,112 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
         expect(result.prepared.payloadsWithToolMedia).toEqual([
           expect.objectContaining({ text: "The tool run finished." }),
         ]);
+      }
+    },
+  );
+
+  it.each([
+    { safety: "read", output: "reasoning", exhausted: false, continues: true },
+    { safety: "read", output: "reasoning", exhausted: true, continues: false },
+    { safety: "read", output: "empty", exhausted: false, continues: true },
+    { safety: "read", output: "empty", exhausted: true, continues: false },
+    { safety: "write", output: "reasoning", exhausted: false, continues: false },
+    { safety: "unknown", output: "reasoning", exhausted: false, continues: false },
+    { safety: "prior-effect", output: "reasoning", exhausted: false, continues: false },
+  ] as const)(
+    "preserves tool-capable recovery after $safety ($output, exhausted=$exhausted)",
+    async ({ safety, output, exhausted, continues }) => {
+      const toolName = safety === "write" ? "write" : safety === "unknown" ? "lookup" : "read";
+      const toolCall = buildEmbeddedRunnerAssistant({
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "status-read", name: toolName, arguments: {} }],
+      });
+      const assistant = buildEmbeddedRunnerAssistant({
+        stopReason: output === "reasoning" ? "length" : "stop",
+        content:
+          output === "reasoning"
+            ? [{ type: "thinking", thinking: "The requested update remains to be done." }]
+            : [],
+      });
+      const attempt = makeEmbeddedRunnerAttempt({
+        assistantTexts: [],
+        lastAssistant: assistant,
+        currentAttemptAssistant: assistant,
+        currentAttemptCompletedAssistant: assistant,
+        messagesSnapshot: [
+          { role: "user", content: "Change status.txt from ready to shipped.", timestamp: 0 },
+          toolCall,
+          {
+            role: "toolResult",
+            toolCallId: "status-read",
+            toolName,
+            content: [{ type: "text", text: "ready" }],
+            isError: false,
+            timestamp: 1,
+          },
+          assistant,
+        ],
+        toolMetas: [
+          {
+            toolName,
+            toolCallId: "status-read",
+            isError: false,
+            ...(safety === "unknown" ? {} : { replaySafe: safety !== "write" }),
+          },
+        ],
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+      });
+      attempt.currentAttemptReplayMetadata = buildAttemptReplayMetadata(attempt);
+      attempt.replayMetadata =
+        safety === "prior-effect"
+          ? { replaySafe: false, hadPotentialSideEffects: true }
+          : attempt.currentAttemptReplayMetadata;
+      const terminalInput = makeTerminalInput({ attempt });
+      if (exhausted) {
+        terminalInput.retryState.reasoningOnlyAttempts =
+          terminalInput.maxReasoningOnlyRetryAttempts;
+        terminalInput.retryState.emptyResponseAttempts =
+          terminalInput.maxEmptyResponseRetryAttempts;
+      }
+      const input = finalizationInput(attempt);
+      input.finalization.availableNonVisibleRetries = {
+        reasoningOnly:
+          terminalInput.retryState.reasoningOnlyAttempts <
+          terminalInput.maxReasoningOnlyRetryAttempts,
+        emptyResponse:
+          terminalInput.retryState.emptyResponseAttempts <
+          terminalInput.maxEmptyResponseRetryAttempts,
+      };
+      backendMocks.runSettledFinalization.mockResolvedValueOnce({
+        outcome: "answered",
+        result: {
+          assistant: buildEmbeddedRunnerAssistant({
+            content: [{ type: "text", text: "The requested update is not confirmed." }],
+          }),
+        },
+      });
+
+      const finalized = await prepareTerminalWithSettledTurnFinalization(input);
+
+      if (continues) {
+        expect(finalized.finalizationOutcome).toBe("not-attempted");
+        expect(finalized.attempt).toBe(attempt);
+        expect(backendMocks.runSettledFinalization).not.toHaveBeenCalled();
+        await expect(resolveEmbeddedRunTerminal(terminalInput)).resolves.toEqual({
+          action: "retry",
+        });
+        expect(terminalInput.activateInternalPrompt).toHaveBeenCalledWith(
+          expect.stringContaining("remaining authorized work using available tools"),
+        );
+        expect(terminalInput.retryState.reasoningOnlyAttempts).toBe(output === "reasoning" ? 1 : 0);
+        expect(terminalInput.retryState.emptyResponseAttempts).toBe(output === "empty" ? 1 : 0);
+      } else {
+        expect(finalized.finalizationOutcome).toBe("answered");
+        expect(backendMocks.runSettledFinalization).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ disableTools: true }),
+          attempt,
+          input.finalization.harness,
+        );
       }
     },
   );

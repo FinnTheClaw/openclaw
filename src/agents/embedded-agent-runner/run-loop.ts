@@ -585,6 +585,12 @@ export async function runPreparedEmbeddedLoop(
           modelApi: effectiveModel.api,
           executionContract,
           hasTerminalToolPresentation: Boolean(terminalToolPresentationText),
+          availableNonVisibleRetries: {
+            reasoningOnly:
+              terminalRetryState.reasoningOnlyAttempts < DEFAULT_REASONING_ONLY_RETRY_LIMIT,
+            emptyResponse:
+              terminalRetryState.emptyResponseAttempts < DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
+          },
           createAttemptControls: input.laneController.createAttemptControls,
           abortSignal: input.laneController.abortSignal,
         },

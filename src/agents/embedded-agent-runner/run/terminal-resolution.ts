@@ -118,6 +118,7 @@ export function resolveSettledTurnFinalizationRequest(input: {
   hasTerminalToolPresentation: boolean;
   terminalState: EmbeddedRunTerminalState;
   settledTurnFinalizationAvailable: boolean;
+  availableNonVisibleRetries?: { reasoningOnly: boolean; emptyResponse: boolean };
 }): string | null {
   const terminalAssistant = resolveCurrentAttemptAssistant(input.attempt);
   if (!input.settledTurnFinalizationAvailable || isTerminalAssistantError(terminalAssistant)) {
@@ -168,18 +169,35 @@ export function resolveSettledTurnFinalizationRequest(input: {
   if (emptyAssistantReplyIsSilent) {
     return null;
   }
-  return resolveSettledToolTerminalContinuationInstruction({
+  const continuationParams = {
     provider: input.activeErrorContext.provider,
     modelId: input.activeErrorContext.model,
     modelApi: input.modelApi,
     executionContract: input.executionContract,
-    allowEmptyStopContinuation: requiresVisibleTerminalReply(input.runParams),
     payloadCount,
-    hasTerminalToolPresentation: input.hasTerminalToolPresentation,
     aborted: terminalAborted,
     timedOut: terminalTimedOut,
     attempt: input.attempt,
+  };
+  const finalizationRequest = resolveSettledToolTerminalContinuationInstruction({
+    ...continuationParams,
+    allowEmptyStopContinuation: requiresVisibleTerminalReply(input.runParams),
+    hasTerminalToolPresentation: input.hasTerminalToolPresentation,
   });
+  // Settled reads do not prove the task is complete. Preserve the ordinary
+  // tool-capable continuation first, but never replay possible prior effects.
+  if (
+    finalizationRequest &&
+    input.attempt.replayMetadata.replaySafe &&
+    !input.attempt.replayMetadata.hadPotentialSideEffects &&
+    ((input.availableNonVisibleRetries?.reasoningOnly &&
+      resolveReasoningOnlyRetryInstruction(continuationParams)) ||
+      (input.availableNonVisibleRetries?.emptyResponse &&
+        resolveEmptyResponseRetryInstruction(continuationParams)))
+  ) {
+    return null;
+  }
+  return finalizationRequest;
 }
 
 export async function resolveEmbeddedRunTerminal(input: {

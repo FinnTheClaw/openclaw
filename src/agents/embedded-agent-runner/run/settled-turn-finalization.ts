@@ -80,6 +80,9 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       typeof resolveSettledTurnFinalizationRequest
     >[0]["executionContract"];
     hasTerminalToolPresentation: boolean;
+    availableNonVisibleRetries?: Parameters<
+      typeof resolveSettledTurnFinalizationRequest
+    >[0]["availableNonVisibleRetries"];
     createAttemptControls: CreateAttemptControls;
     abortSignal: AbortSignal;
   };
@@ -106,6 +109,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     recoveredFinalAssistantPayloadsAfterPromptTimeout:
       prepared.recoveredFinalAssistantPayloadsAfterPromptTimeout,
     hasTerminalToolPresentation: input.finalization.hasTerminalToolPresentation,
+    availableNonVisibleRetries: input.finalization.availableNonVisibleRetries,
     terminalState: initial.terminalState,
     settledTurnFinalizationAvailable:
       typeof input.finalization.harness.finalizeSettledTurn === "function",
