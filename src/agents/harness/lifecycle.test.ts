@@ -305,34 +305,44 @@ describe("AgentHarness lifecycle runner", () => {
     ]);
   });
 
-  it("records a normally completed empty finalization without emitting an error", async () => {
-    const params = createFinalizationParams();
-    const harness: AgentHarness = {
-      id: "codex",
-      label: "Codex",
-      pluginId: "codex-plugin",
-      supports: () => ({ supported: true }),
-      runAttempt: async () => createAttemptResult(),
-    };
-    const diagnostics = captureDiagnosticEvents();
-    const emptyAssistant = { ...createFinalAssistant(), content: [] };
+  it.each(["stop", "length"] as const)(
+    "records nonvisible %s finalization as the existing empty outcome",
+    async (stopReason) => {
+      const params = createFinalizationParams();
+      const harness: AgentHarness = {
+        id: "codex",
+        label: "Codex",
+        pluginId: "codex-plugin",
+        supports: () => ({ supported: true }),
+        runAttempt: async () => createAttemptResult(),
+      };
+      const diagnostics = captureDiagnosticEvents();
+      const emptyAssistant = {
+        ...createFinalAssistant(),
+        stopReason,
+        content:
+          stopReason === "length"
+            ? [{ type: "thinking" as const, thinking: "Reasoning consumed the answer budget." }]
+            : [],
+      };
 
-    const result = await runAgentHarnessLifecycleFinalization(harness, params, async () => ({
-      assistant: emptyAssistant,
-      usage: { input: 1, output: 0, total: 1 },
-    }));
-    await flushDiagnosticEvents();
-    diagnostics.unsubscribe();
+      const result = await runAgentHarnessLifecycleFinalization(harness, params, async () => ({
+        assistant: emptyAssistant,
+        usage: { input: 1, output: 0, total: 1 },
+      }));
+      await flushDiagnosticEvents();
+      diagnostics.unsubscribe();
 
-    expect(result).toMatchObject({
-      outcome: "empty",
-      result: { assistant: emptyAssistant, usage: { input: 1, output: 0, total: 1 } },
-    });
-    expect(diagnostics.events.map(({ event }) => event.type)).toEqual([
-      "harness.run.started",
-      "harness.run.completed",
-    ]);
-  });
+      expect(result).toMatchObject({
+        outcome: "empty",
+        result: { assistant: emptyAssistant, usage: { input: 1, output: 0, total: 1 } },
+      });
+      expect(diagnostics.events.map(({ event }) => event.type)).toEqual([
+        "harness.run.started",
+        "harness.run.completed",
+      ]);
+    },
+  );
 
   it("records an empty finalization already validated by the harness owner", async () => {
     const params = createFinalizationParams();

@@ -93,6 +93,43 @@ describe("assertSettledTurnFinalizationResult", () => {
     }
   });
 
+  it("classifies the budget-stress reasoning-only length shape as typed empty", () => {
+    // b1024-R09: a settled finalizer exhausted its budget with reasoning but no visible text.
+    const result = {
+      assistant: assistantMessage(
+        [{ type: "thinking", thinking: "Reasoning consumed the answer budget." }],
+        "length",
+      ),
+    };
+    try {
+      assertSettledTurnFinalizationResult(result);
+      throw new Error("expected typed empty finalization");
+    } catch (error) {
+      expect(error).toBeInstanceOf(EmptySettledTurnFinalizationError);
+      expect((error as EmptySettledTurnFinalizationError).result).toBe(result);
+    }
+    expect(() =>
+      assertSettledTurnFinalizationResult({ ...result, assistantMessageIndex: -1 }),
+    ).toThrow("invalid assistant message index");
+    expect(() =>
+      assertSettledTurnFinalizationResult({
+        assistant: assistantMessage(
+          [{ type: "toolCall", id: "unfinished", name: "exec", arguments: {} }],
+          "length",
+        ),
+      }),
+    ).toThrow("returned a tool call");
+  });
+
+  it.each(["error", "aborted"] as const)(
+    "does not reclassify an empty %s as retryable finalization",
+    (stopReason) => {
+      expect(() =>
+        assertSettledTurnFinalizationResult({ assistant: assistantMessage([], stopReason) }),
+      ).toThrow(`unsuccessful stop reason: ${stopReason}`);
+    },
+  );
+
   it("classifies an intentionally silent answer as completed-empty", () => {
     const result = {
       assistant: assistantMessage([{ type: "text", text: "NO_REPLY" }]),

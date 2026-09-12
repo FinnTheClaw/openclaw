@@ -43,16 +43,24 @@ export function assertSettledTurnFinalizationResult(
   if (result.assistant.stopReason === "toolUse" || assistantContainsToolCall(result.assistant)) {
     throw new Error("Settled-turn finalization returned a tool call");
   }
-  if (result.assistant.stopReason !== "stop") {
-    throw new Error(
-      `Settled-turn finalization returned unsuccessful stop reason: ${result.assistant.stopReason}`,
-    );
-  }
   if (
     result.assistantMessageIndex !== undefined &&
     (!Number.isSafeInteger(result.assistantMessageIndex) || result.assistantMessageIndex < 0)
   ) {
     throw new Error("Settled-turn finalization returned an invalid assistant message index");
+  }
+  // Output-budget exhaustion without visible text needs the same remaining
+  // answer-only pass as an empty stop, not the generic failed-finalizer path.
+  if (
+    result.assistant.stopReason === "length" &&
+    !resolveFinalAssistantVisibleText(result.assistant)
+  ) {
+    throw new EmptySettledTurnFinalizationError(result);
+  }
+  if (result.assistant.stopReason !== "stop") {
+    throw new Error(
+      `Settled-turn finalization returned unsuccessful stop reason: ${result.assistant.stopReason}`,
+    );
   }
   resolveSettledTurnFinalizationText(result);
   return result;
