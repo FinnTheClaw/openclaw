@@ -1,0 +1,9 @@
+{
+  "agents": {
+    "defaults": {
+      "subagents": {
+        "delegationMode": "prefer"
+      }
+    }
+  }
+}

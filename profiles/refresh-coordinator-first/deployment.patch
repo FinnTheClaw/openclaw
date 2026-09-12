@@ -1,0 +1,23 @@
+--- deploy-alistar/gateway.sh
++++ deploy-alistar/gateway.sh
+@@ -26,6 +26,8 @@
+   config.plugins.entries["refresh-efficiency"].hooks = {
+     ...(config.plugins.entries["refresh-efficiency"].hooks ?? {}), allowConversationAccess: true };
+   config.agents.defaults.workspace = "/home/finnclaw/manual-workspace";
++  config.agents.defaults.subagents ??= {};
++  config.agents.defaults.subagents.delegationMode = "prefer";
+   config.gateway = { mode: "local", bind: "loopback", port: 18789,
+     controlUi: { enabled: false },
+     auth: { mode: "token", token: crypto.randomBytes(32).toString("hex") } };
+@@ -34,6 +36,11 @@
+   fs.writeFileSync(target, JSON.stringify(config, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+ }
+ '
++profile="/workspace/upstream/profiles/refresh-coordinator-first/AGENTS.append.md"
++if [ -f "$profile" ] && ! grep -qF "<!-- refresh-coordinator-first:v1 -->" "$HOME/manual-workspace/AGENTS.md" 2>/dev/null; then
++  printf "\n" >> "$HOME/manual-workspace/AGENTS.md"
++  cat "$profile" >> "$HOME/manual-workspace/AGENTS.md"
++fi
+ cd /workspace/upstream
+ if [ -f "$HOME/diagnostics/wire-trace.enabled" ]; then
+   export OPENCLAW_WIRE_TRACE_DIR="$HOME/diagnostics/openclaw-wire"
