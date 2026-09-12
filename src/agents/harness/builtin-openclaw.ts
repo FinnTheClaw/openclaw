@@ -69,6 +69,7 @@ function buildRestrictedFinalizationAttempt(
     toolAuthProfileStore: attempt.toolAuthProfileStore,
     modelRegistry: attempt.modelRegistry,
     thinkLevel: attempt.thinkLevel,
+    streamParams: attempt.streamParams,
     fastMode: attempt.fastMode,
     fastModeAuto: attempt.fastModeAuto,
     operation: "settled-tool-finalization",

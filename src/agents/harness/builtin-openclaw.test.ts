@@ -71,7 +71,9 @@ describe("createOpenClawAgentHarness", () => {
     const prepareAssistantTranscriptMessage = vi.fn();
     const onAttemptDeadlineChanged = vi.fn();
     const onAttemptTimeoutArmed = vi.fn();
+    const streamParams = { chat_template_kwargs: { enable_thinking: false }, maxTokens: 256 };
     const attempt = {
+      streamParams,
       prompt: "finalize",
       disableTools: false,
       extraSystemPrompt: "ambient system context",
@@ -96,6 +98,7 @@ describe("createOpenClawAgentHarness", () => {
     expect(runEmbeddedAttempt).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: "finalize",
+        streamParams,
         disableTools: true,
         disableTrajectory: true,
         skipPreparedUserTurnMessage: true,

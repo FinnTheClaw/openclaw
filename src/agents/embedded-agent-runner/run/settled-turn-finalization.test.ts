@@ -445,6 +445,99 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     });
   });
 
+  it.each([
+    { firstOutcome: "answered", modelApi: "openai-completions", enabled: true },
+    { firstOutcome: "empty", modelApi: "openai-completions", enabled: true },
+    { firstOutcome: "empty", modelApi: "openai-completions", enabled: false },
+    { firstOutcome: "empty", modelApi: "openai-responses", enabled: true },
+  ] as const)(
+    "changes only the empty finalizer retry ($firstOutcome, $modelApi, thinking=$enabled)",
+    async ({ firstOutcome, modelApi, enabled }) => {
+      const settledAttempt = settledFailedAttempt();
+      const input = finalizationInput(settledAttempt);
+      const streamParams = {
+        maxTokens: 256,
+        temperature: 0.2,
+        chat_template_kwargs: { enable_thinking: enabled, preserve_thinking: true },
+      };
+      const config = {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.6-luna": {
+                params: { chat_template_kwargs: { enable_thinking: enabled } },
+              },
+            },
+          },
+        },
+      };
+      Object.assign(input.finalization.preparedAttempt, {
+        provider: "openai",
+        modelId: "gpt-5.6-luna",
+        config,
+        streamParams,
+      });
+      input.finalization.modelApi = modelApi;
+      const answer = buildEmbeddedRunnerAssistant({
+        content: [{ type: "text", text: "The saved preference is already correct." }],
+      });
+      backendMocks.runSettledFinalization
+        .mockResolvedValueOnce({
+          outcome: firstOutcome,
+          result: {
+            assistant:
+              firstOutcome === "answered"
+                ? answer
+                : buildEmbeddedRunnerAssistant({
+                    content: [{ type: "thinking", thinking: "The recorded result is sufficient." }],
+                  }),
+          },
+        })
+        .mockResolvedValueOnce({ outcome: "answered", result: { assistant: answer } });
+
+      const result = await prepareTerminalWithSettledTurnFinalization(input);
+
+      expect(result.finalizationOutcome).toBe("answered");
+      expect(backendMocks.runSettledFinalization).toHaveBeenCalledTimes(
+        firstOutcome === "answered" ? 1 : 2,
+      );
+      const first = backendMocks.runSettledFinalization.mock.calls[0][0];
+      expect(first.streamParams).toBe(streamParams);
+      expect(first.config).toBe(config);
+      expect(first.prompt).not.toContain("previous answer-only pass");
+      for (const [params, original] of backendMocks.runSettledFinalization.mock.calls) {
+        expect(original).toBe(settledAttempt);
+        expect(params).toMatchObject({
+          disableTools: true,
+          skipPreparedUserTurnMessage: true,
+          suppressNextUserMessagePersistence: true,
+        });
+      }
+      if (firstOutcome === "empty") {
+        const second = backendMocks.runSettledFinalization.mock.calls[1][0];
+        expect(second.prompt).toContain(first.prompt);
+        expect(second.prompt).toContain(
+          "previous answer-only pass produced no user-visible answer",
+        );
+        expect(second.prompt).toContain("already recorded tool results");
+        expect(second.streamParams).toEqual({
+          ...streamParams,
+          chat_template_kwargs: {
+            ...streamParams.chat_template_kwargs,
+            enable_thinking: modelApi === "openai-completions" && enabled ? false : enabled,
+          },
+        });
+        expect(second.config).toBe(config);
+      }
+      expect(streamParams.chat_template_kwargs.enable_thinking).toBe(enabled);
+      expect(
+        config.agents.defaults.models["openai/gpt-5.6-luna"].params.chat_template_kwargs
+          .enable_thinking,
+      ).toBe(enabled);
+      expect(input.finalization.harness.runAttempt).not.toHaveBeenCalled();
+    },
+  );
+
   it("retries empty finalization with fresh controls and retires prior timeout and Stop callbacks", async () => {
     vi.useFakeTimers();
     const attempt = settledFailedAttempt();

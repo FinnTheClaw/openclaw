@@ -43,7 +43,7 @@ describe("prepared provider errors after settled tools", () => {
       }),
     ]);
     expect(resolveSettledTurnFinalizationRequest(request)).toContain(
-      "Do not repeat completed tool calls",
+      "Do not repeat completed calls or claim unperformed work.",
     );
   });
 

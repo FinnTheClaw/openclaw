@@ -14,6 +14,7 @@ import type {
   AgentHarness,
   AgentHarnessSettledTurnFinalizationResult,
 } from "../../harness/types.js";
+import { resolveModelExtraParamSources } from "../../model-extra-params.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import { log } from "../logger.js";
 import {
@@ -26,7 +27,11 @@ import {
   resolveRuntimeModelAttempt,
   runEmbeddedSettledTurnFinalizationWithBackend,
 } from "./backend.js";
-import { resolveSettledToolBatchEvidence } from "./incomplete-turn-recovery.js";
+import {
+  DEFAULT_REASONING_ONLY_RETRY_LIMIT,
+  resolveReasoningOnlyRetryStreamParams,
+  resolveSettledToolBatchEvidence,
+} from "./incomplete-turn-recovery.js";
 import type { createEmbeddedRunLaneController } from "./lane-controller.js";
 import {
   resolveEmbeddedRunAttemptTerminalOutcome,
@@ -139,13 +144,15 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   try {
     let finalization: Awaited<ReturnType<typeof runPreparedSettledTurnFinalization>>;
     let finalizationAttempt = 0;
+    let finalizationPrompt = prompt;
+    let finalizationParams = input.finalization.preparedAttempt;
     do {
       finalizationAttempt += 1;
       finalization = await runPreparedSettledTurnFinalization({
-        attempt: input.finalization.preparedAttempt,
+        attempt: finalizationParams,
         settledAttempt: initial.attempt,
         harness: input.finalization.harness,
-        prompt,
+        prompt: finalizationPrompt,
         createAttemptControls: input.finalization.createAttemptControls,
         abortSignal: input.finalization.abortSignal,
       });
@@ -157,6 +164,23 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
         finalization.outcome === "empty" &&
         finalizationAttempt < MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS
       ) {
+        // The final allowed pass changes the failed answer-only approach, while
+        // preserving the settled transcript and the original request settings.
+        finalizationPrompt = `${prompt}\n\nThe previous answer-only pass produced no user-visible answer. Use the already recorded tool results to give a concise factual answer now, including any remaining uncertainty. No tools are available; do not claim additional work.`;
+        finalizationParams = {
+          ...input.finalization.preparedAttempt,
+          streamParams: resolveReasoningOnlyRetryStreamParams({
+            modelApi: input.finalization.modelApi,
+            reasoningOnlyAttempts: DEFAULT_REASONING_ONLY_RETRY_LIMIT,
+            ...resolveModelExtraParamSources({
+              config: input.finalization.preparedAttempt.config,
+              provider: input.finalization.preparedAttempt.provider ?? errorContext.provider,
+              modelId: input.finalization.preparedAttempt.modelId ?? errorContext.model,
+              agentId: input.finalization.preparedAttempt.agentId,
+            }),
+            streamParams: input.finalization.preparedAttempt.streamParams,
+          }),
+        };
         log.warn(
           `settled-turn finalization completed without a visible answer: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
             `provider=${errorContext.provider}/${errorContext.model} — retrying ${finalizationAttempt}/${MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS - 1} with tools disabled`,
