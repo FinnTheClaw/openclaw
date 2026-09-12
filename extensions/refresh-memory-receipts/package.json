@@ -1,0 +1,15 @@
+{
+  "name": "@openclaw/refresh-memory-receipts",
+  "version": "2026.9.2",
+  "private": true,
+  "type": "module",
+  "description": "Advisory native workspace memory readback receipts",
+  "devDependencies": {
+    "@openclaw/plugin-sdk": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

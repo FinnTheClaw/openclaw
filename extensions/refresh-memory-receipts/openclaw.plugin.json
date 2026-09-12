@@ -1,0 +1,18 @@
+{
+  "id": "refresh-memory-receipts",
+  "name": "Refresh Memory Receipts",
+  "description": "Advisory readback for native workspace memory write/edit operations.",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "agentToolResultMiddleware": [
+      "openclaw"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}
