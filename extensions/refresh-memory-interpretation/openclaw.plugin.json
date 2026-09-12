@@ -1,0 +1,13 @@
+{
+  "id": "refresh-memory-interpretation",
+  "name": "Refresh Memory Interpretation",
+  "description": "Opt-in faithful-memory guidance. Enable this entry with hooks.allowConversationAccess=true and hooks.allowPromptInjection=true.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}
