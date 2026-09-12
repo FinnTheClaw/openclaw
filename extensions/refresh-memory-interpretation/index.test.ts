@@ -17,6 +17,9 @@ describe("faithful-memory guidance", () => {
     expect(first.appendSystemContext).toContain(
       "not qualify an unconditional directive saved in a file.",
     );
+    expect(first.appendSystemContext).toContain("Preserve temporal qualifiers");
+    expect(first.appendSystemContext).toContain("not an indefinite rule");
+    expect(first.appendSystemContext).toContain("explicitly ongoing user preference");
     expect(first.appendSystemContext).toContain("missing provenance—not evidence");
     expect(first.appendSystemContext).toContain("save, update, or forget promptly");
     expect(first.appendSystemContext).toContain("preserving stated exceptions");
