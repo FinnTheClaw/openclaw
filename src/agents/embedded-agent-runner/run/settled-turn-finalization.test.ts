@@ -43,10 +43,10 @@ const transcriptMocks = vi.hoisted(() => ({
 }));
 
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
-  "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch.";
+  "The recorded tool calls have finished. Use their results to answer the original user request. Report what those results establish and any remaining incompleteness or uncertainty. Do not repeat completed calls or claim unperformed work.";
 
 const SETTLED_TOOL_FINALIZATION_FALLBACK_TEXT =
-  "The tool run finished, but no final summary was produced. I did not repeat any completed actions.";
+  "The tool run finished, but no final summary was produced. During answer recovery, I did not rerun completed tool calls.";
 
 vi.mock("./backend.js", () => ({
   resolveRuntimeModelAttempt: backendMocks.resolveRuntimeModelAttempt,

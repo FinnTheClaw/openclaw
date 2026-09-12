@@ -13,7 +13,7 @@ import { loadSharedRunIntegrationHarness } from "./run.shared-integration-harnes
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 
 const REASONING_ONLY_RETRY_INSTRUCTION =
-  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
+  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue the original user request from that partial turn. Perform any remaining authorized work using available tools as needed, then report the actual outcome rather than only a plan. Preserve completed work; do not repeat it, restate the reasoning, or restart from scratch.";
 
 let state: OpenClawTestState;
 let runEmbeddedAgent: Awaited<ReturnType<typeof loadSharedRunIntegrationHarness>>;

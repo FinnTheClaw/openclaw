@@ -26,9 +26,9 @@ vi.mock("./auth-profile-success.js", () => ({
 }));
 
 const EMPTY_RESPONSE_RETRY_INSTRUCTION =
-  "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
+  "The previous attempt did not produce a user-visible answer. Continue the original user request from the current state. Perform any remaining authorized work using available tools as needed, then report the actual outcome rather than only a plan. Preserve completed work; do not repeat it or restart from scratch.";
 const REASONING_ONLY_RETRY_INSTRUCTION =
-  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
+  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue the original user request from that partial turn. Perform any remaining authorized work using available tools as needed, then report the actual outcome rather than only a plan. Preserve completed work; do not repeat it, restate the reasoning, or restart from scratch.";
 
 describe("terminal resolution", () => {
   beforeEach(() => vi.clearAllMocks());

@@ -42,7 +42,7 @@ type CreateAttemptControls = ReturnType<
 >["createAttemptControls"];
 const MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS = 2;
 const SETTLED_TOOL_FINALIZATION_FALLBACK_TEXT =
-  "The tool run finished, but no final summary was produced. I did not repeat any completed actions.";
+  "The tool run finished, but no final summary was produced. During answer recovery, I did not rerun completed tool calls.";
 type TerminalPreparationBase = Omit<
   TerminalPreparationInput,
   | "attempt"

@@ -18,7 +18,7 @@ import { prepareTerminalWithSettledTurnFinalization } from "./settled-turn-final
 import { createSettledFinalizationTestInput } from "./settled-turn-finalization.test-support.js";
 
 const FALLBACK =
-  "The tool run finished, but no final summary was produced. I did not repeat any completed actions.";
+  "The tool run finished, but no final summary was produced. During answer recovery, I did not rerun completed tool calls.";
 
 describe("unavailable finalization through the real core backend", () => {
   const fixture = useTempSessionsFixture("settled-finalization-unavailable-");

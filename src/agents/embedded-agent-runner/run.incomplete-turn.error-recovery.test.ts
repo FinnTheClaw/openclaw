@@ -15,7 +15,7 @@ import { resolveIncompleteTurnPayloadText } from "./run/incomplete-turn-resoluti
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 
 const EMPTY_RESPONSE_RETRY_INSTRUCTION =
-  "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
+  "The previous attempt did not produce a user-visible answer. Continue the original user request from the current state. Perform any remaining authorized work using available tools as needed, then report the actual outcome rather than only a plan. Preserve completed work; do not repeat it or restart from scratch.";
 
 type LastAssistant = NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
 

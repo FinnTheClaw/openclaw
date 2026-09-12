@@ -10,7 +10,7 @@ import { resolveReplayInvalidFlag, resolveRunLivenessState } from "./incomplete-
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
-  "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch.";
+  "The recorded tool calls have finished. Use their results to answer the original user request. Report what those results establish and any remaining incompleteness or uncertainty. Do not repeat completed calls or claim unperformed work.";
 
 type LastAssistant = NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
 

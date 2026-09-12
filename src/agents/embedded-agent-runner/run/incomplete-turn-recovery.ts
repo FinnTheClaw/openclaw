@@ -32,11 +32,11 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 export const DEFAULT_REASONING_ONLY_RETRY_LIMIT = 2;
 export const DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 1;
 const REASONING_ONLY_RETRY_INSTRUCTION =
-  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
+  "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue the original user request from that partial turn. Perform any remaining authorized work using available tools as needed, then report the actual outcome rather than only a plan. Preserve completed work; do not repeat it, restate the reasoning, or restart from scratch.";
 const EMPTY_RESPONSE_RETRY_INSTRUCTION =
-  "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
+  "The previous attempt did not produce a user-visible answer. Continue the original user request from the current state. Perform any remaining authorized work using available tools as needed, then report the actual outcome rather than only a plan. Preserve completed work; do not repeat it or restart from scratch.";
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
-  "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch.";
+  "The recorded tool calls have finished. Use their results to answer the original user request. Report what those results establish and any remaining incompleteness or uncertainty. Do not repeat completed calls or claim unperformed work.";
 
 /** Keep the last reasoning-only retry request-local on explicitly enabled Chat routes. */
 export function resolveReasoningOnlyRetryStreamParams(params: {
