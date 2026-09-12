@@ -88,10 +88,16 @@ export function projectSettledTurnFinalizationAttemptResult(
   ) {
     throw new Error("Settled-turn finalization attempt did not complete successfully");
   }
+  // The native loop records lifecycle events even when a requested tool does
+  // not exist. Keep its later real answer only when every call was rejected
+  // before execution; unknown or executed activity remains invalid here.
+  const rejectedToolCount = result.toolMetas.filter(
+    (tool) => tool.executionStarted === false && tool.isError === true,
+  ).length;
   if (
-    result.toolMetas.length > 0 ||
-    result.itemLifecycle.startedCount > 0 ||
-    result.itemLifecycle.completedCount > 0 ||
+    result.toolMetas.length !== rejectedToolCount ||
+    result.itemLifecycle.startedCount !== rejectedToolCount ||
+    result.itemLifecycle.completedCount !== rejectedToolCount ||
     result.itemLifecycle.activeCount > 0 ||
     result.replayMetadata.hadPotentialSideEffects ||
     !result.replayMetadata.replaySafe ||
@@ -112,7 +118,8 @@ export function projectSettledTurnFinalizationAttemptResult(
     result.toolAudioAsVoice ||
     result.toolTrustedLocalMedia ||
     result.hasToolMediaBlockReply ||
-    result.lastToolError ||
+    (result.lastToolError &&
+      !result.toolMetas.some((tool) => tool.toolName === result.lastToolError?.toolName)) ||
     (result.successfulCronAdds ?? 0) > 0 ||
     result.yieldDetected
   ) {

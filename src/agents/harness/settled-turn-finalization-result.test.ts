@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../../llm/types.js";
+import { buildAttemptReplayMetadata } from "../embedded-agent-runner/run/attempt-terminal-evidence.js";
 import type { EmbeddedRunAttemptResult } from "../embedded-agent-runner/run/types.js";
 import { EmptySettledTurnFinalizationError } from "./settled-turn-finalization-outcome.js";
 import {
@@ -151,6 +152,77 @@ describe("assertSettledTurnFinalizationResult", () => {
     expect(() =>
       projectSettledTurnFinalizationAttemptResult(successfulAttempt({ compactionCount: 1 })),
     ).toThrow("did not complete successfully");
+  });
+
+  it.each([false, true, undefined])(
+    "keeps a completed answer after rejected exec only with executionStarted=%s proof",
+    (executionStarted) => {
+      const assistant = assistantMessage([
+        { type: "text", text: "demo is Cedar; archive is Birch." },
+      ]);
+      const attempt = successfulAttempt({
+        currentAttemptCompletedAssistant: assistant,
+        messagesSnapshot: [
+          assistantMessage(
+            [
+              {
+                type: "toolCall",
+                id: "rejected-exec",
+                name: "exec",
+                arguments: { command: "echo demo" },
+              },
+            ],
+            "toolUse",
+          ),
+          {
+            role: "toolResult",
+            toolCallId: "rejected-exec",
+            toolName: "exec",
+            content: [{ type: "text", text: "Tool exec not found" }],
+            isError: true,
+            timestamp: 1,
+          },
+          assistant,
+        ],
+        toolMetas: [
+          {
+            toolName: "exec",
+            toolCallId: "rejected-exec",
+            replaySafe: false,
+            isError: true,
+            ...(executionStarted === undefined ? {} : { executionStarted }),
+          },
+        ],
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        lastToolError: { toolName: "exec", error: "Tool exec not found" },
+      });
+
+      attempt.currentAttemptReplayMetadata = buildAttemptReplayMetadata(attempt);
+      if (executionStarted === false) {
+        expect(projectSettledTurnFinalizationAttemptResult(attempt)).toEqual({ assistant });
+      } else {
+        expect(() => projectSettledTurnFinalizationAttemptResult(attempt)).toThrow(
+          "reported capability activity",
+        );
+      }
+    },
+  );
+
+  it.each([
+    { itemLifecycle: { startedCount: 2, completedCount: 2, activeCount: 0 } },
+    { itemLifecycle: { startedCount: 1, completedCount: 0, activeCount: 1 } },
+    { lastToolError: { toolName: "write", error: "another tool failed" } },
+    { replayMetadata: { replaySafe: false, hadPotentialSideEffects: true } },
+  ])("rejects unexplained activity alongside a rejected request: %j", (extra) => {
+    expect(() =>
+      projectSettledTurnFinalizationAttemptResult(
+        successfulAttempt({
+          toolMetas: [{ toolName: "exec", executionStarted: false, isError: true }],
+          itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+          ...extra,
+        }),
+      ),
+    ).toThrow("reported capability activity");
   });
 
   it("rejects canonical capability evidence from a full attempt", () => {

@@ -325,6 +325,8 @@ export type EmbeddedRunAttemptResult = {
     toolCallId?: string;
     meta?: string;
     replaySafe?: boolean;
+    /** Producer-recorded false proves rejection before the tool implementation started. */
+    executionStarted?: boolean;
     isError?: boolean;
     terminate?: boolean;
     asyncStarted?: boolean;

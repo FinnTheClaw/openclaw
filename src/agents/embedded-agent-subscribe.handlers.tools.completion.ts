@@ -201,6 +201,7 @@ export async function handleToolExecutionEnd(
     toolCallId,
     meta,
     replaySafe: callSummary.replaySafe,
+    ...(executionStarted ? {} : { executionStarted: false }),
     isError: observerIsError,
     ...(terminate ? { terminate: true } : {}),
     ...(asyncStarted ? { asyncStarted: true, ...asyncTaskIds } : {}),

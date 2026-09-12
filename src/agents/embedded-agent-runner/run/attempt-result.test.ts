@@ -31,6 +31,7 @@ function completeResult(params?: {
     toolCallId?: string;
     meta?: string;
     replaySafe?: boolean;
+    executionStarted?: boolean;
     isError?: boolean;
     terminate?: boolean;
     asyncStarted?: boolean;
@@ -119,6 +120,28 @@ function settledToolMessages(): EmbeddedRunAttemptResult["messagesSnapshot"] {
 }
 
 describe("attempt result projection", () => {
+  it.each([false, true, undefined])(
+    "retains executionStarted=%s through metadata and current-attempt replay projection",
+    (executionStarted) => {
+      const result = completeResult({
+        toolMetas: [
+          {
+            toolName: "exec",
+            toolCallId: "rejected-exec",
+            replaySafe: false,
+            isError: true,
+            ...(executionStarted === undefined ? {} : { executionStarted }),
+          },
+        ],
+      });
+      expect(result.toolMetas[0]?.executionStarted).toBe(executionStarted);
+      expect(result.currentAttemptReplayMetadata).toEqual({
+        replaySafe: executionStarted === false,
+        hadPotentialSideEffects: executionStarted !== false,
+      });
+    },
+  );
+
   it.each([
     {
       label: "a completed refusal",

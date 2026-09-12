@@ -169,6 +169,9 @@ function normalizeEmbeddedAttemptToolMetas(
       if (entry.toolCallId) {
         normalized.toolCallId = entry.toolCallId;
       }
+      if (typeof entry.executionStarted === "boolean") {
+        normalized.executionStarted = entry.executionStarted;
+      }
       if (typeof entry.isError === "boolean") {
         normalized.isError = entry.isError;
       }

@@ -46,7 +46,9 @@ export function isCurrentAttemptReplaySafe(
 export function buildAttemptReplayMetadata(
   params: ReplayMetadataAttempt,
 ): EmbeddedRunAttemptResult["replayMetadata"] {
-  const hadUnsafeTools = params.toolMetas.some((entry) => entry.replaySafe !== true);
+  const hadUnsafeTools = params.toolMetas.some(
+    (entry) => entry.executionStarted !== false && entry.replaySafe !== true,
+  );
   const hadAsyncStartedTool = params.toolMetas.some((t) => t.asyncStarted === true);
   const hadPotentialSideEffects =
     hadUnsafeTools ||

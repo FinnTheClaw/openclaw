@@ -1250,6 +1250,30 @@ describe("handleToolExecutionEnd cron mutation tracking", () => {
     expect(ctx.state.successfulCronAdds).toBe(0);
   });
 
+  it.each([false, true, undefined])(
+    "preserves a rejected exec execution boundary (%s)",
+    async (executionStarted) => {
+      const { ctx } = createTestContext();
+      await executeTool(ctx, {
+        toolName: "exec",
+        toolCallId: "rejected-exec",
+        args: { command: "echo demo" },
+        isError: true,
+        ...(executionStarted === undefined ? {} : { executionStarted }),
+        result: { content: [{ type: "text", text: "Tool exec not found" }] },
+      });
+
+      expect(ctx.state.toolMetas[0]).toMatchObject({
+        toolName: "exec",
+        isError: true,
+      });
+      expect(ctx.state.toolMetas[0]?.executionStarted).toBe(
+        executionStarted === false ? false : undefined,
+      );
+      expect(ctx.state.replayState.hadPotentialSideEffects).toBe(executionStarted !== false);
+    },
+  );
+
   it("keeps pre-execution cron failures replay-safe", async () => {
     const { ctx } = createTestContext();
     await executeTool(ctx, {
