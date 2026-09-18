@@ -2,6 +2,7 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { isSilentReplyPayloadText, SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
+import { extractEmbeddedAssistantText } from "../../embedded-agent-utils.js";
 import {
   isStrictAgenticSupportedProviderModel,
   stripProviderPrefix,
@@ -40,6 +41,52 @@ export type IncompleteTurnAttempt = Pick<
   | "toolMetas"
 > &
   Partial<Pick<EmbeddedRunAttemptResult, "acceptedSessionSpawns">>;
+
+/** A rejected tool terminal can leave partial prose; it is not a completed answer. */
+export function hasRejectedPostToolTerminalText(
+  attempt: Pick<IncompleteTurnAttempt, "assistantTexts" | "messagesSnapshot" | "terminal">,
+): boolean {
+  const { terminal, messagesSnapshot, assistantTexts } = attempt;
+  // Exact producer contract from finalizeOpenAICompletionsToolCalls: the batch
+  // was rejected before dispatch. Never generalize this to arbitrary errors.
+  const rejection = "Provider returned an incomplete or malformed tool call";
+  if (
+    terminal.kind !== "ok" &&
+    (terminal.kind !== "failed" ||
+      terminal.source !== "prompt" ||
+      terminal.timeoutObservation ||
+      !(terminal.error instanceof Error) ||
+      terminal.error.message !== rejection)
+  ) {
+    return false;
+  }
+  const assistant = messagesSnapshot.at(-1);
+  if (
+    assistant?.role !== "assistant" ||
+    assistant.stopReason !== "error" ||
+    assistant.errorMessage !== rejection ||
+    assistant.content.some((block) => block.type === "toolCall")
+  ) {
+    return false;
+  }
+  const latestUser = messagesSnapshot.findLastIndex((message) => message.role === "user");
+  const lastResult = messagesSnapshot.findLastIndex((message) => message.role === "toolResult");
+  if (
+    lastResult <= latestUser ||
+    messagesSnapshot
+      .slice(lastResult + 1, -1)
+      .some(
+        (message) => message.role === "assistant" && extractEmbeddedAssistantText(message).trim(),
+      )
+  ) {
+    return false;
+  }
+  const partialText = extractEmbeddedAssistantText(assistant).trim();
+  return (
+    !isSilentReplyPayloadText(partialText, SILENT_REPLY_TOKEN) &&
+    assistantTexts.every((text) => !text.trim() || text.trim() === partialText)
+  );
+}
 
 export function hasPositiveOutputTokenUsage(message: AgentMessage | null): boolean {
   if (!message || typeof message !== "object") {

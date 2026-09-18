@@ -11,6 +11,7 @@ function completeResult(params?: {
   terminal?: EmbeddedRunAttemptResult["terminal"];
   currentAttemptCompletedAssistant?: EmbeddedRunAttemptResult["currentAttemptCompletedAssistant"];
   replyOptional?: boolean;
+  assistantTexts?: string[];
   trajectoryRecorder?: EmbeddedRunAttemptTrajectoryRecorder;
   messagesSnapshot?: EmbeddedRunAttemptResult["messagesSnapshot"];
   successfulNestedToolNames?: string[];
@@ -52,7 +53,7 @@ function completeResult(params?: {
       terminalReplyExpectation: params?.replyOptional ? "optional" : undefined,
     } as never,
     subscription: {
-      assistantTexts: [],
+      assistantTexts: params?.assistantTexts ?? [],
       didSendDeterministicApprovalPrompt: () => false,
       didSendViaMessagingTool: () => false,
       getAcceptedSessionSpawns: () => [],
@@ -120,6 +121,30 @@ function settledToolMessages(): EmbeddedRunAttemptResult["messagesSnapshot"] {
 }
 
 describe("attempt result projection", () => {
+  it.each([false, true])("captures rejected post-tool partial text (reported: %s)", (reported) => {
+    const errorMessage = "Provider returned an incomplete or malformed tool call";
+    const assistant = makeAssistantMessageFixture({
+      stopReason: "error",
+      errorMessage,
+      content: [{ type: "text", text: "Confirmed —\u0060\n\n" }],
+    });
+    const messagesSnapshot: EmbeddedRunAttemptResult["messagesSnapshot"] = [
+      { role: "user", content: "Change ready to shipped", timestamp: 0 },
+      ...settledToolMessages(),
+      assistant,
+    ];
+    const result = completeResult({
+      terminal: reported
+        ? { kind: "ok" }
+        : { kind: "failed", source: "prompt", error: new Error(errorMessage) },
+      currentAttemptCompletedAssistant: assistant,
+      assistantTexts: ["Confirmed —\u0060\n\n"],
+      messagesSnapshot,
+    });
+    expect(result.settledTurnFinalizationContext?.messages).toEqual(messagesSnapshot);
+    expect(result.assistantTexts).toEqual(["Confirmed —\u0060\n\n"]);
+  });
+
   it.each([false, true, undefined])(
     "retains executionStarted=%s through metadata and current-attempt replay projection",
     (executionStarted) => {

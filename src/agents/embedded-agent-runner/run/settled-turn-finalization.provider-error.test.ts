@@ -77,6 +77,86 @@ describe("prepared provider errors after settled tools", () => {
     },
   );
 
+  it.each([
+    "unattributed text",
+    "earlier answer",
+    "intentional silence",
+    "missing context",
+    "unfinished tool",
+    "asynchronous tool",
+    "delivered reply",
+    "delivered media",
+    "pending approval",
+    "cancellation",
+    "timeout",
+    "refusal",
+    "failed tool",
+  ])("preserves %s after a rejected post-tool partial answer", (kind) => {
+    const attempt = createSettledProviderFailureAttempt();
+    const assistant = attempt.currentAttemptCompletedAssistant!;
+    const errorMessage = "Provider returned an incomplete or malformed tool call";
+    assistant.errorMessage = errorMessage;
+    assistant.content = [{ type: "text", text: "Confirmed —\u0060\n\n" }];
+    attempt.assistantTexts = ["Confirmed —\u0060\n\n"];
+    attempt.terminal = { kind: "failed", source: "prompt", error: new Error(errorMessage) };
+    switch (kind) {
+      case "unattributed text":
+        attempt.assistantTexts.push("A different completed answer.");
+        break;
+      case "earlier answer":
+        attempt.messagesSnapshot.splice(-1, 0, {
+          ...assistant,
+          stopReason: "stop",
+          errorMessage: undefined,
+          content: [{ type: "text", text: "Already answered." }],
+        });
+        break;
+      case "intentional silence":
+        assistant.content = [{ type: "text", text: "NO_REPLY" }];
+        attempt.assistantTexts = ["NO_REPLY"];
+        break;
+      case "missing context":
+        attempt.settledTurnFinalizationContext = undefined;
+        break;
+      case "unfinished tool":
+        attempt.itemLifecycle.activeCount = 1;
+        attempt.itemLifecycle.completedCount = 0;
+        break;
+      case "asynchronous tool":
+        attempt.toolMetas[0].asyncStarted = true;
+        break;
+      case "delivered reply":
+        attempt.didSendViaMessagingTool = true;
+        attempt.messagingToolSentTexts = ["Saved."];
+        break;
+      case "delivered media":
+        attempt.hasToolMediaBlockReply = true;
+        break;
+      case "pending approval":
+        attempt.didSendDeterministicApprovalPrompt = true;
+        break;
+      case "cancellation":
+        attempt.terminal = { kind: "aborted", source: "external" };
+        break;
+      case "timeout":
+        attempt.terminal = { kind: "timeout", phase: "prompt", source: "run_budget" };
+        break;
+      case "refusal":
+        assistant.diagnostics = [
+          { type: "provider_refusal", timestamp: 0, details: { provider: "openai" } },
+        ];
+        break;
+      case "failed tool": {
+        const result = attempt.messagesSnapshot.find((message) => message.role === "toolResult");
+        if (result?.role === "toolResult") {
+          result.isError = true;
+        }
+        break;
+      }
+    }
+    expect(resolveSettledTurnFinalizationRequest(prepareRequest(attempt))).toBeNull();
+  });
+
   it("preserves a structured provider refusal even with stale transient context", () => {
     const attempt = createSettledProviderFailureAttempt();
     const assistant = attempt.currentAttemptCompletedAssistant;

@@ -25,6 +25,7 @@ import {
   hasAttemptTerminalState,
 } from "./attempt-terminal-evidence.js";
 import type { EmbeddedAttemptDeferredLifecycleOwner } from "./deferred-lifecycle-owner.js";
+import { hasRejectedPostToolTerminalText } from "./incomplete-turn-classification.js";
 import { shouldTreatEmptyAssistantReplyAsSilent } from "./incomplete-turn-recovery.js";
 import { resolveSilentToolResultReplyPayload } from "./incomplete-turn-resolution.js";
 import type {
@@ -129,18 +130,21 @@ function resolveSettledTurnFinalizationContext(params: {
   messagesSnapshot: EmbeddedRunAttemptResult["messagesSnapshot"];
   terminal: EmbeddedRunAttemptResult["terminal"];
 }): EmbeddedRunAttemptResult["settledTurnFinalizationContext"] {
-  // Only a transient final provider call can safely recover an already settled tool turn.
+  const rejectedTerminal = hasRejectedPostToolTerminalText(params);
+  // Preserve settled results for a transient failure or a pre-dispatch rejection.
+  // Settlement and delivery authority remain with the existing finalization owner.
   if (
-    params.terminal.kind !== "failed" ||
-    params.terminal.source !== "prompt" ||
-    params.terminal.timeoutObservation ||
-    !isTransientNetworkError(params.terminal.error)
+    !rejectedTerminal &&
+    (params.terminal.kind !== "failed" ||
+      params.terminal.source !== "prompt" ||
+      params.terminal.timeoutObservation ||
+      !isTransientNetworkError(params.terminal.error))
   ) {
     return undefined;
   }
   // A turn that already produced visible text has nothing to finalize, and a
   // turn without a tool result never settled one.
-  if (!params.assistantTexts.every((text) => !text.trim())) {
+  if (!rejectedTerminal && !params.assistantTexts.every((text) => !text.trim())) {
     return undefined;
   }
   if (!params.messagesSnapshot.some((message) => message.role === "toolResult")) {

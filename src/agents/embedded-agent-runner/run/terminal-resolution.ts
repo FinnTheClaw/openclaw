@@ -34,6 +34,7 @@ import {
 } from "./auth-profile-success.js";
 import type { EmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { resolveFinalAssistantVisibleText } from "./helpers.js";
+import { hasRejectedPostToolTerminalText } from "./incomplete-turn-classification.js";
 import {
   resolveEmptyResponseRetryInstruction,
   resolveReasoningOnlyRetryInstruction,
@@ -129,16 +130,21 @@ export function resolveSettledTurnFinalizationRequest(input: {
   // Generated errors are fallback surfaces, not authored answers. Trust their
   // producer provenance; the recovery owner still requires exact settlement,
   // transient-failure context, and no delivery or asynchronous work.
+  const rejectedTerminal =
+    hasRejectedPostToolTerminalText(input.attempt) &&
+    !hasAttemptTerminalState(input.attempt) &&
+    resolveSettledToolBatchEvidence(input.attempt).failedToolNames.size === 0;
   const hasOnlySyntheticErrorPayload = Boolean(
-    input.attempt.assistantTexts.every((text) => text.trim().length === 0) &&
+    (rejectedTerminal || input.attempt.assistantTexts.every((text) => text.trim().length === 0)) &&
     (input.payloadsWithToolMedia?.length ?? 0) > 0 &&
     input.payloadsWithToolMedia?.every((payload) => {
       const metadata = getReplyPayloadMetadata(payload);
       return (
         payload.isError === true &&
         Object.keys(payload).every((key) => key === "text" || key === "isError") &&
-        (metadata?.toolErrorWarning ||
-          (input.attempt.terminal.kind === "failed" &&
+        ((input.attempt.assistantTexts.every((text) => !text.trim()) &&
+          metadata?.toolErrorWarning) ||
+          ((input.attempt.terminal.kind === "failed" || rejectedTerminal) &&
             input.attempt.settledTurnFinalizationContext &&
             metadata?.terminalProviderError))
       );
