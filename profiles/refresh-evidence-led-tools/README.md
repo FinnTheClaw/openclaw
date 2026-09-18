@@ -21,3 +21,5 @@ Raw and summarized evidence lives on Grond under:
 No production gateway, PXE, coordinator configuration, or model launch setting changed.
 
 Latest: candidatec74d3d54 corrects the observed malformed-tool terminal completion path; source-tested/built/staged, NOT live-qualified or promoted. compare-malformed-finalization.py is the prepared20-submission comparison versus62c83212, not yet run. RESULTS-20260918.md records completed cohort results and limits.
+
+Completed qualification update: c74's20-submission Alistar check is now finished,10/10 each arm; no duplicate mutations or wrong answers. No malformed-call event occurred, so the new recovery branch remains unexercised live. No promotion or speedup claimed. See MALFORMED-FINALIZATION-RESULTS.md; earlier not-run/prepared status is superseded.
