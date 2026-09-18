@@ -182,6 +182,16 @@ export function shouldTreatEmptyAssistantReplyAsSilent(params: {
   return classifyAssistantTurn(params).nonVisibleEligibleForSilentReply;
 }
 
+/** Continue the persisted settled transcript; do not replay completed tool calls. */
+function canContinueSettledToolWork(attempt: IncompleteTurnAttempt): boolean {
+  const settled = resolveSettledToolBatchEvidence(attempt);
+  return (
+    settled.allToolsProvenSettled &&
+    !settled.intentionalTermination &&
+    !hasAttemptTerminalState(attempt)
+  );
+}
+
 /**
  * Builds the retry instruction for reasoning-only turns that consumed provider
  * output budget but produced no visible assistant text.
@@ -195,7 +205,12 @@ export function resolveReasoningOnlyRetryInstruction(params: {
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
 }): string | null {
-  if (shouldSkipNonVisibleTurnRetry(params)) {
+  if (
+    shouldSkipNonVisibleTurnRetry({
+      ...params,
+      tolerateSideEffects: canContinueSettledToolWork(params.attempt),
+    })
+  ) {
     return null;
   }
 
@@ -422,7 +437,12 @@ export function resolveEmptyResponseRetryInstruction(params: {
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
 }): string | null {
-  if (shouldSkipNonVisibleTurnRetry(params)) {
+  if (
+    shouldSkipNonVisibleTurnRetry({
+      ...params,
+      tolerateSideEffects: canContinueSettledToolWork(params.attempt),
+    })
+  ) {
     return null;
   }
 

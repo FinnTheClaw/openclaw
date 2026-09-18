@@ -342,13 +342,16 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     { safety: "read", output: "reasoning", exhausted: true, continues: false },
     { safety: "read", output: "empty", exhausted: false, continues: true },
     { safety: "read", output: "empty", exhausted: true, continues: false },
-    { safety: "write", output: "reasoning", exhausted: false, continues: false },
-    { safety: "unknown", output: "reasoning", exhausted: false, continues: false },
-    { safety: "prior-effect", output: "reasoning", exhausted: false, continues: false },
+    { safety: "write", output: "reasoning", exhausted: false, continues: true },
+    { safety: "unknown", output: "reasoning", exhausted: false, continues: true },
+    { safety: "unknown", output: "reasoning-stop", exhausted: false, continues: true },
+    { safety: "unknown", output: "reasoning-stop", exhausted: true, continues: false },
+    { safety: "write", output: "empty", exhausted: false, continues: true },
+    { safety: "prior-effect", output: "reasoning", exhausted: false, continues: true },
   ] as const)(
     "preserves tool-capable recovery after $safety ($output, exhausted=$exhausted)",
     async ({ safety, output, exhausted, continues }) => {
-      const toolName = safety === "write" ? "write" : safety === "unknown" ? "lookup" : "read";
+      const toolName = safety === "write" ? "write" : safety === "unknown" ? "exec" : "read";
       const toolCall = buildEmbeddedRunnerAssistant({
         stopReason: "toolUse",
         content: [{ type: "toolCall", id: "status-read", name: toolName, arguments: {} }],
@@ -356,7 +359,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       const assistant = buildEmbeddedRunnerAssistant({
         stopReason: output === "reasoning" ? "length" : "stop",
         content:
-          output === "reasoning"
+          output !== "empty"
             ? [{ type: "thinking", thinking: "The requested update remains to be done." }]
             : [],
       });
@@ -430,7 +433,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
         expect(terminalInput.activateInternalPrompt).toHaveBeenCalledWith(
           expect.stringContaining("remaining authorized work using available tools"),
         );
-        expect(terminalInput.retryState.reasoningOnlyAttempts).toBe(output === "reasoning" ? 1 : 0);
+        expect(terminalInput.retryState.reasoningOnlyAttempts).toBe(output === "empty" ? 0 : 1);
         expect(terminalInput.retryState.emptyResponseAttempts).toBe(output === "empty" ? 1 : 0);
       } else {
         expect(finalized.finalizationOutcome).toBe("answered");

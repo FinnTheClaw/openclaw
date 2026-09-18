@@ -184,12 +184,10 @@ export function resolveSettledTurnFinalizationRequest(input: {
     allowEmptyStopContinuation: requiresVisibleTerminalReply(input.runParams),
     hasTerminalToolPresentation: input.hasTerminalToolPresentation,
   });
-  // Settled reads do not prove the task is complete. Preserve the ordinary
-  // tool-capable continuation first, but never replay possible prior effects.
+  // Settled tools do not prove the task is complete. The shared recovery
+  // predicates distinguish continuing their persisted results from replaying effects.
   if (
     finalizationRequest &&
-    input.attempt.replayMetadata.replaySafe &&
-    !input.attempt.replayMetadata.hadPotentialSideEffects &&
     ((input.availableNonVisibleRetries?.reasoningOnly &&
       resolveReasoningOnlyRetryInstruction(continuationParams)) ||
       (input.availableNonVisibleRetries?.emptyResponse &&
