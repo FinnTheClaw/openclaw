@@ -282,7 +282,9 @@ describe("terminal resolution", () => {
 
     await expect(resolveEmbeddedRunTerminal(input)).resolves.toEqual({ action: "retry" });
     expect(input.retryState.emptyResponseAttempts).toBe(1);
-    expect(activateInternalPrompt).toHaveBeenCalledWith(EMPTY_RESPONSE_RETRY_INSTRUCTION);
+    expect(activateInternalPrompt).toHaveBeenCalledWith(
+      `${EMPTY_RESPONSE_RETRY_INSTRUCTION}\n\nExact original user request to finish:\n${input.runParams.prompt}`,
+    );
   });
 
   it("completes an explicit silent reply without retrying", async () => {
@@ -661,7 +663,9 @@ describe("terminal resolution", () => {
     });
 
     await expect(resolveEmbeddedRunTerminal(retryInput)).resolves.toEqual({ action: "retry" });
-    expect(activateInternalPrompt).toHaveBeenCalledWith(REASONING_ONLY_RETRY_INSTRUCTION);
+    expect(activateInternalPrompt).toHaveBeenCalledWith(
+      `${REASONING_ONLY_RETRY_INSTRUCTION}\n\nExact original user request to finish:\n${retryInput.runParams.prompt}`,
+    );
 
     const exhaustedInput = makeTerminalInput({
       attempt,

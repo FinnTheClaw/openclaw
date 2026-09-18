@@ -396,7 +396,12 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
         safety === "prior-effect"
           ? { replaySafe: false, hadPotentialSideEffects: true }
           : attempt.currentAttemptReplayMetadata;
-      const terminalInput = makeTerminalInput({ attempt });
+      const terminalInput = makeTerminalInput({
+        attempt,
+        runParams: {
+          prompt: "Change status.txt from ready to shipped. Do not change other files.",
+        },
+      });
       if (exhausted) {
         terminalInput.retryState.reasoningOnlyAttempts =
           terminalInput.maxReasoningOnlyRetryAttempts;
@@ -432,6 +437,11 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
         });
         expect(terminalInput.activateInternalPrompt).toHaveBeenCalledWith(
           expect.stringContaining("remaining authorized work using available tools"),
+        );
+        expect(terminalInput.activateInternalPrompt).toHaveBeenCalledWith(
+          expect.stringContaining(
+            "Exact original user request to finish:\nChange status.txt from ready to shipped. Do not change other files.",
+          ),
         );
         expect(terminalInput.retryState.reasoningOnlyAttempts).toBe(output === "empty" ? 0 : 1);
         expect(terminalInput.retryState.emptyResponseAttempts).toBe(output === "empty" ? 1 : 0);

@@ -325,7 +325,9 @@ export async function resolveEmbeddedRunTerminal(input: {
     retryState.reasoningOnlyAttempts < input.maxReasoningOnlyRetryAttempts
   ) {
     retryState.reasoningOnlyAttempts += 1;
-    input.activateInternalPrompt(nextReasoningOnlyRetryInstruction);
+    input.activateInternalPrompt(
+      `${nextReasoningOnlyRetryInstruction}\n\nExact original user request to finish:\n${runParams.prompt}`,
+    );
     log.warn(
       `reasoning-only assistant turn detected: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
         `provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — retrying ${retryState.reasoningOnlyAttempts}/${input.maxReasoningOnlyRetryAttempts} ` +
@@ -363,7 +365,9 @@ export async function resolveEmbeddedRunTerminal(input: {
     retryState.emptyResponseAttempts < input.maxEmptyResponseRetryAttempts
   ) {
     retryState.emptyResponseAttempts += 1;
-    input.activateInternalPrompt(nextEmptyResponseRetryInstruction);
+    input.activateInternalPrompt(
+      `${nextEmptyResponseRetryInstruction}\n\nExact original user request to finish:\n${runParams.prompt}`,
+    );
     log.warn(
       `empty response detected: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
         `provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — retrying ${retryState.emptyResponseAttempts}/${input.maxEmptyResponseRetryAttempts} ` +
