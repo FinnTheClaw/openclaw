@@ -334,12 +334,10 @@ export async function startPluginServices(params: {
           throw new AggregateError(failures, "plugin service reload cleanup failed");
         }
         for (const entry of selected) {
-          ownedServices.splice(ownedServices.indexOf(entry), 1);
-        }
-        for (const entry of selected) {
           if (stopRequested) {
             return;
           }
+          ownedServices.splice(ownedServices.indexOf(entry), 1);
           await startService(entry.registration, config, true);
         }
       });

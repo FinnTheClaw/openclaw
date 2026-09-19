@@ -155,15 +155,25 @@ export class ShellGatewayOwner {
         this.host.criticalNoticeRuntime ??=
           import("../pages/chat/critical-observer-notice.runtime.ts");
         const payload = event.payload;
-        void this.host.criticalNoticeRuntime.then((runtime) =>
+        const client = context.gateway.snapshot.client;
+        const noticeRuntime = this.host.criticalNoticeRuntime;
+        void noticeRuntime.then((runtime) => {
+          // Lazy module completion can outlive the Gateway or the owning shell.
+          if (
+            this.host.context !== context ||
+            context.gateway.snapshot.client !== client ||
+            this.host.criticalNoticeRuntime !== noticeRuntime
+          ) {
+            return;
+          }
           runtime.handleCriticalObserverDigest({
             payload,
             selectedSessionKey: this.host.activeSessionKey,
             sessionHost: this.host.storedOutboxScopeHost(context),
             sessions: context.sessions.state.result?.sessions ?? [],
             onOpen: (sessionKey, agentId) => this.host.selectChatSession(sessionKey, agentId),
-          }),
-        );
+          });
+        });
       }
       return;
     }
@@ -423,6 +433,7 @@ export class ShellGatewayOwner {
 
   reset(): void {
     void this.host.criticalNoticeRuntime?.then((runtime) => runtime.resetCriticalObserverTracker());
+    this.host.criticalNoticeRuntime = null;
     this.host.agentsListClient = null;
     this.host.agentsListSource = null;
     this.host.sessionKeyClient = null;

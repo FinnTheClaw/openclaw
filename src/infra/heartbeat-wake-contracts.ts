@@ -1,7 +1,12 @@
-export type HeartbeatRunResult =
+type HeartbeatAgentRunResult =
   | { status: "ran"; durationMs: number }
   | { status: "skipped"; reason: string; retryAtMs?: number }
   | { status: "failed"; reason: string };
+
+export type HeartbeatRunResult = HeartbeatAgentRunResult & {
+  /** Per-agent dispatch facts let the wake owner retain only unfinished broadcast targets. */
+  broadcastResults?: readonly { agentId: string; result: HeartbeatAgentRunResult }[];
+};
 
 export type HeartbeatWakeIntent = "scheduled" | "task" | "event" | "immediate" | "manual";
 

@@ -282,6 +282,7 @@ export function buildComputerActParams(params: {
         wire[key] = readToolStringParam(input, key, {
           required: true,
           allowEmpty: key === "value",
+          trim: key !== "value",
         });
       }
       copyDeliveryMode(wire, input);
@@ -361,7 +362,11 @@ export function buildComputerActParams(params: {
       for (const key of ["observationId", "elementRef"] as const) {
         wire[key] = readToolStringParam(input, key, { required: true });
       }
-      wire.text = readToolStringParam(input, "text", { required: true, allowEmpty: true });
+      wire.text = readToolStringParam(input, "text", {
+        required: true,
+        allowEmpty: true,
+        trim: false,
+      });
       copyOptionalStringParam(wire, input, "mode");
       copyOptionalBooleanParam(wire, input, "replace");
       break;

@@ -16,8 +16,8 @@ function orderedIds(queue: readonly ChatQueueItem[]): string[] {
 }
 
 function applyMove(queue: ChatQueueItem[], id: string, toIndex: number): ChatQueueItem[] {
-  const changed = new Map(reorderChatQueueItems(queue, id, toIndex).map((item) => [item.id, item]));
-  return queue.map((item) => changed.get(item.id) ?? item);
+  const ordered = reorderChatQueueItems(queue, id, toIndex);
+  return ordered.length ? ordered : queue;
 }
 
 describe("chat queue order", () => {

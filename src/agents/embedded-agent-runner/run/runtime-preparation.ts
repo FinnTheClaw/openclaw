@@ -127,8 +127,19 @@ export async function prepareEmbeddedRunRuntime(input: {
           agentRuntime: agentHarness.id,
         })
       : undefined;
-    const resolvedModel = preparedThinkingCompat
-      ? { ...candidate, compat: { ...candidate.compat, ...preparedThinkingCompat } }
+    const mergedCompat = preparedThinkingCompat
+      ? { ...candidate.compat, ...preparedThinkingCompat }
+      : undefined;
+    const resolvedModel = mergedCompat
+      ? {
+          ...candidate,
+          compat: {
+            ...mergedCompat,
+            // Prepared metadata may be readonly or null; runtime models own mutable lists.
+            // Normalize after merging so explicit null still clears a prior capability list.
+            supportedReasoningEfforts: mergedCompat.supportedReasoningEfforts?.slice(),
+          },
+        }
       : candidate;
     const resolved =
       resolvedModel === candidate && resolvedCandidate

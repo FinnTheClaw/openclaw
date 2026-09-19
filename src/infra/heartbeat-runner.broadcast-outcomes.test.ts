@@ -37,11 +37,11 @@ describe("heartbeat broadcast outcomes", () => {
     } as OpenClawConfig;
     const runner = startHeartbeatRunner({ cfg, runOnce });
     onTestFinished(() => runner.stop());
-    const run = register.mock.calls[0]?.[0];
+    const run = register.mock.calls.at(-1)?.[0];
     if (!run) {
       throw new Error("Expected the runner to register a wake handler");
     }
-    return { run, runOnce };
+    return { run, runOnce, runner };
   }
 
   it("retains an untargeted task through min-spacing and dispatches its payload at the deadline", async () => {
@@ -60,6 +60,10 @@ describe("heartbeat broadcast outcomes", () => {
       status: "skipped",
       reason: "min-spacing",
       retryAtMs: 30_000,
+      broadcastResults: ["main", "ops"].map((agentId) => ({
+        agentId,
+        result: { status: "skipped", reason: "min-spacing", retryAtMs: 30_000 },
+      })),
     });
     expect(getLastHeartbeatEvent()).toBeNull();
     heartbeatWake.requestHeartbeat({ ...wake, coalesceMs: 0 });
@@ -92,6 +96,14 @@ describe("heartbeat broadcast outcomes", () => {
       status: "skipped",
       reason: testCase.reason,
       retryAtMs: testCase.retryAtMs,
+      broadcastResults: ["main", "ops"].map((agentId) => ({
+        agentId,
+        result: {
+          status: "skipped",
+          reason: testCase.reason,
+          retryAtMs: testCase.retryAtMs + (agentId === "main" ? 5_000 : 0),
+        },
+      })),
     });
   });
 
@@ -108,6 +120,13 @@ describe("heartbeat broadcast outcomes", () => {
       status: "skipped",
       reason: "min-spacing",
       retryAtMs: 30_000,
+      broadcastResults: [
+        { agentId: "main", result: terminal },
+        {
+          agentId: "ops",
+          result: { status: "skipped", reason: "min-spacing", retryAtMs: 30_000 },
+        },
+      ],
     });
   });
 
@@ -131,8 +150,172 @@ describe("heartbeat broadcast outcomes", () => {
     } as const;
     runOnce.mockResolvedValueOnce(busy);
 
-    expect(await run({ source: "cron", intent: "task" })).toEqual(busy);
+    expect(await run({ source: "cron", intent: "task" })).toEqual({
+      ...busy,
+      broadcastResults: [
+        { agentId: "main", result: busy },
+        { agentId: "ops", result: { status: "ran", durationMs: 1 } },
+      ],
+    });
     expect(runOnce).toHaveBeenCalledTimes(2);
+  });
+
+  it("delivers a broadcast task to the deferred agent without repeating its completed sibling", async () => {
+    const { run, runOnce } = startRunner();
+    await run({ source: "manual", intent: "manual", agentId: "ops" });
+    runOnce.mockClear();
+    vi.setSystemTime(1);
+    const tasks = [{ jobId: "inbox", name: "Inbox", prompt: "Check inbox" }];
+
+    heartbeatWake.requestHeartbeat({
+      source: "cron",
+      intent: "task",
+      tasks,
+      coalesceMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runOnce.mock.calls.map(([opts]) => opts.agentId)).toEqual(["main"]);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(runOnce.mock.calls.map(([opts]) => opts.agentId)).toEqual(["main", "ops"]);
+    expect(runOnce.mock.calls.map(([opts]) => opts.tasks)).toEqual([tasks, tasks]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runOnce).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["manual", "immediate"] as const)(
+    "retries only the busy broadcast agent for %s intent",
+    async (intent) => {
+      const { runOnce } = startRunner();
+      const attempts = new Map<string, number>();
+      runOnce.mockImplementation(async ({ agentId }) => {
+        const count = (attempts.get(agentId!) ?? 0) + 1;
+        attempts.set(agentId!, count);
+        return agentId === "ops" && count === 1
+          ? { status: "skipped", reason: heartbeatWake.HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT }
+          : { status: "ran", durationMs: 1 };
+      });
+
+      heartbeatWake.requestHeartbeat({ source: "manual", intent, coalesceMs: 0 });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runOnce.mock.calls.map(([opts]) => opts.agentId)).toEqual(["main", "ops"]);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(runOnce.mock.calls.map(([opts]) => opts.agentId)).toEqual(["main", "ops", "ops"]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(runOnce).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it("coalesces later work only for the deferred target and waits for its settlement", async () => {
+    const { run, runOnce } = startRunner();
+    await run({ source: "manual", intent: "manual", agentId: "ops" });
+    runOnce.mockClear();
+    vi.setSystemTime(1);
+    const original = { jobId: "a", name: "First", prompt: "Original work" };
+    const later = { jobId: "b", name: "Second", prompt: "Later work" };
+    let settled = false;
+    const done = heartbeatWake
+      .requestHeartbeatAndWait({
+        source: "cron",
+        intent: "task",
+        tasks: [original],
+        coalesceMs: 0,
+      })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(false);
+    heartbeatWake.requestHeartbeat({
+      source: "cron",
+      intent: "task",
+      agentId: "ops",
+      tasks: [later],
+      coalesceMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(29_997);
+    expect(settled).toBe(false);
+    expect(
+      runOnce.mock.calls.map(([opts]) => ({ agentId: opts.agentId, tasks: opts.tasks })),
+    ).toEqual([{ agentId: "main", tasks: [original] }]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(await done).toMatchObject({ status: "ran" });
+    expect(
+      runOnce.mock.calls.map(([opts]) => ({ agentId: opts.agentId, tasks: opts.tasks })),
+    ).toEqual([
+      { agentId: "main", tasks: [original] },
+      { agentId: "ops", tasks: [original, later] },
+    ]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runOnce).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains independent broadcast deadlines without replaying the earlier target", async () => {
+    const { run, runOnce } = startRunner();
+    await run({ source: "manual", intent: "manual", agentId: "main" });
+    vi.setSystemTime(5_000);
+    await run({ source: "manual", intent: "manual", agentId: "ops" });
+    runOnce.mockClear();
+    vi.setSystemTime(10_000);
+    let settled = false;
+    const done = heartbeatWake
+      .requestHeartbeatAndWait({
+        source: "cron",
+        intent: "task",
+        tasks: [{ jobId: "a", name: "Work", prompt: "Both targets" }],
+        coalesceMs: 0,
+      })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(runOnce.mock.calls.map(([opts]) => opts.agentId)).toEqual(["main"]);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(await done).toMatchObject({ status: "ran" });
+    expect(runOnce.mock.calls.map(([opts]) => opts.agentId)).toEqual(["main", "ops"]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runOnce).toHaveBeenCalledTimes(2);
+  });
+
+  it("hands only unfinished broadcast targets to a replacement runner", async () => {
+    const first = startRunner();
+    await first.run({ source: "manual", intent: "manual", agentId: "ops" });
+    first.runOnce.mockClear();
+    vi.setSystemTime(1);
+    const tasks = [{ jobId: "a", name: "Work", prompt: "Retained on replacement" }];
+    let settled = false;
+    const done = heartbeatWake
+      .requestHeartbeatAndWait({
+        source: "cron",
+        intent: "task",
+        tasks,
+        coalesceMs: 0,
+      })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(first.runOnce.mock.calls.map(([opts]) => opts.agentId)).toEqual(["main"]);
+    expect(settled).toBe(false);
+
+    first.runner.stop();
+    const second = startRunner();
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(await done).toMatchObject({ status: "ran" });
+    expect(
+      second.runOnce.mock.calls.map(([opts]) => ({ agentId: opts.agentId, tasks: opts.tasks })),
+    ).toEqual([{ agentId: "ops", tasks }]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(first.runOnce).toHaveBeenCalledTimes(1);
+    expect(second.runOnce).toHaveBeenCalledTimes(1);
   });
 
   it("retries a channel-not-ready alert without consuming its scheduled cadence", async () => {

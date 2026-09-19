@@ -1,3 +1,4 @@
+import { createChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import {
   createMessageReceiptFromOutboundResults,
   type MessageReceipt,
@@ -57,7 +58,17 @@ export async function sendMessageTwitchInternal(params: {
   );
   if (!result.ok) {
     // The public boundary keeps the formatted message and omits the raw SDK cause.
-    throw new Error(result.error);
+    const error = new Error(result.error);
+    if (result.partialDelivery) {
+      const { messageId, content } = result.partialDelivery;
+      throw createChannelPartialDeliveryError(error, {
+        visibleReplySent: true,
+        messageIds: [messageId],
+        receipt: createTwitchSendReceipt(messageId, params.channel),
+        content,
+      });
+    }
+    throw error;
   }
   const { messageId } = result;
   return {

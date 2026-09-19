@@ -122,9 +122,22 @@ class ChatOutboxGatewayOwner {
             : item;
     });
     const durableIds = new Set(durable.map((item) => item.id));
-    visible.push(...local.filter((item) => !durableIds.has(item.id) && isActiveLocal(state, item)));
+    // Physical order owns equal-key ties. Refresh the durable subsequence from
+    // storage, while retaining active local-only slots in this pane's projection.
+    let durableIndex = 0;
+    const merged: ChatQueueItem[] = [];
+    for (const item of local) {
+      if (durableIds.has(item.id)) {
+        if (durableIndex < visible.length) {
+          merged.push(visible[durableIndex++]!);
+        }
+      } else if (isActiveLocal(state, item)) {
+        merged.push(item);
+      }
+    }
+    merged.push(...visible.slice(durableIndex));
     this.prune(host);
-    return visible.toSorted(compareChatQueueOrder);
+    return merged.toSorted(compareChatQueueOrder);
   }
   syncHost(host: Host, options: { requestUpdate?: boolean } = {}): void {
     if (this.ownerGatewayKey !== outboxOwnerKey(host)) {
@@ -305,8 +318,14 @@ class ChatOutboxGatewayOwner {
     const scope = { sessionKey, agentId };
     const state = this.state(host);
     const key = storedChatOutboxScopeKey(scope);
-    const queue = (state.byScope.get(key)?.queue ?? []).filter((entry) => entry.id !== item.id);
-    queue.push(applyStoredChatOutboxScope(item, scope));
+    const queue = (state.byScope.get(key)?.queue ?? []).slice();
+    const index = queue.findIndex((entry) => entry.id === item.id);
+    const scoped = applyStoredChatOutboxScope(item, scope);
+    if (index >= 0) {
+      queue[index] = scoped;
+    } else {
+      queue.push(scoped);
+    }
     queue.sort(compareChatQueueOrder);
     state.byScope.set(key, { scope, queue });
     if (retryable) {

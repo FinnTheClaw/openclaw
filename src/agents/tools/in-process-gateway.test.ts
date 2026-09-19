@@ -63,11 +63,13 @@ describe("trusted in-process Gateway session creation", () => {
     expect(mocks.callGatewayTool).not.toHaveBeenCalled();
 
     mocks.hasContext = false;
-    await callInProcessGatewayToolWithCreation("sessions.create", { agentId: "main" }, creation);
+    await callInProcessGatewayToolWithCreation("sessions.create", { agentId: "main" }, creation, {
+      timeoutMs: 120_000,
+    });
 
     expect(mocks.callGatewayTool).toHaveBeenCalledWith(
       "sessions.create",
-      {},
+      { timeoutMs: 120_000 },
       { agentId: "main" },
       { scopes: ["operator.write"] },
     );
@@ -128,11 +130,12 @@ describe("trusted in-process Gateway session creation", () => {
         completionOwnerSessionKey: "agent:main:discord:direct:alice",
         inheritedToolPolicy,
       },
+      { timeoutMs: 2_000 },
     );
 
     expect(mocks.callGatewayTool).toHaveBeenCalledWith(
       "sessions.create",
-      {},
+      { timeoutMs: 2_000 },
       { agentId: "main", parentSessionKey: "agent:main:main", spawnDepth: 1 },
       {
         scopes: ["operator.write"],

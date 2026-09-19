@@ -27,7 +27,12 @@ import {
 } from "./internal/discord.js";
 import { parseAndResolveRecipient } from "./recipient-resolution.js";
 import { resolveDiscordReplyMessageId, type DiscordReplyReference } from "./reply-reference.js";
-import type { DiscordRetryRunner } from "./retry.js";
+import {
+  classifyDiscordDeliveryFailure,
+  hasDiscordMessageCreateAmbiguity,
+  recordDiscordMessageCreateAmbiguity,
+  type DiscordRetryRunner,
+} from "./retry.js";
 import {
   buildDiscordMessageRequest,
   resolveDiscordMessageFlags,
@@ -377,6 +382,7 @@ async function sendDiscordChunks(
       replyTo: replyToId,
     });
     let result: { id: string; channel_id: string };
+    let ambiguousAttempt = false;
     try {
       result = await params.request(
         async () => {
@@ -386,12 +392,19 @@ async function sendDiscordChunks(
             params.rest,
             params.channelId,
             { body },
-          );
+          ).catch((error: unknown) => {
+            ambiguousAttempt ||= classifyDiscordDeliveryFailure(error) === "ambiguous";
+            throw error;
+          });
         },
         files ? "media" : "text",
         { safety: "nonce-protected-create" },
       );
     } catch (error) {
+      // A later rejection cannot prove an earlier same-nonce attempt was never accepted.
+      if (ambiguousAttempt) {
+        recordDiscordMessageCreateAmbiguity(error);
+      }
       // Only a rejected first multipart create can fall back; later sends and ACK callbacks cannot replay it.
       if (files && upload) {
         return upload.onRejected(error);
@@ -442,7 +455,7 @@ async function sendDiscordMedia(params: DiscordMediaSendParams) {
   return sendDiscordChunks(params, {
     files: [{ data: media.buffer, name: resolvedFileName, contentType: media.contentType }],
     onRejected(error) {
-      if (!isDiscordUploadTooLargeError(error)) {
+      if (!isDiscordUploadTooLargeError(error) || hasDiscordMessageCreateAmbiguity(error)) {
         throw error;
       }
       // The multipart request is all-or-nothing. Attachment-coupled presentation must not accompany text fallback.

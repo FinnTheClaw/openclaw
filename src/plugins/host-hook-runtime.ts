@@ -611,10 +611,12 @@ export async function cleanupPluginSessionSchedulerJobs(params: {
       if (!shouldCleanup()) {
         continue;
       }
-      jobs.delete(jobId);
-    }
-    if (jobs.size === 0) {
-      state.schedulerJobsByPlugin.delete(pluginId);
+      deletePluginSessionSchedulerJob({
+        pluginId,
+        jobId,
+        sessionKey: record.job.sessionKey,
+        expectedGeneration: record.generation,
+      });
     }
   }
   return failures;

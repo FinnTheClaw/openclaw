@@ -206,6 +206,29 @@ describe("sanitizeHtml", () => {
     expect(result).toContain("Title");
   });
 
+  it.each([
+    'title="a hidden gem"',
+    'hidden-content="false"',
+    'class="article hidden-gem"',
+    `title='use class="hidden"' class="visible"`,
+  ])("does not mistake attribute text for a hidden marker: %s", async (attributes) => {
+    const html = `<p ${attributes}>Visible article text</p>`;
+
+    await expect(sanitizeHtml(html)).resolves.toBe(html);
+  });
+
+  it.each([
+    ['class="visible" class="hidden"', true],
+    ['class="hidden" class="visible"', false],
+    ['hidden="false"', false],
+    ["HIDDEN", false],
+    ["title='a hidden gem' hidden", false],
+  ])("preserves real attribute semantics for %s", async (attributes, visible) => {
+    const html = `<p ${attributes}>Article text</p>`;
+
+    await expect(sanitizeHtml(html)).resolves.toBe(visible ? html : "");
+  });
+
   it("handles nested hidden elements without removing visible siblings", async () => {
     const html =
       '<div><p>Visible</p><span style="display:none">Hidden</span><p>Also visible</p></div>';

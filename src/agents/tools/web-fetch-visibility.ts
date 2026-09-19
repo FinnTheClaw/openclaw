@@ -118,15 +118,19 @@ function isStyleHidden(style: string): boolean {
   return false;
 }
 
-// The fixed visibility attributes share one grammar; each reader compiles it once per process.
+// Scan complete attributes so quoted values cannot masquerade as visibility markers.
+// The first duplicate attribute wins, matching HTML attribute parsing.
+const HTML_ATTRIBUTE_PATTERN =
+  /([^\t\n\f\r />=]+)(?:[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r >]*)))?/g;
+
 function createAttributeReader(attribute: "aria-hidden" | "class" | "hidden" | "style" | "type") {
-  const pattern = new RegExp(
-    `(?:^|\\s)${attribute}(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+)))?`,
-    "i",
-  );
   return (attrs: string): string | undefined => {
-    const match = attrs.match(pattern);
-    return match ? (match[1] ?? match[2] ?? match[3] ?? "") : undefined;
+    for (const match of attrs.matchAll(HTML_ATTRIBUTE_PATTERN)) {
+      if (match[1]?.toLowerCase() === attribute) {
+        return match[2] ?? match[3] ?? match[4] ?? "";
+      }
+    }
+    return undefined;
   };
 }
 

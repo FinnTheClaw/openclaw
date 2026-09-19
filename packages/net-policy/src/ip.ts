@@ -396,7 +396,10 @@ export function isIpInCidr(ip: string, cidr: string): boolean {
     );
   }
   if (isIpv4Address(comparableIp) && isIpv4Address(comparableBase)) {
-    return comparableIp.match([comparableBase, prefixLength]);
+    // A mapped IPv6 range includes the 96-bit mapping prefix removed above.
+    const comparablePrefixLength =
+      isIpv6Address(baseAddress) && prefixLength >= 96 ? prefixLength - 96 : prefixLength;
+    return comparableIp.match([comparableBase, comparablePrefixLength]);
   }
   if (isIpv6Address(comparableIp) && isIpv6Address(comparableBase)) {
     return comparableIp.match([comparableBase, prefixLength]);

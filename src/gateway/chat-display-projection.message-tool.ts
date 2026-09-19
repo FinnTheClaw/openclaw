@@ -302,7 +302,7 @@ function hasSuppressedToolResultValue(value: unknown): boolean {
 
 function isSuccessfulMessageToolResult(
   message: Record<string, unknown>,
-  pending: PendingMessageToolVisibleReply,
+  pending: Pick<PendingMessageToolVisibleReply, "requiresSourceRouteConfirmation" | "toolCallId">,
 ): boolean {
   const role = typeof message.role === "string" ? message.role.toLowerCase().replace(/_/g, "") : "";
   const toolName = readMessageToolResultName(message)?.toLowerCase();
@@ -409,6 +409,17 @@ function readMessageToolDeliveryMirrorCallId(message: Record<string, unknown>): 
     return undefined;
   }
   return normalizeOptionalString(readRecord(message.openclawDeliveryMirror)?.toolCallId);
+}
+
+/** Completion rows may add or replace mirrors anchored before a delta cursor. */
+export function requiresMessageToolDisplayHistoryContext(message: unknown): boolean {
+  const record = readRecord(message);
+  return Boolean(
+    record &&
+    (isAssistantSilentControlReplyOnly(record) ||
+      isOpenClawDeliveryMirrorAssistantMessage(record) ||
+      isSuccessfulMessageToolResult(record, { requiresSourceRouteConfirmation: false })),
+  );
 }
 
 export function mirrorMessageToolVisibleReplies(messages: unknown[]): unknown[] {

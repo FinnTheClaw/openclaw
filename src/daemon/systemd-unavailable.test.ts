@@ -92,6 +92,7 @@ describe.skipIf(process.platform === "win32")("systemd process availability", ()
     { output: "running", code: 0, available: true },
     { output: "degraded", code: 1, available: true },
     { output: "Failed to connect to bus: No medium found", code: 1, available: false },
+    { output: "Failed to connect to bus: No such file or directory", code: 1, available: false },
   ])("preserves manager status $output", async ({ output, code, available }) => {
     await withTempDir("openclaw-systemctl-", async (dir) => {
       await fs.writeFile(
@@ -188,6 +189,7 @@ describe.skipIf(process.platform === "win32")("systemd process availability", ()
     { unitName: "openclaw-gateway.service", uninstall: uninstallUserSystemdGatewayUnit },
   ])("$unitName cleanup", ({ unitName, uninstall }) => {
     it.each([
+      { availability: "missing-bus", disableFails: true },
       { availability: "signal", disableFails: true },
       { availability: "signal", disableFails: false },
       { availability: "missing", disableFails: false },
@@ -207,7 +209,9 @@ describe.skipIf(process.platform === "win32")("systemd process availability", ()
                 "#!/bin/sh",
                 'printf "%s\\n" "$*" >> "$HOME/systemctl.calls"',
                 'case " $* " in',
-                '*" status "*) kill -TERM $$ ;;',
+                availability === "missing-bus"
+                  ? '*" status "*) printf "Failed to connect to bus: No such file or directory\\n" >&2; exit 1 ;;'
+                  : '*" status "*) kill -TERM $$ ;;',
                 '*" is-enabled "*) printf "enabled\\n" ;;',
                 '*" disable "*)',
                 `  test -f "$HOME/.config/systemd/user/${unitName}" || exit 98`,

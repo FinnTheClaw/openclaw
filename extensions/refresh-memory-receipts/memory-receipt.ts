@@ -87,8 +87,12 @@ function expectedEdit(before: string, args: Record<string, unknown>): string | u
     replacements.push({ start, end: start + edit.oldText.length, text: edit.newText });
   }
   replacements.sort((a, b) => a.start - b.start);
-  for (let i = 1; i < replacements.length; i++) {
-    if (replacements[i].start < replacements[i - 1].end) return;
+  let previousEnd: number | undefined;
+  for (const replacement of replacements) {
+    if (previousEnd !== undefined && replacement.start < previousEnd) {
+      return;
+    }
+    previousEnd = replacement.end;
   }
   let expected = before;
   for (const replacement of replacements.reverse()) {

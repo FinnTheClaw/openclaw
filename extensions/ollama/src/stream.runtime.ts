@@ -30,6 +30,7 @@ import {
   formatToolResultText,
   isImageWithMediaPayload,
   MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE,
+  mergeTransportHeaders,
   notifyProviderHttpResponse,
   parseTerminalToolCallArguments,
 } from "openclaw/plugin-sdk/provider-transport-runtime";
@@ -1028,16 +1029,18 @@ function createRawOllamaStreamFn(
         });
         const replacement = await options?.onPayload?.(body, model);
         const requestBody = replacement === undefined ? body : replacement;
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-          ...defaultHeaders,
-          ...options?.headers,
-        };
-        if (
-          options?.apiKey &&
-          (!headers.Authorization || !isNonSecretApiKeyMarker(options.apiKey))
-        ) {
-          headers.Authorization = `Bearer ${options.apiKey}`;
+        let headers =
+          mergeTransportHeaders(
+            { "Content-Type": "application/json" },
+            defaultHeaders,
+            options?.headers,
+          ) ?? {};
+        const hasAuthorization = Object.entries(headers).some(
+          ([name, value]) => name.toLowerCase() === "authorization" && Boolean(value),
+        );
+        if (options?.apiKey && (!hasAuthorization || !isNonSecretApiKeyMarker(options.apiKey))) {
+          headers =
+            mergeTransportHeaders(headers, { Authorization: `Bearer ${options.apiKey}` }) ?? {};
         }
         const requestTimeoutMs = resolveOllamaRequestTimeoutMs(
           model,

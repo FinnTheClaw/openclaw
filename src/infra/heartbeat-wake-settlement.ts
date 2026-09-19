@@ -1,4 +1,4 @@
-import type { HeartbeatRunResult } from "./heartbeat-wake-contracts.js";
+import type { HeartbeatRunResult, HeartbeatWakeRequest } from "./heartbeat-wake-contracts.js";
 
 export type HeartbeatWakeSettlement = {
   active: boolean;
@@ -18,6 +18,99 @@ export function settleHeartbeatWakeSettlements(
   for (const settlement of settlements ?? []) {
     settlement.settle(result);
   }
+}
+
+/** A broadcast caller completes only after every original target has a terminal outcome. */
+export function splitHeartbeatWakeSettlements(
+  settlements: readonly HeartbeatWakeSettlement[] | undefined,
+  targetCount: number,
+): HeartbeatWakeSettlement[][] {
+  const parents = activeHeartbeatWakeSettlements(settlements);
+  const results: Array<HeartbeatRunResult | undefined> = Array.from({ length: targetCount });
+  let remaining = targetCount;
+  return Array.from({ length: targetCount }, (_, index) => {
+    if (parents.length === 0) {
+      return [];
+    }
+    const child: HeartbeatWakeSettlement = {
+      active: true,
+      settle: (result) => {
+        if (!child.active) {
+          return;
+        }
+        child.active = false;
+        results[index] = result;
+        remaining--;
+        if (remaining !== 0) {
+          return;
+        }
+        const ran = results.filter(
+          (outcome): outcome is Extract<HeartbeatRunResult, { status: "ran" }> =>
+            outcome?.status === "ran",
+        );
+        settleHeartbeatWakeSettlements(
+          parents,
+          ran.length > 0
+            ? { status: "ran", durationMs: Math.max(...ran.map((outcome) => outcome.durationMs)) }
+            : (results[0] ?? { status: "skipped", reason: "disabled" }),
+        );
+      },
+    };
+    return [child];
+  });
+}
+
+/** Expands retained broadcast work without changing queue or retry ownership. */
+export function resolveHeartbeatWakeSettlementOutcomes<
+  Wake extends HeartbeatWakeRequest & { settlements?: HeartbeatWakeSettlement[] },
+>(
+  pendingWake: Wake,
+  result: HeartbeatRunResult,
+  isRetryableSkipReason: (reason: string) => boolean,
+  retryableGuardSkipReasons: ReadonlySet<string>,
+): Array<{
+  wake: Wake;
+  result: HeartbeatRunResult;
+  busy: boolean;
+  guard: number | boolean | undefined;
+}> {
+  const retainsGuardWork =
+    pendingWake.tasks?.length ||
+    pendingWake.intent === "task" ||
+    pendingWake.intent === "event" ||
+    pendingWake.intent === "immediate";
+  const broadcast = result.broadcastResults?.some(
+    ({ result: outcome }) =>
+      outcome.status === "skipped" &&
+      (isRetryableSkipReason(outcome.reason) ||
+        (retryableGuardSkipReasons.has(outcome.reason) && retainsGuardWork)),
+  )
+    ? result.broadcastResults
+    : undefined;
+  const childSettlements = broadcast
+    ? splitHeartbeatWakeSettlements(pendingWake.settlements, broadcast.length)
+    : undefined;
+  const outcomes = broadcast
+    ? broadcast.map(({ agentId, result: agentResult }, index) => ({
+        wake: {
+          ...pendingWake,
+          agentId,
+          // Broadcast dispatch uses each enrolled destination, not a targeted override.
+          heartbeat: undefined,
+          settlements: childSettlements?.[index],
+        },
+        result: agentResult,
+      }))
+    : [{ wake: pendingWake, result }];
+  return outcomes.map((outcome) => ({
+    wake: outcome.wake,
+    result: outcome.result,
+    busy: outcome.result.status === "skipped" && isRetryableSkipReason(outcome.result.reason),
+    guard:
+      outcome.result.status === "skipped" &&
+      retryableGuardSkipReasons.has(outcome.result.reason) &&
+      retainsGuardWork,
+  }));
 }
 
 function createHeartbeatWakeSettlement(abortSignal?: AbortSignal): {

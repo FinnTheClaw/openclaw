@@ -96,6 +96,17 @@ export class WorkerInferenceProxyClient {
   }
 
   async cancel(params: WorkerInferenceCancelParams): Promise<WorkerInferenceCancelResult> {
+    const key = inferenceKey(params);
+    const operation = this.operations.get(key);
+    if (operation && operation.params.runEpoch === params.runEpoch && !operation.settled) {
+      operation.settled = true;
+      this.operations.delete(key);
+      operation.resolve({
+        type: "error",
+        reason: "cancelled",
+        message: "Worker inference aborted.",
+      });
+    }
     const response = await this.connection.requestInferenceCancel(params);
     if (response.ok) {
       return response.payload;
@@ -141,6 +152,13 @@ export class WorkerInferenceProxyClient {
     let interrupted = false;
     try {
       await this.connection.waitForReady();
+      if (
+        operation.settled ||
+        this.disposed ||
+        this.operations.get(inferenceKey(operation.params)) !== operation
+      ) {
+        return;
+      }
       const response = await this.connection.requestInferenceStart(operation.params, (frame) => {
         if (frame.ok && frame.payload.status === "replayed") {
           operation.lastSeq = 0;

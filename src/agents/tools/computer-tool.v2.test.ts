@@ -199,6 +199,39 @@ describe("createComputerTool v2 execution", () => {
     });
   });
 
+  it.each([
+    ["set_value", "value", "window"],
+    ["browser_type", "text", "browser"],
+  ] as const)("preserves exact %s input text", async (action, field, kind) => {
+    const observeAction = kind === "window" ? "get_window_state" : "get_browser_state";
+    const actions: ComputerUseV2ActionName[] = [observeAction, action];
+    listNodesMock.mockResolvedValue([macComputerNode({ computerUse: v2Descriptor(actions) })]);
+    callGatewayToolMock.mockImplementation(async (_method, _opts, body) => {
+      const request = body as ComputerActBody;
+      if (request.command !== COMPUTER_ACT_COMMAND) {
+        return screenshotPayload();
+      }
+      return request.params?.action === observeAction
+        ? { payload: { ok: true, observation: { kind, observationId: "observation-current" } } }
+        : { payload: { ok: true } };
+    });
+    const tool = createVisionComputerTool();
+    const refs =
+      kind === "window"
+        ? { windowRef: "window-1" }
+        : { browserRef: "browser-1", pageRef: "page-1" };
+    await tool.execute("observe", { action: observeAction, ...refs });
+    const text = "  indented input\n";
+    await tool.execute("write", {
+      action,
+      ...refs,
+      elementRef: "element-1",
+      observationId: "observation-current",
+      [field]: text,
+    });
+    expect(readLastComputerActParams()[field]).toBe(text);
+  });
+
   it("rejects stale semantic references before dispatch", async () => {
     const actions: ComputerUseV2ActionName[] = ["get_window_state", "set_value"];
     listNodesMock.mockResolvedValue([macComputerNode({ computerUse: v2Descriptor(actions) })]);

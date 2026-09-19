@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import { runPreparedChannelTurn } from "./execution.js";
 import { deliverPendingDeliveryNotice } from "./pending-delivery-notice.js";
 
 const PENDING_DELIVERY_NOTICE =
@@ -200,5 +201,37 @@ describe("pending delivery notice", () => {
     sent.resolve({ suppressed: false });
     await attempt;
     expect(loadSessionEntry({ sessionKey, storePath })?.pendingDeliveryNotice).toEqual(replacement);
+  });
+
+  it("keeps recovery notice debt owed on an observe-only turn without sending", async () => {
+    const recordInboundSession = vi.fn(async () => undefined);
+    const runDispatch = vi.fn(async () => ({
+      queuedFinal: false,
+      counts: { tool: 0, block: 0, final: 0 },
+    }));
+    await runPreparedChannelTurn({
+      channel: "telegram",
+      accountId: "default",
+      routeSessionKey: sessionKey,
+      storePath,
+      ctxPayload: {
+        Body: "observed",
+        RawBody: "observed",
+        CommandBody: "observed",
+        From: "sender",
+        To: "chat-1",
+        SessionKey: sessionKey,
+        Provider: "telegram",
+        Surface: "telegram",
+        CommandAuthorized: false,
+      },
+      admission: { kind: "observeOnly", reason: "test-observation" },
+      recordInboundSession,
+      runDispatch,
+    });
+    expect(recordInboundSession).toHaveBeenCalledOnce();
+    expect(runDispatch).not.toHaveBeenCalled();
+    expect.soft(sendRecoveryNotice).not.toHaveBeenCalled();
+    expect(loadSessionEntry({ sessionKey, storePath })?.pendingDeliveryNotice?.state).toBe("owed");
   });
 });

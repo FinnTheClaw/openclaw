@@ -44,7 +44,9 @@ export type IncompleteTurnAttempt = Pick<
 
 /** A rejected tool terminal can leave partial prose; it is not a completed answer. */
 export function hasRejectedPostToolTerminalText(
-  attempt: Pick<IncompleteTurnAttempt, "assistantTexts" | "messagesSnapshot" | "terminal">,
+  attempt: Pick<IncompleteTurnAttempt, "messagesSnapshot" | "terminal"> & {
+    assistantTexts: readonly string[];
+  },
 ): boolean {
   const { terminal, messagesSnapshot, assistantTexts } = attempt;
   // Exact producer contract from finalizeOpenAICompletionsToolCalls: the batch

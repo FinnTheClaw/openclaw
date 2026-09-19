@@ -232,6 +232,75 @@ describe.each([false, true])("node stream TLS (managed proxy: %s)", (managed) =>
 });
 
 describe("node stream startup ownership", () => {
+  it.each(["target-close", "target-error"] as const)(
+    "settles %s while the gateway upgrade is pending",
+    async (mode) => {
+      const upgrade = createDeferred();
+      const peers = new Set<net.Socket>();
+      const track = (peer: net.Socket) => {
+        peers.add(peer);
+        peer.once("close", () => peers.delete(peer));
+      };
+      const local = net.createServer(track);
+      const gateway = createHttpServer();
+      gateway.on("connection", track);
+      gateway.on("upgrade", () => upgrade.resolve());
+      await new Promise<void>((resolve) => {
+        local.listen(0, "127.0.0.1", resolve);
+      });
+      await new Promise<void>((resolve) => {
+        gateway.listen(0, "127.0.0.1", resolve);
+      });
+      const target = await new Promise<net.Socket>((resolve, reject) => {
+        const socket = net.connect((local.address() as AddressInfo).port, "127.0.0.1", () =>
+          resolve(socket),
+        );
+        socket.once("error", reject);
+      });
+      // Connected RFB streams also retain an error listener from their probe owner.
+      target.on("error", () => {});
+      const controller = new AbortController();
+      let settled = false;
+      let failure: unknown;
+      const running = runNodeStreamTransport({
+        gatewayUrl: `ws://127.0.0.1:${(gateway.address() as AddressInfo).port}`,
+        attachPath: "/node-desktop/attach",
+        expectedAttachPath: "/node-desktop/attach",
+        target: { stream: target },
+        metadata: { ok: true },
+        streamName: "desktop",
+        signal: controller.signal,
+      }).then(
+        () => {
+          settled = true;
+        },
+        (error: unknown) => {
+          failure = error;
+          settled = true;
+        },
+      );
+      try {
+        await upgrade.promise;
+        target.destroy(mode === "target-error" ? new Error("target failed") : undefined);
+        await expect.poll(() => settled, { timeout: 1_000 }).toBe(true);
+        expect(failure).toBeInstanceOf(Error);
+      } finally {
+        controller.abort();
+        await running;
+        target.destroy();
+        for (const peer of peers) {
+          peer.destroy();
+        }
+        await new Promise<void>((resolve) => {
+          gateway.close(() => resolve());
+        });
+        await new Promise<void>((resolve) => {
+          local.close(() => resolve());
+        });
+      }
+    },
+  );
+
   it.each([
     ["malformed URL", { gatewayUrl: "not-a-url" }],
     ["cross-origin attachment", { attachPath: "ws://example.invalid/node-desktop/attach" }],

@@ -107,7 +107,13 @@ export const llmTaskToolDefinition = {
     prompt: Type.String({ description: "Task instruction for the LLM." }),
     input: Type.Optional(Type.Unknown({ description: "Optional input payload for the task." })),
     schema: Type.Optional(
-      Type.Unknown({ description: "Optional JSON Schema to validate the returned JSON." }),
+      Type.Object(
+        {},
+        {
+          additionalProperties: true,
+          description: "Optional JSON Schema to validate the returned JSON.",
+        },
+      ),
     ),
     provider: Type.Optional(
       Type.String({ description: "Provider override (e.g. openai, anthropic)." }),
@@ -173,7 +179,7 @@ export function createLlmTaskTool(api: OpenClawPluginApi) {
         undefined;
 
       const modelKey = toModelKey(provider, model);
-      if (!provider || !model || !modelKey) {
+      if (hasModelOverride && !modelKey) {
         throw new Error(
           `provider/model could not be resolved (provider=${provider ?? ""}, model=${model ?? ""})`,
         );

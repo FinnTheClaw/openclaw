@@ -9,6 +9,7 @@ import {
 import { readTranscriptDisplayDelta } from "../../config/sessions/session-accessor.sqlite-history-events.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import { readChatHistoryDelta } from "./chat-history-delta.js";
+import { readChatHistoryPage } from "./chat-history-pages.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const maxBytes = 1_000_000;
@@ -121,4 +122,189 @@ describe("chat history delta display budget", () => {
       expect(serialized).not.toContain("PRIVATE_UPSTREAM");
     },
   );
+});
+
+describe("chat history delta visible source replies", () => {
+  it("keeps independent text messages incremental", async () => {
+    const scope = {
+      agentId: "main",
+      sessionKey,
+      sessionId,
+      storePath: path.join(tempDirs.make("openclaw-delta-text-"), "sessions.json"),
+    };
+    await replaceSessionEntry(scope, { sessionId, updatedAt: 42 });
+    await replaceTranscriptEvents(scope, [{ type: "session", version: 3, id: sessionId }]);
+    const head = readTranscriptDisplayDelta(scope);
+    if (head.kind !== "page") {
+      throw new Error("Expected an initial transcript cursor");
+    }
+    await appendTranscriptMessage(scope, {
+      eventId: "ordinary-answer",
+      now: 42,
+      message: { role: "assistant", content: [{ type: "text", text: "An ordinary answer." }] },
+    });
+    expect(
+      readChatHistoryDelta({
+        agentId: "main",
+        cursor: head.cursor,
+        scope,
+        sessionKey,
+        sessionSnapshot,
+      }),
+    ).toMatchObject({
+      kind: "delta",
+      messages: [
+        {
+          messageId: "ordinary-answer",
+          message: { role: "assistant", content: [{ type: "text", text: "An ordinary answer." }] },
+        },
+      ],
+    });
+  });
+
+  it.each([0, 2, 3])(
+    "preserves message-tool replies after %i recorded turn rows",
+    async (prefixRows) => {
+      const scope = {
+        agentId: "main",
+        sessionKey,
+        sessionId,
+        storePath: path.join(tempDirs.make("openclaw-delta-visible-reply-"), "sessions.json"),
+      };
+      await replaceSessionEntry(scope, { sessionId, updatedAt: 42 });
+      await replaceTranscriptEvents(scope, [{ type: "session", version: 3, id: sessionId }]);
+      let head = readTranscriptDisplayDelta(scope);
+      const missedTurn = [
+        { role: "user", content: [{ type: "text", text: "send the answer here" }] },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "visible-send",
+              name: "message",
+              arguments: { action: "send", message: "The visible answer." },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolName: "message",
+          toolCallId: "visible-send",
+          content: [{ type: "text", text: JSON.stringify({ ok: true, messageId: "sent-answer" }) }],
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ];
+      for (const [index, message] of missedTurn.entries()) {
+        await appendTranscriptMessage(scope, { eventId: `visible-${index}`, now: 42, message });
+        if (index + 1 === prefixRows) {
+          head = readTranscriptDisplayDelta(scope);
+        }
+      }
+      if (head.kind !== "page") {
+        throw new Error("Expected a transcript cursor before the missed rows");
+      }
+      const fullPage = await readChatHistoryPage({
+        entry: { sessionId, updatedAt: 42 },
+        provider: undefined,
+        sessionId,
+        storePath: scope.storePath,
+        sessionAgentId: "main",
+        canonicalKey: sessionKey,
+        max: 200,
+        maxHistoryBytes: maxBytes,
+        effectiveMaxChars: 100_000,
+        offset: undefined,
+        messageId: undefined,
+      });
+      const visibleMirrors = (messages: unknown[]) =>
+        messages.filter((message) =>
+          Boolean(message && typeof message === "object" && "openclawMessageToolMirror" in message),
+        );
+      expect(visibleMirrors(fullPage.messages)).toMatchObject([
+        { role: "assistant", content: [{ type: "text", text: "The visible answer." }] },
+      ]);
+      const delta = readChatHistoryDelta({
+        agentId: "main",
+        cursor: head.cursor,
+        scope,
+        sessionKey,
+        sessionSnapshot,
+      });
+      // The real consumer reloads the full page on reset; otherwise it applies only
+      // these projected envelopes and commits the returned cursor.
+      const replayed =
+        delta.kind === "reset"
+          ? fullPage.messages
+          : delta.messages.map((envelope) => envelope.message);
+      expect(visibleMirrors(replayed)).toEqual(visibleMirrors(fullPage.messages));
+    },
+  );
+});
+
+describe("chat history delta commentary segments", () => {
+  it("preserves authored commentary from a missed transcript row", async () => {
+    const scope = {
+      agentId: "main",
+      sessionKey,
+      sessionId,
+      storePath: path.join(tempDirs.make("openclaw-delta-commentary-"), "sessions.json"),
+    };
+    await replaceSessionEntry(scope, { sessionId, updatedAt: 42 });
+    await replaceTranscriptEvents(scope, [{ type: "session", version: 3, id: sessionId }]);
+    const head = readTranscriptDisplayDelta(scope);
+    if (head.kind !== "page") {
+      throw new Error("Expected an initial transcript cursor");
+    }
+    await appendTranscriptMessage(scope, {
+      eventId: "commentary",
+      now: 42,
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "Checking the workspace before answering.",
+            textSignature: JSON.stringify({ v: 1, id: "msg_commentary", phase: "commentary" }),
+          },
+        ],
+      },
+    });
+    const fullPage = await readChatHistoryPage({
+      entry: { sessionId, updatedAt: 42 },
+      provider: undefined,
+      sessionId,
+      storePath: scope.storePath,
+      sessionAgentId: "main",
+      canonicalKey: sessionKey,
+      max: 200,
+      maxHistoryBytes: maxBytes,
+      effectiveMaxChars: 100_000,
+      offset: undefined,
+      messageId: undefined,
+    });
+    const commentary = (messages: unknown[]) =>
+      messages.filter((message) =>
+        Boolean(message && typeof message === "object" && "openclawStreamFallback" in message),
+      );
+    expect(commentary(fullPage.messages)).toMatchObject([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Checking the workspace before answering." }],
+        openclawStreamFallback: { source: "segment", itemId: "msg_commentary" },
+      },
+    ]);
+    const delta = readChatHistoryDelta({
+      agentId: "main",
+      cursor: head.cursor,
+      scope,
+      sessionKey,
+      sessionSnapshot,
+    });
+    const replayed =
+      delta.kind === "reset"
+        ? fullPage.messages
+        : delta.messages.map((envelope) => envelope.message);
+    expect(commentary(replayed)).toEqual(commentary(fullPage.messages));
+  });
 });

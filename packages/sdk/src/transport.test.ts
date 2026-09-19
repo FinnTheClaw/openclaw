@@ -15,13 +15,18 @@ type MockGatewayClientInstance = {
 
 const gatewayClientMocks = vi.hoisted(() => ({
   instances: [] as MockGatewayClientInstance[],
+  synchronousStartError: undefined as Error | undefined,
 }));
 
 vi.mock("@openclaw/gateway-client", () => ({
   GatewayClient: class {
     readonly opts: MockGatewayClientInstance["opts"];
     readonly request = vi.fn();
-    readonly start = vi.fn();
+    readonly start = vi.fn(() => {
+      if (gatewayClientMocks.synchronousStartError) {
+        this.opts.onConnectError?.(gatewayClientMocks.synchronousStartError);
+      }
+    });
     readonly stopAndWait = vi.fn(async () => {});
 
     constructor(opts: MockGatewayClientInstance["opts"]) {
@@ -34,6 +39,7 @@ vi.mock("@openclaw/gateway-client", () => ({
 describe("GatewayClientTransport", () => {
   beforeEach(() => {
     gatewayClientMocks.instances.length = 0;
+    gatewayClientMocks.synchronousStartError = undefined;
   });
 
   it("rejects a pending connect when the transport closes before hello-ok", async () => {
@@ -50,6 +56,24 @@ describe("GatewayClientTransport", () => {
 
     await connectExpectation;
     expect(client?.stopAndWait).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries an initial synchronous startup failure with a fresh client", async () => {
+    const transport = new GatewayClientTransport();
+    gatewayClientMocks.synchronousStartError = new Error("socket startup failed");
+    try {
+      await expect(transport.connect()).rejects.toThrow("socket startup failed");
+      expect(gatewayClientMocks.instances[0]?.stopAndWait).toHaveBeenCalledOnce();
+      gatewayClientMocks.synchronousStartError = undefined;
+
+      const reconnect = transport.connect();
+      gatewayClientMocks.instances[1]?.opts.onHelloOk?.({ sessionId: "replacement" });
+
+      await expect(reconnect).resolves.toBeUndefined();
+      expect(gatewayClientMocks.instances).toHaveLength(2);
+    } finally {
+      await transport.close();
+    }
   });
 
   it("rejects reconnect attempts after close", async () => {

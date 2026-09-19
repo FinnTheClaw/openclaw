@@ -167,6 +167,22 @@ describe("parseCardsJson", () => {
     }
   });
 
+  it.each(["10:30:15", "10:30:30"])(
+    "rejects overlaps that leave no positive duration after trimming: %s",
+    (endTime) => {
+      const result = parseCardsJson({
+        raw: JSON.stringify([
+          card({ startTime: "10:00:00", endTime: "10:30:30" }),
+          card({ startTime: "10:30:00", endTime, title: "Contained" }),
+        ]),
+        day: DAY,
+        windowStartMs,
+        windowEndMs,
+      });
+      expect(result.ok).toBe(false);
+    },
+  );
+
   it("reports actionable errors for the correction round-trip", () => {
     const result = parseCardsJson({
       raw: JSON.stringify([card({ startTime: "13:05 pm" })]),
@@ -344,5 +360,118 @@ describe("revisionWindow / pickKeyframeId", () => {
       frames,
     );
     expect(keyframe).toBe(2);
+  });
+});
+
+describe("midnight batch endpoint", () => {
+  const midnight = new Date(DAY + "T00:00:00");
+  midnight.setDate(midnight.getDate() + 1);
+  const batch = expectDefined(
+    selectBatchFrames({
+      frames: [{ id: 1, capturedAtMs: dayMs("23:59:30") }],
+      windowMs: 15 * 60 * 1000,
+      nowMs: midnight.getTime(),
+    }),
+    "elapsed batch ending at midnight",
+  );
+
+  it("preserves a midnight observation endpoint in the selected batch", () => {
+    const segments = parseObservationSegments({
+      raw: JSON.stringify([
+        { start: "23:59:30", end: "00:00:00", description: "Finishing a review" },
+      ]),
+      day: DAY,
+      startMs: batch.startMs,
+      endMs: batch.endMs,
+    });
+
+    expect(segments).toEqual([
+      { startMs: dayMs("23:59:30"), endMs: midnight.getTime(), text: "Finishing a review" },
+    ]);
+  });
+
+  it("accepts a card covering the selected batch through midnight", () => {
+    const result = parseCardsJson({
+      raw: JSON.stringify([
+        {
+          startTime: "23:59:30",
+          endTime: "00:00:00",
+          title: "Finishing a review",
+          summary: "Reviewed the final changes",
+          distractions: [
+            { startTime: "23:59:45", endTime: "00:00:00", title: "Checking a notification" },
+          ],
+        },
+      ]),
+      day: DAY,
+      windowStartMs: batch.startMs,
+      windowEndMs: batch.endMs,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const draft = expectDefined(result.drafts[0], "midnight card");
+      expect(draft.endMs).toBe(midnight.getTime());
+      expect(draft.distractions).toEqual([
+        {
+          startMs: dayMs("23:59:45"),
+          endMs: midnight.getTime(),
+          title: "Checking a notification",
+        },
+      ]);
+    }
+  });
+
+  it("keeps midnight start and end clocks on their own day in an early batch", () => {
+    const segments = parseObservationSegments({
+      raw: JSON.stringify([
+        { start: "00:00:00", end: "00:00:30", description: "Starting a review" },
+      ]),
+      day: DAY,
+      startMs: dayMs("00:00:00"),
+      endMs: dayMs("00:01:00"),
+    });
+
+    expect(segments).toEqual([
+      {
+        startMs: dayMs("00:00:00"),
+        endMs: dayMs("00:00:30"),
+        text: "Starting a review",
+      },
+    ]);
+  });
+
+  it("does not reinterpret an inverted end clock in a daytime revision window", () => {
+    expect(
+      parseCardsJson({
+        raw: JSON.stringify([
+          {
+            startTime: "10:00:00",
+            endTime: "00:00:00",
+            title: "Invalid interval",
+            summary: "This end precedes the start",
+          },
+        ]),
+        day: DAY,
+        windowStartMs: dayMs("10:00:00"),
+        windowEndMs: dayMs("11:00:00"),
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("uses following local midnight on both DST transition days", () => {
+    const moduleUrl = new URL("./analyze.ts", import.meta.url).href;
+    const output = execFileSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--eval",
+        `const { parseObservationSegments } = await import(${JSON.stringify(moduleUrl)}); process.stdout.write(JSON.stringify(["2026-03-08", "2026-11-01"].map(day => { const startMs = new Date(day + "T23:59:30").getTime(); const end = new Date(day + "T00:00:00"); end.setHours(24, 0, 0, 0); return parseObservationSegments({ raw: JSON.stringify([{ start: "23:59:30", end: "00:00:00", description: "x" }]), day, startMs, endMs: end.getTime() })[0]?.endMs ?? null; })));`,
+      ],
+      { encoding: "utf8", env: { ...process.env, TZ: "America/New_York" } },
+    );
+
+    expect(JSON.parse(output)).toEqual([Date.UTC(2026, 2, 9, 4), Date.UTC(2026, 10, 2, 5)]);
   });
 });

@@ -293,3 +293,46 @@ describe("Signal monitor reply delivery", () => {
     ).resolves.toBeNull();
   });
 });
+
+describe("frozen audit partial direct Signal reply", () => {
+  it("preserves accepted approval reaction bindings when a later attachment fails", async () => {
+    clearSignalApprovalReactionTargetsForTest();
+    sendMocks.sendMessageSignal
+      .mockReset()
+      .mockResolvedValueOnce({ messageId: "1700000000777" })
+      .mockRejectedValueOnce(new Error("second attachment rejected"));
+    const payload = {
+      ...buildExecApprovalPendingReplyPayload({
+        approvalId: "exec-partial-direct",
+        approvalSlug: "exec-partial-direct",
+        allowedDecisions: ["allow-once", "deny"],
+        command: "printf test",
+        host: "gateway",
+        agentId: "main",
+        sessionKey: "agent:main:signal:direct:+15551230000",
+      }),
+      mediaUrls: ["https://example.test/one.png", "https://example.test/two.png"],
+    };
+    const error = await deliverReplyPayload(payload).then(
+      () => {
+        throw new Error("expected partial delivery failure");
+      },
+      (deliveryError: unknown) => deliveryError,
+    );
+    expect(sendMocks.sendMessageSignal).toHaveBeenCalledTimes(2);
+    expect(String(sendMocks.sendMessageSignal.mock.calls[0]?.[1])).toContain("React with:");
+    expect.soft(error).toMatchObject({
+      code: "CHANNEL_PARTIAL_DELIVERY",
+      deliveryResult: { visibleReplySent: true, messageIds: ["1700000000777"] },
+    });
+    await expect(
+      resolveSignalApprovalReactionTargetWithPersistence({
+        accountId: "default",
+        conversationKey: approver,
+        messageId: "1700000000777",
+        reactionKey: "👍",
+        targetAuthor: botAccount,
+      }),
+    ).resolves.toMatchObject({ approvalId: "exec-partial-direct", decision: "allow-once" });
+  });
+});

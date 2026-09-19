@@ -428,23 +428,35 @@ export class TwitchClientManager {
     message: string,
     cfg?: OpenClawConfig,
     accountId?: string,
-  ): Promise<{ ok: true; messageId: string } | { ok: false; error: string }> {
+  ): Promise<
+    | { ok: true; messageId: string }
+    | { ok: false; error: string; partialDelivery?: { messageId: string; content: string } }
+  > {
+    const deliveredChunks: string[] = [];
+    let messageId: string | undefined;
     try {
       const client = await this.getClient(account, cfg, accountId);
 
       // Generate a message ID (Twurple's say() doesn't return the message ID, so we generate one)
-      const messageId = crypto.randomUUID();
+      messageId = crypto.randomUUID();
 
       // Pre-chunk so Twurple's raw UTF-16 fallback cannot split surrogate pairs.
       for (const chunk of chunkTextForOutbound(message, TWITCH_CHAT_MESSAGE_LIMIT)) {
         await client.say(channel, chunk);
+        deliveredChunks.push(chunk);
       }
 
       return { ok: true, messageId };
     } catch (error) {
       const errorMessage = formatErrorMessage(error);
       this.logger.error(`Failed to send message: ${errorMessage}`);
-      return { ok: false, error: errorMessage };
+      return {
+        ok: false,
+        error: errorMessage,
+        ...(messageId && deliveredChunks.length > 0
+          ? { partialDelivery: { messageId, content: deliveredChunks.join("\n") } }
+          : {}),
+      };
     }
   }
 

@@ -342,17 +342,21 @@ async function sendQueuedChatMessage(
           { type: "sendFailed", runId },
           { scope: projectionScope },
         );
-        reconcileChatRunLifecycle(host, {
-          outcome: "interrupted",
-          sessionStatus: ack.status === "error" ? "failed" : "killed",
-          runId: ack.runId,
-          sessionKey,
-          clearLocalRun: true,
-          clearChatStream: true,
-          clearToolStream: true,
-          publishRunStatus: false,
-          armLocalTerminalReconcile: ack.runId === runId,
-        });
+        // A steering operation or delayed ACK does not own another active run.
+        // Settle this send above without erasing that run's live state.
+        if (!host.chatRunId || host.chatRunId === ack.runId) {
+          reconcileChatRunLifecycle(host, {
+            outcome: "interrupted",
+            sessionStatus: ack.status === "error" ? "failed" : "killed",
+            runId: ack.runId,
+            sessionKey,
+            clearLocalRun: true,
+            clearChatStream: true,
+            clearToolStream: true,
+            publishRunStatus: false,
+            armLocalTerminalReconcile: ack.runId === runId,
+          });
+        }
       }
       surfaceChatDeliveryFailure(host, sessionKey, prepared.agentId, error, {
         inline: storageMode === "durable" && !restoreCommand,
@@ -399,7 +403,8 @@ async function sendQueuedChatMessage(
           );
         }
       }
-      if (ack.status === "ok") {
+      if (ack.status === "ok" && (!host.chatRunId || host.chatRunId === ack.runId)) {
+        // Only this run's completion may retire its stream or refresh terminal history.
         reconcileChatRunLifecycle(host, {
           outcome: "done",
           sessionStatus: "done",

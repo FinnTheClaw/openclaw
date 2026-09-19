@@ -234,6 +234,7 @@ export function replaceAssistantContentTextBlocks(
   }
   const merged: AssistantDisplayContentBlock[] = [];
   let transcriptTextIndex = 0;
+  let lastReplacementEnd = 0;
   for (const block of content) {
     if (
       block?.type === "text" &&
@@ -245,12 +246,14 @@ export function replaceAssistantContentTextBlocks(
         "transcript text blocks entry at transcript text index++",
       );
       merged.push(replacement);
+      lastReplacementEnd = merged.length;
       continue;
     }
     merged.push(block);
   }
   if (transcriptTextIndex < transcriptTextBlocks.length) {
-    merged.unshift(...transcriptTextBlocks.slice(transcriptTextIndex));
+    // Keep canonical text ordered without moving the surrounding media/tool blocks.
+    merged.splice(lastReplacementEnd, 0, ...transcriptTextBlocks.slice(transcriptTextIndex));
   }
   return merged;
 }

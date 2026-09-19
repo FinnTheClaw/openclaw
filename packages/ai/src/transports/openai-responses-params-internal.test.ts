@@ -61,6 +61,11 @@ describe("buildOpenAIResponsesParams reasoning capabilities", () => {
     messages: [{ role: "user" as const, content: "Reply briefly.", timestamp: 0 }],
   };
 
+  const legacyOffOptions: NonNullable<Parameters<typeof buildOpenAIResponsesParams>[2]> = {
+    // @ts-expect-error Legacy untyped input normalizes off, but the public wire enum rejects it.
+    reasoningEffort: "off",
+  };
+
   it.each([
     {
       name: "preserves explicitly supported none on a custom route",
@@ -77,7 +82,7 @@ describe("buildOpenAIResponsesParams reasoning capabilities", () => {
     {
       name: "maps explicit off to the declared none capability",
       model: customModel,
-      options: { reasoningEffort: "off" },
+      options: legacyOffOptions,
       expected: { effort: "none" },
     },
     {

@@ -175,7 +175,7 @@ describe("restart health", () => {
       delayMs: 1,
     });
 
-    expect(snapshot.healthy).toBe(true);
+    expect(snapshot.healthy).toBe(false);
     expect(snapshot.runtime.status).toBe("stopped");
     expect(snapshot.waitOutcome).toBe("timeout");
     expect(sleep).toHaveBeenCalledTimes(2);

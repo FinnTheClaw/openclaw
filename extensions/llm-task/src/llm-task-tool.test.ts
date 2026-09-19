@@ -1,4 +1,5 @@
 // Llm Task tests cover llm task tool plugin behavior.
+import { validateToolArguments } from "openclaw/plugin-sdk/llm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createLlmTaskTool } from "./llm-task-tool.js";
 
@@ -151,19 +152,35 @@ describe("llm-task tool (json-only)", () => {
     expect(resultJson(res)).toEqual({ ok: true });
   });
 
-  it("validates schema", async () => {
-    mockIsolatedCompletionJson({ foo: "bar" });
-    const tool = createLlmTaskTool(fakeApi());
-    const schema = {
-      type: "object",
-      properties: { foo: { type: "string" } },
-      required: ["foo"],
-      additionalProperties: false,
-    };
-    const res = await tool.execute("id", { prompt: "return foo", schema });
-    expect(resultJson(res)).toEqual({ foo: "bar" });
-    expect(firstIsolatedCompletionCall().responseFormat).toEqual(schema);
-  });
+  it.each(["object", "string"] as const)(
+    "validates a model-emitted %s schema",
+    async (encoding) => {
+      mockIsolatedCompletionJson({ foo: "bar" });
+      const tool = createLlmTaskTool(fakeApi());
+      const schema = {
+        type: "object",
+        properties: { foo: { type: "string" } },
+        required: ["foo"],
+        additionalProperties: false,
+      };
+      const input = '{"foo":"bar"}';
+      const args = validateToolArguments(tool, {
+        type: "toolCall",
+        id: "id",
+        name: tool.name,
+        arguments: {
+          prompt: "return foo",
+          input,
+          schema: encoding === "string" ? JSON.stringify(schema) : schema,
+        },
+      }) as Parameters<typeof tool.execute>[1];
+      expect(args.schema).toEqual(schema);
+      expect(args.input).toBe(input);
+      const res = await tool.execute("id", args);
+      expect(resultJson(res)).toEqual({ foo: "bar" });
+      expect(firstIsolatedCompletionCall().responseFormat).toEqual(schema);
+    },
+  );
 
   it("validates caller schemas with repeated $id independently across calls", async () => {
     const tool = createLlmTaskTool(fakeApi());
@@ -235,6 +252,26 @@ describe("llm-task tool (json-only)", () => {
     mockIsolatedCompletionJson({ ok: true });
     const call = await executeIsolatedCompletion({ prompt: "x" });
     expect(call.model).toBeUndefined();
+  });
+
+  it.each([
+    { label: "host defaults", config: {} },
+    {
+      label: "configured primary alias",
+      config: {
+        agents: {
+          defaults: {
+            model: { primary: "fast" },
+            models: { "openai/gpt-5.5": { alias: "fast" } },
+          },
+        },
+      },
+    },
+  ])("delegates $label without requiring a locally split model ref", async ({ config }) => {
+    mockIsolatedCompletionJson({ ok: true });
+    const result = await createLlmTaskTool(fakeApi({ config })).execute("id", { prompt: "x" });
+    expect(resultJson(result)).toEqual({ ok: true });
+    expect(firstIsolatedCompletionCall().model).toBeUndefined();
   });
 
   it("reports the canonical provider and model returned by the execution owner", async () => {

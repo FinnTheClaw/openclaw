@@ -6,6 +6,7 @@ import { resolveCommandConversationResolution } from "../channels/conversation-r
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { ADMIN_SCOPE, isOperatorScope } from "../gateway/operator-scopes.js";
 import { logVerbose } from "../globals.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import { withPluginCommandExecution } from "./command-execution-lock.js";
 import { isReservedCommandName } from "./command-registration.js";
 import {
@@ -160,10 +161,10 @@ export async function executeRegisteredPluginCommand(
     return { text: "⚠️ This command has invalid gateway scope configuration." };
   }
   const requiredScopes = command.requiredScopes ?? [];
-  const unknownScope = (requiredScopes as readonly unknown[]).find(
+  const unknownScopeIndex = (requiredScopes as readonly unknown[]).findIndex(
     (scope) => !isOperatorScope(scope),
   );
-  if (unknownScope) {
+  if (unknownScopeIndex !== -1) {
     logVerbose(`Plugin command /${command.name} blocked: unknown gateway scope`);
     return { text: "⚠️ This command has invalid gateway scope configuration." };
   }
@@ -280,7 +281,7 @@ export async function executeRegisteredPluginCommand(
     }
     return result;
   } catch (error) {
-    logVerbose(`Plugin command /${command.name} error: ${(error as Error).message}`);
+    logVerbose(`Plugin command /${command.name} error: ${formatErrorMessage(error)}`);
     return { text: "⚠️ Command failed. Please try again later." };
   } finally {
     commandInvocationAbort.abort("command invocation closed");

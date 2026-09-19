@@ -322,7 +322,9 @@ describe("assistant commentary grouping", () => {
         name: "independently unique boundaries",
         boundaries: [{ afterBoundaryRunId: "a" }, { boundaryRunId: "c" }],
         timestamp: 1_000,
-        orders: ["A B tool C", "A B tool C", "A B tool C"],
+        // run-1 owns only the after-A fact: run-2's before-C fact cannot
+        // override its next-user ceiling B, even though that fact is unique.
+        orders: ["A B tool C", "A tool B C", "A B tool C"],
       },
       {
         name: "ambiguous after boundary",

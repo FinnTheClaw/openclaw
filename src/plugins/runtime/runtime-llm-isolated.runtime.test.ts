@@ -557,6 +557,21 @@ describe("runtime.llm.complete isolated agent runtime", () => {
     await expect(completion).rejects.toMatchObject({ code: "LLM_COMPLETION_ABORTED" });
   });
 
+  it.each([null, undefined])(
+    "maps a runtime rejection of %s to the public failure code",
+    async (error) => {
+      hoisted.runIsolatedCompletion.mockRejectedValueOnce(error);
+      const llm = createRuntimeLlm({ getConfig: () => cfg, authority: { allowComplete: true } });
+
+      await expect(
+        llm.complete({
+          messages: [{ role: "user", content: "Return JSON" }],
+          execution: { mode: "isolated-agent-runtime" },
+        }),
+      ).rejects.toMatchObject({ code: "LLM_COMPLETION_FAILED" });
+    },
+  );
+
   it("maps unsupported isolated runtimes to a stable public error code", async () => {
     hoisted.runIsolatedCompletion.mockRejectedValueOnce(
       Object.assign(new Error("Agent harness external does not support isolated completion."), {

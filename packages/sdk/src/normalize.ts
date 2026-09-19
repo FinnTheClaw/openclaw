@@ -141,7 +141,7 @@ function normalizeNamedEventType(event: GatewayEvent): OpenClawEventType {
       return "session.updated";
     }
     case "session.message":
-      return "assistant.message";
+      return asRecord(payload.message).role === "assistant" ? "assistant.message" : "raw";
     case "session.tool":
       return "tool.call.delta";
     case "exec.approval.requested":

@@ -85,7 +85,11 @@ describe("settled finalization after a rejected tool terminal", () => {
       const result = await prepareTerminalWithSettledTurnFinalization(input);
       expect(result.finalizationOutcome).toBe("answered");
       expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
-      const [prepared, settled] = backendMocks.runSettledFinalization.mock.calls[0];
+      const call = backendMocks.runSettledFinalization.mock.calls[0];
+      if (!call) {
+        throw new Error("Expected the settled finalization backend call");
+      }
+      const [prepared, settled] = call;
       expect(prepared).toMatchObject({
         operation: "settled-tool-finalization",
         disableTools: true,

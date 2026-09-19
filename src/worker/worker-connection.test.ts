@@ -18,7 +18,9 @@ import type {
   WorkerInferenceEventFrame,
   WorkerInferenceTerminalFrame,
 } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../../test/helpers/tls-fixture.js";
+import { createWorkerInferenceStreamAdapter } from "./inference-stream.runtime.js";
 import {
   toWorkerConnectionError,
   WorkerAdmissionDeadlineExceededError,
@@ -29,6 +31,7 @@ import {
 import { WorkerConnectionEndpointError } from "./worker-connection-endpoint.js";
 import { WorkerConnectionFrameDispatcher } from "./worker-connection-frames.js";
 import { createWorkerConnection, type WorkerConnectionState } from "./worker-connection.js";
+import { WorkerInferenceProxyClient } from "./worker-rpc-inference-client.js";
 
 const FRAME_CONNECT_PARAMS: WorkerConnectParams = {
   minProtocol: 1,
@@ -765,4 +768,102 @@ describe("WorkerConnection inference listener isolation", () => {
 
     expect(observed).toEqual([1, 2]);
   });
+});
+
+it("does not send an aborted inference when a real transport reconnects", async () => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("test gateway did not allocate a TCP port");
+  }
+  const reconnected = createDeferred<{ socket: WebSocket; id: string }>();
+  const starts: unknown[] = [];
+  let admissions = 0;
+  server.on("connection", (socket) => {
+    socket.on("message", (data) => {
+      const frame = JSON.parse(rawDataToString(data)) as {
+        id: string;
+        method: string;
+        params: unknown;
+      };
+      if (frame.method === "connect") {
+        admissions += 1;
+        if (admissions === 1) {
+          sendWorkerHello(socket, frame.id, FRAME_CONNECT_PARAMS.admission);
+        } else {
+          reconnected.resolve({ socket, id: frame.id });
+        }
+      } else if (frame.method === "worker.inference.start") {
+        starts.push(frame.params);
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: { status: "accepted" },
+          }),
+        );
+      } else if (frame.method === "worker.heartbeat") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: { receivedAtMs: Date.now(), status: "ok", ownerEpoch: 1 },
+          }),
+        );
+      }
+    });
+  });
+  const connection = createWorkerConnection({
+    endpoint: {
+      kind: "websocket",
+      url: `ws://127.0.0.1:${address.port}${WORKER_PUBLIC_INGRESS_PATH}`,
+    },
+    connectParams: FRAME_CONNECT_PARAMS,
+    admissionDeadlineMs: 3_000,
+    reconnectBackoff: { initialMs: 1, maxMs: 1, factor: 1, jitter: 0 },
+  });
+  const client = new WorkerInferenceProxyClient(connection);
+  try {
+    await connection.start();
+    for (const socket of server.clients) {
+      socket.close(1012, "gateway-unavailable");
+    }
+    const pendingHello = await reconnected.promise;
+    expect(connection.state.kind).toBe("admitting");
+    const modelRef = { provider: "provider-1", model: "model-1" };
+    const adapter = createWorkerInferenceStreamAdapter({
+      client,
+      sessionId: "session-1",
+      runEpoch: 1,
+      runId: "run-1",
+      turnId: "turn-1",
+      modelRef,
+    });
+    const abort = new AbortController();
+    const stream = adapter({
+      modelRef,
+      context: { messages: [] },
+      options: {},
+      signal: abort.signal,
+    });
+    abort.abort();
+    await expect(stream.result()).resolves.toMatchObject({ stopReason: "aborted" });
+    sendWorkerHello(pendingHello.socket, pendingHello.id, FRAME_CONNECT_PARAMS.admission);
+    await connection.waitForReady();
+    // The awaited heartbeat is an ordered round-trip barrier after queued starts.
+    await connection.requestHeartbeat({ sentAtMs: Date.now(), status: "busy" });
+    expect(starts).toEqual([]);
+  } finally {
+    client.dispose();
+    await connection.stop();
+    for (const socket of server.clients) {
+      socket.terminate();
+    }
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
 });

@@ -76,10 +76,44 @@ async function waitForSocketConnect(socket: net.Socket): Promise<void> {
   });
 }
 
-async function waitForWebSocketOpen(ws: WebSocket): Promise<void> {
+async function waitForWebSocketOpen(
+  ws: WebSocket,
+  socket: Duplex,
+  streamName: string,
+  diagnostics: NodeStreamDiagnostics,
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    ws.once("open", resolve);
-    ws.once("error", reject);
+    const cleanup = () => {
+      ws.off("open", onOpen);
+      ws.off("error", onError);
+      socket.off("close", onTargetClose);
+      socket.off("error", onTargetError);
+    };
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onTargetClose = () => {
+      diagnostics.trigger ??= "target-close";
+      onError(socket.errored ?? new Error(`${streamName} stream target closed before attach`));
+    };
+    const onTargetError = (error: Error) => {
+      diagnostics.trigger ??= "target-error";
+      onError(error);
+    };
+    ws.once("open", onOpen);
+    ws.once("error", onError);
+    // Connected desktop targets already have a live owner before the Gateway
+    // upgrade completes. Their failure must retire the pending attach too.
+    socket.once("close", onTargetClose);
+    socket.once("error", onTargetError);
+    if (socket.destroyed) {
+      onTargetClose();
+    }
   });
 }
 
@@ -245,7 +279,7 @@ export async function runNodeStreamTransport(params: {
         closeCode,
       });
     });
-    await Promise.race([waitForWebSocketOpen(ws), abort]);
+    await Promise.race([waitForWebSocketOpen(ws, socket, params.streamName, diagnostics), abort]);
     if (aborted) {
       return;
     }

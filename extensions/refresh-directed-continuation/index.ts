@@ -61,7 +61,7 @@ export default {
         };
         runs.set(ctx.runId, state);
       }
-      if (state.requested) return { appendSystemContext: GUIDANCE };
+      return state.requested ? { appendSystemContext: GUIDANCE } : undefined;
     });
     api.on("before_tool_call", (_event, ctx) => {
       const state = ctx.runId ? runs.get(ctx.runId) : undefined;

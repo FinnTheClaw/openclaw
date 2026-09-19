@@ -133,6 +133,74 @@ describe("monitorTwitchProvider", () => {
     });
   });
 
+  it.each([0, 1, 2])(
+    "preserves %i accepted native chunks through the monitor callback",
+    async (completed) => {
+      const { TwitchClientManager } = await import("./twitch-client.js");
+      const manager = new TwitchClientManager({ info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+      const say = vi.fn();
+      for (let i = 0; i < completed; i++) {
+        say.mockResolvedValueOnce(undefined);
+      }
+      say.mockRejectedValueOnce(new Error("later chunk failed"));
+      vi.spyOn(manager, "getClient").mockResolvedValue({ say } as unknown as Awaited<
+        ReturnType<typeof manager.getClient>
+      >);
+      mocks.sendMessage.mockImplementation((...args: Parameters<typeof manager.sendMessage>) =>
+        manager.sendMessage(...args),
+      );
+      const chunk = "a".repeat(500);
+      const verified = vi.fn();
+      mocks.runInbound.mockImplementation(async (input: InboundRunInput) => {
+        const turn = await input.adapter.resolveTurn(input.adapter.ingest(input.raw));
+        const delivery = turn.delivery.deliver({ text: chunk.repeat(completed) + "b" });
+        if (completed === 0) {
+          await expect(delivery).resolves.toEqual({ visibleReplySent: false });
+        } else {
+          await expect(delivery).rejects.toMatchObject({
+            code: "CHANNEL_PARTIAL_DELIVERY",
+            deliveryResult: {
+              visibleReplySent: true,
+              content: Array(completed).fill(chunk).join("\n"),
+              messageIds: [expect.any(String)],
+              receipt: { platformMessageIds: [expect.any(String)] },
+            },
+          });
+        }
+        verified();
+      });
+      let handler: ((message: TwitchChatMessage) => void) | undefined;
+      mocks.onMessage.mockImplementation((_account: unknown, callback: typeof handler) => {
+        handler = callback;
+        return mocks.unregister;
+      });
+      const monitor = await monitorTwitchProvider({
+        account: { ...BASE_TWITCH_TEST_ACCOUNT, accessToken: "oauth:test-token" },
+        accountId: "default",
+        config: {},
+        channelRuntime: mocks.getRuntime().channel,
+        runtime: { error: vi.fn() },
+        abortSignal: new AbortController().signal,
+      });
+      try {
+        handler?.({
+          id: "partial-1",
+          username: "viewer",
+          message: "hello",
+          channel: "testchannel",
+        });
+        await mocks.ingressAccept.mock.results[0]?.value;
+        expect(verified).toHaveBeenCalledOnce();
+        expect(say.mock.calls).toEqual([
+          ...Array.from({ length: completed }, () => ["testchannel", chunk]),
+          ["testchannel", "b"],
+        ]);
+      } finally {
+        await monitor.stop();
+      }
+    },
+  );
+
   it.each([
     { name: "single-account root", multi: false, override: undefined, expected: "[root] reply" },
     { name: "multi-account root", multi: true, override: undefined, expected: "[root] reply" },

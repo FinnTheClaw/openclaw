@@ -54,3 +54,22 @@ describe("normalizeGatewayEvent terminal tool item status", () => {
     );
   });
 });
+
+describe("normalizeGatewayEvent session transcript roles", () => {
+  it.each([
+    ["assistant", "assistant.message"],
+    ["user", "raw"],
+    ["toolResult", "raw"],
+    ["system", "raw"],
+  ])("maps %s transcript messages to %s", (role, expectedType) => {
+    const event = normalizeGatewayEvent({
+      event: "session.message",
+      seq: 1,
+      payload: {
+        sessionKey: "agent:main:main",
+        message: { role, content: [{ type: "text", text: "transcript content" }] },
+      },
+    });
+    expect(event.type).toBe(expectedType);
+  });
+});

@@ -10,11 +10,36 @@ export type ActiveHeartbeatWakeTarget = {
   abortController: AbortController;
 };
 
-const heartbeatWakeAbortSignals = new AsyncLocalStorage<AbortSignal>();
+type HeartbeatWakeLifecycle = {
+  signal: AbortSignal;
+  broadcastResults?: Array<{
+    agentId: string;
+    result: HeartbeatRunResult;
+  }>;
+};
+
+const heartbeatWakeAbortSignals = new AsyncLocalStorage<HeartbeatWakeLifecycle>();
 
 /** Propagate lifecycle cancellation into the provider's existing reply abort contract. */
 export function getHeartbeatWakeAbortSignal(): AbortSignal | undefined {
-  return heartbeatWakeAbortSignals.getStore();
+  return heartbeatWakeAbortSignals.getStore()?.signal;
+}
+
+/** Keep completed broadcast facts on the existing invocation owner before cancellation can win. */
+export function beginHeartbeatWakeBroadcast(agentIds: string[]) {
+  const lifecycle = heartbeatWakeAbortSignals.getStore();
+  const results: NonNullable<HeartbeatWakeLifecycle["broadcastResults"]> = agentIds.map(
+    (agentId) => ({
+      agentId,
+      result: { status: "skipped", reason: "preempted" },
+    }),
+  );
+  if (lifecycle) {
+    lifecycle.broadcastResults = results;
+  }
+  return (index: number, result: HeartbeatRunResult) => {
+    results[index]!.result = result;
+  };
 }
 
 export async function runAbortableHeartbeatWake(
@@ -23,9 +48,22 @@ export async function runAbortableHeartbeatWake(
   signal: AbortSignal,
 ): Promise<HeartbeatRunResult> {
   signal.throwIfAborted();
+  const lifecycle: HeartbeatWakeLifecycle = { signal };
   let abortListener: (() => void) | undefined;
-  const aborted = new Promise<never>((_resolve, reject) => {
+  const aborted = new Promise<HeartbeatRunResult>((resolve, reject) => {
     abortListener = () => {
+      if (lifecycle.broadcastResults) {
+        // Snapshot before handing off: a late stale provider must not rewrite
+        // completed/unfinished facts already transferred to the replacement.
+        const broadcastResults = lifecycle.broadcastResults.map((entry) => ({ ...entry }));
+        const completed = broadcastResults.find(({ result }) => result.status === "ran");
+        resolve({
+          ...(completed?.result ??
+            broadcastResults[0]?.result ?? { status: "skipped", reason: "preempted" }),
+          broadcastResults,
+        });
+        return;
+      }
       const abortReason = signal.reason;
       reject(
         abortReason instanceof Error ? abortReason : new Error("Heartbeat handler was replaced"),
@@ -36,7 +74,7 @@ export async function runAbortableHeartbeatWake(
   try {
     // Keep provider cancellation in the existing reply AbortSignal contract;
     // racing it also retires a non-cooperative stale handler on replacement.
-    const running = heartbeatWakeAbortSignals.run(signal, () => active(wake));
+    const running = heartbeatWakeAbortSignals.run(lifecycle, () => active(wake));
     return await Promise.race([running, aborted]);
   } finally {
     if (abortListener) {

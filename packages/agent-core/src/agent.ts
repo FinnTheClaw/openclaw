@@ -269,8 +269,14 @@ class PendingMessageQueue {
 
   clear(): void {
     this.messages = this.messages.filter((message) => this.submitted.has(message));
-    this.inFlight = this.inFlight.filter((message) => this.submitted.has(message));
-    this.cancelled = new WeakSet<AgentMessage>();
+    this.inFlight = this.inFlight.filter((message) => {
+      if (this.submitted.has(message)) {
+        return true;
+      }
+      // The loop may still hold drained input across an awaited injection checkpoint.
+      this.cancelled.add(message);
+      return false;
+    });
   }
 }
 

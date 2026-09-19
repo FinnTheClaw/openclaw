@@ -1,4 +1,5 @@
 // LLM Core module implements validation behavior.
+import { parseJsonPreservingUnsafeIntegers } from "@openclaw/normalization-core/json-coercion";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import type { Tool, ToolCall } from "./types.js";
@@ -158,7 +159,7 @@ function coercePrimitiveByType(value: unknown, type: string): unknown {
         value.length <= MAX_JSON_COERCE_LENGTH
       ) {
         try {
-          const parsed: unknown = JSON.parse(value);
+          const parsed: unknown = parseJsonPreservingUnsafeIntegers(value);
           if (Array.isArray(parsed)) {
             return parsed;
           }
@@ -175,7 +176,7 @@ function coercePrimitiveByType(value: unknown, type: string): unknown {
         value.length <= MAX_JSON_COERCE_LENGTH
       ) {
         try {
-          const parsed: unknown = JSON.parse(value);
+          const parsed: unknown = parseJsonPreservingUnsafeIntegers(value);
           if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
             return parsed;
           }
