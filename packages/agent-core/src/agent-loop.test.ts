@@ -1185,46 +1185,74 @@ describe("agentLoop tool termination", () => {
     expect(agent.hasQueuedMessages()).toBe(false);
   });
 
-  it("cancels a drained steering message and permits an explicit re-enqueue", async () => {
-    const turnStarted = createDeferred();
-    const releaseTurn = createDeferred();
-    const requestMessages: Message[][] = [];
-    const agent = new Agent({
-      initialState: {
-        model,
-        messages: [makeAssistantMessage([{ type: "text", text: "ready" }])],
-      },
-      streamFn: createTurnSequenceStream(
-        [[{ type: "text", text: "re-enqueued response" }]],
-        requestMessages,
-      ),
-    });
-    const target = { role: "user" as const, content: "cancel after drain", timestamp: 2 };
-    agent.steer(target);
-    agent.subscribe(async (event) => {
-      if (event.type === "turn_start") {
-        turnStarted.resolve();
-        await releaseTurn.promise;
+  it.each([
+    { queue: "steering", operation: "cancel" },
+    { queue: "steering", operation: "clear-queue" },
+    { queue: "steering", operation: "clear-all" },
+    { queue: "steering", operation: "cancel-then-clear" },
+    { queue: "follow-up", operation: "clear-queue" },
+    { queue: "follow-up", operation: "clear-all" },
+  ] as const)(
+    "removes drained $queue with $operation and permits an explicit re-enqueue",
+    async ({ queue, operation }) => {
+      const turnStarted = createDeferred();
+      const releaseTurn = createDeferred();
+      const requestMessages: Message[][] = [];
+      const agent = new Agent({
+        initialState: {
+          model,
+          messages: [makeAssistantMessage([{ type: "text", text: "ready" }])],
+        },
+        streamFn: createTurnSequenceStream(
+          [[{ type: "text", text: "re-enqueued response" }]],
+          requestMessages,
+        ),
+      });
+      const target = { role: "user" as const, content: "cancel after drain", timestamp: 2 };
+      const enqueue = () => {
+        if (queue === "steering") {
+          agent.steer(target);
+        } else {
+          agent.followUp(target);
+        }
+      };
+      enqueue();
+      agent.subscribe(async (event) => {
+        if (event.type === "turn_start") {
+          turnStarted.resolve();
+          await releaseTurn.promise;
+        }
+      });
+
+      const run = agent.continue();
+      await turnStarted.promise;
+      if (operation === "cancel" || operation === "cancel-then-clear") {
+        expect(agent.cancelSteeringMessage((message) => message === target)).toBe(target);
       }
-    });
+      if (operation === "clear-queue") {
+        if (queue === "steering") {
+          agent.clearSteeringQueue();
+        } else {
+          agent.clearFollowUpQueue();
+        }
+      } else if (operation === "clear-all" || operation === "cancel-then-clear") {
+        agent.clearAllQueues();
+      }
+      releaseTurn.resolve();
+      await run;
 
-    const run = agent.continue();
-    await turnStarted.promise;
-    expect(agent.cancelSteeringMessage((message) => message === target)).toBe(target);
-    releaseTurn.resolve();
-    await run;
+      expect(requestMessages).toHaveLength(0);
+      expect(agent.state.messages).not.toContain(target);
+      expect(agent.hasQueuedMessages()).toBe(false);
 
-    expect(requestMessages).toHaveLength(0);
-    expect(agent.state.messages).not.toContain(target);
-    expect(agent.hasQueuedMessages()).toBe(false);
+      enqueue();
+      await agent.continue();
 
-    agent.steer(target);
-    await agent.continue();
-
-    expect(requestMessages).toHaveLength(1);
-    expect(requestMessages[0]?.at(-1)).toBe(target);
-    expect(agent.state.messages).toContain(target);
-  });
+      expect(requestMessages).toHaveLength(1);
+      expect(requestMessages[0]?.at(-1)).toBe(target);
+      expect(agent.state.messages).toContain(target);
+    },
+  );
 
   it("restores drained follow-ups to their deferred queue in order", async () => {
     const requestMessages: Message[][] = [];

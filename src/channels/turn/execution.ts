@@ -295,7 +295,9 @@ async function runPreparedChannelTurnCoreInTrace<
         },
       });
       await params.afterRecord?.();
-      await deliverPendingDeliveryNotice(recordSessionKey, params.storePath);
+      if (admission.kind !== "observeOnly") {
+        await deliverPendingDeliveryNotice(recordSessionKey, params.storePath);
+      }
     } catch (err) {
       emit({
         ...params,

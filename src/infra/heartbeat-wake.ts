@@ -22,6 +22,7 @@ import {
   activeHeartbeatWakeSettlements,
   createRequestHeartbeatAndWait,
   settleHeartbeatWakeSettlements,
+  resolveHeartbeatWakeSettlementOutcomes,
   type HeartbeatWakeSettlement,
 } from "./heartbeat-wake-settlement.js";
 import {
@@ -539,33 +540,32 @@ async function dispatchPendingWakeGroup(params: {
         retryPendingWake(pendingWake);
         continue;
       }
-      if (handlerGeneration !== generation) {
-        const retainWake =
-          result.status === "skipped" &&
-          (isRetryableHeartbeatSkipReason(result.reason) ||
-            (RETRYABLE_GUARD_SKIP_REASONS.has(result.reason) &&
-              (pendingWake.tasks?.length ||
-                pendingWake.intent === "task" ||
-                pendingWake.intent === "event" ||
-                pendingWake.intent === "immediate")));
-        handOffPendingWakeBatch(wakes, wakeIndex + (retainWake ? 0 : 1));
-        return;
+      const outcomes = resolveHeartbeatWakeSettlementOutcomes(
+        pendingWake,
+        result,
+        isRetryableHeartbeatSkipReason,
+        RETRYABLE_GUARD_SKIP_REASONS,
+      );
+      for (const { wake, result: outcome, busy, guard } of outcomes) {
+        if (handlerGeneration !== generation) {
+          if (busy || guard) {
+            queuePendingWakeReason(wake);
+          } else {
+            settleHeartbeatWakeSettlements(wake.settlements, outcome);
+          }
+        } else if (outcome.status === "skipped" && (busy || guard)) {
+          const retrySchedule = resolveHeartbeatRetrySchedule(wake, outcome);
+          retryPendingWake(wake, guard ? { ...retrySchedule, deferWakeOnly: true } : retrySchedule);
+        } else {
+          settleHeartbeatWakeSettlements(wake.settlements, outcome);
+        }
       }
-      if (result.status === "skipped" && isRetryableHeartbeatSkipReason(result.reason)) {
-        retryPendingWake(pendingWake, resolveHeartbeatRetrySchedule(pendingWake, result));
-      } else if (
-        result.status === "skipped" &&
-        RETRYABLE_GUARD_SKIP_REASONS.has(result.reason) &&
-        (pendingWake.tasks?.length ||
-          pendingWake.intent === "task" ||
-          pendingWake.intent === "event" ||
-          pendingWake.intent === "immediate")
-      ) {
-        // Retain real task/event work until its spacing guard allows a retry.
-        const { delayMs } = resolveHeartbeatRetrySchedule(pendingWake, result);
-        retryPendingWake(pendingWake, { delayMs, deferWakeOnly: true });
-      } else {
-        settleHeartbeatWakeSettlements(pendingWake.settlements, result);
+      if (handlerGeneration !== generation) {
+        handOffPendingWakeBatch(wakes, wakeIndex + 1);
+        if (handler && pendingWakes.size > 0) {
+          schedulePendingWakes(DEFAULT_COALESCE_MS);
+        }
+        return;
       }
     }
   } finally {

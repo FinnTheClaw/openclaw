@@ -2918,6 +2918,7 @@ describe("ChatStateController render lifecycle", () => {
       renderLifecycle: { invalidate: requestUpdate },
       requestUpdate,
     } as unknown as ChatPageHost;
+    let approvalSequence = 0;
     const lifecycleEvent = (
       phase: "waiting-approval" | "approval-resolved",
       sessionKey: string,
@@ -2928,7 +2929,7 @@ describe("ChatStateController render lifecycle", () => {
         event: "agent",
         payload: {
           runId: "engine-run-1",
-          seq: 1,
+          seq: ++approvalSequence,
           stream: "lifecycle",
           ts: Date.now(),
           sessionKey,

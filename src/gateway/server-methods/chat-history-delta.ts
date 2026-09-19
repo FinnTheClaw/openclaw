@@ -7,6 +7,8 @@ import {
 } from "../../config/sessions/session-accessor.sqlite-history-events.js";
 import { jsonUtf8BytesOrInfinity } from "../../infra/json-utf8-bytes.js";
 import { createCurrentUserProfileMessageProjector } from "../chat-display-projection.js";
+import { requiresMessageToolDisplayHistoryContext } from "../chat-display-projection.message-tool.js";
+import { projectAssistantCommentaryFallbacks } from "../chat-display-projection.sanitize.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
 import {
   projectSessionMessagePayload,
@@ -84,6 +86,14 @@ export function readChatHistoryDelta(params: {
     const event = readMessageEvent(row.event);
     if (!event || row.messageSeq === undefined) {
       continue;
+    }
+    // Completions can use pre-cursor calls; commentary can emit multiple display rows.
+    // Reuse full history when singleton projection would acknowledge an incomplete delta.
+    if (
+      requiresMessageToolDisplayHistoryContext(event.message) ||
+      projectAssistantCommentaryFallbacks(event.message, Number.MAX_SAFE_INTEGER).length > 0
+    ) {
+      return { kind: "reset" };
     }
     const projected = projectSessionMessagePayload({
       agentId: params.agentId,

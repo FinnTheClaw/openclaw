@@ -436,7 +436,7 @@ export function dispatchAgentRunFromGateway(params: {
             ts: Date.now(),
             ok: aborted && settlementPersisted,
             payload,
-            ...(aborted ? {} : { error }),
+            ...(aborted && settlementPersisted ? {} : { error }),
           },
         });
       };

@@ -114,6 +114,7 @@ type WaitingApprovalSnapshotHost = Pick<
   | "knownAgentRunIds"
   | "waitingApprovalStatuses"
   | "waitingApprovalResolvedIds"
+  | "activityEventSeqById"
 >;
 
 export function reconcileWaitingApprovalsFromSnapshot(
@@ -126,6 +127,13 @@ export function reconcileWaitingApprovalsFromSnapshot(
   for (const approvalId of resolvedIds) {
     if (!allQueuedIds.has(approvalId)) {
       resolvedIds.delete(approvalId);
+      // The replay fence has the same lifetime as the approval tombstone.
+      const approvalSuffix = `,${JSON.stringify(approvalId)}]`;
+      for (const identity of host.activityEventSeqById?.keys() ?? []) {
+        if (identity.startsWith("approval:") && identity.endsWith(approvalSuffix)) {
+          host.activityEventSeqById?.delete(identity);
+        }
+      }
     }
   }
   const matchingApprovals = queue.filter(

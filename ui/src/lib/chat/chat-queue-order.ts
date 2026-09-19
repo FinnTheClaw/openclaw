@@ -66,7 +66,9 @@ export function chatQueueMovableSegments(
 }
 
 /**
- * Moves one row to `toIndex` and returns only the rows whose position changed.
+ * Moves one row to `toIndex` and returns the complete ordered segment.
+ * Equal key slots retain this physical order; never mint positions that could
+ * cross an unchanged delivery barrier outside the segment.
  * Positions are permuted among the rows instead of minted fresh, so a later
  * arrival — which carries a current `createdAt` — still sorts behind the queue.
  */
@@ -82,13 +84,10 @@ export function reorderChatQueueItems(
     return [];
   }
   const keys = ordered.map(chatQueueOrderKey);
-  for (let index = 1; index < keys.length; index += 1) {
-    // Same-millisecond arrivals would otherwise share a key and swallow the move.
-    keys[index] = Math.max(keys[index]!, keys[index - 1]! + 1);
-  }
   const moved = ordered.splice(from, 1)[0]!;
   ordered.splice(to, 0, moved);
-  return ordered.flatMap((item, index) =>
-    chatQueueOrderKey(item) === keys[index] ? [] : [{ ...item, orderKey: keys[index]! }],
+  // oxlint-disable-next-line oxc/no-map-spread -- copy-on-write preserves caller-owned queue rows and delivery CAS snapshots
+  return ordered.map((item, index) =>
+    chatQueueOrderKey(item) === keys[index] ? item : { ...item, orderKey: keys[index]! },
   );
 }

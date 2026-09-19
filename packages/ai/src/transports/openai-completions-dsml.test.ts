@@ -13,6 +13,44 @@ import {
 } from "./openai-completions.test-support.js";
 
 describe("openai completions DSML", () => {
+  it.each(["|", "｜", "｜｜"])(
+    "preserves unsafe integer IDs in streamed %s DSML JSON calls",
+    async (bar) => {
+      const model = makeCompletionsModel({
+        id: "test-model",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        compat: { thinkingFormat: "deepseek" },
+      });
+      const output = createAssistantOutput(model);
+      const events: CapturedStreamEvent[] = [];
+      const expected = {
+        target: "9223372036854775807",
+        nested: { negative: "-9223372036854775807" },
+        safe: 42,
+      };
+      const content = `<${bar}DSML${bar}tool_calls><${bar}DSML${bar}invoke name="lookup">{"target":9223372036854775807,"nested":{"negative":-9223372036854775807},"safe":42}</${bar}DSML${bar}invoke></${bar}DSML${bar}tool_calls>`;
+      await processCompletionsStream(
+        streamChunks([
+          ...Array.from(content, (char) => makeCompletionsChunk({ content: char })),
+          makeCompletionsChunk({}, "stop"),
+        ]),
+        output,
+        model,
+        { push: (event) => events.push(event as CapturedStreamEvent) },
+      );
+      expect(output.stopReason).toBe("toolUse");
+      expect(output.content).toEqual([
+        expect.objectContaining({ type: "toolCall", name: "lookup", arguments: expected }),
+      ]);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "toolcall_delta",
+          delta: JSON.stringify(expected),
+        }),
+      );
+    },
+  );
+
   it("surfaces aggregated chat-completions message.refusal as visible assistant text", async () => {
     const model = makeCompletionsModel({
       id: "gpt-5.5",

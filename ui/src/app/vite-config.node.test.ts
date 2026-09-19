@@ -409,6 +409,15 @@ describe("Control UI Vite config", () => {
     });
     expect(resultAliasIndex).toBeGreaterThanOrEqual(0);
     expect(rootAliasIndex).toBeGreaterThan(resultAliasIndex);
+    const jsonCoercionAliasIndex = aliases.findIndex(
+      (alias) => alias.find === "@openclaw/normalization-core/json-coercion",
+    );
+    expect(aliases[jsonCoercionAliasIndex]).toEqual({
+      find: "@openclaw/normalization-core/json-coercion",
+      replacement: path.join(repoRoot, "packages/normalization-core/src/json-coercion.ts"),
+    });
+    expect(jsonCoercionAliasIndex).toBeGreaterThanOrEqual(0);
+    expect(rootAliasIndex).toBeGreaterThan(jsonCoercionAliasIndex);
   });
 
   it("uses Node package resolution for external packages inherited by worktrees", () => {

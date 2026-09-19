@@ -43,7 +43,7 @@ export function optionalBoundaryIdentity(value: unknown): { boundaryId: string }
 
 export function createToolCallLookup<Value>() {
   const exact = new Map<string, Value>();
-  const unique = new Map<string, Value | null>();
+  const unique = new Map<string, { runId: string | undefined; value: Value } | null>();
   return {
     add(runId: string | undefined, callId: string | undefined, value: Value) {
       if (!callId) {
@@ -54,14 +54,20 @@ export function createToolCallLookup<Value>() {
       }
       // Ambiguity belongs to each fact, not the whole call. Even equal values
       // from two occurrences cannot identify an unscoped owner.
-      unique.set(callId, unique.has(callId) ? null : value);
+      unique.set(callId, unique.has(callId) ? null : { runId, value });
     },
     get(runId: string | undefined, callId: string | undefined): Value | undefined {
-      return callId
-        ? ((runId ? exact.get(buildToolStreamIdentity(runId, callId)) : undefined) ??
-            unique.get(callId) ??
-            undefined)
-        : undefined;
+      if (!callId) {
+        return undefined;
+      }
+      const candidate = unique.get(callId);
+      // Missing owners may use an unambiguous fact; conflicting known owners may not.
+      return (
+        (runId ? exact.get(buildToolStreamIdentity(runId, callId)) : undefined) ??
+        (candidate && (!runId || !candidate.runId || runId === candidate.runId)
+          ? candidate.value
+          : undefined)
+      );
     },
   };
 }

@@ -2,7 +2,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { isUnresolvedShellReference } from "../config/state-dir-dotenv.js";
 import { hasErrnoCode } from "../infra/errno.js";
 import { splitArgsPreservingQuotes } from "./arg-split.js";
@@ -306,11 +305,7 @@ async function readSystemdDropInOverrides(
             }
             unsetEnvironmentKeys.add(key);
           }
-        } else if (
-          parseEnvironmentFileSpecs(value).some((filename) =>
-            filename.replace(/%%|%h/gu, "").includes("%"),
-          )
-        ) {
+        } else if (value.replace(/%%|%h/gu, "").includes("%")) {
           overrides.environment = true;
         } else {
           try {
@@ -387,8 +382,7 @@ export async function readSystemdServiceExecStart(
       if (directive === "ExecStart") {
         execStart = value;
       } else if (directive === "WorkingDirectory") {
-        const parsed = parseSystemdExecStart(value)[0] ?? "";
-        workingDirectory = expandSystemdSpecifier(parsed.replace(/^-/, ""), env);
+        workingDirectory = expandSystemdSpecifier(value.replace(/^-/, ""), env);
       } else if (directive === "Environment") {
         if (!value) {
           inlineEnvironment = {};
@@ -470,10 +464,6 @@ function expandSystemdSpecifier(input: string, env: GatewayServiceEnv): string {
   return input.replace(/%%|%h/gu, (specifier) =>
     specifier === "%%" ? "%" : normalizeWindowsPathSeparators(resolveDaemonHomeDir(env)),
   );
-}
-
-function parseEnvironmentFileSpecs(raw: string): string[] {
-  return normalizeStringEntries(splitArgsPreservingQuotes(raw, { escapeMode: "backslash" }));
 }
 
 function decodeSystemdEnvironmentFileValue(rawValue: string): {
@@ -650,7 +640,8 @@ async function resolveSystemdEnvironmentFiles(params: {
   };
   for (const specRaw of params.environmentFileSpecs) {
     const managerExpandedPath = typeof specRaw !== "string";
-    const tokens = managerExpandedPath ? [specRaw[0]] : parseEnvironmentFileSpecs(specRaw);
+    // One EnvironmentFile directive is one scalar path, including spaces and quotes.
+    const tokens = managerExpandedPath ? [specRaw[0]] : [specRaw];
     for (const token of tokens) {
       const optional = token.startsWith("-") || (typeof specRaw !== "string" && specRaw[1]);
       const pathnameRaw = token.startsWith("-") ? token.slice(1).trim() : token;

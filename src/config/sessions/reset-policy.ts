@@ -31,6 +31,7 @@ function resolveDailyResetAtMs(now: number, atHour: number): number {
   if (now < resetAt.getTime()) {
     // Before today's reset hour, the active reset boundary is yesterday's scheduled reset.
     resetAt.setDate(resetAt.getDate() - 1);
+    resetAt.setHours(normalizedAtHour, 0, 0, 0);
   }
   return resetAt.getTime();
 }

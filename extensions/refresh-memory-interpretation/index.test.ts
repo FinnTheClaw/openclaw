@@ -7,8 +7,12 @@ describe("faithful-memory guidance", () => {
     const on = vi.fn();
     plugin.register({ on } as unknown as OpenClawPluginApi);
     expect(on).toHaveBeenCalledTimes(1);
-    expect(on.mock.calls[0][0]).toBe("before_prompt_build");
-    const handler = on.mock.calls[0][1];
+    const registration = on.mock.calls[0];
+    if (!registration) {
+      throw new Error("Missing prompt hook registration");
+    }
+    expect(registration[0]).toBe("before_prompt_build");
+    const handler = registration[1];
     const first = handler({ prompt: "Remember this.", messages: [] }, {});
     const next = handler({ prompt: "Forget that.", messages: [] }, {});
     expect(Object.keys(first)).toEqual(["appendSystemContext"]);

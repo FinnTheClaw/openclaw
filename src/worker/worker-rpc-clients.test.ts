@@ -11,6 +11,7 @@ import type {
   WorkerInferenceTerminalOutcome,
 } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { createWorkerInferenceStreamAdapter } from "./inference-stream.runtime.js";
 import { WorkerConnectionStoppedError, WorkerFencedError } from "./worker-connection-contract.js";
 import type { WorkerConnection, WorkerConnectionState } from "./worker-connection.js";
 import { WorkerConnectionInterruptedError } from "./worker-connection.js";
@@ -860,4 +861,118 @@ describe("worker inference proxy client", () => {
     expect(onStreamGap).not.toHaveBeenCalled();
     client.dispose();
   });
+});
+
+it("does not start an inference queued behind reconnect after its stream was aborted", async () => {
+  const harness = connectionHarness();
+  const ready = createDeferred<WorkerHelloOk>();
+  harness.waitForReady.mockReturnValue(ready.promise);
+  harness.requestInferenceCancel.mockRejectedValue(new WorkerConnectionInterruptedError());
+  harness.requestInferenceStart.mockResolvedValue({
+    type: "res",
+    id: "inference-response",
+    ok: true,
+    payload: { status: "accepted" },
+  });
+  const client = new WorkerInferenceProxyClient(harness.connection);
+  const stream = createWorkerInferenceStreamAdapter({
+    client,
+    sessionId: INFERENCE_REQUEST.sessionId,
+    runEpoch: INFERENCE_REQUEST.runEpoch,
+    runId: INFERENCE_REQUEST.runId,
+    turnId: INFERENCE_REQUEST.turnId,
+    modelRef: INFERENCE_REQUEST.modelRef,
+  });
+  const abort = new AbortController();
+  try {
+    const output = stream({
+      modelRef: INFERENCE_REQUEST.modelRef,
+      context: { messages: [] },
+      options: {},
+      signal: abort.signal,
+    });
+    expect(harness.waitForReady).toHaveBeenCalledOnce();
+    abort.abort();
+    await expect(output.result()).resolves.toMatchObject({ stopReason: "aborted" });
+    expect(harness.requestInferenceCancel).toHaveBeenCalledOnce();
+    ready.resolve(HELLO);
+    harness.emitReady();
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(harness.requestInferenceStart).not.toHaveBeenCalled();
+  } finally {
+    client.dispose();
+  }
+});
+
+it("does not let a stale-epoch cancellation settle a queued inference", async () => {
+  const harness = connectionHarness();
+  const ready = createDeferred<WorkerHelloOk>();
+  harness.waitForReady.mockReturnValue(ready.promise);
+  harness.requestInferenceCancel.mockResolvedValue({
+    type: "res",
+    id: "cancel-response",
+    ok: true,
+    payload: { status: "cancelled" },
+  });
+  harness.requestInferenceStart.mockResolvedValue({
+    type: "res",
+    id: "start-response",
+    ok: true,
+    payload: { status: "accepted" },
+  });
+  const client = new WorkerInferenceProxyClient(harness.connection);
+  try {
+    const outcome = client.start(INFERENCE_REQUEST);
+    const staleIdentity = { ...INFERENCE_IDENTITY, runEpoch: INFERENCE_IDENTITY.runEpoch - 1 };
+    await expect(client.cancel(staleIdentity)).resolves.toEqual({ status: "cancelled" });
+    expect(harness.requestInferenceCancel).toHaveBeenCalledWith(staleIdentity);
+    ready.resolve(HELLO);
+    harness.emitReady();
+    await vi.waitFor(() => expect(harness.requestInferenceStart).toHaveBeenCalledOnce());
+    const terminal = doneOutcome();
+    harness.emitInferenceTerminal({
+      type: "event",
+      event: "worker.inference.terminal",
+      payload: { ...INFERENCE_IDENTITY, seq: 1, outcome: terminal },
+    });
+    await expect(outcome).resolves.toEqual(terminal);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("starts only the replacement when a queued inference is cancelled before reconnect", async () => {
+  const harness = connectionHarness();
+  const ready = createDeferred<WorkerHelloOk>();
+  harness.waitForReady.mockReturnValue(ready.promise);
+  harness.requestInferenceCancel.mockRejectedValue(new WorkerConnectionInterruptedError());
+  harness.requestInferenceStart.mockResolvedValue({
+    type: "res",
+    id: "start-response",
+    ok: true,
+    payload: { status: "accepted" },
+  });
+  const client = new WorkerInferenceProxyClient(harness.connection);
+  try {
+    const cancelled = client.start(INFERENCE_REQUEST);
+    await expect(client.cancel(INFERENCE_IDENTITY)).rejects.toBeInstanceOf(
+      WorkerConnectionInterruptedError,
+    );
+    await expect(cancelled).resolves.toMatchObject({ type: "error", reason: "cancelled" });
+    const replacement = client.start(INFERENCE_REQUEST);
+    ready.resolve(HELLO);
+    harness.emitReady();
+    await vi.waitFor(() => expect(harness.requestInferenceStart).toHaveBeenCalledOnce());
+    const terminal = doneOutcome();
+    harness.emitInferenceTerminal({
+      type: "event",
+      event: "worker.inference.terminal",
+      payload: { ...INFERENCE_IDENTITY, seq: 1, outcome: terminal },
+    });
+    await expect(replacement).resolves.toEqual(terminal);
+  } finally {
+    client.dispose();
+  }
 });

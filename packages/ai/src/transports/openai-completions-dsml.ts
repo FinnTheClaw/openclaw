@@ -1,5 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { DEEPSEEK_DSML_MARKERS, DEEPSEEK_DSML_MARKER_PATTERN } from "./deepseek-dsml-grammar.js";
+import { parseJsonPreservingUnsafeIntegers } from "./json-unsafe-integers.js";
 import { measureUtf8AppendBytes } from "./openai-transport-shared.js";
 
 export type RecoveredDeepSeekDsmlToolCall = {
@@ -221,7 +222,7 @@ function parseDeepSeekDsmlInvokeArguments(body: string): Record<string, unknown>
     return null;
   }
   try {
-    const parsed = JSON.parse(trimmed) as unknown;
+    const parsed = parseJsonPreservingUnsafeIntegers(trimmed) as unknown;
     if (isRecord(parsed) && Object.keys(parsed).length > 0) {
       return parsed;
     }

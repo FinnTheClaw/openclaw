@@ -164,6 +164,8 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       mergeUsageIntoAccumulator(input.terminalBase.usageAccumulator, attempt.attemptUsage);
       mergeAttemptRunStatsIntoAccumulator(input.terminalBase.usageAccumulator, attempt);
       lastRunPromptUsage = attempt.attemptUsage ?? lastRunPromptUsage;
+      // A finalizer may finish after Stop; its answer cannot replace cancellation.
+      input.finalization.abortSignal.throwIfAborted();
       if (
         finalization.outcome === "empty" &&
         finalizationAttempt < MAX_EMPTY_SETTLED_FINALIZATION_ATTEMPTS

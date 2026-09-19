@@ -55,10 +55,13 @@ describe("systemd logical lines", () => {
 });
 
 describe("systemd unit value round-trips", () => {
-  it.each(ROUND_TRIP_VALUES)("round-trips %p through Environment=", (value) => {
-    const rendered = renderSystemdEnvAssignment("OPENCLAW_TOKEN", value);
-    expect(parseSystemdEnvAssignments(rendered)).toEqual([{ key: "OPENCLAW_TOKEN", value }]);
-  });
+  it.each([...ROUND_TRIP_VALUES, "%h/%%literal"])(
+    "round-trips %p through Environment=",
+    (value) => {
+      const rendered = renderSystemdEnvAssignment("OPENCLAW_TOKEN", value);
+      expect(parseSystemdEnvAssignments(rendered)).toEqual([{ key: "OPENCLAW_TOKEN", value }]);
+    },
+  );
 
   it.each(ROUND_TRIP_VALUES)("round-trips %p through ExecStart=", (value) => {
     const unit = buildSystemdUnit({
@@ -76,6 +79,25 @@ describe("systemd unit value round-trips", () => {
 });
 
 describe("buildSystemdUnit", () => {
+  it("escapes literal percent signs in generated directives", () => {
+    const unit = buildSystemdUnit({
+      description: "OpenClaw 100% ready",
+      programArguments: ["/usr/bin/openclaw", "gateway", "/tmp/%h/100%"],
+      workingDirectory: "/tmp/%h workspace",
+      environmentFiles: ["/tmp/%h env"],
+      environment: { OPENCLAW_PROXY_URL: "http://user:pa%25ss@127.0.0.1:8080" },
+    });
+    expect(unit.split("\n")).toEqual(
+      expect.arrayContaining([
+        "Description=OpenClaw 100%% ready",
+        "ExecStart=/usr/bin/openclaw gateway /tmp/%%h/100%%",
+        "WorkingDirectory=/tmp/%%h workspace",
+        "EnvironmentFile=-/tmp/%%h env",
+        "Environment=OPENCLAW_PROXY_URL=http://user:pa%%25ss@127.0.0.1:8080",
+      ]),
+    );
+  });
+
   it.each(["", "--max-old-space-size=24576"])(
     "preserves explicit NODE_OPTIONS=%j while omitting other empty values",
     (nodeOptions) => {

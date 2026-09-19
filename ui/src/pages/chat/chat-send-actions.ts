@@ -216,12 +216,16 @@ export function moveQueuedChatMessage(
   if (moves.length === 0) {
     return "noop";
   }
+  const segmentIds = new Set(moves.map((row) => row.id));
+  let moveIndex = 0;
+  const nextOrder = scope.map((row) => (segmentIds.has(row.id) ? moves[moveIndex++]! : row));
   const applied = updateQueuedMessagesForSession(
     host,
     moves.map((moved) => ({
       id: moved.id,
       update: (entry: ChatQueueItem) => ({ ...entry, orderKey: moved.orderKey }),
     })),
+    { expected: scope, next: nextOrder },
   );
   if (!applied) {
     setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);

@@ -173,7 +173,7 @@ export function createLlmTaskTool(api: OpenClawPluginApi) {
         undefined;
 
       const modelKey = toModelKey(provider, model);
-      if (!provider || !model || !modelKey) {
+      if (hasModelOverride && !modelKey) {
         throw new Error(
           `provider/model could not be resolved (provider=${provider ?? ""}, model=${model ?? ""})`,
         );

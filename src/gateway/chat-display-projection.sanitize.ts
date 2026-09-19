@@ -309,7 +309,7 @@ function projectAssistantMixedToolContent(
   return hasVisibleText ? { content: projectedContent, changed: true } : null;
 }
 
-function projectAssistantCommentaryFallbacks(message: unknown, maxChars: number): unknown[] {
+export function projectAssistantCommentaryFallbacks(message: unknown, maxChars: number): unknown[] {
   if (!message || typeof message !== "object") {
     return [];
   }

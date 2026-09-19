@@ -16,6 +16,7 @@ import {
   type HeartbeatConfig,
 } from "./heartbeat-runner-config.js";
 import { runHeartbeatOnce } from "./heartbeat-runner-run.js";
+import { beginHeartbeatWakeBroadcast } from "./heartbeat-wake-lifecycle.js";
 import { isConfiguredHeartbeatAgent, isTargetedUnscheduledWake } from "./heartbeat-wake-policy.js";
 import {
   areHeartbeatsEnabled,
@@ -345,40 +346,56 @@ export function startHeartbeatRunner(opts: {
 
     // Agent state is disjoint; concurrent broadcast dispatch prevents a slow
     // session from starving another agent's independent wake.
-    const agentOutcomes = await Promise.all(enrolledAgents.map((agent) => runOneAgent(agent)));
+    const recordOutcome = beginHeartbeatWakeBroadcast(enrolledAgents.map((agent) => agent.agentId));
+    const agentOutcomes = await Promise.all(
+      enrolledAgents.map(async (agent, index) => {
+        const outcome = await runOneAgent(agent);
+        recordOutcome(
+          index,
+          outcome.retryableSkip ?? outcome.result ?? { status: "skipped", reason: "not-due" },
+        );
+        return outcome;
+      }),
+    );
     let ran = false;
     let firstResult: HeartbeatRunResult | undefined;
+    let firstRetryableSkip: HeartbeatRunResult | undefined;
     let firstGuardSkip: Extract<HeartbeatRunResult, { status: "skipped" }> | undefined;
     for (const outcome of agentOutcomes) {
-      if (outcome.retryableSkip) {
-        // Busy agents own the retry. Successful siblings already advanced their
-        // cooldown, so the retry does not replay their completed work.
-        return outcome.retryableSkip;
-      }
+      firstRetryableSkip ??= outcome.retryableSkip;
       ran ||= outcome.ran;
       firstResult ??= outcome.result;
       const result = outcome.result;
       if (
-        !ran &&
         result?.status === "skipped" &&
         result.retryAtMs !== undefined &&
         (!firstGuardSkip || result.retryAtMs < (firstGuardSkip.retryAtMs ?? Infinity))
       ) {
-        // Keep the original result identity and first agent on equal deadlines;
-        // wake-layer retention consumes the exact guard reason and retry time.
         firstGuardSkip = result;
       }
     }
-    if (ran) {
-      return { status: "ran", durationMs: Date.now() - startedAt };
+    const result: HeartbeatRunResult =
+      firstRetryableSkip ??
+      (ran
+        ? { status: "ran", durationMs: Date.now() - startedAt }
+        : (firstGuardSkip ??
+          firstResult ?? {
+            status: "skipped",
+            reason: isInterval ? "not-due" : "disabled",
+          }));
+    if (!firstRetryableSkip && !firstGuardSkip) {
+      return result;
     }
-    return (
-      firstGuardSkip ??
-      firstResult ?? {
-        status: "skipped",
-        reason: isInterval ? "not-due" : "disabled",
-      }
-    );
+    // Cooldowns do not identify completed work: manual/immediate retries can
+    // run immediately, and task backoff can outlast minimum spacing. Return
+    // dispatch facts so the existing wake queue can retry only unfinished agents.
+    return {
+      ...result,
+      broadcastResults: agentOutcomes.map((outcome, index) => ({
+        agentId: enrolledAgents[index]!.agentId,
+        result: outcome.retryableSkip ?? outcome.result ?? { status: "skipped", reason: "not-due" },
+      })),
+    };
   };
 
   const wakeHandler: HeartbeatWakeHandler = async (params: HeartbeatWakeRequest) =>

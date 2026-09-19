@@ -94,7 +94,11 @@ vi.mock("./exec-file.js", () => {
 import { splitArgsPreservingQuotes } from "./arg-split.js";
 import * as systemdExec from "./systemd-exec.js";
 import { resolveSystemdUnitPath } from "./systemd-service-files.js";
-import { parseSystemdEnvAssignments, parseSystemdExecStart } from "./systemd-unit.js";
+import {
+  buildSystemdUnit,
+  parseSystemdEnvAssignments,
+  parseSystemdExecStart,
+} from "./systemd-unit.js";
 import {
   findInstalledSystemdGatewayScope,
   findSystemdGatewayInstallation,
@@ -742,7 +746,7 @@ describe("isSystemdServiceEnabled", () => {
         cb(err, "", "permission denied");
       });
     await expect(
-      isSystemdServiceEnabled({ env: { HOME: "/tmp/openclaw-test-home" } }),
+      isSystemdServiceEnabled({ env: { HOME: "/tmp/openclaw-test-home", USER: "debian" } }),
     ).rejects.toThrow("systemctl is-enabled unavailable: permission denied");
   });
 
@@ -1977,12 +1981,58 @@ describe("readSystemdServiceExecStart", () => {
     expect(readFile).toHaveBeenCalledTimes(pending ? 1 : 2);
   });
 
+  it.each(["", "\\", "\\\\"])(
+    "reads generated literal percent signs and terminal backslashes %j",
+    async (suffix) => {
+      const programArguments = ["/usr/bin/openclaw", "gateway", "/tmp/%h/%n/100%"];
+      const workingDirectory = "/tmp/%h workspace" + suffix;
+      const environmentFile = "/tmp/%h env" + suffix;
+      const environment = { OPENCLAW_PROXY_URL: "http://user:pa%25ss@127.0.0.1:8080" };
+      mockReadGatewayServiceFile(
+        buildSystemdUnit({
+          programArguments,
+          workingDirectory,
+          environment,
+          environmentFiles: [environmentFile],
+        }).split("\n"),
+        { [environmentFile]: "FILE_VALUE=percent%h" },
+      );
+      mockSystemdManagerProperties(new Error("systemd manager unavailable"));
+      await expect(readSystemdServiceExecStart({ HOME: TEST_SERVICE_HOME })).resolves.toMatchObject(
+        {
+          programArguments,
+          workingDirectory,
+          environment: { ...environment, FILE_VALUE: "percent%h" },
+        },
+      );
+    },
+  );
+
+  it("reads raw scalar directive paths with spaces and literal backslashes", async () => {
+    const workingDirectory = '/tmp/space dir/"quote"/back\\slash';
+    const environmentFile = '/tmp/space env/"quote"/back\\slash';
+    mockReadGatewayServiceFile(
+      [
+        "[Service]",
+        "ExecStart=/usr/bin/openclaw gateway run",
+        `WorkingDirectory=${workingDirectory}`,
+        `EnvironmentFile=-${environmentFile}`,
+      ],
+      { [environmentFile]: "FROM_FILE=present" },
+    );
+    mockSystemdManagerProperties(new Error("systemd manager unavailable"));
+    await expect(readSystemdServiceExecStart({ HOME: TEST_SERVICE_HOME })).resolves.toMatchObject({
+      workingDirectory,
+      environment: { FROM_FILE: "present" },
+    });
+  });
+
   it("does not infer ownership from expanded specifiers or normalized working directories", async () => {
     const workingDirectory = `${TEST_SERVICE_HOME}/Open Claw`;
     mockReadGatewayServiceFile([
       "[Service]",
       "ExecStart=%h/bin/openclaw gateway --unit %n",
-      'WorkingDirectory=-"%h/Open Claw"',
+      "WorkingDirectory=-%h/Open Claw",
       "Environment=OPENCLAW_HOME=%h/openclaw UNIT_NAME=%n",
     ]);
     mockSystemdManagerSnapshot({
@@ -2267,14 +2317,15 @@ describe("readSystemdServiceExecStart", () => {
     await expectExecStartWithoutEnvironment("EnvironmentFile=%h/.openclaw/missing.env");
   });
 
-  it("supports multiple EnvironmentFile entries and quoted paths", async () => {
+  it("supports repeated EnvironmentFile entries and paths with spaces", async () => {
     vi.spyOn(fs, "readFile").mockImplementation(async (pathname) => {
       const pathValue = pathLikeToString(pathname);
       if (pathValue.endsWith("/openclaw-gateway.service")) {
         return [
           "[Service]",
           "ExecStart=/usr/bin/openclaw gateway run",
-          'EnvironmentFile=%h/.openclaw/first.env "%h/.openclaw/second env.env"',
+          "EnvironmentFile=%h/.openclaw/first.env",
+          "EnvironmentFile=%h/.openclaw/second env.env",
         ].join("\n");
       }
       if (pathValue === "/home/test/.openclaw/first.env") {
@@ -2300,7 +2351,8 @@ describe("readSystemdServiceExecStart", () => {
         return [
           "[Service]",
           "ExecStart=/usr/bin/openclaw gateway run",
-          "EnvironmentFile=./gateway.env ./override.env",
+          "EnvironmentFile=./gateway.env",
+          "EnvironmentFile=./override.env",
         ].join("\n");
       }
       if (pathValue.endsWith("/.config/systemd/user/gateway.env")) {
@@ -2995,7 +3047,7 @@ describe("stageSystemdService", () => {
             comment,
             "ExecStart=/usr/bin/openclaw node run",
             comment,
-            "Environment=FOO=bar OPENCLAW_GATEWAY_TOKEN=inline-token BAZ=qux",
+            "Environment=FOO=%h/%%literal OPENCLAW_GATEWAY_TOKEN=inline-token BAZ=qux",
             "Environment=OPENCLAW_GATEWAY_TOKEN=token-only-line",
             "Environment='OPENCLAW_GATEWAY_TOKEN=single-quoted-token' FROM_SINGLE=kept",
             "Environment=",
@@ -3032,7 +3084,7 @@ describe("stageSystemdService", () => {
         expect(backupUnit).not.toContain("single-quoted-token");
         expect(backupUnit).toContain("[Service]");
         expect(backupUnit.split("\n")).toContain("ExecStart=/usr/bin/openclaw node run");
-        expect(backupUnit).toContain("Environment=FOO=bar BAZ=qux");
+        expect(backupUnit).toContain("Environment=FOO=%h/%%literal BAZ=qux");
         expect(backupUnit).toContain("Environment=FROM_SINGLE=kept\nEnvironment=\n");
         expect(backupUnit).toContain("Environment=OPENCLAW_GATEWAY_PORT=18789");
         expect(backupStat.mode & 0o777).toBe(0o600);

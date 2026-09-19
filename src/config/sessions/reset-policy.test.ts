@@ -1,5 +1,6 @@
 // Session reset policy tests cover defaults, opt-in schedules, and compatibility overrides.
 import { describe, expect, it } from "vitest";
+import { execNodeEvalSync } from "../../test-utils/node-process.js";
 import { SessionSchema } from "../zod-schema.session.js";
 import { evaluateSessionFreshness, resolveSessionResetPolicy } from "./reset-policy.js";
 import { resolveChannelResetConfig } from "./reset.js";
@@ -8,6 +9,59 @@ const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
 
 describe("session reset policy", () => {
+  it("keeps yesterday's scheduled hour before a spring-forward reset", () => {
+    const cases = [
+      {
+        now: "2026-03-07T01:00:00-06:00",
+        startedAt: "2026-03-06T02:30:00-06:00",
+        boundary: "2026-03-06T02:00:00-06:00",
+      },
+      {
+        now: "2026-03-08T01:00:00-06:00",
+        startedAt: "2026-03-07T02:30:00-06:00",
+        boundary: "2026-03-07T02:00:00-06:00",
+      },
+      {
+        now: "2026-03-08T03:30:00-05:00",
+        startedAt: "2026-03-08T03:05:00-05:00",
+        boundary: "2026-03-08T03:00:00-05:00",
+      },
+      {
+        now: "2026-03-09T01:00:00-05:00",
+        startedAt: "2026-03-08T03:05:00-05:00",
+        boundary: "2026-03-08T03:00:00-05:00",
+      },
+      {
+        now: "2026-11-01T01:00:00-06:00",
+        startedAt: "2026-10-31T02:30:00-05:00",
+        boundary: "2026-10-31T02:00:00-05:00",
+      },
+      {
+        now: "2026-11-01T02:30:00-06:00",
+        startedAt: "2026-11-01T02:15:00-06:00",
+        boundary: "2026-11-01T02:00:00-06:00",
+      },
+    ];
+    const output = execNodeEvalSync(
+      `
+        import { evaluateSessionFreshness } from "./src/config/sessions/reset-policy.ts";
+        const cases = ${JSON.stringify(cases)};
+        const results = cases.map(({ now, startedAt }) =>
+          evaluateSessionFreshness({
+            updatedAt: Date.parse(startedAt),
+            sessionStartedAt: Date.parse(startedAt),
+            now: Date.parse(now),
+            policy: { mode: "daily", atHour: 2 },
+          }),
+        );
+        process.stdout.write(JSON.stringify(results));
+      `,
+      { imports: ["tsx"], env: { ...process.env, TZ: "America/Chicago" }, timeout: 10_000 },
+    );
+    expect(JSON.parse(output)).toEqual(
+      cases.map(({ boundary }) => ({ fresh: true, dailyResetAt: Date.parse(boundary) })),
+    );
+  });
   it.each([
     {
       name: "a long inactivity gap",

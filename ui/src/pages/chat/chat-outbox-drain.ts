@@ -393,6 +393,20 @@ async function drainStoredChatOutbox(
     const item = freshItem
       ? (readQueuedMessageById(host, storedItem.id) ?? storedItem)
       : storedItem;
+    // Row CAS deliberately excludes physical position. Recheck turn ownership
+    // after an await: an equal-key move can change the head without changing any
+    // delivery fields. Keep the consumed admission's original bypass semantics.
+    const stillOwnsTurn = () => {
+      const current = readStoredChatOutbox(host, scope);
+      const isFresh = (entry: ChatQueueItem) =>
+        lane.freshAdmissions.has(entry.id) || (freshItem && entry.id === item.id);
+      const head =
+        current?.queue.find((entry) => isFresh(entry) && Boolean(entry.queueMode)) ??
+        current?.queue.find(
+          (entry) => isFresh(entry) || entry.sendState !== "failed" || entry.localCommandName,
+        );
+      return head?.id === item.id;
+    };
     if (item.sendState === "failed" && !freshItem) {
       return "empty";
     }
@@ -451,6 +465,9 @@ async function drainStoredChatOutbox(
           }
           continue;
         }
+        if (!stillOwnsTurn()) {
+          continue;
+        }
         const currentAccess = readChatResetTargetAccess(host, resetTarget);
         if (!currentAccess.allowed) {
           setCommandState("failed", currentAccess.reason);
@@ -488,6 +505,9 @@ async function drainStoredChatOutbox(
       }
       if (chatSendHoldReason(host, outbox.sessionKey)) {
         return "blocked";
+      }
+      if (!stillOwnsTurn()) {
+        continue;
       }
       // Claim before execution to preserve FIFO and crash-review state.
       const claimed = setCommandState("executing-command");
@@ -608,7 +628,12 @@ async function drainStoredChatOutbox(
     const currentItem = freshAdmission
       ? readQueuedMessageById(host, item.id)
       : currentOutbox?.queue.find((entry) => entry.id === item.id);
-    if (!currentOutbox || !currentItem || !sameQueuedDeliveryVersion(currentItem, item)) {
+    if (
+      !currentOutbox ||
+      !currentItem ||
+      !sameQueuedDeliveryVersion(currentItem, item) ||
+      !stillOwnsTurn()
+    ) {
       lane.pendingOptions.delete(item.id);
       continue;
     }

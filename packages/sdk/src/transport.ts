@@ -145,7 +145,14 @@ export class GatewayClientTransport implements ConnectableOpenClawTransport {
       this.client = client;
       client.start();
     });
-    return this.connectPromise;
+    const connectPromise = this.connectPromise;
+    // Synchronous startup failures can clear the cache before the assignment above completes.
+    void connectPromise.catch(() => {
+      if (this.connectPromise === connectPromise) {
+        this.connectPromise = null;
+      }
+    });
+    return connectPromise;
   }
 
   async request<T = unknown>(

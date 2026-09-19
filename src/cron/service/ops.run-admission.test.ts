@@ -658,6 +658,20 @@ describe("cron service run admission", () => {
     );
     expect(completedJob?.state.runningAtMs).toBeUndefined();
     expect(completedJob?.state.lastRunStatus).toBe("skipped");
+    expect
+      .soft(inspectActiveCronRunReceipt({ storePath: store.storePath, jobId: waitingJob.id }))
+      .toBeUndefined();
+
+    const repairedStore = await loadCronStore(store.storePath);
+    const repairedJob = repairedStore.jobs.find((job) => job.id === waitingJob.id);
+    if (!repairedJob) {
+      throw new Error("Expected the skipped job to remain available for repair");
+    }
+    repairedJob.sessionTarget = "isolated";
+    repairedJob.enabled = true;
+    await saveCronStore(store.storePath, repairedStore);
+    await expect(run(state, waitingJob.id, "force")).resolves.toEqual({ ok: true, ran: true });
+    expect(runIsolatedAgentJob).toHaveBeenCalledTimes(2);
   });
 
   it("commits invalid-run state before notifying a subscriber that edits the job", async () => {

@@ -625,7 +625,11 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       expect(backendMocks.runSettledFinalization).toHaveBeenCalledTimes(
         firstOutcome === "answered" ? 1 : 2,
       );
-      const first = backendMocks.runSettledFinalization.mock.calls[0][0];
+      const firstCall = backendMocks.runSettledFinalization.mock.calls[0];
+      if (!firstCall) {
+        throw new Error("Expected the first settled finalization backend call");
+      }
+      const [first] = firstCall;
       expect(first.streamParams).toBe(streamParams);
       expect(first.config).toBe(config);
       expect(first.prompt).not.toContain("previous answer-only pass");
@@ -638,7 +642,11 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
         });
       }
       if (firstOutcome === "empty") {
-        const second = backendMocks.runSettledFinalization.mock.calls[1][0];
+        const secondCall = backendMocks.runSettledFinalization.mock.calls[1];
+        if (!secondCall) {
+          throw new Error("Expected a retry after the empty finalization");
+        }
+        const [second] = secondCall;
         expect(second.prompt).toContain(first.prompt);
         expect(second.prompt).toContain(
           "previous answer-only pass produced no user-visible answer",

@@ -21,6 +21,7 @@ import {
   replaceAssistantContentTextBlocks,
 } from "./chat-assistant-content.js";
 import { normalizeWebchatReplyMediaPathsForDisplay } from "./chat-reply-media.js";
+import { buildWebchatAssistantMessageFromReplyPayloads } from "./chat-webchat-media.js";
 
 const PNG_BYTES = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
@@ -390,6 +391,76 @@ describe("normalizeWebchatReplyMediaPathsForDisplay", () => {
         },
       },
     ]);
+  });
+
+  it("preserves reply text order when transcript media splits merged display text", async () => {
+    const payloads = [
+      { text: "First paragraph." },
+      { text: "Second paragraph.", mediaUrls: [dataImageUrl()] },
+    ];
+    const display = await buildAssistantDisplayContentFromReplyPayloads({
+      sessionKey: TEST_SESSION_KEY,
+      agentId: "main",
+      payloads,
+    });
+    const transcript = await buildWebchatAssistantMessageFromReplyPayloads(payloads);
+    expect(transcript).not.toBeNull();
+    const persisted = replaceAssistantContentTextBlocks(display, transcript);
+    expect(persisted?.filter((block) => block.type === "text").map((block) => block.text)).toEqual([
+      "First paragraph.",
+      "Second paragraph.",
+    ]);
+    expect(persisted?.filter((block) => block.type !== "text")).toEqual(
+      display?.filter((block) => block.type !== "text"),
+    );
+  });
+
+  it("keeps nontext blocks in place and inserts surplus text after the last replacement", () => {
+    const image = { type: "image", url: "image.png" };
+    const tool = { type: "tool_use", id: "tool-1" };
+    const tail = { type: "attachment_error", attachment: { code: "delivery-failed" } };
+    const canonical = [
+      { type: "text", text: "First" },
+      { type: "text", text: "Second" },
+      { type: "text", text: "Third" },
+    ];
+    expect(
+      replaceAssistantContentTextBlocks(
+        [
+          image,
+          { type: "text", text: "old first" },
+          tool,
+          { type: "text", text: "old rest" },
+          tail,
+        ],
+        { content: canonical },
+      ),
+    ).toEqual([image, canonical[0], tool, canonical[1], canonical[2], tail]);
+  });
+
+  it("preserves empty, no-text, and surplus display text behavior", () => {
+    const image = { type: "image", url: "image.png" };
+    const canonical = { type: "text", text: "Canonical" };
+    const extra = { type: "text", text: "Extra display text" };
+    expect(replaceAssistantContentTextBlocks(undefined, null)).toBeUndefined();
+    expect(replaceAssistantContentTextBlocks([], null)).toEqual([]);
+    expect(replaceAssistantContentTextBlocks([image, extra], { content: [] })).toEqual([
+      image,
+      extra,
+    ]);
+    expect(replaceAssistantContentTextBlocks(undefined, { content: [canonical] })).toEqual([
+      canonical,
+    ]);
+    expect(replaceAssistantContentTextBlocks([], { content: [canonical] })).toEqual([canonical]);
+    expect(replaceAssistantContentTextBlocks([image], { content: [canonical] })).toEqual([
+      canonical,
+      image,
+    ]);
+    expect(
+      replaceAssistantContentTextBlocks([{ type: "text", text: "old" }, image, extra], {
+        content: [canonical],
+      }),
+    ).toEqual([canonical, image, extra]);
   });
 
   it("preserves a structured media failure beside replaced transcript text", () => {

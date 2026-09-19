@@ -122,9 +122,14 @@ describe("prepared provider errors after settled tools", () => {
         attempt.itemLifecycle.activeCount = 1;
         attempt.itemLifecycle.completedCount = 0;
         break;
-      case "asynchronous tool":
-        attempt.toolMetas[0].asyncStarted = true;
+      case "asynchronous tool": {
+        const toolMeta = attempt.toolMetas[0];
+        if (!toolMeta) {
+          throw new Error("Expected settled tool metadata in the fixture");
+        }
+        toolMeta.asyncStarted = true;
         break;
+      }
       case "delivered reply":
         attempt.didSendViaMessagingTool = true;
         attempt.messagingToolSentTexts = ["Saved."];

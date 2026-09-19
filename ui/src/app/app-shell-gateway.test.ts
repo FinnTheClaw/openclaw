@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI_APPEARANCE_PREFERENCE_KEYS } from "../../../packages/gateway-protocol/src/schema/ui-appearance-preferences.ts";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
+import * as toast from "../lib/toast.ts";
 import { createStorageMock } from "../test-helpers/storage.ts";
 import { ShellGatewayOwner, type ShellGatewayHost } from "./app-shell-gateway.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "./context.ts";
@@ -104,6 +105,58 @@ describe("ShellGatewayOwner profile appearance integration", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
+
+  it.each(["context replacement", "client replacement", "owner reset", "current owner"] as const)(
+    "scopes a deferred critical observer notice to its %s",
+    async (change) => {
+      const { context, host, owner, snapshot } = createProfileAppearanceGateway(null);
+      const runtime = await import("../pages/chat/critical-observer-notice.runtime.ts");
+      runtime.resetCriticalObserverTracker();
+      let release!: (value: typeof runtime) => void;
+      host.criticalNoticeRuntime = new Promise((resolve) => {
+        release = resolve;
+      });
+      const notice = vi.spyOn(toast, "showToast").mockReturnValue(true);
+      const select = vi.fn();
+      Object.assign(context, { sessions: { state: { result: { sessions: [] } } } });
+      Object.assign(host, {
+        activeSessionKey: "agent:main:visible",
+        storedOutboxScopeHost: () => ({ settings: {}, assistantAgentId: "main" }),
+        selectChatSession: select,
+      });
+      owner.handleGatewayEvent({
+        type: "event",
+        event: "session.observer",
+        payload: {
+          sessionKey: "agent:main:background",
+          agentId: "main",
+          revision: 1,
+          health: "stuck",
+          headline: "Old gateway needs attention",
+        },
+      });
+      expect(notice).not.toHaveBeenCalled();
+      if (change === "context replacement") {
+        Object.assign(host, { context: { ...context } });
+      } else if (change === "client replacement") {
+        snapshot.client = { gatewayUrl: "ws://replacement.test" } as GatewayBrowserClient;
+      } else if (change === "owner reset") {
+        owner.reset();
+      }
+      release(runtime);
+      await Promise.resolve();
+      if (change === "current owner") {
+        expect(notice).toHaveBeenCalledOnce();
+        expect(notice.mock.calls[0]![0].message).toContain("Old gateway needs attention");
+        notice.mock.calls[0]![0].onAction?.();
+        expect(select).toHaveBeenCalledWith("agent:main:background", "main");
+      } else {
+        expect(notice).not.toHaveBeenCalled();
+        expect(select).not.toHaveBeenCalled();
+      }
+      runtime.resetCriticalObserverTracker();
+    },
+  );
 
   it("never requests durable profile preferences for an identity-free connection", () => {
     const { owner, request, snapshot } = createProfileAppearanceGateway(null);

@@ -1,7 +1,12 @@
 // Signal plugin module implements monitor behavior.
 import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plugin-sdk/approval-handler-adapter-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
-import { resolveChannelStreamingBlockEnabled } from "openclaw/plugin-sdk/channel-outbound";
+import { createChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
+import {
+  createMessageReceiptFromOutboundResults,
+  listMessageReceiptPlatformIds,
+  resolveChannelStreamingBlockEnabled,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
 import type {
   OpenClawConfig,
@@ -348,40 +353,60 @@ export async function deliverReplies(params: {
         });
       }
     };
-    const delivered = await deliverTextOrMediaReply({
-      payload: deliveredPayload,
-      text: reply.text,
-      chunkText: (value) => chunkTextWithMode(value, textLimit, chunkMode),
-      sendText: async (chunk) => {
-        recordDeliveryResult(
-          await sendMessageSignal(target, chunk, {
-            cfg: params.cfg,
-            baseUrl,
-            account,
-            maxBytes,
-            accountId,
-            ...nextNativeReply(),
-          }),
-          chunk,
-        );
-      },
-      sendMedia: async ({ mediaUrl, caption }) => {
-        const visibleText = caption ?? "";
-        recordDeliveryResult(
-          await sendMessageSignal(target, visibleText, {
-            cfg: params.cfg,
-            baseUrl,
-            account,
-            mediaUrl,
-            maxBytes,
-            accountId,
-            ...nextNativeReply(),
-          }),
-          visibleText,
-        );
-      },
-    });
-    if (delivered !== "empty") {
+    let delivered: Awaited<ReturnType<typeof deliverTextOrMediaReply>>;
+    try {
+      delivered = await deliverTextOrMediaReply({
+        payload: deliveredPayload,
+        text: reply.text,
+        chunkText: (value) => chunkTextWithMode(value, textLimit, chunkMode),
+        sendText: async (chunk) => {
+          recordDeliveryResult(
+            await sendMessageSignal(target, chunk, {
+              cfg: params.cfg,
+              baseUrl,
+              account,
+              maxBytes,
+              accountId,
+              ...nextNativeReply(),
+            }),
+            chunk,
+          );
+        },
+        sendMedia: async ({ mediaUrl, caption }) => {
+          const visibleText = caption ?? "";
+          recordDeliveryResult(
+            await sendMessageSignal(target, visibleText, {
+              cfg: params.cfg,
+              baseUrl,
+              account,
+              mediaUrl,
+              maxBytes,
+              accountId,
+              ...nextNativeReply(),
+            }),
+            visibleText,
+          );
+        },
+      });
+    } catch (error: unknown) {
+      if (deliveryResults.length === 0) {
+        throw error;
+      }
+      const receipt = createMessageReceiptFromOutboundResults({
+        results: deliveryResults,
+        kind: reply.mediaUrls.length > 0 ? "media" : "text",
+      });
+      throw createChannelPartialDeliveryError(error, {
+        messageIds: listMessageReceiptPlatformIds(receipt),
+        receipt,
+        visibleReplySent: true,
+        content: deliveryResults
+          .map((result) => result.meta.signalVisibleText)
+          .filter(Boolean)
+          .join("\n"),
+      });
+    } finally {
+      // An accepted approval or question remains actionable if a later part fails.
       registerSignalReactionTargetsForDeliveredPayload({
         cfg: params.cfg,
         target: {
@@ -394,6 +419,8 @@ export async function deliverReplies(params: {
         targetAuthor: account,
         targetAuthorUuid: accountUuid,
       });
+    }
+    if (delivered !== "empty") {
       runtime.log?.(`delivered reply to ${target}`);
     }
   }

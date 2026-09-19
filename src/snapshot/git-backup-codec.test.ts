@@ -64,3 +64,49 @@ it("preserves NUL-bearing TEXT, storage classes, and source key order", async ()
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+it.each([0, 5])(
+  "preserves cursor sequence high-water marks with %i retained events",
+  async (retained) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "git-backup-sequence-"));
+    const sourcePath = path.join(root, "source.sqlite");
+    const outputPath = path.join(root, "dump");
+    const targetPath = path.join(root, "restored.sqlite");
+    const insertEvent =
+      "INSERT INTO session_state_events (session_key, agent_id, kind, actor_type, occurred_at, summary) VALUES ('session', 'main', 'created', 'agent', 1, 'synthetic event')";
+    try {
+      const source = openOpenClawStateDatabase({ path: sourcePath });
+      for (let index = 0; index < 25; index += 1) {
+        source.db.exec(insertEvent);
+      }
+      source.db.prepare("DELETE FROM session_state_events WHERE sequence > ?").run(retained);
+      source.db.exec("INSERT INTO sqlite_sequence (name, seq) VALUES ('backup_runs', 99)");
+      closeOpenClawStateDatabaseForTest();
+      const manifest = await dumpGitBackupDatabase({
+        snapshotPath: sourcePath,
+        outputPath,
+        identity: { role: "global" },
+      });
+      expect(Object.keys(manifest.tables)[0]).toBe("sqlite_sequence");
+      const sequences = await fs.readFile(
+        path.join(outputPath, "tables/sqlite_sequence.jsonl"),
+        "utf8",
+      );
+      expect(sequences).not.toContain("backup_runs");
+      await restoreGitBackupDirectory({
+        sourcePath: outputPath,
+        targetPath,
+        expectedIdentity: { role: "global" },
+      });
+      const database = new DatabaseSync(targetPath);
+      try {
+        expect(Number(database.prepare(insertEvent).run().lastInsertRowid)).toBe(26);
+      } finally {
+        database.close();
+      }
+    } finally {
+      closeOpenClawStateDatabaseForTest();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);

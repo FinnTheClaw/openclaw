@@ -162,6 +162,7 @@ describe("selected route thinking metadata at runtime preparation", () => {
     { route: "subscription", capability: "absent" },
     { route: "subscription", capability: "platform" },
     { route: "subscription", capability: "subscription" },
+    { route: "subscription", capability: "nullable" },
   ] as const)(
     "preserves $route disablement with $capability prepared capability",
     async ({ route, capability }) => {
@@ -197,11 +198,19 @@ describe("selected route thinking metadata at runtime preparation", () => {
         ...capabilityModel,
         api: capabilityApi,
       } satisfies ModelCatalogEntry;
-      const modelThinkingCapability =
+      const preparedCapability =
         capability === "absent"
           ? undefined
           : prepareModelRunCapabilities([[capabilityEntry], []], ["openai", MODEL_ID, "codex"])
               .modelThinkingCapability;
+      const modelThinkingCapability =
+        capability === "nullable" && preparedCapability
+          ? {
+              ...preparedCapability,
+              route: { api: capabilityApi, baseUrl: SUBSCRIPTION },
+              compat: { supportedReasoningEfforts: null },
+            }
+          : preparedCapability;
       const runId = `effort-${route}-${capability}`;
       const runtime = await prepareEmbeddedRunRuntime({
         runParams: {
@@ -239,7 +248,9 @@ describe("selected route thinking metadata at runtime preparation", () => {
         expect(effectiveModel.baseUrl).toBe(route === "platform" ? PLATFORM : SUBSCRIPTION);
         expect(effectiveModel.thinkingLevelMap?.off).toBe(route === "platform" ? "none" : null);
         const efforts = effectiveModel.compat?.supportedReasoningEfforts ?? [];
-        if (modelThinkingCapability) {
+        if (capability === "nullable") {
+          expect(effectiveModel.compat?.supportedReasoningEfforts).toBeUndefined();
+        } else if (modelThinkingCapability) {
           expect(modelThinkingCapability.route).toBeUndefined();
           expect(efforts).toEqual(
             expect.arrayContaining(

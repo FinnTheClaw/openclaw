@@ -3700,6 +3700,26 @@ describe("launchd install", () => {
     ).rejects.toThrow("launchd restart handoff failed: spawn failed");
   });
 
+  it("rejects detached restart when the helper fails to spawn asynchronously", async () => {
+    const env = createDefaultLaunchdEnv();
+    const stdout = new PassThrough();
+    const onMutation = vi.fn();
+    launchdRestartHandoffState.scheduleDetachedLaunchdRestartHandoff.mockReturnValueOnce({
+      ok: true,
+      value: Promise.resolve(false),
+    });
+
+    await expect(
+      withProcessEnv({ LAUNCH_JOB_LABEL: "ai.openclaw.gateway" }, async () =>
+        restartLaunchAgent({ env, stdout, onMutation }),
+      ),
+    ).rejects.toThrow("launchd restart handoff failed: helper failed to spawn");
+
+    expect(onMutation).not.toHaveBeenCalled();
+    expect(stdout.read()?.toString() ?? "").not.toContain("Scheduled LaunchAgent restart");
+    expect(state.launchctlCalls).toStrictEqual([]);
+  });
+
   it("hands restart off when XPC_SERVICE_NAME is inherited", async () => {
     const env = createDefaultLaunchdEnv();
 

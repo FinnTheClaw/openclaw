@@ -187,7 +187,18 @@ export function resetToolStream(host: ToolStreamHost) {
   cancelToolStreamSync(host);
   host.toolStreamById.clear();
   host.toolStreamOrder = [];
-  host.activityEventSeqById?.clear();
+  // Pending approvals may be rehydrated by replay after the transient reset.
+  for (const waiting of host.waitingApprovalStatuses?.values() ?? []) {
+    host.activityEventSeqById?.delete(
+      `approval:${JSON.stringify([waiting.runId, waiting.approvalId])}`,
+    );
+  }
+  // Approval resolutions outlive transient streams, just like their tombstones.
+  for (const identity of host.activityEventSeqById?.keys() ?? []) {
+    if (!identity.startsWith("approval:")) {
+      host.activityEventSeqById?.delete(identity);
+    }
+  }
   host.chatToolMessages = [];
   host.chatStreamSegments = [];
   host.knownAgentRunIds?.clear();
@@ -277,7 +288,14 @@ function acceptActivityEvent(host: ToolStreamHost, payload: AgentEventPayload): 
   const terminalLifecycle =
     payload.stream === "lifecycle" &&
     (payload.data?.phase === "end" || payload.data?.phase === "error");
-  if (payload.stream === "compaction" || terminalLifecycle) {
+  const approvalId = toTrimmedString(payload.data?.approvalId);
+  if (
+    payload.stream === "lifecycle" &&
+    approvalId &&
+    (payload.data?.phase === "waiting-approval" || payload.data?.phase === "approval-resolved")
+  ) {
+    identity = `approval:${JSON.stringify([payload.runId, approvalId])}`;
+  } else if (payload.stream === "compaction" || terminalLifecycle) {
     // One visible compaction per run: older items and retry completions must
     // not replace a newer operation restored or received on the live stream.
     identity = `compaction:${payload.runId}`;

@@ -76,4 +76,37 @@ describe("streamWithIdleTimeout caller cancellation", () => {
     )?.signal;
     expect([providerSignal?.reason, onIdleTimeout.mock.calls.length]).toEqual([callerReason, 0]);
   });
+  it.each([true, false])(
+    "observes late provider creation rejection when pre-aborted is %s",
+    async (preAborted) => {
+      const controller = new AbortController();
+      const reason = new Error("caller cancelled before provider settled");
+      let rejectProvider!: (error: Error) => void;
+      const providerPromise = new Promise<AssistantMessageEventStream>((_resolve, reject) => {
+        rejectProvider = reject;
+      });
+      const baseFn = vi.fn(() => providerPromise);
+      if (preAborted) {
+        controller.abort(reason);
+      }
+      const pending = streamWithIdleTimeout(baseFn, 50)(
+        {} as Parameters<Parameters<typeof streamWithIdleTimeout>[0]>[0],
+        {} as Parameters<Parameters<typeof streamWithIdleTimeout>[0]>[1],
+        { signal: controller.signal },
+      );
+      if (!preAborted) {
+        controller.abort(reason);
+      }
+      await expect(pending).rejects.toMatchObject({ name: "AbortError", cause: reason });
+      expect(baseFn).toHaveBeenCalledOnce();
+      rejectProvider(new Error("late provider creation rejection"));
+      // Let Node report any unowned rejection to the native test runner.
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+    },
+  );
 });

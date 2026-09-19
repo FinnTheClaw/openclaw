@@ -1,3 +1,4 @@
+import { compareChatQueueOrder } from "../../lib/chat/chat-queue-order.ts";
 import type {
   ChatAttachment,
   ChatComposerDraftRetry,
@@ -459,7 +460,10 @@ export function admitStoredChatComposerQueueItem(
     if (queue.length >= MAX_STORED_QUEUE_ITEMS) {
       return false;
     }
-    writeStoredComposerSession(store, storeSessionKey, session, [...queue, serialized]);
+    const nextQueue = replaces
+      ? storedQueue.map((entry) => (entry.id === replaces.id ? serialized : entry))
+      : [...queue, serialized];
+    writeStoredComposerSession(store, storeSessionKey, session, nextQueue);
     if (captured.awaitingDefaults) {
       store.sessions[storeSessionKey]!.awaitingDefaults = true;
     }
@@ -488,6 +492,7 @@ export function updateStoredChatComposerQueueItems(
   sessionKey: string,
   updates: readonly { expected: ChatQueueItem; next: ChatQueueItem }[],
   agentId?: string,
+  order?: { expected: readonly string[]; next: readonly string[] },
 ): boolean {
   if (updates.length === 0) {
     return true;
@@ -509,7 +514,19 @@ export function updateStoredChatComposerQueueItems(
     };
     const storeSessionKey = storedChatOutboxScopeKey(scope);
     const session = store.sessions[storeSessionKey] ?? null;
-    const nextQueue = (session?.queue ?? []).slice();
+    let nextQueue = (session?.queue ?? []).slice();
+    if (order) {
+      const currentIds = nextQueue.toSorted(compareChatQueueOrder).map((entry) => entry.id);
+      if (
+        currentIds.length !== order.expected.length ||
+        currentIds.some((id, index) => id !== order.expected[index]) ||
+        order.next.length !== currentIds.length ||
+        new Set(order.next).size !== currentIds.length ||
+        order.next.some((id) => !currentIds.includes(id))
+      ) {
+        return false;
+      }
+    }
     for (const { expected, next } of updates) {
       const index = nextQueue.findIndex((entry) => entry.id === expected.id);
       const stored = index >= 0 ? nextQueue[index] : undefined;
@@ -523,10 +540,21 @@ export function updateStoredChatComposerQueueItems(
       }
       nextQueue[index] = serializedNext;
     }
+    if (order) {
+      const byId = new Map(nextQueue.map((entry) => [entry.id, entry]));
+      nextQueue = order.next.map((id) => byId.get(id)!);
+    }
     writeStoredComposerSession(store, storeSessionKey, session, nextQueue);
     writeStore(storage, target, store);
     notifyStoredChatOutboxChanges();
     const persistedQueue = readStore(storage, target).sessions[storeSessionKey]?.queue ?? [];
+    if (
+      order &&
+      (persistedQueue.length !== order.next.length ||
+        persistedQueue.some((entry, index) => entry.id !== order.next[index]))
+    ) {
+      return false;
+    }
     return updates.every(({ next }) => {
       const serializedNext = serializeQueueItemForScope(next, scope);
       const persisted = persistedQueue.find((entry) => entry.id === next.id);

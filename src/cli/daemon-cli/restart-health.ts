@@ -404,10 +404,9 @@ export async function waitForGatewayHealthyRestart(params: {
     } else {
       healthyStreak = undefined;
     }
-    if (settleProbes > 1 && snapshot.healthy) {
-      // Callers consume snapshot.healthy; a partial settle must not report recovery at timeout.
-      snapshot.healthy = false;
-    }
+    // Callers consume snapshot.healthy; missing managed proof or a partial settle
+    // must not report recovery when a later condition ends the wait.
+    snapshot.healthy = false;
     if (snapshot.activatedPluginErrors?.length) {
       return withWaitContext(snapshot, "plugin-errors", elapsedMs);
     }

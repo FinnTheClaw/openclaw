@@ -233,6 +233,7 @@ type QueuedMessageMoveRow = {
 export function updateQueuedMessagesForSession(
   host: ChatQueueScopedSessionHost,
   updates: readonly { id: string; update: (item: ChatQueueItem) => ChatQueueItem }[],
+  order?: { expected: readonly ChatQueueItem[]; next: readonly ChatQueueItem[] },
 ): boolean {
   const owner = chatOutboxOwner(host);
   const rows: QueuedMessageMoveRow[] = [];
@@ -252,11 +253,22 @@ export function updateQueuedMessagesForSession(
   const durableRows = rows.filter((row) => row.durable);
   const outbox = durableRows[0]?.scope;
   if (outbox) {
+    const durableIds =
+      order &&
+      new Set(order.expected.filter((item) => owner.durable(host, item.id)).map((item) => item.id));
     const applied = updateStoredChatComposerQueueItems(
       host,
       outbox.sessionKey,
       durableRows.map((row) => ({ expected: row.current, next: row.next })),
       outbox.agentId,
+      order && durableIds
+        ? {
+            expected: order.expected
+              .filter((item) => durableIds.has(item.id))
+              .map((item) => item.id),
+            next: order.next.filter((item) => durableIds.has(item.id)).map((item) => item.id),
+          }
+        : undefined,
     );
     for (const row of durableRows) {
       if (applied) {
@@ -272,6 +284,16 @@ export function updateQueuedMessagesForSession(
     if (!row.durable) {
       owner.change(host, row.id, () => row.next);
     }
+  }
+  if (order && rows[0]) {
+    // Keep active local-only slots in the existing projection owner. Durable
+    // contents/order are still re-read by snapshot, including peer changes.
+    const current = new Map(owner.snapshot(host, rows[0].scope).map((item) => [item.id, item]));
+    const orderedIds = new Set(order.next.map((item) => item.id));
+    owner.replace(host, rows[0].scope, [
+      ...order.next.flatMap((item) => (current.has(item.id) ? [current.get(item.id)!] : [])),
+      ...[...current.values()].filter((item) => !orderedIds.has(item.id)),
+    ]);
   }
   return true;
 }

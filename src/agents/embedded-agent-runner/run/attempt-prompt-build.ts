@@ -439,7 +439,8 @@ type PromptContextAttempt = Pick<
   | "sessionId"
   | "sessionKey"
   | "suppressNextUserMessagePersistence"
->;
+> &
+  Partial<Pick<EmbeddedRunAttemptParams, "operation" | "skipPreparedUserTurnMessage">>;
 
 type PromptAssemblyContext = {
   effectivePrompt: string;
@@ -620,11 +621,21 @@ export function prepareEmbeddedAttemptPromptContext(input: {
       input.setActiveSessionSystemPrompt(runtimeSystemPrompt);
     }
   }
+  // Internal retries reuse the persisted user row. Their entire control prompt
+  // belongs in the hidden carrier: subtracting the original transcript prompt
+  // would strip a repeated goal anchor before canonical replay restores that row.
+  const internalContinuationContext =
+    !input.isRawModelRun &&
+    attempt.operation === "attempt" &&
+    attempt.skipPreparedUserTurnMessage === true &&
+    attempt.suppressNextUserMessagePersistence === true
+      ? input.prompt.promptForRuntimeContextSplit.trim()
+      : undefined;
   const runtimeContextForHook = isRuntimeOnlyTurn
     ? undefined
     : [
         currentInboundContextText,
-        promptSubmission.runtimeContext?.trim(),
+        internalContinuationContext ?? promptSubmission.runtimeContext?.trim(),
         input.heartbeatOutcomeContext?.trim(),
       ]
         .filter((value): value is string => Boolean(value))

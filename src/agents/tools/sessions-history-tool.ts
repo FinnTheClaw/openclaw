@@ -11,7 +11,7 @@ import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/s
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { capArrayByJsonBytes } from "../../gateway/session-transcript-readers.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
-import { redactToolPayloadText } from "../../logging/redact.js";
+import { redactSecrets, redactToolPayloadText } from "../../logging/redact.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { resolveSessionAgentId, resolveSessionAgentIds } from "../agent-scope.js";
@@ -180,6 +180,11 @@ function sanitizeHistoryContentBlock(
     entry.partialJson = res.text;
     truncated ||= res.truncated;
     redacted ||= res.redacted;
+  }
+  if ("arguments" in entry) {
+    const sanitized = redactSecrets(entry.arguments);
+    redacted ||= JSON.stringify(sanitized) !== JSON.stringify(entry.arguments);
+    entry.arguments = sanitized;
   }
   return { block: entry, truncated, redacted };
 }

@@ -51,6 +51,21 @@ describe("shared ip helpers", () => {
     ["fe80::1%eth0", "fe80::1%eth0", true],
     ["fe80::1%eth0", "fe80::1%eth1/128", true],
     ["::ffff:127.0.0.1", "::ffff:127.0.0.1/128", true],
+    ["::ffff:10.42.0.59", "::ffff:10.42.0.0/120", true],
+    ["10.42.0.59", "::ffff:10.42.0.0/120", true],
+    ["10.43.0.59", "::ffff:10.42.0.0/120", false],
+    ["::ffff:10.42.0.59", "::ffff:0.0.0.0/96", true],
+    ["10.42.0.59", "::ffff:0.0.0.0/96", true],
+    ["10.42.0.59", "::ffff:10.42.0.59/128", true],
+    ["10.42.0.60", "::ffff:10.42.0.59/128", false],
+    ["127.255.255.255", "::ffff:0.0.0.0/97", true],
+    ["128.0.0.0", "::ffff:0.0.0.0/97", false],
+    ["::fffe:a2a:3b", "::ffff:0.0.0.0/96", false],
+    ["2001:db8::1", "::ffff:0.0.0.0/96", false],
+    // Preserve the existing cross-family policy for prefixes outside the mapped allocation.
+    ["10.42.0.0", "::ffff:10.42.0.0/95", true],
+    ["10.42.0.59", "::ffff:10.42.0.0/95", false],
+    ["::fffe:a2a:3b", "::ffff:0.0.0.0/95", false],
   ])("matches %s against %s: %s", (ip, range, expected) => {
     expect(isIpInCidr(ip, range)).toBe(expected);
   });

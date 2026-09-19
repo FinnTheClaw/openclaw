@@ -141,7 +141,12 @@ describe("attempt result projection", () => {
       assistantTexts: ["Confirmed —\u0060\n\n"],
       messagesSnapshot,
     });
-    expect(result.settledTurnFinalizationContext?.messages).toEqual(messagesSnapshot);
+    const context = result.settledTurnFinalizationContext;
+    expect(context?.source).toBe("openclaw-transcript");
+    if (context?.source !== "openclaw-transcript") {
+      throw new Error("Expected captured OpenClaw transcript context");
+    }
+    expect(context.messages).toEqual(messagesSnapshot);
     expect(result.assistantTexts).toEqual(["Confirmed —\u0060\n\n"]);
   });
 

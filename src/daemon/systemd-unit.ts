@@ -24,6 +24,19 @@ function systemdEscapeArg(value: string): string {
   return `"${escaped}"`;
 }
 
+// Generated values are literal data; systemd expands specifiers even inside quotes.
+// Keep the raw serializer separate for rewriting existing operator directives.
+function systemdEscapeLiteralArg(value: string): string {
+  return systemdEscapeArg(value.replaceAll("%", "%%"));
+}
+
+// Scalar path directives do not use ExecStart/Environment token unquoting.
+function systemdEscapeLiteralPath(value: string): string {
+  assertNoSystemdLineBreaks(value, "Systemd unit paths");
+  // A trailing spacer prevents line continuation; systemd trims it after joining lines.
+  return value.replaceAll("%", "%%") + (value.endsWith("\\") ? " " : "");
+}
+
 function renderEnvLines(env: Record<string, string | undefined> | undefined): string[] {
   if (!env) {
     return [];
@@ -39,7 +52,7 @@ function renderEnvLines(env: Record<string, string | undefined> | undefined): st
     const rawValue = value ?? "";
     assertNoSystemdLineBreaks(key, "Systemd environment variable names");
     assertNoSystemdLineBreaks(rawValue, "Systemd environment variable values");
-    return `Environment=${systemdEscapeArg(`${key}=${rawValue.trim()}`)}`;
+    return `Environment=${systemdEscapeLiteralArg(`${key}=${rawValue.trim()}`)}`;
   });
 }
 
@@ -49,7 +62,7 @@ function renderEnvironmentFileLines(environmentFiles: string[] | undefined): str
   }
   return normalizeStringEntries(environmentFiles).map((entry) => {
     assertNoSystemdLineBreaks(entry, "Systemd EnvironmentFile values");
-    return `EnvironmentFile=-${systemdEscapeArg(entry)}`;
+    return `EnvironmentFile=-${systemdEscapeLiteralPath(entry)}`;
   });
 }
 
@@ -60,12 +73,12 @@ export function buildSystemdUnit({
   environment,
   environmentFiles,
 }: GatewayServiceRenderArgs): string {
-  const execStart = programArguments.map(systemdEscapeArg).join(" ");
+  const execStart = programArguments.map(systemdEscapeLiteralArg).join(" ");
   const descriptionValue = description?.trim() || "OpenClaw Gateway";
   assertNoSystemdLineBreaks(descriptionValue, "Systemd Description");
-  const descriptionLine = `Description=${descriptionValue}`;
+  const descriptionLine = `Description=${descriptionValue.replaceAll("%", "%%")}`;
   const workingDirLine = workingDirectory
-    ? `WorkingDirectory=${systemdEscapeArg(workingDirectory)}`
+    ? `WorkingDirectory=${systemdEscapeLiteralPath(workingDirectory)}`
     : null;
   const envLines = renderEnvLines(environment);
   const environmentFileLines = renderEnvironmentFileLines(environmentFiles);

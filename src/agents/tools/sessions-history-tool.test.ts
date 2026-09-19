@@ -236,6 +236,97 @@ describe("sessions_history redaction", () => {
     expect((result.details as { contentRedacted?: unknown }).contentRedacted).toBe(true);
   });
 
+  it.each([false, true])(
+    "redacts recalled tool arguments with includeTools=%s",
+    async (includeTools) => {
+      useLoggingConfig("tool-arguments-redaction-off.json", { redactSensitive: "off" });
+      const tool = createSessionsHistoryTool({
+        config: {},
+        callGateway: async <T = Record<string, unknown>>(
+          request: CallGatewayRequest,
+        ): Promise<T> => {
+          if (request.method === "chat.history") {
+            return {
+              messages: [
+                {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "toolCall",
+                      id: "call-remembered-command",
+                      name: "exec",
+                      arguments: {
+                        command: "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 echo ready",
+                        env: { OPENROUTER_API_KEY: "sk-or-v1-abcdef0123456789" },
+                      },
+                    },
+                  ],
+                },
+              ],
+            } as T;
+          }
+          return {} as T;
+        },
+      });
+
+      const result = await tool.execute("tool-arguments-recall", {
+        sessionKey: "main",
+        includeTools,
+      });
+      const serialized = JSON.stringify(result);
+
+      expect(serialized).not.toContain("sk-or-v1-abcdef0123456789");
+      expect(serialized).toContain("echo ready");
+      expect(result.details).toMatchObject({ contentRedacted: true });
+    },
+  );
+
+  it("applies current redaction patterns to arguments in existing transcript messages", async () => {
+    useLoggingConfig("arguments-before-pattern.json", { redactSensitive: "off" });
+    const argumentsBeforeRecall = {
+      command: "echo internal-ticket-314159",
+      options: { enabled: true, retries: 2, parent: null, labels: ["ordinary label"] },
+    };
+    const message = {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "call-existing", name: "exec", arguments: argumentsBeforeRecall },
+      ],
+    };
+    const tool = createSessionsHistoryTool({
+      config: {},
+      callGateway: async <T = Record<string, unknown>>(request: CallGatewayRequest): Promise<T> =>
+        (request.method === "chat.history" ? { messages: [message] } : {}) as T,
+    });
+    const before = await tool.execute("before-pattern-change", { sessionKey: "main" });
+    expect(before.details).toMatchObject({ messages: [message], contentRedacted: false });
+
+    useLoggingConfig("arguments-after-pattern.json", {
+      redactSensitive: "off",
+      redactPatterns: [String.raw`\binternal-ticket-[A-Za-z0-9]+\b`],
+    });
+    const after = await tool.execute("after-pattern-change", { sessionKey: "main" });
+    expect(JSON.stringify(after)).not.toContain("internal-ticket-314159");
+    expect(after.details).toMatchObject({
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call-existing",
+              name: "exec",
+              arguments: { options: argumentsBeforeRecall.options },
+            },
+          ],
+        },
+      ],
+      contentRedacted: true,
+      contentTruncated: false,
+    });
+    expect(argumentsBeforeRecall.command).toBe("echo internal-ticket-314159");
+  });
+
   it("keeps accepted inputs separate, redacted, bounded, and addressable by their own cursor", async () => {
     useLoggingConfig("pending-redaction-off.json", { redactSensitive: "off" });
     const requests: CallGatewayRequest[] = [];

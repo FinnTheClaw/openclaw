@@ -362,7 +362,16 @@ export async function materializeSubagentAttachments(params: {
       files.push({ name, bytes, sha256 });
     }
 
-    await Promise.all(writeJobs.map(({ outPath, buf }) => store.writeText(outPath, buf)));
+    // Cleanup owns the directory only after every writer has settled. Otherwise
+    // a delayed private-file write can recreate it after an earlier failure.
+    const writes = await Promise.allSettled(
+      writeJobs.map(({ outPath, buf }) => store.writeText(outPath, buf)),
+    );
+    for (const write of writes) {
+      if (write.status === "rejected") {
+        throw write.reason;
+      }
+    }
 
     const manifest = {
       relDir,
