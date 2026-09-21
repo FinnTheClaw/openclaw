@@ -4,6 +4,7 @@ import {
   createOperationalRunInstanceRef,
   type OperationalRunInstanceRef,
 } from "../../agents/admitted-run-context.js";
+import { armCancellationProductionBarrier } from "../../agents/cancellation-production-barriers.js";
 import {
   clearEmbeddedAgentRunAbortabilityForRunId,
   isEmbeddedAgentRunAbortableForRunId,
@@ -609,6 +610,23 @@ export async function prepareAgentRunDispatch(params: {
   if (!revalidateAdmission()) {
     releasePreparedAgentRunUserTurn(userTurn);
     return undefined;
+  }
+  try {
+    armCancellationProductionBarrier({
+      request: params.request.cancellationBarrier,
+      runId: params.runId,
+      sessionKey: params.resolvedSessionKey,
+      agentId: params.activeSessionAgentId,
+      lifecycleGeneration: params.lifecycleGeneration,
+      ownerConnId: params.ownerConnId,
+      ownerDeviceId: params.ownerDeviceId,
+      abortSignal: activeRunAbort.controller.signal,
+      runExpiresAtMs: activeRunAbort.entry?.expiresAtMs,
+      modelRun: params.isOneShotModelRun,
+      suppressVisibleSessionEffects: params.suppressVisibleSessionEffects,
+    });
+  } catch (err) {
+    return rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, err));
   }
   const accepted = {
     runId: params.runId,

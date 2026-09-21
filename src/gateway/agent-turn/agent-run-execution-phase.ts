@@ -5,6 +5,7 @@ import {
   attachAgentCommandRecoveryAdmissionFacts,
 } from "../../agents/agent-command-admission-facts.js";
 import type { AgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
+import { holdAcceptedRunBeforeProvider } from "../../agents/cancellation-production-barriers.js";
 import { prepareGitCoauthorAttribution } from "../../agents/git-coauthor-attribution.js";
 import { repairMainSessionRecoveryMutation } from "../../agents/main-session-recovery/main-session-recovery-lifecycle.js";
 import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-owner-release.js";
@@ -162,6 +163,7 @@ export function startAgentRunExecution(params: {
   };
   return prepared.activeGatewayWorkAdmission.run(async () => {
     await yieldAfterAgentAcceptedAck();
+    await holdAcceptedRunBeforeProvider(params.runId);
     let dispatched = false;
     let pendingRecovery: MainSessionRecoveryPendingTarget | undefined;
     const finishUndispatchedAbort = async () => {

@@ -159,6 +159,7 @@ function buildToolsEffectiveCacheKey(params: {
     // layer is applied after the base cache, so warm/stale runtime state alone
     // never invalidates base entries.
     sessionKey: params.sessionKey,
+    messageToolEnabled: context.toolOverrides?.message !== false,
     workspaceDir: optionalCacheString(context.workspaceDir),
     agentId: context.agentId,
     modelProvider: optionalCacheString(context.modelProvider),
@@ -422,6 +423,7 @@ async function resolveBaseToolsEffectiveInventory(
       groupChannel: context.groupChannel,
       groupSpace: context.groupSpace,
       replyToMode: context.replyToMode,
+      disableMessageTool: context.toolOverrides?.message === false,
     }),
   };
 }

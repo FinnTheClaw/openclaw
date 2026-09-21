@@ -35,6 +35,8 @@ export const SessionEntryArchiveReasonSchema = Type.Union([
 ]);
 
 export const SessionToolOverridesSchema = closedObject({
+  /** Session-local suppression of the native message tool. */
+  message: Type.Optional(Type.Literal(false)),
   mcpServers: Type.Optional(Type.Record(Type.String({ minLength: 1 }), Type.Boolean())),
   mcpToolsDeny: Type.Optional(
     Type.Record(Type.String({ minLength: 1 }), Type.Array(NonEmptyString)),

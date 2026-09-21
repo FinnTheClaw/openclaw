@@ -355,7 +355,8 @@ export function prepareEmbeddedAttemptToolBase(params: {
             sourceReplyDeliveryMode: attempt.sourceReplyDeliveryMode,
             taskSuggestionDeliveryMode: attempt.taskSuggestionDeliveryMode,
             inboundEventKind: attempt.currentInboundEventKind,
-            disableMessageTool: attempt.disableMessageTool,
+            disableMessageTool:
+              attempt.disableMessageTool || attempt.toolOverrides?.message === false,
             forceMessageTool: attempt.forceMessageTool,
             enableHeartbeatTool: attempt.enableHeartbeatTool,
             forceHeartbeatTool: attempt.forceHeartbeatTool,

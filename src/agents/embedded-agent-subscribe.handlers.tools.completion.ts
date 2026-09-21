@@ -18,6 +18,7 @@ import {
   consumeStructuredReplaySafeToolCall,
   consumeTrackedToolExecutionStarted,
 } from "./agent-tools.before-tool-call.state.js";
+import { observeCancellationBarrierToolResult } from "./cancellation-production-barriers.js";
 import { normalizeTextForComparison } from "./embedded-agent-helpers.js";
 import {
   isDeliveredCoreCurrentChannelWidgetResult,
@@ -205,6 +206,13 @@ export async function handleToolExecutionEnd(
     ...(terminate ? { terminate: true } : {}),
     ...(asyncStarted ? { asyncStarted: true, ...asyncTaskIds } : {}),
     ...(codeModeSuspended ? { codeModeSuspended: true } : {}),
+  });
+  observeCancellationBarrierToolResult({
+    runId,
+    toolCallId,
+    toolName,
+    toolArgs: startArgs,
+    isError: isToolError,
   });
   const acceptedSessionSpawn =
     toolName === "sessions_spawn" && !isToolError

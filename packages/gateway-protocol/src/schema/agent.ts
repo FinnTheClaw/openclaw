@@ -288,6 +288,17 @@ export const PollParamsSchema = closedObject({
   idempotencyKey: NonEmptyString,
 });
 
+/** Explicit bounded campaign barrier; inert unless present on this exact run. */
+const CancellationBarrierRequestSchema = closedObject({
+  phase: Type.Union([
+    Type.Literal("accepted_before_provider"),
+    Type.Literal("subagents_list_committed"),
+    Type.Literal("child_started_before_provider"),
+  ]),
+  armExpiresInMs: Type.Integer({ minimum: 1_000, maximum: 600_000 }),
+  holdExpiresInMs: Type.Integer({ minimum: 1_000, maximum: 30_000 }),
+});
+
 /** Main agent-run request accepted by the gateway. */
 export const AgentParamsSchema = closedObject({
   message: NonEmptyString,
@@ -318,6 +329,7 @@ export const AgentParamsSchema = closedObject({
   // One-shot CLI gateway requests can ask the gateway to close process-wide
   // bundle MCP resources after the run instead of keeping them warm.
   cleanupBundleMcpOnRunEnd: Type.Optional(Type.Boolean()),
+  cancellationBarrier: Type.Optional(CancellationBarrierRequestSchema),
   modelRun: Type.Optional(Type.Boolean()),
   promptMode: Type.Optional(
     Type.Union([Type.Literal("full"), Type.Literal("minimal"), Type.Literal("none")]),

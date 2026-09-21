@@ -1,4 +1,5 @@
 export type SessionToolOverrides = {
+  message?: false;
   mcpServers?: Record<string, boolean>;
   mcpToolsDeny?: Record<string, string[]>;
   skills?: Record<string, boolean>;

@@ -52,6 +52,14 @@ export type AgentRunRequest = {
   timeout?: number;
   bestEffortDeliver?: boolean;
   cleanupBundleMcpOnRunEnd?: boolean;
+  cancellationBarrier?: {
+    phase:
+      | "accepted_before_provider"
+      | "subagents_list_committed"
+      | "child_started_before_provider";
+    armExpiresInMs: number;
+    holdExpiresInMs: number;
+  };
   label?: string;
   inputProvenance?: InputProvenance;
   workspaceDir?: string;

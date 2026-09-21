@@ -46,12 +46,19 @@ describe("sessions.create schema", () => {
       validateSessionsCreateParams({
         agentId: "main",
         toolOverrides: {
+          message: false,
           mcpServers: { github: false },
           skills: { release: true },
           webSearch: false,
         },
       }),
     ).toBe(true);
+  });
+
+  it("rejects enabling the session message tool override", () => {
+    expect(
+      validateSessionsCreateParams({ agentId: "main", toolOverrides: { message: true } }),
+    ).toBe(false);
   });
 
   it.each([null, { webSearch: "yes" }, { skills: { release: "yes" } }, { unknown: true }])(

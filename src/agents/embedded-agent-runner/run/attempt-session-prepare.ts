@@ -20,6 +20,11 @@ import {
 } from "../../agent-settings.js";
 import { toToolDefinitions } from "../../agent-tool-definition-adapter.js";
 import { raceWithAbortSignal } from "../../agent-tools.abort.js";
+import {
+  hasPendingChildStartBarrier,
+  holdChildStartBeforeProvider,
+  holdCommittedSubagentsList,
+} from "../../cancellation-production-barriers.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import { resolveUserTimezone } from "../../date-time.js";
 import { bootstrapHarnessContextEngine } from "../../harness/context-engine-lifecycle.js";
@@ -278,6 +283,22 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
       input.assertInitialUserTurnReplay?.();
     };
   });
+  let unsubscribeCancellationChildStart: (() => void) | undefined;
+  unsubscribeCancellationChildStart = activeSession.agent.subscribe(async (event, signal) => {
+    if (event.type !== "agent_start") return;
+    unsubscribeCancellationChildStart?.();
+    if (!hasPendingChildStartBarrier()) return;
+    const { getSubagentRunByRunId } = await import("../../subagents/registry/subagent-registry.js");
+    const trackedChild = getSubagentRunByRunId(attempt.runId);
+    await holdChildStartBeforeProvider({
+      requesterRunId: trackedChild?.requesterTurnRunId,
+      requesterSessionKey: trackedChild?.requesterSessionKey,
+      requesterAgentId: trackedChild?.requesterAgentId,
+      childRunId: attempt.runId,
+      childSessionKey: attempt.sessionKey,
+      childAbortSignal: signal,
+    });
+  });
   const previousPrepareNextTurn = activeSession.agent.prepareNextTurn;
   activeSession.agent.prepareNextTurn = async (signal) => {
     const snapshot = await previousPrepareNextTurn?.call(activeSession.agent, signal);
@@ -292,6 +313,14 @@ export async function prepareEmbeddedAttemptAgentSession(input: {
           },
         }
       : snapshot;
+  };
+  const previousPrepareNextTurnWithContext = activeSession.agent.prepareNextTurnWithContext;
+  activeSession.agent.prepareNextTurnWithContext = async (context, signal) => {
+    const snapshot = previousPrepareNextTurnWithContext
+      ? await previousPrepareNextTurnWithContext.call(activeSession.agent, context, signal)
+      : await activeSession.agent.prepareNextTurn?.(signal);
+    await holdCommittedSubagentsList({ runId: attempt.runId, toolResults: context.toolResults });
+    return snapshot;
   };
   setActiveSessionSystemPrompt(input.initialSystemPrompt);
   let didDeliverSourceReplyViaMessageTool = false;

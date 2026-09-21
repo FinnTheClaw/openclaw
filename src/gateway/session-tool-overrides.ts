@@ -28,6 +28,7 @@ export function normalizeSessionToolOverrides(
   const mcpServers = normalizeBooleanMap(raw.mcpServers);
   const skills = normalizeBooleanMap(raw.skills);
   const normalized: SessionToolOverrides = {
+    ...(raw.message === false ? { message: false } : {}),
     ...(mcpServers ? { mcpServers } : {}),
     ...(Object.keys(mcpToolsDeny).length > 0 ? { mcpToolsDeny } : {}),
     ...(skills ? { skills } : {}),
