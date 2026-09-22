@@ -380,27 +380,74 @@ export async function sendMessageSignal(
     transportKind: opts.transportKind ?? accountInfo.transport.kind,
     maxAttachmentBytes: maxBytes,
   };
+  type Campaign = {
+    begin: (n: {
+      message: string;
+      account?: string;
+      accountId: string;
+      recipient?: string;
+      transport: string;
+      quoted: boolean;
+      media: boolean;
+      baseUrl: string;
+    }) =>
+      | {
+          baseUrl?: string;
+          timeoutMs?: number;
+          failed: () => void;
+          accepted: (n: {
+            timestamp?: number;
+            messageId: string;
+            receipt: unknown;
+          }) => Promise<void>;
+        }
+      | undefined;
+  };
+  const observer = (globalThis as unknown as { __finnSignalCampaignV1?: Campaign })
+    .__finnSignalCampaignV1;
+  if (!observer && /^\[FINN TEST D4R-0[45][0-9]{2}\]/.test(message)) {
+    throw new Error("Signal campaign observer unavailable; send denied");
+  }
+  const campaign = observer?.begin({
+    message,
+    account,
+    accountId: accountInfo.accountId,
+    recipient: target.type === "recipient" ? target.recipient : undefined,
+    transport: sendOpts.transportKind,
+    quoted: Boolean(quote),
+    media: Boolean(attachments?.length),
+    baseUrl,
+  });
+  if (campaign?.baseUrl) {
+    sendOpts.baseUrl = campaign.baseUrl;
+    sendOpts.timeoutMs = campaign.timeoutMs;
+  }
   let nativeReplyStatus: "sent" | "fallback" | undefined;
   let result: SignalSendRpcResult | undefined;
-  if (quote) {
-    try {
-      result = await signalRpcRequest<SignalSendRpcResult>(
-        "send",
-        { ...params, ...quote.params },
-        sendOpts,
-      );
-      nativeReplyStatus = "sent";
-    } catch (error) {
-      if (!isSignalQuoteMetadataRejection(error)) {
-        throw error;
+  try {
+    if (quote) {
+      try {
+        result = await signalRpcRequest<SignalSendRpcResult>(
+          "send",
+          { ...params, ...quote.params },
+          sendOpts,
+        );
+        nativeReplyStatus = "sent";
+      } catch (error) {
+        if (!isSignalQuoteMetadataRejection(error)) {
+          throw error;
+        }
+        result = await signalRpcRequest<SignalSendRpcResult>("send", params, sendOpts);
+        nativeReplyStatus = "fallback";
       }
+    } else {
       result = await signalRpcRequest<SignalSendRpcResult>("send", params, sendOpts);
-      nativeReplyStatus = "fallback";
     }
-  } else {
-    result = await signalRpcRequest<SignalSendRpcResult>("send", params, sendOpts);
+    assertSignalRecipientDelivery(result, target);
+  } catch (error) {
+    campaign?.failed();
+    throw error;
   }
-  assertSignalRecipientDelivery(result, target);
   const timestamp = result?.timestamp;
   const messageId = timestamp ? String(timestamp) : "unknown";
   const replyAuthor = targetAuthor ?? targetAuthorUuid;
@@ -415,17 +462,15 @@ export async function sendMessageSignal(
       sourceTimestamp: timestamp,
     });
   }
-  return {
+  const receipt = createSignalSendReceipt({
     messageId,
-    timestamp,
-    receipt: createSignalSendReceipt({
-      messageId,
-      target,
-      kind: attachments && attachments.length > 0 ? "media" : "text",
-      ...(quote ? { replyToId: quote.replyToId, nativeReplyStatus } : {}),
-      ...(timestamp != null ? { timestamp } : {}),
-    }),
-  };
+    target,
+    kind: attachments && attachments.length > 0 ? "media" : "text",
+    ...(quote ? { replyToId: quote.replyToId, nativeReplyStatus } : {}),
+    ...(timestamp != null ? { timestamp } : {}),
+  });
+  await campaign?.accepted({ messageId, timestamp, receipt });
+  return { messageId, timestamp, receipt };
 }
 
 export async function sendTypingSignal(

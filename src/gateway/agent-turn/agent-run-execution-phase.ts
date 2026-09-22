@@ -24,6 +24,7 @@ import {
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isAbortError } from "../../infra/abort-signal.js";
+import { isSignalCampaignSession } from "../../infra/outbound/signal-campaign-observation.js";
 import type { MediaFact } from "../../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
@@ -395,7 +396,9 @@ export function startAgentRunExecution(params: {
               }),
               bootstrapContextMode: params.request.bootstrapContextMode,
               bootstrapContextRunKind: params.effectiveBootstrapContextRunKind,
-              toolsAllow: pluginSubagentToolsAllow ?? params.restoredCronContinuation?.toolsAllow,
+              toolsAllow: isSignalCampaignSession(params.resolvedSessionKey)
+                ? []
+                : (pluginSubagentToolsAllow ?? params.restoredCronContinuation?.toolsAllow),
               runtimePluginToolGrant,
               trustedInternalHandoff: prepared.trustedInternalHandoff,
               toolsAllowIsDefault: params.restoredCronContinuation?.toolsAllowIsDefault,

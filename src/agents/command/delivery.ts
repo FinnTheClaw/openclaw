@@ -50,6 +50,10 @@ import {
   projectOutboundPayloadPlanForOutbound,
 } from "../../infra/outbound/payloads.js";
 import type { OutboundSessionContext } from "../../infra/outbound/session-context.js";
+import {
+  prepareSignalCampaignDelivery,
+  withSignalCampaignDelivery,
+} from "../../infra/outbound/signal-campaign-observation.js";
 import { hasReplyPayloadContent } from "../../interactive/payload.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../../runtime.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
@@ -910,6 +914,14 @@ export async function deliverAgentCommandResult(
   }
 
   const deliveryPayloads = projectOutboundPayloadPlanForOutbound(outboundPayloadPlan);
+  const signalCampaign = prepareSignalCampaignDelivery(
+    opts.sessionKey,
+    opts.runId,
+    deliveryChannel,
+    deliveryTarget,
+    resolvedAccountId,
+    deliveryPayloads,
+  );
   if (deliveryPayloads.length === 0) {
     deliveryStatus = deliver
       ? (deliveryStatus ??
@@ -960,37 +972,39 @@ export async function deliverAgentCommandResult(
       const restartAbort = createRestartOnlyAbortSignal(opts.abortSignal);
       let send: DurableSendResult;
       try {
-        send = await sendDurableMessageBatchCore({
-          cfg,
-          channel: deliveryChannel,
-          to: deliveryTarget,
-          accountId: resolvedAccountId,
-          payloads: deliveryPayloads,
-          session: outboundSession,
-          identity: resolveAgentOutboundIdentity(cfg, deliveryAgentId),
-          replyPayloadSendingHook: {
-            kind: "final",
+        send = await withSignalCampaignDelivery(signalCampaign, () =>
+          sendDurableMessageBatchCore({
+            cfg,
             channel: deliveryChannel,
-            ...(effectiveSessionKey ? { sessionKey: effectiveSessionKey } : {}),
-            ...(opts.runId ? { runId: opts.runId } : {}),
-            context: {
-              channelId: deliveryChannel,
-              ...(resolvedAccountId ? { accountId: resolvedAccountId } : {}),
-              conversationId: deliveryTarget,
+            to: deliveryTarget,
+            accountId: resolvedAccountId,
+            payloads: deliveryPayloads,
+            session: outboundSession,
+            identity: resolveAgentOutboundIdentity(cfg, deliveryAgentId),
+            replyPayloadSendingHook: {
+              kind: "final",
+              channel: deliveryChannel,
               ...(effectiveSessionKey ? { sessionKey: effectiveSessionKey } : {}),
               ...(opts.runId ? { runId: opts.runId } : {}),
+              context: {
+                channelId: deliveryChannel,
+                ...(resolvedAccountId ? { accountId: resolvedAccountId } : {}),
+                conversationId: deliveryTarget,
+                ...(effectiveSessionKey ? { sessionKey: effectiveSessionKey } : {}),
+                ...(opts.runId ? { runId: opts.runId } : {}),
+              },
             },
-          },
-          replyToId: resolvedReplyToId ?? null,
-          threadId: resolvedThreadTarget ?? null,
-          bestEffort: bestEffortDeliver,
-          durability: bestEffortDeliver ? "best_effort" : "required",
-          signal: restartAbort.signal,
-          onDeliveryIntent: restartAbort.dispose,
-          onError: logDeliveryError,
-          onPayload: logPayload,
-          deps: createOutboundSendDeps(deps),
-        });
+            replyToId: resolvedReplyToId ?? null,
+            threadId: resolvedThreadTarget ?? null,
+            bestEffort: bestEffortDeliver,
+            durability: bestEffortDeliver ? "best_effort" : "required",
+            signal: restartAbort.signal,
+            onDeliveryIntent: restartAbort.dispose,
+            onError: logDeliveryError,
+            onPayload: logPayload,
+            deps: createOutboundSendDeps(deps),
+          }),
+        );
       } finally {
         restartAbort.dispose();
       }
