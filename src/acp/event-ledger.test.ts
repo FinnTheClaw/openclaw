@@ -15,6 +15,35 @@ describe("ACP event ledger", () => {
     closeOpenClawStateDatabaseForTest();
   });
 
+  it.each([
+    ["/work/🚀", "agent:main:work"],
+    ["/work", "agent:main:🚀"],
+    ["/work/漢字", "agent:main:work"],
+  ])("keeps UTF-16 footprint stable for repeated metadata %s / %s", async (cwd, sessionKey) => {
+    await withTestDir({ prefix: "openclaw-ledger-unicode-" }, async (dir) => {
+      const databasePath = path.join(dir, "ledger.sqlite");
+      const ledger = createSqliteAcpEventLedger({ path: databasePath, maxSerializedBytes: 1_024 });
+      const metadata = { sessionId: "stable", sessionKey, cwd, complete: true };
+      await ledger.startSession(metadata);
+      await ledger.recordUpdate({
+        sessionId: metadata.sessionId,
+        sessionKey,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Answer" } },
+      });
+      const db = openOpenClawStateDatabase({ path: databasePath }).db;
+      const bytes = () =>
+        db.prepare("SELECT estimated_bytes FROM acp_replay_sessions").get()?.estimated_bytes;
+      const before = bytes();
+      for (let index = 0; index < 1_100; index++) {
+        await ledger.startSession(metadata);
+      }
+      expect(bytes()).toBe(before);
+      const replay = await ledger.readReplay(metadata);
+      expect(replay.complete).toBe(true);
+      expect(replay.events).toHaveLength(1);
+    });
+  });
+
   it("records complete in-memory session updates in sequence", async () => {
     const ledger = createInMemoryAcpEventLedger({ now: () => 123 });
     await ledger.startSession({

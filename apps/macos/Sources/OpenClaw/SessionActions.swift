@@ -81,6 +81,13 @@ enum SessionActions {
         let proc = Process()
         proc.launchPath = "/usr/bin/env"
         proc.arguments = ["code", url.path]
+        // Launching env does not establish that the editor launched successfully.
+        proc.terminationHandler = { process in
+            guard process.terminationStatus != 0 else { return }
+            Task { @MainActor in
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+        }
         if (try? proc.run()) != nil {
             return
         }

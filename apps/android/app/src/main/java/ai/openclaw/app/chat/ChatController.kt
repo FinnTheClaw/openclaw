@@ -3948,6 +3948,7 @@ class ChatController internal constructor(
   /** Sends best-effort abort requests for every currently pending gateway run. */
   fun abort() {
     val abortGatewayId = currentCacheScope()?.gatewayId
+    val abortSessionKey = _sessionKey.value
     val runIds =
       synchronized(pendingRuns) {
         pendingRuns.toList()
@@ -3958,7 +3959,7 @@ class ChatController internal constructor(
         try {
           val params =
             buildJsonObject {
-              put("sessionKey", JsonPrimitive(_sessionKey.value))
+              put("sessionKey", JsonPrimitive(abortSessionKey))
               put("runId", JsonPrimitive(runId))
             }
           requestGatewayBound(abortGatewayId, "chat.abort", params.toString())

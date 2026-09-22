@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/scripts/lib/docker-e2e-image.sh"
 
-IMAGE_NAME="$(docker_e2e_resolve_image "openclaw-config-reload-e2e" OPENCLAW_CONFIG_RELOAD_E2E_IMAGE)"
 SKIP_BUILD="${OPENCLAW_CONFIG_RELOAD_E2E_SKIP_BUILD:-0}"
 PORT="18789"
 TOKEN="reload-e2e-token"
@@ -13,30 +12,34 @@ CONTAINER_NAME="openclaw-config-reload-e2e-$$"
 cleanup() {
   docker_e2e_docker_cmd rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
-
-docker_e2e_build_or_reuse "$IMAGE_NAME" config-reload "$ROOT_DIR/scripts/e2e/Dockerfile" "$ROOT_DIR" "" "$SKIP_BUILD"
-OPENCLAW_TEST_STATE_SCRIPT_B64="$(docker_e2e_test_state_shell_b64 config-reload empty)"
 
 check_rpc_status() {
   local out_file="$1"
+  local timeout_seconds="${2:-120}"
   docker_e2e_docker_cmd exec "$CONTAINER_NAME" bash -lc "
 source /tmp/openclaw-test-state-env
 source scripts/lib/openclaw-e2e-instance.sh
 entry=\"\$(openclaw_e2e_resolve_entrypoint)\"
-deadline=\$((SECONDS + 120))
+deadline=\$((SECONDS + $timeout_seconds))
 last_status=1
 while [ \"\$SECONDS\" -lt \"\$deadline\" ]; do
   if node \"\$entry\" gateway status --url ws://127.0.0.1:$PORT --token '$TOKEN' --require-rpc --timeout 30000 >'$out_file' 2>'$out_file.err'; then
     exit 0
+  else
+    last_status=\$?
   fi
-  last_status=\$?
   sleep 1
 done
 cat '$out_file.err' >&2 || true
 exit \"\$last_status\"
 "
 }
+
+main() {
+IMAGE_NAME="$(docker_e2e_resolve_image "openclaw-config-reload-e2e" OPENCLAW_CONFIG_RELOAD_E2E_IMAGE)"
+trap cleanup EXIT
+docker_e2e_build_or_reuse "$IMAGE_NAME" config-reload "$ROOT_DIR/scripts/e2e/Dockerfile" "$ROOT_DIR" "" "$SKIP_BUILD"
+OPENCLAW_TEST_STATE_SCRIPT_B64="$(docker_e2e_test_state_shell_b64 config-reload empty)"
 
 echo "Starting gateway container..."
 docker_e2e_run_detached_with_harness \
@@ -88,3 +91,8 @@ echo "Checking reload log..."
 docker_e2e_docker_cmd exec "$CONTAINER_NAME" bash -lc "node scripts/e2e/lib/config-reload/assert-log.mjs"
 
 echo "Config reload Docker E2E passed."
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

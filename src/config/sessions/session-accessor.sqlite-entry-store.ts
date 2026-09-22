@@ -54,6 +54,7 @@ import {
   assertCanonicalSqliteSessionKeysCurrent,
   assertCanonicalSessionKeyWriteMatchesDatabase,
   canonicalSessionKeyMigrationRequiredError,
+  readCanonicalSessionMainKey,
 } from "./session-canonical-key.js";
 import { preserveCreationStamp } from "./session-entry-provenance.js";
 import {
@@ -580,7 +581,12 @@ export function writeSessionEntry(
   const transcriptObservedAt =
     readTranscriptMutationStateInTransaction(database, normalizedEntry.sessionId).updatedAt ??
     updatedAt;
-  const boundSessionRoot = bindSessionRoot({ entry: normalizedEntry, sessionKey, updatedAt });
+  const boundSessionRoot = bindSessionRoot({
+    entry: normalizedEntry,
+    sessionKey,
+    updatedAt,
+    mainKey: readCanonicalSessionMainKey(database),
+  });
   const conversation = prepareSessionConversationForWrite({
     database,
     entry: normalizedEntry,

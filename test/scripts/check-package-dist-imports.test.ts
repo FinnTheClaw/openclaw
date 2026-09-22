@@ -70,6 +70,37 @@ describe("check-package-dist-imports", () => {
     }
   });
 
+  it("matches Node CommonJS resolution while keeping suffixes literal", () => {
+    const root = makeTempDir(tempDirs, "openclaw-package-dist-imports-");
+    mkdirSync(join(root, "dist", "feature"), { recursive: true });
+    writeFileSync(
+      join(root, "dist", "index.cjs"),
+      'module.exports = require("./value");\n',
+      "utf8",
+    );
+    writeFileSync(join(root, "dist", "value.js"), "module.exports = 1;\n", "utf8");
+    writeFileSync(join(root, "dist", "feature", "index.js"), "export {};\n", "utf8");
+    writeFileSync(
+      join(root, "dist", "directory.cjs"),
+      'module.exports = require("./feature");\n',
+      "utf8",
+    );
+
+    const resolved = spawnSync("node", [CHECK_SCRIPT, root], { encoding: "utf8" });
+
+    expect(resolved.status, resolved.stderr).toBe(0);
+
+    writeFileSync(
+      join(root, "dist", "suffix.cjs"),
+      'module.exports = require("./value.js?cache=1");\n',
+      "utf8",
+    );
+    const literalSuffix = spawnSync("node", [CHECK_SCRIPT, root], { encoding: "utf8" });
+
+    expect(literalSuffix.status).not.toBe(0);
+    expect(literalSuffix.stderr).toContain("dist/suffix.cjs imports missing dist/value.js?cache=1");
+  });
+
   it("ignores import-like text inside multiline template literals", () => {
     const root = makeTempDir(tempDirs, "openclaw-package-dist-imports-");
     mkdirSync(join(root, "dist"), { recursive: true });

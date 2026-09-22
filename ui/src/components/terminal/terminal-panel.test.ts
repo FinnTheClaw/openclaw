@@ -873,6 +873,41 @@ describe("OpenClawTerminalPanel", () => {
     expect(panel.renderRoot.querySelector(".tabstrip-new")).not.toBeNull();
   });
 
+  it("does not reopen after closing a fullscreen tab while its open request is pending", async () => {
+    createGhosttyTerminalMock.mockResolvedValue(createTerminalController());
+    const open = createDeferred<ReturnType<typeof terminalOpenResult>>();
+    const requests: Array<{ method: string; params: unknown }> = [];
+    const client: TerminalGatewayClient = {
+      forceReconnect: () => {},
+      request: <T>(method: string, params?: unknown) => {
+        requests.push({ method, params });
+        return (method === "terminal.open" ? open.promise : Promise.resolve({})) as Promise<T>;
+      },
+      addEventListener: () => () => {},
+    };
+    const panel = document.createElement(TERMINAL_PANEL_ELEMENT_NAME) as OpenClawTerminalPanel;
+    panel.client = client;
+    panel.available = true;
+    panel.fullscreen = true;
+    document.body.append(panel);
+
+    await waitForFast(() =>
+      expect(requests.filter((entry) => entry.method === "terminal.open")).toHaveLength(1),
+    );
+    (panel.renderRoot.querySelector(".tabstrip-tab__close") as HTMLElement).click();
+    open.resolve(terminalOpenResult("cancelled-open"));
+
+    await waitForFast(() =>
+      expect(requests).toContainEqual({
+        method: "terminal.close",
+        params: { sessionId: "cancelled-open" },
+      }),
+    );
+    await Promise.resolve();
+    expect(requests.filter((entry) => entry.method === "terminal.open")).toHaveLength(1);
+    expect(panel.renderRoot.querySelector(".tabstrip-new")).not.toBeNull();
+  });
+
   it("opens a fresh terminal after the last tab is closed", async () => {
     const controllers = [createTerminalController(), createTerminalController()] as const;
     createGhosttyTerminalMock

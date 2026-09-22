@@ -7,6 +7,29 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct CanvasWindowSmokeTests {
+    @Test func `repeated manager present applies the new placement immediately`() throws {
+        let manager = CanvasManager.shared
+        let key = "placement-\(UUID().uuidString)"
+        let first = try manager.showDetailed(
+            sessionKey: key, placement: CanvasPlacement(x: 120, y: 200, width: 520, height: 680))
+        let window = try #require(NSApp.windows.first {
+            ($0.windowController as? CanvasWindowController)?.sessionKey == key
+        })
+        defer {
+            manager.hide(sessionKey: key)
+            window.close()
+            try? FileManager().removeItem(atPath: first.directory)
+        }
+        _ = try manager.showDetailed(
+            sessionKey: key, placement: CanvasPlacement(x: 240, y: 260, width: 640, height: 720))
+        let proposed = NSRect(x: 240, y: 260, width: 640, height: 720)
+        let expected = window.screen.map {
+            CanvasWindowController.constrainFrame(proposed, toVisibleFrame: $0.visibleFrame)
+        } ?? proposed
+        #expect(window.frame == expected)
+    }
+
+
     @Test func `panel controller shows and hides`() throws {
         let root = FileManager().temporaryDirectory
             .appendingPathComponent("openclaw-canvas-test-\(UUID().uuidString)")

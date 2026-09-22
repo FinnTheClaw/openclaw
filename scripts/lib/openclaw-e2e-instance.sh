@@ -340,7 +340,7 @@ openclaw_e2e_run_script_with_pty() {
   local log_path="$2"
   local timeout_value="${OPENCLAW_E2E_COMMAND_TIMEOUT:-300s}"
   if script --version >/dev/null 2>&1; then
-    openclaw_e2e_maybe_timeout "$timeout_value" script -q -f -c "$command" "$log_path"
+    openclaw_e2e_maybe_timeout "$timeout_value" script -q -e -f -c "$command" "$log_path"
   elif node -e 'import("@lydell/node-pty")' >/dev/null 2>&1; then
     openclaw_e2e_maybe_timeout "$timeout_value" node scripts/e2e/lib/run-with-pty.mjs "$log_path" /bin/bash -lc "$command"
   else

@@ -891,6 +891,30 @@ describe("openclaw-board-view", () => {
     await vi.waitFor(() => expect(cells[1]?.getAttribute("tabindex")).toBe("0"));
   });
 
+  it("keeps roving focus available without board mutation access", async () => {
+    const applyOps = vi.fn(async () => undefined);
+    const view = await mount({ canMutate: false, callbacks: callbacks({ applyOps }) });
+    const cells = [...view.querySelectorAll<HTMLElement>('[data-test-id="board-widget"]')];
+
+    cells[0]?.focus();
+    cells[0]?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+    );
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(cells[1]));
+    expect(cells[1]?.getAttribute("tabindex")).toBe("0");
+    cells[1]?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowLeft",
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await Promise.resolve();
+    expect(applyOps).not.toHaveBeenCalled();
+  });
+
   it("uses Alt+Arrow as the keyboard reorder fallback and announces the move", async () => {
     const applyOps = vi.fn(async () => undefined);
     const view = await mount({ callbacks: callbacks({ applyOps }) });

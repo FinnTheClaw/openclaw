@@ -180,7 +180,7 @@ async function readLaunchAgentEnvironmentFile(
   const lines = content.split("\n");
   for (let index = 0; index < lines.length; index++) {
     const rawLine = lines[index] ?? "";
-    const line = options?.requireEffective ? rawLine.trimStart() : rawLine.trim();
+    const line = rawLine.trimStart();
     if (!line.trim() || line.startsWith("#")) {
       continue;
     }
@@ -197,8 +197,8 @@ async function readLaunchAgentEnvironmentFile(
       continue;
     }
     let parsedValue = parseGeneratedEnvValue(value);
-    if (options?.requireEffective) {
-      // The writer's quoted literals can span physical lines; retain their exact newline bytes.
+    // Both repair reads and strict inspection must preserve the writer's multiline literals.
+    if (value.startsWith("'")) {
       while (
         quoteLaunchAgentEnvironmentValue(parsedValue) !== value.trim() &&
         index + 1 < lines.length
@@ -206,6 +206,8 @@ async function readLaunchAgentEnvironmentFile(
         value += `\n${lines[++index]}`;
         parsedValue = parseGeneratedEnvValue(value);
       }
+    }
+    if (options?.requireEffective) {
       // Strict inspection accepts the writer's literal syntax, never shell expressions.
       if (quoteLaunchAgentEnvironmentValue(parsedValue) !== value.trim()) {
         throw new Error("Unsupported LaunchAgent environment value");

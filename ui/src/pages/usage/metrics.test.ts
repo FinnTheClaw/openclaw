@@ -1,4 +1,5 @@
 // Control UI tests cover usage metrics behavior.
+import { spawnSync } from "node:child_process";
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -531,6 +532,33 @@ describe("usage mosaic token buckets", () => {
 
     expect(sessionTouchesSelectedHours(session, [10], "utc")).toBe(true);
     expect(sessionTouchesSelectedHours(session, [11], "utc")).toBe(false);
+  });
+
+  it("advances fallback spans through repeated local DST hours", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "./scripts/tsx.mjs",
+        "--input-type=module",
+        "-e",
+        `import { buildPeakErrorHours, sessionTouchesSelectedHours } from "./ui/src/pages/usage/metrics.ts";
+const session = (start, end) => ({ key: "dst", updatedAt: end, usage: { firstActivity: start, lastActivity: end, messageCounts: { total: 2, user: 1, assistant: 1, toolCalls: 0, toolResults: 0, errors: 1 } } });
+const fall = session(Date.parse("2026-11-01T07:15:00.000Z"), Date.parse("2026-11-01T08:15:00.000Z"));
+const spring = session(Date.parse("2026-03-08T07:15:00.000Z"), Date.parse("2026-03-08T08:15:00.000Z"));
+console.log(JSON.stringify({ fall: sessionTouchesSelectedHours(fall, [2], "local"), spring: sessionTouchesSelectedHours(spring, [3], "local"), utc: sessionTouchesSelectedHours(fall, [8], "utc"), peak: buildPeakErrorHours([fall], "local").length }));`,
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: { ...process.env, TZ: "America/Chicago" },
+        timeout: 3000,
+      },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ fall: true, spring: true, utc: true, peak: 2 });
   });
 
   it("renders zero-duration fallback sessions in their activity hour", () => {

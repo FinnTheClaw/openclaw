@@ -136,6 +136,13 @@ const defaultOptions = (): LinuxOptions => ({
   vmNameExplicit: false,
 });
 
+export function resolveLinuxSmokeInstallVersion(
+  installVersion: string,
+  latestVersion: string,
+): string {
+  return installVersion || latestVersion;
+}
+
 function usage(): string {
   return `Usage: bash scripts/e2e/parallels-linux-smoke.sh [options]
 
@@ -308,7 +315,9 @@ class LinuxSmoke extends SmokeRunController<LinuxOptions> {
     await this.phase("upgrade.install-latest", 420, () => this.installLatestRelease());
     this.status.latestInstalledVersion = await this.extractLastVersion("upgrade.install-latest");
     await this.phase("upgrade.verify-latest-version", 90, () =>
-      this.verifyVersionContains(this.latestVersion),
+      this.verifyVersionContains(
+        resolveLinuxSmokeInstallVersion(this.options.installVersion, this.latestVersion),
+      ),
     );
     await this.phase("upgrade.install-main", 420, () =>
       this.installMainTgz("openclaw-main-upgrade.tgz"),

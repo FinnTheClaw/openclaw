@@ -24,7 +24,10 @@ import {
 import { bindSessionWindowEntryProjection } from "./session-accessor.sqlite-session-row.js";
 import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
 import { ensureTranscriptGenerationInTransaction } from "./session-accessor.sqlite-transcript-state.js";
-import { canonicalSessionKeyMigrationRequiredError } from "./session-canonical-key.js";
+import {
+  canonicalSessionKeyMigrationRequiredError,
+  readCanonicalSessionMainKey,
+} from "./session-canonical-key.js";
 import {
   deleteSessionTranscriptIndexInTransaction,
   reconcileSessionTranscriptIndexInTransaction,
@@ -365,6 +368,7 @@ function copySqliteSessionOwnedStateForRepair(params: {
     ? bindSessionWindowEntryProjection({
         entry: params.preferredEntry,
         sessionKey: params.canonicalKey,
+        mainKey: readCanonicalSessionMainKey(params.destination),
       })
     : undefined;
   const preferredWindowProvenance = params.preferredEntry

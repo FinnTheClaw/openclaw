@@ -45,5 +45,5 @@ install_archive \
   "https://github.com/realm/SwiftLint/releases/download/0.65.1/portable_swiftlint.zip" \
   "c1e429b0599cf1b516f369a2d9ec04eaf0e436f3c12b637df8851fa52ff694d0"
 
-[[ "$($install_dir/swiftformat --version)" == "0.63.0" ]]
-[[ "$($install_dir/swiftlint version)" == "0.65.1" ]]
+[[ "$("$install_dir/swiftformat" --version)" == "0.63.0" ]]
+[[ "$("$install_dir/swiftlint" version)" == "0.65.1" ]]

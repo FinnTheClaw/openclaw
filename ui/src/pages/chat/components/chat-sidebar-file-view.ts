@@ -48,7 +48,7 @@ export function computeFileMatches(content: string, query: string): number[] {
     return [];
   }
   return content
-    .split("\n")
+    .split(/\r\n|\r|\n/)
     .flatMap((line, index) =>
       line.toLocaleLowerCase().includes(normalizedQuery) ? [index + 1] : [],
     );

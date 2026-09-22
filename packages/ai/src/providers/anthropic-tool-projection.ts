@@ -211,6 +211,7 @@ export function projectAnthropicTools(
         wireName,
         ...(description ? { description } : {}),
         inputSchema: {
+          ...anthropicSchema,
           type: "object",
           properties: (properties ?? {}) as Record<string, unknown>,
           required: (required ?? []) as string[],

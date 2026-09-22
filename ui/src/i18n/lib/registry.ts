@@ -42,9 +42,8 @@ function isLazyLocale(locale: Locale): locale is LazyLocale {
 }
 
 export function resolveNavigatorLocale(browserLanguage: string): Locale {
-  const navLang = browserLanguage.toLowerCase();
-  if (navLang.startsWith("zh")) {
-    const [, ...subtags] = navLang.split("-");
+  const [language, ...subtags] = browserLanguage.toLowerCase().split("-");
+  if (language === "zh") {
     if (subtags.includes("hant")) {
       return "zh-TW";
     }
@@ -56,7 +55,7 @@ export function resolveNavigatorLocale(browserLanguage: string): Locale {
       : "zh-CN";
   }
   return (
-    LAZY_LOCALES.find((locale) => navLang.startsWith(locale.split("-")[0]!.toLowerCase())) ??
+    LAZY_LOCALES.find((locale) => locale.split("-")[0]!.toLowerCase() === language) ??
     DEFAULT_LOCALE
   );
 }

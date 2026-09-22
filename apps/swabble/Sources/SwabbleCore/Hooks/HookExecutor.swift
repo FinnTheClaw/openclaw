@@ -29,7 +29,7 @@ public actor HookExecutor {
     }
 
     public func run(job: HookJob) async throws {
-        guard self.shouldRun() else { return }
+        guard job.text.count >= self.config.hook.minCharacters, self.shouldRun() else { return }
         guard !self.config.hook.command.isEmpty else { throw NSError(
             domain: "Hook",
             code: 1,

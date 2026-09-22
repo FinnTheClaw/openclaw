@@ -99,16 +99,15 @@ function upsertSqliteSession(
   if (existing) {
     const cwd = params.cwd || existing.cwd;
     const complete = normalizeSqliteInteger(existing.complete) === 1 || params.complete ? 1 : 0;
-    // SET expressions read the pre-update row, so the aggregate sheds the old
-    // key/cwd lengths and gains the new ones; drift here would silently
-    // unbound the byte budget.
+    // Keep both sides of the delta in the persisted UTF-16 estimate unit.
+    // SQLite length() counts Unicode scalars and drifts on non-BMP text.
     db.prepare(
       `UPDATE acp_replay_sessions
-          SET estimated_bytes = estimated_bytes - length(session_key) - length(cwd) + ?,
+          SET estimated_bytes = estimated_bytes + ?,
               session_key = ?, cwd = ?, complete = ?, updated_at = ?
         WHERE session_id = ?`,
     ).run(
-      params.sessionKey.length + cwd.length,
+      params.sessionKey.length + cwd.length - existing.session_key.length - existing.cwd.length,
       params.sessionKey,
       cwd,
       complete,
@@ -317,20 +316,14 @@ function appendSqliteUpdate(
     updateJson,
     eventBytes,
   );
-  // The delta covers the new event plus any session-key length change; SET
-  // expressions read the pre-update row, keeping the aggregate exact.
+  // upsertSqliteSession already accounted for any session-key change.
+  // Add only the event footprint, using the same UTF-16 estimate as inserts.
   db.prepare(
     `UPDATE acp_replay_sessions
-        SET estimated_bytes = estimated_bytes - length(session_key) + ?,
+        SET estimated_bytes = estimated_bytes + ?,
             session_key = ?, updated_at = ?, next_seq = ?
       WHERE session_id = ?`,
-  ).run(
-    params.sessionKey.length + eventBytes,
-    params.sessionKey,
-    now,
-    nextSeq + 1,
-    params.sessionId,
-  );
+  ).run(eventBytes, params.sessionKey, now, nextSeq + 1, params.sessionId);
   trimSqliteLedger(db, state);
 }
 

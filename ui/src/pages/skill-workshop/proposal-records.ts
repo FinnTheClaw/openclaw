@@ -81,9 +81,9 @@ export function parseDateMs(value: string | undefined): number {
   return parseDateStringTimestampMs(value) ?? Date.now();
 }
 
-function startOfLocalDay(ms: number): number {
+function startOfLocalDay(ms: number, dayOffset = 0): number {
   const date = new Date(ms);
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + dayOffset).getTime();
 }
 
 function recencyGroup(ms: number): SkillWorkshopProposal["recencyGroup"] {
@@ -92,7 +92,7 @@ function recencyGroup(ms: number): SkillWorkshopProposal["recencyGroup"] {
   if (day === today) {
     return "today";
   }
-  if (day === today - 24 * 60 * 60 * 1000) {
+  if (day === startOfLocalDay(Date.now(), -1)) {
     return "yesterday";
   }
   return "earlier";

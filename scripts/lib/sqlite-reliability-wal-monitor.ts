@@ -27,6 +27,7 @@ export async function monitorSqliteWalDuring<T>(params: {
       params.onLimitExceeded();
     }
   };
+  sample();
   const timer = setInterval(sample, params.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
   try {
     const result = await params.operation();

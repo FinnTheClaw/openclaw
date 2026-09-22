@@ -29,7 +29,7 @@ func translateHTMLBlocks(ctx context.Context, translator docsTranslator, body, s
 
 	replacements := make([]htmlReplacement, 0, 8)
 
-	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+	if err := ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
 		}
@@ -48,7 +48,9 @@ func translateHTMLBlocks(ctx context.Context, translator docsTranslator, body, s
 		}
 		replacements = append(replacements, htmlReplacement{Start: start, Stop: stop, Value: translated})
 		return ast.WalkSkipChildren, nil
-	})
+	}); err != nil {
+		return "", err
+	}
 
 	if len(replacements) == 0 {
 		return body, nil

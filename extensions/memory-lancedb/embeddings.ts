@@ -33,6 +33,7 @@ export type Embeddings = {
     text: string,
     embedding: EmbeddingConfig,
     timeoutMs?: number,
+    inputType?: "query" | "document",
   ): Promise<number[]>;
   close?(): Promise<void>;
 };
@@ -360,6 +361,7 @@ class ProviderAdapterEmbeddings implements Embeddings {
     text: string,
     embeddingConfig: EmbeddingConfig,
     timeoutMs?: number,
+    inputType: "query" | "document" = "query",
   ): Promise<number[]> {
     if (this.closed) {
       throw new Error("memory-lancedb embeddings are closed");
@@ -372,7 +374,7 @@ class ProviderAdapterEmbeddings implements Embeddings {
     try {
       const provider = await entry.promise;
       if (!timeoutMs) {
-        return await provider.embed(text, { inputType: "query" });
+        return await provider.embed(text, { inputType });
       }
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -382,7 +384,7 @@ class ProviderAdapterEmbeddings implements Embeddings {
           resolveTimerTimeoutMs(timeoutMs, 1),
         );
         timer.unref?.();
-        return await provider.embed(text, { signal: controller.signal, inputType: "query" });
+        return await provider.embed(text, { signal: controller.signal, inputType });
       } finally {
         if (timer) {
           clearTimeout(timer);
@@ -524,7 +526,7 @@ export function createEmbeddings(api: OpenClawPluginApi): Embeddings {
   let direct: { fingerprint: string; client: OpenAiCompatibleEmbeddings } | undefined;
   let closed = false;
   return {
-    async embed(agentId, text, embeddingConfig, timeoutMs) {
+    async embed(agentId, text, embeddingConfig, timeoutMs, inputType) {
       if (closed) {
         throw new Error("memory-lancedb embeddings are closed");
       }
@@ -547,7 +549,7 @@ export function createEmbeddings(api: OpenClawPluginApi): Embeddings {
         return await direct.client.embed(text, timeoutMs ? { timeoutMs } : undefined);
       }
       direct = undefined;
-      return await provider.embed(agentId, text, embedding, timeoutMs);
+      return await provider.embed(agentId, text, embedding, timeoutMs, inputType);
     },
     async close() {
       closed = true;

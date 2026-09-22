@@ -19,6 +19,7 @@ type GatewayFrame = {
   params?: {
     command?: string;
     idempotencyKey?: string;
+    nodeId?: string;
   };
   type: string;
 };
@@ -87,7 +88,8 @@ function invokePayload(
 
 async function listenGateway(params: {
   mode: "empty" | "invalid-payload-json" | "primitive-device-info" | "valid";
-  invokeParams: Array<{ command?: string; idempotencyKey?: string }>;
+  invokeParams: Array<{ command?: string; idempotencyKey?: string; nodeId?: string }>;
+  nodes?: Array<{ connected: boolean; displayName: string; nodeId: string; platform: string }>;
 }): Promise<string> {
   server = createServer();
   wss = new WebSocketServer({ server });
@@ -119,7 +121,7 @@ async function listenGateway(params: {
             id: frame.id,
             ok: true,
             payload: {
-              nodes: [
+              nodes: params.nodes ?? [
                 {
                   nodeId: "ios-node",
                   displayName: "iPhone",
@@ -141,7 +143,7 @@ async function listenGateway(params: {
             ok: true,
             payload: {
               ok: true,
-              nodeId: "ios-node",
+              nodeId: frame.params?.nodeId ?? "ios-node",
               command: frame.params?.command,
               payload: invokePayload(frame.params?.command ?? "", params.mode),
             },
@@ -329,6 +331,54 @@ describe("ios-node-e2e", () => {
       id: "device.status",
       ok: false,
     });
+  });
+
+  it("does not target another iOS node when an explicit selector is unmatched", async () => {
+    const invokeParams: Array<{ command?: string; idempotencyKey?: string; nodeId?: string }> = [];
+    const url = await listenGateway({
+      mode: "valid",
+      invokeParams,
+      nodes: [
+        {
+          nodeId: "other-ios",
+          displayName: "Other iPhone",
+          platform: "iOS",
+          connected: true,
+        },
+      ],
+    });
+    const result = await runScript(url, ["--node", "requested-ios", "--wait-seconds", "1"]);
+
+    expect(result).toMatchObject({ signal: null, status: 5, timedOut: false });
+    expect(result.stderr).toContain('No connected iOS node matched --node "requested-ios".');
+    expect(invokeParams).toEqual([]);
+  });
+
+  it("uses an explicitly selected iOS node for every invocation", async () => {
+    const invokeParams: Array<{ command?: string; idempotencyKey?: string; nodeId?: string }> = [];
+    const url = await listenGateway({
+      mode: "valid",
+      invokeParams,
+      nodes: [
+        {
+          nodeId: "other-ios",
+          displayName: "Other iPhone",
+          platform: "iOS",
+          connected: true,
+        },
+        {
+          nodeId: "requested-ios",
+          displayName: "Requested iPhone",
+          platform: "iOS",
+          connected: true,
+        },
+      ],
+    });
+    const result = await runScript(url, ["--node", "requested-ios"]);
+
+    expect(result).toMatchObject({ signal: null, status: 0, timedOut: false });
+    expect(invokeParams).toHaveLength(8);
+    expect(invokeParams.every((params) => params.nodeId === "requested-ios")).toBe(true);
   });
 
   it("accepts non-empty node invoke payloads and sends idempotency keys", async () => {

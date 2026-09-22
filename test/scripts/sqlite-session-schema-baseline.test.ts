@@ -43,6 +43,23 @@ describe("SQLite sessions/transcripts schema baseline", () => {
     expect(rendered.sql).not.toContain("idx_agent_cache_custom");
   });
 
+  it("includes target DDL preceded by SQL comments in the drift hash", () => {
+    const sourceSql = `
+      -- Archive records are retained separately from active transcript events.
+      CREATE TABLE IF NOT EXISTS session_transcript_archives (
+        archive_blob BLOB NOT NULL
+      );
+    `;
+
+    const rendered = renderSqliteSessionSchemaBaseline(sourceSql);
+    const changed = renderSqliteSessionSchemaBaseline(sourceSql.replace("BLOB", "TEXT"));
+
+    expect(rendered.sql).toContain("CREATE TABLE IF NOT EXISTS session_transcript_archives");
+    expect(computeSqliteSessionSchemaBaselineHashFileContent(changed)).not.toBe(
+      computeSqliteSessionSchemaBaselineHashFileContent(rendered),
+    );
+  });
+
   it("checks generated SQL and hash artifacts for drift", async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), "openclaw-sqlite-schema-baseline-"));
     const schemaPath = path.join(tmp, "schema.sql");

@@ -969,6 +969,58 @@ describe("skill_workshop tool", () => {
     },
   );
 
+  it("deletes a prepared span but rejects an empty append", async () => {
+    const workspaceDir = await tempDirs.make("openclaw-skill-workshop-delete-");
+    const runId = "repair-delete";
+    const skillName = "delete-span";
+    const skillFile = path.join(workspaceDir, "skills", skillName, "SKILL.md");
+    const tool = createSkillWorkshopTool({
+      workspaceDir,
+      config: { skills: { workshop: { autonomous: { mode: "auto" } } } },
+      agentId: "main",
+      origin: { agentId: "main", runId },
+    });
+    const created = await tool.execute("delete-create", {
+      action: "create",
+      name: skillName,
+      description: "Delete one prepared span",
+      proposal_content: "# Delete Span\n\nkeep\nremove\nkeep too\n",
+    });
+    await tool.execute("delete-create-apply", {
+      action: "apply",
+      proposal_id: (created.details as { id: string }).id,
+    });
+    await tool.execute("delete-read", { action: "read", skill_name: skillName });
+    recordRunSkillUsage({
+      runId,
+      name: skillName,
+      source: "workspace",
+      activation: "read",
+      skillFile,
+    });
+
+    await expect(
+      tool.execute("delete-patch", {
+        action: "patch",
+        skill_name: skillName,
+        old_string: "remove\n",
+        new_string: "",
+      }),
+    ).resolves.toMatchObject({ details: { status: "applied" } });
+    await expect(fs.readFile(skillFile, "utf8")).resolves.toContain("keep\nkeep too\n");
+
+    await tool.execute("empty-append-read", { action: "read", skill_name: skillName });
+    await expect(
+      tool.execute("empty-append", {
+        action: "patch",
+        skill_name: skillName,
+        old_string: "",
+        new_string: "",
+      }),
+    ).rejects.toThrow("Patch newString must not be empty when appending.");
+    consumeRunSkillUsage(runId);
+  });
+
   it("matches an aliased used-skill receipt by canonical file", async () => {
     const workspaceDir = await tempDirs.make("openclaw-skill-workshop-repair-alias-");
     const runId = "repair-alias";

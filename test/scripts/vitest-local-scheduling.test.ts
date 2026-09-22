@@ -102,6 +102,25 @@ describe("vitest local full-suite profile", () => {
     });
   });
 
+  it("keeps moderate-load scheduling within a one-worker memory-pressure budget", () => {
+    const hostInfo = {
+      cpuCount: 2,
+      loadAverage1m: 1.5,
+      totalMemoryBytes: 16 * 1024 ** 3,
+      freeMemoryBytes: 3 * 1024 ** 3,
+    };
+
+    expect(resolveLocalVitestScheduling({}, hostInfo, "threads")).toEqual({
+      maxWorkers: 1,
+      fileParallelism: false,
+      throttledBySystem: false,
+    });
+    expect(resolveLocalFullSuiteProfile({}, hostInfo)).toEqual({
+      shardParallelism: 1,
+      vitestMaxWorkers: 1,
+    });
+  });
+
   it("limits local full-suite shards when memory is tight", () => {
     const hostInfo = {
       cpuCount: 10,

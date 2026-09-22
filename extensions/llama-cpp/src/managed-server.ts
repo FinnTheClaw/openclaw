@@ -617,11 +617,10 @@ export async function ensureManagedLlamaServerForChat(params: {
   chatPreparationPromises.set(key, pending);
   try {
     await pending;
-  } catch (error) {
+  } finally {
     if (chatPreparationPromises.get(key) === pending) {
       chatPreparationPromises.delete(key);
     }
-    throw error;
   }
 }
 

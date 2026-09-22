@@ -2,7 +2,10 @@
  * Repairs malformed tool-call arguments in embedded-agent stream results.
  */
 import { extractBalancedJsonPrefix } from "@openclaw/normalization-core";
-import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
+import {
+  parseJsonObjectPreservingUnsafeIntegers,
+  parseJsonPreservingUnsafeIntegers,
+} from "@openclaw/normalization-core/json-coercion";
 import { normalizeProviderId } from "../../model-selection.js";
 import type { StreamFn } from "../../runtime/index.js";
 import type { MutableAssistantMessageEventStream } from "../../stream-compat.js";
@@ -353,7 +356,7 @@ function parseJsonValuePrefix(
     return undefined;
   }
   try {
-    return { value: JSON.parse(json) as unknown, endIndex };
+    return { value: parseJsonPreservingUnsafeIntegers(json), endIndex };
   } catch {
     return undefined;
   }
@@ -482,7 +485,7 @@ function tryExtractUsableToolCallArgumentsFromJson(
     return undefined;
   }
 
-  const parsedExtracted = safeParseJsonRecord(extracted.json);
+  const parsedExtracted = parseJsonObjectPreservingUnsafeIntegers(extracted.json);
   if (!parsedExtracted) {
     return undefined;
   }
@@ -539,7 +542,7 @@ function tryExtractUsableToolCallArguments(
   if (!raw.trim()) {
     return undefined;
   }
-  const parsedRaw = safeParseJsonRecord(raw);
+  const parsedRaw = parseJsonObjectPreservingUnsafeIntegers(raw);
   if (parsedRaw) {
     return {
       args: parsedRaw,

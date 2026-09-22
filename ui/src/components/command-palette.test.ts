@@ -158,6 +158,48 @@ describe("CommandPalette lifecycle", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    { id: "01", key: "Enter", isComposing: true, keyCode: 13 },
+    { id: "02", key: "Enter", isComposing: false, keyCode: 229 },
+    { id: "03", key: "ArrowDown", isComposing: true, keyCode: 40 },
+    { id: "04", key: "ArrowDown", isComposing: false, keyCode: 229 },
+    { id: "05", key: "ArrowUp", isComposing: true, keyCode: 38 },
+    { id: "06", key: "ArrowUp", isComposing: false, keyCode: 229 },
+    { id: "07", key: "Escape", isComposing: true, keyCode: 27 },
+    { id: "08", key: "Escape", isComposing: false, keyCode: 229 },
+    { id: "09", key: "Enter", isComposing: false, keyCode: 13 },
+    { id: "10", key: "ArrowDown", isComposing: false, keyCode: 40 },
+  ])(
+    "R2-L02-UI-01/$id preserves IME ownership ($key, $isComposing, $keyCode)",
+    async (scenario) => {
+      const { gateway } = createGateway(true);
+      const { palette } = await mountPalette(
+        createContext(
+          gateway,
+          vi.fn(async () => null),
+        ),
+      );
+      await enterQuery(palette, "");
+      const input = palette.querySelector("input")!;
+      const selected = input.getAttribute("aria-activedescendant");
+      const event = new KeyboardEvent("keydown", { ...scenario, bubbles: true, cancelable: true });
+      input.dispatchEvent(event);
+      await palette.updateComplete;
+      const composing = scenario.isComposing || scenario.keyCode === 229;
+      expect(event.defaultPrevented).toBe(!composing);
+      expect(palette.isOpen).toBe(composing || scenario.key !== "Enter");
+      expect(palette.onNavigate).toHaveBeenCalledTimes(
+        !composing && scenario.key === "Enter" ? 1 : 0,
+      );
+      expect(palette.onSelectSession).not.toHaveBeenCalled();
+      if (palette.isOpen) {
+        const next = palette.querySelector("input")!.getAttribute("aria-activedescendant");
+        if (composing) expect(next).toBe(selected);
+        else expect(next).not.toBe(selected);
+      }
+    },
+  );
+
   it("closes and clears its query before a retained element reconnects", async () => {
     const { gateway } = createGateway(true);
     const list = vi.fn(async () => createSessionResult("agent:main:old", "Old chat"));

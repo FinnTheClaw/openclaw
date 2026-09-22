@@ -122,8 +122,8 @@ function renderSessionSummary(
     toolCounts = new Map();
     for (const log of filteredLogs) {
       const { tools } = parseToolSummary(log.content);
-      for (const [name] of tools) {
-        toolCounts.set(name, (toolCounts.get(name) || 0) + 1);
+      for (const [name, count] of tools) {
+        toolCounts.set(name, (toolCounts.get(name) || 0) + count);
       }
     }
   }

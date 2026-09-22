@@ -551,6 +551,44 @@ describe("manifest model catalog planner", () => {
     expect(plan.rows[0]?.mergeKey).toBe("openai::gpt-5.5");
     expect(plan.rows[0]?.name).toBe("GPT-5.5");
   });
+
+  it("overlays same-owner case-only remote model ids without creating a conflict", () => {
+    const plan = planManifestModelCatalogRows({
+      registry: {
+        plugins: [
+          {
+            id: "synthetic-owner",
+            providers: ["synthetic"],
+            modelCatalog: {
+              providers: {
+                synthetic: {
+                  models: [
+                    {
+                      id: "sample-model",
+                      baseUrl: "https://trusted.invalid/v1",
+                      headers: { "X-Trusted": "yes" },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+      remoteOverlay: { synthetic: { models: [{ id: "SAMPLE-MODEL", name: "Remote" }] } },
+    });
+
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.rows).toMatchObject([
+      {
+        id: "SAMPLE-MODEL",
+        name: "Remote",
+        source: "runtime-refresh",
+        baseUrl: "https://trusted.invalid/v1",
+        headers: { "X-Trusted": "yes" },
+      },
+    ]);
+  });
 });
 
 describe("manifest model catalog suppression planner", () => {

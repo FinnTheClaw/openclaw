@@ -13,6 +13,10 @@ const MINTLIFY_REPAIRED_COMPONENTS = new Set([
   "Step",
 ]);
 
+function isCodeFenceLine(line) {
+  return /^\s*(```|~~~)/u.test(line);
+}
+
 function visitMintlifyComponentIndentation(raw, onMisindentedClose, onMisindentedOpen) {
   const lines = raw.split(/\r?\n/u);
   const componentStack = [];
@@ -20,7 +24,7 @@ function visitMintlifyComponentIndentation(raw, onMisindentedClose, onMisindente
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (/^\s*(```|~~~)/u.test(line)) {
+    if (isCodeFenceLine(line)) {
       inCodeFence = !inCodeFence;
       continue;
     }
@@ -83,13 +87,25 @@ export function repairMintlifyAccordionIndentation(raw) {
       changed = true;
     },
   );
-  for (let index = lines.length - 1; index > 0; index--) {
+  const listAdjacentClosingIndexes = [];
+  let inCodeFence = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (isCodeFenceLine(lines[index])) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    if (inCodeFence || index === 0) {
+      continue;
+    }
     if (!/^\s*<\/[A-Z][A-Za-z0-9]*>/u.test(lines[index])) {
       continue;
     }
     if (!/^\s*[-*+]\s+/u.test(lines[index - 1])) {
       continue;
     }
+    listAdjacentClosingIndexes.push(index);
+  }
+  for (const index of listAdjacentClosingIndexes.toReversed()) {
     lines.splice(index, 0, "");
     changed = true;
   }

@@ -101,6 +101,17 @@ struct BackgroundTasksScreenTests {
         #expect(!snapshot.overlapped)
     }
 
+    @Test(arguments: [
+        ("queued", "Queued"), ("running", "Running"), ("completed", "Completed"),
+        ("failed", "Failed"), ("cancelled", "Cancelled"), ("timed_out", "Timed out"),
+        ("", "Unknown"), ("future_status", "Unknown"), ("CANCELLED", "Unknown"),
+        ("timed-out", "Unknown"),
+    ])
+    func statusLabelsPreserveTerminalReason(status: String, label: String) throws {
+        let task = try self.task(id: "status-label", status: status, updatedAt: 0)
+        #expect(task.statusLabel == label)
+    }
+
     private func task(id: String, status: String, updatedAt: Int) throws -> MobileBackgroundTask {
         let data = Data(#"""
         {

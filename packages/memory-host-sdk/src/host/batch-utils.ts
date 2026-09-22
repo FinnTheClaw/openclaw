@@ -22,13 +22,17 @@ export function buildBatchHeaders(
   params: { json: boolean },
 ): Record<string, string> {
   const headers = client.headers ? { ...client.headers } : {};
+  const contentTypeKeys = Object.keys(headers).filter(
+    (key) => key.toLowerCase() === "content-type",
+  );
   if (params.json) {
-    if (!headers["Content-Type"] && !headers["content-type"]) {
+    if (contentTypeKeys.length === 0) {
       headers["Content-Type"] = "application/json";
     }
   } else {
-    delete headers["Content-Type"];
-    delete headers["content-type"];
+    for (const key of contentTypeKeys) {
+      delete headers[key];
+    }
   }
   return headers;
 }

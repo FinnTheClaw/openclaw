@@ -6,6 +6,7 @@ struct AgentProDreamingDestination: View {
     @Environment(NodeAppModel.self) private var appModel
     let headerSidebarAction: OpenClawSidebarHeaderAction?
     let overview: AgentOverviewSnapshot?
+    let agentID: String
     let gatewayConnected: Bool
     let overviewLoading: Bool
     let dreamingValue: String
@@ -528,7 +529,7 @@ struct AgentProDreamingDestination: View {
         do {
             let data = try await self.appModel.operatorSession.request(
                 method: action.method,
-                paramsJSON: "{}",
+                paramsJSON: AgentProTab.agentScopedParams(agentId: self.agentID),
                 timeoutSeconds: 30)
             self.dreamActionStatusText = Self.dreamActionSummary(action: action, data: data)
             await self.refresh()

@@ -210,8 +210,15 @@ function planManifestModelCatalogPluginEntries(params: {
         params.mergeKeyFilter.has(buildModelCatalogMergeKey(plannedProvider, model.id));
       const manifestModels = providerCatalog.models.filter(includesModel);
       const remoteModels = remoteProvider?.models.filter(includesModel) ?? [];
-      const remoteModelIds = new Set(remoteModels.map((model) => model.id));
-      const manifestModelsById = new Map(manifestModels.map((model) => [model.id, model]));
+      const remoteModelKeys = new Set(
+        remoteModels.map((model) => buildModelCatalogMergeKey(plannedProvider, model.id)),
+      );
+      const manifestModelsByKey = new Map(
+        manifestModels.map((model) => [
+          buildModelCatalogMergeKey(plannedProvider, model.id),
+          model,
+        ]),
+      );
       const providerDefaults = remoteProvider
         ? {
             ...providerCatalog,
@@ -224,7 +231,9 @@ function planManifestModelCatalogPluginEntries(params: {
         provider: plannedProvider,
         providerCatalog: {
           ...providerDefaults,
-          models: manifestModels.filter((model) => !remoteModelIds.has(model.id)),
+          models: manifestModels.filter(
+            (model) => !remoteModelKeys.has(buildModelCatalogMergeKey(plannedProvider, model.id)),
+          ),
         },
         source: "manifest",
       });
@@ -234,7 +243,10 @@ function planManifestModelCatalogPluginEntries(params: {
             providerCatalog: {
               ...providerDefaults,
               models: remoteModels.map((model) =>
-                mergeRemoteModelWithTrustedTransport(model, manifestModelsById.get(model.id)),
+                mergeRemoteModelWithTrustedTransport(
+                  model,
+                  manifestModelsByKey.get(buildModelCatalogMergeKey(plannedProvider, model.id)),
+                ),
               ),
             },
             source: "runtime-refresh",

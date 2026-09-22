@@ -158,7 +158,7 @@ function walkMarkdownFiles(entryPath: string, out: string[] = []): string[] {
   return out;
 }
 
-function stripFrontmatter(raw: string): string {
+export function stripFrontmatter(raw: string): string {
   if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n")) {
     return raw;
   }
@@ -166,7 +166,7 @@ function stripFrontmatter(raw: string): string {
   const lines = raw.split(/\r?\n/u);
   for (let index = 1; index < lines.length; index += 1) {
     if (lines[index] === "---" || lines[index] === "...") {
-      return lines.slice(index + 1).join("\n");
+      return `${"\n".repeat(index + 1)}${lines.slice(index + 1).join("\n")}`;
     }
   }
   return raw;

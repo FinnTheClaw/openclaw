@@ -26,6 +26,7 @@ import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
+import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
 import type { SessionEntry, SessionOrigin } from "./types.js";
 
 type LegacyDeliveryFixture = Partial<SessionEntry> & {
@@ -52,40 +53,46 @@ describe("conversation registry", () => {
     storePath = path.join(tempDir, "sessions.json");
   });
 
-  it("links multiple direct peers to a shared main context without conflating addresses", async () => {
-    const scope = { agentId: "main", sessionKey: "agent:main:main", storePath };
-    await upsertSessionEntry(scope, {
-      sessionId: "shared-main-session",
-      updatedAt: 100,
-      chatType: "direct",
-      deliveryContext: { channel: "reef", accountId: "default", to: "reef:peer-a" },
-      origin: { provider: "reef", accountId: "default", nativeDirectUserId: "peer-a" },
-    });
-    await upsertSessionEntry(scope, {
-      sessionId: "shared-main-session",
-      updatedAt: 200,
-      chatType: "direct",
-      deliveryContext: { channel: "reef", accountId: "default", to: "reef:peer-b" },
-      origin: { provider: "reef", accountId: "default", nativeDirectUserId: "peer-b" },
-    });
+  it.each(["main", "primary", "daily-chat"])(
+    "links multiple direct peers to shared main key %s without conflating addresses",
+    async (mainKey) => {
+      const scope = { agentId: "main", sessionKey: `agent:main:${mainKey}`, storePath };
+      const resolved = resolveSqliteReadScope(scope);
+      const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+      setCanonicalSqliteSessionMainKey(database, mainKey);
+      await upsertSessionEntry(scope, {
+        sessionId: "shared-main-session",
+        updatedAt: 100,
+        chatType: "direct",
+        deliveryContext: { channel: "reef", accountId: "default", to: "reef:peer-a" },
+        origin: { provider: "reef", accountId: "default", nativeDirectUserId: "peer-a" },
+      });
+      await upsertSessionEntry(scope, {
+        sessionId: "shared-main-session",
+        updatedAt: 200,
+        chatType: "direct",
+        deliveryContext: { channel: "reef", accountId: "default", to: "reef:peer-b" },
+        origin: { provider: "reef", accountId: "default", nativeDirectUserId: "peer-b" },
+      });
 
-    const conversations = listConversations({ agentId: "main", storePath }, { channel: "reef" });
-    expect(conversations.map((entry) => entry.target).toSorted()).toEqual([
-      "reef:peer-a",
-      "reef:peer-b",
-    ]);
-    expect(conversations.every((entry) => entry.role === "participant")).toBe(true);
-    expect(conversations.every((entry) => entry.sessionKey === scope.sessionKey)).toBe(true);
-    expect(
-      resolveCurrentSessionPrimaryConversation({ ...scope, sessionId: "shared-main-session" }),
-    ).toBeUndefined();
+      const conversations = listConversations({ agentId: "main", storePath }, { channel: "reef" });
+      expect(conversations.map((entry) => entry.target).toSorted()).toEqual([
+        "reef:peer-a",
+        "reef:peer-b",
+      ]);
+      expect(conversations.every((entry) => entry.role === "participant")).toBe(true);
+      expect(conversations.every((entry) => entry.sessionKey === scope.sessionKey)).toBe(true);
+      expect(
+        resolveCurrentSessionPrimaryConversation({ ...scope, sessionId: "shared-main-session" }),
+      ).toBeUndefined();
 
-    const peerA = conversations.find((entry) => entry.target === "reef:peer-a");
-    expect(peerA).toBeDefined();
-    expect(resolveConversation({ agentId: "main", storePath }, peerA!.conversationRef)).toEqual(
-      peerA,
-    );
-  });
+      const peerA = conversations.find((entry) => entry.target === "reef:peer-a");
+      expect(peerA).toBeDefined();
+      expect(resolveConversation({ agentId: "main", storePath }, peerA!.conversationRef)).toEqual(
+        peerA,
+      );
+    },
+  );
 
   it("catalogs a directory address without inventing a model-context session", () => {
     const identity = buildConversationIdentity({

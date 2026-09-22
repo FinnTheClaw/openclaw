@@ -416,4 +416,21 @@ describe("renderSessionDetailPanel filtered usage", () => {
     ).toHaveLength(5);
     expect(expanded.querySelector(".context-breakdown-more")).toBeNull();
   });
+
+  it("counts every same-name tool invocation in the selected timeline range", () => {
+    const container = mount(
+      [point({ timestamp: 1_000_000 })],
+      1_000_000,
+      1_000_000,
+      "total",
+      {},
+      {
+        sessionLogsData: [
+          { timestamp: 1000, role: "assistant", content: "[Tool: read]\n[Tool: read]" },
+        ],
+      },
+    );
+
+    expect(container.querySelectorAll(".session-summary-card")[1]?.textContent).toContain("2");
+  });
 });

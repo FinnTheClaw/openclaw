@@ -1134,10 +1134,10 @@ exit 1
 
       expect(result.status).toBe(0);
       expect(fs.readFileSync(timeoutArgsPath, "utf8").trim()).toBe(
-        `--kill-after=30s 31s script -q -f -c node /tmp/entry onboard ${logPath}`,
+        `--kill-after=30s 31s script -q -e -f -c node /tmp/entry onboard ${logPath}`,
       );
       expect(fs.readFileSync(scriptArgsPath, "utf8").trim()).toBe(
-        `-q -f -c node /tmp/entry onboard ${logPath}`,
+        `-q -e -f -c node /tmp/entry onboard ${logPath}`,
       );
     });
   });

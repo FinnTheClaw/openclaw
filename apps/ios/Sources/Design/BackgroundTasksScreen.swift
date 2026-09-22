@@ -55,7 +55,10 @@ struct MobileBackgroundTask: Decodable, Identifiable, Equatable {
         case "queued": String(localized: "Queued")
         case "running": String(localized: "Running")
         case "completed": String(localized: "Completed")
-        default: String(localized: "Failed")
+        case "failed": String(localized: "Failed")
+        case "cancelled": String(localized: "Cancelled")
+        case "timed_out": String(localized: "Timed out")
+        default: String(localized: "Unknown")
         }
     }
 

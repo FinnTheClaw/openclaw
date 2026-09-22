@@ -84,7 +84,10 @@ internal class WearReplySpeaker(
       return
     }
     pendingText = null
-    audioFocus.request()
+    if (!audioFocus.request()) {
+      stop()
+      return
+    }
     val result =
       engine?.speak(
         normalized,

@@ -64,15 +64,35 @@ function normalizeStatement(statement: string): string {
   return `${lines.join("\n")};`;
 }
 
+function stripLeadingSqlComments(statement: string): string {
+  let remaining = statement.trimStart();
+  while (remaining.startsWith("--") || remaining.startsWith("/*")) {
+    if (remaining.startsWith("--")) {
+      const lineEnd = remaining.indexOf("\n");
+      if (lineEnd === -1) {
+        return "";
+      }
+      remaining = remaining.slice(lineEnd + 1).trimStart();
+      continue;
+    }
+    const commentEnd = remaining.indexOf("*/");
+    if (commentEnd === -1) {
+      return "";
+    }
+    remaining = remaining.slice(commentEnd + 2).trimStart();
+  }
+  return remaining;
+}
+
 function readCreatedTableName(statement: string): string | null {
-  const match = statement.match(
+  const match = stripLeadingSqlComments(statement).match(
     /^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\b/iu,
   );
   return match ? normalizeIdentifier(expectDefined(match[1], "created table name")) : null;
 }
 
 function readIndexedTableName(statement: string): string | null {
-  const match = statement.match(
+  const match = stripLeadingSqlComments(statement).match(
     /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s+ON\s+("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\b/isu,
   );
   return match ? normalizeIdentifier(expectDefined(match[2], "indexed table name")) : null;

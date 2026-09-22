@@ -69,7 +69,7 @@ export function assertCanonicalSessionKeyWrite(sessionKey: string, expectedAgent
   }
 }
 
-function readCanonicalSessionMainKey(database: { db: DatabaseSync }): string {
+export function readCanonicalSessionMainKey(database: { db: DatabaseSync }): string {
   const db = getNodeSqliteKysely<CanonicalSessionDatabase>(database.db);
   return normalizeMainKey(
     executeSqliteQueryTakeFirstSync(

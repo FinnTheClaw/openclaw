@@ -21,6 +21,7 @@ export function readSkillPatchText(params: Record<string, unknown>) {
       readToolStringParam(params, "old_string", { label: "old_string", trim: false }) ?? "",
     newString: readToolStringParam(params, "new_string", {
       required: true,
+      allowEmpty: true,
       label: "new_string",
       trim: false,
     }),

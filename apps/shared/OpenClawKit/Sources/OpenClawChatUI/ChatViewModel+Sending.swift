@@ -370,7 +370,7 @@ extension OpenClawChatViewModel {
         isSubmittingDraft = true
         defer { self.isSubmittingDraft = false }
 
-        guard await self.validateSendDraft(draft) else { return }
+        guard await self.validateSendDraft(draft), self.isCurrentSession(draft.session) else { return }
 
         isSending = true
         isSendingAttachmentDraft = !draft.attachments.isEmpty
@@ -380,7 +380,7 @@ extension OpenClawChatViewModel {
             self.applyDeferredExternalStateIfReady()
         }
 
-        guard await self.prepareLiveRoute(for: draft) else { return }
+        guard await self.prepareLiveRoute(for: draft), self.isCurrentSession(draft.session) else { return }
         guard self.composerModelAvailabilityMessage == nil else {
             logDiagnostic("chat.ui send ignored reason=model-auth sessionKey=\(sessionKey)")
             return
