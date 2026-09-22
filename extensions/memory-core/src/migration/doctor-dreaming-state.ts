@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { PluginDoctorStateMigration } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import {
   archiveLegacyStateSource,
@@ -18,8 +19,10 @@ import {
   SHORT_TERM_PHASE_SIGNAL_NAMESPACE,
   SHORT_TERM_RECALL_NAMESPACE,
   configureMemoryCoreDreamingState,
-  writeMemoryCoreWorkspaceEntries,
-  writeMemoryCoreWorkspaceEntry,
+  DREAMING_WORKSPACE_STATE_MAX_ENTRIES,
+  memoryCoreWorkspaceEntryKey,
+  memoryCoreWorkspaceStateKey,
+  readMemoryCoreWorkspaceEntries,
 } from "../dreaming-state.js";
 // Import from the defining modules, not the short-term-promotion barrel: the
 // barrel pulls memory-host-events/kysely, which doctor enumeration cold-loads.
@@ -62,98 +65,89 @@ async function collectLegacySources(
   return sources;
 }
 
-async function migrateDailyIngestion(source: LegacySource): Promise<number> {
-  const state = normalizeDailyIngestionState(await readJsonFile(source.filePath));
-  await writeMemoryCoreWorkspaceEntries({
-    namespace: DREAMING_DAILY_INGESTION_NAMESPACE,
-    workspaceDir: source.workspaceDir,
-    entries: Object.entries(state.files).map(([key, value]) => ({ key, value })),
-  });
-  return Object.keys(state.files).length;
-}
+type ImportGroup = {
+  namespace: string;
+  entries: Array<{ key: string; value: unknown }>;
+};
 
-async function migrateSessionIngestion(source: LegacySource): Promise<number> {
-  const state = normalizeSessionIngestionState(await readJsonFile(source.filePath));
-  const seenEntries = Object.entries(state.seenMessages).flatMap(([scope, hashes]) =>
-    Array.from(
-      { length: Math.ceil(hashes.length / SESSION_SEEN_HASHES_PER_CHUNK) },
-      (_, index) => ({
-        key: `${scope}:${index}`,
-        value: {
-          scope,
-          index,
-          hashes: hashes.slice(
-            index * SESSION_SEEN_HASHES_PER_CHUNK,
-            (index + 1) * SESSION_SEEN_HASHES_PER_CHUNK,
-          ),
-        },
-      }),
-    ),
-  );
-  await Promise.all([
-    writeMemoryCoreWorkspaceEntries({
-      namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
-      workspaceDir: source.workspaceDir,
-      entries: Object.entries(state.files).map(([key, value]) => ({ key, value })),
-    }),
-    writeMemoryCoreWorkspaceEntries({
-      namespace: DREAMING_SESSION_INGESTION_SEEN_NAMESPACE,
-      workspaceDir: source.workspaceDir,
-      entries: seenEntries,
-    }),
-  ]);
-  return Object.keys(state.files).length + Object.keys(state.seenMessages).length;
-}
-
-async function migrateShortTermRecall(source: LegacySource): Promise<number> {
-  const nowIso = new Date().toISOString();
-  const state = normalizeShortTermRecallStore(await readJsonFile(source.filePath), nowIso);
-  await Promise.all([
-    writeMemoryCoreWorkspaceEntries({
-      namespace: SHORT_TERM_RECALL_NAMESPACE,
-      workspaceDir: source.workspaceDir,
-      entries: Object.entries(state.entries).map(([key, value]) => ({ key, value })),
-    }),
-    writeMemoryCoreWorkspaceEntry({
-      namespace: SHORT_TERM_META_NAMESPACE,
-      workspaceDir: source.workspaceDir,
-      key: "recall",
-      value: { updatedAt: state.updatedAt },
-    }),
-  ]);
-  return Object.keys(state.entries).length;
-}
-
-async function migratePhaseSignals(source: LegacySource): Promise<number> {
-  const nowIso = new Date().toISOString();
-  const state = normalizeShortTermPhaseSignalStore(await readJsonFile(source.filePath), nowIso);
-  await Promise.all([
-    writeMemoryCoreWorkspaceEntries({
-      namespace: SHORT_TERM_PHASE_SIGNAL_NAMESPACE,
-      workspaceDir: source.workspaceDir,
-      entries: Object.entries(state.entries).map(([key, value]) => ({ key, value })),
-    }),
-    writeMemoryCoreWorkspaceEntry({
-      namespace: SHORT_TERM_META_NAMESPACE,
-      workspaceDir: source.workspaceDir,
-      key: "phase",
-      value: { updatedAt: state.updatedAt },
-    }),
-  ]);
-  return Object.keys(state.entries).length;
-}
-
-async function migrateSource(source: LegacySource): Promise<number> {
+async function prepareSource(source: LegacySource): Promise<ImportGroup[]> {
+  const raw = await readJsonFile(source.filePath);
   if (source.label === "daily ingestion") {
-    return await migrateDailyIngestion(source);
+    const state = normalizeDailyIngestionState(raw);
+    return [
+      {
+        namespace: DREAMING_DAILY_INGESTION_NAMESPACE,
+        entries: Object.entries(state.files).map(([key, value]) => ({ key, value })),
+      },
+    ];
   }
   if (source.label === "session ingestion") {
-    return await migrateSessionIngestion(source);
+    const state = normalizeSessionIngestionState(raw);
+    return [
+      {
+        namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+        entries: Object.entries(state.files).map(([key, value]) => ({ key, value })),
+      },
+      {
+        namespace: DREAMING_SESSION_INGESTION_SEEN_NAMESPACE,
+        entries: Object.entries(state.seenMessages).flatMap(([scope, hashes]) =>
+          Array.from(
+            { length: Math.ceil(hashes.length / SESSION_SEEN_HASHES_PER_CHUNK) },
+            (_, index) => ({
+              key: `${scope}:${index}`,
+              value: {
+                scope,
+                index,
+                hashes: hashes.slice(
+                  index * SESSION_SEEN_HASHES_PER_CHUNK,
+                  (index + 1) * SESSION_SEEN_HASHES_PER_CHUNK,
+                ),
+              },
+            }),
+          ),
+        ),
+      },
+    ];
   }
-  if (source.label === "short-term recall") {
-    return await migrateShortTermRecall(source);
+  const recall = source.label === "short-term recall";
+  const metaKey = recall ? "recall" : "phase";
+  const meta = await readMemoryCoreWorkspaceEntries<{ updatedAt?: string }>({
+    namespace: SHORT_TERM_META_NAMESPACE,
+    workspaceDir: source.workspaceDir,
+  });
+  const nowIso =
+    meta.find((row) => row.key === metaKey)?.value.updatedAt ?? new Date().toISOString();
+  let state = recall
+    ? normalizeShortTermRecallStore(raw, nowIso)
+    : normalizeShortTermPhaseSignalStore(raw, nowIso);
+  if (recall) {
+    const rows = await readMemoryCoreWorkspaceEntries<{
+      firstRecalledAt: string;
+      lastRecalledAt: string;
+    }>({ namespace: SHORT_TERM_RECALL_NAMESPACE, workspaceDir: source.workspaceDir });
+    // A previous batch may commit before its metadata. Recover its normalization
+    // timestamp only when the complete persisted subset matches the legacy source.
+    const candidates = new Set(
+      rows.flatMap((row) => [row.value.firstRecalledAt, row.value.lastRecalledAt]),
+    );
+    for (const candidate of candidates) {
+      const normalized = normalizeShortTermRecallStore(raw, candidate);
+      if (rows.every((row) => isDeepStrictEqual(normalized.entries[row.key], row.value))) {
+        state = normalized;
+        break;
+      }
+    }
   }
-  return await migratePhaseSignals(source);
+  return [
+    {
+      namespace: recall ? SHORT_TERM_RECALL_NAMESPACE : SHORT_TERM_PHASE_SIGNAL_NAMESPACE,
+      entries: Object.entries(state.entries).map(([key, value]) => ({ key, value })),
+    },
+    {
+      namespace: SHORT_TERM_META_NAMESPACE,
+      entries: [{ key: metaKey, value: { updatedAt: state.updatedAt } }],
+    },
+  ];
 }
 
 export const dreamingStateMigration: PluginDoctorStateMigration = {
@@ -177,6 +171,21 @@ export const dreamingStateMigration: PluginDoctorStateMigration = {
     const warnings: string[] = [];
     const notices: string[] = [];
     for (const source of await collectLegacySources(params.config, params.env)) {
+      let groups: ImportGroup[];
+      try {
+        groups = await prepareSource(source);
+      } catch (err) {
+        warnings.push(`Skipped Memory Core ${source.label} import: ${String(err)}`);
+        continue;
+      }
+      const existingGroups = await Promise.all(
+        groups.map((group) =>
+          readMemoryCoreWorkspaceEntries({
+            namespace: group.namespace,
+            workspaceDir: source.workspaceDir,
+          }),
+        ),
+      );
       const targetHasRows = await dreamingStateComparison.targetHasRows(source);
       if (targetHasRows) {
         let sourceAcknowledged: boolean;
@@ -196,22 +205,86 @@ export const dreamingStateMigration: PluginDoctorStateMigration = {
           );
           continue;
         }
-        // Each retired journal mirrors the SQLite namespaces used by the runtime.
-        // Keep canonical state active and retain only the divergent rollback source.
-        changes.push(
-          `Resolved Memory Core ${source.label} legacy conflict by keeping canonical SQLite plugin state`,
-        );
-        await archiveLegacyStateSource({
-          filePath: source.filePath,
-          label: `Memory Core ${source.label} conflicting legacy source`,
-          changes,
-          warnings,
+        // Equal subsets can be a previous interrupted import. Only genuinely
+        // divergent rows are canonical conflicts; never archive an incomplete import.
+        const conflicting = groups.some((group, index) => {
+          const expected = new Map(group.entries.map((row) => [row.key, row.value]));
+          return existingGroups[index].some(
+            (row) =>
+              (group.namespace !== SHORT_TERM_META_NAMESPACE || expected.has(row.key)) &&
+              (!expected.has(row.key) || !isDeepStrictEqual(expected.get(row.key), row.value)),
+          );
         });
-        continue;
+        if (conflicting) {
+          changes.push(
+            `Resolved Memory Core ${source.label} legacy conflict by keeping canonical SQLite plugin state`,
+          );
+          await archiveLegacyStateSource({
+            filePath: source.filePath,
+            label: `Memory Core ${source.label} conflicting legacy source`,
+            changes,
+            warnings,
+          });
+          continue;
+        }
       }
-      let imported: number;
+      let imported = 0;
       try {
-        imported = await migrateSource(source);
+        const { importPluginStateEntries, getPluginStateCapacity } = params.context;
+        if (!importPluginStateEntries || !getPluginStateCapacity) {
+          throw new Error("Doctor host does not provide bounded state import");
+        }
+        const missingGroups = groups.map((group, index) => {
+          const existing = new Set(existingGroups[index].map((row) => row.key));
+          return { ...group, entries: group.entries.filter((row) => !existing.has(row.key)) };
+        });
+        const missing = missingGroups.reduce((sum, group) => sum + group.entries.length, 0);
+        // Doctor owns the offline maintenance lock. No await between the final
+        // capacity check and synchronous imports: no writer can consume the room
+        // or cause eviction of earlier imported or unrelated workspace rows.
+        const capacity = getPluginStateCapacity();
+        if (
+          capacity.liveEntries + missing >
+          Math.min(capacity.maxEntries, DREAMING_WORKSPACE_STATE_MAX_ENTRIES)
+        ) {
+          throw new Error("Plugin state capacity cannot retain the complete legacy source");
+        }
+        const workspaceKey = memoryCoreWorkspaceStateKey(source.workspaceDir);
+        for (const group of missingGroups) {
+          importPluginStateEntries(
+            {
+              namespace: group.namespace,
+              maxEntries: DREAMING_WORKSPACE_STATE_MAX_ENTRIES,
+            },
+            group.entries.map((row) => ({
+              key: memoryCoreWorkspaceEntryKey(source.workspaceDir, row.key),
+              value: {
+                version: 1,
+                workspaceKey,
+                workspaceDir: path.resolve(source.workspaceDir),
+                key: row.key,
+                value: row.value,
+              },
+              createdAt: Date.now(),
+            })),
+          );
+          if (group.namespace !== SHORT_TERM_META_NAMESPACE) {
+            imported += group.entries.length;
+          }
+        }
+        for (const group of groups) {
+          const retained = new Map(
+            (
+              await readMemoryCoreWorkspaceEntries({
+                namespace: group.namespace,
+                workspaceDir: source.workspaceDir,
+              })
+            ).map((row) => [row.key, row.value]),
+          );
+          if (group.entries.some((row) => !isDeepStrictEqual(retained.get(row.key), row.value))) {
+            throw new Error("Plugin state did not retain the complete legacy source");
+          }
+        }
       } catch (err) {
         warnings.push(
           `Skipped Memory Core ${source.label} import for ${source.workspaceDir} because the legacy source could not be imported: ${String(err)}`,

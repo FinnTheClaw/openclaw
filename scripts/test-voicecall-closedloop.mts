@@ -8,9 +8,8 @@ const args = [
   "run",
   "--config",
   "vitest.config.ts",
-  bundledPluginFile("voice-call", "src/manager.test.ts"),
+  bundledPluginFile("voice-call", "src/manager.closed-loop.test.ts"),
   bundledPluginFile("voice-call", "src/media-stream.test.ts"),
-  "src/plugins/voice-call.plugin.test.ts",
   "--maxWorkers=1",
 ];
 

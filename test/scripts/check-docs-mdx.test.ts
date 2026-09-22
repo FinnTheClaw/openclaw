@@ -1,8 +1,13 @@
 // Check Docs Mdx tests cover check docs mdx script behavior.
 import { describe, expect, it } from "vitest";
-import { parseArgs } from "../../scripts/check-docs-mdx.mts";
+import { parseArgs, stripFrontmatter } from "../../scripts/check-docs-mdx.mts";
 
 describe("scripts/check-docs-mdx", () => {
+  it("preserves source line coordinates while removing frontmatter", () => {
+    expect(stripFrontmatter("---\ntitle: Example\n---\n<broken")).toBe("\n\n\n<broken");
+    expect(stripFrontmatter("# No frontmatter\n<broken")).toBe("# No frontmatter\n<broken");
+  });
+
   it("parses roots and output options", () => {
     expect(
       parseArgs(["docs", "README.md", "--json-out", "report.json", "--max-errors", "7"]),

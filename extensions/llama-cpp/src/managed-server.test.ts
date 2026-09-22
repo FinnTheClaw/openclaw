@@ -391,6 +391,48 @@ describe("managed llama-server", () => {
     }
   });
 
+  it("refreshes the owned preset for sequential chat selections and changed limits", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "llama-server-chat-refresh-"));
+    const presetPath = path.join(tempRoot, "models.ini");
+    const chatAPath = path.join(tempRoot, "chat-a.gguf");
+    const chatBPath = path.join(tempRoot, "chat-b.gguf");
+    const localService = {
+      command: path.join(tempRoot, "llama-server"),
+      args: ["--models-preset", presetPath],
+    };
+    const provider = {
+      baseUrl: "http://127.0.0.1:19435/v1",
+      localService,
+      models: [],
+      params: { modelCacheDir: tempRoot },
+    };
+
+    try {
+      await Promise.all([fs.writeFile(chatAPath, "GGUF"), fs.writeFile(chatBPath, "GGUF")]);
+      const prepare = async (
+        id: string,
+        modelPath: string,
+        contextSize: number,
+        maxTokens: number,
+      ) =>
+        await ensureManagedLlamaServerForChat({
+          provider,
+          model: { id, params: { modelPath, contextSize }, maxTokens },
+        });
+
+      await prepare("chat-a", chatAPath, 8192, 100);
+      await prepare("chat-b", chatBPath, 4096, 100);
+      await prepare("chat-a", chatAPath, 2048, 200);
+
+      const preset = await fs.readFile(presetPath, "utf8");
+      expect(preset).toContain(
+        "[chat-a]\nmodel = " + chatAPath + "\nctx-size = 2048\nn-predict = 200",
+      );
+      expect(preset).not.toContain("[chat-b]");
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
   it("reports a missing local GGUF with the setup repair path", async () => {
     await expect(
       ensureLlamaCppModel({

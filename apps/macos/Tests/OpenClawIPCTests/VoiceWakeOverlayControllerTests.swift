@@ -5,6 +5,21 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct VoiceWakeOverlayControllerTests {
+    @Test(arguments: ["corrected", "", " \n", "new\nline", "café", "你好", "emoji 🦞", "  trimmed  ", "a'b", "recognized"])
+    func `user edits update the text owned by the coordinator`(_ edited: String) {
+        let coordinator = VoiceSessionCoordinator.shared
+        let token = coordinator.startSession(source: .wakeWord, text: "recognized")
+        defer { coordinator.dismiss(token: token, reason: .explicit, outcome: .empty) }
+        let controller = VoiceWakeOverlayController.shared
+        controller.userBeganEditing()
+        controller.updateText(edited)
+        #expect(controller.snapshot().text == edited)
+        #expect(coordinator.snapshot().text == edited)
+        coordinator.updateUserText(token: UUID(), text: "stale", attributed: NSAttributedString(string: "stale"))
+        #expect(coordinator.snapshot().text == edited)
+    }
+
+
     @Test func `overlay controller lifecycle without UI`() async {
         let controller = VoiceWakeOverlayController(enableUI: false)
         let token = controller.startSession(

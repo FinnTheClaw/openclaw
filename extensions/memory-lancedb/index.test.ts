@@ -844,6 +844,7 @@ describe("memory plugin e2e", () => {
 
   test("keeps provider auth agent-scoped across memory tools and automatic hooks", async () => {
     const requests: Array<{ agentDir: string; text: string }> = [];
+    const roles: Array<{ text: string; inputType?: string }> = [];
     const closeProvider = vi.fn(async () => {});
     const createProvider = vi.fn(async (options: { agentDir?: string; model?: string }) => {
       const agentDir = options.agentDir ?? "unscoped";
@@ -851,7 +852,8 @@ describe("memory plugin e2e", () => {
         provider: {
           id: "openai",
           model: options.model ?? "text-embedding-3-small",
-          embed: vi.fn(async (text: string) => {
+          embed: vi.fn(async (text: string, options?: { inputType?: string }) => {
+            roles.push({ text, inputType: options?.inputType });
             requests.push({ agentDir, text });
             return [0.1, 0.2, 0.3];
           }),
@@ -951,6 +953,11 @@ describe("memory plugin e2e", () => {
         { agentId: "private", sessionKey: "agent:private:main" },
       );
 
+      expect(roles.filter((row) => row.inputType === "document").map((row) => row.text)).toEqual([
+        "private durable memory",
+        "I prefer my private automatic capture secret.",
+      ]);
+      expect(roles.filter((row) => row.inputType === "query")).toHaveLength(6);
       expect(createProvider).toHaveBeenCalledTimes(2);
       expect(requests).toEqual(
         expect.arrayContaining([

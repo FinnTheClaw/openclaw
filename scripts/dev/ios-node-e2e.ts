@@ -203,7 +203,6 @@ function pickIosNode(list: NodeListPayload, hint?: string): NodeListNode | null 
     ios.find((n) => n.nodeId.toLowerCase() === h) ??
     ios.find((n) => (n.displayName ?? "").toLowerCase().includes(h)) ??
     ios.find((n) => n.nodeId.toLowerCase().includes(h)) ??
-    ios[0] ??
     null
   );
 }
@@ -267,7 +266,11 @@ async function main() {
     }
   }
   if (!node) {
-    writeStderrLine("No connected iOS nodes found. (Is the iOS app connected to the gateway?)");
+    writeStderrLine(
+      nodeHint
+        ? `No connected iOS node matched --node ${JSON.stringify(nodeHint)}.`
+        : "No connected iOS nodes found. (Is the iOS app connected to the gateway?)",
+    );
     close();
     process.exit(5);
   }

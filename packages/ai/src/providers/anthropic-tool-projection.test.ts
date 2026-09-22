@@ -168,4 +168,33 @@ describe("projectAnthropicTools", () => {
       default: tupleLikeValue,
     });
   });
+
+  it("preserves root definitions and constraints in the projected input schema", () => {
+    const projection = projectAnthropicTools(
+      [
+        {
+          name: "Lookup",
+          description: "Look up a location",
+          parameters: {
+            type: "object",
+            $defs: { location: { type: "string", minLength: 1 } },
+            properties: { city: { $ref: "#/$defs/location" } },
+            required: ["city"],
+            additionalProperties: false,
+            minProperties: 1,
+          },
+        },
+      ],
+      (name) => name,
+    );
+
+    expect(projection.tools[0]?.inputSchema).toEqual({
+      type: "object",
+      $defs: { location: { type: "string", minLength: 1 } },
+      properties: { city: { $ref: "#/$defs/location" } },
+      required: ["city"],
+      additionalProperties: false,
+      minProperties: 1,
+    });
+  });
 });

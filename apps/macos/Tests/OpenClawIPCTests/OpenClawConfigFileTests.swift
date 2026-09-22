@@ -4,6 +4,26 @@ import Testing
 
 @Suite(.serialized)
 struct OpenClawConfigFileTests {
+    @MainActor
+    @Test(arguments: ["{", "{\"gateway\":", "[]", "\"value\"", "null", "", " \n", "{bad", "false"])
+    func `save preserves an existing invalid config`(_ contents: String) async throws {
+        let stateDir = FileManager().temporaryDirectory
+            .appendingPathComponent("openclaw-invalid-config-\(UUID().uuidString)")
+        let config = stateDir.appendingPathComponent("openclaw.json")
+        try FileManager().createDirectory(at: stateDir, withIntermediateDirectories: true)
+        defer { try? FileManager().removeItem(at: stateDir) }
+        let original = Data(contents.utf8)
+        try original.write(to: config)
+        try await TestIsolation.withEnvValues([
+            "OPENCLAW_CONFIG_PATH": config.path,
+            "OPENCLAW_STATE_DIR": stateDir.path,
+        ]) {
+            #expect(!OpenClawConfigFile.saveDict(["session": ["store": "changed"]]))
+            #expect(try Data(contentsOf: config) == original)
+        }
+    }
+
+
     private func makeConfigOverridePath() -> String {
         FileManager().temporaryDirectory
             .appendingPathComponent("openclaw-config-\(UUID().uuidString)")

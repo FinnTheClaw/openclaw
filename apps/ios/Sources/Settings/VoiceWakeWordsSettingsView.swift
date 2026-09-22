@@ -33,6 +33,7 @@ struct VoiceWakeWordsSettingsView: View {
 
                 Button {
                     self.triggerWords = VoiceWakePreferences.defaultTriggerWords
+                    self.commitTriggerWords()
                 } label: {
                     Text("Reset defaults")
                         .font(OpenClawType.subheadSemiBold)

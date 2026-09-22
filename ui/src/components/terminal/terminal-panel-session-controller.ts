@@ -544,6 +544,7 @@ export class TerminalPanelSessionController
         },
         boot.sink,
       );
+      const cancelledByClose = boot.tab.cancelled === "close";
       if (!this.isTerminalOperationCurrent(operation) || boot.tab.cancelled) {
         // The tab's close button was clicked while the open RPC was in flight.
         // The server session is live and its sink registered; close it now or
@@ -553,7 +554,7 @@ export class TerminalPanelSessionController
           boot.tab.cancelled = "lifecycle";
           this.dropFailedTab(boot.tab);
         }
-        return false;
+        return cancelledByClose;
       }
       this.adoptSession(boot.tab, result, ownerSessionKey !== undefined);
       boot.tab.controller.terminal.focus();
@@ -592,6 +593,7 @@ export class TerminalPanelSessionController
       createdTab = boot.tab;
       createdConnection = boot.connection;
       const result = await boot.connection.attach(sessionId, boot.sink);
+      const cancelledByClose = boot.tab.cancelled === "close";
       if (!this.isTerminalOperationCurrent(operation) || boot.tab.cancelled) {
         // A user close is deliberate; lifecycle cancellation leaves the existing
         // server session available for the next reconnect to reattach.
@@ -602,7 +604,7 @@ export class TerminalPanelSessionController
           boot.tab.cancelled = "lifecycle";
           this.dropFailedTab(boot.tab);
         }
-        return false;
+        return cancelledByClose;
       }
       this.adoptSession(boot.tab, result, agentOwned);
       return true;

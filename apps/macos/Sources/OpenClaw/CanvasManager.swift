@@ -55,8 +55,8 @@ final class CanvasManager {
         let controller = ensured.controller
 
         if !ensured.created {
-            controller.presentAnchoredPanel(anchorProvider: anchorProvider)
             controller.applyPreferredPlacement(placement)
+            controller.presentAnchoredPanel(anchorProvider: anchorProvider)
 
             // Existing session: only navigate when an explicit target was provided.
             if let normalizedTarget {

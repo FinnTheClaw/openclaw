@@ -394,6 +394,7 @@ function assertMarketplaceInstalled() {
 }
 
 function assertMarketplaceRecords() {
+  const allowLegacyCompat = process.env.OPENCLAW_PACKAGE_ACCEPTANCE_LEGACY_COMPAT === "1";
   const installRecords = getInstallRecords();
   for (const id of ["marketplace-shortcut", "marketplace-direct"]) {
     const record = installRecords[id];

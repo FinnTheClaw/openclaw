@@ -115,6 +115,10 @@ extension VoiceWakeOverlayController {
         self.model.text = text
         self.model.isSending = false
         self.model.attributed = self.makeAttributed(from: text)
+        if let token = self.activeToken {
+            VoiceSessionCoordinator.shared.updateUserText(
+                token: token, text: text, attributed: self.model.attributed)
+        }
         self.updateWindowFrame(animate: true)
     }
 

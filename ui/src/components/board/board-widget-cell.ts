@@ -412,7 +412,7 @@ class OpenClawBoardWidgetCell extends OpenClawLightDomElement {
     widget: BoardWidget,
     callbacks: BoardWidgetCellCallbacks,
   ): void {
-    if (event.target !== event.currentTarget || !this.canMutate) {
+    if (event.target !== event.currentTarget) {
       return;
     }
     const direction =
@@ -430,6 +430,9 @@ class OpenClawBoardWidgetCell extends OpenClawLightDomElement {
     }
     event.preventDefault();
     if (event.altKey) {
+      if (!this.canMutate) {
+        return;
+      }
       void this.runAction(() => callbacks.nudge(widget, direction));
     } else {
       callbacks.focus(widget, direction);

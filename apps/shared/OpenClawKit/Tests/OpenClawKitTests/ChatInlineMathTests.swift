@@ -22,6 +22,15 @@ struct ChatInlineMathTests {
         #expect(ChatInlineMathScanner.pieces(in: source) == [.markdown(source)])
     }
 
+    @Test func `candidate jumps retain later code span exclusions`() {
+        let source = #"\(a `x` b\) then `\(y\)` and \(z\)"#
+        #expect(ChatInlineMathScanner.pieces(in: source) == [
+            .math(latex: "a `x` b", source: #"\(a `x` b\)"#),
+            .markdown(#" then `\(y\)` and "#),
+            .math(latex: "z", source: #"\(z\)"#),
+        ])
+    }
+
     @Test func `unmatched backtick does not hide later math`() {
         #expect(ChatInlineMathScanner.pieces(in: #"stray ` before \(x\)"#) == [
             .markdown("stray ` before "),

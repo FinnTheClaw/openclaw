@@ -6,6 +6,7 @@ import { GatewayRequestError } from "../../api/gateway.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/context.ts";
 import type { SkillWorkshopProposal } from "../../lib/skill-workshop/index.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
+import { proposalFromManifest } from "./proposal-records.ts";
 import {
   createSkillWorkshopState,
   loadSkillWorkshopProposals,
@@ -137,6 +138,53 @@ function proposal(overrides: Partial<SkillWorkshopProposal> = {}): SkillWorkshop
     ...overrides,
   };
 }
+
+it("groups previous local calendar days as yesterday across DST transitions", () => {
+  const originalTimeZone = process.env.TZ;
+  process.env.TZ = "America/Chicago";
+  vi.useFakeTimers();
+  try {
+    for (const [now, updatedAt] of [
+      ["2026-03-09T17:00:00.000Z", "2026-03-08T17:00:00.000Z"],
+      ["2026-11-02T18:00:00.000Z", "2026-11-01T18:00:00.000Z"],
+      ["2026-03-10T17:00:00.000Z", "2026-03-09T17:00:00.000Z"],
+    ]) {
+      vi.setSystemTime(new Date(now));
+      const entry = { ...manifest().proposals[0]!, updatedAt };
+      expect(proposalFromManifest(entry, undefined).recencyGroup).toBe("yesterday");
+    }
+  } finally {
+    vi.useRealTimers();
+    if (originalTimeZone === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = originalTimeZone;
+    }
+  }
+});
+
+it("uses createdAt for recency when a manifest entry omits updatedAt", () => {
+  const originalTimeZone = process.env.TZ;
+  process.env.TZ = "America/Chicago";
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date("2026-11-02T18:00:00.000Z"));
+    const entry = {
+      ...manifest().proposals[0]!,
+      createdAt: "2026-11-01T23:59:00.000Z",
+      updatedAt: undefined,
+    } as unknown as Parameters<typeof proposalFromManifest>[0];
+
+    expect(proposalFromManifest(entry, undefined).recencyGroup).toBe("yesterday");
+  } finally {
+    vi.useRealTimers();
+    if (originalTimeZone === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = originalTimeZone;
+    }
+  }
+});
 
 function proposalDecision(expectedRevisionHash: string | null = REVISION_HASH) {
   return { proposalId: "proposal-1", expectedRevisionHash };

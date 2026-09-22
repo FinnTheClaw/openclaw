@@ -19,15 +19,63 @@ function hasJavaScriptFileExtension(value) {
   return /\.(?:cjs|js|mjs)$/u.test(path.posix.basename(stripSpecifierSuffix(value)));
 }
 
-function resolveDistImportPath(importerPath, specifier) {
+function resolveCommonJsPath(candidatePath, fileSet, readText, seen = new Set()) {
+  if (seen.has(candidatePath)) {
+    return null;
+  }
+  seen.add(candidatePath);
+  for (const extension of ["", ".js", ".json", ".node"]) {
+    const filePath = `${candidatePath}${extension}`;
+    if (fileSet.has(filePath)) {
+      return filePath;
+    }
+  }
+
+  const packageJsonPath = `${candidatePath}/package.json`;
+  if (fileSet.has(packageJsonPath)) {
+    try {
+      const packageMain = JSON.parse(readText(packageJsonPath)).main;
+      if (typeof packageMain === "string" && packageMain) {
+        const resolvedMain = resolveCommonJsPath(
+          path.posix.normalize(path.posix.join(candidatePath, packageMain)),
+          fileSet,
+          readText,
+          seen,
+        );
+        if (resolvedMain) {
+          return resolvedMain;
+        }
+      }
+    } catch {
+      // Node falls back to index resolution when package metadata is unusable.
+    }
+  }
+  for (const extension of [".js", ".json", ".node"]) {
+    const indexPath = `${candidatePath}/index${extension}`;
+    if (fileSet.has(indexPath)) {
+      return indexPath;
+    }
+  }
+  return null;
+}
+
+function resolveDistImportPath(importerPath, specifier, kind, fileSet, readText) {
   if (!specifier.startsWith(".")) {
     return null;
   }
-  const stripped = stripSpecifierSuffix(specifier);
-  if (!stripped) {
+  const resolvedPath = path.posix.normalize(
+    path.posix.join(
+      path.posix.dirname(importerPath),
+      kind === "commonjs-require" ? specifier : stripSpecifierSuffix(specifier),
+    ),
+  );
+  if (!resolvedPath) {
     return null;
   }
-  return path.posix.normalize(path.posix.join(path.posix.dirname(importerPath), stripped));
+  if (kind !== "commonjs-require") {
+    return resolvedPath;
+  }
+  return resolveCommonJsPath(resolvedPath, fileSet, readText) ?? resolvedPath;
 }
 
 function collectImportSpecifiers(source, importerPath) {
@@ -49,7 +97,7 @@ function collectImportSpecifiers(source, importerPath) {
           (hasJavaScriptFileExtension(specifier) &&
             resolveDistImportPath(importerPath, specifier)?.startsWith("dist/")))
       ) {
-        specifiers.push(specifier);
+        specifiers.push({ kind, specifier });
       }
     },
     { includeCommonJs: true, includeImportMetaUrl: true },
@@ -77,14 +125,21 @@ export function collectPackageDistImportErrors(params) {
 function collectPackageDistImports(params) {
   const files = [...new Set(params.files.map(normalizePackagePath))];
   const imports = [];
+  const fileSet = new Set(files);
 
   for (const importerPath of files.toSorted((left, right) => left.localeCompare(right))) {
     if (!JS_DIST_FILE_RE.test(importerPath) || importerPath.includes("/node_modules/")) {
       continue;
     }
     const source = params.readText(importerPath);
-    for (const specifier of collectImportSpecifiers(source, importerPath)) {
-      const importedPath = resolveDistImportPath(importerPath, specifier);
+    for (const { kind, specifier } of collectImportSpecifiers(source, importerPath)) {
+      const importedPath = resolveDistImportPath(
+        importerPath,
+        specifier,
+        kind,
+        fileSet,
+        params.readText,
+      );
       if (!importedPath) {
         continue;
       }

@@ -15,6 +15,7 @@ import {
   getPluginStateCapacityForTests,
   importPluginStateEntriesForDoctorForTests,
   resetPluginStateStoreForTests,
+  setMaxPluginStateEntriesPerPluginForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import type {
   OpenKeyedStoreOptions,
@@ -24,12 +25,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stateMigrations } from "./doctor-contract-api.js";
 import {
   DREAMING_DAILY_INGESTION_NAMESPACE,
+  DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+  DREAMING_SESSION_INGESTION_SEEN_NAMESPACE,
+  SHORT_TERM_RECALL_NAMESPACE,
+  SHORT_TERM_META_NAMESPACE,
+  readMemoryCoreWorkspaceEntries,
   configureMemoryCoreDreamingState,
   writeMemoryCoreWorkspaceEntry,
 } from "./src/dreaming-state.js";
 import { bm25RankToScore, buildFtsQuery } from "./src/memory/hybrid.js";
 import { runVectorKnnQuery } from "./src/memory/manager-search-knn.js";
 import { searchKeyword, searchVector } from "./src/memory/manager-search.js";
+import { normalizeShortTermRecallStore } from "./src/short-term-promotion-utils.js";
 import {
   dreamingTestState as dreamingTesting,
   resetMemoryCoreDreamingStateForTests,
@@ -1190,6 +1197,98 @@ describe("memory-core doctor dreaming migration", () => {
     expect(entries).toEqual([]);
     await expect(fs.access(`${eventPath}.migrated`)).resolves.toBeUndefined();
   });
+
+  it.each([false, true])(
+    "retains and resumes capacity-blocked dreaming imports (old partial: %s)",
+    async (partial) => {
+      const source = path.join(workspaceDir, "memory", ".dreams", "session-ingestion.json");
+      const file = { mtimeMs: 1, size: 10, contentHash: "abc", lineCount: 1, lastContentLine: 1 };
+      await fs.writeFile(
+        source,
+        JSON.stringify({
+          version: 3,
+          files: { "session-a": file },
+          seenMessages: { "scope-a": ["hash-a"] },
+        }),
+      );
+      configureMemoryCoreDreamingState(context().openPluginStateKeyedStore);
+      if (partial) {
+        await writeMemoryCoreWorkspaceEntry({
+          namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+          workspaceDir,
+          key: "session-a",
+          value: file,
+        });
+      }
+      setMaxPluginStateEntriesPerPluginForTests(1);
+      try {
+        const first = await dreamingStateMigration().migrateLegacyState(migrationParams());
+        expect(first.warnings).toHaveLength(1);
+        await expect(fs.access(source)).resolves.toBeUndefined();
+        expect(
+          await readMemoryCoreWorkspaceEntries({
+            namespace: DREAMING_SESSION_INGESTION_FILES_NAMESPACE,
+            workspaceDir,
+          }),
+        ).toHaveLength(partial ? 1 : 0);
+        setMaxPluginStateEntriesPerPluginForTests(100);
+        const second = await dreamingStateMigration().migrateLegacyState(migrationParams());
+        expect(second.warnings).toEqual([]);
+        expect(
+          await readMemoryCoreWorkspaceEntries({
+            namespace: DREAMING_SESSION_INGESTION_SEEN_NAMESPACE,
+            workspaceDir,
+          }),
+        ).toEqual([
+          { key: "scope-a:0", value: { scope: "scope-a", index: 0, hashes: ["hash-a"] } },
+        ]);
+        await expect(fs.access(source + ".migrated")).resolves.toBeUndefined();
+      } finally {
+        setMaxPluginStateEntriesPerPluginForTests(undefined);
+      }
+    },
+  );
+
+  it.each([undefined, "2026-04-01T00:00:00.000Z"])(
+    "resumes partial recall imports with missing source timestamps (updatedAt: %s)",
+    async (updatedAt) => {
+      const source = path.join(workspaceDir, "memory", ".dreams", "short-term-recall.json");
+      const entry = {
+        path: "memory/notes.md",
+        startLine: 1,
+        endLine: 1,
+        source: "memory",
+        snippet: "project note",
+        recallCount: 1,
+      };
+      const raw = { version: 1, updatedAt, entries: { first: entry, second: entry } };
+      const prior = normalizeShortTermRecallStore(raw, "2026-04-05T00:00:00.000Z");
+      await fs.writeFile(source, JSON.stringify(raw));
+      configureMemoryCoreDreamingState(context().openPluginStateKeyedStore);
+      await writeMemoryCoreWorkspaceEntry({
+        namespace: SHORT_TERM_RECALL_NAMESPACE,
+        workspaceDir,
+        key: "first",
+        value: prior.entries.first,
+      });
+
+      const result = await dreamingStateMigration().migrateLegacyState(migrationParams());
+
+      expect(result.warnings).toEqual([]);
+      const rows = await readMemoryCoreWorkspaceEntries({
+        namespace: SHORT_TERM_RECALL_NAMESPACE,
+        workspaceDir,
+      });
+      expect(Object.fromEntries(rows.map((row) => [row.key, row.value]))).toEqual(prior.entries);
+      expect(
+        await readMemoryCoreWorkspaceEntries({
+          namespace: SHORT_TERM_META_NAMESPACE,
+          workspaceDir,
+        }),
+      ).toEqual([{ key: "recall", value: { updatedAt: prior.updatedAt } }]);
+      await expect(fs.access(source + ".migrated")).resolves.toBeUndefined();
+    },
+  );
 
   it("migrates and recovers persistent legacy dreaming state", async () => {
     const dreamsDir = path.join(workspaceDir, "memory", ".dreams");

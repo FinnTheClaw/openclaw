@@ -56,6 +56,9 @@ describe("resolveNavigatorLocale", () => {
     ["fa-IR", "fa"],
     ["ru-RU", "ru"],
     ["sv-SE", "en"],
+    ["kok-IN", "en"],
+    ["frr-DE", "en"],
+    ["arn-CL", "en"],
     ["", "en"],
   ] as const)("maps browser language %s to %s", (browserLanguage, expectedLocale) => {
     expect(resolveNavigatorLocale(browserLanguage)).toBe(expectedLocale);

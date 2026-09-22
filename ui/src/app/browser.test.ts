@@ -16,4 +16,13 @@ describe("Control UI route and resource bases", () => {
   it("retains pathname inference when no Gateway mount is declared", () => {
     expect(resolveControlUiPaths("/portable/new")).toEqual(["/portable", "/portable"]);
   });
+
+  it.each(["/chat/focus/terminal", "/chat/main/focus/desktop", "/focus/terminal"])(
+    "keeps an explicitly root-mounted URL rooted for %s",
+    (pathname) => {
+      document.documentElement.setAttribute(CONTROL_UI_BASE_PATH_ATTRIBUTE, "");
+
+      expect(resolveControlUiPaths(pathname)).toEqual(["", ""]);
+    },
+  );
 });

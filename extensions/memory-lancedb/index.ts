@@ -414,9 +414,16 @@ export default definePluginEntry({
               });
             }
 
+            const documentVector = await embeddings.embed(
+              agentId,
+              text,
+              currentCfg.embedding,
+              undefined,
+              "document",
+            );
             const entry = await db.store(agentId, {
               text,
-              vector,
+              vector: documentVector,
               importance,
               category,
             });
@@ -601,9 +608,19 @@ export default definePluginEntry({
                     return;
                   }
                   if (!existing) {
+                    const documentVector = await embeddings.embed(
+                      agentId,
+                      sanitized,
+                      currentCfg.embedding,
+                      undefined,
+                      "document",
+                    );
+                    if (captureStopped) {
+                      return;
+                    }
                     await db.store(agentId, {
                       text: sanitized,
-                      vector,
+                      vector: documentVector,
                       importance: 0.7,
                       category: detectCategory(sanitized),
                     });

@@ -78,6 +78,7 @@ enum ChatInlineMathScanner {
                 pieces.append(.literal(source))
             }
             cursor = candidate.end
+            codeSpanIndex = self.firstCodeSpan(endingAfter: cursor, in: codeSpans)
             textStart = cursor
         }
 

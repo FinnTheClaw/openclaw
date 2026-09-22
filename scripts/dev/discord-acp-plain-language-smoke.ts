@@ -656,6 +656,7 @@ function resolveCandidateBindings(params: {
   entries: ThreadBindingRecord[];
   minBoundAt: number;
   targetAgent: string;
+  channelId: string;
 }): ThreadBindingRecord[] {
   const normalizedTargetAgent = params.targetAgent.trim().toLowerCase();
   return params.entries
@@ -669,6 +670,9 @@ function resolveCandidateBindings(params: {
       }
       const agentId = (entry.agentId || "").trim().toLowerCase();
       if (normalizedTargetAgent && agentId && agentId !== normalizedTargetAgent) {
+        return false;
+      }
+      if (entry.channelId !== params.channelId) {
         return false;
       }
       return true;
@@ -950,6 +954,7 @@ async function run(argv = process.argv.slice(2)): Promise<SuccessResult | Failur
           entries,
           minBoundAt: minBindingBoundAt,
           targetAgent: args.targetAgent,
+          channelId: args.channelId,
         });
         winningBinding = latestCandidates[0];
       } catch {
@@ -1110,6 +1115,7 @@ export const testing = {
   parseDriverMode,
   parseArgs,
   redactDiscordApiPath,
+  resolveCandidateBindings,
   remainingTimeoutMs,
   requestDiscordJson,
 };

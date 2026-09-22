@@ -2405,6 +2405,38 @@ extension ChatViewModelOutboxTests {
         #expect(await MainActor.run { vm.input } == "newer draft")
     }
 
+    @Test func `stale slash validation cannot insert a turn into a switched session`() async throws {
+        let (store, _, databaseDirectory) = try makeOutboxStore()
+        defer { try? FileManager.default.removeItem(at: databaseDirectory) }
+        let transport = OutboxTestTransport(healthy: true, supportsSlashCommands: true)
+        let commandListGate = DeleteGate()
+        await transport.state.update { $0.commandListGate = commandListGate }
+        let vm = await makeOutboxViewModel(transport: transport, outbox: store)
+
+        await MainActor.run {
+            vm.input = "/remote-command"
+            vm.send()
+        }
+        await transport.state.commandListStarted.wait()
+        await MainActor.run { vm.switchSession(to: "other-session") }
+        try await waitUntil("new session fully bootstrapped before old validation returns") {
+            await MainActor.run {
+                vm.sessionKey == "other-session" && !vm.isLoading && vm.healthOK &&
+                    vm.hasRestoredOutboxMessages
+            }
+        }
+        await MainActor.run { vm.input = "new session draft" }
+        await commandListGate.open()
+        try await waitUntil("old submission settled") {
+            await MainActor.run { !vm.isSubmittingDraft }
+        }
+        #expect(await transport.state.sentMessages.isEmpty)
+        #expect(await store.loadCommands().isEmpty)
+        #expect(await userTexts(vm).isEmpty)
+        #expect(await MainActor.run { vm.pendingRunCount } == 0)
+        #expect(await MainActor.run { vm.input } == "new session draft")
+    }
+
     @Test func `stale history after the flush ack keeps the durable turn visible`() async throws {
         let (store, _, databaseDirectory) = try makeOutboxStore()
         defer { try? FileManager.default.removeItem(at: databaseDirectory) }

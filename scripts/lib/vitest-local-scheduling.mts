@@ -177,10 +177,10 @@ export function resolveLocalVitestScheduling(
   }
 
   if (loadRatio >= 0.75) {
-    const maxWorkers = Math.max(2, Math.ceil(inferred * 0.75));
+    const maxWorkers = Math.min(inferred, Math.max(1, Math.ceil(inferred * 0.75)));
     return {
       maxWorkers,
-      fileParallelism: true,
+      fileParallelism: maxWorkers > 1,
       throttledBySystem: maxWorkers < inferred,
     };
   }

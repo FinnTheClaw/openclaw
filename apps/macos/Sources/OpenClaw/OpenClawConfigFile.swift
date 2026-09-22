@@ -86,8 +86,20 @@ enum OpenClawConfigFile {
                 return false
             }
             let url = self.url()
-            let previousData = try? Data(contentsOf: url)
+            let previousData: Data?
+            do {
+                previousData = try Data(contentsOf: url)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                previousData = nil
+            } catch {
+                self.logger.warning("config write rejected: existing config could not be read")
+                return false
+            }
             let previousRoot = previousData.flatMap { self.parseConfigData($0) }
+            guard previousData == nil || previousRoot != nil else {
+                self.logger.warning("config write rejected: existing config could not be parsed")
+                return false
+            }
             let previousBytes = previousData?.count
             let previousAttributes = try? FileManager().attributesOfItem(atPath: url.path)
             let hadMetaBefore = self.hasMeta(previousRoot)

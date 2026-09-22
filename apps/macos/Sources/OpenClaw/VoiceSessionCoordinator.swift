@@ -62,6 +62,12 @@ final class VoiceSessionCoordinator {
         VoiceWakeOverlayController.shared.updatePartial(token: token, transcript: text, attributed: attributed)
     }
 
+    func updateUserText(token: UUID, text: String, attributed: NSAttributedString) {
+        guard self.session?.token == token else { return }
+        self.session?.text = text
+        self.session?.attributed = attributed
+    }
+
     func finalize(
         token: UUID,
         text: String,

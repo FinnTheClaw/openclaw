@@ -341,8 +341,11 @@ export class SessionOrganizerController {
 
   handleSessionListDragOver(event: DragEvent) {
     const routeDrag = sidebarRouteDragActive(event.dataTransfer);
-    const sessionKey = readSessionDragData(event.dataTransfer);
-    const session = sessionKey ? this.host.findSidebarSessionByKey(sessionKey) : undefined;
+    const session = sessionDragActive(event.dataTransfer)
+      ? this.draggingSessionKey
+        ? this.host.findSidebarSessionByKey(this.draggingSessionKey)
+        : undefined
+      : undefined;
     if (!routeDrag && !session?.pinned) {
       return;
     }

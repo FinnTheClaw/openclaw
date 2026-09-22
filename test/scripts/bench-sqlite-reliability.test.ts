@@ -153,6 +153,30 @@ describe("scripts/bench-sqlite-reliability", () => {
     expect(stopRequests).toBe(1);
   });
 
+  it("rejects an initial WAL overrun even when the file shrinks before polling", async () => {
+    const walPath = path.join(
+      tempDirs.make("openclaw-sqlite-reliability-test-"),
+      "database.sqlite-wal",
+    );
+    let stopRequests = 0;
+
+    fs.writeFileSync(walPath, Buffer.alloc(2048));
+    await expect(
+      monitorSqliteWalDuring({
+        maxWalBytes: 1024,
+        onLimitExceeded: () => {
+          stopRequests += 1;
+        },
+        operation: async () => {
+          fs.truncateSync(walPath, 0);
+          return "complete";
+        },
+        walPath,
+      }),
+    ).rejects.toThrow("SQLite reliability WAL exceeded the 1024-byte profile limit: 2048 bytes");
+    expect(stopRequests).toBe(1);
+  });
+
   it("rejects malformed arguments before creating state", () => {
     const unknown = runProof(["--wat"]);
     expect(unknown.status).toBe(2);

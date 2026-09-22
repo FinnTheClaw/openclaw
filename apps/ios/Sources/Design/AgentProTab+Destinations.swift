@@ -168,6 +168,7 @@ extension AgentProTab {
         AgentProDreamingDestination(
             headerSidebarAction: self.directHeaderSidebarAction(for: .dreaming),
             overview: self.overview,
+            agentID: self.activeAgentID,
             gatewayConnected: self.gatewayConnected,
             overviewLoading: self.overviewLoading,
             dreamingValue: self.dreamingValue,

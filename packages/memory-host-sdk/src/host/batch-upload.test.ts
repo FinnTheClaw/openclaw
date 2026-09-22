@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withTestTimeout } from "../../../../test/helpers/promise.js";
 import { uploadBatchJsonlFile } from "./batch-upload.js";
+import { buildBatchHeaders } from "./batch-utils.js";
 import { withRemoteHttpResponse } from "./remote-http.js";
 import { createPendingResponse } from "./response-snippet.test-harness.js";
 
@@ -208,5 +209,34 @@ describe("uploadBatchJsonlFile", () => {
       fixture.dispose();
       await withTestTimeout(settled, 1_000, "upload JSON cleanup did not settle");
     }
+  });
+
+  it.each(["CONTENT-TYPE", "Content-type"])(
+    "lets Request assign the multipart boundary after removing %s",
+    (contentType) => {
+      const headers = buildBatchHeaders(
+        { headers: { Authorization: "Bearer test", [contentType]: "application/json" } },
+        { json: false },
+      );
+      const form = new FormData();
+      form.set("file", new Blob(["{}"], { type: "application/jsonl" }), "batch.jsonl");
+      const request = new Request("https://memory.example/files", {
+        method: "POST",
+        headers,
+        body: form,
+      });
+
+      expect(request.headers.get("content-type")).toContain("multipart/form-data; boundary=");
+      expect(headers).toEqual({ Authorization: "Bearer test" });
+    },
+  );
+
+  it("preserves a caller JSON content type regardless of its casing", () => {
+    expect(
+      buildBatchHeaders(
+        { headers: { "Content-type": "application/problem+json" } },
+        { json: true },
+      ),
+    ).toEqual({ "Content-type": "application/problem+json" });
   });
 });

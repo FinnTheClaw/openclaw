@@ -1,4 +1,5 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
+import { parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   deliveryContextFromSession,
   sessionDeliveryChannel,
@@ -39,6 +40,7 @@ export function normalizeSessionEntryTimestamp(entry: SessionEntry): SessionEntr
 }
 
 export function bindSessionRoot(params: {
+  mainKey: string;
   entry: SessionEntry;
   sessionKey: string;
   updatedAt: number;
@@ -59,12 +61,13 @@ export function bindSessionRoot(params: {
 }
 
 export function bindSessionWindowEntryProjection(params: {
+  mainKey: string;
   entry: SessionEntry;
   sessionKey: string;
 }) {
   return {
     previous_session_id: normalizeText(params.entry.previousSessionId),
-    session_scope: resolveSqliteSessionScope(params.entry, params.sessionKey),
+    session_scope: resolveSqliteSessionScope(params.entry, params.sessionKey, params.mainKey),
     started_at: finiteSqliteNumber(params.entry.startedAt),
     ended_at: finiteSqliteNumber(params.entry.endedAt),
     status: normalizeStatus(params.entry.status),
@@ -138,10 +141,10 @@ function normalizeSqliteCreatedActorType(value: unknown) {
 function resolveSqliteSessionScope(
   entry: Pick<SessionEntry, "chatType">,
   sessionKey: string,
+  mainKey: string,
 ): "conversation" | "shared-main" | "group" | "channel" {
   const chatType = normalizeSessionRowChatType(entry.chatType);
-  const normalizedKey = sessionKey.trim().toLowerCase();
-  if (chatType === "direct" && (normalizedKey === "main" || normalizedKey.endsWith(":main"))) {
+  if (chatType === "direct" && parseAgentSessionKey(sessionKey)?.rest === mainKey) {
     return "shared-main";
   }
   if (chatType === "group" || chatType === "channel") {

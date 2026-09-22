@@ -80,7 +80,7 @@ function forEachSessionHourSlice(
   let cursor = startMs;
   while (cursor < endMs) {
     const date = new Date(cursor);
-    const nextHour = setToHourEnd(date, timeZone);
+    const nextHour = setToHourEnd(date);
     const nextMs = Math.min(nextHour.getTime(), endMs);
     const minutes = Math.max((nextMs - cursor) / 60000, 0);
     visitor({
@@ -205,14 +205,10 @@ function getHourAndWeekdayForUtcQuarterBucket(
   };
 }
 
-function setToHourEnd(date: Date, zone: "local" | "utc"): Date {
-  const next = new Date(date);
-  if (zone === "utc") {
-    next.setUTCMinutes(59, 59, 999);
-  } else {
-    next.setMinutes(59, 59, 999);
-  }
-  return next;
+function setToHourEnd(date: Date): Date {
+  const elapsedInHour =
+    (date.getMinutes() * 60 + date.getSeconds()) * 1000 + date.getMilliseconds();
+  return new Date(date.getTime() + 60 * 60 * 1000 - elapsedInHour - 1);
 }
 
 function forEachSessionTokenUsageBucket(
@@ -259,7 +255,7 @@ function sessionSpanTouchesSelectedHours(
     if (hours.includes(hour)) {
       return true;
     }
-    const nextHour = setToHourEnd(date, timeZone);
+    const nextHour = setToHourEnd(date);
     const nextMs = Math.min(nextHour.getTime(), endMs);
     cursor = nextMs + 1;
   }

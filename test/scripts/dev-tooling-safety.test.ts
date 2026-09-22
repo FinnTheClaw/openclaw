@@ -283,6 +283,34 @@ describe("script-specific dev tooling hardening", () => {
     );
   });
 
+  it("selects ACP bindings only from the requested parent channel", () => {
+    const candidates = discordSmokeTesting.resolveCandidateBindings({
+      channelId: "requested-channel",
+      entries: [
+        {
+          agentId: "codex",
+          boundAt: 100,
+          channelId: "requested-channel",
+          targetKind: "acp",
+          targetSessionKey: "correct-session",
+          threadId: "correct-thread",
+        },
+        {
+          agentId: "codex",
+          boundAt: 101,
+          channelId: "other-channel",
+          targetKind: "acp",
+          targetSessionKey: "unrelated-session",
+          threadId: "unrelated-thread",
+        },
+      ],
+      minBoundAt: 99,
+      targetAgent: "codex",
+    });
+
+    expect(candidates.map((candidate) => candidate.threadId)).toEqual(["correct-thread"]);
+  });
+
   it("aborts stalled Discord smoke fetches at the request timeout", async () => {
     let signal: AbortSignal | undefined;
     const request = discordSmokeTesting.requestDiscordJson({

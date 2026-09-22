@@ -147,6 +147,12 @@ async function runModel(opts: {
       { apiKey: opts.apiKey, maxTokens: 64 },
     );
     const durationMs = Date.now() - started;
+    if (res.stopReason === "error" || res.stopReason === "aborted") {
+      const detail = res.errorMessage ? `: ${res.errorMessage}` : "";
+      throw new Error(
+        `${opts.label} run ${i + 1}/${opts.runs} failed (${res.stopReason})${detail}`,
+      );
+    }
     results.push({ durationMs, usage: res.usage });
     console.log(`${opts.label} run ${i + 1}/${opts.runs}: ${durationMs}ms`);
   }

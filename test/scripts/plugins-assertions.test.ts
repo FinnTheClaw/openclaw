@@ -1668,6 +1668,47 @@ fs.renameSync = (source, destination) => {
     }
   });
 
+  it("allows absent marketplace records only under legacy compatibility", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "openclaw-marketplace-records-"));
+    const home = path.join(root, "home");
+    const scratchRoot = path.join(root, "scratch");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(scratchRoot, { recursive: true });
+
+    try {
+      const legacy = spawnSync(process.execPath, [ASSERTIONS_SCRIPT, "marketplace-records"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: home,
+          OPENCLAW_PACKAGE_ACCEPTANCE_LEGACY_COMPAT: "1",
+          OPENCLAW_PLUGINS_TMP_DIR: scratchRoot,
+          OPENCLAW_STATE_DIR: path.join(home, ".openclaw"),
+        },
+      });
+      const modern = spawnSync(process.execPath, [ASSERTIONS_SCRIPT, "marketplace-records"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: home,
+          OPENCLAW_PLUGINS_TMP_DIR: scratchRoot,
+          OPENCLAW_STATE_DIR: path.join(home, ".openclaw"),
+        },
+      });
+
+      expect(legacy.status, legacy.stderr).toBe(0);
+      expect(legacy.stdout).toContain(
+        "legacy package did not persist marketplace install record for marketplace-shortcut",
+      );
+      expect(legacy.stdout).toContain(
+        "legacy package did not persist marketplace install record for marketplace-direct",
+      );
+      expect(modern.status).not.toBe(0);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   it("compares local plugin source paths by canonical path", () => {
     const root = mkdtempSync(path.join(tmpdir(), "openclaw-plugins-assertions-"));
     const home = path.join(root, "home");

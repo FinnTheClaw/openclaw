@@ -71,7 +71,7 @@ function createSourceResolver(files: readonly string[]) {
   };
 }
 
-function importDeclarationHasRuntimeEdge(node: ts.ImportDeclaration): boolean {
+export function importDeclarationHasRuntimeEdge(node: ts.ImportDeclaration): boolean {
   if (!node.importClause) {
     return true;
   }
@@ -82,10 +82,10 @@ function importDeclarationHasRuntimeEdge(node: ts.ImportDeclaration): boolean {
   if (node.importClause.name || !bindings || ts.isNamespaceImport(bindings)) {
     return true;
   }
-  return bindings.elements.some((element) => !element.isTypeOnly);
+  return true;
 }
 
-function exportDeclarationHasRuntimeEdge(node: ts.ExportDeclaration): boolean {
+export function exportDeclarationHasRuntimeEdge(node: ts.ExportDeclaration): boolean {
   if (!node.moduleSpecifier || node.isTypeOnly) {
     return false;
   }
@@ -93,7 +93,7 @@ function exportDeclarationHasRuntimeEdge(node: ts.ExportDeclaration): boolean {
   if (!clause || ts.isNamespaceExport(clause)) {
     return true;
   }
-  return clause.elements.some((element) => !element.isTypeOnly);
+  return true;
 }
 
 function collectRuntimeStaticImports(

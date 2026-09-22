@@ -521,4 +521,18 @@ const re = /\d+/;
     });
     expect(result.finalArgs).not.toHaveProperty("foo");
   });
+
+  it.each([
+    ["ordinary", '{"id":9007199254740993}', { id: "9007199254740993" }],
+    ["prefix", '{"id":9007199254740993}x', { id: "9007199254740993" }],
+    ["smart-quoted", "{“id”:9007199254740993}", { id: "9007199254740993" }],
+    ["nested", '{"payload":{"id":9007199254740993}}', { payload: { id: "9007199254740993" } }],
+    ["quoted-string control", '{"id":"9007199254740993"}', { id: "9007199254740993" }],
+  ])(
+    "preserves unsafe integer IDs in %s repaired arguments",
+    async (_branch, delta, expectedArgs) => {
+      const result = await runToolCallRepairCase({ delta, includePreamble: false });
+      expectAllToolCallArgs(result, expectedArgs);
+    },
+  );
 });
