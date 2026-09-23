@@ -221,25 +221,38 @@ async function restoreIndexedDatabases(snapshot: IdbDatabaseSnapshot[]): Promise
         () => {
           void (async () => {
             const db = r.result;
-            for (const storeSnap of dbSnap.stores) {
-              if (storeSnap.records.length === 0) {
-                continue;
-              }
-              const tx = db.transaction(storeSnap.name, "readwrite");
-              const store = tx.objectStore(storeSnap.name);
-              for (const rec of storeSnap.records) {
-                if (storeSnap.keyPath !== null) {
-                  store.put(rec.value);
-                } else {
-                  store.put(rec.value, rec.key);
+            try {
+              for (const storeSnap of dbSnap.stores) {
+                if (storeSnap.records.length === 0) {
+                  continue;
                 }
+                const tx = db.transaction(storeSnap.name, "readwrite");
+                const store = tx.objectStore(storeSnap.name);
+                for (const rec of storeSnap.records) {
+                  if (storeSnap.keyPath !== null) {
+                    store.put(rec.value);
+                  } else {
+                    store.put(rec.value, rec.key);
+                  }
+                }
+                await new Promise<void>((res, rej) => {
+                  tx.addEventListener("complete", () => res(), { once: true });
+                  tx.addEventListener(
+                    "abort",
+                    () => rej(toErrorObject(tx.error, "IndexedDB transaction aborted")),
+                    { once: true },
+                  );
+                  tx.addEventListener(
+                    "error",
+                    () => rej(toErrorObject(tx.error, "IndexedDB transaction failed")),
+                    { once: true },
+                  );
+                });
               }
-              await new Promise<void>((res) => {
-                tx.addEventListener("complete", () => res(), { once: true });
-              });
+              resolve();
+            } finally {
+              db.close();
             }
-            db.close();
-            resolve();
           })().catch(reject);
         },
         { once: true },

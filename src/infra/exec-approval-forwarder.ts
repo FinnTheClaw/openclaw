@@ -253,6 +253,9 @@ async function deliverToTargets(params: {
     try {
       const payload = params.buildPayload(target);
       await params.beforeDeliver?.(target, payload);
+      if (params.shouldSend && !params.shouldSend()) {
+        return;
+      }
       const send = await params.deliver({
         cfg: params.cfg,
         channel,
@@ -423,6 +426,9 @@ function createApprovalHandlers<
       }),
     );
 
+    // A resolution queued during route lookup still precedes its pending notice.
+    const queuedBeforeDelivery = pendingEntry.queued;
+
     void trackDelivery(() =>
       deliverToTargets({
         cfg,
@@ -450,7 +456,8 @@ function createApprovalHandlers<
           });
         },
         deliver: params.deliver,
-        shouldSend: () => pending.isCurrent(pendingEntry),
+        shouldSend: () =>
+          pending.isCurrent(pendingEntry) && pendingEntry.queued === queuedBeforeDelivery,
       }).then(() => pending.completeDelivery(pendingEntry, pendingEntry.value)),
     ).catch((err: unknown) => {
       log.error(

@@ -132,8 +132,7 @@ function extractKimiMessageText(message: KimiMessage | undefined): string | unde
   if (content) {
     return content;
   }
-  const reasoning = message?.reasoning_content?.trim();
-  return reasoning || undefined;
+  return undefined;
 }
 
 function extractKimiCitations(data: KimiSearchResponse): string[] {

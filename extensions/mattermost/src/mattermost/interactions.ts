@@ -390,7 +390,7 @@ export function createMattermostInteractionHandler(params: {
     actionName: string;
     postId: string;
     post: MattermostPost;
-  }) => Promise<void>;
+  }) => Promise<{ completion: Promise<unknown> } | false>;
   log?: (message: string) => void;
 }): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { client, accountId, log } = params;
@@ -625,9 +625,8 @@ export function createMattermostInteractionHandler(params: {
       }
     }
 
-    // Dispatch as system event so the agent can handle it.
-    // Wrapped in try/catch — the post update below must still run even if
-    // system event dispatch fails (e.g. missing sessionKey or channel lookup).
+    // A click is acknowledged only after at least one dispatch path accepts it.
+    let systemEventAccepted = false;
     try {
       const eventLabel =
         `Mattermost button click: action="${actionId}" ` +
@@ -642,7 +641,7 @@ export function createMattermostInteractionHandler(params: {
           })
         : `agent:main:mattermost:${accountId}:${payload.channel_id}`;
 
-      core.system.enqueueSystemEvent(eventLabel, {
+      systemEventAccepted = core.system.enqueueSystemEvent(eventLabel, {
         sessionKey,
         contextKey: `mattermost:interaction:${payload.post_id}:${actionId}`,
       });
@@ -650,7 +649,38 @@ export function createMattermostInteractionHandler(params: {
       log?.(`mattermost interaction: system event dispatch failed: ${String(err)}`);
     }
 
-    // Update the post via API to replace buttons with a completion indicator.
+    let syntheticDispatchAccepted = false;
+    if (params.dispatchButtonClick) {
+      try {
+        const admission = await params.dispatchButtonClick({
+          channelId: payload.channel_id,
+          userId: payload.user_id,
+          userName,
+          actionId,
+          actionName: clickedButtonName,
+          postId: payload.post_id,
+          post: originalPost,
+        });
+        if (admission) {
+          syntheticDispatchAccepted = true;
+          // Admission is route preparation. The agent turn may outlast Mattermost's callback.
+          void admission.completion.catch((err) => {
+            log?.(`mattermost interaction: dispatchButtonClick failed: ${String(err)}`);
+          });
+        }
+      } catch (err) {
+        log?.(`mattermost interaction: dispatchButtonClick admission failed: ${String(err)}`);
+      }
+    }
+
+    if (!systemEventAccepted && !syntheticDispatchAccepted) {
+      res.statusCode = 503;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: "Interaction dispatch failed" }));
+      return;
+    }
+
+    // Do not show completion until a dispatch path has accepted the click.
     try {
       await updateMattermostPost(client, payload.post_id, {
         message: originalMessage,
@@ -666,26 +696,8 @@ export function createMattermostInteractionHandler(params: {
       log?.(`mattermost interaction: failed to update post ${payload.post_id}: ${String(err)}`);
     }
 
-    // Respond with empty JSON — the post update is handled above
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end("{}");
-
-    // Dispatch a synthetic inbound message so the agent responds to the button click.
-    if (params.dispatchButtonClick) {
-      try {
-        await params.dispatchButtonClick({
-          channelId: payload.channel_id,
-          userId: payload.user_id,
-          userName,
-          actionId,
-          actionName: clickedButtonName,
-          postId: payload.post_id,
-          post: originalPost,
-        });
-      } catch (err) {
-        log?.(`mattermost interaction: dispatchButtonClick failed: ${String(err)}`);
-      }
-    }
   };
 }

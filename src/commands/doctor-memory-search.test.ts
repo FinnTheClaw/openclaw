@@ -18,6 +18,12 @@ const resolveAgentWorkspaceDir = vi.hoisted(() =>
 );
 const resolveMemorySearchConfig = vi.hoisted(() => vi.fn());
 const resolveApiKeyForProviderCore = vi.hoisted(() => vi.fn());
+const resolveEnvApiKey = vi.hoisted(() =>
+  vi.fn((_provider: string, _env?: NodeJS.ProcessEnv): unknown => null),
+);
+const resolveUsableCustomProviderApiKey = vi.hoisted(() =>
+  vi.fn((_params: { env?: NodeJS.ProcessEnv }): unknown => null),
+);
 const hasAnyAuthProfileStoreSource = vi.hoisted(() => vi.fn(() => true));
 const hasAuthProfileStoreSourceForProvider = vi.hoisted(() => vi.fn(() => true));
 const isConfiguredAwsSdkAuthProfileForProvider = vi.hoisted(() => vi.fn(() => false));
@@ -95,8 +101,8 @@ vi.mock("../agents/memory-search.js", () => ({
 
 vi.mock("../agents/model-auth.js", () => ({
   resolveApiKeyForProviderCore,
-  resolveEnvApiKey: vi.fn(() => null),
-  resolveUsableCustomProviderApiKey: vi.fn(() => null),
+  resolveEnvApiKey,
+  resolveUsableCustomProviderApiKey,
 }));
 
 vi.mock("../agents/auth-profiles.js", () => ({
@@ -340,6 +346,10 @@ describe("noteMemorySearchHealth", () => {
     resolveMemorySearchConfig.mockReset();
     resolveApiKeyForProviderCore.mockReset();
     resolveApiKeyForProviderCore.mockRejectedValue(new Error("missing key"));
+    resolveEnvApiKey.mockReset();
+    resolveEnvApiKey.mockReturnValue(null);
+    resolveUsableCustomProviderApiKey.mockReset();
+    resolveUsableCustomProviderApiKey.mockReturnValue(null);
     hasAnyAuthProfileStoreSource.mockReset();
     hasAnyAuthProfileStoreSource.mockReturnValue(true);
     hasAuthProfileStoreSourceForProvider.mockReset();
@@ -373,6 +383,105 @@ describe("noteMemorySearchHealth", () => {
       },
     });
     resetMemoryRecallMocks();
+  });
+
+  describe("explicit-env remote credential diagnosis", () => {
+    it.each([
+      ["D01 OpenAI inspected-only key", "openai", "OPENAI_API_KEY", true, false, true],
+      ["D02 OpenAI ambient-only key", "openai", "OPENAI_API_KEY", false, true, false],
+      ["D03 Gemini inspected-only key", "gemini", "GOOGLE_API_KEY", true, false, true],
+      ["D04 Gemini ambient-only key", "gemini", "GOOGLE_API_KEY", false, true, false],
+      ["D05 OpenAI both keys", "openai", "OPENAI_API_KEY", true, true, true],
+      ["D06 OpenAI neither key", "openai", "OPENAI_API_KEY", false, false, false],
+    ] as const)(
+      "%s",
+      async (_name, provider, envVar, inspectedHasKey, ambientHasKey, expectedAvailable) => {
+        const previous = process.env[envVar];
+        try {
+          if (ambientHasKey) {
+            process.env[envVar] = "ambient-test-key";
+          } else {
+            delete process.env[envVar];
+          }
+          hasAuthProfileStoreSourceForProvider.mockReturnValue(false);
+          resolveEnvApiKey.mockImplementation((_provider, env) =>
+            env?.[envVar] ? { apiKey: "redacted", source: "env:test", mode: "api-key" } : null,
+          );
+          await runMemorySearchHealth(provider, {
+            env: inspectedHasKey ? { [envVar]: "inspected-test-key" } : {},
+            skipAuthProfileResolution: true,
+          });
+          expect(note.mock.calls.length === 0).toBe(expectedAvailable);
+          expect(resolveEnvApiKey).toHaveBeenCalledWith(
+            provider === "gemini" ? "google" : provider,
+            expect.any(Object),
+          );
+        } finally {
+          if (previous === undefined) {
+            delete process.env[envVar];
+          } else {
+            process.env[envVar] = previous;
+          }
+        }
+      },
+    );
+
+    it.each([
+      ["D07 Custom inspected-only env key", true, false, true],
+      ["D08 Custom ambient-only env key", false, true, false],
+    ] as const)("%s", async (_name, inspectedHasKey, ambientHasKey, expectedAvailable) => {
+      const previous = process.env.CUSTOM_EMBEDDING_KEY;
+      try {
+        if (ambientHasKey) {
+          process.env.CUSTOM_EMBEDDING_KEY = "ambient-test-key";
+        } else {
+          delete process.env.CUSTOM_EMBEDDING_KEY;
+        }
+        hasAuthProfileStoreSourceForProvider.mockReturnValue(false);
+        resolveUsableCustomProviderApiKey.mockImplementation((params) =>
+          params.env?.CUSTOM_EMBEDDING_KEY
+            ? { apiKey: "redacted", source: "models.providers.mistral", mode: "api-key" }
+            : null,
+        );
+        await runMemorySearchHealth("mistral", {
+          env: inspectedHasKey ? { CUSTOM_EMBEDDING_KEY: "inspected-test-key" } : {},
+          skipAuthProfileResolution: true,
+        });
+        expect(note.mock.calls.length === 0).toBe(expectedAvailable);
+        expect(resolveUsableCustomProviderApiKey).toHaveBeenCalledWith(
+          expect.objectContaining({ provider: "mistral", env: expect.any(Object) }),
+        );
+      } finally {
+        if (previous === undefined) {
+          delete process.env.CUSTOM_EMBEDDING_KEY;
+        } else {
+          process.env.CUSTOM_EMBEDDING_KEY = previous;
+        }
+      }
+    });
+
+    it("D09 Full doctor rejects ambient-only credential", async () => {
+      hasAuthProfileStoreSourceForProvider.mockReturnValue(false);
+      resolveApiKeyForProviderCore.mockResolvedValue({
+        apiKey: "ambient-test-key",
+        source: "env: OPENAI_API_KEY",
+        mode: "api-key",
+      });
+      await runMemorySearchHealth("openai", { env: {} });
+      expect(firstNoteMessage()).toContain("no API key was found");
+      expect(resolveApiKeyForProviderCore).not.toHaveBeenCalled();
+    });
+
+    it("D10 Full doctor accepts isolated profile-source evidence", async () => {
+      hasAuthProfileStoreSourceForProvider.mockReturnValue(true);
+      await runMemorySearchHealth("openai", { env: {} });
+      expect(note).not.toHaveBeenCalled();
+      expect(hasAuthProfileStoreSourceForProvider).toHaveBeenCalledWith(
+        "openai",
+        "/tmp/agent-default",
+      );
+      expect(resolveApiKeyForProviderCore).not.toHaveBeenCalled();
+    });
   });
 
   it("uses the memory-core recovery message when the local provider plugin is missing", async () => {

@@ -123,23 +123,33 @@ function isValidHostname(hostname: string): boolean {
  * Safely extract hostname from a host header value.
  * Handles IPv6 addresses and prevents injection via malformed values.
  */
-function extractHostname(hostHeader: string): string | null {
-  if (!hostHeader) {
+type HostAuthority = { hostname: string; port?: string };
+
+function parseHostPort(suffix: string): string | null | undefined {
+  if (!suffix) {
+    return undefined;
+  }
+  if (!/^:\d+$/u.test(suffix)) {
+    return null;
+  }
+  const port = suffix.slice(1);
+  const numericPort = Number(port);
+  return numericPort >= 1 && numericPort <= 65535 ? port : null;
+}
+
+function extractHostAuthority(hostHeader: string): HostAuthority | null {
+  if (!hostHeader || hostHeader.includes("@")) {
     return null;
   }
 
-  // Handle IPv6 addresses: [::1]:8080
   if (hostHeader.startsWith("[")) {
     const endBracket = hostHeader.indexOf("]");
     if (endBracket === -1) {
-      return null; // Malformed IPv6
-    }
-    const suffix = hostHeader.slice(endBracket + 1);
-    if (suffix && !/^:\d+$/u.test(suffix)) {
       return null;
     }
+    const port = parseHostPort(hostHeader.slice(endBracket + 1));
     const hostname = hostHeader.slice(1, endBracket);
-    if (isIP(hostname) !== 6) {
+    if (port === null || isIP(hostname) !== 6) {
       return null;
     }
     try {
@@ -147,34 +157,28 @@ function extractHostname(hostHeader: string): string | null {
       if (!parsedHostname.startsWith("[") || !parsedHostname.endsWith("]")) {
         return null;
       }
-      return normalizeLowercaseStringOrEmpty(parsedHostname.slice(1, -1));
+      return { hostname: normalizeLowercaseStringOrEmpty(parsedHostname.slice(1, -1)), port };
     } catch {
       return null;
     }
   }
 
-  // Handle IPv4/domain with optional port
-  // Check for @ which could indicate user info injection attempt
-  if (hostHeader.includes("@")) {
-    return null; // Reject potential injection: attacker.com:80@legitimate.com
-  }
-
-  const hostname = hostHeader.split(":").at(0);
-
-  // Validate the extracted hostname
-  if (!hostname || !isValidHostname(hostname)) {
+  const colon = hostHeader.indexOf(":");
+  const hostname = colon < 0 ? hostHeader : hostHeader.slice(0, colon);
+  const port = parseHostPort(colon < 0 ? "" : hostHeader.slice(colon));
+  if (!isValidHostname(hostname) || port === null) {
     return null;
   }
-
-  return normalizeLowercaseStringOrEmpty(hostname);
+  return { hostname: normalizeLowercaseStringOrEmpty(hostname), port };
 }
 
-function extractHostnameFromHeader(headerValue: string): string | null {
+function extractHostname(hostHeader: string): string | null {
+  return extractHostAuthority(hostHeader)?.hostname ?? null;
+}
+
+function extractHostAuthorityFromHeader(headerValue: string): HostAuthority | null {
   const first = headerValue.split(",")[0]?.trim();
-  if (!first) {
-    return null;
-  }
-  return extractHostname(first);
+  return first ? extractHostAuthority(first) : null;
 }
 
 function normalizeAllowedHosts(allowedHosts?: string[]): Set<string> | null {
@@ -249,7 +253,7 @@ export function reconstructWebhookUrl(ctx: WebhookContext, options?: WebhookUrlO
   }
 
   // Determine host - with security validation
-  let host: string | null = null;
+  let authority: HostAuthority | null = null;
 
   if (shouldTrustForwardingHeaders) {
     // Try forwarding headers in priority order
@@ -258,9 +262,9 @@ export function reconstructWebhookUrl(ctx: WebhookContext, options?: WebhookUrlO
     for (const headerName of forwardingHeaders) {
       const headerValue = getHeader(headers, headerName);
       if (headerValue) {
-        const extracted = extractHostnameFromHeader(headerValue);
-        if (extracted && isAllowedForwardedHost(extracted)) {
-          host = extracted;
+        const extracted = extractHostAuthorityFromHeader(headerValue);
+        if (extracted && isAllowedForwardedHost(extracted.hostname)) {
+          authority = extracted;
           break;
         }
       }
@@ -268,32 +272,24 @@ export function reconstructWebhookUrl(ctx: WebhookContext, options?: WebhookUrlO
   }
 
   // Fallback to Host header if no valid forwarding header found
-  if (!host) {
+  if (!authority) {
     const hostHeader = getHeader(headers, "host");
     if (hostHeader) {
-      const extracted = extractHostnameFromHeader(hostHeader);
-      if (extracted) {
-        host = extracted;
-      }
+      authority = extractHostAuthorityFromHeader(hostHeader);
     }
   }
 
   // Last resort: try to extract from ctx.url
-  if (!host) {
+  if (!authority) {
     try {
       const parsed = new URL(ctx.url);
       const extracted = extractHostname(parsed.host);
       if (extracted) {
-        host = extracted;
+        authority = { hostname: extracted };
       }
     } catch {
       // URL parsing failed - use empty string (will result in invalid URL)
-      host = "";
     }
-  }
-
-  if (!host) {
-    host = "";
   }
 
   // Extract path from the context URL (fallback to "/" on parse failure)
@@ -305,7 +301,9 @@ export function reconstructWebhookUrl(ctx: WebhookContext, options?: WebhookUrlO
     // URL parsing failed
   }
 
-  return `${proto}://${formatHostnameForUrl(host)}${path}`;
+  const host = authority ? formatHostnameForUrl(authority.hostname) : "";
+  const port = authority?.port ? `:${authority.port}` : "";
+  return `${proto}://${host}${port}${path}`;
 }
 
 function buildTwilioVerificationUrl(

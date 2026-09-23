@@ -8,6 +8,8 @@ import {
   renderArtifactsMarkdown,
   renderAttendanceCsv,
   renderAttendanceMarkdown,
+  renderArtifactsSummary,
+  renderAttendanceSummary,
   writeArtifactsSummary,
   writeAttendanceSummary,
   writeMeetExportBundle,
@@ -80,8 +82,15 @@ export function registerGoogleMeetArtifactCommands(context: GoogleMeetCliCommand
       if (options.format && options.format !== "summary") {
         throw new Error("Unsupported format. Expected summary or markdown.");
       }
-      writeArtifactsSummary(result);
-      writeStdoutLine("token source: %s", resolveTokenSource(resolved.token.refreshed));
+      if (options.output?.trim()) {
+        await writeCliOutput(
+          options,
+          `${renderArtifactsSummary(result)}token source: ${resolveTokenSource(resolved.token.refreshed)}\n`,
+        );
+      } else {
+        writeArtifactsSummary(result);
+        writeStdoutLine("token source: %s", resolveTokenSource(resolved.token.refreshed));
+      }
     });
 
   addGoogleMeetArtifactOptions(
@@ -121,8 +130,15 @@ export function registerGoogleMeetArtifactCommands(context: GoogleMeetCliCommand
       if (options.format && options.format !== "summary") {
         throw new Error("Unsupported format. Expected summary, markdown, or csv.");
       }
-      writeAttendanceSummary(result);
-      writeStdoutLine("token source: %s", resolveTokenSource(resolved.token.refreshed));
+      if (options.output?.trim()) {
+        await writeCliOutput(
+          options,
+          `${renderAttendanceSummary(result)}token source: ${resolveTokenSource(resolved.token.refreshed)}\n`,
+        );
+      } else {
+        writeAttendanceSummary(result);
+        writeStdoutLine("token source: %s", resolveTokenSource(resolved.token.refreshed));
+      }
     });
 
   addGoogleMeetArtifactOptions(

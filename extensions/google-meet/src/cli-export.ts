@@ -1,5 +1,6 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { format } from "node:util";
 import JSZip from "jszip";
 import { writeExternalFileWithinRoot } from "openclaw/plugin-sdk/security-runtime";
 import { listGoogleMeetCalendarEvents, type GoogleMeetCalendarLookupResult } from "./calendar.js";
@@ -17,42 +18,45 @@ import type {
   GoogleMeetLatestConferenceRecordResult,
 } from "./meet.js";
 
-export function writeArtifactsSummary(result: GoogleMeetArtifactsResult): void {
+export function writeArtifactsSummary(
+  result: GoogleMeetArtifactsResult,
+  writeLine: typeof writeStdoutLine = writeStdoutLine,
+): void {
   if (result.input) {
-    writeStdoutLine("input: %s", result.input);
+    writeLine("input: %s", result.input);
   }
   if (result.space) {
-    writeStdoutLine("space: %s", result.space.name);
+    writeLine("space: %s", result.space.name);
   }
-  writeStdoutLine("conference records: %d", result.conferenceRecords.length);
+  writeLine("conference records: %d", result.conferenceRecords.length);
   for (const entry of result.artifacts) {
-    writeStdoutLine("");
-    writeStdoutLine("record: %s", entry.conferenceRecord.name);
-    writeStdoutLine("started: %s", formatOptional(entry.conferenceRecord.startTime));
-    writeStdoutLine("ended: %s", formatOptional(entry.conferenceRecord.endTime));
-    writeStdoutLine("participants: %d", entry.participants.length);
-    writeStdoutLine("recordings: %d", entry.recordings.length);
-    writeStdoutLine("transcripts: %d", entry.transcripts.length);
-    writeStdoutLine(
+    writeLine("");
+    writeLine("record: %s", entry.conferenceRecord.name);
+    writeLine("started: %s", formatOptional(entry.conferenceRecord.startTime));
+    writeLine("ended: %s", formatOptional(entry.conferenceRecord.endTime));
+    writeLine("participants: %d", entry.participants.length);
+    writeLine("recordings: %d", entry.recordings.length);
+    writeLine("transcripts: %d", entry.transcripts.length);
+    writeLine(
       "transcript entries: %d",
       entry.transcriptEntries.reduce((count, transcript) => count + transcript.entries.length, 0),
     );
-    writeStdoutLine("smart notes: %d", entry.smartNotes.length);
+    writeLine("smart notes: %d", entry.smartNotes.length);
     if (entry.smartNotesError) {
-      writeStdoutLine("smart notes warning: %s", entry.smartNotesError);
+      writeLine("smart notes warning: %s", entry.smartNotesError);
     }
     for (const recording of entry.recordings) {
-      writeStdoutLine("- recording: %s", recording.name);
+      writeLine("- recording: %s", recording.name);
     }
     for (const transcript of entry.transcripts) {
-      writeStdoutLine("- transcript: %s", transcript.name);
+      writeLine("- transcript: %s", transcript.name);
       if (transcript.documentTextError) {
-        writeStdoutLine("- transcript document body warning: %s", transcript.documentTextError);
+        writeLine("- transcript document body warning: %s", transcript.documentTextError);
       }
     }
     for (const transcriptEntries of entry.transcriptEntries) {
       if (transcriptEntries.entriesError) {
-        writeStdoutLine(
+        writeLine(
           "- transcript entries warning: %s: %s",
           transcriptEntries.transcript,
           transcriptEntries.entriesError,
@@ -60,38 +64,41 @@ export function writeArtifactsSummary(result: GoogleMeetArtifactsResult): void {
       }
     }
     for (const smartNote of entry.smartNotes) {
-      writeStdoutLine("- smart note: %s", smartNote.name);
+      writeLine("- smart note: %s", smartNote.name);
       if (smartNote.documentTextError) {
-        writeStdoutLine("- smart note document body warning: %s", smartNote.documentTextError);
+        writeLine("- smart note document body warning: %s", smartNote.documentTextError);
       }
     }
   }
 }
 
-export function writeAttendanceSummary(result: GoogleMeetAttendanceResult): void {
+export function writeAttendanceSummary(
+  result: GoogleMeetAttendanceResult,
+  writeLine: typeof writeStdoutLine = writeStdoutLine,
+): void {
   if (result.input) {
-    writeStdoutLine("input: %s", result.input);
+    writeLine("input: %s", result.input);
   }
   if (result.space) {
-    writeStdoutLine("space: %s", result.space.name);
+    writeLine("space: %s", result.space.name);
   }
-  writeStdoutLine("conference records: %d", result.conferenceRecords.length);
-  writeStdoutLine("attendance rows: %d", result.attendance.length);
+  writeLine("conference records: %d", result.conferenceRecords.length);
+  writeLine("attendance rows: %d", result.attendance.length);
   for (const row of result.attendance) {
     const identity = row.displayName || row.user || row.participant;
-    writeStdoutLine("");
-    writeStdoutLine("participant: %s", identity);
-    writeStdoutLine("record: %s", row.conferenceRecord);
-    writeStdoutLine("resource: %s", row.participant);
-    writeStdoutLine("participants merged: %d", row.participants?.length ?? 1);
-    writeStdoutLine("first joined: %s", formatOptional(row.firstJoinTime ?? row.earliestStartTime));
-    writeStdoutLine("last left: %s", formatOptional(row.lastLeaveTime ?? row.latestEndTime));
-    writeStdoutLine("duration: %s", formatDuration(row.durationMs));
-    writeStdoutLine("late: %s", row.late ? formatDuration(row.lateByMs) : "no");
-    writeStdoutLine("early leave: %s", row.earlyLeave ? formatDuration(row.earlyLeaveByMs) : "no");
-    writeStdoutLine("sessions: %d", row.sessions.length);
+    writeLine("");
+    writeLine("participant: %s", identity);
+    writeLine("record: %s", row.conferenceRecord);
+    writeLine("resource: %s", row.participant);
+    writeLine("participants merged: %d", row.participants?.length ?? 1);
+    writeLine("first joined: %s", formatOptional(row.firstJoinTime ?? row.earliestStartTime));
+    writeLine("last left: %s", formatOptional(row.lastLeaveTime ?? row.latestEndTime));
+    writeLine("duration: %s", formatDuration(row.durationMs));
+    writeLine("late: %s", row.late ? formatDuration(row.lateByMs) : "no");
+    writeLine("early leave: %s", row.earlyLeave ? formatDuration(row.earlyLeaveByMs) : "no");
+    writeLine("sessions: %d", row.sessions.length);
     for (const session of row.sessions) {
-      writeStdoutLine(
+      writeLine(
         "- %s: %s -> %s",
         session.name,
         formatOptional(session.startTime),
@@ -99,6 +106,22 @@ export function writeAttendanceSummary(result: GoogleMeetAttendanceResult): void
       );
     }
   }
+}
+
+function renderSummary(writer: (writeLine: typeof writeStdoutLine) => void): string {
+  const lines: string[] = [];
+  writer((...values) => {
+    lines.push(format(...values));
+  });
+  return `${lines.join("\n")}\n`;
+}
+
+export function renderArtifactsSummary(result: GoogleMeetArtifactsResult): string {
+  return renderSummary((writeLine) => writeArtifactsSummary(result, writeLine));
+}
+
+export function renderAttendanceSummary(result: GoogleMeetAttendanceResult): string {
+  return renderSummary((writeLine) => writeAttendanceSummary(result, writeLine));
 }
 
 export function writeLatestConferenceRecordSummary(

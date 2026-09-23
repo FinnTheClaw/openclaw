@@ -372,7 +372,7 @@ describe("verifyPlivoWebhook", () => {
     const authToken = "test-ipv6-auth-token";
     const nonce = "nonce-ipv6-v3";
     const postBody = "CallUUID=ipv6-uuid&CallStatus=in-progress";
-    const webhookUrl = "https://[2001:db8::1]/voice/webhook?flow=answer&callId=ipv6";
+    const webhookUrl = "https://[2001:db8::1]:8443/voice/webhook?flow=answer&callId=ipv6";
     const signature = plivoV3Signature({
       authToken,
       urlWithQuery: webhookUrl,
@@ -684,7 +684,7 @@ describe("reconstructWebhookUrl", () => {
       method: "POST",
     });
 
-    expect(verificationUrl).toBe("https://[2001:db8::1]/voice/webhook?callId=ipv6");
+    expect(verificationUrl).toBe("https://[2001:db8::1]:8443/voice/webhook?callId=ipv6");
     expect(new URL(verificationUrl)).toMatchObject({
       hostname: "[2001:db8::1]",
       pathname: "/voice/webhook",
@@ -732,7 +732,7 @@ describe("verifyTwilioWebhook", () => {
   it("verifies a signature reconstructed from an allowed bracketed IPv6 proxy host", () => {
     const authToken = "test-ipv6-auth-token";
     const postBody = "CallSid=CS-IPV6&CallStatus=completed";
-    const webhookUrl = "https://[2001:db8::1]/voice/webhook?callId=ipv6";
+    const webhookUrl = "https://[2001:db8::1]:8443/voice/webhook?callId=ipv6";
     const signature = twilioSignature({ authToken, url: webhookUrl, postBody });
 
     const result = verifyTwilioWebhook(

@@ -783,6 +783,7 @@ async function noteMemorySearchHealthForAgent(
     hasRemoteApiKey ||
     (await hasApiKeyForProvider(provider, cfg, agentDir, {
       skipProfileResolution: opts?.skipAuthProfileResolution === true,
+      env: opts?.env,
     }))
   ) {
     return;
@@ -846,17 +847,20 @@ async function hasApiKeyForProvider(
   provider: string,
   cfg: OpenClawConfig,
   agentDir: string,
-  opts?: { skipProfileResolution?: boolean },
+  opts?: { skipProfileResolution?: boolean; env?: NodeJS.ProcessEnv },
 ): Promise<boolean> {
   const authProviderId = MEMORY_EMBEDDING_PROVIDER_AUTH_IDS.get(provider) ?? provider;
+  const env = opts?.env ?? process.env;
   if (
     isSecretRef(findNormalizedProviderValue(cfg.models?.providers, authProviderId)?.apiKey) ||
-    resolveEnvApiKey(authProviderId) ||
-    resolveUsableCustomProviderApiKey({ cfg, provider: authProviderId })
+    resolveEnvApiKey(authProviderId, env) ||
+    resolveUsableCustomProviderApiKey({ cfg, provider: authProviderId, env })
   ) {
     return true;
   }
-  if (opts?.skipProfileResolution === true) {
+  // The core resolver has no env parameter. With a distinct inspected env, use
+  // profile-source evidence rather than accidentally accepting ambient keys.
+  if (opts?.skipProfileResolution === true || (opts?.env && opts.env !== process.env)) {
     if (authProviderId === "amazon-bedrock") {
       return hasConfiguredAwsSdkAuthForProvider(authProviderId, cfg);
     }

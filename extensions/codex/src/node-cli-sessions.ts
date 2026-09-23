@@ -276,7 +276,7 @@ async function runCodexExecResume(params: {
       input: params.prompt,
       env: process.env,
       killGraceMs: 2_000,
-      killProcessTree: false,
+      killProcessTree: true,
       terminateOnOutputError: true,
       timeoutMs: params.timeoutMs,
     });

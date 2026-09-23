@@ -23,6 +23,27 @@ const OTHER_DATABASE_PREFIX = "openclaw-matrix-persistence-other-test";
 const cryptoDatabaseName = `${DATABASE_PREFIX}::matrix-sdk-crypto`;
 const otherCryptoDatabaseName = `${OTHER_DATABASE_PREFIX}::matrix-sdk-crypto`;
 
+function writeTestSnapshot(snapshotPath: string, snapshots: unknown[]): void {
+  writeMatrixIdbSnapshotJson({
+    storageRootDir: path.dirname(snapshotPath),
+    snapshotJson: JSON.stringify(snapshots),
+    databaseCount: snapshots.length,
+  });
+}
+
+function uniqueEmailStore(
+  records: Array<{ key: IDBValidKey; value: { email: string } }>,
+  name = "sessions",
+) {
+  return {
+    name,
+    keyPath: null,
+    autoIncrement: false,
+    indexes: [{ name: "email", keyPath: "email", multiEntry: false, unique: true }],
+    records,
+  };
+}
+
 async function clearTestIndexedDbState(): Promise<void> {
   await clearAllIndexedDbState({ databasePrefix: DATABASE_PREFIX });
   await clearAllIndexedDbState({ databasePrefix: OTHER_DATABASE_PREFIX });
@@ -217,5 +238,246 @@ describe("Matrix IndexedDB persistence", () => {
       pendingDatabases.resolve(databaseList);
       databasesSpy.mockRestore();
     }
+  });
+});
+
+describe("Matrix IndexedDB restore transaction outcomes", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    resetPluginStateStoreForTests();
+    installMatrixTestRuntime();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-idb-abort-"));
+    await clearTestIndexedDbState();
+  });
+
+  afterEach(async () => {
+    await clearTestIndexedDbState();
+    resetFileLockStateForTest();
+    resetPluginStateStoreForTests();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("IDB-A01 settles false on a duplicate unique-index value", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [
+          uniqueEmailStore([
+            { key: "one", value: { email: "same@example.org" } },
+            { key: "two", value: { email: "same@example.org" } },
+          ]),
+        ],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(false);
+  });
+
+  it("IDB-A02 settles false on a multi-entry unique-index collision", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [
+          {
+            name: "sessions",
+            keyPath: null,
+            autoIncrement: false,
+            indexes: [{ name: "tags", keyPath: "tags", multiEntry: true, unique: true }],
+            records: [
+              { key: "one", value: { tags: ["a", "shared"] } },
+              { key: "two", value: { tags: ["b", "shared"] } },
+            ],
+          },
+        ],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(false);
+  });
+
+  it("IDB-A03 preserves an existing record when a later restore conflicts", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [uniqueEmailStore([{ key: "old", value: { email: "same@example.org" } }])],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(true);
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [uniqueEmailStore([{ key: "new", value: { email: "same@example.org" } }])],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(false);
+    await expect(
+      readDatabaseRecords({ name: cryptoDatabaseName, storeName: "sessions" }),
+    ).resolves.toEqual([{ key: "old", value: { email: "same@example.org" } }]);
+  });
+
+  it("IDB-A04 closes the database after a synchronous invalid-key failure", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [
+          uniqueEmailStore([
+            { key: { invalid: true } as unknown as IDBValidKey, value: { email: "a@example.org" } },
+          ]),
+        ],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(false);
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.deleteDatabase(cryptoDatabaseName);
+        request.addEventListener("success", () => resolve(), { once: true });
+        request.addEventListener("blocked", () => reject(new Error("database remained open")), {
+          once: true,
+        });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("IDB-A05 settles false when a later store aborts after the first commits", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [
+          uniqueEmailStore([{ key: "ok", value: { email: "ok@example.org" } }], "first"),
+          uniqueEmailStore(
+            [
+              { key: "one", value: { email: "same@example.org" } },
+              { key: "two", value: { email: "same@example.org" } },
+            ],
+            "second",
+          ),
+        ],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(false);
+    await expect(
+      readDatabaseRecords({ name: cryptoDatabaseName, storeName: "first" }),
+    ).resolves.toEqual([{ key: "ok", value: { email: "ok@example.org" } }]);
+  });
+
+  it("IDB-A06 releases the lock for a corrected retry at the same path", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [
+          uniqueEmailStore([
+            { key: "one", value: { email: "same@example.org" } },
+            { key: "two", value: { email: "same@example.org" } },
+          ]),
+        ],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(false);
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [
+          uniqueEmailStore([
+            { key: "one", value: { email: "one@example.org" } },
+            { key: "two", value: { email: "two@example.org" } },
+          ]),
+        ],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(true);
+    await expect(
+      readDatabaseRecords({ name: cryptoDatabaseName, storeName: "sessions" }),
+    ).resolves.toHaveLength(2);
+  });
+
+  it("IDB-A07 permits persistence after an aborted restore", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [
+          uniqueEmailStore([
+            { key: "one", value: { email: "same@example.org" } },
+            { key: "two", value: { email: "same@example.org" } },
+          ]),
+        ],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(false);
+    await expect(
+      persistIdbToDisk({ snapshotPath, databasePrefix: DATABASE_PREFIX, strict: true }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("IDB-A08 restores an empty store without waiting for a transaction", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [uniqueEmailStore([])],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(true);
+    await expect(
+      readDatabaseRecords({ name: cryptoDatabaseName, storeName: "sessions" }),
+    ).resolves.toEqual([]);
+  });
+
+  it("IDB-A09 preserves distinct indexed records on success", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    const records = [
+      { key: "one", value: { email: "one@example.org" } },
+      { key: "two", value: { email: "two@example.org" } },
+    ];
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [uniqueEmailStore(records)],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(true);
+    await expect(
+      readDatabaseRecords({ name: cryptoDatabaseName, storeName: "sessions" }),
+    ).resolves.toEqual(records);
+  });
+
+  it("IDB-A10 restores both databases in a valid multi-database snapshot", async () => {
+    const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
+    writeTestSnapshot(snapshotPath, [
+      {
+        name: cryptoDatabaseName,
+        version: 1,
+        stores: [uniqueEmailStore([{ key: "one", value: { email: "one@example.org" } }])],
+      },
+      {
+        name: otherCryptoDatabaseName,
+        version: 1,
+        stores: [uniqueEmailStore([{ key: "two", value: { email: "two@example.org" } }])],
+      },
+    ]);
+    await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(true);
+    await expect(
+      readDatabaseRecords({ name: cryptoDatabaseName, storeName: "sessions" }),
+    ).resolves.toEqual([{ key: "one", value: { email: "one@example.org" } }]);
+    await expect(
+      readDatabaseRecords({ name: otherCryptoDatabaseName, storeName: "sessions" }),
+    ).resolves.toEqual([{ key: "two", value: { email: "two@example.org" } }]);
   });
 });

@@ -228,6 +228,7 @@ function resolveRuntimeAvailableProviderAuth<T>(
     shouldResolvePluginSyntheticAuth({
       cfg: params.cfg,
       provider,
+      modelApi: params.modelApi,
       runtimeLookup: params.runtimeLookup,
     })
   ) {
@@ -243,6 +244,7 @@ export function hasRuntimeAvailableProviderAuth(params: RuntimeProviderAuthParam
       resolveSyntheticLocalProviderAuth({
         cfg: params.cfg,
         provider,
+        modelApi: params.modelApi,
         workspaceDir: params.workspaceDir,
         env: params.env,
       }),

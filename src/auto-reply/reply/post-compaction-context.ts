@@ -178,20 +178,28 @@ export function extractSections(
     let sectionLines: string[] = [];
     let inSection = false;
     let sectionLevel = 0;
-    let inCodeBlock = false;
+    let fence: { marker: "`" | "~"; length: number } | undefined;
 
     for (const line of lines) {
-      // Track fenced code blocks
-      if (line.trimStart().startsWith("```")) {
-        inCodeBlock = !inCodeBlock;
+      // A fence closes only with the same marker and at least its opening length.
+      const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+      const markerRun = fenceMatch?.[1] ?? "";
+      const fenceTail = fenceMatch?.[2] ?? "";
+      if (fence) {
+        if (
+          markerRun.startsWith(fence.marker) &&
+          markerRun.length >= fence.length &&
+          !fenceTail.trim()
+        ) {
+          fence = undefined;
+        }
         if (inSection) {
           sectionLines.push(line);
         }
         continue;
       }
-
-      // Skip heading detection inside code blocks
-      if (inCodeBlock) {
+      if (markerRun && (markerRun.startsWith("~") || !fenceTail.includes("`"))) {
+        fence = { marker: markerRun.startsWith("~") ? "~" : "`", length: markerRun.length };
         if (inSection) {
           sectionLines.push(line);
         }

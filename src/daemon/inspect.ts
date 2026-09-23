@@ -205,16 +205,6 @@ function isOpenClawGatewayLaunchdService(label: string, contents: string): boole
   return label.startsWith("ai.openclaw.");
 }
 
-function isOpenClawGatewaySystemdService(name: string, contents: string): boolean {
-  if (hasGatewayServiceMarker(contents)) {
-    return true;
-  }
-  if (!name.startsWith("openclaw-gateway")) {
-    return false;
-  }
-  return normalizeLowercaseStringOrEmpty(contents).includes("gateway");
-}
-
 function isOpenClawGatewayTaskName(name: string): boolean {
   const normalized = normalizeLowercaseStringOrEmpty(name);
   if (!normalized) {
@@ -366,13 +356,6 @@ async function scanSystemdDir(params: {
       ? "openclaw"
       : detectMarkerLineWithGateway(contents);
     if (!marker) {
-      continue;
-    }
-    if (
-      !params.includeManagedOpenClaw &&
-      marker === "openclaw" &&
-      isOpenClawGatewaySystemdService(name, contents)
-    ) {
       continue;
     }
     results.push({

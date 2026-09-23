@@ -56,8 +56,19 @@ async function readMatrixDirectAccountData(client: MatrixClient): Promise<Matrix
   try {
     const direct = (await client.getAccountData(EventType.Direct)) as MatrixDirectAccountData;
     return direct && typeof direct === "object" && !Array.isArray(direct) ? direct : {};
-  } catch {
-    return {};
+  } catch (error) {
+    const matrixError = error as {
+      httpStatus?: number;
+      statusCode?: number;
+      errcode?: string;
+      body?: { errcode?: string };
+    };
+    const status = matrixError?.httpStatus ?? matrixError?.statusCode;
+    const errcode = matrixError?.errcode ?? matrixError?.body?.errcode;
+    if (status === 404 && errcode === "M_NOT_FOUND") {
+      return {};
+    }
+    throw error;
   }
 }
 

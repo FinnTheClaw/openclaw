@@ -247,6 +247,84 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
   // These tests write real .service files to a temp dir and call findExtraGatewayServices
   // with that dir as HOME. No platform mocking or fs mocking needed.
   const isLinux = process.platform === "linux";
+  it.skipIf(!isLinux).each([
+    {
+      name: "D01 prefix backup",
+      units: [["openclaw-gateway-backup.service", CUSTOM_OPENCLAW_GATEWAY_CONTENTS]],
+      expected: ["openclaw-gateway-backup.service"],
+    },
+    {
+      name: "D02 prefix alternate",
+      units: [["openclaw-gateway-alt.service", CUSTOM_OPENCLAW_GATEWAY_CONTENTS]],
+      expected: ["openclaw-gateway-alt.service"],
+    },
+    {
+      name: "D03 prefix number",
+      units: [["openclaw-gateway2.service", CUSTOM_OPENCLAW_GATEWAY_CONTENTS]],
+      expected: ["openclaw-gateway2.service"],
+    },
+    {
+      name: "D04 canonical control",
+      units: [["openclaw-gateway.service", GATEWAY_SERVICE_CONTENTS]],
+      expected: [],
+    },
+    {
+      name: "D05 custom control",
+      units: [["custom-openclaw.service", CUSTOM_OPENCLAW_GATEWAY_CONTENTS]],
+      expected: ["custom-openclaw.service"],
+    },
+    {
+      name: "D06 companion control",
+      units: [["openclaw-gateway-backup.service", COMPANION_SERVICE_CONTENTS]],
+      expected: [],
+    },
+    {
+      name: "D07 comment control",
+      units: [
+        [
+          "openclaw-gateway-backup.service",
+          "[Service]\n# ExecStart=/opt/openclaw gateway\nExecStart=/bin/sleep 1\n",
+        ],
+      ],
+      expected: [],
+    },
+    {
+      name: "D08 legacy control",
+      units: [["clawdbot-gateway.service", CLAWDBOT_GATEWAY_CONTENTS]],
+      expected: ["clawdbot-gateway.service"],
+    },
+    {
+      name: "D09 two extras",
+      units: [
+        ["openclaw-gateway.service", GATEWAY_SERVICE_CONTENTS],
+        ["openclaw-gateway-backup.service", CUSTOM_OPENCLAW_GATEWAY_CONTENTS],
+        ["openclaw-gateway-alt.service", CUSTOM_OPENCLAW_GATEWAY_CONTENTS],
+      ],
+      expected: ["openclaw-gateway-alt.service", "openclaw-gateway-backup.service"],
+    },
+    {
+      name: "D10 marked extra",
+      units: [["openclaw-gateway-backup.service", GATEWAY_SERVICE_CONTENTS]],
+      expected: ["openclaw-gateway-backup.service"],
+    },
+  ] satisfies Array<{ name: string; units: Array<[string, string]>; expected: string[] }>)(
+    "$name",
+    async ({ units, expected }) => {
+      const tmpHome = tempDirs.make("openclaw-extra-", os.tmpdir());
+      const systemdDir = path.join(tmpHome, ".config", "systemd", "user");
+      await fs.mkdir(systemdDir, { recursive: true });
+      for (const [name, contents] of units) {
+        await fs.writeFile(path.join(systemdDir, name), contents);
+      }
+      const result = await findExtraGatewayServices({ HOME: tmpHome });
+      expect(result.map((service) => service.label).sort()).toEqual(expected);
+      for (const service of result) {
+        expect(service.scope).toBe("user");
+        expect(service.detail).toBe(`unit: ${path.join(systemdDir, service.label)}`);
+        expect(service.marker).toBe(service.label.startsWith("clawdbot") ? "clawdbot" : "openclaw");
+      }
+    },
+  );
 
   it.skipIf(!isLinux)("does not report openclaw-test.service as a gateway service", async () => {
     const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());

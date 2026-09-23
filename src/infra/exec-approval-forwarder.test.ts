@@ -366,13 +366,239 @@ async function expectForwardedApprovalText(params: {
   expect(getFirstDeliveryText(deliver)).toContain(params.expectedText);
 }
 
+function installSlackPendingHook(onTarget: (to: string) => Promise<void> | void): void {
+  setActivePluginRegistry(
+    createTestRegistry([
+      {
+        pluginId: "slack",
+        plugin: {
+          ...createChannelTestPluginBase({ id: "slack" as ChannelPlugin["id"] }),
+          outbound: {
+            deliveryMode: "direct",
+            beforeDeliverPayload: async ({ target }) => {
+              await onTarget(target.to);
+            },
+          },
+        } satisfies Pick<ChannelPlugin, "id" | "meta" | "capabilities" | "config" | "outbound">,
+        source: "test",
+      },
+    ]),
+  );
+}
+
+function approvalDeliveryTexts(deliver: ReturnType<typeof vi.fn>): string[] {
+  return deliver.mock.calls.map(
+    ([params]) => (params as { payloads?: Array<{ text?: string }> }).payloads?.[0]?.text ?? "",
+  );
+}
+
 describe("exec approval forwarder", () => {
   beforeEach(() => {
     setActivePluginRegistry(defaultRegistry);
+    mockLogError.mockClear();
   });
 
   afterEach(() => {
     setActivePluginRegistry(emptyRegistry);
+  });
+
+  it.each([
+    {
+      name: "A01 allow during hook",
+      targets: ["U123"],
+      held: ["U123"],
+      terminal: "allow-once",
+      total: 1,
+      pending: 0,
+    },
+    {
+      name: "A02 deny during hook",
+      targets: ["U123"],
+      held: ["U123"],
+      terminal: "deny",
+      total: 1,
+      pending: 0,
+    },
+    {
+      name: "A03 expire during hook",
+      targets: ["U123"],
+      held: ["U123"],
+      terminal: "expire",
+      total: 1,
+      pending: 0,
+    },
+    {
+      name: "A04 two targets held",
+      targets: ["U1", "U2"],
+      held: ["U1", "U2"],
+      terminal: "allow-once",
+      total: 2,
+      pending: 0,
+    },
+    {
+      name: "A05 one fast one held",
+      targets: ["U1", "U2"],
+      held: ["U2"],
+      terminal: "allow-once",
+      total: 3,
+      pending: 1,
+    },
+    {
+      name: "A06 pending control",
+      targets: ["U123"],
+      held: ["U123"],
+      terminal: "none",
+      total: 1,
+      pending: 1,
+    },
+    {
+      name: "A09 microtask order",
+      targets: ["U123"],
+      held: ["U123"],
+      terminal: "microtask",
+      total: 1,
+      pending: 0,
+    },
+    {
+      name: "A10 hook error control",
+      targets: ["U123"],
+      held: ["U123"],
+      terminal: "hook-error",
+      total: 1,
+      pending: 0,
+    },
+  ])("$name", async (scenario) => {
+    if (scenario.terminal === "expire") {
+      vi.useFakeTimers();
+    }
+    const gates = new Map(scenario.held.map((to) => [to, createDeferred()]));
+    const hookEntered = vi.fn();
+    installSlackPendingHook(async (to) => {
+      hookEntered(to);
+      await gates.get(to)?.promise;
+      if (scenario.terminal === "hook-error") {
+        throw new Error("controlled pending hook failure");
+      }
+    });
+    const { deliver, forwarder } = createForwarder({
+      cfg: makeTargetsCfg(scenario.targets.map((to) => ({ channel: "slack", to }))),
+    });
+    await expect(forwarder.handleRequested(baseRequest)).resolves.toBe(true);
+    if (scenario.terminal === "expire") {
+      await flushPendingDelivery();
+      expect(hookEntered).toHaveBeenCalledTimes(scenario.targets.length);
+    } else {
+      await vi.waitFor(() => expect(hookEntered).toHaveBeenCalledTimes(scenario.targets.length));
+    }
+    if (scenario.name.startsWith("A05")) {
+      await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+    }
+    if (scenario.terminal === "expire") {
+      await vi.advanceTimersByTimeAsync(baseRequest.expiresAtMs - 1000);
+    } else if (
+      scenario.terminal === "allow-once" ||
+      scenario.terminal === "deny" ||
+      scenario.terminal === "microtask"
+    ) {
+      await forwarder.handleResolved({
+        id: baseRequest.id,
+        decision: scenario.terminal === "deny" ? "deny" : "allow-once",
+        resolvedBy: "reviewer",
+        ts: 2000,
+      });
+      if (scenario.terminal === "microtask") {
+        await Promise.resolve();
+      }
+    }
+    for (const gate of gates.values()) {
+      gate.resolve();
+    }
+    if (scenario.terminal === "hook-error") {
+      await flushPendingDelivery();
+      await forwarder.handleResolved({
+        id: baseRequest.id,
+        decision: "allow-once",
+        resolvedBy: "reviewer",
+        ts: 2000,
+      });
+    }
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(scenario.total));
+    await forwarder.stop();
+    const texts = approvalDeliveryTexts(deliver);
+    expect(texts).toHaveLength(scenario.total);
+    expect(texts.filter((text) => text.includes("approval required"))).toHaveLength(
+      scenario.pending,
+    );
+    if (scenario.terminal === "expire") {
+      expect(texts).toEqual([expect.stringContaining("approval expired")]);
+    }
+    if (scenario.terminal === "deny") {
+      expect(texts).toEqual([expect.stringContaining("approval denied")]);
+    }
+  });
+
+  it("A07 pre-route resolution control", async () => {
+    installSlackPendingHook(() => {});
+    const target = createDeferred<{ channel: "slack"; to: string }>();
+    const resolveSessionTarget = vi.fn(() => target.promise);
+    const { deliver, forwarder } = createForwarder({
+      cfg: makeSessionCfg(),
+      resolveSessionTarget,
+    });
+    const requested = forwarder.handleRequested(baseRequest);
+    await vi.waitFor(() => expect(resolveSessionTarget).toHaveBeenCalledOnce());
+    await forwarder.handleResolved({
+      id: baseRequest.id,
+      decision: "allow-once",
+      resolvedBy: "reviewer",
+      ts: 2000,
+    });
+    target.resolve({ channel: "slack", to: "U123" });
+    await expect(requested).resolves.toBe(true);
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(2));
+    await forwarder.stop();
+    const texts = approvalDeliveryTexts(deliver);
+    expect(texts[0]).toContain("approval required");
+    expect(texts[1]).not.toContain("approval required");
+  });
+
+  it("A08 reused ID generation", async () => {
+    const oldGate = createDeferred();
+    const hookEntered = vi.fn();
+    installSlackPendingHook(async () => {
+      hookEntered();
+      if (hookEntered.mock.calls.length === 1) {
+        await oldGate.promise;
+      }
+    });
+    const { deliver, forwarder } = createForwarder({ cfg: TARGETS_CFG });
+    await expect(
+      forwarder.handleRequested({
+        ...baseRequest,
+        request: { ...baseRequest.request, command: "old-generation-command" },
+      }),
+    ).resolves.toBe(true);
+    await vi.waitFor(() => expect(hookEntered).toHaveBeenCalledTimes(1));
+    await forwarder.handleResolved({
+      id: baseRequest.id,
+      decision: "deny",
+      resolvedBy: "reviewer",
+      ts: 2000,
+    });
+    await expect(
+      forwarder.handleRequested({
+        ...baseRequest,
+        request: { ...baseRequest.request, command: "new-generation-command" },
+      }),
+    ).resolves.toBe(true);
+    await vi.waitFor(() => expect(hookEntered).toHaveBeenCalledTimes(2));
+    oldGate.resolve();
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+    await forwarder.stop();
+    const texts = approvalDeliveryTexts(deliver);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain("new-generation-command");
+    expect(texts[0]).not.toContain("old-generation-command");
   });
 
   it("forwards to session target and resolves", async () => {

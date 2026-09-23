@@ -173,3 +173,148 @@ describe("ChatLog run state", () => {
     expect(chatLog.countPendingUsers()).toBe(0);
   });
 });
+
+describe("R7-L07-11 tool starts freeze only their owning assistant run", () => {
+  it("tui-tool-a-keeps-b", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.updateAssistant("B before.", "B");
+    const b = log.children[1];
+    log.startTool("A-tool", "read_file", { path: "a.txt" }, "A");
+    expect(log.children[1]).toBe(b);
+    expect(log.children).toHaveLength(3);
+  });
+
+  it("tui-tool-b-keeps-a", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.updateAssistant("B before.", "B");
+    const a = log.children[0];
+    log.startTool("B-tool", "read_file", { path: "b.txt" }, "B");
+    expect(log.children[0]).toBe(a);
+    expect(log.children).toHaveLength(3);
+  });
+
+  it("tui-ambiguous-tool-freezes-none", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.updateAssistant("B before.", "B");
+    const [a, b] = log.children;
+    log.startTool("unknown-tool", "read_file", { path: "unknown.txt" });
+    log.updateAssistant("A before.\nA after.", "A");
+    log.updateAssistant("B before.\nB after.", "B");
+    expect(log.children[0]).toBe(a);
+    expect(log.children[1]).toBe(b);
+    expect(log.children).toHaveLength(3);
+  });
+
+  it("tui-single-run-inference", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.startTool("A-tool", "read_file", { path: "a.txt" });
+    log.updateAssistant("A before.\nA after.", "A");
+    expect(log.children.map((child) => child.constructor.name)).toEqual([
+      "AssistantMessageComponent",
+      "ToolExecutionComponent",
+      "AssistantMessageComponent",
+    ]);
+    const rendered = normalizeTestText(log.render(120).join("\n"));
+    expect(rendered.indexOf("A before.")).toBeLessThan(rendered.indexOf("Read File"));
+    expect(rendered.indexOf("Read File")).toBeLessThan(rendered.indexOf("A after."));
+  });
+
+  it("tui-owned-cumulative-split", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.updateAssistant("B before.", "B");
+    log.startTool("A-tool", "read_file", { path: "a.txt" }, "A");
+    log.updateAssistant("A before.\nA after.", "A");
+    expect(log.children.map((child) => child.constructor.name)).toEqual([
+      "AssistantMessageComponent",
+      "AssistantMessageComponent",
+      "ToolExecutionComponent",
+      "AssistantMessageComponent",
+    ]);
+    const rendered = normalizeTestText(log.render(120).join("\n"));
+    expect(rendered.split("A before.")).toHaveLength(2);
+    expect(rendered.split("B before.")).toHaveLength(2);
+    expect(rendered.split("A after.")).toHaveLength(2);
+  });
+
+  it("tui-peer-continuation", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.updateAssistant("B before.", "B");
+    const b = log.children[1];
+    log.startTool("A-tool", "read_file", { path: "a.txt" }, "A");
+    log.updateAssistant("B before.\nB after.", "B");
+    expect(log.children[1]).toBe(b);
+    expect(log.children).toHaveLength(3);
+    const rendered = normalizeTestText(log.render(120).join("\n"));
+    expect(rendered.split("B before.")).toHaveLength(2);
+    expect(rendered.split("B after.")).toHaveLength(2);
+  });
+
+  it("tui-peer-finalization", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.updateAssistant("B before.", "B");
+    const b = log.children[1];
+    log.startTool("A-tool", "read_file", { path: "a.txt" }, "A");
+    log.finalizeAssistant("B final.", "B");
+    expect(log.children[1]).toBe(b);
+    expect(log.children).toHaveLength(3);
+    const rendered = normalizeTestText(log.render(120).join("\n"));
+    expect(rendered.split("B final.")).toHaveLength(2);
+  });
+
+  it("tui-repeated-tool-id", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.updateAssistant("B before.", "B");
+    const b = log.children[1];
+    const tool = log.startTool("A-tool", "read_file", { path: "a.txt" }, "A");
+    const repeated = log.startTool("A-tool", "read_file", { path: "b.txt" }, "A");
+    expect(repeated).toBe(tool);
+    expect(log.children[1]).toBe(b);
+    expect(log.children).toHaveLength(3);
+  });
+
+  it("tui-tool-result-isolation", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.updateAssistant("B before.", "B");
+    const b = log.children[1];
+    log.startTool("A-tool", "read_file", { path: "a.txt" }, "A");
+    log.updateToolResult("A-tool", { content: [{ type: "text", text: "done" }] });
+    expect(log.children[1]).toBe(b);
+    expect(log.children).toHaveLength(3);
+    expect(normalizeTestText(log.render(120).join("\n"))).toContain("B before.");
+  });
+
+  it("tui-three-run-interleave", () => {
+    const log = new ChatLog(40);
+    log.updateAssistant("A before.", "A");
+    log.updateAssistant("B before.", "B");
+    log.updateAssistant("C before.", "C");
+    const [a, b] = log.children;
+    log.startTool("C-tool", "read_file", { path: "c.txt" }, "C");
+    log.updateAssistant("A before.\nA after.", "A");
+    log.updateAssistant("B before.\nB after.", "B");
+    log.updateAssistant("C before.\nC after.", "C");
+    expect(log.children[0]).toBe(a);
+    expect(log.children[1]).toBe(b);
+    expect(log.children).toHaveLength(5);
+    const rendered = normalizeTestText(log.render(120).join("\n"));
+    for (const text of [
+      "A before.",
+      "A after.",
+      "B before.",
+      "B after.",
+      "C before.",
+      "C after.",
+    ]) {
+      expect(rendered.split(text)).toHaveLength(2);
+    }
+  });
+});

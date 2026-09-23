@@ -433,15 +433,17 @@ export class ChatLog extends Container {
   }
 
   // Tool rows freeze earlier cumulative text so later deltas render below the tool.
-  private freezeStreamingAssistants() {
-    for (const run of this.assistantRuns.values()) {
-      if (!run.streaming) {
-        continue;
-      }
-      run.frozen.add(run.streaming);
-      run.committedText = run.latestText ?? "";
-      run.streaming = undefined;
+  private freezeStreamingAssistant(runId?: string) {
+    if (!runId) {
+      return;
     }
+    const run = this.assistantRuns.get(runId);
+    if (!run?.streaming) {
+      return;
+    }
+    run.frozen.add(run.streaming);
+    run.committedText = run.latestText ?? "";
+    run.streaming = undefined;
   }
 
   startAssistant(text: string, runId?: string) {
@@ -576,7 +578,7 @@ export class ChatLog extends Container {
       return existing.component;
     }
     const owningRunId = runId ?? this.resolveSingleStreamingRunId();
-    this.freezeStreamingAssistants();
+    this.freezeStreamingAssistant(owningRunId);
     const component = new ToolExecutionComponent(toolName, args);
     component.setExpanded(this.toolsExpanded);
     this.tools.set(toolCallId, { component, runId: owningRunId, active: true });

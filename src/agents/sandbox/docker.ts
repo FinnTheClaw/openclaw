@@ -527,10 +527,23 @@ async function createSandboxContainer(params: {
     args.push("--env-file", envFile, cfg.image, "sleep", "infinity");
     await execContainer(engine, args);
   });
-  await execContainer(engine, ["start", name]);
-
-  if (cfg.setupCommand?.trim()) {
-    await execContainer(engine, ["exec", "-i", name, "/bin/sh", "-lc", cfg.setupCommand]);
+  try {
+    await execContainer(engine, ["start", name]);
+    if (cfg.setupCommand?.trim()) {
+      await execContainer(engine, ["exec", "-i", name, "/bin/sh", "-lc", cfg.setupCommand]);
+    }
+  } catch (error) {
+    // Only this call's successfully created container belongs to this cleanup.
+    // A failed setup must never be reused as a completed same-hash runtime.
+    try {
+      await execContainer(engine, ["rm", "-f", name]);
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        `Sandbox container ${name} failed to start or set up and could not be removed.`,
+      );
+    }
+    throw error;
   }
 }
 
@@ -643,9 +656,19 @@ async function ensureSandboxContainerLifecycle(
   let hashMismatch = false;
   const registryEntry = existingRegistryEntry ?? undefined;
   if (hasContainer) {
-    currentHash = await readContainerConfigHash(engine, containerName);
+    const labelHash = await readContainerConfigHash(engine, containerName);
+    currentHash = labelHash;
     if (!currentHash) {
       currentHash = registryEntry?.configHash ?? null;
+    }
+    if (
+      params.cfg.docker.setupCommand?.trim() &&
+      labelHash === expectedHash &&
+      registryEntry?.configHash !== expectedHash
+    ) {
+      throw new Error(
+        `Sandbox container ${containerName} has no completed setup record; inspect it before reuse.`,
+      );
     }
     hashMismatch = !currentHash || currentHash !== expectedHash;
     if (hashMismatch) {
@@ -670,6 +693,10 @@ async function ensureSandboxContainerLifecycle(
     }
   }
   if (!hasContainer) {
+    // An absent or replaced container cannot inherit an older setup record.
+    if (registryEntry) {
+      await removeRegistryEntry(containerName);
+    }
     await createSandboxContainer({
       engine,
       name: containerName,

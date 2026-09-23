@@ -21,6 +21,36 @@ describe("gateway cli backend live helpers", () => {
     liveHelpers = await import("./gateway-cli-backend.live-helpers.js");
   });
 
+  it.each([
+    ["C01 exact period", "CLI backend RESUME OK ABC.", "CLI backend RESUME OK ABC.", true],
+    ["C02 omitted period", "CLI backend RESUME OK ABC", "CLI backend RESUME OK ABC.", true],
+    ["C03 outer whitespace", "  CLI backend RESUME OK ABC.  ", "CLI backend RESUME OK ABC.", true],
+    [
+      "C04 negated prefix",
+      "I cannot verify CLI backend RESUME OK ABC.",
+      "CLI backend RESUME OK ABC.",
+      false,
+    ],
+    [
+      "C05 contradictory suffix",
+      "CLI backend RESUME OK ABC. but this failed",
+      "CLI backend RESUME OK ABC.",
+      false,
+    ],
+    [
+      "C06 embedded quote",
+      'It said "CLI backend RESUME OK ABC."',
+      "CLI backend RESUME OK ABC.",
+      false,
+    ],
+    ["C07 partial token", "CLI backend RESUME OK AB", "CLI backend RESUME OK ABC.", false],
+    ["C08 wrong nonce", "CLI backend RESUME OK XYZ.", "CLI backend RESUME OK ABC.", false],
+    ["C09 no-period exact", "CLI-RESUME-ABC", "CLI-RESUME-ABC", true],
+    ["C10 no-period truncated", "CLI-RESUME-AB", "CLI-RESUME-ABC", false],
+  ])("reply matcher %s", (_name, text, expected, matches) => {
+    expect(liveHelpers.matchesCliBackendReply(text, expected)).toBe(matches);
+  });
+
   beforeEach(() => {
     vi.useRealTimers();
   });

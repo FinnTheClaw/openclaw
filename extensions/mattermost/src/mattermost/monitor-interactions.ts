@@ -93,7 +93,7 @@ export function registerMattermostInteractions(params: {
           dropLabel: "interaction dispatch",
         });
         if (!eventPlan) {
-          return;
+          return false;
         }
         const { channelDisplay, channelId, kind, route, thread, to } = eventPlan;
         const bodyText = `[Button click: user @${button.userName} selected "${button.actionName}"]`;
@@ -110,7 +110,7 @@ export function registerMattermostInteractions(params: {
           CommandAuthorized: false,
         });
         const { replyOptions, replyPipeline, tableMode, textLimit } = eventPlan.createReplyPlan();
-        await core.channel.inbound.dispatch({
+        const completion = core.channel.inbound.dispatch({
           cfg,
           channel: "mattermost",
           accountId: account.accountId,
@@ -156,6 +156,7 @@ export function registerMattermostInteractions(params: {
           },
           replyOptions,
         });
+        return { completion };
       },
       log: (message) => runtime.log?.(message),
     }),

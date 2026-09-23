@@ -56,8 +56,10 @@ export function classifySkippableRealtimeVoiceConsultTranscript(
   // common conversational exits rather than work requests.
   if (
     !normalized.includes("?") &&
-    (/^(i'?ll|i will) be (right )?back\b/.test(normalized) ||
-      /\b(see you|bye(?:-bye)?|goodbye)\b/.test(normalized))
+    (/^(i'?ll|i will) be (right )?back[.!]*$/.test(normalized) ||
+      /^(?:(?:ok(?:ay)?|thanks?)[, ]+)?(?:bye(?:-bye)?|goodbye|see you)(?:\s+(?:for now|later|soon|tomorrow))?[.!]*$/.test(
+        normalized,
+      ))
   ) {
     return "non-actionable-closing";
   }

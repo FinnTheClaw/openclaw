@@ -35,12 +35,14 @@ describe("persistPendingFinalDeliveryMarker", () => {
 
     expect(result.sessionEntry?.pendingFinalDelivery?.deliveries).toEqual([
       { id: expect.any(String), state: "prepared" },
+      { id: expect.any(String), state: "prepared" },
     ]);
-    const deliveryId = result.sessionEntry?.pendingFinalDelivery?.deliveries?.[0]?.id;
+    const deliveryIds = result.sessionEntry?.pendingFinalDelivery?.deliveries?.map(({ id }) => id);
     expect(
       payloads.map(
         (payload) => getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion?.deliveryId,
       ),
-    ).toEqual([deliveryId, deliveryId]);
+    ).toEqual(deliveryIds);
+    expect(new Set(deliveryIds).size).toBe(2);
   });
 });

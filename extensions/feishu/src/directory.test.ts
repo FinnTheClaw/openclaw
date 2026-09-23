@@ -312,4 +312,160 @@ describe("feishu directory (config-backed)", () => {
       listFeishuDirectoryGroupsLive({ cfg: makeConfiguredCfg(), fallbackToStatic: false }),
     ).rejects.toThrow("forbidden");
   });
+
+  describe("round-seven live peer pagination", () => {
+    const users = (start: number, count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        open_id: `ou_${start + index}`,
+        name: `User ${start + index}`,
+      }));
+    const positiveCases = [
+      {
+        name: "feishu_peer_single_page_control",
+        pages: [{ items: users(0, 2), has_more: false }],
+        ids: ["ou_0", "ou_1"],
+        calls: 1,
+        limit: 2,
+      },
+      {
+        name: "feishu_peer_51st_user",
+        pages: [
+          { items: users(0, 50), has_more: true, page_token: "page-2" },
+          { items: users(50, 1), has_more: false },
+        ],
+        ids: users(0, 51).map((user) => user.open_id),
+        calls: 2,
+        limit: 51,
+      },
+      {
+        name: "feishu_peer_120_users",
+        pages: [
+          { items: users(0, 50), has_more: true, page_token: "page-2" },
+          { items: users(50, 50), has_more: true, page_token: "page-3" },
+          { items: users(100, 20), has_more: false },
+        ],
+        ids: users(0, 120).map((user) => user.open_id),
+        calls: 3,
+        limit: 120,
+      },
+      {
+        name: "feishu_peer_filtered_first_page_empty",
+        pages: [
+          { items: [{ open_id: "ou_other", name: "Other" }], has_more: true, page_token: "page-2" },
+          { items: [{ open_id: "ou_target", name: "Target" }], has_more: false },
+        ],
+        ids: ["ou_target"],
+        calls: 2,
+        limit: 1,
+        query: "target",
+      },
+      {
+        name: "feishu_peer_limit_stops_before_third_page",
+        pages: [
+          { items: users(0, 2), has_more: true, page_token: "page-2" },
+          { items: users(2, 1), has_more: false },
+        ],
+        ids: ["ou_0", "ou_1"],
+        calls: 1,
+        limit: 2,
+      },
+      {
+        name: "feishu_peer_missing_open_id_then_next_page",
+        pages: [
+          { items: [{ name: "Missing ID" }], has_more: true, page_token: "page-2" },
+          { items: [{ open_id: "ou_valid", name: "Valid" }], has_more: false },
+        ],
+        ids: ["ou_valid"],
+        calls: 2,
+        limit: 1,
+      },
+    ] as const;
+
+    it.each(positiveCases)("$name", async (testCase) => {
+      let page = 0;
+      const list = vi.fn(async () => ({ code: 0, data: testCase.pages[page++] }));
+      createFeishuClientMock.mockReturnValueOnce({ contact: { user: { list } } });
+      const peers = await listFeishuDirectoryPeersLive({
+        cfg: makeConfiguredCfg(),
+        limit: testCase.limit,
+        query: "query" in testCase ? testCase.query : undefined,
+        fallbackToStatic: false,
+      });
+      expect(peers.map((peer) => peer.id)).toEqual(testCase.ids);
+      expect(list).toHaveBeenCalledTimes(testCase.calls);
+      if (testCase.calls > 1) {
+        expect(list).toHaveBeenNthCalledWith(2, {
+          params: { page_size: Math.min(testCase.limit, 50), page_token: "page-2" },
+        });
+      }
+    });
+
+    it("feishu_peer_second_page_error_strict", async () => {
+      const list = vi
+        .fn()
+        .mockResolvedValueOnce({
+          code: 0,
+          data: { items: [], has_more: true, page_token: "page-2" },
+        })
+        .mockResolvedValueOnce({ code: 403, msg: "forbidden" });
+      createFeishuClientMock.mockReturnValueOnce({ contact: { user: { list } } });
+      await expect(
+        listFeishuDirectoryPeersLive({
+          cfg: makeConfiguredCfg(),
+          limit: 2,
+          fallbackToStatic: false,
+        }),
+      ).rejects.toThrow("forbidden");
+      expect(list).toHaveBeenCalledTimes(2);
+    });
+
+    it("feishu_peer_second_page_exception_default_fallback", async () => {
+      const list = vi
+        .fn()
+        .mockResolvedValueOnce({
+          code: 0,
+          data: { items: [], has_more: true, page_token: "page-2" },
+        })
+        .mockRejectedValueOnce(new Error("transport failed"));
+      createFeishuClientMock.mockReturnValueOnce({ contact: { user: { list } } });
+      const peers = await listFeishuDirectoryPeersLive({
+        cfg: makeConfiguredCfg(),
+        query: "a",
+        limit: 2,
+      });
+      expect(peers.map((peer) => peer.id)).toEqual(["alice", "carla"]);
+      expect(list).toHaveBeenCalledTimes(2);
+    });
+
+    it("feishu_peer_repeated_token", async () => {
+      const list = vi.fn(async () => ({
+        code: 0,
+        data: { items: [], has_more: true, page_token: "repeat" },
+      }));
+      createFeishuClientMock.mockReturnValueOnce({ contact: { user: { list } } });
+      await expect(
+        listFeishuDirectoryPeersLive({
+          cfg: makeConfiguredCfg(),
+          fallbackToStatic: false,
+        }),
+      ).rejects.toThrow("Feishu live peer directory returned a repeated page token");
+      expect(list).toHaveBeenCalledTimes(2);
+    });
+
+    it("feishu_peer_page_cap", async () => {
+      let page = 0;
+      const list = vi.fn(async () => ({
+        code: 0,
+        data: { items: [], has_more: true, page_token: `page-${++page}` },
+      }));
+      createFeishuClientMock.mockReturnValueOnce({ contact: { user: { list } } });
+      await expect(
+        listFeishuDirectoryPeersLive({
+          cfg: makeConfiguredCfg(),
+          fallbackToStatic: false,
+        }),
+      ).rejects.toThrow("Feishu live peer directory pagination limit exceeded");
+      expect(list).toHaveBeenCalledTimes(100);
+    });
+  });
 });

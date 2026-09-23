@@ -894,7 +894,7 @@ describe("createMattermostInteractionHandler", () => {
     setInteractionRuntime(enqueueSystemEvent);
     const { context, token } = createActionContext();
     const resolveSessionKey = vi.fn().mockResolvedValue("session:thread:root-9");
-    const dispatchButtonClick = vi.fn();
+    const dispatchButtonClick = vi.fn(async () => ({ completion: Promise.resolve() }));
     const fetchedPost = createActionPost({ rootId: "root-9" });
     const handler = createMattermostInteractionHandler({
       client: createMattermostClientMock(async (_path: string, init?: { method?: string }) =>
@@ -980,6 +980,166 @@ describe("createMattermostInteractionHandler", () => {
       post: originalPost,
     });
     expect(dispatchButtonClick).not.toHaveBeenCalled();
+  });
+  describe("round-seven dispatch completion", () => {
+    const cases = [
+      {
+        name: "mm_dispatch_system_only_success",
+        system: "accepted",
+        synthetic: "absent",
+        status: 200,
+        completed: true,
+      },
+      {
+        name: "mm_dispatch_system_and_synthetic_pending",
+        system: "accepted",
+        synthetic: "accepted",
+        pending: true,
+        status: 200,
+        completed: true,
+      },
+      {
+        name: "mm_dispatch_system_false_without_fallback",
+        system: "rejected",
+        synthetic: "absent",
+        status: 503,
+        completed: false,
+      },
+      {
+        name: "mm_dispatch_system_throw_without_fallback",
+        system: "throws",
+        synthetic: "absent",
+        status: 503,
+        completed: false,
+      },
+      {
+        name: "mm_dispatch_session_lookup_failure_synthetic_success",
+        system: "accepted",
+        synthetic: "accepted",
+        resolverFails: true,
+        status: 200,
+        completed: true,
+      },
+      {
+        name: "mm_dispatch_system_false_synthetic_success",
+        system: "rejected",
+        synthetic: "accepted",
+        status: 200,
+        completed: true,
+      },
+      {
+        name: "mm_dispatch_both_paths_fail",
+        system: "rejected",
+        synthetic: "throws",
+        status: 503,
+        completed: false,
+      },
+      {
+        name: "mm_dispatch_system_success_synthetic_failure",
+        system: "accepted",
+        synthetic: "throws",
+        status: 200,
+        completed: true,
+      },
+      {
+        name: "mm_dispatch_synthetic_explicit_no_plan",
+        system: "rejected",
+        synthetic: "no-plan",
+        status: 503,
+        completed: false,
+      },
+      {
+        name: "mm_dispatch_post_update_failure_after_accept",
+        system: "accepted",
+        synthetic: "absent",
+        postUpdateFails: true,
+        status: 200,
+        completed: false,
+      },
+    ] as const;
+
+    it.each(cases)("$name", async (testCase) => {
+      const enqueue = vi.fn(() => {
+        if (testCase.system === "throws") {
+          throw new Error("system unavailable");
+        }
+        return testCase.system === "accepted";
+      });
+      setInteractionRuntime(enqueue);
+      const requestLog: Array<{ path: string; method?: string }> = [];
+      const persistedUpdates: string[] = [];
+      const log = vi.fn();
+      const client = createMattermostClientMock(async (path, init) => {
+        requestLog.push({ path, method: init?.method });
+        if (init?.method === "PUT") {
+          if ("postUpdateFails" in testCase && testCase.postUpdateFails) {
+            throw new Error("post update unavailable");
+          }
+          persistedUpdates.push(path);
+          return { id: "post-1" };
+        }
+        return createActionPost();
+      });
+      let releaseCompletion: (() => void) | undefined;
+      const dispatchButtonClick =
+        testCase.synthetic === "absent"
+          ? undefined
+          : vi.fn(async () => {
+              if (testCase.synthetic === "throws") {
+                throw new Error("synthetic unavailable");
+              }
+              if (testCase.synthetic === "no-plan") {
+                return false;
+              }
+              if ("pending" in testCase && testCase.pending) {
+                return {
+                  completion: new Promise<void>((resolve) => {
+                    releaseCompletion = resolve;
+                  }),
+                };
+              }
+              return { completion: Promise.resolve() };
+            });
+      const handler = createMattermostInteractionHandler({
+        client,
+        botUserId: "bot",
+        accountId: "acct",
+        resolveSessionKey: async () => {
+          if ("resolverFails" in testCase && testCase.resolverFails) {
+            throw new Error("session unavailable");
+          }
+          return "agent:main:mattermost:acct:chan-1";
+        },
+        dispatchButtonClick,
+        log,
+      });
+      const { context, token } = createActionContext();
+      const res = await runHandler(handler, {
+        body: createInteractionBody({ context, token, userName: "alice" }),
+      });
+      expect(res.statusCode).toBe(testCase.status);
+      expect(enqueue).toHaveBeenCalledTimes(
+        "resolverFails" in testCase && testCase.resolverFails ? 0 : 1,
+      );
+      if (dispatchButtonClick) {
+        expect(dispatchButtonClick).toHaveBeenCalledOnce();
+      }
+      expect(persistedUpdates).toHaveLength(testCase.completed ? 1 : 0);
+      expect(requestLog.filter((entry) => entry.method === "PUT")).toHaveLength(
+        testCase.status === 200 ? 1 : 0,
+      );
+      if (testCase.status === 503) {
+        expect(res.body).toContain("Interaction dispatch failed");
+      }
+      if ("postUpdateFails" in testCase && testCase.postUpdateFails) {
+        expect(log).toHaveBeenCalledWith(expect.stringContaining("failed to update post"));
+      }
+      if ("pending" in testCase && testCase.pending) {
+        // HTTP 200 and checkmark must not wait for the agent turn to settle.
+        expect(releaseCompletion).toBeTypeOf("function");
+        releaseCompletion?.();
+      }
+    });
   });
 });
 

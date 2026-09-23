@@ -51,17 +51,51 @@ export async function spawnSandboxChild(params: {
     throw error;
   }
 
+  let spawnPending = true;
+  let rejectSpawn!: (error: Error) => void;
+  let processError: Error | undefined;
+  const spawned = new Promise<void>((resolve, reject) => {
+    rejectSpawn = reject;
+    child.once("spawn", () => {
+      spawnPending = false;
+      resolve();
+    });
+  });
+  const onChildError = (error: Error) => {
+    processError = error;
+    if (spawnPending) {
+      spawnPending = false;
+      rejectSpawn(error);
+    } else {
+      params.onFinalizeError(error);
+    }
+  };
+  // Node reports ENOENT/EACCES asynchronously. Own that event before yielding
+  // to a caller, whose own listener may otherwise be attached too late.
+  child.on("error", onChildError);
   let outcome: SandboxChildOutcome | undefined;
   const closed = new Promise<SandboxChildOutcome>((resolve) => {
-    child.once("close", (code, signal) => resolve((outcome = { exitCode: code ?? 1, signal })));
+    child.once("close", (code, signal) => {
+      child.off("error", onChildError);
+      resolve((outcome = { exitCode: code ?? 1, signal }));
+    });
   });
+  try {
+    await spawned;
+  } catch (error) {
+    await finalize("failed", null).catch(params.onFinalizeError);
+    throw error;
+  }
   let finalizePromise: Promise<void> | undefined;
   let terminationCleanup: Promise<void> | undefined;
   let terminationError: Error | undefined;
   const settled = closed.then(async (result) => {
     await terminationCleanup;
     child.stdin.destroy();
-    await (finalizePromise ??= finalize(params.finalizeStatus(result), result.exitCode));
+    await (finalizePromise ??= finalize(
+      processError ? "failed" : params.finalizeStatus(result),
+      result.exitCode,
+    ));
     return result;
   });
   void settled.catch(params.onFinalizeError);

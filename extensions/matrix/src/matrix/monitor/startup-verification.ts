@@ -24,7 +24,7 @@ type MatrixStartupVerificationState = {
   userId?: string | null;
   deviceId?: string | null;
   attemptedAt?: string;
-  outcome?: "requested" | "failed";
+  outcome?: "attempting" | "requested" | "failed";
   requestId?: string;
   transactionId?: string;
   error?: string;
@@ -332,7 +332,14 @@ export async function ensureMatrixStartupVerification(params: {
     };
   }
 
-  const verifications = await params.client.crypto.listVerifications().catch(() => []);
+  const verifications = await params.client.crypto.listVerifications().catch(() => null);
+  if (!verifications) {
+    return {
+      kind: "request-failed",
+      verification,
+      error: "Unable to inspect pending Matrix verifications; startup request was not sent",
+    };
+  }
   if (hasPendingSelfVerification(verifications)) {
     return {
       kind: "pending",
@@ -365,6 +372,29 @@ export async function ensureMatrixStartupVerification(params: {
     };
   }
 
+  // Record intent before asking the homeserver, so a later storage failure cannot erase
+  // the fact that this account may already have an outstanding verification request.
+  try {
+    await writeStartupVerificationState({
+      auth: params.auth,
+      env: params.env,
+      stateDir,
+      legacyFilePath: statePath,
+      state: {
+        userId: verification.userId,
+        deviceId: verification.deviceId,
+        attemptedAt,
+        outcome: "attempting",
+      },
+    });
+  } catch (err) {
+    return {
+      kind: "request-failed",
+      verification,
+      error: `Unable to record Matrix verification attempt: ${formatErrorMessage(err)}`,
+    };
+  }
+
   try {
     const request = await params.client.crypto.requestVerification({ ownUser: true });
     await writeStartupVerificationState({
@@ -380,6 +410,8 @@ export async function ensureMatrixStartupVerification(params: {
         requestId: request.id,
         transactionId: request.transactionId,
       },
+    }).catch(() => {
+      // The earlier durable attempt still protects the next startup from a duplicate request.
     });
     return {
       kind: "requested",

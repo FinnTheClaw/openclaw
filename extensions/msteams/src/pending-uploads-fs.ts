@@ -1,5 +1,5 @@
 // Msteams plugin module implements pending uploads fs behavior.
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { getMSTeamsRuntime } from "./runtime.js";
 import {
@@ -46,6 +46,7 @@ type PendingUploadFs = {
 type PendingUploadMetaRecord = Omit<PendingUploadFsRecord, "bufferBase64"> & {
   chunkCount: number;
   byteLength: number;
+  chunkGeneration?: string;
 };
 
 type PendingUploadChunkRecord = {
@@ -78,6 +79,7 @@ function createChunkStore(
   return getMSTeamsRuntime().state.openKeyedStore<PendingUploadChunkRecord>({
     namespace: PENDING_UPLOAD_CHUNKS_NAMESPACE,
     maxEntries: MAX_PENDING_UPLOAD_CHUNK_ROWS,
+    overflowPolicy: "reject-new",
     env: resolveMSTeamsSqliteStateEnv(options),
   });
 }
@@ -90,8 +92,11 @@ function buildMetaKey(id: string): string {
   return `${buildUploadKey(id)}:meta`;
 }
 
-function buildChunkKey(id: string, index: number): string {
-  return `${buildUploadKey(id)}:chunk:${String(index).padStart(4, "0")}`;
+function buildChunkKey(id: string, index: number, generation?: string): string {
+  const prefix = generation
+    ? `${buildUploadKey(id)}:chunk:${generation}`
+    : `${buildUploadKey(id)}:chunk`;
+  return `${prefix}:${String(index).padStart(4, "0")}`;
 }
 
 function recordToUpload(
@@ -119,9 +124,16 @@ async function deleteUploadRows(
   if (!existing) {
     return;
   }
-  const chunkCount = existing.chunkCount;
-  for (let index = 0; index < chunkCount; index += 1) {
-    await chunkStore.delete(buildChunkKey(id, index));
+  await deleteChunkRows(id, existing, chunkStore);
+}
+
+async function deleteChunkRows(
+  id: string,
+  meta: PendingUploadMetaRecord,
+  chunkStore: PluginStateKeyedStore<PendingUploadChunkRecord>,
+): Promise<void> {
+  for (let index = 0; index < meta.chunkCount; index += 1) {
+    await chunkStore.delete(buildChunkKey(id, index, meta.chunkGeneration));
   }
 }
 
@@ -139,36 +151,54 @@ async function registerUploadRows(
       `Microsoft Teams pending upload ${record.id} exceeds SQLite chunk limit (${chunkCount}/${MAX_CHUNKS_PER_UPLOAD})`,
     );
   }
-  if (overwrite) {
-    await deleteUploadRows(record.id, metaStore, chunkStore);
-  } else if (await metaStore.lookup(buildMetaKey(record.id))) {
+  const existing = await metaStore.lookup(buildMetaKey(record.id));
+  if (!overwrite && existing) {
     return;
   }
-  await pruneUploadStore(metaStore, chunkStore, ttlMs, chunkCount);
-  for (let index = 0; index < chunkCount; index += 1) {
-    const chunk = buffer.subarray(index * RAW_CHUNK_BYTES, (index + 1) * RAW_CHUNK_BYTES);
-    await chunkStore.register(
-      buildChunkKey(record.id, index),
+  // Keep the prior generation intact until a single metadata-row publication.
+  await pruneUploadStore(metaStore, chunkStore, ttlMs, chunkCount, record.id);
+  const chunkGeneration = randomUUID();
+  const staged: number[] = [];
+  try {
+    for (let index = 0; index < chunkCount; index += 1) {
+      const chunk = buffer.subarray(index * RAW_CHUNK_BYTES, (index + 1) * RAW_CHUNK_BYTES);
+      staged.push(index);
+      await chunkStore.register(
+        buildChunkKey(record.id, index, chunkGeneration),
+        toPluginJsonValue({
+          id: record.id,
+          index,
+          dataBase64: chunk.toString("base64"),
+        }),
+      );
+    }
+    await metaStore.register(
+      buildMetaKey(record.id),
       toPluginJsonValue({
         id: record.id,
-        index,
-        dataBase64: chunk.toString("base64"),
+        filename: record.filename,
+        contentType: record.contentType,
+        conversationId: record.conversationId,
+        consentCardActivityId: record.consentCardActivityId,
+        createdAt: record.createdAt,
+        chunkCount,
+        byteLength: buffer.byteLength,
+        chunkGeneration,
       }),
     );
+  } catch (error) {
+    for (const index of staged) {
+      await chunkStore.delete(buildChunkKey(record.id, index, chunkGeneration)).catch(() => {});
+    }
+    throw error;
   }
-  await metaStore.register(
-    buildMetaKey(record.id),
-    toPluginJsonValue({
-      id: record.id,
-      filename: record.filename,
-      contentType: record.contentType,
-      conversationId: record.conversationId,
-      consentCardActivityId: record.consentCardActivityId,
-      createdAt: record.createdAt,
-      chunkCount,
-      byteLength: buffer.byteLength,
-    }),
-  );
+  if (existing) {
+    // Publication has committed: a cleanup failure must not report this
+    // replacement as failed and tempt callers to retry an already-visible upload.
+    await deleteChunkRows(record.id, existing, chunkStore).catch(() => {
+      console.warn("MSTeams pending upload: previous chunk cleanup failed after replacement");
+    });
+  }
 }
 
 async function withPendingUploadLock<T>(
@@ -189,7 +219,7 @@ async function readUploadRows(
   }
   const chunks: Buffer[] = [];
   for (let index = 0; index < meta.chunkCount; index += 1) {
-    const chunk = await chunkStore.lookup(buildChunkKey(id, index));
+    const chunk = await chunkStore.lookup(buildChunkKey(id, index, meta.chunkGeneration));
     if (!chunk || chunk.id !== id || chunk.index !== index) {
       return undefined;
     }
@@ -203,13 +233,14 @@ async function pruneUploadStore(
   chunkStore: PluginStateKeyedStore<PendingUploadChunkRecord>,
   ttlMs: number,
   extraChunkRows = 0,
+  protectedId?: string,
 ): Promise<void> {
   const rows = await metaStore.entries();
   const liveRows = [];
   const now = Date.now();
   let liveChunkRows = 0;
   for (const row of rows) {
-    if (now - row.value.createdAt > ttlMs) {
+    if (row.value.id !== protectedId && now - row.value.createdAt > ttlMs) {
       await deleteUploadRows(row.value.id, metaStore, chunkStore);
       continue;
     }
@@ -225,16 +256,23 @@ async function pruneUploadStore(
   const sorted = liveRows.toSorted(
     (a, b) => a.value.createdAt - b.value.createdAt || a.value.id.localeCompare(b.value.id),
   );
+  let liveCount = liveRows.length;
   for (const row of sorted) {
     if (
-      liveRows.length <= MAX_PENDING_UPLOADS &&
+      liveCount <= MAX_PENDING_UPLOADS &&
       liveChunkRows + extraChunkRows <= MAX_PENDING_UPLOAD_CHUNK_ROWS
     ) {
       break;
     }
+    if (row.value.id === protectedId) {
+      continue;
+    }
     await deleteUploadRows(row.value.id, metaStore, chunkStore);
     liveChunkRows -= row.value.chunkCount;
-    liveRows.pop();
+    liveCount -= 1;
+  }
+  if (liveChunkRows + extraChunkRows > MAX_PENDING_UPLOAD_CHUNK_ROWS) {
+    throw new Error("Microsoft Teams pending upload chunk capacity exceeded");
   }
 }
 
@@ -273,7 +311,7 @@ export async function storePendingUploadFs(
       ttlMs,
       true,
     );
-    await pruneUploadStore(metaStore, chunkStore, ttlMs);
+    await pruneUploadStore(metaStore, chunkStore, ttlMs, 0, upload.id);
   });
 }
 
@@ -290,15 +328,17 @@ export async function getPendingUploadFs(
   const ttlMs = options?.ttlMs ?? PENDING_UPLOAD_TTL_MS;
   const metaStore = createMetaStore(options);
   const chunkStore = createChunkStore(options);
-  const upload = await readUploadRows(id, metaStore, chunkStore);
-  if (!upload) {
-    return undefined;
-  }
-  if (Date.now() - upload.createdAt > ttlMs) {
-    await removePendingUploadFs(id, options);
-    return undefined;
-  }
-  return upload;
+  return await withPendingUploadLock(options, async () => {
+    const upload = await readUploadRows(id, metaStore, chunkStore);
+    if (!upload) {
+      return undefined;
+    }
+    if (Date.now() - upload.createdAt > ttlMs) {
+      await deleteUploadRows(id, metaStore, chunkStore);
+      return undefined;
+    }
+    return upload;
+  });
 }
 
 /**

@@ -139,7 +139,7 @@ describe("codex cli node sessions", () => {
       cwd: tempDir,
       input: "continue this task",
       killGraceMs: 2_000,
-      killProcessTree: false,
+      killProcessTree: true,
       terminateOnOutputError: true,
       timeoutMs: 12_345,
     });

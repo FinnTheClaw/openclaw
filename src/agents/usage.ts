@@ -129,6 +129,7 @@ export function hasNonzeroUsage(usage?: NormalizedUsage | null): usage is Normal
       usage.output,
       usage.cacheRead,
       usage.cacheWrite,
+      usage.cacheWrite1h,
       usage.contextUsage?.state === "available" ? usage.contextUsage.promptTokens : undefined,
       usage.contextUsage?.state === "available" ? usage.contextUsage.totalTokens : undefined,
       usage.reasoningTokens,
@@ -279,6 +280,7 @@ export function normalizeUsage(raw?: UsageLike | null): NormalizedUsage | undefi
     output === undefined &&
     cacheRead === undefined &&
     cacheWrite === undefined &&
+    cacheWrite1h === undefined &&
     contextUsage === undefined &&
     reasoningTokens === undefined &&
     total === undefined &&

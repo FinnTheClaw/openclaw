@@ -97,6 +97,9 @@ export function resolveMeetingRealtimeTranscriptionProvider(params: {
         (entry) => entry.id === providerId || entry.aliases?.includes(providerId),
       ) ?? getRealtimeTranscriptionProvider(providerId, params.fullConfig))
     : undefined;
+  if (providerId && !configuredProvider) {
+    throw new Error(`Realtime transcription provider "${providerId}" is not registered`);
+  }
   const provider = configuredProvider ?? providers[0];
   if (!provider) {
     throw new Error("No configured realtime transcription provider registered");

@@ -256,13 +256,7 @@ export function shouldRetryCliBackendLiveTimeout(params: {
 export function matchesCliBackendReply(text: string, expected: string): boolean {
   const normalized = text.trim();
   const target = expected.trim();
-  const targetWithoutPeriod = target.slice(0, -1);
-  return (
-    normalized === target ||
-    normalized === targetWithoutPeriod ||
-    normalized.includes(target) ||
-    normalized.includes(targetWithoutPeriod)
-  );
+  return normalized === target || (target.endsWith(".") && normalized === target.slice(0, -1));
 }
 
 export function buildClaudeCliResumeContinuityProbe(params: {

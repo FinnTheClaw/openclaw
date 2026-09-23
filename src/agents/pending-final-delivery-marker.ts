@@ -72,7 +72,10 @@ export async function persistPendingFinalDeliveryMarker(
 
   const now = Date.now();
   const intentId = randomUUID();
-  const deliveryId = randomUUID();
+  const deliveryOwners = sendablePayloads.map((payload) => ({
+    payload,
+    deliveryId: randomUUID(),
+  }));
   const persisted = await persistAgentSession({
     sessionStore: params.sessionStore,
     sessionKey: params.sessionKey,
@@ -85,7 +88,10 @@ export async function persistPendingFinalDeliveryMarker(
           ? { kind: "replayable" as const, text: recoverableText }
           : { kind: "transport-only" as const }),
         intentId,
-        deliveries: [{ id: deliveryId, state: "prepared" as const }],
+        deliveries: deliveryOwners.map(({ deliveryId }) => ({
+          id: deliveryId,
+          state: "prepared" as const,
+        })),
         createdAt: now,
         context: params.deliveryContext,
       },
@@ -97,7 +103,7 @@ export async function persistPendingFinalDeliveryMarker(
   const markerPersisted = persisted?.pendingFinalDelivery?.intentId === intentId;
 
   if (markerPersisted) {
-    for (const payload of sendablePayloads) {
+    for (const { payload, deliveryId } of deliveryOwners) {
       setReplyPayloadMetadata(payload, {
         pendingFinalDeliveryCompletion: {
           deliveryId,

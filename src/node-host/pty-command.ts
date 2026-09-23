@@ -162,6 +162,22 @@ export async function runNodePtyCommand(
   });
   let outputQueue = Promise.resolve();
   let settled = false;
+  let outputFailure: unknown;
+  let hasOutputFailure = false;
+  const failOutput = (error: unknown) => {
+    if (hasOutputFailure) {
+      return;
+    }
+    hasOutputFailure = true;
+    outputFailure = error;
+    if (!settled) {
+      try {
+        pty.kill();
+      } catch {
+        // Keep the progress failure as the error returned to the caller.
+      }
+    }
+  };
   const kill = () => pty.kill();
   io.signal.addEventListener("abort", kill, { once: true });
   if (io.signal.aborted) {
@@ -187,21 +203,38 @@ export async function runNodePtyCommand(
       return;
     }
     pty.pause();
-    outputQueue = outputQueue.then(() => io.emitChunk(chunk)).finally(() => pty.resume());
+    outputQueue = outputQueue
+      .then(async () => {
+        if (!hasOutputFailure) {
+          await io.emitChunk(chunk);
+        }
+      })
+      .catch(failOutput)
+      .then(() => {
+        try {
+          pty.resume();
+        } catch (error) {
+          failOutput(error);
+        }
+      });
   });
-  return await new Promise<NodePtyCommandResult>((resolve) => {
+  return await new Promise<NodePtyCommandResult>((resolve, reject) => {
     pty.onExit((event) => {
       if (settled) {
         return;
       }
       settled = true;
       io.signal.removeEventListener("abort", kill);
-      void outputQueue.finally(() =>
+      void outputQueue.then(() => {
+        if (hasOutputFailure) {
+          reject(outputFailure);
+          return;
+        }
         resolve({
           exitCode: event.exitCode,
           ...(event.signal ? { signal: event.signal } : {}),
-        }),
-      );
+        });
+      }, reject);
     });
   });
 }

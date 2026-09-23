@@ -493,4 +493,58 @@ describe("sessionsTailCommand", () => {
     expect(output).toContain("bash ok");
     expect(output).not.toContain("No sessions found");
   });
+
+  it.each<[string, Partial<TrajectoryEvent> & { type: string }, string]>([
+    [
+      "tail-tool-name-csi",
+      { type: "tool.call", data: { name: "b\u001b[31mash" } },
+      "bash {...redacted...}",
+    ],
+    [
+      "tail-tool-name-osc52",
+      { type: "tool.result", data: { name: "b\u001b]52;c;YWJj\u0007ash", success: true } },
+      "bash ok",
+    ],
+    ["tail-timeout-c1", { type: "tool.timeout", data: { name: "b\u009b31mash" } }, "bash timeout"],
+    [
+      "tail-skipped-newline",
+      { type: "prompt.skipped", data: { reason: "first\nsecond" } },
+      "first\\nsecond",
+    ],
+    [
+      "tail-ended-carriage-return",
+      { type: "session.ended", data: { status: "done\rnext" } },
+      "done\\rnext",
+    ],
+    ["tail-custom-tab", { type: "custom.progress", data: { status: "a\tb" } }, "a\\tb"],
+    [
+      "tail-custom-osc-link",
+      { type: "custom.progress", data: { name: "a\u001b]8;;https://example.invalid/\u0007b" } },
+      "ab",
+    ],
+    [
+      "tail-model-provider-csi",
+      { type: "model.completed", provider: "mo\u001b[31mira", modelId: "brain" },
+      "moira/brain done",
+    ],
+    [
+      "tail-model-id-osc",
+      { type: "model.completed", provider: "moira", modelId: "br\u001b]0;title\u0007ain" },
+      "moira/brain done",
+    ],
+    ["tail-benign-unicode", { type: "session.ended", data: { status: "caf\u00e9" } }, "caf\u00e9"],
+  ])("R7-L02-05 %s", async (_name, eventFields, expected) => {
+    const runtime = makeRuntime();
+    await writeSessionEntry();
+    await appendEvents([makeEvent({ ...eventFields, ts: "2026-05-18T12:04:21.000Z" })]);
+
+    await sessionsTailCommand({ agent: "main", store: storePath, sessionKey }, runtime);
+
+    const output = runtimeOutput(runtime);
+    expect(output.split("\n")).toHaveLength(1);
+    expect(output).toContain(expected);
+    expect(output).not.toMatch(/[\u001b\u0007\u009b\u009d\u009c]/u);
+    expect(output).not.toContain("\t");
+    expect(output).not.toContain("\r");
+  });
 });

@@ -95,6 +95,7 @@ export const toNormalizedUsage = (usage: UsageAccumulator): NormalizedUsage | un
     usage.output > 0 ||
     usage.cacheRead > 0 ||
     usage.cacheWrite > 0 ||
+    usage.cacheWrite1h > 0 ||
     usage.reasoningTokens > 0 ||
     usage.total > 0;
   const cost = usage.cost === "unavailable" ? undefined : usage.cost;

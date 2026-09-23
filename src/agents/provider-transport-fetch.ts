@@ -951,11 +951,20 @@ export function buildGuardedModelFetch(
         headers,
       });
     }
+    const contentType = response.headers.get("content-type") ?? "";
     const synthesizeJsonAsSse =
       options?.sanitizeSse !== false &&
-      !/\btext\/event-stream\b/i.test(response.headers.get("content-type") ?? "") &&
+      !/\btext\/event-stream\b/i.test(contentType) &&
       requestBodyHasStreamTrue(request, baseInit);
-    if (synthesizeJsonAsSse) {
+    // A Request carries its JSON body as a stream; do not clone or consume it
+    // merely to inspect stream:true. Sniff the response instead, and relabel
+    // only actual SSE. Keep JSON-to-SSE synthesis exclusive to proven string bodies.
+    const mayHaveRequestFormSse =
+      options?.sanitizeSse !== false &&
+      request?.method === "POST" &&
+      /\bapplication\/json\b/i.test(request.headers.get("content-type") ?? "") &&
+      (!contentType.trim() || isJsonContentType(contentType));
+    if (synthesizeJsonAsSse || mayHaveRequestFormSse) {
       response = await normalizeOpenAISdkStreamContentType({
         response,
         model,

@@ -5554,6 +5554,176 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
         #expect(snapshot.agentAvatarText == "OC")
     }
 
+    // The Watch review list is exec-only. Count and list must describe the same
+    // current-owner approvals even when the iPhone inbox also holds plugins.
+    @MainActor
+    private func assertWatchBadgeForPresentedApprovals(
+        _ approvals: [(id: String, kind: ApprovalKind, owner: String, expiresAtMs: Int64?)],
+        expectedWatchIDs: [String],
+        expectedCacheIDs: [String]) async throws
+    {
+        NodeAppModel._test_resetPersistedWatchExecApprovalBridgeState()
+        defer { NodeAppModel._test_resetPersistedWatchExecApprovalBridgeState() }
+        let (watchService, appModel) = makeWatchModel()
+        appModel.connectedGatewayID = "test-gateway"
+        for approval in approvals {
+            try appModel._test_presentExecApprovalPrompt(#require(
+                NodeAppModel._test_makeExecApprovalPrompt(
+                    id: approval.id,
+                    gatewayStableID: approval.owner,
+                    kind: approval.kind,
+                    commandText: "Review " + approval.id,
+                    descriptionText: approval.kind == .plugin ? "Plugin review" : nil,
+                    pluginId: approval.kind == .plugin ? "example" : nil,
+                    toolName: approval.kind == .plugin ? "guarded" : nil,
+                    expiresAtMs: approval.expiresAtMs)))
+        }
+        let previousSnapshotID = watchService.lastSentAppSnapshot?.snapshotId
+        watchService.emitAppSnapshotRequest(WatchAppSnapshotRequestEvent(
+            requestId: UUID().uuidString,
+            sentAtMs: 124,
+            transport: "sendMessage"))
+        try #require(await waitForMainActorWork {
+            watchService.lastSentAppSnapshot?.snapshotId != previousSnapshotID
+        })
+        if !expectedWatchIDs.isEmpty {
+            try #require(await waitForMainActorWork {
+                watchService.lastSentExecApprovalSnapshot?.approvals.map(\.id).sorted()
+                    == expectedWatchIDs.sorted()
+            })
+        }
+        #expect(watchService.lastSentAppSnapshot?.pendingApprovalCount == expectedWatchIDs.count)
+        #expect((watchService.lastSentExecApprovalSnapshot?.approvals.map(\.id) ?? []).sorted()
+            == expectedWatchIDs.sorted())
+        #expect(appModel._test_watchExecApprovalCacheIDs().sorted() == expectedCacheIDs.sorted())
+    }
+
+    @Test @MainActor func `watch badge omits plugin only approval`() async throws {
+        try await self.assertWatchBadgeForPresentedApprovals(
+            [("plugin-only", .plugin, "test-gateway", nil)],
+            expectedWatchIDs: [],
+            expectedCacheIDs: ["plugin-only"])
+    }
+
+    @Test @MainActor func `watch badge counts exec only approval`() async throws {
+        try await self.assertWatchBadgeForPresentedApprovals(
+            [("exec-only", .exec, "test-gateway", nil)],
+            expectedWatchIDs: ["exec-only"],
+            expectedCacheIDs: ["exec-only"])
+    }
+
+    @Test @MainActor func `watch badge counts exec but omits mixed plugin`() async throws {
+        try await self.assertWatchBadgeForPresentedApprovals(
+            [("mixed-exec", .exec, "test-gateway", nil),
+             ("mixed-plugin", .plugin, "test-gateway", nil)],
+            expectedWatchIDs: ["mixed-exec"],
+            expectedCacheIDs: ["mixed-exec", "mixed-plugin"])
+    }
+
+    @Test @MainActor func `watch badge counts two exec and omits plugin`() async throws {
+        try await self.assertWatchBadgeForPresentedApprovals(
+            [("multi-exec-a", .exec, "test-gateway", nil),
+             ("multi-plugin", .plugin, "test-gateway", nil),
+             ("multi-exec-b", .exec, "test-gateway", nil)],
+            expectedWatchIDs: ["multi-exec-a", "multi-exec-b"],
+            expectedCacheIDs: ["multi-exec-a", "multi-plugin", "multi-exec-b"])
+    }
+
+    @Test @MainActor func `watch badge excludes expired exec beside current plugin`() async throws {
+        try await self.assertWatchBadgeForPresentedApprovals(
+            [("expired-exec", .exec, "test-gateway", 1),
+             ("current-plugin", .plugin, "test-gateway", nil)],
+            expectedWatchIDs: [],
+            expectedCacheIDs: ["current-plugin"])
+    }
+
+    @Test @MainActor func `watch badge ignores foreign plugin beside current exec`() async throws {
+        try await self.assertWatchBadgeForPresentedApprovals(
+            [("current-exec", .exec, "test-gateway", nil),
+             ("foreign-plugin", .plugin, "other-gateway", nil)],
+            expectedWatchIDs: ["current-exec"],
+            expectedCacheIDs: ["current-exec"])
+    }
+
+    @Test @MainActor func `watch badge ignores foreign exec owner`() async throws {
+        try await self.assertWatchBadgeForPresentedApprovals(
+            [("foreign-exec", .exec, "other-gateway", nil)],
+            expectedWatchIDs: [],
+            expectedCacheIDs: [])
+    }
+
+    @Test @MainActor func `watch badge does not double count duplicate exec ID`() async throws {
+        try await self.assertWatchBadgeForPresentedApprovals(
+            [("same-exec", .exec, "test-gateway", nil),
+             ("same-exec", .exec, "test-gateway", nil)],
+            expectedWatchIDs: ["same-exec"],
+            expectedCacheIDs: ["same-exec"])
+    }
+
+    @Test @MainActor func `watch badge clears resolved exec but not pending plugin`() async throws {
+        NodeAppModel._test_resetPersistedWatchExecApprovalBridgeState()
+        defer { NodeAppModel._test_resetPersistedWatchExecApprovalBridgeState() }
+        let (watchService, appModel) = makeWatchModel()
+        appModel.connectedGatewayID = "test-gateway"
+        for (id, kind) in [("resolved-exec", ApprovalKind.exec), ("pending-plugin", .plugin)] {
+            try appModel._test_presentExecApprovalPrompt(#require(
+                NodeAppModel._test_makeExecApprovalPrompt(
+                    id: id,
+                    kind: kind,
+                    commandText: "Review " + id,
+                    descriptionText: kind == .plugin ? "Plugin review" : nil,
+                    pluginId: kind == .plugin ? "example" : nil,
+                    toolName: kind == .plugin ? "guarded" : nil,
+                    expiresAtMs: nil)))
+        }
+        try #require(await appModel._test_applyLegacyExecApprovalTerminal(
+            approvalID: "resolved-exec",
+            decision: .deny))
+        let previousSnapshotID = watchService.lastSentAppSnapshot?.snapshotId
+        watchService.emitAppSnapshotRequest(WatchAppSnapshotRequestEvent(
+            requestId: "resolved-exec-badge",
+            sentAtMs: 125,
+            transport: "sendMessage"))
+        try #require(await waitForMainActorWork {
+            watchService.lastSentAppSnapshot?.snapshotId != previousSnapshotID
+        })
+        #expect(watchService.lastSentAppSnapshot?.pendingApprovalCount == 0)
+        #expect(appModel._test_watchExecApprovalCacheIDs() == ["pending-plugin"])
+        try #require(await waitForMainActorWork {
+            watchService.lastSentExecApprovalSnapshot?.approvals.isEmpty == true
+        })
+    }
+
+    @Test @MainActor func `watch badge restored mixed approval remains exec only`() async throws {
+        NodeAppModel._test_resetPersistedWatchExecApprovalBridgeState()
+        defer { NodeAppModel._test_resetPersistedWatchExecApprovalBridgeState() }
+        let (_, firstModel) = makeWatchModel()
+        firstModel.connectedGatewayID = "test-gateway"
+        for (id, kind) in [("restored-exec", ApprovalKind.exec), ("restored-plugin", .plugin)] {
+            try firstModel._test_presentExecApprovalPrompt(#require(
+                NodeAppModel._test_makeExecApprovalPrompt(
+                    id: id,
+                    kind: kind,
+                    commandText: "Review " + id,
+                    descriptionText: kind == .plugin ? "Plugin review" : nil,
+                    pluginId: kind == .plugin ? "example" : nil,
+                    toolName: kind == .plugin ? "guarded" : nil,
+                    expiresAtMs: 4_000_000_000_000)))
+        }
+        let (watchService, restoredModel) = makeWatchModel()
+        restoredModel.connectedGatewayID = "test-gateway"
+        watchService.emitAppSnapshotRequest(WatchAppSnapshotRequestEvent(
+            requestId: "restored-mixed-badge",
+            sentAtMs: 126,
+            transport: "sendMessage"))
+        try #require(await waitForMainActorWork {
+            watchService.lastSentAppSnapshot != nil
+        })
+        #expect(watchService.lastSentAppSnapshot?.pendingApprovalCount == 1)
+        #expect(restoredModel._test_watchExecApprovalCacheIDs().sorted()
+            == ["restored-exec", "restored-plugin"])
+    }
+
     @Test @MainActor func `watch app snapshot includes pending approval count`() async throws {
         NodeAppModel._test_resetPersistedWatchExecApprovalBridgeState()
         defer { NodeAppModel._test_resetPersistedWatchExecApprovalBridgeState() }

@@ -1506,6 +1506,151 @@ describe("buildGuardedModelFetch", () => {
     ]);
   });
 
+  const requestFormStreamCases: Array<{
+    name: string;
+    mode: "request" | "override" | "string-init";
+    stream: boolean;
+    contentType?: string;
+    chunks: string[];
+    expectedEvents?: Array<Record<string, unknown>>;
+    expectedText?: string;
+    query?: string;
+  }> = [
+    {
+      name: "R01 JSON-mislabeled SSE",
+      mode: "request",
+      stream: true,
+      contentType: "application/json",
+      chunks: ['data: {"case":"r01"}\n\n', "data: [DONE]\n\n"],
+      expectedEvents: [{ case: "r01" }],
+    },
+    {
+      name: "R02 No-content-type SSE",
+      mode: "request",
+      stream: true,
+      chunks: ['data: {"case":"r02"}\n\n', "data: [DONE]\n\n"],
+      expectedEvents: [{ case: "r02" }],
+    },
+    {
+      name: "R03 Split-frame SSE",
+      mode: "request",
+      stream: true,
+      contentType: "application/json",
+      chunks: ['data: {"case":', '"r03"}\n', "\n", "data: [DONE]\n\n"],
+      expectedEvents: [{ case: "r03" }],
+    },
+    {
+      name: "R04 Multi-event SSE",
+      mode: "request",
+      stream: true,
+      contentType: "application/json",
+      chunks: ['data: {"case":"r04a"}\n\n', 'data: {"case":"r04b"}\n\n', "data: [DONE]\n\n"],
+      expectedEvents: [{ case: "r04a" }, { case: "r04b" }],
+    },
+    {
+      name: "R05 Init-body override",
+      mode: "override",
+      stream: true,
+      contentType: "application/json",
+      chunks: ['data: {"case":"r05"}\n\n', "data: [DONE]\n\n"],
+      expectedEvents: [{ case: "r05" }],
+    },
+    {
+      name: "R06 Request with query",
+      mode: "request",
+      stream: true,
+      contentType: "application/json",
+      chunks: ['data: {"case":"r06"}\n\n', "data: [DONE]\n\n"],
+      expectedEvents: [{ case: "r06" }],
+      query: "?trace=r06",
+    },
+    {
+      name: "R07 Actual JSON control",
+      mode: "request",
+      stream: true,
+      contentType: "application/json",
+      chunks: ['{"error":"not-stream"}'],
+      expectedText: '{"error":"not-stream"}',
+    },
+    {
+      name: "R08 Stream-false control",
+      mode: "request",
+      stream: false,
+      contentType: "application/json",
+      chunks: ['{"ok":true}'],
+      expectedText: '{"ok":true}',
+    },
+    {
+      name: "R09 String-init control",
+      mode: "string-init",
+      stream: true,
+      contentType: "application/json",
+      chunks: ['data: {"case":"r09"}\n\n', "data: [DONE]\n\n"],
+      expectedEvents: [{ case: "r09" }],
+    },
+    {
+      name: "R10 Correct-SSE control",
+      mode: "request",
+      stream: true,
+      contentType: "text/event-stream",
+      chunks: ['data: {"case":"r10"}\n\n', "data: [DONE]\n\n"],
+      expectedEvents: [{ case: "r10" }],
+    },
+  ];
+
+  it.each(requestFormStreamCases)("$name", async (scenario) => {
+    fetchWithSsrFGuardMock.mockResolvedValueOnce({
+      response: new Response(responseStreamChunks(scenario.chunks), {
+        headers: scenario.contentType ? { "content-type": scenario.contentType } : {},
+      }),
+      finalUrl: "https://openrouter.ai/api/v1/chat/completions",
+      release: vi.fn(async () => undefined),
+    });
+    const model = makeProviderModelFixture<"openai-completions">({
+      id: "transport-test",
+      provider: "openrouter",
+      api: "openai-completions",
+      baseUrl: "https://openrouter.ai/api/v1",
+    });
+    const url = `https://openrouter.ai/api/v1/chat/completions${scenario.query ?? ""}`;
+    const body = JSON.stringify({ model: "transport-test", stream: scenario.stream });
+    const input =
+      scenario.mode === "string-init"
+        ? url
+        : new Request(url, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-case": scenario.name },
+            body:
+              scenario.mode === "override"
+                ? JSON.stringify({ model: "transport-test", stream: false })
+                : body,
+          });
+    const init =
+      scenario.mode === "string-init"
+        ? { method: "POST", headers: { "content-type": "application/json" }, body }
+        : scenario.mode === "override"
+          ? { body }
+          : undefined;
+    const response = await buildGuardedModelFetch(model)(input, init);
+    const guarded = latestGuardedFetchParams();
+    expect(guarded.url).toBe(url);
+    if (scenario.mode !== "string-init") {
+      const actualBody = (guarded.init as RequestInit).body;
+      expect(await new Response(actualBody).text()).toBe(body);
+    }
+    if (scenario.expectedText !== undefined) {
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(await response.text()).toBe(scenario.expectedText);
+      return;
+    }
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const events: unknown[] = [];
+    for await (const event of Stream.fromSSEResponse(response, new AbortController())) {
+      events.push(event);
+    }
+    expect(events).toEqual(scenario.expectedEvents);
+  });
+
   it("does not clone Request bodies while checking for streaming JSON fallbacks", async () => {
     const cloneSpy = vi.spyOn(Request.prototype, "clone");
     fetchWithSsrFGuardMock.mockResolvedValue({

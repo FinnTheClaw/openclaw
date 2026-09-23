@@ -5856,4 +5856,120 @@ describe("state migrations", () => {
     },
   );
 });
+describe("auto-migration retries after incomplete checks", () => {
+  async function futureSchemaFixture() {
+    const root = await createTempDir();
+    const stateDir = path.join(root, ".openclaw");
+    const env = createEnv(stateDir);
+    const cfg = createConfig();
+    const dbPath = path.join(stateDir, "state", "openclaw.sqlite");
+    await fs.mkdir(path.dirname(dbPath), { recursive: true });
+    const setVersion = (version: number) => {
+      closeMigrationDatabases();
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.exec(`PRAGMA user_version = ${version};`);
+      } finally {
+        db.close();
+      }
+    };
+    setVersion(OPENCLAW_STATE_SCHEMA_VERSION + 1);
+    const run = (doctorOnlyStateMigrations = false, runEnv = env) =>
+      autoMigrateLegacyState({
+        cfg,
+        env: runEnv,
+        homedir: () => root,
+        doctorOnlyStateMigrations,
+      });
+    return { root, stateDir, env, run, repair: () => setVersion(0) };
+  }
+
+  it("M01 Automatic schema failure can retry after repair", async () => {
+    const fixture = await futureSchemaFixture();
+    await expect(fixture.run()).rejects.toThrow("Failed migrating shared state database schema");
+    fixture.repair();
+    await expect(fixture.run()).resolves.toMatchObject({ skipped: false, warnings: [] });
+  });
+
+  it("M02 Repeated automatic schema failures are not marked skipped", async () => {
+    const fixture = await futureSchemaFixture();
+    await expect(fixture.run()).rejects.toThrow("Failed migrating shared state database schema");
+    await expect(fixture.run()).rejects.toThrow("Failed migrating shared state database schema");
+  });
+
+  it("M03 Successful automatic retry is then skipped", async () => {
+    const fixture = await futureSchemaFixture();
+    await expect(fixture.run()).rejects.toThrow();
+    fixture.repair();
+    expect((await fixture.run()).skipped).toBe(false);
+    expect((await fixture.run()).skipped).toBe(true);
+  });
+
+  it("M04 Doctor schema warning can retry after repair", async () => {
+    const fixture = await futureSchemaFixture();
+    const failed = await fixture.run(true);
+    expect(failed.skipped).toBe(false);
+    expect(failed.warnings.length).toBeGreaterThan(0);
+    fixture.repair();
+    const repaired = await fixture.run(true);
+    expect(repaired.skipped).toBe(false);
+    expect(repaired.warnings).toEqual([]);
+  });
+
+  it("M05 Repeated doctor schema warnings remain visible", async () => {
+    const fixture = await futureSchemaFixture();
+    const first = await fixture.run(true);
+    const second = await fixture.run(true);
+    expect(first.warnings.length).toBeGreaterThan(0);
+    expect(second.warnings.length).toBeGreaterThan(0);
+    expect(second.skipped).toBe(false);
+  });
+
+  it("M06 Automatic failure does not suppress doctor mode", async () => {
+    const fixture = await futureSchemaFixture();
+    await expect(fixture.run()).rejects.toThrow();
+    const doctor = await fixture.run(true);
+    expect(doctor.skipped).toBe(false);
+    expect(doctor.warnings.length).toBeGreaterThan(0);
+  });
+
+  it("M07 Doctor warning does not suppress automatic mode", async () => {
+    const fixture = await futureSchemaFixture();
+    expect((await fixture.run(true)).warnings.length).toBeGreaterThan(0);
+    await expect(fixture.run()).rejects.toThrow("Failed migrating shared state database schema");
+  });
+
+  it("M08 Normalized state-path alias retries after failure", async () => {
+    const fixture = await futureSchemaFixture();
+    await expect(fixture.run()).rejects.toThrow();
+    fixture.repair();
+    const aliasEnv = {
+      ...fixture.env,
+      OPENCLAW_STATE_DIR: `${fixture.root}/alias/../.openclaw`,
+    };
+    const retried = await fixture.run(false, aliasEnv);
+    expect(retried.skipped).toBe(false);
+    expect(retried.warnings).toEqual([]);
+  });
+
+  it("M09 Failed state root does not suppress another root", async () => {
+    const failed = await futureSchemaFixture();
+    await expect(failed.run()).rejects.toThrow();
+    const healthy = await futureSchemaFixture();
+    healthy.repair();
+    expect((await healthy.run()).skipped).toBe(false);
+    expect((await healthy.run()).skipped).toBe(true);
+  });
+
+  it("M10 Clean initial migration still skips completed repeat", async () => {
+    const fixture = await futureSchemaFixture();
+    fixture.repair();
+    const first = await fixture.run();
+    const second = await fixture.run();
+    expect(first.skipped).toBe(false);
+    expect(first.warnings).toEqual([]);
+    expect(second.skipped).toBe(true);
+  });
+});
+
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

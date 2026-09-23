@@ -6928,8 +6928,19 @@ class ChatController internal constructor(
     if (payload["state"].asStringOrNull() != "final") return
     val normalizedRunId = runId?.trim()?.takeIf(String::isNotEmpty) ?: return
     val verifiedOwner = owner?.takeIf { it.routingVerified } ?: return
-    val text = parseAssistantDeltaText(payload)?.trim()?.takeIf(String::isNotEmpty) ?: return
+    val text = parseAssistantFinalText(payload) ?: return
     runCatching { onAssistantReplyFinalized(verifiedOwner, normalizedRunId, text) }
+  }
+
+  private fun parseAssistantFinalText(payload: JsonObject): String? {
+    val message = payload["message"].asObjectOrNull() ?: return null
+    if (message["role"].asStringOrNull() != "assistant") return null
+    val content = message["content"].asArrayOrNull() ?: return null
+    return content.mapNotNull { item ->
+      val obj = item.asObjectOrNull() ?: return@mapNotNull null
+      if (obj["type"].asStringOrNull() != "text") return@mapNotNull null
+      obj["text"].asStringOrNull()?.trim()?.takeIf(String::isNotEmpty)
+    }.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
   }
 
   private fun parseAssistantDeltaText(payload: JsonObject): String? {

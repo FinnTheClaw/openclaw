@@ -162,10 +162,15 @@ export function withSameOriginMcpHttpHeaders(params: {
   }
   const resourceOrigin = new URL(params.resourceUrl).origin;
   return (url, init) => {
-    if (new URL(url).origin !== resourceOrigin) {
+    if (new URL(url instanceof Request ? url.url : url).origin !== resourceOrigin) {
       return params.fetchFn(url, init);
     }
     const headers = new Headers(params.headers);
+    if (url instanceof Request) {
+      for (const [key, value] of url.headers) {
+        headers.set(key, value);
+      }
+    }
     for (const [key, value] of new Headers(init?.headers)) {
       headers.set(key, value);
     }

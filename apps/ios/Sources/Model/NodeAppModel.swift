@@ -6280,7 +6280,8 @@ extension NodeAppModel {
             talkEnabled: self.talkMode.isEnabled,
             talkListening: self.talkMode.isListening,
             talkSpeaking: self.talkMode.isSpeaking,
-            pendingApprovalCount: self.watchExecApprovalPromptsByID.count,
+            pendingApprovalCount: self.watchExecApprovalPromptsByID.values
+                .filter(self.isWatchExecApprovalPromptCurrent).count,
             chatItems: chatPreview?.items,
             chatStatus: chatPreview?.status,
             chatStatusText: chatPreview?.statusText,

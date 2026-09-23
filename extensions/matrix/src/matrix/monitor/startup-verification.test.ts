@@ -99,6 +99,48 @@ function createHarness(params?: {
   };
 }
 
+function failRoundSevenStartupStateWritesOn(numbers: number[]): void {
+  const selected = new Set(numbers);
+  let count = 0;
+  setMatrixRuntime({
+    state: {
+      openKeyedStore: (options: OpenKeyedStoreOptions) => {
+        const store = createPluginStateKeyedStoreForTests<unknown>("matrix", options);
+        if (options.namespace !== "startup-verification") {
+          return store;
+        }
+        return {
+          lookup: store.lookup.bind(store),
+          delete: store.delete.bind(store),
+          register: async (key: string, value: unknown) => {
+            count += 1;
+            if (selected.has(count)) {
+              throw new Error(`startup state write ${count} failed`);
+            }
+            return await store.register(key, value);
+          },
+        };
+      },
+    },
+  } as unknown as PluginRuntime);
+}
+
+const ROUND_SEVEN_NOW = Date.parse("2026-03-08T12:00:00.000Z");
+
+async function runRoundSevenStartup(
+  harness: ReturnType<typeof createHarness>,
+  stateDir: string,
+  nowMs = ROUND_SEVEN_NOW,
+) {
+  return await ensureMatrixStartupVerification({
+    client: harness.client as never,
+    auth: createAuth(),
+    accountConfig: {},
+    stateFilePath: createStateFilePath(stateDir),
+    nowMs,
+  });
+}
+
 describe("ensureMatrixStartupVerification", () => {
   beforeEach(() => {
     setMatrixRuntime({
@@ -349,5 +391,132 @@ describe("ensureMatrixStartupVerification", () => {
     expect(result.kind).toBe("verified");
     expect(fs.existsSync(stateFilePath)).toBe(false);
     await expect(readPersistedStartupState(tempHome)).resolves.toBeUndefined();
+  });
+  describe("round-seven verification request persistence", () => {
+    it("verification-success-stored", async () => {
+      const dir = createTempStateDir();
+      const h = createHarness();
+      expect((await runRoundSevenStartup(h, dir)).kind).toBe("requested");
+      expect(h.client.crypto.requestVerification).toHaveBeenCalledTimes(1);
+      await expect(readPersistedStartupState(dir)).resolves.toMatchObject({
+        outcome: "requested",
+        attemptedAt: "2026-03-08T12:00:00.000Z",
+      });
+    });
+
+    it("verification-prewrite-fails", async () => {
+      failRoundSevenStartupStateWritesOn([1]);
+      const dir = createTempStateDir();
+      const h = createHarness();
+      const result = await runRoundSevenStartup(h, dir);
+      expect(result.kind).toBe("request-failed");
+      expect(result.error).toContain("startup state write 1 failed");
+      expect(h.client.crypto.requestVerification).not.toHaveBeenCalled();
+      await expect(readPersistedStartupState(dir)).resolves.toBeUndefined();
+    });
+
+    it("verification-postwrite-fails", async () => {
+      failRoundSevenStartupStateWritesOn([2]);
+      const dir = createTempStateDir();
+      const h = createHarness();
+      expect((await runRoundSevenStartup(h, dir)).kind).toBe("requested");
+      expect(h.client.crypto.requestVerification).toHaveBeenCalledTimes(1);
+      await expect(readPersistedStartupState(dir)).resolves.toMatchObject({
+        outcome: "attempting",
+      });
+    });
+
+    it("verification-restart-pending-query-fails", async () => {
+      failRoundSevenStartupStateWritesOn([2]);
+      let calls = 0;
+      const h = createHarness({
+        listVerifications: async () => {
+          if (++calls === 2) {
+            throw new Error("pending query unavailable");
+          }
+          return [];
+        },
+      });
+      const dir = createTempStateDir();
+      expect((await runRoundSevenStartup(h, dir)).kind).toBe("requested");
+      const second = await runRoundSevenStartup(h, dir, ROUND_SEVEN_NOW + 60_000);
+      expect(second.kind).toBe("request-failed");
+      expect(second.error).toContain("startup request was not sent");
+      expect(h.client.crypto.requestVerification).toHaveBeenCalledTimes(1);
+    });
+
+    it("verification-initial-pending-query-fails", async () => {
+      const h = createHarness({
+        listVerifications: async () => {
+          throw new Error("pending query unavailable");
+        },
+      });
+      expect((await runRoundSevenStartup(h, createTempStateDir())).kind).toBe("request-failed");
+      expect(h.client.crypto.requestVerification).not.toHaveBeenCalled();
+    });
+
+    it("verification-existing-pending", async () => {
+      const h = createHarness({
+        listVerifications: async () => [
+          {
+            id: "existing",
+            isSelfVerification: true,
+            completed: false,
+            pending: true,
+          },
+        ],
+      });
+      expect((await runRoundSevenStartup(h, createTempStateDir())).kind).toBe("pending");
+      expect(h.client.crypto.requestVerification).not.toHaveBeenCalled();
+    });
+
+    it("verification-saved-attempt-cooldown", async () => {
+      failRoundSevenStartupStateWritesOn([2]);
+      const dir = createTempStateDir();
+      const h = createHarness();
+      expect((await runRoundSevenStartup(h, dir)).kind).toBe("requested");
+      expect((await runRoundSevenStartup(h, dir, ROUND_SEVEN_NOW + 60_000)).kind).toBe("cooldown");
+      expect(h.client.crypto.requestVerification).toHaveBeenCalledTimes(1);
+    });
+
+    it("verification-cooldown-expires", async () => {
+      const dir = createTempStateDir();
+      const h = createHarness();
+      expect((await runRoundSevenStartup(h, dir)).kind).toBe("requested");
+      expect((await runRoundSevenStartup(h, dir, ROUND_SEVEN_NOW + 25 * 60 * 60 * 1000)).kind).toBe(
+        "requested",
+      );
+      expect(h.client.crypto.requestVerification).toHaveBeenCalledTimes(2);
+    });
+
+    it("verification-remote-request-fails", async () => {
+      const dir = createTempStateDir();
+      const h = createHarness({
+        requestVerification: async () => {
+          throw new Error("remote request rejected");
+        },
+      });
+      const result = await runRoundSevenStartup(h, dir);
+      expect(result.kind).toBe("request-failed");
+      expect(result.error).toContain("remote request rejected");
+      await expect(readPersistedStartupState(dir)).resolves.toMatchObject({ outcome: "failed" });
+      expect((await runRoundSevenStartup(h, dir, ROUND_SEVEN_NOW + 60_000)).kind).toBe("cooldown");
+      expect(h.client.crypto.requestVerification).toHaveBeenCalledTimes(1);
+    });
+
+    it("verification-verified-clears-attempt", async () => {
+      failRoundSevenStartupStateWritesOn([2]);
+      const dir = createTempStateDir();
+      expect((await runRoundSevenStartup(createHarness(), dir)).kind).toBe("requested");
+      await expect(readPersistedStartupState(dir)).resolves.toMatchObject({
+        outcome: "attempting",
+      });
+      const verified = createHarness({ verified: true });
+      expect((await runRoundSevenStartup(verified, dir, ROUND_SEVEN_NOW + 60_000)).kind).toBe(
+        "verified",
+      );
+      expect(verified.client.crypto.requestVerification).not.toHaveBeenCalled();
+      await expect(readPersistedStartupState(dir)).resolves.toBeUndefined();
+    });
   });
 });

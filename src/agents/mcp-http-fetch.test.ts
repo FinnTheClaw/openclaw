@@ -287,6 +287,153 @@ describe("MCP HTTP fetch helpers", () => {
     expect(calls[1]?.[1]?.headers).toBeUndefined();
   });
 
+  const requestHeaderCases: Array<{
+    name: string;
+    resourceUrl: string;
+    headers?: Record<string, string>;
+    input: () => Request | URL | string;
+    init?: RequestInit;
+    expectedHeaders?: Record<string, string | null>;
+    expectedMethod?: string;
+    expectedBody?: string;
+    expectAbort?: boolean;
+  }> = [
+    {
+      name: "M01 Request GET baseline",
+      resourceUrl: "https://mcp.example.com/mcp",
+      headers: { "X-Tenant": "docs" },
+      input: () => new Request("https://mcp.example.com/get", { headers: { "X-Request": "one" } }),
+      expectedHeaders: { "x-tenant": "docs", "x-request": "one" },
+    },
+    {
+      name: "M02 Request POST body",
+      resourceUrl: "https://mcp.example.com/mcp",
+      headers: { "X-Tenant": "docs" },
+      input: () =>
+        new Request("https://mcp.example.com/post", {
+          method: "POST",
+          headers: { "X-Request": "two", "content-type": "application/json" },
+          body: '{"value":2}',
+        }),
+      expectedHeaders: { "x-tenant": "docs", "x-request": "two" },
+      expectedMethod: "POST",
+      expectedBody: '{"value":2}',
+    },
+    {
+      name: "M03 Request header wins",
+      resourceUrl: "https://mcp.example.com/mcp",
+      headers: { "X-Mode": "default" },
+      input: () => new Request("https://mcp.example.com/get", { headers: { "X-Mode": "request" } }),
+      expectedHeaders: { "x-mode": "request" },
+    },
+    {
+      name: "M04 Init header wins",
+      resourceUrl: "https://mcp.example.com/mcp",
+      headers: { "X-Mode": "default" },
+      input: () => new Request("https://mcp.example.com/get", { headers: { "X-Mode": "request" } }),
+      init: { headers: { "X-Mode": "init" } },
+      expectedHeaders: { "x-mode": "init" },
+    },
+    {
+      name: "M05 Mixed header inputs",
+      resourceUrl: "https://mcp.example.com/mcp",
+      headers: { "X-Tenant": "docs" },
+      input: () =>
+        new Request("https://mcp.example.com/get", {
+          headers: { Authorization: "Bearer demo", "X-Request": "five" },
+        }),
+      init: { headers: { "X-Init": "override" } },
+      expectedHeaders: {
+        authorization: "Bearer demo",
+        "x-request": "five",
+        "x-init": "override",
+        "x-tenant": "docs",
+      },
+    },
+    {
+      name: "M06 Request abort",
+      resourceUrl: "https://mcp.example.com/mcp",
+      headers: { "X-Tenant": "docs" },
+      input: () =>
+        new Request("https://mcp.example.com/get", {
+          signal: AbortSignal.abort(new Error("cancelled")),
+        }),
+      expectAbort: true,
+    },
+    {
+      name: "M07 Cross-origin Request",
+      resourceUrl: "https://mcp.example.com/mcp",
+      headers: { "X-Tenant": "docs" },
+      input: () =>
+        new Request("https://auth.example.com/get", { headers: { "X-Request": "seven" } }),
+      expectedHeaders: { "x-tenant": null, "x-request": "seven" },
+    },
+    {
+      name: "M08 Different-port origin",
+      resourceUrl: "https://mcp.example.com:8443/mcp",
+      headers: { "X-Tenant": "docs" },
+      input: () =>
+        new Request("https://mcp.example.com:9443/get", {
+          headers: { "X-Request": "eight" },
+        }),
+      expectedHeaders: { "x-tenant": null, "x-request": "eight" },
+    },
+    {
+      name: "M09 URL-string control",
+      resourceUrl: "https://mcp.example.com/mcp",
+      headers: { "X-Tenant": "docs" },
+      input: () => "https://mcp.example.com/get",
+      init: { headers: { "X-Request": "nine" } },
+      expectedHeaders: { "x-tenant": "docs", "x-request": "nine" },
+    },
+    {
+      name: "M10 Headerless pass-through control",
+      resourceUrl: "https://mcp.example.com/mcp",
+      input: () =>
+        new Request("https://mcp.example.com/post", {
+          method: "POST",
+          headers: { "X-Request": "ten" },
+          body: "unchanged",
+        }),
+      expectedHeaders: { "x-tenant": null, "x-request": "ten" },
+      expectedMethod: "POST",
+      expectedBody: "unchanged",
+    },
+  ];
+
+  it.each(requestHeaderCases)("$name", async (scenario) => {
+    const calls: Request[] = [];
+    const fetchFn: FetchLike = async (url, init) => {
+      const request = new Request(url, init);
+      if (request.signal.aborted) {
+        throw request.signal.reason;
+      }
+      calls.push(request);
+      return new Response("ok");
+    };
+    const fetch = withSameOriginMcpHttpHeaders({
+      fetchFn,
+      resourceUrl: scenario.resourceUrl,
+      headers: scenario.headers,
+    });
+    const input = scenario.input();
+    if (scenario.expectAbort) {
+      await expect(fetch(input, scenario.init)).rejects.toThrow("cancelled");
+      expect(calls).toHaveLength(0);
+      return;
+    }
+    expect((await fetch(input, scenario.init)).status).toBe(200);
+    expect(calls).toHaveLength(1);
+    const sent = calls[0]!;
+    expect(sent.method).toBe(scenario.expectedMethod ?? "GET");
+    for (const [key, value] of Object.entries(scenario.expectedHeaders ?? {})) {
+      expect(sent.headers.get(key)).toBe(value);
+    }
+    if (scenario.expectedBody !== undefined) {
+      expect(await sent.text()).toBe(scenario.expectedBody);
+    }
+  });
+
   it("preserves POST bodies and bearer headers through the production OAuth fetch stack", async () => {
     oauthResolveMock.mockResolvedValueOnce("first-token").mockResolvedValueOnce("second-token");
     const requests: Array<{

@@ -378,8 +378,6 @@ function createSqliteTrajectoryRuntimeSink(params: {
         return;
       }
       const events = pendingEvents;
-      pendingEvents = [];
-      queuedBytes = 0;
       appendSqliteTrajectoryRuntimeEvents(
         {
           agentId: marker.agentId,
@@ -390,6 +388,8 @@ function createSqliteTrajectoryRuntimeSink(params: {
         },
         events,
       );
+      pendingEvents = [];
+      queuedBytes = 0;
     },
     write: (event, line) => {
       pendingEvents.push(event);

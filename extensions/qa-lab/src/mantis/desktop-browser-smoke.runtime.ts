@@ -433,13 +433,28 @@ export async function runMantisDesktopBrowserSmoke(
       summaryPath,
     };
   } finally {
+    let cleanupError: unknown;
+    let cleanupFailedAfterPass = false;
+    if (createdLease && leaseId && !keepLease) {
+      try {
+        await stopCrabbox({ crabboxBin, cwd: repoRoot, env, leaseId, provider, runner });
+      } catch (error) {
+        cleanupError = error;
+        cleanupFailedAfterPass = summary?.status === "pass";
+        if (summary) {
+          const detail = `Lease cleanup failed: ${formatErrorMessage(error)}`;
+          summary.error = summary.error ? `${summary.error}\n${detail}` : detail;
+          summary.status = "fail";
+        }
+      }
+    }
     if (summary) {
       summary.finishedAt = new Date().toISOString();
       await fs.writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
       await fs.writeFile(reportPath, renderReport(summary), "utf8");
     }
-    if (summary?.status === "pass" && createdLease && leaseId && !keepLease) {
-      await stopCrabbox({ crabboxBin, cwd: repoRoot, env, leaseId, provider, runner });
+    if (cleanupFailedAfterPass) {
+      throw cleanupError;
     }
   }
 }

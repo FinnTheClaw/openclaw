@@ -2697,3 +2697,119 @@ describe("applyAuthHeaderOverride", () => {
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+describe("round-seven route API synthetic auth availability", () => {
+  const lookup = (refs?: string[]) => ({
+    envApiKey: {
+      aliasMap: {},
+      candidateMap: {},
+      authEvidenceMap: {},
+      skipSetupProviderFallback: true,
+    },
+    syntheticAuthProviderRefs: refs,
+    syntheticAuthProviderRefsComplete: refs !== undefined,
+  });
+  const cases: Array<{
+    name: string;
+    refs?: string[];
+    modelApi?: string;
+    expected: boolean;
+    disabled?: boolean;
+    explicitKey?: boolean;
+  }> = [
+    {
+      name: "A01 API-only cached ref admits sync resolver",
+      refs: ["ollama"],
+      modelApi: "ollama",
+      expected: true,
+    },
+    {
+      name: "A02 normalized API ref admits sync resolver",
+      refs: ["OLLAMA"],
+      modelApi: "ollama",
+      expected: true,
+    },
+    {
+      name: "A03 absent model API does not match API-only ref",
+      refs: ["ollama"],
+      modelApi: undefined,
+      expected: false,
+    },
+    {
+      name: "A04 provider ref admits matching API route",
+      refs: ["remote-route"],
+      modelApi: "ollama",
+      expected: true,
+    },
+    {
+      name: "A05 absent cached refs leave plugin discovery available",
+      refs: undefined,
+      modelApi: "ollama",
+      expected: true,
+    },
+    {
+      name: "A06 complete empty refs deny plugin discovery",
+      refs: [],
+      modelApi: "ollama",
+      expected: false,
+    },
+    {
+      name: "A07 unrelated ref does not widen plugin discovery",
+      refs: ["other-api"],
+      modelApi: "ollama",
+      expected: false,
+    },
+    {
+      name: "A08 disabled plugin synthetic auth remains disabled",
+      refs: ["ollama"],
+      modelApi: "ollama",
+      expected: false,
+      disabled: true,
+    },
+    {
+      name: "A09 immediate explicit key wins despite unrelated refs",
+      refs: ["other-api"],
+      modelApi: "ollama",
+      expected: true,
+      explicitKey: true,
+    },
+  ];
+
+  it.each(cases)("$name", ({ refs, modelApi, expected, disabled, explicitKey }) => {
+    const cfg = explicitKey
+      ? {
+          models: {
+            providers: {
+              "remote-route": {
+                api: "openai-completions",
+                baseUrl: "https://remote.example/v1",
+                apiKey: "test-key",
+                models: [],
+              },
+            },
+          },
+        }
+      : undefined;
+    expect(
+      hasRuntimeAvailableProviderAuth({
+        provider: "remote-route",
+        modelApi,
+        cfg: cfg as never,
+        env: {},
+        runtimeLookup: lookup(refs),
+        allowPluginSyntheticAuth: !disabled,
+      }),
+    ).toBe(expected);
+  });
+
+  it("A10 API-only cached ref admits prepared resolver", async () => {
+    const { prepareRuntimeAvailableProviderAuth } = await import("./model-auth.js");
+    await expect(
+      prepareRuntimeAvailableProviderAuth({
+        provider: "remote-route",
+        modelApi: "ollama",
+        env: {},
+        runtimeLookup: lookup(["ollama"]),
+      }),
+    ).resolves.toBe(true);
+  });
+});

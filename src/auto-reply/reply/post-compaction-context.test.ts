@@ -468,3 +468,148 @@ Read WORKFLOW.md on startup.
     });
   });
 });
+
+describe("post-compaction fenced section ten-case pack", () => {
+  let fixtureDir = "";
+  beforeEach(() => {
+    fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-post-compaction-fences-"));
+  });
+  afterEach(() => {
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  const cases = [
+    {
+      id: "P01 Tilde-fake-startup",
+      sections: ["Session Startup", "Red Lines"],
+      lines: ["~~~markdown", "## Session Startup", "FAKE_START", "~~~", "## Red Lines", "REAL_RED"],
+      expected: ["REAL_RED"],
+      absent: ["FAKE_START"],
+    },
+    {
+      id: "P02 Tilde-fake-red-lines",
+      sections: ["Session Startup", "Red Lines"],
+      lines: ["~~~", "## Red Lines", "FAKE_RED", "~~~", "## Session Startup", "REAL_START"],
+      expected: ["REAL_START"],
+      absent: ["FAKE_RED"],
+    },
+    {
+      id: "P03 Tilde-only-no-real",
+      sections: ["Session Startup", "Red Lines"],
+      lines: ["~~~", "## Session Startup", "FAKE_START", "## Red Lines", "FAKE_RED", "~~~"],
+      expected: null,
+      absent: [],
+    },
+    {
+      id: "P04 Tilde-inside-real",
+      sections: ["Session Startup"],
+      lines: [
+        "## Session Startup",
+        "ORIGINAL",
+        "~~~markdown",
+        "## Other",
+        "EXAMPLE",
+        "~~~",
+        "CONTINUATION",
+        "## Tail",
+        "OUTSIDE",
+      ],
+      expected: ["ORIGINAL", "CONTINUATION"],
+      absent: ["OUTSIDE"],
+    },
+    {
+      id: "P05 Four-tilde-length",
+      sections: ["Session Startup", "Red Lines"],
+      lines: [
+        "~~~~",
+        "~~~",
+        "## Session Startup",
+        "FAKE_START",
+        "~~~~",
+        "## Red Lines",
+        "REAL_RED",
+      ],
+      expected: ["REAL_RED"],
+      absent: ["FAKE_START"],
+    },
+    {
+      id: "P06 Mixed-marker-interior",
+      sections: ["Session Startup", "Red Lines"],
+      lines: ["~~~", "```", "## Session Startup", "FAKE_START", "~~~", "## Red Lines", "REAL_RED"],
+      expected: ["REAL_RED"],
+      absent: ["FAKE_START"],
+    },
+    {
+      id: "P07 Backtick-control",
+      sections: ["Session Startup", "Red Lines"],
+      lines: [
+        "```markdown",
+        "~~~",
+        "## Session Startup",
+        "FAKE_START",
+        "```",
+        "## Red Lines",
+        "REAL_RED",
+      ],
+      expected: ["REAL_RED"],
+      absent: ["FAKE_START"],
+    },
+    {
+      id: "P08 Indented-tilde",
+      sections: ["Session Startup"],
+      lines: [
+        "  ~~~",
+        "### Session Startup",
+        "FAKE_START",
+        "  ~~~",
+        "### Session Startup",
+        "REAL_START",
+      ],
+      expected: ["REAL_START"],
+      absent: ["FAKE_START"],
+    },
+    {
+      id: "P09 Custom-section",
+      sections: ["Boot Sequence"],
+      lines: ["~~~", "## Boot Sequence", "FAKE_BOOT", "~~~", "## Boot Sequence", "REAL_BOOT"],
+      expected: ["REAL_BOOT", "full startup sequence"],
+      absent: ["FAKE_BOOT", "Run your Session Startup sequence"],
+    },
+    {
+      id: "P10 Legacy-fallback",
+      sections: ["Session Startup", "Red Lines"],
+      lines: [
+        "~~~",
+        "## Session Startup",
+        "FAKE_START",
+        "## Red Lines",
+        "FAKE_RED",
+        "~~~",
+        "## Every Session",
+        "REAL_EVERY",
+        "## Safety",
+        "REAL_SAFETY",
+      ],
+      expected: ["REAL_EVERY", "REAL_SAFETY"],
+      absent: ["FAKE_START", "FAKE_RED"],
+    },
+  ] as const;
+
+  it.each(cases)("$id", async ({ sections, lines, expected, absent }) => {
+    fs.writeFileSync(path.join(fixtureDir, "AGENTS.md"), lines.join("\n") + "\n");
+    const cfg = {
+      agents: { defaults: { compaction: { postCompactionSections: [...sections] } } },
+    } as OpenClawConfig;
+    const result = await readPostCompactionContext(fixtureDir, { cfg });
+    if (expected === null) {
+      expect(result).toBeNull();
+      return;
+    }
+    for (const text of expected) {
+      expect(result).toContain(text);
+    }
+    for (const text of absent) {
+      expect(result).not.toContain(text);
+    }
+  });
+});

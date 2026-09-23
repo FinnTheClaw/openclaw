@@ -134,7 +134,7 @@ function getToolPath(tool: "fd" | "rg"): string | null {
 
   // Check our tools directory first
   const localPath = join(TOOLS_DIR, config.binaryName + (platform() === "win32" ? ".exe" : ""));
-  if (existsSync(localPath)) {
+  if (commandExists(localPath)) {
     return localPath;
   }
 

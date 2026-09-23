@@ -138,7 +138,7 @@ function formatProgressLine(event: TrajectoryEvent): string {
   const sessionKey = event.sessionKey ?? event.sessionId;
   const sessionLabel = formatTextCell(sanitizeTerminalText(sessionKey), SESSION_KEY_PAD);
   const typeLabel = formatTextCell(sanitizeTerminalText(event.type), EVENT_TYPE_PAD);
-  const preview = safePreview(event);
+  const preview = sanitizeTerminalText(safePreview(event));
   return [formatTimestamp(event.ts), typeLabel, sessionLabel, preview].join(" ").trimEnd();
 }
 
