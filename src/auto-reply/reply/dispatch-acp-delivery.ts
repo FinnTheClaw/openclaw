@@ -648,7 +648,7 @@ export function createAcpDispatchDeliveryCoordinator(params: {
       routed: false,
     });
     const transcriptOutcome =
-      rawBlockText || rawFinalText || hasFinalTtsMedia
+      rawBlockText || rawFinalText || hasFinalTtsMedia || isAnswerBearingFinal
         ? captureReplyDispatchDeliveryOutcome(ttsPayload)
         : undefined;
     if (hasFinalTtsMedia && ttsPayload.text?.trim()) {
@@ -674,12 +674,25 @@ export function createAcpDispatchDeliveryCoordinator(params: {
         );
       }
     }
-    if (kind === "final" && delivered) {
+    // Admission is not delivery. A final queued behind other replies can fail
+    // before transport; only a settled visible or uncertain-after-send outcome
+    // may suppress the retained-text fallback.
+    const finalOutcome =
+      kind === "final" && isAnswerBearingFinal && delivered && transcriptOutcome?.isTracked()
+        ? await transcriptOutcome.promise
+        : undefined;
+    const finalMayBeVisible =
+      finalOutcome === undefined ||
+      finalOutcome === "delivered" ||
+      finalOutcome === "failed-deliver";
+    if (kind === "final" && delivered && (!isAnswerBearingFinal || finalMayBeVisible)) {
       state.deliveredFinalReply = true;
       if (isAnswerBearingFinal) {
         state.deliveredAnswerFinalToUser = true;
         state.deliveredFinalTtsMedia = hasFinalTtsMedia;
       }
+    } else if (kind === "final" && delivered && isAnswerBearingFinal) {
+      state.failedVisibleTextDelivery = true;
     }
     if (delivered && tracksVisibleText) {
       state.queuedDirectVisibleTextDeliveries += 1;
@@ -690,7 +703,7 @@ export function createAcpDispatchDeliveryCoordinator(params: {
     if (kind === "block" && delivered) {
       hasPendingDirectBlockReplyDelivery = true;
     }
-    return delivered;
+    return delivered && (kind !== "final" || !isAnswerBearingFinal || finalMayBeVisible);
   };
 
   return {

@@ -22,6 +22,7 @@ type TelegramErrorConfig =
 
 const errorCooldownStore = new Map<string, Map<string, number>>();
 const DEFAULT_ERROR_COOLDOWN_MS = 14400000;
+const MAX_ERROR_MESSAGES_PER_SCOPE = 128;
 
 function pruneExpiredCooldowns(messageStore: Map<string, number>, now: number) {
   for (const [message, expiresAt] of messageStore) {
@@ -107,6 +108,12 @@ export function shouldSuppressTelegramError(params: {
     return false;
   }
   const nextScopeStore = scopeStore ?? new Map<string, number>();
+  if (!nextScopeStore.has(messageKey) && nextScopeStore.size >= MAX_ERROR_MESSAGES_PER_SCOPE) {
+    const oldestMessage = nextScopeStore.keys().next().value;
+    if (oldestMessage !== undefined) {
+      nextScopeStore.delete(oldestMessage);
+    }
+  }
   nextScopeStore.set(messageKey, nextExpiresAt);
   errorCooldownStore.set(scopeKey, nextScopeStore);
   return false;

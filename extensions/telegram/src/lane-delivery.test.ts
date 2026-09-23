@@ -667,6 +667,30 @@ describe("createLaneTextDeliverer", () => {
     expect(harness.answer?.clear).not.toHaveBeenCalled();
   });
 
+  it("reports partial finalization when late media returns false", async () => {
+    const harness = createHarness({ answerMessageId: 999 });
+    harness.lanes.answer.hasStreamedMessage = true;
+    harness.sendPayload.mockResolvedValueOnce(false);
+
+    const result = await harness.deliverLaneText({
+      laneName: "answer",
+      text: "photo",
+      payload: { text: "photo", mediaUrl: "https://example.com/a.png" },
+      infoKind: "final",
+    });
+
+    expect(result).toMatchObject({
+      kind: "preview-finalized-partial",
+      delivery: {
+        content: "photo",
+        messageId: 999,
+        receipt: { primaryPlatformMessageId: "999" },
+      },
+    });
+    expect(harness.sendPayload).toHaveBeenCalledTimes(1);
+    expect(harness.answer?.clear).not.toHaveBeenCalled();
+  });
+
   it("keeps throwing late media failures without a concrete preview receipt", async () => {
     const answer = createTestDraftStream();
     const harness = createHarness({ answerStream: answer });

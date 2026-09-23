@@ -28,7 +28,13 @@ export function mapCodexAppServerRemoteWorkspacePath(
       `Codex remoteWorkspaceRoot is configured but cwd ${params.value} is outside OpenClaw workspace root ${params.localWorkspaceRoot}; refusing to send a gateway-local cwd to the remote Codex app-server.`,
     );
   }
-  return joinRemoteWorkspacePath(remoteRoot, normalizedValue.slice(prefix.length));
+  const suffix = normalizedValue.slice(prefix.length);
+  if (suffix.split("/").some((segment) => segment === "..")) {
+    throw new Error(
+      `Codex remote workspace cwd ${params.value} must stay inside ${params.localWorkspaceRoot}.`,
+    );
+  }
+  return joinRemoteWorkspacePath(remoteRoot, suffix);
 }
 
 /** Maps a remote workspace artifact back into the corresponding gateway workspace. */

@@ -726,8 +726,10 @@ function hasSurfaceSilentReplyDirect(value: unknown): boolean {
   if (!surfaces) {
     return false;
   }
-  return Object.values(surfaces).some((surface) =>
-    Object.hasOwn(getRecord(getRecord(surface)?.silentReply) ?? {}, "direct"),
+  return Object.entries(surfaces).some(
+    ([surfaceId, surface]) =>
+      !isBlockedObjectKey(surfaceId) &&
+      Object.hasOwn(getRecord(getRecord(surface)?.silentReply) ?? {}, "direct"),
   );
 }
 

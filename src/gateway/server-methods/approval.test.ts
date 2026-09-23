@@ -475,6 +475,157 @@ describe("unified approval handlers", () => {
     expect((secondPage.result as ApprovalHistoryResult).nextCursor).toBeUndefined();
   });
 
+  it("filters terminal history by reviewer device while preserving admin and cursor access", async () => {
+    const databaseOptions = createDatabaseOptions();
+    const managers = createManagers(databaseOptions);
+    const a = registerExec(managers.exec, {
+      id: "history-bound-a",
+      reviewerDeviceIds: ["reviewer-a"],
+    });
+    const b = registerExec(managers.exec, {
+      id: "history-bound-b",
+      reviewerDeviceIds: ["reviewer-b"],
+    });
+    const handlers = createApprovalHandlers({
+      execApprovalManager: managers.exec,
+      pluginApprovalManager: managers.plugin,
+      databaseOptions,
+    });
+    const admin = createClient({ scopes: ["operator.admin"], deviceId: "admin" });
+    for (const approval of [a, b]) {
+      expect(
+        await invoke({
+          handlers,
+          method: "approval.resolve",
+          body: { id: approval.record.id, kind: "exec", decision: "deny" },
+          client: admin,
+        }),
+      ).toMatchObject({ ok: true });
+    }
+    await Promise.all([a.decision, b.decision]);
+
+    for (const [deviceId, visibleId] of [
+      ["reviewer-a", a.record.id],
+      ["reviewer-b", b.record.id],
+    ] as const) {
+      const response = await invoke({
+        handlers,
+        method: "approval.history",
+        body: {},
+        client: createClient({ deviceId }),
+      });
+      expect(response).toMatchObject({
+        ok: true,
+        result: { items: [{ id: visibleId }] },
+      });
+      expect((response.result as ApprovalHistoryResult).items).toHaveLength(1);
+    }
+    const noDevice = await invoke({
+      handlers,
+      method: "approval.history",
+      body: {},
+      client: createClient({ scopes: ["operator.approvals"] }),
+    });
+    expect(noDevice).toMatchObject({ ok: true, result: { items: [] } });
+    const first = await invoke({
+      handlers,
+      method: "approval.history",
+      body: { limit: 1 },
+      client: admin,
+    });
+    expect((first.result as ApprovalHistoryResult).items).toHaveLength(1);
+    const cursor = (first.result as ApprovalHistoryResult).nextCursor;
+    expect(cursor).toEqual(expect.any(String));
+    const next = await invoke({
+      handlers,
+      method: "approval.history",
+      body: { cursor, limit: 1 },
+      client: admin,
+    });
+    const ids = [
+      ...(first.result as ApprovalHistoryResult).items,
+      ...(next.result as ApprovalHistoryResult).items,
+    ].map((item) => item.id);
+    expect(new Set(ids)).toEqual(new Set([a.record.id, b.record.id]));
+  });
+
+  const historyVisibilityPack = [
+    ["GM05-A1", ["reviewer-a"], "reviewer-a", ["operator.approvals"], true],
+    ["GM05-A2", ["reviewer-a"], "reviewer-b", ["operator.approvals"], false],
+    ["GM05-A3", ["reviewer-a"], "", ["operator.approvals"], false],
+    ["GM05-A4", ["reviewer-a"], "admin", ["operator.admin"], true],
+    ["GM05-A5", ["reviewer-a"], "requester-device", ["operator.approvals"], false],
+    ["GM05-A6", [], "reviewer-a", ["operator.approvals"], true],
+    ["GM05-A7", [], "reviewer-b", ["operator.approvals"], true],
+    ["GM05-A8", [], "", ["operator.approvals"], false],
+    ["GM05-A9", [], "admin", ["operator.admin"], true],
+    ["GM05-A10", ["reviewer-a"], "admin", ["operator.admin"], true],
+  ] as const;
+  it.each(historyVisibilityPack)(
+    "%s exposes only permitted terminal history",
+    async (id, binding, deviceId, scopes, expectedVisible) => {
+      const databaseOptions = createDatabaseOptions();
+      const managers = createManagers(databaseOptions);
+      const approval = registerExec(managers.exec, { id, reviewerDeviceIds: [...binding] });
+      const handlers = createApprovalHandlers({
+        execApprovalManager: managers.exec,
+        pluginApprovalManager: managers.plugin,
+        databaseOptions,
+      });
+      const admin = createClient({ scopes: ["operator.admin"], deviceId: "admin" });
+      expect(
+        await invoke({
+          handlers,
+          method: "approval.resolve",
+          body: { id, kind: "exec", decision: "deny" },
+          client: admin,
+        }),
+      ).toMatchObject({ ok: true });
+      await approval.decision;
+      const client = createClient({ scopes: [...scopes], ...(deviceId ? { deviceId } : {}) });
+      const response = await invoke({ handlers, method: "approval.history", body: {}, client });
+      expect(response.ok).toBe(true);
+      expect((response.result as ApprovalHistoryResult).items.map((item) => item.id)).toEqual(
+        expectedVisible ? [id] : [],
+      );
+      if (id === "GM05-A10") {
+        const nextApproval = registerExec(managers.exec, {
+          id: "GM05-A10-next",
+          reviewerDeviceIds: ["reviewer-b"],
+        });
+        expect(
+          await invoke({
+            handlers,
+            method: "approval.resolve",
+            body: { id: nextApproval.record.id, kind: "exec", decision: "deny" },
+            client: admin,
+          }),
+        ).toMatchObject({ ok: true });
+        await nextApproval.decision;
+        const first = await invoke({
+          handlers,
+          method: "approval.history",
+          body: { limit: 1 },
+          client: admin,
+        });
+        const cursor = (first.result as ApprovalHistoryResult).nextCursor;
+        expect(cursor).toEqual(expect.any(String));
+        const second = await invoke({
+          handlers,
+          method: "approval.history",
+          body: { limit: 1, cursor },
+          client: admin,
+        });
+        expect(
+          new Set([
+            ...(first.result as ApprovalHistoryResult).items.map((item) => item.id),
+            ...(second.result as ApprovalHistoryResult).items.map((item) => item.id),
+          ]),
+        ).toEqual(new Set([id, nextApproval.record.id]));
+      }
+    },
+  );
+
   it("hides foreign pending and terminal approvals from roles without foreign-session access", async () => {
     const databaseOptions = createDatabaseOptions();
     const stateDir = databaseOptions.env?.OPENCLAW_STATE_DIR;

@@ -703,11 +703,10 @@ async function buildBrowserResult(params: {
   };
 }
 
-async function loadSessionFiles(params: {
-  sessionKey: string;
-  agentId?: string;
-}): Promise<LoadedSessionFiles> {
-  const loaded = loadSessionFileRoot(params);
+async function loadSessionFiles(
+  params: { sessionKey: string; agentId?: string },
+  loaded = loadSessionFileRoot(params),
+): Promise<LoadedSessionFiles> {
   const { storePath, entry, canonicalKey, agentId } = loaded;
   if (!entry?.sessionId || !storePath || !agentId) {
     return { files: [] };
@@ -744,13 +743,14 @@ async function buildListResult(params: {
   agentId?: string;
   path?: string;
   search?: string;
+  loadedSession: ReturnType<typeof loadSessionFileRoot>;
 }): Promise<{
   root?: string;
   gitCheckout?: boolean;
   files: SessionFileEntry[];
   browser?: SessionFileBrowserResult;
 }> {
-  const loaded = await loadSessionFiles(params);
+  const loaded = await loadSessionFiles(params, params.loadedSession);
   const root = loaded.root;
   const gitCheckout = loaded.diffCwd ? insideGitCheckout(loaded.diffCwd) : undefined;
   const workspaceRoot = root ? await openWorkspaceRoot(root) : undefined;
@@ -782,8 +782,9 @@ async function buildListResult(params: {
 
 async function findSessionFile(
   params: SessionsFilesGetParams,
+  loadedSession: ReturnType<typeof loadSessionFileRoot>,
 ): Promise<{ root?: string; file?: SessionFileEntry }> {
-  const loaded = await loadSessionFiles(params);
+  const loaded = await loadSessionFiles(params, loadedSession);
   const exactTouched = loaded.files.find((file) => file.path === params.path);
   if (exactTouched) {
     return {
@@ -829,6 +830,14 @@ function respondSessionFileNotFound(respond: RespondFn, filePath: string) {
     false,
     undefined,
     sessionFilesError("session_file_not_found", "session file not found", { path: filePath }),
+  );
+}
+
+function respondSessionFileRemote(respond: RespondFn) {
+  respond(
+    false,
+    undefined,
+    sessionFilesError("session_file_remote", "session workspace is on an exec node"),
   );
 }
 
@@ -889,7 +898,12 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
     if (!agentId) {
       return;
     }
-    const result = await buildListResult({ ...params, agentId });
+    const loadedSession = loadSessionFileRoot({ ...params, agentId });
+    if (loadedSession.entry?.execNode) {
+      respondSessionFileRemote(respond);
+      return;
+    }
+    const result = await buildListResult({ ...params, agentId, loadedSession });
     respond(true, {
       sessionKey: params.sessionKey,
       ...result,
@@ -908,7 +922,12 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
     if (!agentId) {
       return;
     }
-    const result = await findSessionFile({ ...params, agentId });
+    const loadedSession = loadSessionFileRoot({ ...params, agentId });
+    if (loadedSession.entry?.execNode) {
+      respondSessionFileRemote(respond);
+      return;
+    }
+    const result = await findSessionFile({ ...params, agentId }, loadedSession);
     if (!result.file || result.file.missing) {
       respondSessionFileNotFound(respond, params.path);
       return;
@@ -963,6 +982,10 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
       return;
     }
     const loaded = loadSessionFileRoot({ ...params, agentId });
+    if (loaded.entry?.execNode) {
+      respondSessionFileRemote(respond);
+      return;
+    }
     if (!loaded.root) {
       respondSessionFileNotFound(respond, params.path);
       return;

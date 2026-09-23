@@ -1031,6 +1031,119 @@ describe("subagent registry archive behavior", () => {
     expect(run?.archiveAtMs).toBeUndefined();
   });
 
+  it.each([
+    { id: "A1-C01", mode: "archive", fault: "none" },
+    { id: "A1-C02", mode: "ttl", fault: "none" },
+    { id: "A1-C03", mode: "archive", fault: "sibling" },
+    { id: "A1-C04", mode: "ttl", fault: "sibling" },
+    { id: "A1-C05", mode: "archive", fault: "symlink" },
+    { id: "A1-C06", mode: "ttl", fault: "symlink" },
+    { id: "A1-C07", mode: "archive", fault: "nonwritable" },
+    { id: "A1-C08", mode: "ttl", fault: "nonwritable" },
+    { id: "A1-C09", mode: "archive", fault: "missing-root" },
+  ] as const)(
+    "$id retains attachment retry ownership only when cleanup fails",
+    async ({ id, mode, fault }) => {
+      const temp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-a1-retry-"));
+      const root = path.join(temp, "root");
+      const owned = path.join(root, "owned");
+      const outside = path.join(temp, "outside");
+      const symlink = path.join(root, "escape");
+      const runId = `run-${id}`;
+      await fs.mkdir(owned, { recursive: true });
+      await fs.mkdir(outside);
+      await fs.writeFile(path.join(owned, "artifact.txt"), "artifact");
+      await fs.symlink(outside, symlink, "dir");
+      try {
+        if (fault === "nonwritable") {
+          await fs.chmod(root, 0o500);
+        }
+        addCanonicalSubagentRunForTests({
+          runId,
+          childSessionKey: `agent:main:subagent:${id}`,
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          task: "attachment cleanup retry",
+          cleanup: mode === "archive" ? "delete" : "keep",
+          spawnMode: mode === "ttl" ? "session" : "run",
+          retainAttachmentsOnKeep: false,
+          createdAt: Date.now() - 10 * 60_000,
+          endedAt: Date.now() - 6 * 60_000,
+          ...(mode === "archive"
+            ? { archiveAtMs: Date.now() - 1 }
+            : { cleanupCompletedAt: Date.now() - 6 * 60_000 }),
+          attachmentsRootDir: fault === "missing-root" ? path.join(temp, "missing") : root,
+          attachmentsDir:
+            fault === "sibling" || fault === "missing-root"
+              ? outside
+              : fault === "symlink"
+                ? symlink
+                : owned,
+        });
+
+        await mod.testing.sweepOnceForTests();
+        const retained = mod.getSubagentRunByRunId(runId);
+        if (fault === "none") {
+          expect(retained).toBeUndefined();
+          await expect(fs.access(owned)).rejects.toMatchObject({ code: "ENOENT" });
+          return;
+        }
+        expect(retained).toBeDefined();
+        await expect(fs.access(fault === "nonwritable" ? owned : outside)).resolves.toBeUndefined();
+        // Repair only this owned fixture and let the same production sweeper retry.
+        await fs.chmod(root, 0o700);
+        if (retained) {
+          retained.attachmentsRootDir = root;
+          retained.attachmentsDir = owned;
+        }
+        await mod.testing.sweepOnceForTests();
+        expect(mod.getSubagentRunByRunId(runId)).toBeUndefined();
+        await expect(fs.access(owned)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await fs.chmod(root, 0o700);
+        await fs.rm(temp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("A1-C10 leaves a failed eager attachment cleanup with its replacement owner", async () => {
+    const temp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-a1-replace-"));
+    const root = path.join(temp, "root");
+    const outside = path.join(temp, "outside");
+    await fs.mkdir(root);
+    await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, "artifact.txt"), "artifact");
+    const realpathSpy = vi.spyOn(fs, "realpath");
+    try {
+      mod.registerSubagentRun({
+        runId: "run-A1-C10-old",
+        childSessionKey: "agent:main:subagent:A1-C10",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "replace failed attachment cleanup",
+        cleanup: "delete",
+        attachmentsRootDir: root,
+        attachmentsDir: outside,
+      });
+      expect(
+        mod.replaceSubagentRunAfterSteerCore({
+          previousRunId: "run-A1-C10-old",
+          nextRunId: "run-A1-C10-new",
+        }),
+      ).toBe(true);
+      await vi.waitFor(() => expect(realpathSpy).toHaveBeenCalledWith(outside));
+      expect(mod.getSubagentRunByRunId("run-A1-C10-old")).toBeUndefined();
+      expect(mod.getSubagentRunByRunId("run-A1-C10-new")).toMatchObject({
+        attachmentsRootDir: root,
+        attachmentsDir: outside,
+      });
+      await expect(fs.access(path.join(outside, "artifact.txt"))).resolves.toBeUndefined();
+    } finally {
+      realpathSpy.mockRestore();
+      await fs.rm(temp, { recursive: true, force: true });
+    }
+  });
+
   it("removes attachments for the replaced run after steer restart", async () => {
     const attachmentsRootDir = await fs.mkdtemp(
       path.join(os.tmpdir(), "openclaw-replace-attachments-"),

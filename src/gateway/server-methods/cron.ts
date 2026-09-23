@@ -1296,7 +1296,8 @@ export const cronHandlers: GatewayRequestHandlers = {
       return;
     }
     const p = params as CronRunsRequestParams;
-    const callerScope = readCronCallerScope(client);
+    const admittedScope = readCronCallerScope(client);
+    const callerScope = admittedScope?.manageAll ? undefined : admittedScope;
     const explicitScope = p.scope;
     const hasJobSelector = p.id !== undefined || p.jobId !== undefined;
     const jobId = resolveCronJobId(p);
@@ -1404,7 +1405,7 @@ for (const [method, handler] of Object.entries(cronHandlers)) {
         respond: (...response) => {
           // Reads release data here; mutations already checked at commit. A late
           // acknowledgement must not turn a committed effect into a retryable denial.
-          if (method === "cron.list" || method === "cron.get") {
+          if (method === "cron.list" || method === "cron.get" || method === "cron.runs") {
             assertActiveAgentRuntimeAuthority(args.client, args.context);
             getCronManagementAuthority(identity)?.();
           }

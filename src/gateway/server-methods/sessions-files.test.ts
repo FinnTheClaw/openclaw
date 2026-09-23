@@ -204,6 +204,68 @@ describe("sessions.files RPC handlers", () => {
     expect(hoisted.execOpenPath).not.toHaveBeenCalled();
   });
 
+  const execNodePack = [
+    ["GM07-R1", "sessions.files.list", false, true],
+    ["GM07-R2", "sessions.files.get", false, true],
+    ["GM07-R3", "sessions.files.set", false, true],
+    ["GM07-R4", "sessions.files.list", true, true],
+    ["GM07-R5", "sessions.files.get", true, true],
+    ["GM07-R6", "sessions.files.set", true, true],
+    ["GM07-L1", "sessions.files.list", false, false],
+    ["GM07-L2", "sessions.files.get", false, false],
+    ["GM07-L3", "sessions.files.set", false, false],
+    ["GM07-C1", "sessions.files.reveal", true, true],
+  ] as const;
+  it.each(execNodePack)("%s preserves host identity", async (_id, method, colliding, remote) => {
+    const original = fs.readFileSync(path.join(workspaceRoot, "ui/chat.ts"), "utf8");
+    hoisted.loadSessionEntry.mockReturnValue({
+      canonicalKey: "agent:main:main",
+      cfg: {},
+      storePath: path.join(workspaceRoot, ".sessions.json"),
+      entry: {
+        sessionId: "sess-main",
+        sessionFile: "sess-main.jsonl",
+        ...(remote ? { execNode: "build-mac" } : {}),
+        ...(colliding ? { spawnedCwd: workspaceRoot } : {}),
+      },
+    });
+    const replacement = "local update\n";
+    const args =
+      method === "sessions.files.reveal"
+        ? { key: "agent:main:main" }
+        : {
+            sessionKey: "agent:main:main",
+            ...(method === "sessions.files.list" ? { path: "ui" } : { path: "ui/chat.ts" }),
+            ...(method === "sessions.files.set"
+              ? { content: replacement, expectedHash: hashContent(original) }
+              : {}),
+          };
+    const calls = await invokeSessionFilesHandler(method, args);
+    if (method === "sessions.files.reveal") {
+      expect(expectOkPayload(calls)).toMatchObject({ ok: false });
+      expect(hoisted.execOpenPath).not.toHaveBeenCalled();
+    } else if (remote) {
+      expect(expectError(calls)).toMatchObject({
+        code: "INVALID_REQUEST",
+        details: { type: "session_file_remote" },
+      });
+      expect(hoisted.readSessionTranscriptVisibleMessageDeltaCore).not.toHaveBeenCalled();
+    } else {
+      const result = expectOkPayload(calls);
+      if (method === "sessions.files.list") {
+        expect(result.root).toBe(workspaceRoot);
+        expect(result.browser).toBeDefined();
+      } else if (method === "sessions.files.get") {
+        expect(result.file.content).toBe(original);
+      } else {
+        expect(result.file.hash).toBe(hashContent(replacement));
+      }
+    }
+    expect(fs.readFileSync(path.join(workspaceRoot, "ui/chat.ts"), "utf8")).toBe(
+      method === "sessions.files.set" && !remote ? replacement : original,
+    );
+  });
+
   it("withholds the workspace root of an exec-node session", () => {
     // Workspace identity surfaces read this root. An exec-node session's
     // directory lives on another host, while the precedence below it falls back

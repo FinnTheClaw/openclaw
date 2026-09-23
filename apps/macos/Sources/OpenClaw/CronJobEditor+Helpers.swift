@@ -297,7 +297,9 @@ extension CronJobEditor {
         case "h": 3_600_000
         default: 86_400_000
         }
-        return Int(floor(n * factor))
+        let scaled = floor(n * factor)
+        guard scaled.isFinite, let duration = Int(exactly: scaled) else { return nil }
+        return duration
     }
 
     var effectiveSessionTargetRaw: String {

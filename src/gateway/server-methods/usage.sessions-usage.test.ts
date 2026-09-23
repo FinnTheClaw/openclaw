@@ -130,6 +130,7 @@ async function runSessionsUsage(
 async function runSessionsUsageTimeseries(
   params: Record<string, unknown>,
   config: OpenClawConfig = TEST_RUNTIME_CONFIG,
+  client: Parameters<(typeof usageHandlers)["sessions.usage.timeseries"]>[0]["client"] = null,
 ) {
   const respond = vi.fn();
   await expectDefined(
@@ -138,6 +139,7 @@ async function runSessionsUsageTimeseries(
   )({
     respond,
     params,
+    client,
     context: { getRuntimeConfig: () => config },
   } as unknown as Parameters<(typeof usageHandlers)["sessions.usage.timeseries"]>[0]);
   return respond;
@@ -146,6 +148,7 @@ async function runSessionsUsageTimeseries(
 async function runSessionsUsageLogs(
   params: Record<string, unknown>,
   config: OpenClawConfig = TEST_RUNTIME_CONFIG,
+  client: Parameters<(typeof usageHandlers)["sessions.usage.logs"]>[0]["client"] = null,
 ) {
   const respond = vi.fn();
   await expectDefined(
@@ -154,6 +157,7 @@ async function runSessionsUsageLogs(
   )({
     respond,
     params,
+    client,
     context: { getRuntimeConfig: () => config },
   } as unknown as Parameters<(typeof usageHandlers)["sessions.usage.logs"]>[0]);
   return respond;
@@ -991,6 +995,96 @@ describe("sessions.usage", () => {
       );
     });
   });
+
+  it("withholds storeless history from scoped callers but preserves admin, system, and stored detail", async () => {
+    await withUsageState(async (writeSessionFile) => {
+      writeSessionFile("storeless.jsonl");
+      const key = "agent:opus:storeless";
+      const scoped = {
+        connect: { scopes: ["operator.read"] },
+      } as Parameters<(typeof usageHandlers)["sessions.usage.logs"]>[0]["client"];
+      for (const run of [runSessionsUsageLogs, runSessionsUsageTimeseries]) {
+        vi.mocked(loadSessionLogs).mockClear();
+        vi.mocked(loadSessionUsageTimeSeries).mockClear();
+        const denied = await run({ key }, TEST_RUNTIME_CONFIG, scoped);
+        expect(denied).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({
+            code: "INVALID_REQUEST",
+            message: "Invalid session key: " + key,
+          }),
+        );
+        expect(loadSessionLogs).not.toHaveBeenCalled();
+        expect(loadSessionUsageTimeSeries).not.toHaveBeenCalled();
+        const admin = await run({ key }, TEST_RUNTIME_CONFIG, {
+          connect: { scopes: ["operator.admin"] },
+        } as typeof scoped);
+        expect(admin.mock.calls[0]?.[0]).toBe(true);
+        const system = await run({ key }, TEST_RUNTIME_CONFIG, {
+          internal: { operatorRoleActor: { kind: "system" } },
+        } as typeof scoped);
+        expect(system.mock.calls[0]?.[0]).toBe(true);
+      }
+      mockStoredSession("agent:opus:stored", "stored");
+      const stored = await runSessionsUsageTimeseries(
+        { key: "agent:opus:stored" },
+        TEST_RUNTIME_CONFIG,
+        scoped,
+      );
+      expect(stored.mock.calls[0]?.[0]).toBe(true);
+    });
+  });
+
+  const storelessDetailPack = [
+    ["GM03-T1", "timeseries", "scoped", false, false],
+    ["GM03-T2", "logs", "scoped", false, false],
+    ["GM03-T3", "timeseries", "other-scoped", false, false],
+    ["GM03-T4", "logs", "other-scoped", false, false],
+    ["GM03-T5", "timeseries", "admin", false, true],
+    ["GM03-T6", "logs", "admin", false, true],
+    ["GM03-T7", "timeseries", "system", false, true],
+    ["GM03-T8", "logs", "system", false, true],
+    ["GM03-T9", "timeseries", "scoped", true, true],
+    ["GM03-T10", "logs", "scoped", true, true],
+  ] as const;
+  it.each(storelessDetailPack)(
+    "%s respects historical transcript provenance",
+    async (_id, method, caller, stored, expected) => {
+      await withUsageState(async (writeSessionFile) => {
+        const key = stored ? "agent:opus:stored" : "agent:opus:storeless";
+        if (stored) {
+          mockStoredSession(key, "stored");
+        } else {
+          writeSessionFile("storeless.jsonl");
+        }
+        const client = (
+          caller === "admin"
+            ? { connect: { scopes: ["operator.admin"] } }
+            : caller === "system"
+              ? { internal: { operatorRoleActor: { kind: "system" } } }
+              : { connect: { scopes: ["operator.read"], device: { id: caller } } }
+        ) as Parameters<(typeof usageHandlers)["sessions.usage.logs"]>[0]["client"];
+        vi.mocked(loadSessionLogs).mockClear();
+        vi.mocked(loadSessionUsageTimeSeries).mockClear();
+        const result =
+          method === "logs"
+            ? await runSessionsUsageLogs({ key }, TEST_RUNTIME_CONFIG, client)
+            : await runSessionsUsageTimeseries({ key }, TEST_RUNTIME_CONFIG, client);
+        expect(result).toHaveBeenCalledTimes(1);
+        expect(result.mock.calls[0]?.[0]).toBe(expected);
+        if (!expected) {
+          expect(result.mock.calls[0]?.[2]).toMatchObject({
+            code: "INVALID_REQUEST",
+            message: "Invalid session key: " + key,
+          });
+        }
+        expect(
+          method === "logs" ? loadSessionLogs : loadSessionUsageTimeSeries,
+        ).toHaveBeenCalledTimes(expected ? 1 : 0);
+      });
+    },
+  );
 
   it("fails closed when a canonical stored target no longer matches", async () => {
     const key = "agent:opus:stale";

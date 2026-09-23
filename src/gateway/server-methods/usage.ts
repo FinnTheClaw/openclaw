@@ -22,12 +22,12 @@ import {
   sessionDeliveryChannel,
   sessionDeliveryOrigin,
 } from "../../utils/delivery-context.shared.js";
-import { operatorSessionCap } from "../operator-role-policy.js";
+import { operatorSessionCap, resolveGatewayOperatorRoleActor } from "../operator-role-policy.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { createSessionListEntryFilter, isGatewayAdmin } from "../session-sharing.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { loadUsageStatusStaleWhileRevalidate } from "./models-auth-status-usage-cache.js";
-import type { GatewayRequestHandlers, RespondFn } from "./types.js";
+import type { GatewayClient, GatewayRequestHandlers, RespondFn } from "./types.js";
 import {
   formatDateLabel,
   resolveDateInterpretation,
@@ -55,6 +55,7 @@ function resolveSessionUsageFileOrRespond(
   key: string,
   respond: RespondFn,
   config: OpenClawConfig,
+  client: GatewayClient | null,
 ): (NonNullable<ReturnType<typeof resolveSessionUsageTarget>> & { config: OpenClawConfig }) | null {
   const sessionOwner = resolveRequestedSessionAgentId(config, key);
   if (!sessionOwner.ok) {
@@ -72,6 +73,21 @@ function resolveSessionUsageFileOrRespond(
       false,
       undefined,
       errorShape(ErrorCodes.INVALID_REQUEST, `Invalid session key: ${key}`),
+    );
+    return null;
+  }
+  // A historical transcript without a store row has no ownership provenance.
+  // The router's normal sharing check still handles every store-backed target.
+  if (
+    !resolved.entry &&
+    client != null &&
+    !isGatewayAdmin(client) &&
+    resolveGatewayOperatorRoleActor(client)?.kind !== "system"
+  ) {
+    respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.INVALID_REQUEST, "Invalid session key: " + key),
     );
     return null;
   }
@@ -328,7 +344,7 @@ export const usageHandlers: GatewayRequestHandlers = {
     }
     respond(true, result, undefined);
   },
-  "sessions.usage.timeseries": async ({ respond, params, context }) => {
+  "sessions.usage.timeseries": async ({ respond, params, context, client }) => {
     const key = normalizeOptionalString(params?.key) ?? null;
     if (!key) {
       respond(
@@ -339,7 +355,12 @@ export const usageHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    const resolved = resolveSessionUsageFileOrRespond(key, respond, context.getRuntimeConfig());
+    const resolved = resolveSessionUsageFileOrRespond(
+      key,
+      respond,
+      context.getRuntimeConfig(),
+      client,
+    );
     if (!resolved) {
       return;
     }
@@ -365,7 +386,7 @@ export const usageHandlers: GatewayRequestHandlers = {
 
     respond(true, timeseries, undefined);
   },
-  "sessions.usage.logs": async ({ respond, params, context }) => {
+  "sessions.usage.logs": async ({ respond, params, context, client }) => {
     const key = normalizeOptionalString(params?.key) ?? null;
     if (!key) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "key is required for logs"));
@@ -377,7 +398,12 @@ export const usageHandlers: GatewayRequestHandlers = {
         ? Math.min(params.limit, 1000)
         : 200;
 
-    const resolved = resolveSessionUsageFileOrRespond(key, respond, context.getRuntimeConfig());
+    const resolved = resolveSessionUsageFileOrRespond(
+      key,
+      respond,
+      context.getRuntimeConfig(),
+      client,
+    );
     if (!resolved) {
       return;
     }

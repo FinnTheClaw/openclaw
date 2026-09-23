@@ -261,6 +261,133 @@ describe("webHandlers web.login.start", () => {
     expect(respond).toHaveBeenCalledWith(true, result, undefined);
   });
 
+  it("restores the exact running account when forced login rejects before QR", async () => {
+    const loginWithQrStart = vi.fn().mockRejectedValue(new Error("plugin unavailable"));
+    mocks.listChannelPlugins.mockReturnValue([
+      {
+        id: "whatsapp",
+        gatewayMethods: ["web.login.start"],
+        gateway: { loginWithQrStart },
+      },
+    ]);
+    const { context, startChannel, stopChannel } = createRunningWhatsappContext();
+    const respond = vi.fn();
+
+    await expectDefined(
+      webHandlers["web.login.start"],
+      'webHandlers["web.login.start"] test invariant',
+    )(
+      createOptions(
+        { channel: "whatsapp", accountId: "default", force: true },
+        { respond, context },
+      ),
+    );
+
+    expect(stopChannel).toHaveBeenCalledExactlyOnceWith("whatsapp", "default");
+    expect(startChannel).toHaveBeenCalledExactlyOnceWith("whatsapp", "default");
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "UNAVAILABLE", message: "Error: plugin unavailable" }),
+    );
+  });
+
+  it.each([
+    { id: "GM-02-C01", mode: "async-reject", force: true, running: true, stops: 1, starts: 1 },
+    { id: "GM-02-C02", mode: "no-qr", force: true, running: true, stops: 1, starts: 1 },
+    { id: "GM-02-C03", mode: "sync-throw", force: true, running: true, stops: 1, starts: 1 },
+    { id: "GM-02-C04", mode: "delayed-reject", force: true, running: true, stops: 1, starts: 1 },
+    { id: "GM-02-C05", mode: "late-getter", force: true, running: true, stops: 1, starts: 1 },
+    { id: "GM-02-C06", mode: "qr-takeover", force: true, running: true, stops: 1, starts: 0 },
+    { id: "GM-02-C07", mode: "async-reject", force: true, running: false, stops: 1, starts: 0 },
+    { id: "GM-02-C08", mode: "async-reject", force: false, running: true, stops: 0, starts: 0 },
+    { id: "GM-02-C09", mode: "other-account", force: true, running: true, stops: 1, starts: 1 },
+    { id: "GM-02-C10", mode: "restart-reject", force: true, running: true, stops: 1, starts: 1 },
+  ] as const)("$id exercises $mode", async ({ mode, force, running, stops, starts }) => {
+    const result = { code: "temporary", message: "try again" };
+    const loginWithQrStart = vi.fn().mockImplementation(() => {
+      switch (mode) {
+        case "async-reject":
+        case "other-account":
+        case "restart-reject":
+          return Promise.reject(new Error("plugin unavailable"));
+        case "sync-throw":
+          throw new Error("plugin unavailable");
+        case "delayed-reject":
+          return Promise.resolve().then(() => {
+            throw new Error("plugin unavailable");
+          });
+        case "late-getter":
+          return Promise.resolve({
+            get connected() {
+              throw new Error("late result failure");
+            },
+          });
+        case "qr-takeover":
+          return Promise.resolve({ qrDataUrl: "data:image/png;base64,qr" });
+        default:
+          return Promise.resolve(result);
+      }
+    });
+    mocks.listChannelPlugins.mockReturnValue([
+      {
+        id: "whatsapp",
+        gatewayMethods: ["web.login.start"],
+        gateway: { loginWithQrStart },
+      },
+    ]);
+    const { context, startChannel, stopChannel } = createRunningWhatsappContext();
+    const snapshot = createRunningWhatsappSnapshot();
+    if (!running) {
+      snapshot.channels.whatsapp!.running = false;
+      snapshot.channelAccounts.whatsapp!.default!.running = false;
+    }
+    if (mode === "other-account") {
+      snapshot.channelAccounts.whatsapp!.other = {
+        accountId: "other",
+        running: true,
+      };
+    }
+    if (mode === "restart-reject") {
+      startChannel.mockRejectedValueOnce(new Error("restart failed"));
+    }
+    const respond = vi.fn();
+    await expectDefined(
+      webHandlers["web.login.start"],
+      'webHandlers["web.login.start"] test invariant',
+    )(
+      createOptions(
+        { channel: "whatsapp", accountId: "default", force },
+        {
+          respond,
+          context: {
+            ...context,
+            getRuntimeSnapshot: vi.fn(() => snapshot),
+          } as GatewayRequestHandlerOptions["context"],
+        },
+      ),
+    );
+
+    expect(stopChannel).toHaveBeenCalledTimes(stops);
+    expect(startChannel).toHaveBeenCalledTimes(starts);
+    for (const call of [...stopChannel.mock.calls, ...startChannel.mock.calls]) {
+      expect(call).toEqual(["whatsapp", "default"]);
+    }
+    expect(respond).toHaveBeenCalledTimes(1);
+    if (mode === "no-qr" || mode === "qr-takeover") {
+      expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
+    } else {
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({ code: "UNAVAILABLE" }),
+      );
+    }
+    if (mode === "restart-reject") {
+      expect(respond.mock.calls[0]?.[2]?.message).toContain("channel restoration failed");
+    }
+  });
+
   it("preserves gateway method receiver state for login start", async () => {
     const gateway = {
       marker: "gateway-state",

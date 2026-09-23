@@ -504,7 +504,7 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
         const mediaText =
           finalizedPreview.kind === "preview-finalized" ? finalizedPreview.delivery.content : text;
         try {
-          await params.sendPayload(
+          const mediaDelivered = await params.sendPayload(
             mediaOnlyPayload(payload, mediaText, {
               stripButtons,
               fallbackButtons: stripButtons ? undefined : buttons,
@@ -518,6 +518,13 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
               bindPendingFinalDelivery,
             },
           );
+          if (!mediaDelivered) {
+            const error = new Error("Telegram late media delivery was not confirmed");
+            if (finalizedPreview.kind === "preview-finalized") {
+              return { ...finalizedPreview, kind: "preview-finalized-partial", error };
+            }
+            throw error;
+          }
         } catch (error) {
           if (durable && finalizedPreview.kind === "preview-finalized") {
             return { ...finalizedPreview, kind: "preview-finalized-partial", error };

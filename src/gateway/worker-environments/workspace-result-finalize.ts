@@ -586,14 +586,6 @@ export async function finalizeWorkspaceResultConflicts(params: {
       params.priorConflict.stagedResultRef !== params.stagedResultRef)
       ? params.priorConflict
       : undefined;
-  if (supersededConflict && supersededConflict.stagedResultRef !== params.stagedResultRef) {
-    // Delete the inspectable result before replacing its last durable pointer.
-    await deleteStagedWorkerWorkspaceResult({
-      root: params.root,
-      stagedResultRef: supersededConflict.stagedResultRef,
-    });
-  }
-
   let conflict: Required<WorkerWorkspaceResultConflict> | undefined;
   if (params.conflictPaths.length > 0) {
     if (!params.stagedResultRef) {
@@ -607,6 +599,15 @@ export async function finalizeWorkspaceResultConflicts(params: {
   } else if (supersededConflict) {
     params.placements.recordWorkspaceResultConflict(params.turnClaim, undefined);
     await params.report({ cleared: true });
+  }
+
+  if (supersededConflict && supersededConflict.stagedResultRef !== params.stagedResultRef) {
+    // Keep the old ref inspectable until both the placement and transcript have
+    // durably superseded it. A failed report leaves the old transcript intact.
+    await deleteStagedWorkerWorkspaceResult({
+      root: params.root,
+      stagedResultRef: supersededConflict.stagedResultRef,
+    });
   }
 
   return { conflict, conflictRetained: conflict !== undefined };

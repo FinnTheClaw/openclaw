@@ -497,6 +497,13 @@ export function createSubagentRegistrySweeper(params: {
             typeof entry.cleanupCompletedAt === "number" &&
             now - entry.cleanupCompletedAt > SESSION_RUN_TTL_MS
           ) {
+            if (!entry.retainAttachmentsOnKeep && !(await safeRemoveAttachmentsDir(entry))) {
+              params.warn("subagent attachment cleanup failed; keeping run for retry", { runId });
+              continue;
+            }
+            if (runs.get(runId) !== entry) {
+              continue;
+            }
             params.clearPendingLifecycleError(runId);
             if (!shouldSuppressSubagentRecoverySessionEffects(entry)) {
               runCleanupTail(runId, "context-engine cleanup", async () => {
@@ -505,9 +512,6 @@ export function createSubagentRegistrySweeper(params: {
             }
             runs.delete(runId);
             mutatedRunIds.add(runId);
-            if (!entry.retainAttachmentsOnKeep) {
-              await safeRemoveAttachmentsDir(entry);
-            }
           }
           continue;
         }
@@ -538,9 +542,29 @@ export function createSubagentRegistrySweeper(params: {
             }
           }
         }
+        if (!(await safeRemoveAttachmentsDir(entry))) {
+          if (runs.get(runId) !== entry) {
+            continue;
+          }
+          // Session cleanup already settled. Keep only the attachment retry
+          // owner so a later sweep cannot delete a newer child session.
+          if (!suppressSessionEffects) {
+            entry.execution = { ...entry.execution, suppressSessionEffects: true };
+            mutatedRunIds.add(runId);
+            if (!sessionOwnershipChanged) {
+              runCleanupTail(runId, "context-engine cleanup", async () => {
+                await params.notifyContextEngineSubagentEnded(sweptContext(entry));
+              });
+            }
+          }
+          params.warn("subagent attachment cleanup failed; keeping run for retry", { runId });
+          continue;
+        }
+        if (runs.get(runId) !== entry) {
+          continue;
+        }
         runs.delete(runId);
         mutatedRunIds.add(runId);
-        await safeRemoveAttachmentsDir(entry);
         if (!suppressSessionEffects && !sessionOwnershipChanged) {
           runCleanupTail(runId, "context-engine cleanup", async () => {
             await params.notifyContextEngineSubagentEnded(sweptContext(entry));

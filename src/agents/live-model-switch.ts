@@ -189,16 +189,10 @@ export function shouldSwitchToLiveModel(params: {
       persisted,
     )
   ) {
-    // Current model already matches the persisted selection — the switch has
-    // effectively been applied.  Clear the stale flag so subsequent fallback
-    // iterations don't re-evaluate it.
-    clearLiveModelSwitchPending({
-      cfg,
-      sessionKey,
-      agentId: params.agentId,
-    }).catch(() => {
-      /* best-effort — fs/lock errors are non-fatal here */
-    });
+    // A matching runtime needs no restart. Do not clear pending here: this
+    // synchronous observation cannot own an asynchronous clear after a newer
+    // /model directive, including an identical directive, is persisted. The
+    // completed-run consolidation below retires the pending flag.
     return undefined;
   }
   return persisted;

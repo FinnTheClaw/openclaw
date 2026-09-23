@@ -472,9 +472,7 @@ describe("live model switch", () => {
       });
     });
 
-    it("clears the stale liveModelSwitchPending flag when models already match", async () => {
-      // A stale pending flag should self-heal once the active runtime already
-      // matches the persisted selection.
+    it("defers a matching pending flag until completed-run consolidation", async () => {
       const sessionEntry = {
         liveModelSwitchPending: true,
         providerOverride: "anthropic",
@@ -482,13 +480,61 @@ describe("live model switch", () => {
       };
       state.loadSessionStoreMock.mockReturnValue({ main: sessionEntry });
 
-      const { shouldSwitchToLiveModel } = await loadModule();
+      const { shouldSwitchToLiveModel, consolidateLiveModelSwitchAfterRun } = await loadModule();
 
-      const result = shouldSwitchToLiveModel(makeShouldSwitchParams());
+      expect(shouldSwitchToLiveModel(makeShouldSwitchParams())).toBeUndefined();
+      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+      expect(sessionEntry.liveModelSwitchPending).toBe(true);
 
-      expect(result).toBeUndefined();
-      await vi.waitFor(() => expect(state.updateSessionStoreMock).toHaveBeenCalledTimes(1));
+      await consolidateLiveModelSwitchAfterRun({
+        cfg: { session: { store: "/tmp/custom-store.json" } },
+        sessionKey: "main",
+        providerUsed: "anthropic",
+        modelUsed: "claude-opus-4-6",
+      });
       expect(sessionEntry).not.toHaveProperty("liveModelSwitchPending");
+    });
+
+    it("does not consume a model directive arriving after a matching read", () => {
+      const sessionEntry = {
+        liveModelSwitchPending: true,
+        providerOverride: "anthropic",
+        modelOverride: "claude-opus-4-6",
+      };
+      state.loadSessionStoreMock.mockReturnValue({ main: sessionEntry });
+
+      expect(mod.shouldSwitchToLiveModel(makeShouldSwitchParams())).toBeUndefined();
+      sessionEntry.providerOverride = "openai";
+      sessionEntry.modelOverride = "gpt-5.4";
+      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+      expect(sessionEntry).toMatchObject({
+        liveModelSwitchPending: true,
+        providerOverride: "openai",
+        modelOverride: "gpt-5.4",
+      });
+    });
+
+    it("does not consume a profile-only directive arriving after a matching read", () => {
+      const sessionEntry = {
+        liveModelSwitchPending: true,
+        providerOverride: "anthropic",
+        modelOverride: "claude-opus-4-6",
+        authProfileOverride: "old-profile",
+      };
+      state.loadSessionStoreMock.mockReturnValue({ main: sessionEntry });
+
+      expect(
+        mod.shouldSwitchToLiveModel(
+          makeShouldSwitchParams({
+            currentAuthProfileId: "old-profile",
+            currentAuthProfileIdSource: "user",
+          }),
+        ),
+      ).toBeUndefined();
+      sessionEntry.authProfileOverride = "new-profile";
+      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+      expect(sessionEntry.liveModelSwitchPending).toBe(true);
+      expect(sessionEntry.authProfileOverride).toBe("new-profile");
     });
 
     it("returns undefined when sessionKey is missing", async () => {
@@ -654,6 +700,67 @@ describe("live model switch", () => {
       });
 
       expect(sessionEntry).not.toHaveProperty("liveModelSwitchPending");
+    });
+  });
+
+  describe("A2 ten-case live-switch ownership pack", () => {
+    it.each([
+      { id: "A2-C01", next: {} },
+      { id: "A2-C02", next: { modelOverride: "claude-sonnet-4-6" } },
+      { id: "A2-C03", next: { providerOverride: "openai", modelOverride: "gpt-5.4" } },
+      { id: "A2-C04", next: { authProfileOverride: "new-profile" } },
+      { id: "A2-C05", next: { updatedAt: 101 } },
+      { id: "A2-C06", next: { sessionId: "new-session" } },
+      { id: "A2-C07", next: { lifecycleRevision: "new-revision" } },
+      // A repeated identical /model can share the same timestamp granularity.
+      { id: "A2-C08", next: { providerOverride: "anthropic", modelOverride: "claude-opus-4-6" } },
+    ] as const)("$id never schedules a stale matching-runtime clear", ({ next }) => {
+      const entry: Record<string, unknown> = {
+        liveModelSwitchPending: true,
+        providerOverride: "anthropic",
+        modelOverride: "claude-opus-4-6",
+        updatedAt: 100,
+        sessionId: "old-session",
+        lifecycleRevision: "old-revision",
+      };
+      state.loadSessionStoreMock.mockReturnValue({ main: entry });
+
+      expect(mod.shouldSwitchToLiveModel(makeShouldSwitchParams())).toBeUndefined();
+      Object.assign(entry, next);
+      expect(entry.liveModelSwitchPending).toBe(true);
+      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+    });
+
+    it("A2-C09 does not clear a borrowed detached session", () => {
+      state.loadSessionStoreMock.mockReturnValue({
+        main: {
+          liveModelSwitchPending: true,
+          providerOverride: "anthropic",
+          modelOverride: "claude-opus-4-6",
+        },
+      });
+      expect(
+        mod.shouldSwitchToLiveModel(makeShouldSwitchParams({ sessionPersistence: "detached" })),
+      ).toBeUndefined();
+      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+    });
+
+    it("A2-C10 clears a matching flag only after a completed run", async () => {
+      const entry = {
+        liveModelSwitchPending: true,
+        providerOverride: "anthropic",
+        modelOverride: "claude-opus-4-6",
+      };
+      state.loadSessionStoreMock.mockReturnValue({ main: entry });
+      expect(mod.shouldSwitchToLiveModel(makeShouldSwitchParams())).toBeUndefined();
+      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+      await mod.consolidateLiveModelSwitchAfterRun({
+        cfg: { session: { store: "/tmp/custom-store.json" } },
+        sessionKey: "main",
+        providerUsed: "anthropic",
+        modelUsed: "claude-opus-4-6",
+      });
+      expect(entry).not.toHaveProperty("liveModelSwitchPending");
     });
   });
 

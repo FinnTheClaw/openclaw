@@ -346,6 +346,14 @@ export function createApprovalHandlers(
         ) {
           return [];
         }
+        if (
+          !canAccessOperatorApproval({
+            client,
+            binding: { reviewerDeviceIds: record.reviewerDeviceIds },
+          })
+        ) {
+          return [];
+        }
         const snapshot = buildApprovalSnapshot(record, controlUiBasePath);
         return snapshot && snapshot.status !== "pending" ? [snapshot] : [];
       });

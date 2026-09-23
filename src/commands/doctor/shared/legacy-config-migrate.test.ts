@@ -1274,6 +1274,115 @@ describe("legacy silent reply config migrate", () => {
       "Removed surfaces.telegram.silentReplyRewrite",
     ]);
   });
+
+  it.each([
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C01",
+      json: '{"surfaces":{"__proto__":{"silentReply":{"direct":true}}}}',
+      blockedKey: "__proto__",
+      expectedWarning: false,
+      expectedChange: false,
+    },
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C02",
+      json: '{"surfaces":{"constructor":{"silentReply":{"direct":true}}}}',
+      blockedKey: "constructor",
+      expectedWarning: false,
+      expectedChange: false,
+    },
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C03",
+      json: '{"surfaces":{"prototype":{"silentReply":{"direct":true}}}}',
+      blockedKey: "prototype",
+      expectedWarning: false,
+      expectedChange: false,
+    },
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C04",
+      json: '{"surfaces":{"telegram":{"silentReply":{"direct":true}}}}',
+      safeKey: "telegram",
+      expectedWarning: true,
+      expectedChange: true,
+    },
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C05",
+      json: '{"surfaces":{"matrix":{"silentReply":{"direct":true}}}}',
+      safeKey: "matrix",
+      expectedWarning: true,
+      expectedChange: true,
+    },
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C06",
+      json: '{"surfaces":{"__proto__":{"silentReply":{"direct":false}}}}',
+      blockedKey: "__proto__",
+      expectedWarning: false,
+      expectedChange: false,
+    },
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C07",
+      json: '{"surfaces":{"constructor":{"silentReply":{"direct":"legacy"}}}}',
+      blockedKey: "constructor",
+      expectedWarning: false,
+      expectedChange: false,
+    },
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C08",
+      json: '{"surfaces":{"__proto__":{"silentReply":{"direct":true}},"telegram":{"silentReply":{"direct":true}}}}',
+      blockedKey: "__proto__",
+      safeKey: "telegram",
+      expectedWarning: true,
+      expectedChange: true,
+    },
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C09",
+      json: '{"surfaces":{"prototype":{"silentReply":{"direct":true}},"signal":{"silentReply":{"direct":false}}}}',
+      blockedKey: "prototype",
+      safeKey: "signal",
+      expectedWarning: true,
+      expectedChange: true,
+    },
+    {
+      id: "DOCTOR-SURFACE-SILENT-01/C10",
+      json: '{"surfaces":{"telegram":{"silentReply":{"group":true}}}}',
+      safeKey: "telegram",
+      expectedWarning: false,
+      expectedChange: false,
+    },
+  ])("$id only warns when the repair can remove the direct setting", (testCase) => {
+    const raw = JSON.parse(testCase.json) as Record<string, unknown>;
+    const surfaces = raw.surfaces as Record<string, unknown>;
+    if (testCase.blockedKey) {
+      expect(Object.hasOwn(surfaces, testCase.blockedKey)).toBe(true);
+    }
+
+    const warning = findLegacyConfigIssues(raw).some((issue) => issue.path === "surfaces");
+    const result = migrateLegacyConfigForTest(raw);
+    expect(warning).toBe(testCase.expectedWarning);
+    expect(result.changes.some((change) => change.includes("Removed surfaces."))).toBe(
+      testCase.expectedChange,
+    );
+
+    if (testCase.blockedKey) {
+      expect(
+        Object.hasOwn(
+          (surfaces[testCase.blockedKey] as { silentReply?: object }).silentReply ?? {},
+          "direct",
+        ),
+      ).toBe(true);
+    }
+    if (testCase.safeKey && testCase.expectedChange) {
+      expect(
+        Object.hasOwn(
+          (result.config?.surfaces as Record<string, { silentReply?: object }>)?.[testCase.safeKey]
+            ?.silentReply ?? {},
+          "direct",
+        ),
+      ).toBe(false);
+    }
+    if (!testCase.expectedChange) {
+      expect(result.config).toBeNull();
+    }
+  });
 });
 
 describe("legacy agent system prompt override config migrate", () => {

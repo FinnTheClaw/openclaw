@@ -67,6 +67,63 @@ function prepareInput(
   };
 }
 
+/** Project path aliases once over the original input, never over inserted destinations. */
+export function createWorkerMediaAliasProjector(projectedPaths: ReadonlyMap<string, string>) {
+  const pathDelimiters = new Set([
+    '"',
+    "'",
+    "`",
+    "(",
+    ")",
+    "[",
+    "]",
+    "{",
+    "}",
+    "<",
+    ">",
+    ",",
+    ";",
+    ":",
+    "=",
+    "!",
+    "?",
+  ]);
+  const isPathBoundary = (character: string | undefined) =>
+    character === undefined || /\s/u.test(character) || pathDelimiters.has(character);
+  const regexSpecial = new Set([
+    "\\",
+    ".",
+    "*",
+    "+",
+    "?",
+    "^",
+    "$",
+    "{",
+    "}",
+    "(",
+    ")",
+    "|",
+    "[",
+    "]",
+  ]);
+  const escapedAliases = [...projectedPaths.keys()]
+    .toSorted((a, b) => b.length - a.length)
+    .map((alias) =>
+      [...alias]
+        .map((character) => (regexSpecial.has(character) ? `\\${character}` : character))
+        .join(""),
+    );
+  const aliasPattern = escapedAliases.length ? new RegExp(escapedAliases.join("|"), "gu") : null;
+  return (text: string): string =>
+    aliasPattern
+      ? text.replace(aliasPattern, (source, index: number) =>
+          isPathBoundary(text[index - 1]) && isPathBoundary(text[index + source.length])
+            ? (projectedPaths.get(source) ?? source)
+            : source,
+        )
+      : text;
+}
+
 /** Prepare transient worker input; canonical media paths and transcript bytes stay on the Gateway. */
 export async function prepareWorkerTurnMedia(params: {
   turn: SessionPlacementTurnParams;
@@ -252,13 +309,7 @@ export async function prepareWorkerTurnMedia(params: {
     await staging?.cleanup();
   }
   assertCurrent();
-  const projectText = (text: string) => {
-    let projected = text;
-    for (const [source, destination] of projectedPaths) {
-      projected = projected.replaceAll(source, destination);
-    }
-    return projected;
-  };
+  const projectText = createWorkerMediaAliasProjector(projectedPaths);
   const projectInput = (input: ReturnType<typeof prepareInput>) => {
     // Gateway bookkeeping is not part of the closed worker content contract.
     const parts = input.parts.map((part) =>

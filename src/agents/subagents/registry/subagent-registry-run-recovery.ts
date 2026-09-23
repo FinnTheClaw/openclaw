@@ -255,7 +255,16 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
         this.options.clearPendingLifecycleError(previousRunId);
         this.options.resumedRuns.delete(previousRunId);
         if (this.shouldDeleteAttachments(source)) {
-          void safeRemoveAttachmentsDir(source);
+          // The successor inherits this attachment path. A failed eager cleanup
+          // must leave that durable run as the later sweep's retry owner.
+          void safeRemoveAttachmentsDir(source).then((removed) => {
+            if (!removed) {
+              log.warn("replacement attachment cleanup deferred to successor", {
+                previousRunId,
+                nextRunId,
+              });
+            }
+          });
         }
         if (
           source.execution.transcriptTarget &&

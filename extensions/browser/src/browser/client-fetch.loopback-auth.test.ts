@@ -168,6 +168,32 @@ describe("fetchBrowserJson loopback auth", () => {
     const headers = new Headers(init?.headers);
     expect(headers.get("authorization")).toBe("Bearer loopback-token");
   });
+  it("prefers registered bridge token over configured global auth on its dynamic port", async () => {
+    mocks.resolveBrowserControlAuth.mockReturnValue({ token: "configured-global-token" });
+    mocks.getBridgeAuthForPort.mockReturnValue({ token: "attached-bridge-token" });
+    const fetchMock = stubJsonFetchOk();
+
+    await fetchBrowserJson<{ ok: boolean }>("http://127.0.0.1:39876/");
+
+    const init = requireFetchInit(fetchMock);
+    const headers = new Headers(init?.headers);
+    expect(mocks.getBridgeAuthForPort).toHaveBeenCalledWith(39876);
+    expect(headers.get("authorization")).toBe("Bearer attached-bridge-token");
+  });
+
+  it("prefers registered bridge password over configured global auth on its dynamic port", async () => {
+    mocks.resolveBrowserControlAuth.mockReturnValue({ token: "configured-global-token" });
+    mocks.getBridgeAuthForPort.mockReturnValue({ password: "attached-bridge-password" });
+    const fetchMock = stubJsonFetchOk();
+
+    await fetchBrowserJson<{ ok: boolean }>("http://127.0.0.1:39877/");
+
+    const init = requireFetchInit(fetchMock);
+    const headers = new Headers(init?.headers);
+    expect(mocks.getBridgeAuthForPort).toHaveBeenCalledWith(39877);
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("x-openclaw-password")).toBe("attached-bridge-password");
+  });
 
   it("does not inject auth for non-loopback absolute URLs", async () => {
     const fetchMock = stubJsonFetchOk();

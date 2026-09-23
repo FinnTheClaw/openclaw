@@ -279,6 +279,172 @@ describe("deviceHandlers", () => {
     });
   });
 
+  it("GM-01-C02: finishes a committed node-token revoke when worker reconciliation fails", async () => {
+    const nodeId = "revoked-node-reconcile-failure";
+    revokeDeviceTokenMock.mockResolvedValue({
+      ok: true,
+      entry: { token: "raw-node-token", role: "node", scopes: [], revokedAtMs: 456 },
+    });
+    await seedNodeWakeState(nodeId);
+    enqueueNodePendingWork({ nodeId, type: "location.request" });
+    const workerEnvironmentService = {};
+    bindDeviceWorkerReconciliation(workerEnvironmentService, async () => {
+      throw new Error("worker store unavailable");
+    });
+    const opts = createOptions(
+      "device.token.revoke",
+      { deviceId: nodeId, role: "node" },
+      { client: createClient(["operator.admin"], "admin-device", { isDeviceTokenAuth: true }) },
+    );
+    Object.assign(opts.context, { workerEnvironmentService });
+    vi.mocked(opts.respond).mockImplementation(() => {
+      expect(opts.context.invalidateClientsForDevice).toHaveBeenCalledWith(nodeId, {
+        role: "node",
+        reason: "device-token-revoked",
+      });
+      expect(opts.context.disconnectClientsForDevice).not.toHaveBeenCalled();
+    });
+
+    await expectDefined(
+      deviceHandlers["device.token.revoke"],
+      'deviceHandlers["device.token.revoke"] test invariant',
+    )(opts);
+    await Promise.resolve();
+
+    expect(revokeDeviceTokenMock).toHaveBeenCalledTimes(1);
+    expect(getNodeWakeStateSnapshot(nodeId)).toBeUndefined();
+    expect(drainNodePendingWork(nodeId).items.map((item) => item.id)).toEqual(["baseline-status"]);
+    expect(opts.context.logGateway.warn).toHaveBeenCalledWith(
+      "device worker reconciliation failed after token revocation device=" + nodeId,
+    );
+    expect(opts.respond).toHaveBeenCalledWith(
+      true,
+      { deviceId: nodeId, role: "node", revokedAtMs: 456 },
+      undefined,
+    );
+    expect(opts.context.disconnectClientsForDevice).toHaveBeenCalledWith(nodeId, { role: "node" });
+  });
+
+  it.each([
+    { id: "GM-01-C01", mode: "ok", role: "node", sockets: 1 },
+    { id: "GM-01-C03", mode: "credential-reject", role: "node", sockets: 1 },
+    { id: "GM-01-C04", mode: "delayed-reject", role: "node", sockets: 1 },
+    { id: "GM-01-C05", mode: "ok", role: "node", sockets: 0 },
+    { id: "GM-01-C06", mode: "list-reject", role: "node", sockets: 2 },
+    { id: "GM-01-C07", mode: "list-reject", role: "node", sockets: 1 },
+    { id: "GM-01-C08", mode: "list-reject", role: "operator", sockets: 1 },
+    { id: "GM-01-C09", mode: "deny", role: "node", sockets: 1 },
+    { id: "GM-01-C10", mode: "repeat", role: "node", sockets: 1 },
+  ] as const)("$id: committed token outcome and target-only socket teardown", async (scenario) => {
+    const nodeId = "revocation-" + scenario.id;
+    const entry = { token: "raw-token", role: scenario.role, scopes: [], revokedAtMs: 456 };
+    const denied = { ok: false, reason: "unknown-device-or-role" };
+    if (scenario.mode === "deny") {
+      revokeDeviceTokenMock.mockResolvedValue(denied);
+    } else if (scenario.mode === "repeat") {
+      revokeDeviceTokenMock
+        .mockResolvedValueOnce({ ok: true, entry })
+        .mockResolvedValueOnce(denied);
+    } else {
+      revokeDeviceTokenMock.mockResolvedValue({ ok: true, entry });
+    }
+    const targetSockets = Array.from({ length: scenario.sockets }, () => ({
+      role: scenario.role,
+      invalidated: false,
+      connected: true,
+    }));
+    const unrelatedSocket = { role: "node", invalidated: false, connected: true };
+    const workerEnvironmentService = {};
+    const reconcile = vi.fn(async () => {
+      if (scenario.mode === "delayed-reject") {
+        await Promise.resolve();
+      }
+      if (
+        scenario.mode === "list-reject" ||
+        scenario.mode === "credential-reject" ||
+        scenario.mode === "delayed-reject"
+      ) {
+        throw new Error("worker store unavailable");
+      }
+      return [];
+    });
+    bindDeviceWorkerReconciliation(workerEnvironmentService, reconcile);
+    const opts = createOptions(
+      "device.token.revoke",
+      { deviceId: " " + nodeId + " ", role: scenario.role },
+      { client: createClient(["operator.admin"], "admin-device", { isDeviceTokenAuth: true }) },
+    );
+    Object.assign(opts.context, { workerEnvironmentService });
+    vi.mocked(opts.context.invalidateClientsForDevice!).mockImplementation((deviceId, options) => {
+      if (deviceId === nodeId) {
+        for (const socket of targetSockets) {
+          if (socket.role === options?.role) {
+            socket.invalidated = true;
+          }
+        }
+      }
+    });
+    vi.mocked(opts.context.disconnectClientsForDevice!).mockImplementation((deviceId, options) => {
+      if (deviceId === nodeId) {
+        for (const socket of targetSockets) {
+          if (socket.role === options?.role) {
+            socket.connected = false;
+          }
+        }
+      }
+    });
+    vi.mocked(opts.respond).mockImplementation((ok) => {
+      if (ok) {
+        expect(opts.context.invalidateClientsForDevice).toHaveBeenCalledWith(nodeId, {
+          role: scenario.role,
+          reason: "device-token-revoked",
+        });
+        expect(opts.context.disconnectClientsForDevice).not.toHaveBeenCalled();
+      }
+    });
+
+    await expectDefined(
+      deviceHandlers["device.token.revoke"],
+      'deviceHandlers["device.token.revoke"] test invariant',
+    )(opts);
+    await Promise.resolve();
+
+    if (scenario.mode === "deny") {
+      expect(opts.respond).toHaveBeenCalledWith(false, undefined, expect.anything());
+      expect(opts.context.invalidateClientsForDevice).not.toHaveBeenCalled();
+      expect(opts.context.disconnectClientsForDevice).not.toHaveBeenCalled();
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(targetSockets.every((socket) => socket.connected && !socket.invalidated)).toBe(true);
+      return;
+    }
+    expect(opts.respond).toHaveBeenCalledWith(
+      true,
+      { deviceId: nodeId, role: scenario.role, revokedAtMs: 456 },
+      undefined,
+    );
+    expect(targetSockets.every((socket) => socket.invalidated && !socket.connected)).toBe(true);
+    expect(unrelatedSocket).toEqual({ role: "node", invalidated: false, connected: true });
+    if (scenario.role === "node") {
+      expect(reconcile).toHaveBeenCalledTimes(1);
+    } else {
+      expect(reconcile).not.toHaveBeenCalled();
+    }
+    if (scenario.role === "node" && scenario.mode.endsWith("reject")) {
+      expect(opts.context.logGateway.warn).toHaveBeenCalledWith(
+        "device worker reconciliation failed after token revocation device=" + nodeId,
+      );
+    }
+    if (scenario.mode === "repeat") {
+      await expectDefined(
+        deviceHandlers["device.token.revoke"],
+        'deviceHandlers["device.token.revoke"] test invariant',
+      )(opts);
+      expect(opts.respond).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(opts.context.invalidateClientsForDevice!).mock.calls).toHaveLength(1);
+      expect(vi.mocked(opts.context.disconnectClientsForDevice!).mock.calls).toHaveLength(1);
+    }
+  });
+
   it("disconnects active clients after removing a paired device", async () => {
     removePairedDeviceMock.mockResolvedValue({ deviceId: "device-1", removedAtMs: 123 });
     const opts = createOptions("device.pair.remove", { deviceId: " device-1 " });

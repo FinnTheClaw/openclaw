@@ -93,6 +93,25 @@ describe("telegram error policy", () => {
     ).toBe(true);
   });
 
+  it("evicts the oldest distinct error when one scope reaches its message limit", () => {
+    const scopeKey = buildTelegramErrorScopeKey({ accountId, chatId: 42 });
+    for (let index = 0; index < 129; index += 1) {
+      expect(
+        shouldSuppressTelegramError({
+          scopeKey,
+          cooldownMs: 1000,
+          errorMessage: `error-${index}`,
+        }),
+      ).toBe(false);
+    }
+    expect(
+      shouldSuppressTelegramError({ scopeKey, cooldownMs: 1000, errorMessage: "error-128" }),
+    ).toBe(true);
+    expect(
+      shouldSuppressTelegramError({ scopeKey, cooldownMs: 1000, errorMessage: "error-0" }),
+    ).toBe(false);
+  });
+
   it("prunes expired cooldowns within a single scope", () => {
     const scopeKey = buildTelegramErrorScopeKey({
       accountId,

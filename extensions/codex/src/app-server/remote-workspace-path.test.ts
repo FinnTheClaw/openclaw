@@ -1,5 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { resolveCodexAppServerExecutionCwd } from "./dynamic-tool-build.js";
 import {
   mapCodexAppServerLocalWorkspacePath,
   mapCodexAppServerRemoteWorkspacePath,
@@ -127,6 +128,92 @@ describe("Codex remote workspace paths", () => {
       }),
     ).toThrow("must stay inside");
   });
+
+  for (const testCase of [
+    { id: "C01", value: localWorkspaceRoot, expected: remoteWorkspaceRoot },
+    {
+      id: "C02",
+      value: `${localWorkspaceRoot}/project`,
+      expected: `${remoteWorkspaceRoot}/project`,
+    },
+    {
+      id: "C03",
+      value: `${localWorkspaceRoot}/project/nested`,
+      expected: `${remoteWorkspaceRoot}/project/nested`,
+    },
+    {
+      id: "C04",
+      value: `${localWorkspaceRoot}-other/project`,
+      error: "outside OpenClaw workspace root",
+    },
+    {
+      id: "C05",
+      value: `${localWorkspaceRoot}/../outside`,
+      error: "must stay inside",
+    },
+    {
+      id: "C06",
+      value: `${localWorkspaceRoot}/nested/../../outside`,
+      error: "must stay inside",
+    },
+    {
+      id: "C07",
+      value: `${localWorkspaceRoot}/nested/./inside`,
+      expected: `${remoteWorkspaceRoot}/nested/./inside`,
+    },
+    {
+      id: "C08",
+      value: `${localWorkspaceRoot}/`,
+      expected: remoteWorkspaceRoot,
+    },
+    {
+      id: "C09",
+      value: `${localWorkspaceRoot}/../outside`,
+      error: "must stay inside",
+      caller: "environment",
+    },
+    {
+      id: "C10",
+      value: `${localWorkspaceRoot}/project`,
+      expected: `${remoteWorkspaceRoot}/project`,
+      caller: "effective",
+    },
+  ]) {
+    it(`CODEX-R4-01-${testCase.id} maps or rejects the requested cwd`, () => {
+      const map = () => {
+        const value =
+          testCase.caller === "environment"
+            ? resolveCodexAppServerExecutionCwd({
+                effectiveCwd: `${localWorkspaceRoot}/project`,
+                environment: { id: "sandbox-case", cwd: testCase.value } as never,
+                nativeToolSurfaceEnabled: true,
+                localWorkspaceRoot,
+                remoteWorkspaceRoot,
+              })
+            : testCase.caller === "effective"
+              ? resolveCodexAppServerExecutionCwd({
+                  effectiveCwd: testCase.value,
+                  nativeToolSurfaceEnabled: false,
+                  localWorkspaceRoot,
+                  remoteWorkspaceRoot,
+                })
+              : mapCodexAppServerRemoteWorkspacePath({
+                  value: testCase.value,
+                  localWorkspaceRoot,
+                  remoteWorkspaceRoot,
+                });
+        return value;
+      };
+      if (testCase.error) {
+        expect(map).toThrow(testCase.error);
+      } else {
+        expect(map()).toBe(testCase.expected);
+        if (testCase.id === "C07") {
+          expect(path.posix.resolve(map())).toBe(`${remoteWorkspaceRoot}/nested/inside`);
+        }
+      }
+    });
+  }
 
   it("preserves workspace paths when no remote root is configured", () => {
     const value = path.join(localWorkspaceRoot, "report.txt");

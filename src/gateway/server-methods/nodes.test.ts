@@ -763,6 +763,153 @@ describe("nodeHandlers node.pair.remove", () => {
     expect(order).toEqual(["environment", "placement", "respond"]);
   });
 
+  it("GM-04-C02: clears and closes a removed node after worker reconciliation rejects", async () => {
+    const state = await createState("node-remove-worker-reconcile-failure");
+    const nodeId = "node-remove-worker-reconcile-failure";
+    await pairAndroidNodeDevice(state.stateDir, nodeId);
+    await seedNodeWakeState(nodeId);
+    enqueueNodePendingWork({ nodeId, type: "location.request" });
+    const workerEnvironmentService = {};
+    bindDeviceWorkerReconciliation(workerEnvironmentService, async () => {
+      throw new Error("worker store unavailable");
+    });
+    const { context, opts, respond } = createOptions({ nodeId });
+    Object.assign(context, { workerEnvironmentService });
+    respond.mockImplementation(() => {
+      expect(context.invalidateClientsForDevice).toHaveBeenCalledWith(nodeId, {
+        role: "node",
+        reason: "device-pair-removed",
+      });
+      expect(context.disconnectClientsForDevice).not.toHaveBeenCalled();
+    });
+
+    await expectDefined(
+      nodeHandlers["node.pair.remove"],
+      'nodeHandlers["node.pair.remove"] test invariant',
+    )(opts);
+    await Promise.resolve();
+
+    expect(Object.hasOwn(await readPaired(state.stateDir), nodeId)).toBe(false);
+    expect(getNodeWakeStateSnapshot(nodeId)).toBeUndefined();
+    expect(drainNodePendingWork(nodeId).items.map((item) => item.id)).toEqual(["baseline-status"]);
+    expect(context.nodeRegistry.updateSurface).toHaveBeenCalledWith(nodeId, {
+      caps: [],
+      commands: [],
+      permissions: undefined,
+    });
+    expect(context.logGateway.warn).toHaveBeenCalledWith(
+      "device worker reconciliation failed after node-role removal device=" + nodeId,
+    );
+    expect(respond).toHaveBeenCalledWith(true, { nodeId }, undefined);
+    expect(context.disconnectClientsForDevice).toHaveBeenCalledWith(nodeId, { role: "node" });
+  });
+
+  it.each([
+    { id: "GM-04-C01", mode: "ok", sockets: 1 },
+    { id: "GM-04-C03", mode: "credential-reject", sockets: 1 },
+    { id: "GM-04-C04", mode: "delayed-reject", sockets: 1 },
+    { id: "GM-04-C05", mode: "ok", sockets: 0 },
+    { id: "GM-04-C06", mode: "list-reject", sockets: 2 },
+    { id: "GM-04-C07", mode: "list-reject", sockets: 1 },
+    { id: "GM-04-C08", mode: "list-reject", sockets: 1 },
+    { id: "GM-04-C09", mode: "unpaired", sockets: 1 },
+    { id: "GM-04-C10", mode: "repeat", sockets: 1 },
+  ] as const)("$id: role-removal outcome and target-only socket teardown", async (scenario) => {
+    const state = await createState("node-role-removal-" + scenario.id);
+    const nodeId = "node-role-removal-" + scenario.id;
+    if (scenario.mode !== "unpaired") {
+      await pairAndroidNodeDevice(state.stateDir, nodeId);
+    }
+    if (scenario.id === "GM-04-C08") {
+      await seedNodeWakeState(nodeId);
+      enqueueNodePendingWork({ nodeId, type: "location.request" });
+    }
+    const targetSockets = Array.from({ length: scenario.sockets }, () => ({
+      invalidated: false,
+      connected: true,
+    }));
+    const unrelatedSocket = { invalidated: false, connected: true };
+    const workerEnvironmentService = {};
+    const reconcile = vi.fn(async () => {
+      if (scenario.mode === "delayed-reject") {
+        await Promise.resolve();
+      }
+      if (
+        scenario.mode === "list-reject" ||
+        scenario.mode === "credential-reject" ||
+        scenario.mode === "delayed-reject"
+      ) {
+        throw new Error("worker store unavailable");
+      }
+      return [];
+    });
+    bindDeviceWorkerReconciliation(workerEnvironmentService, reconcile);
+    const { context, opts, respond } = createOptions({ nodeId });
+    Object.assign(context, { workerEnvironmentService });
+    context.invalidateClientsForDevice.mockImplementation((deviceId) => {
+      if (deviceId === nodeId) {
+        for (const socket of targetSockets) {
+          socket.invalidated = true;
+        }
+      }
+    });
+    context.disconnectClientsForDevice.mockImplementation((deviceId) => {
+      if (deviceId === nodeId) {
+        for (const socket of targetSockets) {
+          socket.connected = false;
+        }
+      }
+    });
+    respond.mockImplementation((ok) => {
+      if (ok) {
+        expect(context.invalidateClientsForDevice).toHaveBeenCalledWith(nodeId, {
+          role: "node",
+          reason: "device-pair-removed",
+        });
+        expect(context.disconnectClientsForDevice).not.toHaveBeenCalled();
+      }
+    });
+
+    await expectDefined(
+      nodeHandlers["node.pair.remove"],
+      'nodeHandlers["node.pair.remove"] test invariant',
+    )(opts);
+    await Promise.resolve();
+
+    if (scenario.mode === "unpaired") {
+      expect(respond).toHaveBeenCalledWith(false, undefined, expect.anything());
+      expect(context.invalidateClientsForDevice).not.toHaveBeenCalled();
+      expect(context.disconnectClientsForDevice).not.toHaveBeenCalled();
+      expect(reconcile).not.toHaveBeenCalled();
+      return;
+    }
+    expect(Object.hasOwn(await readPaired(state.stateDir), nodeId)).toBe(false);
+    expect(respond).toHaveBeenCalledWith(true, { nodeId }, undefined);
+    expect(targetSockets.every((socket) => socket.invalidated && !socket.connected)).toBe(true);
+    expect(unrelatedSocket).toEqual({ invalidated: false, connected: true });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    if (scenario.mode.endsWith("reject")) {
+      expect(context.logGateway.warn).toHaveBeenCalledWith(
+        "device worker reconciliation failed after node-role removal device=" + nodeId,
+      );
+    }
+    if (scenario.id === "GM-04-C08") {
+      expect(getNodeWakeStateSnapshot(nodeId)).toBeUndefined();
+      expect(drainNodePendingWork(nodeId).items.map((item) => item.id)).toEqual([
+        "baseline-status",
+      ]);
+    }
+    if (scenario.mode === "repeat") {
+      await expectDefined(
+        nodeHandlers["node.pair.remove"],
+        'nodeHandlers["node.pair.remove"] test invariant',
+      )(opts);
+      expect(respond).toHaveBeenCalledTimes(2);
+      expect(context.invalidateClientsForDevice).toHaveBeenCalledTimes(1);
+      expect(context.disconnectClientsForDevice).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("preserves an APNs registration created after node-role removal commits", async () => {
     const state = await createState("node-remove-apns-registration-race");
     const nodeId = "ios-node-registration-race";

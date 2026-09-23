@@ -97,6 +97,24 @@ function withLoopbackBrowserAuthImpl(
     return { ...init, headers };
   }
 
+  // Sandbox bridge servers use per-process auth on dynamic loopback ports.
+  // Prefer the credential registered for this exact port over global browser auth.
+  try {
+    const { port } = parseBrowserHttpUrl(url, "browser control URL");
+    const bridgeAuth = deps.getBridgeAuthForPort(port);
+    if (bridgeAuth?.token) {
+      headers.set("Authorization", `Bearer ${bridgeAuth.token}`);
+      return { ...init, headers };
+    }
+    if (bridgeAuth?.password) {
+      headers.set("x-openclaw-password", bridgeAuth.password);
+      return { ...init, headers };
+    }
+  } catch {
+    // ignore
+  }
+
+  // Other loopback browser-control servers continue using configured global auth.
   try {
     const cfg = deps.getRuntimeConfig();
     const auth = deps.resolveBrowserControlAuth(cfg);
@@ -110,20 +128,6 @@ function withLoopbackBrowserAuthImpl(
     }
   } catch {
     // ignore config/auth lookup failures and continue without auth headers
-  }
-
-  // Sandbox bridge servers can run with per-process ephemeral auth on dynamic ports.
-  // Fall back to the in-memory registry if config auth is not available.
-  try {
-    const { port } = parseBrowserHttpUrl(url, "browser control URL");
-    const bridgeAuth = deps.getBridgeAuthForPort(port);
-    if (bridgeAuth?.token) {
-      headers.set("Authorization", `Bearer ${bridgeAuth.token}`);
-    } else if (bridgeAuth?.password) {
-      headers.set("x-openclaw-password", bridgeAuth.password);
-    }
-  } catch {
-    // ignore
   }
 
   return { ...init, headers };

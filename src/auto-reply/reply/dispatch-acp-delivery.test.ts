@@ -97,6 +97,123 @@ vi.mock("../../infra/outbound/message-action-runner.js", () => ({
   runMessageAction: (params: unknown) => deliveryMocks.runMessageAction(params),
 }));
 
+describe("AUTO-R4-01 settled answer-final delivery pack", () => {
+  it.each([
+    { id: "AUTO-R4-01-C01", mode: "delivered", answer: true, failed: false, calls: 1 },
+    { id: "AUTO-R4-01-C02", mode: "rewritten", answer: true, failed: false, calls: 1 },
+    { id: "AUTO-R4-01-C03", mode: "cancelled", answer: false, failed: true, calls: 0 },
+    { id: "AUTO-R4-01-C04", mode: "hook-error", answer: false, failed: true, calls: 0 },
+    { id: "AUTO-R4-01-C05", mode: "not-visible", answer: false, failed: true, calls: 1 },
+    { id: "AUTO-R4-01-C06", mode: "uncertain-send", answer: true, failed: false, calls: 1 },
+    { id: "AUTO-R4-01-C07", mode: "media-and-text", answer: true, failed: false, calls: 1 },
+    { id: "AUTO-R4-01-C08", mode: "status-notice", answer: false, failed: false, calls: 1 },
+  ] as const)(
+    "$id classifies settled or uncertain delivery rather than queue admission",
+    async ({ mode, answer, failed, calls }) => {
+      const sent = vi.fn(async () => {
+        if (mode === "uncertain-send") {
+          // A rejected transport promise cannot establish whether a recipient saw it.
+          throw new Error("transport outcome uncertain");
+        }
+        return mode === "not-visible" ? { visibleReplySent: false } : undefined;
+      });
+      const dispatcher = createReplyDispatcher({
+        beforeDeliver: async (payload) => {
+          if (mode === "cancelled") {
+            return null;
+          }
+          if (mode === "hook-error") {
+            throw new Error("before-send failure");
+          }
+          return mode === "rewritten" ? { ...payload, text: "rewritten" } : payload;
+        },
+        deliver: sent,
+      });
+      const coordinator = createAcpDispatchDeliveryCoordinator({
+        cfg: createAcpTestConfig(),
+        ctx: buildTestCtx({ Provider: "visiblechat", Surface: "visiblechat" }),
+        dispatcher,
+        inboundAudio: false,
+        shouldRouteToOriginating: false,
+      });
+      const payload =
+        mode === "status-notice"
+          ? { text: "status", isFallbackNotice: true }
+          : mode === "media-and-text"
+            ? { text: "answer", mediaUrl: "file:///tmp/answer.ogg" }
+            : { text: "answer" };
+
+      const accepted = await coordinator.deliver("final", payload, { skipTts: true });
+      if (mode === "status-notice") {
+        await dispatcher.waitForIdle();
+      }
+
+      expect(accepted).toBe(mode === "status-notice" || answer);
+      expect(coordinator.hasDeliveredAnswerFinalToUser()).toBe(answer);
+      expect(coordinator.hasFailedVisibleTextDelivery()).toBe(failed);
+      expect(sent).toHaveBeenCalledTimes(calls);
+    },
+  );
+
+  it("AUTO-R4-01-C09 classifies two explicit dispatches after proven no-send", async () => {
+    let attempt = 0;
+    const sent = vi.fn(async () => {});
+    const dispatcher = createReplyDispatcher({
+      beforeDeliver: async (payload) => {
+        attempt += 1;
+        return attempt === 1 ? null : payload;
+      },
+      deliver: sent,
+    });
+    const coordinator = createAcpDispatchDeliveryCoordinator({
+      cfg: createAcpTestConfig(),
+      ctx: buildTestCtx({ Provider: "visiblechat", Surface: "visiblechat" }),
+      dispatcher,
+      inboundAudio: false,
+      shouldRouteToOriginating: false,
+    });
+
+    expect(await coordinator.deliver("final", { text: "answer" }, { skipTts: true })).toBe(false);
+    expect(coordinator.hasDeliveredAnswerFinalToUser()).toBe(false);
+    expect(sent).not.toHaveBeenCalled();
+    // This is a caller-invoked second dispatch, not proof of the upstream fallback caller.
+    expect(await coordinator.deliver("final", { text: "answer" }, { skipTts: true })).toBe(true);
+    expect(coordinator.hasDeliveredAnswerFinalToUser()).toBe(true);
+    expect(sent).toHaveBeenCalledTimes(1);
+  });
+
+  it("AUTO-R4-01-C10 settles a queued final after a preceding block", async () => {
+    let releaseBlock: (() => void) | undefined;
+    const blockGate = new Promise<void>((resolve) => {
+      releaseBlock = resolve;
+    });
+    const sent = vi.fn(async (_payload: unknown, info: { kind: string }) => {
+      if (info.kind === "block") {
+        await blockGate;
+      }
+    });
+    const dispatcher = createReplyDispatcher({
+      beforeDeliver: async (payload, info) => (info.kind === "final" ? null : payload),
+      deliver: sent,
+    });
+    const coordinator = createAcpDispatchDeliveryCoordinator({
+      cfg: createAcpTestConfig(),
+      ctx: buildTestCtx({ Provider: "visiblechat", Surface: "visiblechat" }),
+      dispatcher,
+      inboundAudio: false,
+      shouldRouteToOriginating: false,
+    });
+    expect(await coordinator.deliver("block", { text: "partial" }, { skipTts: true })).toBe(true);
+    const final = coordinator.deliver("final", { text: "answer" }, { skipTts: true });
+    await Promise.resolve();
+    expect(coordinator.hasDeliveredAnswerFinalToUser()).toBe(false);
+    releaseBlock?.();
+    expect(await final).toBe(false);
+    expect(coordinator.hasDeliveredAnswerFinalToUser()).toBe(false);
+    expect(sent).toHaveBeenCalledTimes(1);
+  });
+});
+
 function createCoordinator(onReplyStart?: (...args: unknown[]) => Promise<void>) {
   return createAcpDispatchDeliveryCoordinator({
     cfg: createAcpTestConfig(),

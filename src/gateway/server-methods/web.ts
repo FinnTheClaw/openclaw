@@ -170,6 +170,7 @@ export const webHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateWebLoginStartParams, "web.login.start", respond)) {
       return;
     }
+    let restoreStoppedChannel: { channelId: ChannelId; accountId?: string } | undefined;
     try {
       const request = resolveWebLoginRequest({
         rawParams: params,
@@ -190,6 +191,9 @@ export const webHandlers: GatewayRequestHandlers = {
       const stoppedBeforeLogin = forceLogin || !wasRunning;
       if (stoppedBeforeLogin) {
         await context.stopChannel(provider.id, accountId);
+        if (wasRunning) {
+          restoreStoppedChannel = { channelId: provider.id, accountId };
+        }
       }
       const result = await run({
         force: forceLogin,
@@ -202,15 +206,37 @@ export const webHandlers: GatewayRequestHandlers = {
         await context.stopChannel(provider.id, accountId);
       }
       const stoppedForLogin = stoppedBeforeLogin || stoppedAfterQrTakeover;
+      if (result.qrDataUrl) {
+        // A QR means the login flow intentionally owns the stopped channel.
+        restoreStoppedChannel = undefined;
+      }
       if (result.connected && stoppedForLogin) {
+        restoreStoppedChannel = undefined;
         await context.startChannel(provider.id, accountId);
       } else if (wasRunning && stoppedForLogin && !result.qrDataUrl) {
-        // When start fails before producing a QR code, restore the previously
-        // running channel/account so a transient login failure does not stop it.
+        // Restore a running account after a failed login with no QR takeover.
+        // Clear first so a failed restart is not attempted twice in the catch.
+        restoreStoppedChannel = undefined;
         await context.startChannel(provider.id, accountId);
       }
       respond(true, result, undefined);
     } catch (err) {
+      if (restoreStoppedChannel) {
+        try {
+          await context.startChannel(
+            restoreStoppedChannel.channelId,
+            restoreStoppedChannel.accountId,
+          );
+        } catch (restoreError) {
+          respondWebLoginUnavailable(
+            respond,
+            new Error(
+              formatForLog(err) + "; channel restoration failed: " + formatForLog(restoreError),
+            ),
+          );
+          return;
+        }
+      }
       respondWebLoginUnavailable(respond, err);
     }
   },

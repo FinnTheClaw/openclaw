@@ -284,6 +284,10 @@ export async function openTerminalSession(
         pairingGeneration: access.node.pairingGeneration,
       };
       let policyResult: Awaited<ReturnType<typeof applyPluginNodeInvokePolicy>>;
+      const isPolicyInvocationCurrent = () =>
+        !deadline.controller.signal.aborted &&
+        Date.now() < deadline.expiresAtMs &&
+        context.isConnectionActive?.(connId) !== false;
       try {
         policyResult = await waitForTerminalOpenDeadline(
           () =>
@@ -293,6 +297,11 @@ export async function openTerminalSession(
               nodeSession: access.node,
               command: nodeCatalogPlan.command,
               params: nodeParams,
+              signal: deadline.controller.signal,
+              resolveRemainingTimeoutMs: () =>
+                isPolicyInvocationCurrent() ? Math.max(0, deadline.expiresAtMs - Date.now()) : 0,
+              isInvocationCurrent: isPolicyInvocationCurrent,
+              isApprovalAuthorityActive: isPolicyInvocationCurrent,
             }),
           deadline,
         );

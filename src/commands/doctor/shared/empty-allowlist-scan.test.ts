@@ -4,7 +4,7 @@ import { scanEmptyAllowlistPolicyWarnings } from "./empty-allowlist-scan.js";
 
 vi.mock("../channel-capabilities.js", () => ({
   getDoctorChannelCapabilities: (channelName?: string) => ({
-    dmAllowFromMode: "topOnly",
+    dmAllowFromMode: channelName === "matrix" ? "nestedOnly" : "topOnly",
     groupModel: "sender",
     groupAllowFromFallbackToAllowFrom: channelName !== "imessage",
     warnOnEmptyGroupSenderAllowlist: channelName !== "discord",
@@ -234,5 +234,150 @@ describe("doctor empty allowlist policy scan", () => {
     expect(extraWarningsForAccount).toHaveBeenCalledTimes(1);
     const [warningOptions] = extraWarningsForAccount.mock.calls[0] ?? [];
     expect(warningOptions?.prefix).toBe("channels.signal");
+  });
+  it.each([
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C01",
+      channel: "matrix",
+      config: {
+        dmPolicy: "open",
+        allowFrom: ["@legacy:example.org"],
+        dm: { policy: "allowlist", allowFrom: [] },
+      },
+      expectedPolicy: "allowlist",
+      expectedAllowFrom: [],
+      expectedWarningPath: "channels.matrix.dm.policy",
+    },
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C02",
+      channel: "matrix",
+      config: {
+        dmPolicy: "open",
+        allowFrom: [],
+        dm: { policy: "allowlist", allowFrom: ["@alice:example.org"] },
+      },
+      expectedPolicy: "allowlist",
+      expectedAllowFrom: ["@alice:example.org"],
+    },
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C03",
+      channel: "matrix",
+      config: {
+        dmPolicy: "allowlist",
+        allowFrom: [],
+        dm: { policy: "open", allowFrom: [] },
+      },
+      expectedPolicy: "open",
+      expectedAllowFrom: [],
+    },
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C04",
+      channel: "matrix",
+      config: {
+        dm: { policy: "allowlist" },
+        allowFrom: ["@legacy:example.org"],
+      },
+      expectedPolicy: "allowlist",
+      expectedAllowFrom: ["@legacy:example.org"],
+    },
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C05",
+      channel: "matrix",
+      config: { dm: { policy: "allowlist", allowFrom: [] } },
+      expectedPolicy: "allowlist",
+      expectedAllowFrom: [],
+      expectedWarningPath: "channels.matrix.dm.policy",
+    },
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C06",
+      channel: "matrix",
+      config: {
+        dmPolicy: "allowlist",
+        allowFrom: ["@legacy:example.org"],
+        dm: { allowFrom: [] },
+      },
+      expectedPolicy: "allowlist",
+      expectedAllowFrom: [],
+      expectedWarningPath: "channels.matrix.dm.policy",
+    },
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C07",
+      channel: "matrix",
+      config: {
+        dmPolicy: "open",
+        allowFrom: [],
+        dm: { policy: "allowlist", allowFrom: [] },
+      },
+      expectedPolicy: "allowlist",
+      expectedAllowFrom: [],
+      expectedWarningPath: "channels.matrix.dm.policy",
+    },
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C08",
+      channel: "matrix",
+      config: {
+        dm: { policy: "allowlist", allowFrom: ["@parent:example.org"] },
+        accounts: {
+          work: { dm: { policy: "allowlist", allowFrom: [] } },
+        },
+      },
+      expectedPolicy: "allowlist",
+      expectedAllowFrom: [],
+      expectedWarningPath: "channels.matrix.accounts.work.dm.policy",
+      contextPrefix: "channels.matrix.accounts.work",
+    },
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C09",
+      channel: "matrix",
+      config: {
+        dm: { policy: "allowlist", allowFrom: ["@parent:example.org"] },
+        accounts: {
+          work: { dm: { policy: "open", allowFrom: [] } },
+        },
+      },
+      expectedPolicy: "open",
+      expectedAllowFrom: [],
+      contextPrefix: "channels.matrix.accounts.work",
+    },
+    {
+      id: "DOCTOR-MATRIX-NESTED-ONLY-01/C10",
+      channel: "signal",
+      config: { dmPolicy: "allowlist", allowFrom: [] },
+      expectedPolicy: "allowlist",
+      expectedAllowFrom: [],
+      expectedWarningPath: "channels.signal.dmPolicy",
+    },
+  ])("$id uses runtime-effective DM fields", (testCase) => {
+    const prefix =
+      ("contextPrefix" in testCase && testCase.contextPrefix) || `channels.${testCase.channel}`;
+    const warnings = scanEmptyAllowlistPolicyWarnings(
+      { channels: { [testCase.channel]: testCase.config } },
+      {
+        doctorFixCommand: "openclaw doctor --fix",
+        extraWarningsForAccount: ({ prefix: actualPrefix, dmPolicy, effectiveAllowFrom }) => [
+          `${testCase.id}|${actualPrefix}|${String(dmPolicy)}|${JSON.stringify(effectiveAllowFrom)}`,
+        ],
+      },
+    );
+
+    expect(warnings).toContain(
+      `${testCase.id}|${prefix}|${testCase.expectedPolicy}|${JSON.stringify(testCase.expectedAllowFrom)}`,
+    );
+    if ("expectedWarningPath" in testCase && testCase.expectedWarningPath) {
+      expect(
+        warnings.some((warning) =>
+          warning.startsWith(`- ${testCase.expectedWarningPath} is "allowlist"`),
+        ),
+      ).toBe(true);
+    } else {
+      expect(
+        warnings.some(
+          (warning) =>
+            warning.startsWith("- channels.matrix.dm.policy is") ||
+            warning.startsWith("- channels.matrix.accounts.work.dm.policy is") ||
+            warning.startsWith("- channels.signal.dmPolicy is"),
+        ),
+      ).toBe(false);
+    }
   });
 });

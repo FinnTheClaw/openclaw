@@ -789,7 +789,15 @@ export const deviceHandlers: GatewayRequestHandlers = {
       // run the same teardown owner so pending actions/work, wake state,
       // surface caps, and worker placements are not stranded on a dead node.
       clearRemovedNodeRuntimeState({ nodeId: normalizedDeviceId, context });
-      await reconcileRevokedDeviceWorker(context, normalizedDeviceId);
+      try {
+        await reconcileRevokedDeviceWorker(context, normalizedDeviceId);
+      } catch {
+        // The token is already durably revoked; worker cleanup must not suppress
+        // connection teardown or turn a committed result into a retryable error.
+        context.logGateway.warn(
+          "device worker reconciliation failed after token revocation device=" + normalizedDeviceId,
+        );
+      }
     }
     // Preserve only this committed mutation's reply across its own invalidation;
     // a caller revoked during the await cannot claim it or skip target teardown.

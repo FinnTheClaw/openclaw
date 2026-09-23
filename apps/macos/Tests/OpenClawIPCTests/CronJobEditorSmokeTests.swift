@@ -77,4 +77,24 @@ struct CronJobEditorSmokeTests {
         let raw = root["deleteAfterRun"] as? Bool
         #expect(raw == true)
     }
+
+    @Test func `cron duration parsing rejects overflow without changing valid values`() {
+        let cases: [(String, Int?)] = [
+            ("9999999999999999999d", nil), // MACOS-R4-01-C01
+            ("9223372036854774784ms", 9223372036854774784), // C02
+            ("9223372036854775808ms", nil), // C03
+            ("9999999999999999999h", nil), // C04
+            ("9999999999999999999m", nil), // C05
+            ("9999999999999999999s", nil), // C06
+            (String(repeating: "9", count: 307) + "d", nil), // C07
+            ("15m", 900_000), // C08
+            ("0ms", nil), // C09
+            ("1.2.3s", nil), // C10
+        ]
+        for (input, expected) in cases {
+            #expect(CronJobEditor.parseDurationMs(input) == expected)
+        }
+        #expect(CronJobEditor.parseDurationMs("-1ms") == nil) // C09 negative control
+        #expect(CronJobEditor.parseDurationMs("0.5ms") == 0) // Existing sub-ms rounding
+    }
 }

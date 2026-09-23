@@ -956,6 +956,125 @@ describe("runCodexAppServerSideQuestion", () => {
     },
   );
 
+  for (const testCase of [
+    { id: "C01", deltas: ["Only"], expected: "Only" },
+    { id: "C02", deltas: ["First ", "second"], expected: "First second" },
+    { id: "C03", deltas: ["First ", "second"], expected: "First second", delayStart: true },
+    {
+      id: "C04",
+      deltas: ["One ", "two ", "three"],
+      expected: "One two three",
+      delayStart: true,
+    },
+    { id: "C05", deltas: ["Only"], expected: "Only", delayStart: true },
+    {
+      id: "C06",
+      deltas: ["First ", "second"],
+      afterCompletionDelta: " ignored",
+      expected: "First second",
+      delayStart: true,
+    },
+    {
+      id: "C07",
+      deltas: ["partial"],
+      finalText: "Authoritative final",
+      expected: "Authoritative final",
+      delayStart: true,
+      lateError: true,
+    },
+    {
+      id: "C08",
+      deltas: ["First ", "second ", "third"],
+      expected: "First second third",
+    },
+  ]) {
+    it(`CODER4-SIDE-DELTA-ORDER-01-${testCase.id} preserves streamed answer order`, async () => {
+      const client = createFakeClient({ completeTurn: false });
+      getSharedCodexAppServerClientMock.mockResolvedValue(client);
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((resolve) => {
+        releaseStart = resolve;
+      });
+      const started = vi.fn(() => (testCase.delayStart ? startGate : undefined));
+      const run = runCodexAppServerSideQuestion(
+        sideParams({ opts: { onAssistantMessageStart: started } }),
+      );
+      await vi.waitFor(() =>
+        expect(client.request.mock.calls.map(([method]) => method)).toContain("turn/start"),
+      );
+
+      for (const delta of testCase.deltas) {
+        client.emit(agentDelta("side-thread", "turn-1", delta));
+      }
+      client.emit(turnCompleted("side-thread", "turn-1", testCase.finalText ?? ""));
+      if (testCase.lateError) {
+        client.emit({
+          method: "error",
+          params: {
+            threadId: "side-thread",
+            turnId: "turn-1",
+            willRetry: false,
+            error: { message: "late error after completion" },
+          },
+        });
+      }
+      if (testCase.afterCompletionDelta) {
+        client.emit(agentDelta("side-thread", "turn-1", testCase.afterCompletionDelta));
+      }
+      let settled = false;
+      void run.finally(() => {
+        settled = true;
+      });
+      if (testCase.delayStart) {
+        await Promise.resolve();
+        expect(settled).toBe(false);
+      }
+      releaseStart();
+      await expect(run).resolves.toEqual({ text: testCase.expected });
+      expect(started).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it("CODER4-SIDE-DELTA-ORDER-01-C09 surfaces a start callback rejection", async () => {
+    const client = createFakeClient({ completeTurn: false });
+    getSharedCodexAppServerClientMock.mockResolvedValue(client);
+    const run = runCodexAppServerSideQuestion(
+      sideParams({
+        opts: {
+          onAssistantMessageStart: async () => {
+            throw new Error("start callback failed");
+          },
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(client.request.mock.calls.map(([method]) => method)).toContain("turn/start"),
+    );
+    client.emit(agentDelta("side-thread", "turn-1", "not delivered"));
+    client.emit(turnCompleted("side-thread", "turn-1", ""));
+    await expect(run).rejects.toThrow("start callback failed");
+  });
+
+  it("CODER4-SIDE-DELTA-ORDER-01-C10 isolates concurrent side questions", async () => {
+    const first = createFakeClient({ completeTurn: false });
+    const second = createFakeClient({ completeTurn: false });
+    getSharedCodexAppServerClientMock.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const firstRun = runCodexAppServerSideQuestion(sideParams());
+    const secondRun = runCodexAppServerSideQuestion(sideParams());
+    await vi.waitFor(() => {
+      expect(first.request.mock.calls.map(([method]) => method)).toContain("turn/start");
+      expect(second.request.mock.calls.map(([method]) => method)).toContain("turn/start");
+    });
+    first.emit(agentDelta("side-thread", "turn-1", "first"));
+    second.emit(agentDelta("side-thread", "turn-1", "second"));
+    second.emit(turnCompleted("side-thread", "turn-1", ""));
+    first.emit(turnCompleted("side-thread", "turn-1", ""));
+    await expect(Promise.all([firstRun, secondRun])).resolves.toEqual([
+      { text: "first" },
+      { text: "second" },
+    ]);
+  });
+
   it("returns an explicit unsupported decline for ordinary MCP input", async () => {
     const approvalSpy = vi.spyOn(elicitationBridge, "routeCodexAppServerElicitationRequest");
     const client = createFakeClient({ completeTurn: false });

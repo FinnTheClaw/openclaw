@@ -1448,6 +1448,8 @@ class CodexSideQuestionCollector {
   private pendingNotifications: CodexServerNotification[] = [];
   private assistantStarted = false;
   private assistantText = "";
+  private pendingDelta: Promise<void> = Promise.resolve();
+  private terminalReceived = false;
   private finalText: string | undefined;
   private terminalError: Error | undefined;
   private settle:
@@ -1486,14 +1488,33 @@ class CodexSideQuestionCollector {
       return;
     }
     if (notification.method === "item/agentMessage/delta") {
-      void this.appendAssistantDelta(params);
+      if (!this.terminalReceived) {
+        this.pendingDelta = this.pendingDelta
+          .then(async () => {
+            if (!this.terminalError) {
+              await this.appendAssistantDelta(params);
+            }
+          })
+          .catch((error: unknown) => this.reject(error instanceof Error ? error : String(error)));
+      }
       return;
     }
     if (notification.method === "turn/completed") {
-      this.completeFromTurn(params);
+      const turn = readCodexTurn(params.turn);
+      if (this.terminalReceived || !turn || turn.id !== this.turnId) {
+        return;
+      }
+      this.terminalReceived = true;
+      void this.pendingDelta
+        .then(() => {
+          if (!this.terminalError) {
+            this.completeFromTurn(params);
+          }
+        })
+        .catch((error: unknown) => this.reject(error instanceof Error ? error : String(error)));
       return;
     }
-    if (notification.method === "error" && params.willRetry !== true) {
+    if (notification.method === "error" && params.willRetry !== true && !this.terminalReceived) {
       this.reject(formatCodexErrorMessage(params, this.readRecentRateLimits()));
     }
   }
@@ -1558,7 +1579,9 @@ class CodexSideQuestionCollector {
       this.assistantStarted = true;
       await this.params.opts?.onAssistantMessageStart?.();
     }
-    this.assistantText += delta;
+    if (!this.terminalError) {
+      this.assistantText += delta;
+    }
   }
 
   private completeFromTurn(params: JsonObject): void {
@@ -1595,6 +1618,7 @@ class CodexSideQuestionCollector {
   }
 
   reject(error: string | Error): void {
+    this.terminalReceived = true;
     this.terminalError = error instanceof Error ? error : new Error(error);
     const settle = this.settle;
     this.settle = undefined;

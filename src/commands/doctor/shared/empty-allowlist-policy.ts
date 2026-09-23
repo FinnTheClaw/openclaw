@@ -1,4 +1,8 @@
 // Doctor warning builder for allowlist policies that would block every sender.
+import {
+  resolveChannelDmAllowFrom,
+  resolveChannelDmPolicy,
+} from "../../../channels/plugins/dm-access.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { getDoctorChannelCapabilities } from "../channel-capabilities.js";
 import type { DoctorAccountRecord, DoctorAllowFromList } from "../types.js";
@@ -23,38 +27,47 @@ function allowsGroupAllowFromFallback(channelName?: string): boolean {
   return getDoctorChannelCapabilities(channelName).groupAllowFromFallbackToAllowFrom;
 }
 
+export function resolveDoctorEffectiveDmAllowlist(params: {
+  account: DoctorAccountRecord;
+  channelName?: string;
+  parent?: DoctorAccountRecord;
+  prefix: string;
+}) {
+  const mode = getDoctorChannelCapabilities(params.channelName).dmAllowFromMode;
+  const nestedCanonical = mode === "nestedOnly";
+  return {
+    dmPolicy: resolveChannelDmPolicy({
+      account: params.account,
+      parent: params.parent,
+      mode,
+    }),
+    effectiveAllowFrom: resolveChannelDmAllowFrom({
+      account: params.account,
+      parent: params.parent,
+      mode,
+    }),
+    dmPolicyPath: nestedCanonical ? `${params.prefix}.dm.policy` : `${params.prefix}.dmPolicy`,
+    allowFromPath: nestedCanonical ? `${params.prefix}.dm.allowFrom` : `${params.prefix}.allowFrom`,
+    allowFromLabel: nestedCanonical ? "dm.allowFrom" : "allowFrom",
+  };
+}
+
 /** Collect DM/group allowlist warnings for one channel or account config record. */
 export function collectEmptyAllowlistPolicyWarningsForAccount(
   params: CollectEmptyAllowlistPolicyWarningsParams,
 ): string[] {
   const warnings: string[] = [];
-  const dmEntry = params.account.dm;
-  const dm =
-    dmEntry && typeof dmEntry === "object" && !Array.isArray(dmEntry)
-      ? (dmEntry as DoctorAccountRecord)
-      : undefined;
-  const parentDmEntry = params.parent?.dm;
-  const parentDm =
-    parentDmEntry && typeof parentDmEntry === "object" && !Array.isArray(parentDmEntry)
-      ? (parentDmEntry as DoctorAccountRecord)
-      : undefined;
-  const dmPolicy =
-    (params.account.dmPolicy as string | undefined) ??
-    (dm?.policy as string | undefined) ??
-    (params.parent?.dmPolicy as string | undefined) ??
-    (parentDm?.policy as string | undefined) ??
-    undefined;
-
-  const topAllowFrom =
-    (params.account.allowFrom as DoctorAllowFromList | undefined) ??
-    (params.parent?.allowFrom as DoctorAllowFromList | undefined);
-  const nestedAllowFrom = dm?.allowFrom as DoctorAllowFromList | undefined;
-  const parentNestedAllowFrom = parentDm?.allowFrom as DoctorAllowFromList | undefined;
-  const effectiveAllowFrom = topAllowFrom ?? nestedAllowFrom ?? parentNestedAllowFrom;
+  const { dmPolicy, effectiveAllowFrom, dmPolicyPath, allowFromPath, allowFromLabel } =
+    resolveDoctorEffectiveDmAllowlist({
+      account: params.account,
+      channelName: params.channelName,
+      parent: params.parent,
+      prefix: params.prefix,
+    });
 
   if (dmPolicy === "allowlist" && !hasAllowFromEntries(effectiveAllowFrom)) {
     warnings.push(
-      `- ${params.prefix}.dmPolicy is "allowlist" but allowFrom is empty — all DMs will be blocked. Add sender IDs to ${params.prefix}.allowFrom, or run "${params.doctorFixCommand}" to auto-migrate from pairing store when entries exist.`,
+      `- ${dmPolicyPath} is "allowlist" but ${allowFromLabel} is empty — all DMs will be blocked. Add sender IDs to ${allowFromPath}, or run "${params.doctorFixCommand}" to auto-migrate from pairing store when entries exist.`,
     );
   }
 
@@ -101,7 +114,7 @@ export function collectEmptyAllowlistPolicyWarningsForAccount(
 
   if (fallbackToAllowFrom) {
     warnings.push(
-      `- ${params.prefix}.groupPolicy is "allowlist" but groupAllowFrom (and allowFrom) is empty — all group messages will be silently dropped. Add sender IDs to ${params.prefix}.groupAllowFrom or ${params.prefix}.allowFrom, or set groupPolicy to "open".`,
+      `- ${params.prefix}.groupPolicy is "allowlist" but groupAllowFrom (and ${allowFromLabel}) is empty — all group messages will be silently dropped. Add sender IDs to ${params.prefix}.groupAllowFrom or ${allowFromPath}, or set groupPolicy to "open".`,
     );
   } else {
     warnings.push(

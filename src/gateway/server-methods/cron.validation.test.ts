@@ -627,6 +627,7 @@ function expectInvalidCronPatternError(respond: ReturnType<typeof vi.fn>): void 
 describe("cron method validation", () => {
   it.each([
     ["cron.list", false],
+    ["cron.runs", false],
     ["cron.get", false],
     ["cron.update", false],
     ["cron.run", false],
@@ -678,7 +679,11 @@ describe("cron method validation", () => {
         const { respond } = await invokeCron(
           method,
           {
-            ...(method === "cron.list" ? { compact: true } : { id: job.id }),
+            ...(method === "cron.list"
+              ? { compact: true }
+              : method === "cron.runs"
+                ? { scope: "all" }
+                : { id: job.id }),
             ...(method === "cron.update"
               ? { patch: { payload: { kind: "agentTurn", message: "updated by admin" } } }
               : {}),
@@ -688,6 +693,9 @@ describe("cron method validation", () => {
         expect(respond).toHaveBeenCalledWith(true, expect.anything(), undefined);
         if (method === "cron.list") {
           expect(respond.mock.calls[0]?.[1]).toMatchObject({ jobs: [{ id: job.id }], total: 1 });
+        }
+        if (method === "cron.runs") {
+          expect(context.cron.list).toHaveBeenCalledWith({ includeDisabled: true });
         }
       } finally {
         revokeCronCreatorAuthorityRunScope(scope);
@@ -4212,6 +4220,134 @@ describe("cron method validation", () => {
     });
   });
 
+  async function invokeManagementHistory(
+    method: "cron.runs" | "cron.list",
+    params: Record<string, unknown>,
+    context: ReturnType<typeof createCronContext>,
+    revokeBeforeCall = false,
+  ) {
+    const client = callerClient("main");
+    const identity = client.internal!.agentRuntimeIdentity!;
+    const authority = claimAgentRunDelegatedAuthority(identity.operationalRunInstance);
+    identity.delegatedAuthority = { kind: "local", ...authority };
+    const scope = createCronCreatorAuthorityRunScope(
+      identity.operationalRunInstance.runId,
+      { kind: "local" },
+      true,
+    );
+    identity.cronManagementGrant = mintCronCreatorAuthorityGrant(scope, undefined, undefined, {
+      method,
+      authority,
+    });
+    if (revokeBeforeCall) {
+      revokeCronCreatorAuthorityRunScope(scope);
+    }
+    try {
+      return await invokeCron(method, params, { context, client });
+    } finally {
+      revokeCronCreatorAuthorityRunScope(scope);
+      releaseAgentRunDelegatedAuthority(authority);
+    }
+  }
+
+  it("CRON-R4-M1 grants explicit all-scope history", async () => {
+    const context = createCronContext(createCronJob({ agentId: "worker" }));
+    const { respond } = await invokeManagementHistory("cron.runs", { scope: "all" }, context);
+    expect(context.cron.list).toHaveBeenCalledWith({ includeDisabled: true });
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ entries: expect.any(Array) }),
+      undefined,
+    );
+  });
+
+  it("CRON-R4-M2 grants implicit all-scope history", async () => {
+    const context = createCronContext(createCronJob({ agentId: "worker" }));
+    const { respond } = await invokeManagementHistory("cron.runs", {}, context);
+    expect(context.cron.list).toHaveBeenCalledWith({ includeDisabled: true });
+    expect(respond).toHaveBeenCalledWith(true, expect.anything(), undefined);
+  });
+
+  it("CRON-R4-M3 preserves agent filter under management scope", async () => {
+    const context = createCronContext(createCronJob({ agentId: "worker" }));
+    const { respond } = await invokeManagementHistory(
+      "cron.runs",
+      { scope: "all", agentId: "worker" },
+      context,
+    );
+    expect(respond).toHaveBeenCalledWith(true, expect.anything(), undefined);
+    expect(cronTaskRunHistoryPageOverride).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "worker", jobNameById: { "cron-1": "cron job" } }),
+    );
+  });
+
+  it("CRON-R4-M4 preserves paging and status filters under management scope", async () => {
+    const context = createCronContext(createCronJob({ agentId: "worker" }));
+    const { respond } = await invokeManagementHistory(
+      "cron.runs",
+      { scope: "all", status: "ok", limit: 3, offset: 2 },
+      context,
+    );
+    expect(respond).toHaveBeenCalledWith(true, expect.anything(), undefined);
+    expect(cronTaskRunHistoryPageOverride).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "ok", limit: 3, offset: 2 }),
+    );
+  });
+
+  it("CRON-R4-M5 rejects a revoked management grant before history discovery", async () => {
+    const context = createCronContext(createCronJob({ agentId: "worker" }));
+    const { respond } = await invokeManagementHistory("cron.runs", { scope: "all" }, context, true);
+    expect(context.cron.list).not.toHaveBeenCalled();
+    expectResponseError(respond, { code: "INVALID_REQUEST" });
+  });
+
+  it("CRON-R4-C1 keeps ordinary caller all-scope history denied", async () => {
+    const context = createCronContext(createCronJob({ agentId: "ops" }));
+    const { respond } = await invokeCron(
+      "cron.runs",
+      { scope: "all" },
+      { context, client: callerClient("ops") },
+    );
+    expect(context.cron.list).not.toHaveBeenCalled();
+    expectResponseError(respond, { code: "INVALID_REQUEST" });
+  });
+
+  it("CRON-R4-C2 keeps ordinary caller own-job history", async () => {
+    const context = createCronContext(createCronJob({ agentId: "ops" }));
+    const { respond } = await invokeCron(
+      "cron.runs",
+      { id: "cron-1" },
+      { context, client: callerClient("ops") },
+    );
+    expect(context.cron.readJob).toHaveBeenCalledWith("cron-1");
+    expect(respond).toHaveBeenCalledWith(true, expect.anything(), undefined);
+  });
+
+  it("CRON-R4-C3 keeps ordinary caller foreign-job history hidden", async () => {
+    const context = createCronContext(createCronJob({ agentId: "worker" }));
+    const { respond } = await invokeCron(
+      "cron.runs",
+      { id: "cron-1" },
+      { context, client: callerClient("ops") },
+    );
+    expectResponseError(respond, { code: "INVALID_REQUEST" });
+  });
+
+  it("CRON-R4-C4 keeps unscoped operator all-scope history", async () => {
+    const context = createCronContext(createCronJob({ agentId: "worker" }));
+    const { respond } = await invokeCron("cron.runs", { scope: "all" }, { context });
+    expect(context.cron.list).toHaveBeenCalledWith({ includeDisabled: true });
+    expect(respond).toHaveBeenCalledWith(true, expect.anything(), undefined);
+  });
+
+  it("CRON-R4-C5 matches management-granted list visibility", async () => {
+    const context = createCronContext(createCronJob({ agentId: "worker" }));
+    const list = await invokeManagementHistory("cron.list", {}, context);
+    const runs = await invokeManagementHistory("cron.runs", { scope: "all" }, context);
+    expect(list.respond).toHaveBeenCalledWith(true, expect.anything(), undefined);
+    expect(runs.respond).toHaveBeenCalledWith(true, expect.anything(), undefined);
+    expect(context.cron.list).toHaveBeenCalledWith({ includeDisabled: true });
+  });
   it("rejects caller-scoped cron.runs all-scope history", async () => {
     const context = createCronContext(createCronJob({ id: "cron-1", agentId: "ops" }));
 

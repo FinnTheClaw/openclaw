@@ -210,7 +210,15 @@ async function removePairedDeviceBackedNode(params: {
     role: "node",
     reason: "device-pair-removed",
   });
-  await reconcileRevokedDeviceWorker(params.context, removed.deviceId);
+  try {
+    await reconcileRevokedDeviceWorker(params.context, removed.deviceId);
+  } catch {
+    // The node role is already removed and its connection invalidated.
+    // Let the caller clear runtime state, reply, and hard-close the socket.
+    params.context.logGateway.warn(
+      "device worker reconciliation failed after node-role removal device=" + removed.deviceId,
+    );
+  }
   return {
     status: "removed",
     nodeId: removed.deviceId,

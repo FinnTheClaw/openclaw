@@ -25,9 +25,7 @@ const policyMocks = vi.hoisted(() => ({
   isNodeCommandAllowed: vi.fn<() => { ok: true } | { ok: false; reason: string }>(() => ({
     ok: true,
   })),
-  applyPluginNodeInvokePolicy: vi.fn<() => Promise<{ ok: false; message: string } | null>>(
-    async () => null,
-  ),
+  applyPluginNodeInvokePolicy: vi.fn<(params: unknown) => Promise<unknown>>(async () => null),
 }));
 const sessionMocks = vi.hoisted(() => ({
   loadGatewaySessionEntryReadOnly: vi.fn(
@@ -794,6 +792,166 @@ describe("terminal gateway policy", () => {
         expectedPairingGeneration: "generation-node",
       }),
     );
+  });
+
+  it.each([
+    { id: "GM-06-C01", mode: "immediate", sends: 1 },
+    { id: "GM-06-C02", mode: "before-deadline", sends: 1 },
+    { id: "GM-06-C03", mode: "after-deadline", sends: 0 },
+    { id: "GM-06-C04", mode: "exact-deadline", sends: 0 },
+    { id: "GM-06-C05", mode: "retry-after-timeout", sends: 1 },
+    { id: "GM-06-C06", mode: "connection-closed", sends: 0 },
+    { id: "GM-06-C07", mode: "aborted-signal", sends: 0 },
+    { id: "GM-06-C08", mode: "ignored-abort", sends: 0 },
+    { id: "GM-06-C09", mode: "concurrent-isolation", sends: 1 },
+    { id: "GM-06-C10", mode: "no-late-side-effect", sends: 0 },
+  ] as const)("$id exercises $mode through the real plugin policy", async ({ mode, sends }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const command = "test.terminal.resume";
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const releaseSecond = deferred<void>();
+      const registry = createEmptyPluginRegistry();
+      registry.sessionCatalogs.push({
+        pluginId: "test",
+        source: "test",
+        provider: {
+          id: "test",
+          label: "Test",
+          list: async () => [],
+          read: async (request) => ({ ...request, items: [] }),
+          openTerminal: async (request) => ({
+            kind: "node",
+            nodeId: "node-1",
+            command,
+            paramsJSON: JSON.stringify({ threadId: request.threadId }),
+          }),
+        },
+      });
+      registry.nodeInvokePolicies.push({
+        pluginId: "test",
+        source: "test",
+        pluginConfig: {},
+        policy: {
+          commands: [command],
+          handle: async (policyContext) => {
+            entered.resolve();
+            const threadId = (policyContext.params as { threadId?: string }).threadId;
+            await (mode === "concurrent-isolation" && threadId === "second"
+              ? releaseSecond.promise
+              : release.promise);
+            return await policyContext.invokeNode();
+          },
+        },
+      });
+      setActivePluginRegistry(registry);
+      const realPolicy = await vi.importActual<typeof import("../node-invoke-plugin-policy.js")>(
+        "../node-invoke-plugin-policy.js",
+      );
+      const completions: Promise<unknown>[] = [];
+      const signals: AbortSignal[] = [];
+      policyMocks.applyPluginNodeInvokePolicy.mockImplementation((input) => {
+        const params = input as Parameters<typeof realPolicy.applyPluginNodeInvokePolicy>[0];
+        if (params.signal) {
+          signals.push(params.signal);
+        }
+        const completion = realPolicy.applyPluginNodeInvokePolicy(params);
+        completions.push(completion);
+        return completion;
+      });
+      const node = {
+        nodeId: "node-1",
+        connId: "conn-node",
+        commands: [command],
+        client: { invalidated: false },
+      };
+      const dispatched: string[] = [];
+      const invoke = vi.fn(async (input: unknown) => {
+        const request = input as {
+          params?: { threadId?: string };
+          isDispatchAuthorized?: () => boolean;
+        };
+        if (!request.isDispatchAuthorized?.()) {
+          return { ok: false, error: { code: "DENIED", message: "dispatch not authorized" } };
+        }
+        dispatched.push(request.params?.threadId ?? "");
+        return { ok: true, payload: { opened: true } };
+      });
+      const nodeRegistry = { get: () => node, invoke };
+      const makeOpen = (threadId: string) =>
+        makeOpts(
+          {
+            cols: 80,
+            rows: 24,
+            catalog: { catalogId: "test", hostId: "node:node-1", threadId },
+          },
+          { enabled: true },
+          undefined,
+          nodeRegistry,
+        );
+
+      if (mode === "immediate") {
+        release.resolve();
+      }
+      const first = makeOpen("first");
+      const opening = expectDefined(terminalHandlers["terminal.open"], "terminal.open")(first.opts);
+      await entered.promise;
+      if (mode === "concurrent-isolation") {
+        const second = makeOpen("second");
+        const secondOpening = expectDefined(
+          terminalHandlers["terminal.open"],
+          "terminal.open",
+        )(second.opts);
+        releaseSecond.resolve();
+        await secondOpening;
+        expect(second.respond).toHaveBeenCalledWith(true, expect.any(Object));
+        await vi.advanceTimersByTimeAsync(TERMINAL_OPEN_DEADLINE_MS);
+        await opening;
+        release.resolve();
+      } else if (mode === "before-deadline") {
+        await vi.advanceTimersByTimeAsync(TERMINAL_OPEN_DEADLINE_MS - 1);
+        release.resolve();
+      } else if (mode === "connection-closed") {
+        first.isConnectionActive.mockReturnValue(false);
+        release.resolve();
+      } else if (mode !== "immediate") {
+        await vi.advanceTimersByTimeAsync(TERMINAL_OPEN_DEADLINE_MS);
+        await opening;
+        expect(first.respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ message: "terminal open timed out" }),
+        );
+        expect(signals[0]?.aborted).toBe(true);
+        release.resolve();
+      }
+      await opening;
+      await Promise.all(completions);
+      if (mode === "retry-after-timeout") {
+        const retry = makeOpen("retry");
+        await expectDefined(terminalHandlers["terminal.open"], "terminal.open")(retry.opts);
+        await Promise.all(completions);
+        expect(retry.respond).toHaveBeenCalledWith(true, expect.any(Object));
+      }
+      expect(invoke).toHaveBeenCalledTimes(sends);
+      expect(dispatched).toHaveLength(sends);
+      if (mode === "retry-after-timeout") {
+        expect(dispatched).toEqual(["retry"]);
+      }
+      if (mode === "concurrent-isolation") {
+        expect(dispatched).toEqual(["second"]);
+      }
+      if (mode === "aborted-signal") {
+        expect(signals[0]?.aborted).toBe(true);
+      }
+      if (sends === 0) {
+        expect(first.sessions.open).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each(["commands removed", "connection replaced", "pairing promoted"])(
