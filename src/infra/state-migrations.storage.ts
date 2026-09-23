@@ -1101,6 +1101,7 @@ export async function migrateLegacyDeliveryQueues(params: {
               now,
             });
             if (!row) {
+              skipped++;
               continue;
             }
             const existing = db

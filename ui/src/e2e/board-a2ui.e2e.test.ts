@@ -275,4 +275,68 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
       }
     });
   }
+
+  it.each([
+    ["CANVAS-LISTENER-R9-L01-01 first connection emits one action", 0, false, "first"],
+    ["CANVAS-LISTENER-R9-L01-02 disconnected host emits no action", 0, true, "detached"],
+    ["CANVAS-LISTENER-R9-L01-03 one reconnect emits one action", 1, false, "reconnected"],
+    ["CANVAS-LISTENER-R9-L01-04 two reconnects emit one action", 2, false, "twice"],
+    ["CANVAS-LISTENER-R9-L01-05 three reconnects emit one action", 3, false, "three"],
+    ["CANVAS-LISTENER-R9-L01-06 four reconnects emit one action", 4, false, "four"],
+    ["CANVAS-LISTENER-R9-L01-07 five reconnects emit one action", 5, false, "five"],
+    ["CANVAS-LISTENER-R9-L01-08 six reconnects emit one action", 6, false, "six"],
+    ["CANVAS-LISTENER-R9-L01-09 action name is preserved", 1, false, "preserved-name"],
+    [
+      "CANVAS-LISTENER-R9-L01-10 reattached host uses current bridge once",
+      2,
+      false,
+      "current-bridge",
+    ],
+  ] as const)("%s", async (_name, reconnects, dispatchDisconnected, actionName) => {
+    const context = await browser.newContext();
+    contexts.add(context);
+    const page = await context.newPage();
+    const fixtureUrl = controlUi.baseUrl + "/__a2ui_listener_round9";
+    await page.route(fixtureUrl, (route) =>
+      route.fulfill({ status: 200, contentType: "text/html", body: "<html><body></body></html>" }),
+    );
+    await page.goto(fixtureUrl);
+    await page.addScriptTag({ url: rendererOrigin + "/renderer.js" });
+    const result = await page.evaluate(
+      ({ reconnects, dispatchDisconnected, actionName }) => {
+        const actions: unknown[] = [];
+        Reflect.set(globalThis, "openclaw", {
+          state: {
+            emit: (payload: unknown) => {
+              actions.push(payload);
+              return Promise.resolve();
+            },
+          },
+        });
+        const host = document.createElement("openclaw-a2ui-host");
+        document.body.append(host);
+        for (let index = 0; index < reconnects; index += 1) {
+          host.remove();
+          document.body.append(host);
+        }
+        if (dispatchDisconnected) {
+          host.remove();
+        }
+        host.dispatchEvent(
+          new CustomEvent("a2uiaction", {
+            detail: { eventType: "a2ui.action", action: { name: actionName } },
+          }),
+        );
+        return actions;
+      },
+      { reconnects, dispatchDisconnected, actionName },
+    );
+    expect(result).toHaveLength(dispatchDisconnected ? 0 : 1);
+    if (!dispatchDisconnected) {
+      expect(result[0]).toMatchObject({
+        eventType: "a2ui.action",
+        action: { name: actionName },
+      });
+    }
+  });
 });

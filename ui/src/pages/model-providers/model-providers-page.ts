@@ -597,7 +597,8 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     if (
       this.agentEpoch === agentEpoch &&
       this.defaultsDraft === defaults &&
-      (!result.ok || !result.warning)
+      result.ok &&
+      !result.warning
     ) {
       this.defaultsDraft = null;
     }

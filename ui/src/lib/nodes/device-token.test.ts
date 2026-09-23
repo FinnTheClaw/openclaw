@@ -5,6 +5,7 @@ import { createStorageMock } from "../../test-helpers/storage.ts";
 import {
   clearDeviceAuthToken,
   loadDeviceAuthToken,
+  revokeDeviceToken,
   rotateDeviceToken,
   storeDeviceAuthToken,
 } from "./index.ts";
@@ -253,5 +254,97 @@ describe("device token request lifecycle", () => {
     clearDeviceAuthToken(tokenParams);
 
     expect(loadDeviceAuthToken(tokenParams)).toBeNull();
+  });
+});
+
+describe("device token cache clear regression", () => {
+  function storeOperator() {
+    storeDeviceAuthToken({ ...tokenParams, token: "operator-token", scopes: [] });
+  }
+
+  function makeAliasOnly() {
+    const key = storedTokenKey();
+    const store = JSON.parse(localStorage.getItem(key) ?? "null");
+    store.tokens = { " operator ": store.tokens.operator };
+    localStorage.setItem(key, JSON.stringify(store));
+  }
+
+  it("UI1 canonical-key clear removes token", () => {
+    storeOperator();
+    clearDeviceAuthToken(tokenParams);
+    expect(loadDeviceAuthToken(tokenParams)).toBeNull();
+  });
+
+  it("UI2 alias-only clear removes token", () => {
+    storeOperator();
+    makeAliasOnly();
+    expect(loadDeviceAuthToken(tokenParams)?.token).toBe("operator-token");
+    clearDeviceAuthToken(tokenParams);
+    expect(loadDeviceAuthToken(tokenParams)).toBeNull();
+  });
+
+  it("UI3 canonical-plus-alias clear removes both", () => {
+    storeOperator();
+    const key = storedTokenKey();
+    const store = JSON.parse(localStorage.getItem(key) ?? "null");
+    store.tokens[" operator "] = store.tokens.operator;
+    localStorage.setItem(key, JSON.stringify(store));
+    clearDeviceAuthToken(tokenParams);
+    expect(JSON.parse(localStorage.getItem(key) ?? "null").tokens).toEqual({});
+  });
+
+  it("UI4 whitespace request role clears canonical key", () => {
+    storeOperator();
+    clearDeviceAuthToken({ ...tokenParams, role: " operator " });
+    expect(loadDeviceAuthToken(tokenParams)).toBeNull();
+  });
+
+  it("UI5 clearing one role retains another", () => {
+    storeOperator();
+    storeDeviceAuthToken({ ...tokenParams, role: "node", token: "node-token" });
+    clearDeviceAuthToken(tokenParams);
+    expect(loadDeviceAuthToken({ ...tokenParams, role: "node" })?.token).toBe("node-token");
+  });
+
+  it("UI6 wrong device ID leaves token", () => {
+    storeOperator();
+    clearDeviceAuthToken({ ...tokenParams, deviceId: "other" });
+    expect(loadDeviceAuthToken(tokenParams)?.token).toBe("operator-token");
+  });
+
+  it("UI7 wrong gateway scope leaves token", () => {
+    storeOperator();
+    clearDeviceAuthToken({ ...tokenParams, gatewayUrl: "wss://other.test" });
+    expect(loadDeviceAuthToken(tokenParams)?.token).toBe("operator-token");
+  });
+
+  it("UI8 missing role remains no-op", () => {
+    storeOperator();
+    clearDeviceAuthToken({ ...tokenParams, role: "node" });
+    expect(loadDeviceAuthToken(tokenParams)?.token).toBe("operator-token");
+  });
+
+  it("UI9 successful self revoke clears alias-only cache", async () => {
+    storeOperator();
+    makeAliasOnly();
+    storeIdentity();
+    vi.stubGlobal("crypto", { subtle: { digest: async () => new Uint8Array([0]).buffer } });
+    const request = vi.fn(async () => ({}));
+    await revokeDeviceToken(createState(request), tokenParams);
+    expect(request).toHaveBeenCalledWith("device.token.revoke", {
+      deviceId: tokenParams.deviceId,
+      role: tokenParams.role,
+    });
+    expect(loadDeviceAuthToken(tokenParams)).toBeNull();
+  });
+
+  it("UI10 failed revoke retains token", async () => {
+    storeOperator();
+    storeIdentity();
+    const request = vi.fn(async () => {
+      throw new Error("revoke failed");
+    });
+    await revokeDeviceToken(createState(request), tokenParams);
+    expect(loadDeviceAuthToken(tokenParams)?.token).toBe("operator-token");
   });
 });

@@ -234,6 +234,8 @@ export async function runCopilotExecution(context: {
   try {
     byokProxy = await createCopilotByokProxy(poolAcquire.provider);
   } catch (error) {
+    settled = true;
+    params.abortSignal?.removeEventListener("abort", onAbort);
     return finishAttempt(
       createResult(input, {
         messagesSnapshot: messages,

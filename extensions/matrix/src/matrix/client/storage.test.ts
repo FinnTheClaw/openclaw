@@ -4,11 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import {
   createPluginStateSyncKeyedStoreForTests,
+  openOpenClawStateDatabase,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveMatrixAccountStorageRoot } from "../../storage-paths.js";
 import { installMatrixTestRuntime } from "../../test-runtime.js";
+import {
+  openMatrixLegacyCryptoMigrationStoreOptions,
+  openMatrixRecoveryKeyStoreOptions,
+} from "../crypto-state-store.js";
 import { SqliteBackedMatrixSyncStore } from "./file-sync-store.js";
 import {
   claimCurrentTokenStorageState,
@@ -384,6 +389,234 @@ describe("matrix client storage paths", () => {
     });
 
     expect(fs.readFileSync(storagePaths.storagePath, "utf8")).toBe('{"new":true}');
+  });
+
+  describe("legacy migration forward recovery", () => {
+    const recoveryPayload = {
+      version: 1,
+      createdAt: "2026-09-23T00:00:00.000Z",
+      privateKeyBase64: "cmVjb3Zlcnk=",
+    };
+    const cryptoPayload = {
+      version: 1,
+      accountId: "default",
+      roomKeyCounts: null,
+      restoreStatus: "pending",
+    };
+    type InputKind = "sync" | "recovery" | "crypto";
+
+    function migrationFixture(inputs: InputKind[], logger = createTestLogger()) {
+      const stateDir = setupStateDir(undefined, logger);
+      const storagePaths = resolveDefaultStoragePaths();
+      fs.mkdirSync(storagePaths.rootDir, { recursive: true });
+      const sources = {
+        sync: storagePaths.storagePath,
+        recovery: storagePaths.recoveryKeyPath,
+        crypto: path.join(storagePaths.rootDir, "legacy-crypto-migration.json"),
+      };
+      if (inputs.includes("sync")) {
+        fs.writeFileSync(sources.sync, legacySyncCacheBody("retry-token"));
+      }
+      if (inputs.includes("recovery")) {
+        fs.writeFileSync(sources.recovery, JSON.stringify(recoveryPayload));
+      }
+      if (inputs.includes("crypto")) {
+        fs.writeFileSync(sources.crypto, JSON.stringify(cryptoPayload));
+      }
+      return { storagePaths, env: createMigrationEnv(stateDir), sources };
+    }
+
+    function readMigrationRow(
+      rootDir: string,
+      kind: "recovery" | "crypto",
+    ): Record<string, unknown> | undefined {
+      const options =
+        kind === "recovery"
+          ? openMatrixRecoveryKeyStoreOptions(rootDir)
+          : openMatrixLegacyCryptoMigrationStoreOptions(rootDir);
+      return (
+        createPluginStateSyncKeyedStoreForTests<Record<string, unknown>>("matrix", options).lookup(
+          "current",
+        ) ?? undefined
+      );
+    }
+
+    function expectSource(source: string, state: "original" | "archived" | "both") {
+      expect(fs.existsSync(source)).toBe(state === "original" || state === "both");
+      expect(fs.existsSync(`${source}.migrated`)).toBe(state === "archived" || state === "both");
+    }
+
+    async function failMigration(
+      fixture: ReturnType<typeof migrationFixture>,
+      namespace: "sync-cache" | "recovery-key" | "legacy-crypto-migration",
+    ) {
+      const db = openOpenClawStateDatabase({
+        env: { OPENCLAW_STATE_DIR: fixture.storagePaths.rootDir },
+      }).db;
+      const trigger = `fail_matrix_${namespace.replaceAll("-", "_")}`;
+      db.exec(
+        `CREATE TEMP TRIGGER ${trigger} BEFORE INSERT ON plugin_state_entries
+         WHEN NEW.plugin_id = 'matrix' AND NEW.namespace = '${namespace}'
+         BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END`,
+      );
+      try {
+        await expect(maybeMigrateLegacyStorage(fixture)).rejects.toThrow(
+          "Failed migrating legacy Matrix client storage",
+        );
+      } finally {
+        db.exec(`DROP TRIGGER ${trigger}`);
+      }
+      expect(
+        fs.existsSync(path.join(fixture.storagePaths.rootDir, "state", "openclaw.sqlite")),
+      ).toBe(true);
+    }
+
+    it("late-crypto-write-preserves-all-inputs", async () => {
+      const fixture = migrationFixture(["sync", "recovery", "crypto"]);
+      await failMigration(fixture, "legacy-crypto-migration");
+      for (const source of Object.values(fixture.sources)) {
+        expectSource(source, "original");
+      }
+      const syncStore = new SqliteBackedMatrixSyncStore(fixture.storagePaths.rootDir);
+      await expect(syncStore.getSavedSyncToken()).resolves.toBe("retry-token");
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toMatchObject(
+        recoveryPayload,
+      );
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "crypto")).toBeUndefined();
+    });
+
+    it("late-crypto-write-retries-to-completion", async () => {
+      const fixture = migrationFixture(["sync", "recovery", "crypto"]);
+      await failMigration(fixture, "legacy-crypto-migration");
+      const savedRecovery = readMigrationRow(fixture.storagePaths.rootDir, "recovery");
+      await maybeMigrateLegacyStorage(fixture);
+      for (const source of Object.values(fixture.sources)) {
+        expectSource(source, "archived");
+      }
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toEqual(savedRecovery);
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "crypto")).toMatchObject(cryptoPayload);
+    });
+
+    it("recovery-write-failure-preserves-sync-source", async () => {
+      const fixture = migrationFixture(["sync", "recovery"]);
+      await failMigration(fixture, "recovery-key");
+      expectSource(fixture.sources.sync, "original");
+      expectSource(fixture.sources.recovery, "original");
+      await expect(
+        new SqliteBackedMatrixSyncStore(fixture.storagePaths.rootDir).getSavedSyncToken(),
+      ).resolves.toBe("retry-token");
+      await maybeMigrateLegacyStorage(fixture);
+      expectSource(fixture.sources.sync, "archived");
+      expectSource(fixture.sources.recovery, "archived");
+    });
+
+    it("sync-write-failure-preserves-all-sources", async () => {
+      const fixture = migrationFixture(["sync", "recovery", "crypto"]);
+      await failMigration(fixture, "sync-cache");
+      for (const source of Object.values(fixture.sources)) {
+        expectSource(source, "original");
+      }
+      expect(new SqliteBackedMatrixSyncStore(fixture.storagePaths.rootDir).hasSavedSync()).toBe(
+        false,
+      );
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toBeUndefined();
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "crypto")).toBeUndefined();
+      await maybeMigrateLegacyStorage(fixture);
+      for (const source of Object.values(fixture.sources)) {
+        expectSource(source, "archived");
+      }
+    });
+
+    it("crypto-only-write-failure-preserves-source", async () => {
+      const fixture = migrationFixture(["crypto"]);
+      await failMigration(fixture, "legacy-crypto-migration");
+      expectSource(fixture.sources.crypto, "original");
+      await maybeMigrateLegacyStorage(fixture);
+      expectSource(fixture.sources.crypto, "archived");
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "crypto")).toMatchObject(cryptoPayload);
+    });
+
+    it("recovery-only-write-failure-preserves-source", async () => {
+      const fixture = migrationFixture(["recovery"]);
+      await failMigration(fixture, "recovery-key");
+      expectSource(fixture.sources.recovery, "original");
+      await maybeMigrateLegacyStorage(fixture);
+      expectSource(fixture.sources.recovery, "archived");
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toMatchObject(
+        recoveryPayload,
+      );
+    });
+
+    it("three-input-success-archives-after-commit", async () => {
+      const fixture = migrationFixture(["sync", "recovery", "crypto"]);
+      await maybeMigrateLegacyStorage(fixture);
+      for (const source of Object.values(fixture.sources)) {
+        expectSource(source, "archived");
+      }
+      await expect(
+        new SqliteBackedMatrixSyncStore(fixture.storagePaths.rootDir).getSavedSyncToken(),
+      ).resolves.toBe("retry-token");
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toMatchObject(
+        recoveryPayload,
+      );
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "crypto")).toMatchObject(cryptoPayload);
+    });
+
+    it("preexisting-recovery-row-survives-late-failure", async () => {
+      const fixture = migrationFixture(["recovery", "crypto"]);
+      const existing = { ...recoveryPayload, privateKeyBase64: "cHJlZXhpc3Rpbmc=" };
+      createPluginStateSyncKeyedStoreForTests(
+        "matrix",
+        openMatrixRecoveryKeyStoreOptions(fixture.storagePaths.rootDir),
+      ).register("current", existing);
+      await failMigration(fixture, "legacy-crypto-migration");
+      expectSource(fixture.sources.recovery, "original");
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toMatchObject(existing);
+      await maybeMigrateLegacyStorage(fixture);
+      expectSource(fixture.sources.recovery, "archived");
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toMatchObject(existing);
+    });
+
+    it("existing-migrated-file-is-never-overwritten", async () => {
+      const logger = createTestLogger();
+      const fixture = migrationFixture(["recovery"], logger);
+      const archived = `${fixture.sources.recovery}.migrated`;
+      fs.writeFileSync(archived, "existing archive");
+      const original = fs.readFileSync(fixture.sources.recovery);
+      await maybeMigrateLegacyStorage(fixture);
+      expectSource(fixture.sources.recovery, "both");
+      expect(fs.readFileSync(fixture.sources.recovery)).toEqual(original);
+      expect(fs.readFileSync(archived, "utf8")).toBe("existing archive");
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toMatchObject(
+        recoveryPayload,
+      );
+      expect(logger.warn).toHaveBeenCalled();
+    });
+
+    it("completed-migration-repeat-is-idempotent", async () => {
+      const fixture = migrationFixture(["sync", "recovery", "crypto"]);
+      await maybeMigrateLegacyStorage(fixture);
+      const before = Object.fromEntries(
+        Object.entries(fixture.sources).map(([kind, source]) => [
+          kind,
+          fs.readFileSync(`${source}.migrated`),
+        ]),
+      );
+      const recovery = readMigrationRow(fixture.storagePaths.rootDir, "recovery");
+      const crypto = readMigrationRow(fixture.storagePaths.rootDir, "crypto");
+      const files = fs.readdirSync(fixture.storagePaths.rootDir).toSorted();
+      await maybeMigrateLegacyStorage(fixture);
+      expect(fs.readdirSync(fixture.storagePaths.rootDir).toSorted()).toEqual(files);
+      for (const [kind, source] of Object.entries(fixture.sources)) {
+        expectSource(source, "archived");
+        expect(fs.readFileSync(`${source}.migrated`)).toEqual(before[kind]);
+      }
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toEqual(recovery);
+      expect(readMigrationRow(fixture.storagePaths.rootDir, "crypto")).toEqual(crypto);
+      await expect(
+        new SqliteBackedMatrixSyncStore(fixture.storagePaths.rootDir).getSavedSyncToken(),
+      ).resolves.toBe("retry-token");
+    });
   });
 
   it("keeps the canonical current-token storage root when deviceId is still unknown", () => {

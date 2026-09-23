@@ -225,7 +225,16 @@ export async function offerPostInstallMigrations(
           `Re-run with ${formatCliCommand(`openclaw migrate ${candidate.provider.id} --dry-run`)} to inspect.`,
       );
     } finally {
-      await preparation?.dispose?.();
+      try {
+        await preparation?.dispose?.();
+      } catch (error) {
+        params.runtime.log(
+          candidate.provider.label +
+            " migration cleanup failed: " +
+            formatErrorMessage(error) +
+            ".",
+        );
+      }
     }
   }
   return { config: nextConfig };

@@ -1970,6 +1970,7 @@ describe("Slack live QA runtime helpers", () => {
         channelId: "C123456789",
         client: {
           conversations: {
+            replies: async () => ({ messages: [] }),
             history: async () => ({
               messages: [
                 {
@@ -2009,6 +2010,7 @@ describe("Slack live QA runtime helpers", () => {
         channelId: "C123456789",
         client: {
           conversations: {
+            replies: async () => ({ messages: [] }),
             history: async () => ({
               messages: [
                 {

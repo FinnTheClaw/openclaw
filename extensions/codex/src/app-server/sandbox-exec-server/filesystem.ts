@@ -328,7 +328,7 @@ async function listDirectoryEntries(
   }
   const result = await execServer.backend.runShellCommand({
     script:
-      'find "$1" -mindepth 1 -maxdepth 1 -exec sh -c \'for path do name=${path##*/}; if [ -L "$path" ]; then kind=o; elif [ -d "$path" ]; then kind=d; elif [ -f "$path" ]; then kind=f; else kind=o; fi; printf "%s\\t%s\\n" "$kind" "$name"; done\' sh {} +',
+      'find "$1" -mindepth 1 -maxdepth 1 -exec sh -c \'for path do name=${path##*/}; if [ -L "$path" ]; then kind=o; elif [ -d "$path" ]; then kind=d; elif [ -f "$path" ]; then kind=f; else kind=o; fi; printf "%s\\0%s\\0" "$kind" "$name"; done\' sh {} +',
     args: [resolved.containerPath],
     allowFailure: true,
   });
@@ -336,15 +336,25 @@ async function listDirectoryEntries(
     const stderr = result.stderr.toString("utf8").trim();
     throw new Error(stderr || `sandbox directory listing failed with code ${result.code}`);
   }
-  const lines = result.stdout.toString("utf8").split("\n").filter(Boolean);
-  return lines.map((line) => {
-    const [kind = "o", fileName = ""] = line.split("\t");
-    return {
+  const fields = result.stdout.toString("utf8").split("\0");
+  if (fields.at(-1) !== "") {
+    throw new Error("sandbox directory listing returned an unterminated entry");
+  }
+  fields.pop();
+  if (fields.length % 2 !== 0) {
+    throw new Error("sandbox directory listing returned an incomplete entry");
+  }
+  const entries: DirectoryEntry[] = [];
+  for (let index = 0; index < fields.length; index += 2) {
+    const kind = fields[index];
+    const fileName = fields[index + 1] ?? "";
+    entries.push({
       fileName,
       isDirectory: kind === "d",
       isFile: kind === "f",
-    };
-  });
+    });
+  }
+  return entries;
 }
 
 /** Removes a sandbox path after rejecting writes outside policy or under read-only descendants. */

@@ -77,10 +77,12 @@ function isBeforeCurrentMessage(params: {
   }
   const guid = normalizeOptionalString(message.guid);
   const currentGuid = normalizeOptionalString(currentMessage.guid);
-  if (guid && currentGuid) {
-    return guid !== currentGuid;
+  if (guid && currentGuid && guid === currentGuid) {
+    return false;
   }
-  return true;
+  const messageTime = parseDateStringTimestampMs(message.created_at);
+  const currentTime = parseDateStringTimestampMs(currentMessage.created_at);
+  return messageTime !== undefined && currentTime !== undefined && messageTime < currentTime;
 }
 
 function historyEntryFromMessage(message: IMessagePayload, fallbackSender: string) {

@@ -243,6 +243,58 @@ describe("experience review auto apply", () => {
     },
   );
 
+  it("R9-A10 experience review records an already-applied outcome as applied", async () => {
+    const workspaceDir = await tempDirs.make("openclaw-experience-r9-already-applied-");
+    const config = { skills: { workshop: { autonomous: { mode: "auto" as const } } } };
+    const apply = vi.spyOn(autonomousApply, "applyAutonomousSkillProposal");
+    apply.mockImplementationOnce(async ({ proposal }) => ({
+      status: "applied",
+      record: { ...proposal.record, status: "applied" as const },
+      targetSkillFile: proposal.record.target.skillFile,
+      alreadyApplied: true,
+    }));
+    runEmbeddedAgent.mockImplementation(async (params) => {
+      const tool = createSkillWorkshopTool({
+        workspaceDir: params.workspaceDir,
+        config: params.config,
+        agentId: params.agentId,
+        origin: params.skillWorkshopOrigin,
+        proposalOnly: params.skillWorkshopProposalOnly,
+        autonomousCapture: params.skillWorkshopAutonomousCapture,
+        proposalMutationBudget: params.skillWorkshopProposalMutationBudget,
+      });
+      await tool.execute("r9-review-create", {
+        action: "create",
+        name: "r9-review-skill",
+        description: "Review a learned procedure",
+        proposal_content: "# Review Skill\n\nKeep this procedure.\n",
+      });
+      return { meta: { durationMs: 1 } };
+    });
+    try {
+      await runSkillExperienceReview(
+        {
+          ctx: {
+            sessionId: "foreground-session",
+            sessionKey: "agent:main:r9-already-applied",
+            workspaceDir,
+            modelProviderId: "openai",
+            modelId: "gpt-test",
+            foregroundPromptContext: foregroundPromptContext(workspaceDir),
+          },
+          config,
+        },
+        { getCurrentConfig: () => config },
+      );
+      expect(apply).toHaveBeenCalledOnce();
+      expect(Object.values(readSkillReviewOutcomes().experienceReviews)).toContainEqual(
+        expect.objectContaining({ outcome: "applied" }),
+      );
+    } finally {
+      apply.mockRestore();
+    }
+  });
+
   it("records acquisition failure and releases its registered review", async () => {
     const workspaceDir = await tempDirs.make("openclaw-experience-read-failure-");
     const registration = vi.spyOn(agentRunRegistry, "registerAgentRunContext");

@@ -241,6 +241,127 @@ struct ConfigureRemoteCommandTests {
             }
         }
     }
+    @Test @MainActor func `C01 unchanged direct route preserves omitted auth`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "direct", "url": "wss://gateway-a.example.test",
+                "token": "old-token", "password": "old-password", // pragma: allowlist secret
+            ], opts: .init(directUrl: "wss://gateway-a.example.test"))
+        #expect(remote["token"] as? String == "old-token") // pragma: allowlist secret
+        #expect(remote["password"] as? String == "old-password") // pragma: allowlist secret
+    }
+
+    @Test @MainActor func `C02 changed direct route clears omitted auth`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "direct", "url": "wss://gateway-a.example.test",
+                "token": "old-token", "password": "old-password", // pragma: allowlist secret
+            ], opts: .init(directUrl: "wss://gateway-b.example.test"))
+        #expect(remote["token"] == nil)
+        #expect(remote["password"] == nil)
+    }
+
+    @Test @MainActor func `C03 changed direct route applies new token only`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "direct", "url": "wss://gateway-a.example.test",
+                "token": "old-token", "password": "old-password", // pragma: allowlist secret
+            ], opts: .init(
+                directUrl: "wss://gateway-b.example.test",
+                token: "new-token")) // pragma: allowlist secret
+        #expect(remote["token"] as? String == "new-token") // pragma: allowlist secret
+        #expect(remote["password"] == nil)
+    }
+
+    @Test @MainActor func `C04 changed direct route applies new password only`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "direct", "url": "wss://gateway-a.example.test",
+                "token": "old-token", "password": "old-password", // pragma: allowlist secret
+            ], opts: .init(
+                directUrl: "wss://gateway-b.example.test",
+                password: "new-password")) // pragma: allowlist secret
+        #expect(remote["token"] == nil)
+        #expect(remote["password"] as? String == "new-password") // pragma: allowlist secret
+    }
+
+    @Test @MainActor func `C05 local tunnel port change preserves SSH auth`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "ssh", "sshTarget": "alice@gateway-a.example.test",
+                "remotePort": 18789, "token": "old-token", // pragma: allowlist secret
+            ], opts: .init(sshTarget: "alice@gateway-a.example.test", localPort: 19089))
+        #expect(remote["token"] as? String == "old-token") // pragma: allowlist secret
+    }
+
+    @Test @MainActor func `C06 changed SSH target clears omitted auth`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "ssh", "sshTarget": "alice@gateway-a.example.test",
+                "remotePort": 18789, "token": "old-token", "password": "old-password", // pragma: allowlist secret
+            ], opts: .init(sshTarget: "alice@gateway-b.example.test"))
+        #expect(remote["token"] == nil)
+        #expect(remote["password"] == nil)
+    }
+
+    @Test @MainActor func `C07 changed remote gateway port clears SSH auth`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "ssh", "sshTarget": "alice@gateway-a.example.test",
+                "remotePort": 18789, "token": "old-token", // pragma: allowlist secret
+            ], opts: .init(sshTarget: "alice@gateway-a.example.test", remotePort: 19089))
+        #expect(remote["token"] == nil)
+    }
+
+    @Test @MainActor func `C08 SSH to direct clears omitted auth`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "ssh", "sshTarget": "alice@gateway-a.example.test",
+                "remotePort": 18789, "token": "old-token", // pragma: allowlist secret
+            ], opts: .init(directUrl: "wss://gateway-b.example.test"))
+        #expect(remote["token"] == nil)
+    }
+
+    @Test @MainActor func `C09 direct to SSH clears omitted auth`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "direct", "url": "wss://gateway-a.example.test",
+                "token": "old-token", // pragma: allowlist secret
+            ], opts: .init(sshTarget: "alice@gateway-b.example.test"))
+        #expect(remote["token"] == nil)
+    }
+
+    @Test @MainActor func `C10 changed route with empty auth stays cleared`() async throws {
+        let remote = try await self.reconfigure(
+            initialRemote: [
+                "transport": "direct", "url": "wss://gateway-a.example.test",
+                "token": "old-token", "password": "old-password", // pragma: allowlist secret
+            ], opts: .init(
+                directUrl: "wss://gateway-b.example.test", token: "", password: "  "))
+        #expect(remote["token"] == nil)
+        #expect(remote["password"] == nil)
+    }
+
+    @MainActor
+    private func reconfigure(
+        initialRemote: [String: Any],
+        opts: ConfigureRemoteOptions) async throws -> [String: Any]
+    {
+        let configURL = FileManager().temporaryDirectory
+            .appendingPathComponent("openclaw-configure-route-\(UUID().uuidString).json")
+        defer { try? FileManager().removeItem(at: configURL) }
+        let initial: [String: Any] = ["gateway": ["remote": initialRemote]]
+        let initialData = try JSONSerialization.data(withJSONObject: initial)
+        try initialData.write(to: configURL)
+        return try await TestIsolation.withIsolatedState(env: ["OPENCLAW_CONFIG_PATH": configURL.path]) {
+            try configureRemote(opts, defaultsSuites: [])
+            let data = try Data(contentsOf: configURL)
+            let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let gateway = try #require(root["gateway"] as? [String: Any])
+            return try #require(gateway["remote"] as? [String: Any])
+        }
+    }
+
 }
 
 @Suite(.serialized)

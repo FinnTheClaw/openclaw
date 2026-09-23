@@ -188,9 +188,9 @@ export function getGoogleMeetSetupStatus(
 
   checks.push({
     id: "chrome-node-target",
-    ok: config.defaultTransport !== "chrome-node" || Boolean(config.chromeNode.node),
+    ok: transport !== "chrome-node" || Boolean(config.chromeNode.node),
     message:
-      config.defaultTransport === "chrome-node" && !config.chromeNode.node
+      transport === "chrome-node" && !config.chromeNode.node
         ? "chrome-node default should pin chromeNode.node when multiple nodes may be connected"
         : config.chromeNode.node
           ? `Chrome node pinned to ${config.chromeNode.node}`

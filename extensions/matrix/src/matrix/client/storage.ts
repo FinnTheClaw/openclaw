@@ -430,35 +430,52 @@ export async function maybeMigrateLegacyStorage(params: {
       });
     }
     if (hasAccountScopedRecoveryKey) {
-      migrateLegacyMatrixRecoveryKeyFileToStore(params.storagePaths.rootDir);
+      migrateLegacyMatrixRecoveryKeyFileToStore(params.storagePaths.rootDir, {
+        archiveLegacyFile: false,
+      });
       moved.push({
         sourcePath: params.storagePaths.recoveryKeyPath,
         targetPath: `${params.storagePaths.rootDir} SQLite recovery key state`,
         label: "recovery key",
       });
+      pendingArchives.push({
+        sourcePath: params.storagePaths.recoveryKeyPath,
+        label: "recovery key",
+      });
     }
     if (hasAccountScopedLegacyCryptoMigration) {
-      migrateLegacyMatrixLegacyCryptoMigrationFileToStore(params.storagePaths.rootDir);
+      migrateLegacyMatrixLegacyCryptoMigrationFileToStore(params.storagePaths.rootDir, {
+        archiveLegacyFile: false,
+      });
+      const sourcePath = path.join(
+        params.storagePaths.rootDir,
+        MATRIX_LEGACY_CRYPTO_MIGRATION_FILENAME,
+      );
       moved.push({
-        sourcePath: path.join(params.storagePaths.rootDir, MATRIX_LEGACY_CRYPTO_MIGRATION_FILENAME),
+        sourcePath,
         targetPath: `${params.storagePaths.rootDir} SQLite legacy crypto migration state`,
         label: "legacy crypto migration",
       });
+      pendingArchives.push({ sourcePath, label: "legacy crypto migration" });
     }
   } catch (err) {
-    const rollbackError = rollbackLegacyMoves(moved);
     throw new Error(
-      rollbackError
-        ? `Failed migrating legacy Matrix client storage: ${String(err)}. Rollback also failed: ${rollbackError}`
-        : `Failed migrating legacy Matrix client storage: ${String(err)}`,
+      `Failed migrating legacy Matrix client storage: ${String(err)}. Legacy source files remain for retry; SQLite state already written may remain.`,
       { cause: err },
     );
   }
   for (const archive of pendingArchives) {
-    archiveLegacyStoragePath({
-      ...archive,
-      skippedExistingTargets,
-    });
+    try {
+      archiveLegacyStoragePath({
+        ...archive,
+        skippedExistingTargets,
+      });
+    } catch (err) {
+      throw new Error(
+        `Matrix SQLite migration completed, but archiving ${archive.label} failed: ${String(err)}. Some legacy sources may already be archived; retry after resolving the filesystem error.`,
+        { cause: err },
+      );
+    }
   }
   if (moved.length > 0) {
     logger.info(
@@ -529,20 +546,6 @@ function archiveLegacyStoragePath(params: {
     return;
   }
   fs.renameSync(params.sourcePath, archivedLegacyStoragePath);
-}
-
-function rollbackLegacyMoves(moved: LegacyMoveRecord[]): string | null {
-  for (const entry of moved.toReversed()) {
-    try {
-      if (!fs.existsSync(entry.targetPath) || fs.existsSync(entry.sourcePath)) {
-        continue;
-      }
-      fs.renameSync(entry.targetPath, entry.sourcePath);
-    } catch (err) {
-      return `${entry.label} (${entry.targetPath} -> ${entry.sourcePath}): ${String(err)}`;
-    }
-  }
-  return null;
 }
 
 function writeStoredRootMetadata(

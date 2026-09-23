@@ -136,4 +136,189 @@ describe("createCommentTypingReactionLifecycle", () => {
     expect(request).toHaveBeenNthCalledWith(2, expectedTypingReactionRequest("delete"));
     expect(request).toHaveBeenNthCalledWith(3, expectedTypingReactionRequest("delete"));
   });
+
+  it("deletes a reaction added after cleanup began", async () => {
+    let resolveAdd!: (value: { code: number }) => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise<{ code: number }>((resolve) => {
+          resolveAdd = resolve;
+        }),
+    );
+    const lifecycle = createTypingReactionLifecycle();
+    const start = lifecycle.start();
+    const cleanup = lifecycle.cleanup();
+
+    expect(request).toHaveBeenCalledTimes(1);
+    resolveAdd({ code: 0 });
+    await Promise.all([start, cleanup]);
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenNthCalledWith(2, expectedTypingReactionRequest("delete"));
+  });
+
+  it("coalesces concurrent starts while the add request is pending", async () => {
+    let resolveAdd!: (value: { code: number }) => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise<{ code: number }>((resolve) => {
+          resolveAdd = resolve;
+        }),
+    );
+    const lifecycle = createTypingReactionLifecycle();
+    const first = lifecycle.start();
+    const second = lifecycle.start();
+
+    expect(request).toHaveBeenCalledTimes(1);
+    resolveAdd({ code: 0 });
+    await Promise.all([first, second]);
+    await lifecycle.cleanup();
+
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenNthCalledWith(2, expectedTypingReactionRequest("delete"));
+  });
+
+  it("R9-FEISHU-REACTION-01 successful add then cleanup deletes once", async () => {
+    const lifecycle = createTypingReactionLifecycle();
+    await lifecycle.start();
+    await lifecycle.cleanup();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenNthCalledWith(1, expectedTypingReactionRequest("add"));
+    expect(request).toHaveBeenNthCalledWith(2, expectedTypingReactionRequest("delete"));
+  });
+
+  it("R9-FEISHU-REACTION-02 cleanup before start makes no remote request", async () => {
+    const lifecycle = createTypingReactionLifecycle();
+    await lifecycle.cleanup();
+    await lifecycle.start();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("R9-FEISHU-REACTION-03 cleanup during delayed successful add deletes eventual reaction", async () => {
+    let resolveAdd!: (value: { code: number }) => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveAdd = resolve;
+        }),
+    );
+    const lifecycle = createTypingReactionLifecycle();
+    const start = lifecycle.start();
+    const cleanup = lifecycle.cleanup();
+    expect(request).toHaveBeenCalledTimes(1);
+    resolveAdd({ code: 0 });
+    await Promise.all([start, cleanup]);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenNthCalledWith(2, expectedTypingReactionRequest("delete"));
+  });
+
+  it("R9-FEISHU-REACTION-04 cleanup during delayed failed add does not delete", async () => {
+    let resolveAdd!: (value: { code: number }) => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveAdd = resolve;
+        }),
+    );
+    const lifecycle = createTypingReactionLifecycle();
+    const start = lifecycle.start();
+    const cleanup = lifecycle.cleanup();
+    resolveAdd({ code: 5001 });
+    await Promise.all([start, cleanup]);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("R9-FEISHU-REACTION-05 concurrent starts issue one add", async () => {
+    let resolveAdd!: (value: { code: number }) => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveAdd = resolve;
+        }),
+    );
+    const lifecycle = createTypingReactionLifecycle();
+    const first = lifecycle.start();
+    const second = lifecycle.start();
+    expect(request).toHaveBeenCalledTimes(1);
+    resolveAdd({ code: 0 });
+    await Promise.all([first, second]);
+    await lifecycle.cleanup();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("R9-FEISHU-REACTION-06 concurrent cleanups issue one delete", async () => {
+    let resolveDelete!: (value: { code: number }) => void;
+    request.mockResolvedValueOnce({ code: 0 }).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+    const lifecycle = createTypingReactionLifecycle();
+    await lifecycle.start();
+    const first = lifecycle.cleanup();
+    const second = lifecycle.cleanup();
+    expect(request).toHaveBeenCalledTimes(2);
+    resolveDelete({ code: 0 });
+    await Promise.all([first, second]);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("R9-FEISHU-REACTION-07 failed delete remains retryable", async () => {
+    request
+      .mockResolvedValueOnce({ code: 0 })
+      .mockResolvedValueOnce({ code: 5001 })
+      .mockResolvedValueOnce({ code: 0 });
+    const lifecycle = createTypingReactionLifecycle();
+    await lifecycle.start();
+    await lifecycle.cleanup();
+    await lifecycle.cleanup();
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(request).toHaveBeenNthCalledWith(3, expectedTypingReactionRequest("delete"));
+  });
+
+  it("R9-FEISHU-REACTION-08 ambient cleanup during delayed add removes reaction", async () => {
+    let resolveAdd!: (value: { code: number }) => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveAdd = resolve;
+        }),
+    );
+    const lifecycle = createTypingReactionLifecycle();
+    const start = lifecycle.start();
+    const ambient = cleanupAmbientReply();
+    resolveAdd({ code: 0 });
+    await start;
+    await expect(ambient).resolves.toBe(true);
+    await lifecycle.cleanup();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenNthCalledWith(2, expectedTypingReactionRequest("delete"));
+  });
+
+  it("R9-FEISHU-REACTION-09 separate reply keys retain independent lifecycles", async () => {
+    const first = createTypingReactionLifecycle("reply_2");
+    const second = createTypingReactionLifecycle("reply_3");
+    await Promise.all([first.start(), second.start()]);
+    await Promise.all([first.cleanup(), second.cleanup()]);
+    expect(request).toHaveBeenCalledTimes(4);
+    expect(request.mock.calls.map(([call]) => call.data.reply_id)).toEqual([
+      "reply_2",
+      "reply_3",
+      "reply_2",
+      "reply_3",
+    ]);
+  });
+
+  it("R9-FEISHU-REACTION-10 disabled indicator makes no add or delete", async () => {
+    resolveFeishuRuntimeAccountMock.mockReturnValue({
+      accountId: "default",
+      configured: true,
+      config: { typingIndicator: false },
+    });
+    const lifecycle = createTypingReactionLifecycle("reply_disabled");
+    await lifecycle.start();
+    await lifecycle.cleanup();
+    expect(request).not.toHaveBeenCalled();
+  });
 });

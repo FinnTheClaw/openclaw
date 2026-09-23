@@ -1,6 +1,6 @@
 import { type FSWatcher, readFileSync, watch } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { isRecord as isPlainObject } from "@openclaw/normalization-core/record-coerce";
 import { createDedupeCache } from "../../infra/dedupe.js";
 import { expandHomePrefix } from "../../infra/home-dir.js";
@@ -142,7 +142,12 @@ function cacheTemplateFile(path: string): UsageBarTemplate | undefined {
   const entry: CacheEntry = { template: result.template };
   if (entry.template) {
     try {
-      const watcher = watch(path, { persistent: false }, () => {
+      // Watch the directory, not the file inode: atomic replacement leaves a
+      // file watcher attached to the old inode after the first rename.
+      const watcher = watch(dirname(path), { persistent: false }, (_event, filename) => {
+        if (filename && filename.toString() !== basename(path)) {
+          return;
+        }
         const next = readTemplateFile(path);
         if (next.reason) {
           warnInvalidUsageTemplate("file", next.reason, path);

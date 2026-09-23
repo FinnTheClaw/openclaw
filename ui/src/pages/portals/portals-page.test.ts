@@ -200,6 +200,203 @@ describe("PortalsPage", () => {
     expect(page.textContent).toContain("This gateway does not support portals.");
     expect(source.request).not.toHaveBeenCalled();
   });
+
+  it("refetches when a portal change arrives during an in-flight list", async () => {
+    let resolveFirst!: (result: PortalListResult) => void;
+    let listCalls = 0;
+    const source = createContext(["portal.list"], async () => {
+      listCalls += 1;
+      return listCalls === 1
+        ? await new Promise<PortalListResult>((resolve) => {
+            resolveFirst = resolve;
+          })
+        : ({ portals: [portal] } satisfies PortalListResult);
+    });
+    const page = await mountPage(source.context);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(1));
+
+    source.emitPortals([portal]);
+    source.emitPortals([portal]);
+    resolveFirst({ portals: [] });
+
+    await vi.waitFor(() => {
+      expect(source.request).toHaveBeenCalledTimes(2);
+      expect(page.querySelector(".portals-rail__title")?.textContent).toBe("Seeded app");
+    });
+  });
+});
+
+describe("checkpoint R9 portals refresh cases", () => {
+  const secondPortal = { ...portal, id: "p4000", title: "Second app", port: 4000 };
+
+  function deferredList() {
+    let resolve!: (value: PortalListResult) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<PortalListResult>((resolveValue, rejectValue) => {
+      resolve = resolveValue;
+      reject = rejectValue;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("R9-PORTALS-REFRESH-01 initial connected load displays portal set", async () => {
+    const source = createContext(["portal.list"], async () => ({ portals: [portal] }));
+    const page = await mountPage(source.context);
+    await vi.waitFor(() =>
+      expect(page.querySelector(".portals-rail__title")?.textContent).toBe("Seeded app"),
+    );
+    expect(source.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("R9-PORTALS-REFRESH-02 idle change starts a fresh list", async () => {
+    let calls = 0;
+    const source = createContext(["portal.list"], async () => ({
+      portals: ++calls === 1 ? [] : [portal],
+    }));
+    const page = await mountPage(source.context);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(1));
+    source.emitPortals([portal]);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(page.querySelector(".portals-rail__title")?.textContent).toBe("Seeded app"),
+    );
+  });
+
+  it("R9-PORTALS-REFRESH-03 change during first list triggers a fresh visible set", async () => {
+    const first = deferredList();
+    let calls = 0;
+    const source = createContext(["portal.list"], async () =>
+      ++calls === 1 ? first.promise : { portals: [portal] },
+    );
+    const page = await mountPage(source.context);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(1));
+    source.emitPortals([portal]);
+    first.resolve({ portals: [] });
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(page.querySelector(".portals-rail__title")?.textContent).toBe("Seeded app"),
+    );
+  });
+
+  it("R9-PORTALS-REFRESH-04 several changes during one list coalesce to one follow-up", async () => {
+    const first = deferredList();
+    let calls = 0;
+    const source = createContext(["portal.list"], async () =>
+      ++calls === 1 ? first.promise : { portals: [portal] },
+    );
+    await mountPage(source.context);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(1));
+    source.emitPortals([portal]);
+    source.emitPortals([portal]);
+    source.emitPortals([portal]);
+    first.resolve({ portals: [] });
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(source.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("R9-PORTALS-REFRESH-05 a change during follow-up schedules a third list", async () => {
+    const first = deferredList();
+    const second = deferredList();
+    let calls = 0;
+    const source = createContext(["portal.list"], async () => {
+      calls += 1;
+      return calls === 1
+        ? first.promise
+        : calls === 2
+          ? second.promise
+          : { portals: [secondPortal] };
+    });
+    const page = await mountPage(source.context);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(1));
+    source.emitPortals([portal]);
+    first.resolve({ portals: [] });
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(2));
+    source.emitPortals([secondPortal]);
+    second.resolve({ portals: [portal] });
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() =>
+      expect(page.querySelector(".portals-rail__title")?.textContent).toBe("Second app"),
+    );
+  });
+
+  it("R9-PORTALS-REFRESH-06 disconnect prevents stale list publication", async () => {
+    const first = deferredList();
+    const source = createContext(["portal.list"], async () => first.promise);
+    const page = await mountPage(source.context);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(1));
+    page.remove();
+    first.resolve({ portals: [portal] });
+    await page.updateComplete;
+    expect(page.querySelector(".portals-rail__title")).toBeNull();
+  });
+
+  it("R9-PORTALS-REFRESH-07 reconnect loads only the new gateway client data", async () => {
+    const oldList = deferredList();
+    const oldSource = createContext(["portal.list"], async () => oldList.promise);
+    const newSource = createContext(["portal.list"], async () => ({ portals: [secondPortal] }));
+    const page = await mountPage(oldSource.context);
+    await vi.waitFor(() => expect(oldSource.request).toHaveBeenCalledTimes(1));
+    page.remove();
+    page.context = newSource.context;
+    document.body.append(page);
+    await vi.waitFor(() => expect(newSource.request).toHaveBeenCalledTimes(1));
+    oldList.resolve({ portals: [portal] });
+    await vi.waitFor(() =>
+      expect(page.querySelector(".portals-rail__title")?.textContent).toBe("Second app"),
+    );
+  });
+
+  it("R9-PORTALS-REFRESH-08 selection persists when refreshed set retains its ID", async () => {
+    let calls = 0;
+    const source = createContext(["portal.list"], async () => ({
+      portals: ++calls === 1 ? [portal, secondPortal] : [secondPortal, portal],
+    }));
+    const page = await mountPage(source.context);
+    await vi.waitFor(() => expect(page.querySelectorAll(".portals-rail__item")).toHaveLength(2));
+    (page.querySelectorAll(".portals-rail__item")[1] as HTMLElement).click();
+    source.emitPortals([secondPortal, portal]);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(
+        page.querySelector(".portals-rail__item.active .portals-rail__title")?.textContent,
+      ).toBe("Second app"),
+    );
+  });
+
+  it("R9-PORTALS-REFRESH-09 selection falls back when refreshed set removes selected ID", async () => {
+    let calls = 0;
+    const source = createContext(["portal.list"], async () => ({
+      portals: ++calls === 1 ? [portal, secondPortal] : [portal],
+    }));
+    const page = await mountPage(source.context);
+    await vi.waitFor(() => expect(page.querySelectorAll(".portals-rail__item")).toHaveLength(2));
+    (page.querySelectorAll(".portals-rail__item")[1] as HTMLElement).click();
+    source.emitPortals([portal]);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(
+        page.querySelector(".portals-rail__item.active .portals-rail__title")?.textContent,
+      ).toBe("Seeded app"),
+    );
+  });
+
+  it("R9-PORTALS-REFRESH-10 queued refresh recovers after first list rejects", async () => {
+    const first = deferredList();
+    let calls = 0;
+    const source = createContext(["portal.list"], async () =>
+      ++calls === 1 ? first.promise : { portals: [portal] },
+    );
+    const page = await mountPage(source.context);
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(1));
+    source.emitPortals([portal]);
+    first.reject(new Error("stale failure"));
+    await vi.waitFor(() => expect(source.request).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(page.querySelector(".portals-rail__title")?.textContent).toBe("Seeded app"),
+    );
+    expect(page.textContent).not.toContain("stale failure");
+  });
 });
 
 describe("resolvePortalUrl", () => {

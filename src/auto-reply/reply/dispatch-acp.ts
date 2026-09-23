@@ -940,7 +940,6 @@ export async function tryDispatchAcpReplyCore(params: {
       logVerbose(`dispatch-acp: start reply lifecycle failed: ${formatErrorMessage(error)}`);
     }
 
-    turnDispatched = true;
     const channelAdmission = consumeChannelRunAdmission(
       readChannelContextAdmissionEvidence(params.ctx),
     );
@@ -974,7 +973,7 @@ export async function tryDispatchAcpReplyCore(params: {
         getAdmittedRunDelegatedAuthority(turnAdmission) !== undefined,
     };
     const onElicitation = createLazyAcpElicitationHandler(elicitationParams);
-    await acpManager.runTurn({
+    const turnInput: Parameters<typeof acpManager.runTurn>[0] = {
       admittedRunContext,
       cfg: params.cfg,
       sessionKey: canonicalSessionKey,
@@ -1010,7 +1009,9 @@ export async function tryDispatchAcpReplyCore(params: {
         }
         await projector.onEvent(event);
       },
-    });
+    };
+    turnDispatched = true;
+    await acpManager.runTurn(turnInput);
 
     await projector.flush(true);
     if (runtimeTurnWasCancelled || params.abortSignal?.aborted) {

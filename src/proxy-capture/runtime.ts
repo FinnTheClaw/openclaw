@@ -356,63 +356,74 @@ function installDebugProxyGlobalFetchPatch(
     try {
       const response = await originalFetch(input, normalizedInit);
       if (url && /^https?:/i.test(url)) {
-        captureHttpExchange(
-          {
-            url,
+        try {
+          captureHttpExchange(
+            {
+              url,
+              method:
+                (typeof Request !== "undefined" && input instanceof Request
+                  ? input.method
+                  : undefined) ??
+                normalizedInit?.method ??
+                "GET",
+              requestHeaders:
+                (typeof Request !== "undefined" && input instanceof Request
+                  ? input.headers
+                  : undefined) ??
+                (normalizedInit?.headers as Headers | Record<string, string> | undefined),
+              requestBody:
+                (typeof Request !== "undefined" && input instanceof Request
+                  ? (input as Request & { body?: BodyInit | null }).body
+                  : undefined) ??
+                (normalizedInit as (RequestInit & { body?: BodyInit | null }) | undefined)?.body ??
+                null,
+              response,
+              transport: "http",
+              meta: {
+                captureOrigin: "global-fetch",
+                source: settings.sourceProcess,
+              },
+            },
+            settings,
+            deps,
+          );
+        } catch {
+          // Capture is diagnostic and must not replace a successful fetch.
+        }
+      }
+      return response;
+    } catch (error) {
+      if (url && /^https?:/i.test(url)) {
+        try {
+          const store = runtime.getStore();
+          const captureUrl = redactCaptureUrl(url);
+          const parsed = new URL(captureUrl);
+          store.recordEvent({
+            sessionId: settings.sessionId,
+            ts: Date.now(),
+            sourceScope: "openclaw",
+            sourceProcess: settings.sourceProcess,
+            protocol: protocolFromUrl(captureUrl),
+            direction: "local",
+            kind: "error",
+            flowId: randomUUID(),
             method:
               (typeof Request !== "undefined" && input instanceof Request
                 ? input.method
                 : undefined) ??
               normalizedInit?.method ??
               "GET",
-            requestHeaders:
-              (typeof Request !== "undefined" && input instanceof Request
-                ? input.headers
-                : undefined) ??
-              (normalizedInit?.headers as Headers | Record<string, string> | undefined),
-            requestBody:
-              (typeof Request !== "undefined" && input instanceof Request
-                ? (input as Request & { body?: BodyInit | null }).body
-                : undefined) ??
-              (normalizedInit as (RequestInit & { body?: BodyInit | null }) | undefined)?.body ??
-              null,
-            response,
-            transport: "http",
-            meta: {
-              captureOrigin: "global-fetch",
-              source: settings.sourceProcess,
-            },
-          },
-          settings,
-          deps,
-        );
-      }
-      return response;
-    } catch (error) {
-      if (url && /^https?:/i.test(url)) {
-        const store = runtime.getStore();
-        const captureUrl = redactCaptureUrl(url);
-        const parsed = new URL(captureUrl);
-        store.recordEvent({
-          sessionId: settings.sessionId,
-          ts: Date.now(),
-          sourceScope: "openclaw",
-          sourceProcess: settings.sourceProcess,
-          protocol: protocolFromUrl(captureUrl),
-          direction: "local",
-          kind: "error",
-          flowId: randomUUID(),
-          method:
-            (typeof Request !== "undefined" && input instanceof Request
-              ? input.method
-              : undefined) ??
-            normalizedInit?.method ??
-            "GET",
-          host: parsed.host,
-          path: `${parsed.pathname}${parsed.search}`,
-          errorText: redactCaptureText(error instanceof Error ? error.message : String(error)),
-          metaJson: redactedCaptureJson({ captureOrigin: "global-fetch" }, runtime.safeJsonString),
-        });
+            host: parsed.host,
+            path: `${parsed.pathname}${parsed.search}`,
+            errorText: redactCaptureText(error instanceof Error ? error.message : String(error)),
+            metaJson: redactedCaptureJson(
+              { captureOrigin: "global-fetch" },
+              runtime.safeJsonString,
+            ),
+          });
+        } catch {
+          // Preserve the original fetch failure when diagnostics are unavailable.
+        }
       }
       throw error;
     }
@@ -617,19 +628,23 @@ export function captureHttpExchange(
       });
     })
     .catch((error: unknown) => {
-      store.recordEvent({
-        ...createHttpCaptureEventBase({
-          settings,
-          rawUrl: captureUrl,
-          url,
-          transport: params.transport,
-          direction: "local",
-          kind: "error",
-          flowId,
-          method: params.method,
-        }),
-        errorText: redactCaptureText(error instanceof Error ? error.message : String(error)),
-      });
+      try {
+        store.recordEvent({
+          ...createHttpCaptureEventBase({
+            settings,
+            rawUrl: captureUrl,
+            url,
+            transport: params.transport,
+            direction: "local",
+            kind: "error",
+            flowId,
+            method: params.method,
+          }),
+          errorText: redactCaptureText(error instanceof Error ? error.message : String(error)),
+        });
+      } catch {
+        // A failed diagnostic write must not become an unhandled rejection.
+      }
     });
 }
 

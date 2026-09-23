@@ -103,13 +103,13 @@ func runWizardCommand(_ args: [String]) async {
     }
 }
 
-private func resolveWizardGatewayEndpoint(opts: WizardCliOptions, config: GatewayConfig) throws -> GatewayEndpoint {
+func resolveWizardGatewayEndpoint(opts: WizardCliOptions, config: GatewayConfig) throws -> GatewayEndpoint {
     if let raw = opts.url, !raw.isEmpty {
         guard let url = URL(string: raw) else { throw WizardCliError.invalidUrl(raw) }
         return GatewayEndpoint(
             url: url,
-            token: resolvedToken(opts: opts, config: config),
-            password: resolvedPassword(opts: opts, config: config),
+            token: opts.token?.isEmpty == false ? opts.token : nil,
+            password: opts.password?.isEmpty == false ? opts.password : nil,
             mode: (config.mode ?? "local").lowercased())
     }
 

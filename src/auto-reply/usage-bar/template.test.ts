@@ -1,6 +1,6 @@
-import { type FSWatcher, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { type FSWatcher, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_USAGE_BAR_TEMPLATE } from "./default-template.js";
@@ -14,7 +14,7 @@ vi.mock("../../logging/subsystem.js", () => ({
 }));
 
 const capturedWatchers = vi.hoisted(() => [] as Array<ReturnType<typeof import("node:fs").watch>>);
-const capturedWatchChanges = vi.hoisted(() => [] as Array<() => void>);
+const capturedWatchChanges = vi.hoisted(() => [] as Array<(filename?: string | null) => void>);
 const watcherOperations = vi.hoisted(() => [] as Array<["watch", unknown] | ["close", FSWatcher]>);
 const closedWatchers = vi.hoisted(() => new Set<FSWatcher>());
 
@@ -35,8 +35,8 @@ vi.mock("node:fs", async (importOriginal) => {
         closedWatchers.add(w);
       });
       capturedWatchers.push(w);
-      capturedWatchChanges.push(() => {
-        (cb as (eventType: string, filename: null) => void)("change", null);
+      capturedWatchChanges.push((filename = null) => {
+        (cb as (eventType: string, filename: string | null) => void)("change", filename);
       });
       return w;
     }) as typeof orig.watch,
@@ -82,6 +82,12 @@ function tmpFile(name: string, contents: string): string {
   const path = join(d, name);
   writeFileSync(path, contents);
   return path;
+}
+
+function replaceAtomically(path: string, value: unknown): void {
+  const next = join(dirname(path), "next.json");
+  writeFileSync(next, JSON.stringify(value));
+  renameSync(next, path);
 }
 
 describe("loadUsageBarTemplate", () => {
@@ -157,6 +163,130 @@ describe("loadUsageBarTemplate", () => {
     expect(loadUsageBarTemplate(path)).toMatchObject(tplB);
   });
 
+  it.runIf(process.platform !== "win32")(
+    "R9-W01 keeps refreshing a template across repeated atomic replacements",
+    async () => {
+      const path = tmpFile("t.json", JSON.stringify(tplA));
+      expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+
+      const replace = (value: unknown) => {
+        const next = join(dirname(path), "next.json");
+        writeFileSync(next, JSON.stringify(value));
+        renameSync(next, path);
+      };
+      replace(tplB);
+      await vi.waitFor(() => {
+        expect(loadUsageBarTemplate(path)).toMatchObject(tplB);
+      });
+
+      const tplC = { segments: [{ text: "C" }] };
+      replace(tplC);
+      await vi.waitFor(() => {
+        expect(loadUsageBarTemplate(path)).toMatchObject(tplC);
+      });
+    },
+  );
+
+  it.runIf(process.platform !== "win32")("R9-W02 observes an in-place target write", async () => {
+    const path = tmpFile("t.json", JSON.stringify(tplA));
+    expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+    writeFileSync(path, JSON.stringify(tplB));
+    await vi.waitFor(() => {
+      expect(loadUsageBarTemplate(path)).toMatchObject(tplB);
+    });
+  });
+
+  it.runIf(process.platform !== "win32")("R9-W03 observes one atomic replacement", async () => {
+    const path = tmpFile("t.json", JSON.stringify(tplA));
+    expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+    replaceAtomically(path, tplB);
+    await vi.waitFor(() => {
+      expect(loadUsageBarTemplate(path)).toMatchObject(tplB);
+    });
+  });
+
+  it.runIf(process.platform !== "win32")("R9-W04 observes three atomic replacements", async () => {
+    const path = tmpFile("t.json", JSON.stringify(tplA));
+    expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+    for (const text of ["B", "C", "D"]) {
+      const next = { segments: [{ text }] };
+      replaceAtomically(path, next);
+      await vi.waitFor(() => {
+        expect(loadUsageBarTemplate(path)).toMatchObject(next);
+      });
+    }
+  });
+
+  it.runIf(process.platform !== "win32")("R9-W05 ignores an adjacent filename event", () => {
+    const path = tmpFile("t.json", JSON.stringify(tplA));
+    expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+    writeFileSync(path, JSON.stringify(tplB));
+    capturedWatchChanges[0]?.("adjacent.json");
+    expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "R9-W06 falls back after an invalid atomic replacement",
+    async () => {
+      const path = tmpFile("t.json", JSON.stringify(tplA));
+      expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+      const next = join(dirname(path), "next.json");
+      writeFileSync(next, "{ invalid json");
+      renameSync(next, path);
+      await vi.waitFor(() => {
+        expect(loadUsageBarTemplate(path)).toBe(DEFAULT_USAGE_BAR_TEMPLATE);
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        "configured usage template could not be used; using built-in footer",
+        { source: "file", reason: "invalid-json", path },
+      );
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "R9-W07 recovers after invalid then valid atomic replacements",
+    async () => {
+      const path = tmpFile("t.json", JSON.stringify(tplA));
+      expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+      const next = join(dirname(path), "next.json");
+      writeFileSync(next, "{ invalid json");
+      renameSync(next, path);
+      await vi.waitFor(() => {
+        expect(loadUsageBarTemplate(path)).toBe(DEFAULT_USAGE_BAR_TEMPLATE);
+      });
+      replaceAtomically(path, tplB);
+      await vi.waitFor(() => {
+        expect(loadUsageBarTemplate(path)).toMatchObject(tplB);
+      });
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "R9-W08 recovers after target removal and recreation",
+    async () => {
+      const path = tmpFile("t.json", JSON.stringify(tplA));
+      expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+      rmSync(path);
+      await vi.waitFor(() => {
+        expect(loadUsageBarTemplate(path)).toBe(DEFAULT_USAGE_BAR_TEMPLATE);
+      });
+      writeFileSync(path, JSON.stringify(tplB));
+      await vi.waitFor(() => {
+        expect(loadUsageBarTemplate(path)).toMatchObject(tplB);
+      });
+    },
+  );
+
+  it("R9-W10 cache reset closes watcher and reloads the target", () => {
+    const path = tmpFile("t.json", JSON.stringify(tplA));
+    expect(loadUsageBarTemplate(path)).toMatchObject(tplA);
+    const first = capturedWatchers[0];
+    clearUsageBarTemplateCacheForTest();
+    expect(watcherOperations).toContainEqual(["close", first]);
+    writeFileSync(path, JSON.stringify(tplB));
+    expect(loadUsageBarTemplate(path)).toMatchObject(tplB);
+  });
+
   it("bounds invalid-template warnings by least-recently-used path", () => {
     const dir = tmpDir();
     const paths = Array.from({ length: 257 }, (_, index) => {
@@ -188,7 +318,7 @@ describe("loadUsageBarTemplate", () => {
   });
 
   describe("cache eviction", () => {
-    it("evicts the oldest entry and closes its watcher when inserting a new key over the limit", async () => {
+    it("R9-W09 evicts the oldest entry and closes its watcher when inserting a new key over the limit", async () => {
       const dir = tmpDir();
       const paths: string[] = [];
       // Create 65 template files — one more than MAX_CACHED_TEMPLATE_FILES (64).
@@ -217,7 +347,7 @@ describe("loadUsageBarTemplate", () => {
       expect(capturedWatchers).toHaveLength(65);
       expect(watcherOperations.map(([kind]) => kind)).toEqual(["close", "watch"]);
       expect(watcherOperations[0]?.[1]).toBe(capturedWatchers[0]);
-      expect(watcherOperations[1]?.[1]).toBe(paths[64]);
+      expect(watcherOperations[1]?.[1]).toBe(dirname(paths[64]));
       watcherOperations.splice(0);
 
       // Check every survivor before re-inserting the evicted path causes another eviction.
@@ -240,7 +370,7 @@ describe("loadUsageBarTemplate", () => {
       expect(capturedWatchers).toHaveLength(66);
       expect(watcherOperations.map(([kind]) => kind)).toEqual(["close", "watch"]);
       expect(watcherOperations[0]?.[1]).toBe(capturedWatchers[1]);
-      expect(watcherOperations[1]?.[1]).toBe(paths[0]);
+      expect(watcherOperations[1]?.[1]).toBe(dirname(paths[0]));
       watcherOperations.splice(0);
 
       clearUsageBarTemplateCacheForTest();

@@ -5,7 +5,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { FsSafeError } from "openclaw/plugin-sdk/security-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyMemoryWikiMutation } from "./apply.js";
-import { importChatGptConversations } from "./chatgpt-import.js";
+import { importChatGptConversations, rollbackChatGptImportRun } from "./chatgpt-import.js";
 import { ingestMemoryWikiSource } from "./ingest.js";
 import { renderMarkdownFence, renderWikiMarkdown } from "./markdown.js";
 import { writeImportedSourcePage } from "./source-page-shared.js";
@@ -17,6 +17,7 @@ const securityRuntimeMock = vi.hoisted(() => ({
   readTextOnceError: new Error("transient existing-page read failure"),
   readTextError: new Error("persistent existing-page read failure"),
   readTextFailureInjected: false,
+  onReadText: undefined as ((relativePath: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => {
@@ -42,7 +43,9 @@ vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => {
               securityRuntimeMock.readTextFailureInjected = true;
               throw securityRuntimeMock.readTextOnceError;
             }
-            return target.readText(relativePath);
+            const text = await target.readText(relativePath);
+            await securityRuntimeMock.onReadText?.(relativePath);
+            return text;
           };
         },
       });
@@ -122,6 +125,7 @@ async function createChatGptImportFixture(prefix: string) {
   return {
     config,
     exportDir,
+    rootDir,
     pagePath: path.join(
       rootDir,
       "sources",
@@ -138,6 +142,7 @@ describe("memory-wiki existing-page read retry", () => {
     securityRuntimeMock.readTextOnceError = new Error("transient existing-page read failure");
     securityRuntimeMock.readTextError = new Error("persistent existing-page read failure");
     securityRuntimeMock.readTextFailureInjected = false;
+    securityRuntimeMock.onReadText = undefined;
   });
 
   it("preserves ingest notes after a transient existing-page read failure", async () => {
@@ -179,7 +184,7 @@ describe("memory-wiki existing-page read retry", () => {
       nowMs: Date.UTC(2026, 3, 6, 12, 0, 0),
     });
 
-    const after = await originalReadFile(pagePath, "utf8");
+    const after = await fs.readFile(pagePath, "utf8");
     expect(injectedFailure).toBe(true);
     expect(after).toContain("v2 content updated");
     expect(after).toContain(userNote);
@@ -450,7 +455,7 @@ describe("memory-wiki existing-page read retry", () => {
   });
 
   it("preserves chatgpt conversation notes after a transient existing-page read failure", async () => {
-    const { config, exportDir, pagePath } = await createChatGptImportFixture(
+    const { config, exportDir, pagePath, rootDir } = await createChatGptImportFixture(
       "memory-wiki-chatgpt-read-retry-",
     );
     const userNote = "HUMAN NOTE: verified against the airline booking.";
@@ -460,17 +465,10 @@ describe("memory-wiki existing-page read retry", () => {
     );
     await fs.writeFile(pagePath, edited, "utf8");
 
-    const originalReadFile = fs.readFile.bind(fs);
-    let injectedFailure = false;
-    vi.spyOn(fs, "readFile").mockImplementation(
-      async (...args: Parameters<typeof fs.readFile>): ReturnType<typeof fs.readFile> => {
-        if (!injectedFailure && args[0] === pagePath && args[1] === "utf8") {
-          injectedFailure = true;
-          throw Object.assign(new Error("page temporarily missing"), { code: "ENOENT" });
-        }
-        return originalReadFile(...args);
-      },
-    );
+    securityRuntimeMock.failReadTextOnceFor = path.relative(rootDir, pagePath);
+    securityRuntimeMock.readTextOnceError = Object.assign(new Error("page temporarily missing"), {
+      code: "ENOENT",
+    });
 
     const second = await importChatGptConversations({
       config,
@@ -478,8 +476,8 @@ describe("memory-wiki existing-page read retry", () => {
       nowMs: Date.UTC(2026, 3, 6, 12, 0, 0),
     });
 
-    const after = await originalReadFile(pagePath, "utf8");
-    expect(injectedFailure).toBe(true);
+    const after = await fs.readFile(pagePath, "utf8");
+    expect(securityRuntimeMock.readTextFailureInjected).toBe(true);
     expect(second.createdCount).toBe(0);
     expect(after).toContain(userNote);
   });
@@ -513,20 +511,36 @@ describe("memory-wiki existing-page read retry", () => {
     expect(after).toContain(userNote);
   });
 
-  it("leaves a ChatGPT page unchanged after a persistent existing-page read failure", async () => {
+  it("rejects a ChatGPT page symlink outside the vault", async () => {
     const { config, exportDir, pagePath } = await createChatGptImportFixture(
+      "memory-wiki-chatgpt-page-alias-",
+    );
+    const outsideDir = await createTempDir("memory-wiki-chatgpt-outside-");
+    const outsidePath = path.join(outsideDir, "outside.md");
+    const before = await fs.readFile(pagePath, "utf8");
+    await fs.writeFile(outsidePath, before, "utf8");
+    await fs.rm(pagePath);
+    await fs.symlink(outsidePath, pagePath);
+
+    await expect(
+      importChatGptConversations({
+        config,
+        exportPath: exportDir,
+        nowMs: Date.UTC(2026, 3, 6, 12, 0, 0),
+      }),
+    ).rejects.toMatchObject({ code: "symlink" });
+    await expect(fs.readFile(outsidePath, "utf8")).resolves.toBe(before);
+  });
+
+  it("leaves a ChatGPT page unchanged after a persistent existing-page read failure", async () => {
+    const { config, exportDir, pagePath, rootDir } = await createChatGptImportFixture(
       "memory-wiki-chatgpt-persistent-read-",
     );
     const before = await fs.readFile(pagePath, "utf8");
-    const originalReadFile = fs.readFile.bind(fs);
-    vi.spyOn(fs, "readFile").mockImplementation(
-      async (...args: Parameters<typeof fs.readFile>): ReturnType<typeof fs.readFile> => {
-        if (args[0] === pagePath && args[1] === "utf8") {
-          throw Object.assign(new Error("resource busy"), { code: "EBUSY" });
-        }
-        return originalReadFile(...args);
-      },
-    );
+    securityRuntimeMock.failReadTextAlwaysFor = path.relative(rootDir, pagePath);
+    securityRuntimeMock.readTextError = Object.assign(new Error("resource busy"), {
+      code: "EBUSY",
+    });
 
     await expect(
       importChatGptConversations({
@@ -536,6 +550,135 @@ describe("memory-wiki existing-page read retry", () => {
       }),
     ).rejects.toMatchObject({ code: "EBUSY" });
 
-    await expect(originalReadFile(pagePath, "utf8")).resolves.toBe(before);
+    await expect(fs.readFile(pagePath, "utf8")).resolves.toBe(before);
+  });
+});
+
+async function changeChatGptExport(exportDir: string): Promise<void> {
+  const exportFile = path.join(exportDir, "conversations.json");
+  const before = await fs.readFile(exportFile, "utf8");
+  const after = before.replace("I prefer aisle seats.", "I now prefer window seats.");
+  expect(after).not.toBe(before);
+  await fs.writeFile(exportFile, after, "utf8");
+}
+
+describe("Memory Wiki ChatGPT import rooted page paths", () => {
+  it("M01 creates an ordinary page inside the vault", async () => {
+    const { pagePath } = await createChatGptImportFixture("wiki-root-create-");
+    await expect(fs.readFile(pagePath, "utf8")).resolves.toContain("Travel preference check");
+  });
+  it("M02 updates an ordinary page with a run snapshot", async () => {
+    const { config, exportDir, pagePath, rootDir } =
+      await createChatGptImportFixture("wiki-root-update-");
+    await changeChatGptExport(exportDir);
+    const result = await importChatGptConversations({ config, exportPath: exportDir });
+    expect(result.updatedCount).toBe(1);
+    expect(result.runId).toBeTruthy();
+    const snapshots = path.join(
+      rootDir,
+      ".openclaw-wiki",
+      "import-runs",
+      result.runId!,
+      "snapshots",
+    );
+    expect((await fs.readdir(snapshots)).length).toBeGreaterThan(0);
+    await expect(fs.readFile(pagePath, "utf8")).resolves.toContain("window seats");
+  });
+  it("M03 skips an identical page", async () => {
+    const { config, exportDir } = await createChatGptImportFixture("wiki-root-skip-");
+    const result = await importChatGptConversations({ config, exportPath: exportDir });
+    expect(result).toMatchObject({ createdCount: 0, updatedCount: 0, skippedCount: 1 });
+  });
+  it("M04 rejects a final page symlink pointing outside", async () => {
+    const { config, exportDir, pagePath } =
+      await createChatGptImportFixture("wiki-root-final-alias-");
+    const outside = path.join(await createTempDir("wiki-root-outside-"), "outside.md");
+    await fs.writeFile(outside, "OUTSIDE", "utf8");
+    await fs.rm(pagePath);
+    await fs.symlink(outside, pagePath);
+    await expect(
+      importChatGptConversations({ config, exportPath: exportDir }),
+    ).rejects.toMatchObject({ code: "symlink" });
+    await expect(fs.readFile(outside, "utf8")).resolves.toBe("OUTSIDE");
+  });
+  it("M05 rejects a parent directory symlink pointing outside", async () => {
+    const { config, exportDir, pagePath, rootDir } =
+      await createChatGptImportFixture("wiki-root-parent-alias-");
+    const outsideDir = await createTempDir("wiki-root-parent-outside-");
+    await fs.rename(path.join(rootDir, "sources"), path.join(rootDir, "sources-original"));
+    await fs.symlink(outsideDir, path.join(rootDir, "sources"), "dir");
+    await expect(
+      importChatGptConversations({ config, exportPath: exportDir }),
+    ).rejects.toMatchObject({ code: "outside-workspace" });
+    expect(await fs.readdir(outsideDir)).toEqual([]);
+    expect(pagePath).toContain("sources");
+  });
+  it("M06 rejects a dangling final page symlink", async () => {
+    const { config, exportDir, pagePath } = await createChatGptImportFixture("wiki-root-dangling-");
+    await fs.rm(pagePath);
+    await fs.symlink(path.join(await createTempDir("wiki-root-missing-"), "missing.md"), pagePath);
+    await expect(
+      importChatGptConversations({ config, exportPath: exportDir }),
+    ).rejects.toMatchObject({ code: "symlink" });
+  });
+  it("M07 handles an in-vault page alias without escaping the vault", async () => {
+    const { config, exportDir, pagePath, rootDir } =
+      await createChatGptImportFixture("wiki-root-inside-alias-");
+    const target = path.join(rootDir, "inside.md");
+    const before = await fs.readFile(pagePath, "utf8");
+    await fs.writeFile(target, before, "utf8");
+    await fs.rm(pagePath);
+    await fs.symlink(target, pagePath);
+    await changeChatGptExport(exportDir);
+    try {
+      await importChatGptConversations({ config, exportPath: exportDir });
+      await expect(fs.readFile(target, "utf8")).resolves.toContain("window seats");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "symlink" });
+      await expect(fs.readFile(target, "utf8")).resolves.toBe(before);
+    }
+  });
+  it("M08 rejects a page swapped to an outside symlink after planning read", async () => {
+    const { config, exportDir, pagePath, rootDir } =
+      await createChatGptImportFixture("wiki-root-swap-");
+    await changeChatGptExport(exportDir);
+    const outside = path.join(await createTempDir("wiki-root-swap-outside-"), "outside.md");
+    await fs.writeFile(outside, "OUTSIDE", "utf8");
+    let swapped = false;
+    securityRuntimeMock.onReadText = async (relativePath) => {
+      if (swapped || relativePath !== path.relative(rootDir, pagePath)) return;
+      swapped = true;
+      await fs.rm(pagePath);
+      await fs.symlink(outside, pagePath);
+    };
+    await expect(
+      importChatGptConversations({ config, exportPath: exportDir }),
+    ).rejects.toMatchObject({ code: "path-alias" });
+    expect(swapped).toBe(true);
+    await expect(fs.readFile(outside, "utf8")).resolves.toBe("OUTSIDE");
+  });
+  it("M09 rejects a snapshot parent symlink pointing outside", async () => {
+    const { config, exportDir, rootDir } = await createChatGptImportFixture(
+      "wiki-root-snapshot-alias-",
+    );
+    const outsideDir = await createTempDir("wiki-root-snapshot-outside-");
+    const runs = path.join(rootDir, ".openclaw-wiki", "import-runs");
+    await fs.mkdir(runs, { recursive: true });
+    await fs.rename(runs, path.join(rootDir, ".openclaw-wiki", "import-runs-original"));
+    await fs.symlink(outsideDir, runs, "dir");
+    await changeChatGptExport(exportDir);
+    await expect(
+      importChatGptConversations({ config, exportPath: exportDir }),
+    ).rejects.toMatchObject({ code: "path-alias" });
+    expect(await fs.readdir(outsideDir)).toEqual([]);
+  });
+  it("M10 rolls back an ordinary update to the prior bytes", async () => {
+    const { config, exportDir, pagePath } = await createChatGptImportFixture("wiki-root-rollback-");
+    const before = await fs.readFile(pagePath, "utf8");
+    await changeChatGptExport(exportDir);
+    const result = await importChatGptConversations({ config, exportPath: exportDir });
+    expect(result.runId).toBeTruthy();
+    await rollbackChatGptImportRun({ config, runId: result.runId! });
+    await expect(fs.readFile(pagePath, "utf8")).resolves.toBe(before);
   });
 });

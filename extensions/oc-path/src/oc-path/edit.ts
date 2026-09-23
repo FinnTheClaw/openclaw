@@ -105,7 +105,7 @@ function rebuildBlockBody(block: AstBlock, newItems: readonly AstItem[]): string
       continue;
     }
     const re = new RegExp(`^(\\s*-\\s*${escapeRegex(oldItem.kv.key)}\\s*:\\s*).*$`, "m");
-    body = body.replace(re, `$1${newItem.kv.value}`);
+    body = body.replace(re, (_match, prefix: string) => `${prefix}${newItem.kv.value}`);
   }
   return body;
 }

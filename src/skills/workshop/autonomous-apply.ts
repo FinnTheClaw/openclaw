@@ -11,7 +11,12 @@ type AutonomousSkillProposal = Pick<SkillProposalReadResult, "record" | "revisio
 
 type AutonomousSkillProposalResult =
   | { status: "pending"; record: SkillProposalRecord }
-  | { status: "applied"; record: SkillProposalRecord; targetSkillFile: string };
+  | {
+      status: "applied";
+      record: SkillProposalRecord;
+      targetSkillFile: string;
+      alreadyApplied?: true;
+    };
 
 export async function applyAutonomousSkillProposal(params: {
   workspaceDir: string;
@@ -51,6 +56,17 @@ export async function applyAutonomousSkillProposal(params: {
       },
       store,
     );
+    if (record.status === "applied") {
+      return {
+        status: "applied",
+        record,
+        targetSkillFile: record.target.skillFile,
+        alreadyApplied: true,
+      };
+    }
+    if (record.status !== "pending") {
+      throw new Error(`Skill proposal ${record.id} is ${record.status}; cannot await review.`);
+    }
     return { status: "pending", record };
   }
   const applied = await applySkillProposal({

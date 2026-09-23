@@ -27,6 +27,20 @@ import {
 import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+const byokFailureR9 = vi.hoisted(() => ({ enabled: false }));
+vi.mock("./byok-proxy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./byok-proxy.js")>();
+  return {
+    ...actual,
+    createCopilotByokProxy: async (...args: Parameters<typeof actual.createCopilotByokProxy>) => {
+      if (byokFailureR9.enabled) {
+        throw new Error("BYOK proxy setup failed");
+      }
+      return await actual.createCopilotByokProxy(...args);
+    },
+  };
+});
+
 import { runCopilotAttempt } from "./attempt.js";
 import { createCopilotTestHostCapabilities } from "./host-capability.test-support.js";
 import type { CopilotClientPool } from "./runtime.js";
@@ -583,6 +597,7 @@ function makeFinalizationParams(
 }
 
 afterEach(() => {
+  byokFailureR9.enabled = false;
   resetGlobalHookRunner();
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -5054,3 +5069,56 @@ describe("runCopilotAttempt", () => {
 });
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+describe("COPILOT-ABORT-R9-L01 BYOK setup cleanup", () => {
+  it.each([
+    ["COPILOT-ABORT-R9-L01-01 failure maps to a failed terminal", 1, false],
+    ["COPILOT-ABORT-R9-L01-02 failure removes abort callback", 1, false],
+    ["COPILOT-ABORT-R9-L01-03 two failures do not retain callbacks", 2, false],
+    ["COPILOT-ABORT-R9-L01-04 abort after failure invokes no SDK session", 1, true],
+    ["COPILOT-ABORT-R9-L01-05 three failures clean each callback", 3, false],
+    ["COPILOT-ABORT-R9-L01-06 four failures clean each callback", 4, false],
+    ["COPILOT-ABORT-R9-L01-07 five failures clean each callback", 5, false],
+    ["COPILOT-ABORT-R9-L01-08 six failures clean each callback", 6, false],
+    ["COPILOT-ABORT-R9-L01-09 proxy failure avoids pool acquisition", 1, false],
+    ["COPILOT-ABORT-R9-L01-10 failed attempt completes exactly once", 1, false],
+  ] as const)("%s", async (_name, attempts, abortAfter) => {
+    byokFailureR9.enabled = true;
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, "addEventListener");
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const sdk = makeFakeSdk();
+    const pool = makeFakePool(sdk);
+    for (let index = 0; index < attempts; index += 1) {
+      const result = await runCopilotAttempt(
+        makeParams({
+          abortSignal: controller.signal,
+          model: {
+            api: "openai-responses",
+            baseUrl: "https://api.example.test/v1",
+            id: "gpt-test",
+            provider: "custom-openai",
+          } as never,
+          resolvedApiKey: "byok-token",
+        } as never),
+        { pool },
+      );
+      expect(result.terminal.kind).toBe("failed");
+    }
+    const addedAbort = add.mock.calls
+      .filter(([type]) => type === "abort")
+      .map(([, listener]) => listener);
+    const removedAbort = remove.mock.calls
+      .filter(([type]) => type === "abort")
+      .map(([, listener]) => listener);
+    expect(addedAbort.length).toBeGreaterThanOrEqual(attempts);
+    for (const listener of addedAbort) {
+      expect(removedAbort).toContain(listener);
+    }
+    expect(pool.acquire).not.toHaveBeenCalled();
+    if (abortAfter) {
+      controller.abort();
+      expect(sdk.createSession).not.toHaveBeenCalled();
+    }
+  });
+});

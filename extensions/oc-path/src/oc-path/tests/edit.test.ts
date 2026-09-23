@@ -82,6 +82,53 @@ describe("setOcPath — item kv field", () => {
   });
 });
 
+describe("setOcPath — literal item replacement tokens", () => {
+  const raw = "## Boundaries\n\n- enabled: old\n- timeout: 5\n";
+  const enabledPath = parseOcPath("oc://AGENTS.md/boundaries/enabled/enabled");
+  const timeoutPath = parseOcPath("oc://AGENTS.md/boundaries/timeout/timeout");
+
+  it.each([
+    { name: "whole match", value: "$&" },
+    { name: "first capture", value: "$1" },
+    { name: "preceding text", value: "$`" },
+    { name: "following text", value: "$'" },
+    { name: "dollar escape", value: "$$" },
+    { name: "embedded whole match", value: "pre$&post" },
+    { name: "embedded first capture", value: "pre$1post" },
+    { name: "mixed tokens", value: "$&/$1/$`/$'/$$" },
+    { name: "Unicode around token", value: "λ$&🙂" },
+  ])("writes $name as literal Markdown", ({ value }) => {
+    const result = setOcPath(parseMd(raw).ast, enabledPath, value);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.ast.raw).toContain(`- enabled: ${value}\n- timeout: 5`);
+    expect(result.ast.raw.match(/^- enabled:/gm)).toHaveLength(1);
+    expect(result.ast.raw.match(/^- timeout:/gm)).toHaveLength(1);
+    const reparsed = parseMd(result.ast.raw).ast;
+    expect(reparsed.blocks[0]?.items[0]?.kv?.value).toBe(value);
+    expect(reparsed.blocks[0]?.items[1]?.kv?.value).toBe("5");
+  });
+
+  it("preserves two sequential literal-token edits and neighboring lines", () => {
+    const first = setOcPath(parseMd(raw).ast, enabledPath, "$&");
+    expect(first.ok).toBe(true);
+    if (!first.ok) {
+      return;
+    }
+    const second = setOcPath(first.ast, timeoutPath, "$1");
+    expect(second.ok).toBe(true);
+    if (!second.ok) {
+      return;
+    }
+    expect(second.ast.raw).toContain("- enabled: $&\n- timeout: $1");
+    const reparsed = parseMd(second.ast.raw).ast;
+    expect(reparsed.blocks[0]?.items[0]?.kv?.value).toBe("$&");
+    expect(reparsed.blocks[0]?.items[1]?.kv?.value).toBe("$1");
+  });
+});
+
 describe("setOcPath — sentinel guard (defense-in-depth)", () => {
   // The JSONC + JSONL paths reject sentinel-bearing values at the
   // substrate boundary; the md path was deferring entirely to round-trip

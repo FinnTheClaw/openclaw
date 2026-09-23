@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { safeRealpathSync } from "../../infra/boundary-path.js";
+import {
+  resolveIdentityPathViaExistingAncestorSync,
+  safeRealpathSync,
+} from "../../infra/boundary-path.js";
 import { expandHomePrefix, resolveRequiredHomeDir } from "../../infra/home-dir.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { resolveStateDir } from "../paths.js";
@@ -256,10 +259,30 @@ function resolvePathWithinSessionsDir(
       }
     }
   }
-  if (!normalized || normalized.startsWith("..") || path.isAbsolute(normalized)) {
+  if (!normalized || path.isAbsolute(normalized)) {
     throw new Error("Session file path must be within sessions directory");
   }
-  return path.resolve(realBase, normalized);
+  const resolved = path.resolve(realBase, normalized);
+  const isInside = (candidatePath: string): boolean => {
+    const relative = path.relative(realBase, candidatePath);
+    return (
+      Boolean(relative) &&
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative)
+    );
+  };
+  // A relative path can hide parent traversal after an internal segment.
+  if (!isInside(resolved)) {
+    throw new Error("Session file path must be within sessions directory");
+  }
+  // Resolve the nearest existing ancestor as well as the leaf so relative
+  // symlinks cannot redirect a transcript outside this sessions directory.
+  const canonical = resolveIdentityPathViaExistingAncestorSync(resolved);
+  if (!isInside(canonical)) {
+    throw new Error("Session file path must be within sessions directory");
+  }
+  return canonical;
 }
 
 export function resolveSessionTranscriptPathInDir(

@@ -167,6 +167,7 @@ export async function waitForSlackNoReply(params: {
   observationScenarioTitle: string;
   sentTs: string;
   sutIdentity: SlackAuthIdentity;
+  threadTs?: string;
   timeoutMs: number;
 }) {
   const startedAt = Date.now();
@@ -182,7 +183,20 @@ export async function waitForSlackNoReply(params: {
       client: params.client,
       oldestTs: params.sentTs,
     });
-    for (const message of messages) {
+    let threadMessages: SlackMessage[];
+    try {
+      threadMessages = await listSlackThreadMessages({
+        channelId: params.channelId,
+        client: params.client,
+        threadTs: params.threadTs ?? params.sentTs,
+      });
+    } catch (error) {
+      throw new Error(
+        `Slack conversations.replies failed while checking no reply for ${params.observationScenarioId}: ${formatErrorMessage(error)}`,
+        { cause: error },
+      );
+    }
+    for (const message of [...messages, ...threadMessages]) {
       const text = message.text ?? "";
       if (
         !message.ts ||

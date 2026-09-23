@@ -1719,6 +1719,7 @@ export async function startZaloListener(params: {
   onError: (error: Error) => void;
 }): Promise<{ stop: () => void }> {
   const profile = normalizeProfile(params.profile);
+  params.abortSignal.throwIfAborted();
 
   const existing = activeListeners.get(profile);
   if (existing) {
@@ -1728,6 +1729,7 @@ export async function startZaloListener(params: {
   }
 
   const api = await withZaloApi(profile, async (apiLocal) => apiLocal);
+  params.abortSignal.throwIfAborted();
   let stopped = false;
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
   let lastWatchdogTickAt = Date.now();
@@ -1737,6 +1739,7 @@ export async function startZaloListener(params: {
       return;
     }
     stopped = true;
+    params.abortSignal.removeEventListener("abort", cleanup);
     if (watchdogTimer) {
       clearInterval(watchdogTimer);
       watchdogTimer = null;
@@ -1786,9 +1789,15 @@ export async function startZaloListener(params: {
   api.listener.on("message", onMessage);
   api.listener.on("error", onError);
   api.listener.on("closed", onClosed);
+  params.abortSignal.addEventListener("abort", cleanup, { once: true });
+  if (params.abortSignal.aborted) {
+    cleanup();
+    params.abortSignal.throwIfAborted();
+  }
 
   try {
     api.listener.start({ retryOnClose: false });
+    params.abortSignal.throwIfAborted();
   } catch (error) {
     cleanup();
     throw error;
@@ -1811,14 +1820,6 @@ export async function startZaloListener(params: {
     );
   }, LISTENER_WATCHDOG_INTERVAL_MS);
   watchdogTimer.unref?.();
-
-  params.abortSignal.addEventListener(
-    "abort",
-    () => {
-      cleanup();
-    },
-    { once: true },
-  );
 
   activeListeners.set(profile, {
     profile,

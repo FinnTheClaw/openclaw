@@ -42,6 +42,7 @@ class PortalsPage extends OpenClawLightDomElement {
   @state() private portalProbeState: PortalProbeState | null = null;
 
   private requestGeneration = 0;
+  private refreshQueued = false;
   private portalSetRevision = 0;
   private portalProbeGeneration = 0;
   private readonly portalProbeCache = new Map<string, PortalReachability>();
@@ -62,7 +63,11 @@ class PortalsPage extends OpenClawLightDomElement {
         ) {
           return;
         }
-        void this.loadPortals();
+        if (this.loading) {
+          this.refreshQueued = true;
+        } else {
+          void this.loadPortals();
+        }
       }),
   );
 
@@ -86,6 +91,7 @@ class PortalsPage extends OpenClawLightDomElement {
     this.portals = [];
     this.selectedPortalId = null;
     this.loading = false;
+    this.refreshQueued = false;
     this.loaded = false;
     this.error = null;
     this.closingPortalId = null;
@@ -191,6 +197,10 @@ class PortalsPage extends OpenClawLightDomElement {
     } finally {
       if (generation === this.requestGeneration && this.gateway.isCurrent(scope)) {
         this.loading = false;
+        if (this.refreshQueued) {
+          this.refreshQueued = false;
+          void this.loadPortals();
+        }
       }
     }
   }

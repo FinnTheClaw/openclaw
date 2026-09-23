@@ -148,6 +148,14 @@ private func configureSSHRemote(
     let localURL = "ws://127.0.0.1:\(opts.localPort)"
     let existingTarget = (remote["sshTarget"] as? String)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    let previousTransport = remote["transport"] as? String
+    let sameRemoteRoute = (previousTransport == nil || previousTransport == "ssh")
+        && existingTarget == target
+        && (parseInt(remote["remotePort"]) ?? 18789) == opts.remotePort
+    if !sameRemoteRoute {
+        remote.removeValue(forKey: "token")
+        remote.removeValue(forKey: "password")
+    }
 
     gateway["mode"] = "remote"
     gateway["port"] = opts.localPort
@@ -205,6 +213,13 @@ private func configureDirectRemote(
     var root = try loadConfigRoot(from: configURL)
     var gateway = root["gateway"] as? [String: Any] ?? [:]
     var remote = gateway["remote"] as? [String: Any] ?? [:]
+    let previousTransport = remote["transport"] as? String
+    let sameRemoteRoute = (previousTransport == nil || previousTransport == "direct")
+        && (remote["url"] as? String) == directURL.absoluteString
+    if !sameRemoteRoute {
+        remote.removeValue(forKey: "token")
+        remote.removeValue(forKey: "password")
+    }
 
     gateway["mode"] = "remote"
     remote["transport"] = "direct"

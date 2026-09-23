@@ -144,15 +144,18 @@ function normalizeWhitespace(value: string): string {
 }
 
 function isMissingConversationPageError(error: unknown): boolean {
-  return asNullableRecord(error)?.code === "ENOENT";
+  return error instanceof FsSafeError && error.code === "not-found";
 }
 
-async function readExistingConversationPage(absolutePath: string): Promise<string> {
+async function readExistingConversationPage(
+  vaultFs: ChatGptRollbackRoot,
+  relativePath: string,
+): Promise<string> {
   try {
-    return await fs.readFile(absolutePath, "utf8");
+    return await vaultFs.readText(relativePath);
   } catch {
     try {
-      return await fs.readFile(absolutePath, "utf8");
+      return await vaultFs.readText(relativePath);
     } catch (retryError) {
       if (isMissingConversationPageError(retryError)) {
         return "";
@@ -698,31 +701,33 @@ function hashChatGptImportContent(content: string): string {
 
 async function writeTrackedImportPage(params: {
   vaultRoot: string;
+  vaultFs: ChatGptRollbackRoot;
   runDir: string;
   relativePath: string;
   existing: string;
   rendered: string;
   record: ChatGptImportRunRecord;
 }): Promise<ChatGptImportOperation> {
-  const absolutePath = path.join(params.vaultRoot, params.relativePath);
   if (params.existing === params.rendered) {
     return "skip";
   }
   // Hash the exact import-owned bytes before writing. A later compile must not
   // let a concurrent user save become the recorded rollback baseline.
   const contentHash = hashChatGptImportContent(params.rendered);
-  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   if (!params.existing) {
-    await fs.writeFile(absolutePath, params.rendered, "utf8");
+    await params.vaultFs.write(params.relativePath, params.rendered, { mkdir: true });
     params.record.createdPaths.push({ path: params.relativePath, contentHash });
     return "create";
   }
   const snapshotHash = createHash("sha1").update(params.relativePath).digest("hex").slice(0, 12);
   const snapshotRelativePath = path.join("snapshots", `${snapshotHash}.md`).replace(/\\/g, "/");
   const snapshotAbsolutePath = path.join(params.runDir, snapshotRelativePath);
-  await fs.mkdir(path.dirname(snapshotAbsolutePath), { recursive: true });
-  await fs.writeFile(snapshotAbsolutePath, params.existing, "utf8");
-  await fs.writeFile(absolutePath, params.rendered, "utf8");
+  await params.vaultFs.write(
+    toVaultRelativePath(params.vaultRoot, snapshotAbsolutePath),
+    params.existing,
+    { mkdir: true },
+  );
+  await params.vaultFs.write(params.relativePath, params.rendered, { mkdir: true });
   params.record.updatedPaths.push({
     path: params.relativePath,
     snapshotPath: snapshotRelativePath,
@@ -738,6 +743,7 @@ async function importChatGptConversationsUnlocked(params: {
   nowMs?: number;
 }): Promise<ChatGptImportResult> {
   await initializeMemoryWikiVault(params.config, { nowMs: params.nowMs });
+  const vaultFs = await fsRoot(params.config.vault.path);
   const { exportPath, conversationsPath, conversations } = await loadConversations(
     params.exportPath,
   );
@@ -761,8 +767,7 @@ async function importChatGptConversationsUnlocked(params: {
 
   for (const record of records) {
     const rendered = renderConversationPage(record);
-    const absolutePath = path.join(params.config.vault.path, record.pagePath);
-    const existing = await readExistingConversationPage(absolutePath);
+    const existing = await readExistingConversationPage(vaultFs, record.pagePath);
     const stabilized = preserveExistingPageBlocks(rendered, existing);
     const operation: ChatGptImportOperation =
       existing === stabilized ? "skip" : existing ? "update" : "create";
@@ -818,6 +823,7 @@ async function importChatGptConversationsUnlocked(params: {
       }
       await writeTrackedImportPage({
         vaultRoot: params.config.vault.path,
+        vaultFs,
         runDir: importRunDir,
         relativePath: plan.relativePath,
         existing: plan.existing,

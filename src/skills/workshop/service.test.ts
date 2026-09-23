@@ -105,6 +105,22 @@ async function createOwnedSkill(params: {
   });
   return proposal.record.target.skillDir;
 }
+async function makeUserAuthoredUpdate() {
+  const workspaceDir = await makeWorkspace();
+  const skillDir = path.join(workspaceDir, "skills", "handwritten");
+  await writeSkill({
+    dir: skillDir,
+    name: "handwritten",
+    description: "Operator-owned skill",
+    body: "# Handwritten\n\nOld body.\n",
+  });
+  const snapshot = await proposeUpdateSkill({
+    workspaceDir,
+    skillName: "handwritten",
+    content: "# Handwritten\n\nNew body.\n",
+  });
+  return { workspaceDir, skillDir, snapshot };
+}
 
 function createSkillProposalRollback(params: {
   proposalId: string;
@@ -288,7 +304,7 @@ describe("skill workshop proposals", () => {
     );
   });
 
-  it("keeps an operator apply when autonomous review holds a stale pending snapshot", async () => {
+  it("R9-A01 reports an operator-applied stale pending snapshot as applied", async () => {
     const workspaceDir = await makeWorkspace();
     await writeSkill({
       dir: path.join(workspaceDir, "skills", "handwritten"),
@@ -307,11 +323,148 @@ describe("skill workshop proposals", () => {
       eventActor: { type: "gateway" },
     });
 
-    await applyAutonomousSkillProposal({ workspaceDir, proposal: snapshot, reason: "review" });
+    const autonomous = await applyAutonomousSkillProposal({
+      workspaceDir,
+      proposal: snapshot,
+      reason: "review",
+    });
+    expect(autonomous).toMatchObject({
+      status: "applied",
+      alreadyApplied: true,
+      targetSkillFile: snapshot.record.target.skillFile,
+    });
 
     const inspected = await inspectSkillProposal(snapshot.record.id, { workspaceDir });
     expect(inspected?.record.status).toBe("applied");
     expect(inspected?.record.statusReason).toBeUndefined();
+  });
+
+  it("R9-A03 keeps an unapplied user-authored proposal pending", async () => {
+    const workspaceDir = await makeWorkspace();
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "handwritten"),
+      name: "handwritten",
+      description: "Operator-owned skill",
+      body: "# Handwritten\n\nOld body.\n",
+    });
+    const snapshot = await proposeUpdateSkill({
+      workspaceDir,
+      skillName: "handwritten",
+      content: "# Handwritten\n\nNew body.\n",
+    });
+    const autonomous = await applyAutonomousSkillProposal({
+      workspaceDir,
+      proposal: snapshot,
+      reason: "review",
+    });
+    expect(autonomous).toMatchObject({ status: "pending", record: { status: "pending" } });
+  });
+
+  it.each([
+    ["R9-A04", "rejected"],
+    ["R9-A06", "quarantined"],
+  ] as const)(
+    "%s does not report a terminal %s proposal as pending",
+    async (_caseId, terminalStatus) => {
+      const workspaceDir = await makeWorkspace();
+      await writeSkill({
+        dir: path.join(workspaceDir, "skills", "handwritten"),
+        name: "handwritten",
+        description: "Operator-owned skill",
+        body: "# Handwritten\n\nOld body.\n",
+      });
+      const snapshot = await proposeUpdateSkill({
+        workspaceDir,
+        skillName: "handwritten",
+        content: "# Handwritten\n\nNew body.\n",
+      });
+      const transition =
+        terminalStatus === "rejected" ? rejectSkillProposal : quarantineSkillProposal;
+      await transition({ workspaceDir, proposalId: snapshot.record.id });
+      await expect(
+        applyAutonomousSkillProposal({ workspaceDir, proposal: snapshot, reason: "review" }),
+      ).rejects.toThrow(terminalStatus);
+    },
+  );
+
+  it("R9-A02 never overwrites an operator-applied proposal reason", async () => {
+    const { workspaceDir, snapshot } = await makeUserAuthoredUpdate();
+    await applySkillProposal({
+      workspaceDir,
+      proposalId: snapshot.record.id,
+      eventActor: { type: "gateway" },
+      reason: "approved by operator",
+    });
+    await applyAutonomousSkillProposal({ workspaceDir, proposal: snapshot, reason: "review" });
+    const inspected = await inspectSkillProposal(snapshot.record.id, { workspaceDir });
+    expect(inspected?.record).toMatchObject({
+      status: "applied",
+      statusReason: "approved by operator",
+    });
+  });
+
+  it("R9-A05 never reports a stale terminal proposal as pending", async () => {
+    const { workspaceDir, skillDir, snapshot } = await makeUserAuthoredUpdate();
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: handwritten\ndescription: Operator-owned skill\n---\n\nChanged elsewhere.\n",
+      "utf8",
+    );
+    await expect(
+      applySkillProposal({
+        workspaceDir,
+        proposalId: snapshot.record.id,
+        eventActor: { type: "gateway" },
+      }),
+    ).rejects.toThrow("proposal marked stale");
+    await expect(
+      applyAutonomousSkillProposal({ workspaceDir, proposal: snapshot, reason: "review" }),
+    ).rejects.toThrow("stale");
+  });
+
+  it("R9-A07 applies a pending Workshop-owned update once", async () => {
+    const workspaceDir = await makeWorkspace();
+    const skillDir = await createOwnedSkill({
+      workspaceDir,
+      name: "owned-skill",
+      description: "Workshop-owned skill",
+      body: "# Owned Skill\n\nOld body.\n",
+    });
+    const snapshot = await proposeUpdateSkill({
+      workspaceDir,
+      skillName: "owned-skill",
+      content: "# Owned Skill\n\nNew body.\n",
+    });
+    const autonomous = await applyAutonomousSkillProposal({
+      workspaceDir,
+      proposal: snapshot,
+      reason: "review",
+    });
+    expect(autonomous).toMatchObject({ status: "applied" });
+    expect(autonomous).not.toHaveProperty("alreadyApplied");
+    await expect(fs.readFile(path.join(skillDir, "SKILL.md"), "utf8")).resolves.toContain(
+      "New body.",
+    );
+  });
+
+  it("R9-A08 applies a pending create proposal once", async () => {
+    const workspaceDir = await makeWorkspace();
+    const snapshot = await proposeCreateSkill({
+      workspaceDir,
+      name: "Fresh Skill",
+      description: "A new Workshop-owned skill",
+      content: "# Fresh Skill\n\nNew body.\n",
+    });
+    const autonomous = await applyAutonomousSkillProposal({
+      workspaceDir,
+      proposal: snapshot,
+      reason: "review",
+    });
+    expect(autonomous).toMatchObject({ status: "applied" });
+    expect(autonomous).not.toHaveProperty("alreadyApplied");
+    await expect(fs.readFile(snapshot.record.target.skillFile, "utf8")).resolves.toContain(
+      "New body.",
+    );
   });
 
   it.runIf(process.platform !== "win32")(

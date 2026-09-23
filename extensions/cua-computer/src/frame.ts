@@ -364,7 +364,7 @@ export function issueFrame(
   // Snapshot encoding bounds both dimensions before issuing the frame, so direct
   // callers and the model receive the same bitmap without another coordinate projection.
   const digest = createHash("sha256")
-    .update(JSON.stringify([state.generation, geometry, capture]))
+    .update(JSON.stringify([state.generation, geometry, capture, randomUUID()]))
     .digest("hex");
   const id = `cua:v1:${digest}`;
   state.lastFrame = {

@@ -48,6 +48,7 @@ type ProviderMock = {
   id: string;
   label: string;
   detect: ReturnType<typeof vi.fn>;
+  prepareApply?: ReturnType<typeof vi.fn>;
 };
 
 function buildProvider(overrides: Partial<ProviderMock> = {}): ProviderMock {
@@ -361,5 +362,74 @@ describe("offerPostInstallMigrations", () => {
 
     expect(prompter.confirm).not.toHaveBeenCalled();
     expect(migrateDefaultCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe("WIZARD-DISPOSE-R9-L01 optional cleanup", () => {
+  beforeEach(() => {
+    migrateDefaultCommand.mockReset().mockResolvedValue(undefined);
+    setTTY(true);
+  });
+  afterEach(() => {
+    if (originalStdinIsTTYDescriptor) {
+      Object.defineProperty(process.stdin, "isTTY", originalStdinIsTTYDescriptor);
+    } else {
+      delete (process.stdin as Partial<typeof process.stdin>).isTTY;
+    }
+  });
+
+  it.each([
+    ["WIZARD-DISPOSE-R9-L01-01 successful disposal keeps result", "resolve", false, true],
+    ["WIZARD-DISPOSE-R9-L01-02 rejected disposal does not abort", "reject", false, true],
+    ["WIZARD-DISPOSE-R9-L01-03 synchronous disposal throw does not abort", "throw", false, true],
+    ["WIZARD-DISPOSE-R9-L01-04 rejected disposal logs cleanup failure", "reject", false, true],
+    [
+      "WIZARD-DISPOSE-R9-L01-05 migration failure and cleanup rejection both log",
+      "reject",
+      true,
+      true,
+    ],
+    ["WIZARD-DISPOSE-R9-L01-06 disposal runs once after success", "resolve", false, true],
+    ["WIZARD-DISPOSE-R9-L01-07 disposal runs once after migration failure", "resolve", true, true],
+    ["WIZARD-DISPOSE-R9-L01-08 absent preparation needs no cleanup", "none", false, true],
+    ["WIZARD-DISPOSE-R9-L01-09 declined migration does not prepare", "resolve", false, false],
+    [
+      "WIZARD-DISPOSE-R9-L01-10 subsequent optional outcome returns after rejection",
+      "reject",
+      false,
+      true,
+    ],
+  ] as const)("%s", async (_name, disposeMode, migrationFails, accepted) => {
+    const dispose = vi.fn(() => {
+      if (disposeMode === "throw") {
+        throw new Error("cleanup failed");
+      }
+      return disposeMode === "reject"
+        ? Promise.reject(new Error("cleanup failed"))
+        : Promise.resolve();
+    });
+    const prepareApply = vi.fn(async () => (disposeMode === "none" ? undefined : { dispose }));
+    setProviders([buildProvider({ prepareApply })]);
+    setOwnership("codex", ["codex"]);
+    if (migrationFails) {
+      migrateDefaultCommand.mockRejectedValueOnce(new Error("migration failed"));
+    }
+    const prompter = createWizardPrompter({
+      confirm: vi.fn(async () => accepted) as WizardPrompter["confirm"],
+    });
+    const args = buildBaseArgs({ prompter });
+    const log = vi.spyOn(args.runtime, "log");
+    await expect(offerPostInstallMigrations(args)).resolves.toMatchObject({ config: {} });
+    expect(prepareApply).toHaveBeenCalledTimes(accepted ? 1 : 0);
+    expect(dispose).toHaveBeenCalledTimes(accepted && disposeMode !== "none" ? 1 : 0);
+    expect(migrateDefaultCommand).toHaveBeenCalledTimes(accepted ? 1 : 0);
+    if (accepted && (disposeMode === "reject" || disposeMode === "throw")) {
+      expect(
+        log.mock.calls.some(([line]) => String(line).includes("migration cleanup failed")),
+      ).toBe(true);
+    }
+    if (migrationFails) {
+      expect(log.mock.calls.some(([line]) => String(line).includes("migration failed"))).toBe(true);
+    }
   });
 });

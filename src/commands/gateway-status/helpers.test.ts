@@ -511,3 +511,97 @@ describe("sanitizeSshTarget", () => {
     expect(sanitizeSshTarget("  ssh me@studio:2222  ")).toBe("me@studio:2222");
   });
 });
+
+describe("STATUS-SCOPE-R9-L01 legacy scope classification", () => {
+  const base = {
+    ok: false as const,
+    url: "ws://127.0.0.1:18789",
+    connectLatencyMs: 1,
+    gatewayReached: true as const,
+    close: null,
+    auth: {
+      role: "operator",
+      scopes: [],
+      capability: "connected_no_operator_scope" as const,
+    },
+    health: null,
+    status: null,
+    presence: null,
+    configSnapshot: null,
+  };
+  it.each([
+    [
+      "STATUS-SCOPE-R9-L01-01 structured read scope is limited",
+      "permission denied",
+      "operator.read",
+      true,
+    ],
+    [
+      "STATUS-SCOPE-R9-L01-02 legacy read scope is limited",
+      "missing scope: operator.read",
+      null,
+      true,
+    ],
+    [
+      "STATUS-SCOPE-R9-L01-03 legacy write scope is failed",
+      "missing scope: operator.write",
+      null,
+      false,
+    ],
+    [
+      "STATUS-SCOPE-R9-L01-04 legacy unrelated scope is failed",
+      "missing scope: admin",
+      null,
+      false,
+    ],
+    ["STATUS-SCOPE-R9-L01-05 malformed scope text is failed", "missing scope: ", null, false],
+    [
+      "STATUS-SCOPE-R9-L01-06 read scope case and whitespace variation is limited",
+      "Missing Scope:  OPERATOR.READ  ",
+      null,
+      true,
+    ],
+    [
+      "STATUS-SCOPE-R9-L01-07 mixed read and write scope is failed",
+      "missing scope: operator.read, operator.write",
+      null,
+      false,
+    ],
+    [
+      "STATUS-SCOPE-R9-L01-08 structured non-read scope is failed",
+      "missing scope: operator.read",
+      "operator.write",
+      false,
+    ],
+    [
+      "STATUS-SCOPE-R9-L01-09 unrelated post-connect failure is failed",
+      "unknown method: status",
+      null,
+      false,
+    ],
+    [
+      "STATUS-SCOPE-R9-L01-10 read-limited error with prefix remains limited",
+      "RPC failed: missing scope: operator.read",
+      null,
+      true,
+    ],
+  ] as const)("%s", (_name, error, missingScope, expected) => {
+    const probe = {
+      ...base,
+      error,
+      ...(missingScope
+        ? {
+            missingScopeErrorDetails: {
+              code: "MISSING_SCOPE" as const,
+              missingScope,
+              requiredScopes: [missingScope],
+            },
+          }
+        : {}),
+    };
+    expect(isScopeLimitedProbeFailure(probe)).toBe(expected);
+    expect(renderProbeSummaryLine(probe, false)).toContain(
+      expected ? "Read probe: limited" : "Read probe: failed",
+    );
+  });
+});

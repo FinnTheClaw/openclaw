@@ -417,8 +417,10 @@ export async function removeClawWorkspaceFile(
   if (record.state === "modified") {
     return { path: record.path, action: "retainedModified" };
   }
+  let workspace: Awaited<ReturnType<typeof fsSafeRoot>> | undefined;
+  let stagedPath: string | undefined;
   try {
-    const workspace = await fsSafeRoot(record.workspace, {
+    workspace = await fsSafeRoot(record.workspace, {
       hardlinks: "reject",
       maxBytes,
       symlinks: "reject",
@@ -426,7 +428,7 @@ export async function removeClawWorkspaceFile(
     if (!(await workspace.exists(record.path))) {
       return { path: record.path, action: "missing" };
     }
-    const stagedPath = `${record.path}.openclaw-claw-remove-${randomUUID()}`;
+    stagedPath = `${record.path}.openclaw-claw-remove-${randomUUID()}`;
     await workspace.move(record.path, stagedPath, { overwrite: false });
     const content = await workspace.readBytes(stagedPath, { maxBytes });
     const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
@@ -437,10 +439,24 @@ export async function removeClawWorkspaceFile(
     await workspace.remove(stagedPath);
     return { path: record.path, action: "deleted" };
   } catch (error) {
+    let restoreError: unknown;
+    if (workspace && stagedPath) {
+      try {
+        if (await workspace.exists(stagedPath)) {
+          await workspace.move(stagedPath, record.path, { overwrite: false });
+        }
+      } catch (failure) {
+        restoreError = failure;
+      }
+    }
+    const message =
+      error instanceof FsSafeError ? `${error.code}: ${error.message}` : String(error);
     return {
       path: record.path,
       action: "error",
-      message: error instanceof FsSafeError ? `${error.code}: ${error.message}` : String(error),
+      message: restoreError
+        ? `${message}; failed to restore staged file ${stagedPath}: ${String(restoreError)}`
+        : message,
     };
   }
 }

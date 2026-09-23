@@ -158,6 +158,29 @@ const transcriptMocks = vi.hoisted(() => ({
   persistAcpDispatchTranscript: vi.fn(async (_params: unknown) => undefined),
 }));
 
+const admissionBoundaryMocks = vi.hoisted(() => ({ rejectNext: 0 }));
+
+vi.mock("./channel-run-admission.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./channel-run-admission.js")>();
+  return {
+    ...actual,
+    consumeChannelRunAdmission: (...args: Parameters<typeof actual.consumeChannelRunAdmission>) => {
+      const admission = actual.consumeChannelRunAdmission(...args);
+      if (admissionBoundaryMocks.rejectNext === 0) {
+        return admission;
+      }
+      return {
+        ...admission,
+        onAdmitted: async (context: Parameters<typeof admission.onAdmitted>[0]) => {
+          admission.onAdmitted(context);
+          admissionBoundaryMocks.rejectNext -= 1;
+          throw new Error("injected channel admission rejection");
+        },
+      };
+    },
+  };
+});
+
 const bindingServiceMocks = vi.hoisted(() => ({
   listBySession: vi.fn<(sessionKey: string) => SessionBindingRecord[]>(() => []),
   unbind: vi.fn<(input: unknown) => Promise<SessionBindingRecord[]>>(async () => []),
@@ -575,11 +598,137 @@ describe("tryDispatchAcpReplyCore", () => {
     sessionMetaMocks.readAcpSessionEntry.mockReset();
     sessionMetaMocks.readAcpSessionEntry.mockReturnValue(null);
     transcriptMocks.persistAcpDispatchTranscript.mockClear();
+    admissionBoundaryMocks.rejectNext = 0;
     bindingServiceMocks.listBySession.mockReset();
     bindingServiceMocks.listBySession.mockReturnValue([]);
     bindingServiceMocks.unbind.mockReset();
     bindingServiceMocks.unbind.mockResolvedValue([]);
     globalThis.fetch = originalFetch;
+  });
+
+  async function expectRejectedAdmission(params: Parameters<typeof runDispatch>[0]) {
+    setReadyAcpResolution();
+    admissionBoundaryMocks.rejectNext = 1;
+    try {
+      await runDispatch(params);
+      expect(managerMocks.runTurn).not.toHaveBeenCalled();
+      expect(transcriptMocks.persistAcpDispatchTranscript).not.toHaveBeenCalled();
+    } finally {
+      admissionBoundaryMocks.rejectNext = 0;
+    }
+  }
+
+  describe("ACP pre-turn admission transcript boundary", () => {
+    it("does not persist a plain prompt after admission rejection", async () => {
+      await expectRejectedAdmission({ bodyForAgent: "reply" });
+    });
+
+    it("does not persist a participant-scoped prompt after admission rejection", async () => {
+      await expectRejectedAdmission({
+        bodyForAgent: "reply",
+        ctxOverrides: { SenderId: "participant-42" },
+      });
+    });
+
+    it("does not persist a legacy-resolved prompt after admission rejection", async () => {
+      await expectRejectedAdmission({
+        bodyForAgent: "reply",
+        sessionKeyOverride: "agent:legacy-acp:private-session",
+      });
+    });
+
+    it("does not persist a routed prompt after admission rejection", async () => {
+      await expectRejectedAdmission({ bodyForAgent: "reply", shouldRouteToOriginating: true });
+    });
+
+    it("does not persist an image-bearing prompt after admission rejection", async () => {
+      await expectRejectedAdmission({
+        bodyForAgent: "describe image",
+        images: [{ data: ACP_PNG_IMAGE_BYTES.toString("base64"), mimeType: "image/png" }],
+      });
+    });
+
+    it("does not persist either of two rejected prompts", async () => {
+      setReadyAcpResolution();
+      admissionBoundaryMocks.rejectNext = 2;
+      try {
+        await runDispatch({ bodyForAgent: "first" });
+        await runDispatch({ bodyForAgent: "second" });
+        expect(managerMocks.runTurn).not.toHaveBeenCalled();
+        expect(transcriptMocks.persistAcpDispatchTranscript).not.toHaveBeenCalled();
+      } finally {
+        admissionBoundaryMocks.rejectNext = 0;
+      }
+    });
+
+    it("records only the admitted retry after a rejected prompt", async () => {
+      setReadyAcpResolution();
+      admissionBoundaryMocks.rejectNext = 1;
+      try {
+        await runDispatch({ bodyForAgent: "rejected" });
+        expect(transcriptMocks.persistAcpDispatchTranscript).not.toHaveBeenCalled();
+        await runDispatch({ bodyForAgent: "accepted" });
+        expect(managerMocks.runTurn).toHaveBeenCalledTimes(1);
+        expect(transcriptMocks.persistAcpDispatchTranscript).toHaveBeenCalledTimes(1);
+        const transcript = requireRecord(
+          mockArg(transcriptMocks.persistAcpDispatchTranscript, 0, 0, "transcript call"),
+          "transcript call",
+        );
+        expect(transcript.promptText).toBe("accepted");
+      } finally {
+        admissionBoundaryMocks.rejectNext = 0;
+      }
+    });
+
+    it("still persists a turn that fails inside runTurn before an event", async () => {
+      setReadyAcpResolution();
+      managerMocks.runTurn.mockRejectedValueOnce(new Error("runtime failed before an event"));
+      await runDispatch({ bodyForAgent: "submitted" });
+      expect(managerMocks.runTurn).toHaveBeenCalledOnce();
+      expect(transcriptMocks.persistAcpDispatchTranscript).toHaveBeenCalledOnce();
+      const transcript = requireRecord(
+        mockArg(transcriptMocks.persistAcpDispatchTranscript, 0, 0, "transcript call"),
+        "transcript call",
+      );
+      expect(transcript.promptText).toBe("submitted");
+      expect(transcript.terminalOutcome).toMatchObject({ reason: "failed", status: "error" });
+    });
+
+    it("still persists partial output and error after an admitted turn fails", async () => {
+      setReadyAcpResolution();
+      managerMocks.runTurn.mockImplementationOnce(async (input: unknown) => {
+        const turn = input as { onEvent?: (event: unknown) => Promise<void> };
+        await turn.onEvent?.({ type: "text_delta", stream: "output", text: "partial answer" });
+        throw new Error("runtime failed after streaming");
+      });
+      await runDispatch({ bodyForAgent: "submitted" });
+      expect(transcriptMocks.persistAcpDispatchTranscript).toHaveBeenCalledOnce();
+      const transcript = requireRecord(
+        mockArg(transcriptMocks.persistAcpDispatchTranscript, 0, 0, "transcript call"),
+        "transcript call",
+      );
+      expect(String(transcript.finalText)).toContain("partial answer");
+      expect(String(transcript.finalText)).toContain("runtime failed after streaming");
+    });
+
+    it("still persists an admitted completion when routed delivery fails", async () => {
+      setReadyAcpResolution();
+      mockRoutedTextTurn("hello");
+      routeMocks.routeReply.mockResolvedValue({
+        ok: false,
+        delivered: false,
+        error: "missing channel adapter",
+      });
+      await runDispatch({ bodyForAgent: "submitted", shouldRouteToOriginating: true });
+      expect(managerMocks.runTurn).toHaveBeenCalledOnce();
+      expect(transcriptMocks.persistAcpDispatchTranscript).toHaveBeenCalledOnce();
+      const transcript = requireRecord(
+        mockArg(transcriptMocks.persistAcpDispatchTranscript, 0, 0, "transcript call"),
+        "transcript call",
+      );
+      expect(transcript.promptText).toBe("submitted");
+      expect(transcript.finalText).toBe("hello");
+    });
   });
 
   it("admits ACP message turns with the original channel participant", async () => {

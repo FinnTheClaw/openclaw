@@ -18,10 +18,14 @@ export function createLazyFileTransferNodeInvokePolicy(
     commands: [...FILE_TRANSFER_NODE_INVOKE_COMMANDS],
     async handle(ctx) {
       let policy: OpenClawPluginNodeInvokePolicy;
+      let pending: Promise<OpenClawPluginNodeInvokePolicy> | undefined;
       try {
-        policyPromise ??= loadPolicy();
-        policy = await policyPromise;
+        pending = policyPromise ??= loadPolicy();
+        policy = await pending;
       } catch (error) {
+        if (policyPromise === pending) {
+          policyPromise = undefined;
+        }
         const message = error instanceof Error && error.message ? error.message : String(error);
         return {
           ok: false,

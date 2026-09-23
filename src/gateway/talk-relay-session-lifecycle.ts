@@ -76,9 +76,8 @@ export function requireActiveTalkRelaySession<TSession extends TalkRelayLifecycl
     nowMs === undefined ||
     isExpiredTalkRelaySession(session, nowMs)
   ) {
-    // A stale or cross-connection id is closed before throwing so callers do
-    // not leave provider sessions alive after ownership checks fail.
-    if (session) {
+    // A foreign connection must not close the rightful owner's live session.
+    if (session && session.connId === params.connId) {
       params.closeSession(session);
     }
     throw new Error(params.unknownSessionMessage);

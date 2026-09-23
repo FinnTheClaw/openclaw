@@ -253,32 +253,44 @@ export async function writeMatrixIdbSnapshotJsonToStore(params: {
   }
 }
 
-export function migrateLegacyMatrixRecoveryKeyFileToStore(storageRootDir: string): boolean {
+export function migrateLegacyMatrixRecoveryKeyFileToStore(
+  storageRootDir: string,
+  options: { archiveLegacyFile?: boolean } = {},
+): boolean {
   return migrateLegacyMatrixRecoveryKeyFilePathToStore(
     path.join(storageRootDir, MATRIX_RECOVERY_KEY_FILENAME),
+    options,
   );
 }
 
-export function migrateLegacyMatrixRecoveryKeyFilePathToStore(recoveryKeyPath: string): boolean {
+export function migrateLegacyMatrixRecoveryKeyFilePathToStore(
+  recoveryKeyPath: string,
+  options: { archiveLegacyFile?: boolean } = {},
+): boolean {
   const existing = readMatrixRecoveryKeyStateForPath(recoveryKeyPath);
   const legacy = readLegacyMatrixRecoveryKeyFile(recoveryKeyPath);
   if (!existing && legacy) {
     writeMatrixRecoveryKeyStateForPath({ recoveryKeyPath, payload: legacy });
   }
-  return archiveLegacyStateFileIfPossible(recoveryKeyPath);
+  return options.archiveLegacyFile === false
+    ? false
+    : archiveLegacyStateFileIfPossible(recoveryKeyPath);
 }
 
 export function migrateLegacyMatrixLegacyCryptoMigrationFileToStore(
   storageRootDir: string,
+  options: { archiveLegacyFile?: boolean } = {},
 ): boolean {
   const existing = readMatrixLegacyCryptoMigrationState(storageRootDir);
   const legacy = readLegacyMatrixLegacyCryptoMigrationState(storageRootDir);
   if (!existing && legacy) {
     writeMatrixLegacyCryptoMigrationState({ storageRootDir, state: legacy });
   }
-  return archiveLegacyStateFileIfPossible(
-    path.join(storageRootDir, MATRIX_LEGACY_CRYPTO_MIGRATION_FILENAME),
-  );
+  return options.archiveLegacyFile === false
+    ? false
+    : archiveLegacyStateFileIfPossible(
+        path.join(storageRootDir, MATRIX_LEGACY_CRYPTO_MIGRATION_FILENAME),
+      );
 }
 
 export function readLegacyMatrixRecoveryKeyState(

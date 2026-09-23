@@ -249,6 +249,7 @@ class OpenClawA2UIHost extends LitElement {
   surfaces = [];
   pendingAction = null;
   toast = null;
+  #actionListener = (evt) => this.#handleA2UIAction(evt);
   #statusListener = null;
 
   static styles = css`
@@ -370,7 +371,7 @@ class OpenClawA2UIHost extends LitElement {
       getSurfaces: () => Array.from(this.#processor.getSurfaces().keys()),
     };
     globalThis.openclawA2UI = api;
-    this.addEventListener("a2uiaction", (evt) => this.#handleA2UIAction(evt));
+    this.addEventListener("a2uiaction", this.#actionListener);
     this.#statusListener = (evt) => this.#handleActionStatus(evt);
     for (const eventName of ["openclaw:a2ui-action-status"]) {
       globalThis.addEventListener(eventName, this.#statusListener);
@@ -384,6 +385,7 @@ class OpenClawA2UIHost extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.removeEventListener("a2uiaction", this.#actionListener);
     if (this.#statusListener) {
       for (const eventName of ["openclaw:a2ui-action-status"]) {
         globalThis.removeEventListener(eventName, this.#statusListener);

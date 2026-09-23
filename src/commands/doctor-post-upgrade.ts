@@ -185,7 +185,7 @@ export async function runPostUpgradeProbes(params: {
 
     if (record.manifestPath && record.manifestHash) {
       const currentHash = await sha256OfFile(record.manifestPath);
-      if (currentHash && currentHash !== record.manifestHash) {
+      if (currentHash !== record.manifestHash) {
         findings.push({
           level: "warn",
           code: "plugin.manifest_drift",

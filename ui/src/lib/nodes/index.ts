@@ -899,10 +899,10 @@ export function clearDeviceAuthToken(params: {
     return;
   }
   const role = normalizeDeviceAuthRole(params.role);
-  if (!store.tokens[role]) {
+  const tokens = canonicalDeviceAuthTokens(store.tokens);
+  if (!tokens[role]) {
     return;
   }
-  const tokens = canonicalDeviceAuthTokens(store.tokens);
   delete tokens[role];
   writeStore(params.gatewayUrl, { ...store, tokens });
 }

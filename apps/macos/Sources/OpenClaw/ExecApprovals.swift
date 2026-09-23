@@ -297,7 +297,7 @@ actor SkillBinsCache {
         var pathsByName: [String: Set<String>] = [:]
 
         for skill in report.skills {
-            for bin in skill.requirements.bins {
+            for bin in skill.requirements.bins + skill.requirements.anyBins {
                 let trimmed = bin.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
                 names.insert(trimmed)

@@ -296,7 +296,7 @@ describe("sessions", () => {
     expect(resolved?.sessionsDir).toBe(path.dirname(path.resolve(storePath)));
   });
 
-  it("resolves sibling agent absolute sessionFile using alternate agentId from options", async () => {
+  it("R9-P09 resolves sibling agent absolute sessionFile using alternate agentId from options", async () => {
     const { stateDir, mainStorePath, bot2SessionPath } =
       await createAgentSessionsLayout("sibling-agent");
     const sessionFile = withStateDir(stateDir, () => {

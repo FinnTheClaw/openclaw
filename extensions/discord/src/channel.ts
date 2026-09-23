@@ -599,7 +599,7 @@ export const discordPlugin: ChannelPlugin<ResolvedDiscordAccount, DiscordProbe> 
           const botToken = account.token?.trim();
           if (!botToken) {
             return {
-              ok: unresolvedChannels === 0,
+              ok: false,
               checkedChannels: 0,
               unresolvedChannels,
               channels: [],

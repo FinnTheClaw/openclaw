@@ -273,7 +273,7 @@ describe("session path safety", () => {
     expect(resolveSessionFilePathOptions({ storePath: "(multiple)" })).toBeUndefined();
   });
 
-  it("accepts symlink-alias session paths that resolve under the sessions dir", () => {
+  it("R9-P08 accepts symlink-alias session paths that resolve under the sessions dir", () => {
     if (process.platform === "win32") {
       return;
     }
@@ -317,6 +317,118 @@ describe("session path safety", () => {
       );
       expect(fs.realpathSync(path.dirname(resolved))).toBe(fs.realpathSync(sessionsDir));
       expect(path.basename(resolved)).toBe("sess-1.jsonl");
+    });
+  });
+
+  it("R9-P01 falls back when relative sessionFile hides parent traversal", () => {
+    withTempDirSync({ prefix: "openclaw-relative-session-escape-" }, (tmpDir) => {
+      const sessionsDir = path.join(tmpDir, "sessions");
+      fs.mkdirSync(sessionsDir);
+      const outside = path.join(tmpDir, "outside.jsonl");
+      fs.writeFileSync(outside, "outside");
+      expect(
+        resolveSessionFilePathCore(
+          "sess-1",
+          { sessionFile: "sub/../../outside.jsonl" },
+          { sessionsDir },
+        ),
+      ).toBe(path.join(sessionsDir, "sess-1.jsonl"));
+    });
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "R9-P02 falls back when a relative transcript symlink leaves sessions",
+    () => {
+      withTempDirSync({ prefix: "openclaw-relative-session-symlink-" }, (tmpDir) => {
+        const sessionsDir = path.join(tmpDir, "sessions");
+        fs.mkdirSync(sessionsDir);
+        const outside = path.join(tmpDir, "outside.jsonl");
+        fs.writeFileSync(outside, "outside");
+        fs.symlinkSync(outside, path.join(sessionsDir, "link.jsonl"));
+        expect(
+          resolveSessionFilePathCore("sess-1", { sessionFile: "link.jsonl" }, { sessionsDir }),
+        ).toBe(path.join(sessionsDir, "sess-1.jsonl"));
+      });
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "R9-P03 checks a relative symlink ancestor even when transcript is absent",
+    () => {
+      withTempDirSync({ prefix: "openclaw-relative-session-parent-" }, (tmpDir) => {
+        const sessionsDir = path.join(tmpDir, "sessions");
+        const outsideDir = path.join(tmpDir, "outside");
+        fs.mkdirSync(sessionsDir);
+        fs.mkdirSync(outsideDir);
+        fs.symlinkSync(outsideDir, path.join(sessionsDir, "link"));
+        expect(
+          resolveSessionFilePathCore(
+            "sess-1",
+            { sessionFile: "link/missing.jsonl" },
+            { sessionsDir },
+          ),
+        ).toBe(path.join(sessionsDir, "sess-1.jsonl"));
+      });
+    },
+  );
+
+  it("R9-P06 preserves a safe nested relative transcript", () => {
+    withTempDirSync({ prefix: "openclaw-relative-session-nested-" }, (tmpDir) => {
+      const sessionsDir = path.join(tmpDir, "sessions");
+      const nested = path.join(sessionsDir, "nested");
+      fs.mkdirSync(nested, { recursive: true });
+      fs.writeFileSync(path.join(nested, "sess-1.jsonl"), "");
+      expect(
+        resolveSessionFilePathCore(
+          "sess-1",
+          { sessionFile: "nested/sess-1.jsonl" },
+          { sessionsDir },
+        ),
+      ).toBe(path.join(nested, "sess-1.jsonl"));
+    });
+  });
+  it("R9-P04 rejects a direct parent-relative transcript", () => {
+    withTempDirSync({ prefix: "openclaw-relative-session-parent-direct-" }, (tmpDir) => {
+      const sessionsDir = path.join(tmpDir, "sessions");
+      fs.mkdirSync(sessionsDir);
+      fs.writeFileSync(path.join(tmpDir, "outside.jsonl"), "outside");
+      expect(
+        resolveSessionFilePathCore("sess-1", { sessionFile: "../outside.jsonl" }, { sessionsDir }),
+      ).toBe(path.join(sessionsDir, "sess-1.jsonl"));
+    });
+  });
+
+  it("R9-P05 accepts a safe direct relative transcript", () => {
+    withTempDirSync({ prefix: "openclaw-relative-session-direct-" }, (tmpDir) => {
+      const sessionsDir = path.join(tmpDir, "sessions");
+      fs.mkdirSync(sessionsDir);
+      const file = path.join(sessionsDir, "custom.jsonl");
+      fs.writeFileSync(file, "");
+      expect(
+        resolveSessionFilePathCore("sess-1", { sessionFile: "custom.jsonl" }, { sessionsDir }),
+      ).toBe(file);
+    });
+  });
+
+  it("R9-P07 accepts an absolute transcript in the same sessions directory", () => {
+    withTempDirSync({ prefix: "openclaw-absolute-session-direct-" }, (tmpDir) => {
+      const sessionsDir = path.join(tmpDir, "sessions");
+      fs.mkdirSync(sessionsDir);
+      const file = path.join(sessionsDir, "custom.jsonl");
+      fs.writeFileSync(file, "");
+      expect(resolveSessionFilePathCore("sess-1", { sessionFile: file }, { sessionsDir })).toBe(
+        file,
+      );
+    });
+  });
+
+  it("R9-P10 preserves a sqlite transcript target", () => {
+    withTempDirSync({ prefix: "openclaw-sqlite-session-target-" }, (tmpDir) => {
+      const sessionsDir = path.join(tmpDir, "sessions");
+      const target = "sqlite:main:sess-1:/tmp/explicit-sessions.json";
+      expect(resolveSessionFilePathCore("sess-1", { sessionFile: target }, { sessionsDir })).toBe(
+        target,
+      );
     });
   });
 });

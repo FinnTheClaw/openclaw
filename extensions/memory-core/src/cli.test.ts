@@ -2364,6 +2364,7 @@ describe("memory cli", () => {
         "utf-8",
       );
 
+      const created = vi.spyOn(fs, "mkdtemp");
       const close = vi.fn(async () => {});
       mockManager({
         status: () => makeMemoryStatus({ workspaceDir }),
@@ -2387,6 +2388,198 @@ describe("memory cli", () => {
       expect(Array.isArray(payload?.rem?.candidateTruths)).toBe(true);
       expect(payload?.deep?.candidates?.[0]?.snippet).toContain("Happy Together");
       expect(payload?.deep?.candidates?.[0]?.path).toBe("memory/2025-01-01.md");
+      const scratch = await created.mock.results[0]?.value;
+      expect(scratch).toBeTruthy();
+      await expectPathMissing(scratch!);
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it.each([
+    { name: "MemoryDirCreateFailsRemovesScratch", failure: "mkdir" },
+    { name: "FirstHistoricalCopyFailsRemovesScratch", failure: "copy" },
+  ])("$name", async ({ failure }) => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const historyPath = path.join(workspaceDir, "2025-01-01.md");
+      await fs.writeFile(historyPath, "# Historical preference\n- Use the blue calendar.\n");
+      const created = vi.spyOn(fs, "mkdtemp");
+      if (failure === "mkdir") {
+        const mkdir = fs.mkdir.bind(fs);
+        vi.spyOn(fs, "mkdir").mockImplementation((target, options) =>
+          String(target).includes("openclaw-rem-harness-")
+            ? Promise.reject(new Error("scratch mkdir failed"))
+            : mkdir(target, options),
+        );
+      } else {
+        vi.spyOn(fs, "copyFile").mockRejectedValueOnce(new Error("historical copy failed"));
+      }
+      const close = vi.fn(async () => {});
+      mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close });
+
+      await expect(runMemoryCli(["rem-harness", "--path", historyPath])).rejects.toThrow(
+        failure === "mkdir" ? "scratch mkdir failed" : "historical copy failed",
+      );
+
+      const scratch = await created.mock.results[0]?.value;
+      expect(scratch).toBeTruthy();
+      await expectPathMissing(scratch!);
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it("LaterHistoricalCopyFailsRemovesEarlierCopies", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const historyDir = path.join(workspaceDir, "history");
+      await fs.mkdir(historyDir, { recursive: true });
+      await fs.writeFile(path.join(historyDir, "2025-01-01.md"), "# First day\n");
+      await fs.writeFile(path.join(historyDir, "2025-01-02.md"), "# Second day\n");
+      const created = vi.spyOn(fs, "mkdtemp");
+      const copy = fs.copyFile.bind(fs);
+      let copies = 0;
+      vi.spyOn(fs, "copyFile").mockImplementation((source, destination, mode) => {
+        copies += 1;
+        return copies === 2
+          ? Promise.reject(new Error("second historical copy failed"))
+          : copy(source, destination, mode);
+      });
+      const close = vi.fn(async () => {});
+      mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close });
+
+      await expect(runMemoryCli(["rem-harness", "--path", historyDir])).rejects.toThrow(
+        "second historical copy failed",
+      );
+
+      const scratch = await created.mock.results[0]?.value;
+      expect(copies).toBe(2);
+      expect(scratch).toBeTruthy();
+      await expectPathMissing(scratch!);
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it("HistoricalSeedFailsRemovesScratch", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const historyPath = path.join(workspaceDir, "2025-01-01.md");
+      await fs.writeFile(historyPath, "# Historical preference\n- Keep the blue calendar.\n");
+      const created = vi.spyOn(fs, "mkdtemp");
+      const copy = fs.copyFile.bind(fs);
+      vi.spyOn(fs, "copyFile").mockImplementation(async (source, destination, mode) => {
+        await copy(source, destination, mode);
+        vi.spyOn(fs, "readFile").mockRejectedValueOnce(new Error("historical seed failed"));
+      });
+      const close = vi.fn(async () => {});
+      mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close });
+
+      await expect(runMemoryCli(["rem-harness", "--path", historyPath])).rejects.toThrow(
+        "historical seed failed",
+      );
+
+      const scratch = await created.mock.results[0]?.value;
+      expect(scratch).toBeTruthy();
+      await expectPathMissing(scratch!);
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it("HistoricalSourceScanFailsBeforeAllocation", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const historyPath = path.join(workspaceDir, "2025-01-01.md");
+      await fs.writeFile(historyPath, "# Historical preference\n");
+      const created = vi.spyOn(fs, "mkdtemp");
+      const stat = fs.stat.bind(fs);
+      vi.spyOn(fs, "stat").mockImplementation((target, options) =>
+        String(target) === historyPath
+          ? Promise.reject(new Error("historical scan failed"))
+          : stat(target, options),
+      );
+      const close = vi.fn(async () => {});
+      mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close });
+
+      await expect(runMemoryCli(["rem-harness", "--path", historyPath])).rejects.toThrow(
+        "historical scan failed",
+      );
+
+      expect(created).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it("EmptyHistoricalSourceRemovesScratch", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const historyDir = path.join(workspaceDir, "empty-history");
+      await fs.mkdir(historyDir);
+      const created = vi.spyOn(fs, "mkdtemp");
+      const close = vi.fn(async () => {});
+      mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close });
+      const errors = spyRuntimeErrors(defaultRuntime);
+
+      await runMemoryCli(["rem-harness", "--path", historyDir]);
+
+      expect(
+        errors.mock.calls.some(([message]) =>
+          String(message).includes("found no YYYY-MM-DD.md files"),
+        ),
+      ).toBe(true);
+      const scratch = await created.mock.results[0]?.value;
+      expect(scratch).toBeTruthy();
+      await expectPathMissing(scratch!);
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it("TextHistoricalPreviewCleansScratch", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const historyPath = path.join(workspaceDir, "2025-01-01.md");
+      await fs.writeFile(historyPath, "## Preferences Learned\n- Use the blue calendar.\n");
+      const created = vi.spyOn(fs, "mkdtemp");
+      const close = vi.fn(async () => {});
+      mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close });
+      const logs = spyRuntimeLogs(defaultRuntime);
+
+      await runMemoryCli(["rem-harness", "--path", historyPath]);
+
+      expect(loggedOutput(logs)).toContain("REM Harness");
+      const scratch = await created.mock.results[0]?.value;
+      expect(scratch).toBeTruthy();
+      await expectPathMissing(scratch!);
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it("PreviewFailureCleansScratch", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const historyPath = path.join(workspaceDir, "2025-01-01.md");
+      await fs.writeFile(historyPath, "## Preferences Learned\n- Use the blue calendar.\n");
+      const created = vi.spyOn(fs, "mkdtemp");
+      const close = vi.fn(async () => {});
+      mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close });
+      vi.spyOn(defaultRuntime, "log").mockImplementationOnce(() => {
+        throw new Error("preview output failed");
+      });
+
+      await expect(runMemoryCli(["rem-harness", "--path", historyPath])).rejects.toThrow(
+        "preview output failed",
+      );
+
+      const scratch = await created.mock.results[0]?.value;
+      expect(scratch).toBeTruthy();
+      await expectPathMissing(scratch!);
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it("ManagerWorkspaceNeverRemoved", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      const close = vi.fn(async () => {});
+      mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close });
+      const created = vi.spyOn(fs, "mkdtemp");
+      const writeJson = spyRuntimeJson(defaultRuntime);
+
+      await runMemoryCli(["rem-harness", "--json"]);
+
+      expect(firstWrittenJsonArg(writeJson)).toBeTruthy();
+      expect(created).not.toHaveBeenCalled();
+      expect((await fs.stat(workspaceDir)).isDirectory()).toBe(true);
       expect(close).toHaveBeenCalled();
     });
   });

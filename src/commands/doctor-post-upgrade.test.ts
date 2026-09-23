@@ -622,6 +622,65 @@ describe("runPostUpgradeProbes — plugin.manifest_drift", () => {
   });
 });
 
+describe("DOCTOR-MANIFEST-R9-L01 missing recorded manifest", () => {
+  const original = JSON.stringify({ id: "missing-r9", version: 1 });
+  const expectedHash = crypto.createHash("sha256").update(original).digest("hex");
+  it.each([
+    ["DOCTOR-MANIFEST-R9-L01-01 matching manifest is quiet", "same", true, false],
+    ["DOCTOR-MANIFEST-R9-L01-02 changed manifest reports drift", "changed", true, true],
+    ["DOCTOR-MANIFEST-R9-L01-03 deleted recorded manifest reports drift", "delete", true, true],
+    [
+      "DOCTOR-MANIFEST-R9-L01-04 directory replacing manifest reports drift",
+      "directory",
+      true,
+      true,
+    ],
+    ["DOCTOR-MANIFEST-R9-L01-05 empty manifest reports drift", "empty", true, true],
+    ["DOCTOR-MANIFEST-R9-L01-06 no recorded hash is quiet", "delete", false, false],
+    ["DOCTOR-MANIFEST-R9-L01-07 restored manifest clears drift", "restore", true, false],
+    ["DOCTOR-MANIFEST-R9-L01-08 malformed manifest bytes report drift", "malformed", true, true],
+    ["DOCTOR-MANIFEST-R9-L01-09 whitespace-only manifest reports drift", "whitespace", true, true],
+    ["DOCTOR-MANIFEST-R9-L01-10 missing recorded manifest names plugin", "delete", true, true],
+  ] as const)("%s", async (_name, mutation, recorded, expectedFinding) => {
+    await withFixtureRoot("manifest-r9-" + mutation, async (root) => {
+      await writePluginFixture(root, {
+        id: "missing-r9",
+        packageJson: {
+          name: "missing-r9",
+          version: "0.0.1",
+          type: "module",
+          openclaw: { extensions: ["./dist/index.js"] },
+        },
+        files: { "dist/index.js": "export default {};" },
+        manifest: { id: "missing-r9", version: mutation === "changed" ? 2 : 1 },
+        manifestHash: recorded ? expectedHash : "",
+      });
+      const manifestPath = path.join(root, "user-plugins", "missing-r9", "openclaw.plugin.json");
+      if (mutation === "delete" || mutation === "restore") {
+        await fs.rm(manifestPath);
+      } else if (mutation === "directory") {
+        await fs.rm(manifestPath);
+        await fs.mkdir(manifestPath);
+      } else if (mutation === "empty") {
+        await fs.writeFile(manifestPath, "");
+      } else if (mutation === "malformed") {
+        await fs.writeFile(manifestPath, "{bad");
+      } else if (mutation === "whitespace") {
+        await fs.writeFile(manifestPath, "  ");
+      }
+      if (mutation === "restore") {
+        await fs.writeFile(manifestPath, original);
+      }
+      const report = await runPostUpgradeProbes({ stateDir: root });
+      const finding = report.findings.find((item) => item.code === "plugin.manifest_drift");
+      expect(Boolean(finding)).toBe(expectedFinding);
+      if (finding) {
+        expect(finding.plugin).toBe("missing-r9");
+      }
+    });
+  });
+});
+
 describe("runPostUpgradeProbes — plugin.version_drift", () => {
   it.each([
     {

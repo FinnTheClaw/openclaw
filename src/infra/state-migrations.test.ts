@@ -5972,4 +5972,146 @@ describe("auto-migration retries after incomplete checks", () => {
   });
 });
 
+describe("MIGRATION-R9-L01 failed legacy delivery queue retention", () => {
+  async function fixture(
+    options: {
+      invalidIds?: string[];
+      validPending?: boolean;
+      validFailed?: boolean;
+      marker?: boolean;
+    } = {},
+  ) {
+    const root = await createTempDir();
+    const stateDir = path.join(root, ".openclaw");
+    const env = createEnv(stateDir);
+    const cfg = createConfig();
+    const queueDir = path.join(stateDir, "delivery-queue");
+    await fs.mkdir(path.join(queueDir, "failed"), { recursive: true });
+    for (const id of options.invalidIds ?? ["unretained"]) {
+      await fs.writeFile(
+        path.join(queueDir, "failed", id + ".json"),
+        JSON.stringify({ id, enqueuedAt: 10, retryCount: 1, lastError: "failed" }),
+      );
+    }
+    if (options.validPending) {
+      await fs.writeFile(
+        path.join(queueDir, "pending.json"),
+        JSON.stringify({
+          id: "pending",
+          enqueuedAt: 11,
+          retryCount: 0,
+          channel: "telegram",
+          to: "123",
+          payloads: [{ text: "pending" }],
+        }),
+      );
+    }
+    if (options.validFailed) {
+      await fs.writeFile(
+        path.join(queueDir, "failed", "retained.json"),
+        JSON.stringify({
+          id: "retained",
+          enqueuedAt: 12,
+          retryCount: 1,
+          retainOnFailure: true,
+          lastError: "failed",
+        }),
+      );
+    }
+    if (options.marker) {
+      await fs.writeFile(path.join(queueDir, "sent.delivered"), "done");
+    }
+    const detected = await detectLegacyStateMigrations({ cfg, env, homedir: () => root });
+    const result = await runLegacyStateMigrations({ detected });
+    return { root, stateDir, env, cfg, queueDir, result };
+  }
+
+  it("MIGRATION-R9-L01-01 retains a failed row without inferable retention", async () => {
+    const f = await fixture();
+    await expect(
+      fs.access(path.join(f.queueDir, "failed", "unretained.json")),
+    ).resolves.toBeUndefined();
+  });
+
+  it("MIGRATION-R9-L01-02 does not insert the unimportable row into SQLite", async () => {
+    const f = await fixture();
+    const { db } = openOpenClawStateDatabase({ env: f.env });
+    expect(
+      db.prepare("SELECT id FROM delivery_queue_entries WHERE id = 'unretained'").get(),
+    ).toBeUndefined();
+  });
+
+  it("MIGRATION-R9-L01-03 keeps the legacy directory for a sole unimportable row", async () => {
+    const f = await fixture();
+    await expect(fs.access(f.queueDir)).resolves.toBeUndefined();
+  });
+
+  it("MIGRATION-R9-L01-04 imports a valid pending row while retaining an invalid failed row", async () => {
+    const f = await fixture({ validPending: true });
+    const { db } = openOpenClawStateDatabase({ env: f.env });
+    expect(
+      db.prepare("SELECT status FROM delivery_queue_entries WHERE id = 'pending'").get(),
+    ).toEqual({ status: "pending" });
+    await expect(
+      fs.access(path.join(f.queueDir, "failed", "unretained.json")),
+    ).resolves.toBeUndefined();
+  });
+
+  it("MIGRATION-R9-L01-05 imports a valid failed row while retaining an invalid failed row", async () => {
+    const f = await fixture({ validFailed: true });
+    const { db } = openOpenClawStateDatabase({ env: f.env });
+    expect(
+      db.prepare("SELECT status FROM delivery_queue_entries WHERE id = 'retained'").get(),
+    ).toEqual({ status: "failed" });
+    await expect(
+      fs.access(path.join(f.queueDir, "failed", "unretained.json")),
+    ).resolves.toBeUndefined();
+  });
+
+  it("MIGRATION-R9-L01-06 reports one skipped unimportable row", async () => {
+    const f = await fixture();
+    expect(f.result.warnings).toContain("Skipped 1 malformed outbound delivery queue entry");
+  });
+
+  it("MIGRATION-R9-L01-07 reports multiple skipped unimportable rows", async () => {
+    const f = await fixture({ invalidIds: ["bad-a", "bad-b"] });
+    expect(f.result.warnings).toContain("Skipped 2 malformed outbound delivery queue entries");
+  });
+
+  it("MIGRATION-R9-L01-08 imports a repaired row on a later migration run", async () => {
+    const f = await fixture();
+    await fs.writeFile(
+      path.join(f.queueDir, "failed", "unretained.json"),
+      JSON.stringify({ id: "unretained", enqueuedAt: 10, retryCount: 1, retainOnFailure: true }),
+    );
+    const detected = await detectLegacyStateMigrations({
+      cfg: f.cfg,
+      env: f.env,
+      homedir: () => f.root,
+    });
+    const rerun = await runLegacyStateMigrations({ detected });
+    const { db } = openOpenClawStateDatabase({ env: f.env });
+    expect(
+      db.prepare("SELECT status FROM delivery_queue_entries WHERE id = 'unretained'").get(),
+    ).toEqual({ status: "failed" });
+    expect(rerun.warnings).toStrictEqual([]);
+    await expectMissingPath(f.queueDir);
+  });
+
+  it("MIGRATION-R9-L01-09 removes an all-valid legacy queue", async () => {
+    const f = await fixture({ invalidIds: [], validPending: true });
+    expect(f.result.warnings).toStrictEqual([]);
+    await expectMissingPath(f.queueDir);
+  });
+
+  it("MIGRATION-R9-L01-10 still removes delivered markers while retaining skipped rows", async () => {
+    const f = await fixture({ marker: true });
+    expect(f.result.changes).toContain("Removed 1 outbound delivery queue delivered marker");
+    await expectMissingPath(path.join(f.queueDir, "sent.delivered"));
+    await expect(
+      fs.access(path.join(f.queueDir, "failed", "unretained.json")),
+    ).resolves.toBeUndefined();
+  });
+});
+
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

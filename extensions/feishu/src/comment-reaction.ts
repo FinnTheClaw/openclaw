@@ -12,6 +12,7 @@ const commentTypingReactionState = new Map<
   {
     active: boolean;
     cleaned: boolean;
+    addPromise?: Promise<boolean>;
     cleanupPromise?: Promise<boolean>;
   }
 >();
@@ -41,6 +42,7 @@ function ensureCommentTypingReactionState(key: string) {
   const created = {
     active: false,
     cleaned: false,
+    addPromise: undefined,
     cleanupPromise: undefined,
   };
   commentTypingReactionState.set(key, created);
@@ -136,6 +138,9 @@ async function cleanupCommentTypingReactionByKey(params: {
     return await state.cleanupPromise;
   }
   const cleanupPromise = (async (): Promise<boolean> => {
+    if (state.addPromise) {
+      await state.addPromise;
+    }
     if (!state.active) {
       state.cleaned = true;
       return false;
@@ -227,7 +232,11 @@ export function createCommentTypingReactionLifecycle(params: {
       if (!state || state.cleaned || state.active || !replyId) {
         return;
       }
-      state.active = await requestCommentTypingReaction({
+      if (state.addPromise) {
+        await state.addPromise;
+        return;
+      }
+      const addPromise = requestCommentTypingReaction({
         cfg: params.cfg,
         fileToken: params.fileToken,
         fileType: params.fileType,
@@ -235,7 +244,18 @@ export function createCommentTypingReactionLifecycle(params: {
         action: "add",
         accountId: params.accountId,
         runtime: params.runtime,
+      }).then((added) => {
+        state.active = added;
+        return added;
       });
+      state.addPromise = addPromise;
+      try {
+        await addPromise;
+      } finally {
+        if (state.addPromise === addPromise) {
+          state.addPromise = undefined;
+        }
+      }
     },
     cleanup: async (): Promise<void> => {
       const replyId = params.replyId?.trim();

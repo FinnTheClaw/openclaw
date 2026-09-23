@@ -892,6 +892,60 @@ describe("skill_workshop tool", () => {
     ).rejects.toThrow();
   });
 
+  it("R9-A09 tool reports an operator-applied foreground repair accurately", async () => {
+    const workspaceDir = await tempDirs.make("openclaw-skill-workshop-r9-already-applied-");
+    const runId = "r9-already-applied";
+    const skillName = "r9-used-skill";
+    const config = { skills: { workshop: { autonomous: { mode: "auto" as const } } } };
+    await writeWorkspaceSkills(workspaceDir, [
+      {
+        name: skillName,
+        description: "A used skill",
+        body: "# Used Skill\n\nUse OLD_TOKEN.\n",
+      },
+    ]);
+
+    const proposalMutationBudget: SkillWorkshopProposalMutationBudget = { remaining: 1 };
+    const proposalReviewCompletion = {
+      completed: false,
+      complete: async () => {},
+      recordProgress: async ({ proposalIds }: { proposalIds: string[] }) => {
+        await applySkillProposal({
+          workspaceDir,
+          env: testState.env,
+          proposalId: proposalIds[0]!,
+          eventActor: { type: "gateway" },
+        });
+      },
+    };
+    const tool = createSkillWorkshopTool({
+      workspaceDir,
+      env: testState.env,
+      config,
+      agentId: "main",
+      origin: { agentId: "main", runId },
+      proposalMutationBudget,
+      proposalReviewCompletion,
+    });
+    await tool.execute("r9-read", { action: "read", skill_name: skillName });
+    recordRunSkillUsage({
+      runId,
+      name: skillName,
+      source: "workspace",
+      activation: "read",
+      skillFile: path.join(workspaceDir, "skills", skillName, "SKILL.md"),
+    });
+    const result = await tool.execute("r9-patch", {
+      action: "patch",
+      skill_name: skillName,
+      old_string: "Use OLD_TOKEN.",
+      new_string: "Use NEW_TOKEN.",
+    });
+    expect(result.details).toMatchObject({ status: "applied" });
+    expect((result.content[0] as { text: string }).text).toContain("was already repaired");
+    consumeRunSkillUsage(runId);
+  });
+
   it.each(["off", "propose", "auto"] as const)(
     "enforces foreground repair receipts in autonomous mode %s",
     async (mode) => {

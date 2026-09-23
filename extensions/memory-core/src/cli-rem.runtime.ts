@@ -507,29 +507,34 @@ async function createHistoricalRemHarnessWorkspace(params: {
   const workspaceDir = await fs.mkdtemp(
     path.join(resolvePreferredOpenClawTmpDir(), "openclaw-rem-harness-"),
   );
-  const memoryDir = path.join(workspaceDir, "memory");
-  await fs.mkdir(memoryDir, { recursive: true });
-  for (const filePath of sourceFiles) {
-    await fs.copyFile(filePath, path.join(memoryDir, path.basename(filePath)));
+  try {
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    for (const filePath of sourceFiles) {
+      await fs.copyFile(filePath, path.join(memoryDir, path.basename(filePath)));
+    }
+    const workspaceSourceFiles = sourceFiles.map((entry) =>
+      path.join(memoryDir, path.basename(entry)),
+    );
+    const seeded = await seedHistoricalDailyMemorySignals({
+      workspaceDir,
+      filePaths: workspaceSourceFiles,
+      limit: params.remLimit,
+      nowMs: params.nowMs,
+      timezone: params.timezone,
+    });
+    return {
+      workspaceDir,
+      sourceFiles,
+      workspaceSourceFiles,
+      importedFileCount: seeded.importedFileCount,
+      importedSignalCount: seeded.importedSignalCount,
+      skippedPaths: seeded.skippedPaths,
+    };
+  } catch (error) {
+    await fs.rm(workspaceDir, { recursive: true, force: true });
+    throw error;
   }
-  const workspaceSourceFiles = sourceFiles.map((entry) =>
-    path.join(memoryDir, path.basename(entry)),
-  );
-  const seeded = await seedHistoricalDailyMemorySignals({
-    workspaceDir,
-    filePaths: workspaceSourceFiles,
-    limit: params.remLimit,
-    nowMs: params.nowMs,
-    timezone: params.timezone,
-  });
-  return {
-    workspaceDir,
-    sourceFiles,
-    workspaceSourceFiles,
-    importedFileCount: seeded.importedFileCount,
-    importedSignalCount: seeded.importedSignalCount,
-    skippedPaths: seeded.skippedPaths,
-  };
 }
 function extractIsoDayFromPath(filePath: string): string | null {
   const match = path.basename(filePath).match(DAILY_MEMORY_FILE_NAME_RE);

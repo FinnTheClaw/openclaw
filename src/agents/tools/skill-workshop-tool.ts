@@ -706,7 +706,9 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
             );
           }
           return actionResult(autonomous.record, {
-            contentText: `Repaired used skill ${autonomous.record.target.skillName} through proposal ${autonomous.record.id}.`,
+            contentText: autonomous.alreadyApplied
+              ? `Skill ${autonomous.record.target.skillName} was already repaired through proposal ${autonomous.record.id}.`
+              : `Repaired used skill ${autonomous.record.target.skillName} through proposal ${autonomous.record.id}.`,
             targetSkillFile: autonomous.targetSkillFile,
           });
         }

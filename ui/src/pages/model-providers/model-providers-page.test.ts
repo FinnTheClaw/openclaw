@@ -467,6 +467,157 @@ describe("ModelProvidersPage agent scope", () => {
     });
   });
 
+  it("SuccessfulPatchClearsDefaultsDraft", async () => {
+    const { context, runtimeConfig } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const selection: DefaultModelSelection = {
+      primary: "openai/gpt-5",
+      fallbacks: [],
+      utilityModel: null,
+    };
+    page.defaultsDraft = selection;
+
+    await page.saveDefaults();
+
+    expect(runtimeConfig.patch).toHaveBeenCalledOnce();
+    expect(runtimeConfig.refresh).toHaveBeenCalledOnce();
+    expect(page.defaultsDraft).toBeNull();
+    expect(page.messages.defaults).toMatchObject({ kind: "success" });
+  });
+
+  it("RejectedPatchKeepsDefaultsDraft", async () => {
+    const { context, runtimeConfig } = createHarness("main");
+    runtimeConfig.patch.mockResolvedValueOnce(false);
+    runtimeConfig.state.lastError = "default model rejected";
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const selection: DefaultModelSelection = {
+      primary: "openai/gpt-5",
+      fallbacks: [],
+      utilityModel: null,
+    };
+    page.defaultsDraft = selection;
+
+    await page.saveDefaults();
+
+    expect(page.defaultsDraft).toBe(selection);
+    expect(page.messages.defaults).toEqual({ kind: "error", text: "default model rejected" });
+  });
+
+  it("ThrownPatchKeepsDefaultsDraft", async () => {
+    const { context, runtimeConfig } = createHarness("main");
+    runtimeConfig.patch.mockRejectedValueOnce(new Error("config patch unavailable"));
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const selection: DefaultModelSelection = {
+      primary: "openai/gpt-5",
+      fallbacks: [],
+      utilityModel: null,
+    };
+    page.defaultsDraft = selection;
+
+    await page.saveDefaults();
+
+    expect(page.defaultsDraft).toBe(selection);
+    expect(page.messages.defaults).toMatchObject({ kind: "error" });
+    expect(page.messages.defaults?.text).toContain("config patch unavailable");
+  });
+
+  it("PredispatchBlockKeepsDefaultsDraft", async () => {
+    const { context, runtimeConfig } = createHarness("main");
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const selection: DefaultModelSelection = {
+      primary: "openai/gpt-5",
+      fallbacks: [],
+      utilityModel: null,
+    };
+    page.defaultsDraft = selection;
+    runtimeConfig.canPatch = false;
+
+    await page.saveDefaults();
+
+    expect(runtimeConfig.patch).not.toHaveBeenCalled();
+    expect(page.defaultsDraft).toBe(selection);
+  });
+
+  it("NewerEditSurvivesOlderSave", async () => {
+    const { context, runtimeConfig } = createHarness("main");
+    const gate = deferred<boolean>();
+    runtimeConfig.patch.mockImplementationOnce(async () => gate.promise);
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const oldSelection: DefaultModelSelection = {
+      primary: "openai/gpt-5",
+      fallbacks: [],
+      utilityModel: null,
+    };
+    const newSelection: DefaultModelSelection = {
+      primary: "anthropic/claude",
+      fallbacks: [],
+      utilityModel: null,
+    };
+    page.defaultsDraft = oldSelection;
+
+    const saving = page.saveDefaults();
+    await vi.waitFor(() => expect(runtimeConfig.patch).toHaveBeenCalledOnce());
+    page.defaultsDraft = newSelection;
+    gate.resolve(true);
+    await saving;
+
+    expect(page.defaultsDraft).toBe(newSelection);
+  });
+
+  it.each([
+    { name: "FailedPrimarySelectionStaysVisible", fallbacks: [] },
+    { name: "FailedFallbackSelectionStaysVisible", fallbacks: ["anthropic/claude"] },
+  ])("$name", async ({ fallbacks }) => {
+    const { context, runtimeConfig } = createHarness("main");
+    runtimeConfig.patch.mockResolvedValueOnce(false);
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const selection: DefaultModelSelection = {
+      primary: "openai/gpt-5",
+      fallbacks,
+      utilityModel: null,
+    };
+    page.defaultsDraft = selection;
+
+    await page.saveDefaults();
+    await page.updateComplete;
+
+    expect(page.defaultsDraft).toBe(selection);
+    const selectors = page.querySelectorAll<HTMLElement & { value: string }>(
+      ".model-providers__defaults .model-picker__select",
+    );
+    expect(selectors[0]?.value).toBe("openai/gpt-5");
+    if (fallbacks.length > 0) {
+      expect(selectors[2]?.value).toBe("anthropic/claude");
+    }
+  });
+
+  it("RetrySuccessClearsRetainedDraft", async () => {
+    const { context, runtimeConfig } = createHarness("main");
+    runtimeConfig.patch.mockResolvedValueOnce(false);
+    const page = appendPage(context);
+    await waitForFast(() => expect(page.data?.config).toEqual({}));
+    const selection: DefaultModelSelection = {
+      primary: "openai/gpt-5",
+      fallbacks: [],
+      utilityModel: null,
+    };
+    page.defaultsDraft = selection;
+
+    await page.saveDefaults();
+    expect(page.defaultsDraft).toBe(selection);
+    await page.saveDefaults();
+
+    expect(runtimeConfig.patch).toHaveBeenCalledTimes(2);
+    expect(page.defaultsDraft).toBeNull();
+    expect(page.messages.defaults).toMatchObject({ kind: "success" });
+  });
+
   it("keeps a replacement agent's default-model draft after a global model write", async () => {
     const { agentSelection, context, notifySelection, runtimeConfig } = createHarness("main");
     const gate = deferred<void>();
