@@ -8,7 +8,11 @@ export async function runBestEffortCleanup<T>(params: {
   try {
     return await params.cleanup();
   } catch (error) {
-    params.onError?.(error);
+    try {
+      params.onError?.(error);
+    } catch {
+      // Diagnostics must not turn best-effort cleanup into a fatal failure.
+    }
     return undefined;
   }
 }

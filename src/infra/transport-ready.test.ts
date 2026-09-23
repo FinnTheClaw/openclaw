@@ -181,6 +181,154 @@ describe("waitForTransportReady", () => {
     expect(latestRuntimeErrorMessage(runtime)).toContain("not ready after 120ms");
   });
 
+  it.each([
+    {
+      name: "a never-settling probe times out at zero",
+      timeoutMs: 0,
+      advanceMs: 1,
+      event: "none",
+      expected: "test transport not ready (unknown error)",
+      checks: 1,
+      errors: 1,
+    },
+    {
+      name: "a never-settling probe times out after one millisecond",
+      timeoutMs: 1,
+      advanceMs: 2,
+      event: "none",
+      expected: "test transport not ready (unknown error)",
+      checks: 1,
+      errors: 1,
+    },
+    {
+      name: "a never-settling probe times out before the next poll",
+      timeoutMs: 40,
+      advanceMs: 41,
+      event: "none",
+      expected: "test transport not ready (unknown error)",
+      checks: 1,
+      errors: 1,
+    },
+    {
+      name: "a never-settling probe times out after a longer deadline",
+      timeoutMs: 120,
+      advanceMs: 121,
+      event: "none",
+      expected: "test transport not ready (unknown error)",
+      checks: 1,
+      errors: 1,
+    },
+    {
+      name: "a hanging retry retains the preceding probe error",
+      timeoutMs: 75,
+      advanceMs: 76,
+      event: "none",
+      firstError: "prior down",
+      expected: "test transport not ready (prior down)",
+      checks: 2,
+      errors: 1,
+    },
+    {
+      name: "abort during a hanging probe returns quietly",
+      timeoutMs: 200,
+      advanceMs: 21,
+      event: "abort",
+      eventAt: 20,
+      expected: "resolved",
+      checks: 1,
+      errors: 0,
+    },
+    {
+      name: "immediate abort during a hanging probe returns quietly",
+      timeoutMs: 200,
+      advanceMs: 1,
+      event: "abort",
+      eventAt: 0,
+      expected: "resolved",
+      checks: 1,
+      errors: 0,
+    },
+    {
+      name: "a late successful probe cannot undo timeout",
+      timeoutMs: 50,
+      advanceMs: 76,
+      event: "resolve",
+      eventAt: 75,
+      expected: "test transport not ready (unknown error)",
+      checks: 1,
+      errors: 1,
+    },
+    {
+      name: "a late rejected probe remains observed after timeout",
+      timeoutMs: 50,
+      advanceMs: 76,
+      event: "reject",
+      eventAt: 75,
+      expected: "test transport not ready (unknown error)",
+      checks: 1,
+      errors: 1,
+    },
+    {
+      name: "a probe rejection before the deadline propagates",
+      timeoutMs: 200,
+      advanceMs: 21,
+      event: "reject",
+      eventAt: 20,
+      expected: "probe exploded",
+      checks: 1,
+      errors: 0,
+    },
+  ] as const)("$name", async (scenario) => {
+    const runtime = createRuntime();
+    const controller = new AbortController();
+    let resolveProbe!: (value: { ok: boolean }) => void;
+    let rejectProbe!: (reason: Error) => void;
+    const probe = new Promise<{ ok: boolean }>((resolve, reject) => {
+      resolveProbe = resolve;
+      rejectProbe = reject;
+    });
+    let checks = 0;
+    const result = waitForTransportReady({
+      label: "test transport",
+      timeoutMs: scenario.timeoutMs,
+      pollIntervalMs: 50,
+      abortSignal: controller.signal,
+      runtime,
+      check: () => {
+        checks += 1;
+        if ("firstError" in scenario && checks === 1) {
+          return Promise.resolve({ ok: false, error: scenario.firstError });
+        }
+        return probe;
+      },
+    }).then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    if (scenario.event !== "none") {
+      setTimeout(() => {
+        if (scenario.event === "abort") {
+          controller.abort();
+        } else if (scenario.event === "resolve") {
+          resolveProbe({ ok: true });
+        } else {
+          rejectProbe(new Error("probe exploded"));
+        }
+      }, scenario.eventAt);
+    }
+
+    await vi.advanceTimersByTimeAsync(scenario.advanceMs);
+    expect({
+      result: await result,
+      checks,
+      errors: runtime.error.mock.calls.length,
+    }).toEqual({
+      result: scenario.expected,
+      checks: scenario.checks,
+      errors: scenario.errors,
+    });
+  });
+
   it("rethrows non-abort sleep failures", async () => {
     const runtime = createRuntime();
     transportReadyMocks.injectedSleepError = new Error("sleep exploded");

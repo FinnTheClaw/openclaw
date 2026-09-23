@@ -52,6 +52,12 @@ export type WorkboardCardStore = WorkboardKeyedStore & {
     expectedUpdatedAt: number,
   ): Promise<boolean>;
   deleteIfUpdatedAt(key: string, expectedUpdatedAt: number): Promise<boolean>;
+  deleteAttachmentIfUpdatedAt?(
+    key: string,
+    value: PersistedWorkboardCard,
+    expectedUpdatedAt: number,
+    attachmentId: string,
+  ): Promise<boolean>;
   claimIfOwnerAvailable(
     key: string,
     value: PersistedWorkboardCard,

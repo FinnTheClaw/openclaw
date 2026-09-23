@@ -1483,6 +1483,8 @@ class NodeRuntime private constructor(
   val execApprovalsNotice: StateFlow<GatewayExecApprovalNotice?> = _execApprovalsNotice.asStateFlow()
   private val execApprovalsRefreshSeq = AtomicLong(0)
   private val execApprovalsStateLock = Any()
+  private var execApprovalExpiryPruneJob: Job? = null
+  private var execApprovalExpiryPruneGeneration = 0L
   private var execApprovalsSnapshotReady = false
   private val resolvedExecApprovalIds = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
   private val pendingExecApprovalWrites = mutableMapOf<String, PendingExecApprovalWrite>()
@@ -1917,8 +1919,9 @@ class NodeRuntime private constructor(
       if (retirePendingCronRuns) {
         pendingExecApprovalWrites.clear()
       }
+      _execApprovals.value = emptyList()
+      scheduleExecApprovalExpiryPrune(emptyList())
     }
-    _execApprovals.value = emptyList()
     _execApprovalsRefreshing.value = false
     _execApprovalsErrorText.value = null
     _execApprovalsNotice.value = null
@@ -7907,7 +7910,10 @@ class NodeRuntime private constructor(
     if (!operatorConnected) {
       publishGatewayData(gatewayScope) {
         if (execApprovalsRefreshSeq.get() == refreshGeneration) {
-          _execApprovals.value = emptyList()
+          synchronized(execApprovalsStateLock) {
+            _execApprovals.value = emptyList()
+            scheduleExecApprovalExpiryPrune(emptyList())
+          }
           _execApprovalsRefreshing.value = false
         }
       }
@@ -8473,6 +8479,7 @@ class NodeRuntime private constructor(
       pendingExecApprovalWrites.remove(id)
       invalidateExecApprovalRefreshes()
       _execApprovals.value = _execApprovals.value.filterNot { it.id == id }
+      scheduleExecApprovalExpiryPrune(_execApprovals.value)
     }
   }
 
@@ -8506,17 +8513,22 @@ class NodeRuntime private constructor(
   }
 
   private fun scheduleExecApprovalExpiryPrune(rows: List<GatewayExecApprovalSummary>) {
+    // Called under execApprovalsStateLock. Retire the previous timer whenever
+    // the visible set changes, including gateway teardown and resolution.
+    execApprovalExpiryPruneJob?.cancel()
+    execApprovalExpiryPruneJob = null
+    val generation = ++execApprovalExpiryPruneGeneration
     val now = System.currentTimeMillis()
-    val nextExpiry = rows.mapNotNull { it.expiresAtMs }.filter { it > now }.minOrNull() ?: return
-    scope.launch {
-      delay((nextExpiry - now + 250).coerceAtLeast(0))
-      pruneExpiredExecApprovals()
-    }
-  }
-
-  private fun pruneExpiredExecApprovals() {
-    synchronized(execApprovalsStateLock) {
-      _execApprovals.value = _execApprovals.value.filterActiveExecApprovals()
+    val nextExpiry = rows.mapNotNull { it.expiresAtMs }.minOrNull() ?: return
+    execApprovalExpiryPruneJob = scope.launch {
+      delay((nextExpiry - now).coerceAtLeast(0))
+      synchronized(execApprovalsStateLock) {
+        if (generation != execApprovalExpiryPruneGeneration) return@synchronized
+        _execApprovals.value = _execApprovals.value.filterActiveExecApprovals()
+        // An early wake-up leaves the same deadline pending; otherwise advance
+        // to the next remaining approval without waiting for a gateway refresh.
+        scheduleExecApprovalExpiryPrune(_execApprovals.value)
+      }
     }
   }
 
@@ -9080,14 +9092,17 @@ class NodeRuntime private constructor(
     }
 
   private fun cronIntervalText(everyMs: Long): NativeText {
+    val days = everyMs / 86_400_000L
+    val hours = everyMs / 3_600_000L
     val minutes = everyMs / 60_000L
-    val hours = minutes / 60L
-    val days = hours / 24L
+    val seconds = everyMs / 1_000L
     return when {
-      days >= 1 && hours % 24L == 0L -> nativeText("Every \${days}d", days)
-      hours >= 1 && minutes % 60L == 0L -> nativeText("Every \${hours}h", hours)
-      minutes >= 1 -> nativeText("Every \${minutes}m", minutes)
-      else -> nativeText("Repeating")
+      everyMs <= 0L -> nativeText("Repeating")
+      everyMs % 86_400_000L == 0L -> nativeText("Every \${days}d", days)
+      everyMs % 3_600_000L == 0L -> nativeText("Every \${hours}h", hours)
+      everyMs % 60_000L == 0L -> nativeText("Every \${minutes}m", minutes)
+      everyMs % 1_000L == 0L -> nativeText("Every \${seconds}s", seconds)
+      else -> nativeText("Every \${everyMs}ms", everyMs)
     }
   }
 

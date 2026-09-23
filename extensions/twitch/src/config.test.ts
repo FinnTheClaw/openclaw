@@ -250,3 +250,48 @@ describe("resolveTwitchAccountContext", () => {
     expect(context.configured).toBe(true);
   });
 });
+
+describe("default account sparse root override", () => {
+  const account = {
+    username: "account-bot",
+    accessToken: "oauth:account",
+    clientId: "account-client",
+    channel: "#account",
+    enabled: true,
+    allowFrom: ["account-user"],
+    allowedRoles: ["mod"],
+    requireMention: true,
+    clientSecret: "account-secret",
+  };
+
+  it.each([
+    ["inherits username when root omits it", {}, "username", "account-bot"],
+    ["inherits accessToken when root omits it", {}, "accessToken", "oauth:account"],
+    ["inherits clientId when root omits it", {}, "clientId", "account-client"],
+    ["inherits channel when root omits it", {}, "channel", "#account"],
+    ["keeps an explicit false enabled override", { enabled: false }, "enabled", false],
+    ["keeps an explicit empty allowFrom override", { allowFrom: [] }, "allowFrom", []],
+    ["keeps an explicit empty allowedRoles override", { allowedRoles: [] }, "allowedRoles", []],
+    [
+      "keeps an explicit false requireMention override",
+      { requireMention: false },
+      "requireMention",
+      false,
+    ],
+    ["keeps an explicit empty username override", { username: "" }, "username", ""],
+    ["keeps an explicit empty clientSecret override", { clientSecret: "" }, "clientSecret", ""],
+  ])("%s", (_name, rootFields, field, expected) => {
+    const result = getAccountConfig(
+      {
+        channels: {
+          twitch: {
+            accounts: { default: account },
+            ...rootFields,
+          },
+        },
+      },
+      "default",
+    ) as Record<string, unknown> | null;
+    expect(result?.[field as string]).toEqual(expected);
+  });
+});

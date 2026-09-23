@@ -214,6 +214,18 @@ export class AuthenticatedAvatarRouteLoader implements ReactiveController {
     if (!url.startsWith("/")) {
       return url;
     }
+    // A leading slash alone does not guarantee a same-origin route: browsers
+    // interpret //host and slash/backslash variants as network URLs. Never
+    // attach a bearer credential unless URL parsing confirms this route stays
+    // on the current origin.
+    try {
+      const base = new URL(globalThis.location?.href ?? "http://localhost/");
+      if (url.startsWith("//") || new URL(url, base).origin !== base.origin) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
     // Lit can finish a queued render after disconnect. That render must not
     // reacquire a released route and keep an orphaned request or retry alive.
     if (!this.connected) {

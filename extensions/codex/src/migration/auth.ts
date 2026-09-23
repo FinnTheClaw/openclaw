@@ -468,17 +468,23 @@ export async function applyCodexAuthItems(params: {
   const profileId = typeof item.details?.profileId === "string" ? item.details.profileId : "";
   const provider = typeof item.details?.provider === "string" ? item.details.provider : "";
   const sourceProfileId =
-    typeof item.details?.sourceProfileId === "string" ? item.details.sourceProfileId : undefined;
-  if (!profileId || !provider) {
+    typeof item.details?.sourceProfileId === "string" ? item.details.sourceProfileId : "";
+  const credentialKind = item.details?.credentialKind;
+  if (
+    !profileId ||
+    !provider ||
+    !sourceProfileId ||
+    (credentialKind !== "oauth" && credentialKind !== "api_key")
+  ) {
     return [markMigrationItemError(item, CODEX_REASON_MISSING_AUTH_METADATA)];
   }
   const credential = (await readCodexAuthCredentials(source)).find(
-    (candidate) => candidate.provider === provider,
+    (candidate) =>
+      candidate.provider === provider &&
+      candidate.kind === credentialKind &&
+      candidate.profileId === sourceProfileId,
   );
   if (!credential) {
-    return [markMigrationItemSkipped(item, CODEX_REASON_AUTH_NO_LONGER_PRESENT)];
-  }
-  if (credential.kind === "oauth" && sourceProfileId && credential.profileId !== sourceProfileId) {
     return [markMigrationItemSkipped(item, CODEX_REASON_AUTH_NO_LONGER_PRESENT)];
   }
   const oauthProfile = credential.kind === "oauth" ? credential.result.profiles[0] : undefined;

@@ -341,7 +341,10 @@ describe("setupPluginConfig", () => {
         intro: vi.fn(async () => {}),
         outro: vi.fn(async () => {}),
         note: vi.fn(async () => {}),
-        select: vi.fn(async () => "llm-context") as unknown as WizardPrompter["select"],
+        select: vi.fn(
+          async (params: { options: Array<{ value: string; label: string }> }) =>
+            params.options.find((option) => option.label === "llm-context")?.value ?? "",
+        ) as unknown as WizardPrompter["select"],
         multiselect: vi.fn(async () => ["brave"]) as unknown as WizardPrompter["multiselect"],
         text: vi.fn(async () => ""),
         confirm: vi.fn(async () => true),
@@ -541,5 +544,60 @@ describe("setupPluginConfig", () => {
       scientific: 100,
       retries: 3,
     });
+  });
+});
+
+describe("schema enum value preservation", () => {
+  it.each([
+    { name: "keeps zero numeric", values: [0, 1], pick: 0, expected: 0 },
+    { name: "keeps negative numeric", values: [-2, 2], pick: 0, expected: -2 },
+    { name: "keeps fractional numeric", values: [0.5, 1], pick: 0, expected: 0.5 },
+    { name: "keeps positive numeric", values: [1, 2], pick: 1, expected: 2 },
+    { name: "keeps false boolean", values: [false, true], pick: 0, expected: false },
+    { name: "keeps true boolean", values: [false, true], pick: 1, expected: true },
+    {
+      name: "keeps literal keep-marker string",
+      values: ["__keep__", "other"],
+      pick: 0,
+      expected: "__keep__",
+    },
+    { name: "distinguishes numeric one from string one", values: [1, "1"], pick: 0, expected: 1 },
+    { name: "distinguishes string one from numeric one", values: [1, "1"], pick: 1, expected: "1" },
+    {
+      name: "distinguishes string true from boolean true",
+      values: [true, "true"],
+      pick: 1,
+      expected: "true",
+    },
+  ])("$name", async ({ values, pick, expected }) => {
+    loadPluginManifestRegistryCore.mockReturnValue({
+      plugins: [
+        makeManifestPlugin(
+          "enum-plugin",
+          { choice: { label: "Choice" } },
+          { type: "object", properties: { choice: { enum: values } } },
+        ),
+      ],
+    });
+    const select = vi.fn(async (params: { options: Array<{ value: string; label: string }> }) => {
+      expect(new Set(params.options.map((option) => option.label)).size).toBe(values.length);
+      return params.options[pick]?.value ?? "";
+    });
+
+    const result = await setupPluginConfig({
+      config: { plugins: { entries: { "enum-plugin": { enabled: true } } } },
+      prompter: {
+        intro: vi.fn(async () => {}),
+        outro: vi.fn(async () => {}),
+        note: vi.fn(async () => {}),
+        select: select as unknown as WizardPrompter["select"],
+        multiselect: vi.fn(async () => ["enum-plugin"]) as unknown as WizardPrompter["multiselect"],
+        text: vi.fn(async () => ""),
+        confirm: vi.fn(async () => true),
+        progress: vi.fn(() => ({ update: vi.fn(), stop: vi.fn() })),
+      },
+    });
+
+    expect(result.plugins?.entries?.["enum-plugin"]?.config).toEqual({ choice: expected });
   });
 });

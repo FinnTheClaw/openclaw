@@ -57,4 +57,72 @@ describe("mcp-command-line", () => {
       splitCommandLine('"C:\\Users\\me\\bin\\claude-wrapper.cmd" --stdio', "win32"),
     ).toThrow(/Invoke wrapper scripts through their shell or interpreter instead/);
   });
+  it.each([
+    {
+      name: "L4-02 retains a double-quoted empty first argument",
+      input: 'agent ""',
+      platform: "linux",
+      args: [""],
+    },
+    {
+      name: "L4-02 retains a single-quoted empty first argument",
+      input: "agent ''",
+      platform: "linux",
+      args: [""],
+    },
+    {
+      name: "L4-02 retains an empty argument before a nonempty one",
+      input: 'agent "" next',
+      platform: "linux",
+      args: ["", "next"],
+    },
+    {
+      name: "L4-02 retains an empty argument after a nonempty one",
+      input: 'agent next ""',
+      platform: "linux",
+      args: ["next", ""],
+    },
+    {
+      name: "L4-02 retains two consecutive empty arguments",
+      input: 'agent "" ""',
+      platform: "linux",
+      args: ["", ""],
+    },
+    {
+      name: "L4-02 allows empty quotes inside a nonempty argument",
+      input: 'agent a""b',
+      platform: "linux",
+      args: ["ab"],
+    },
+    {
+      name: "L4-02 coalesces adjacent empty quote pairs into one argument",
+      input: "agent \"\"''",
+      platform: "linux",
+      args: [""],
+    },
+    {
+      name: "L4-02 retains an empty argument after a spaced quoted argument",
+      input: 'agent "one two" ""',
+      platform: "linux",
+      args: ["one two", ""],
+    },
+    {
+      name: "L4-02 retains an empty argument after a quoted Windows executable",
+      input: '"C:\\Program Files\\agent.exe" ""',
+      platform: "win32",
+      args: [""],
+    },
+    {
+      name: "L4-02 retains an empty argument after an unquoted Windows executable path",
+      input: 'C:\\Program Files\\agent.exe "" next',
+      platform: "win32",
+      args: ["", "next"],
+    },
+  ])("$name", async ({ input, platform, args }) => {
+    const splitCommandLine = await loadSplitCommandLine();
+    expect(splitCommandLine(input, platform)).toEqual({
+      command: platform === "win32" ? "C:\\Program Files\\agent.exe" : "agent",
+      args,
+    });
+  });
 });

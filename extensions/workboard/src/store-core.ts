@@ -80,6 +80,7 @@ type WorkboardUpdateCardOptions = {
   allowAutomationLaunch?: boolean;
   allowMetadataDependencyLinks?: boolean;
   enforceStatusHolds?: boolean;
+  deleteAttachmentId?: string;
   event?: Omit<WorkboardEvent, "id" | "at">;
   eventAt?: number;
   expectedUpdatedAt?: number;
@@ -873,7 +874,19 @@ export class WorkboardCoreStore extends WorkboardStoreRuntime {
     }
     if (this.cardStore) {
       const expectedUpdatedAt = options.expectedUpdatedAt ?? existing.updatedAt;
-      if (options.ownerSlot) {
+      if (options.deleteAttachmentId && this.cardStore.deleteAttachmentIfUpdatedAt) {
+        if (
+          await this.cardStore.deleteAttachmentIfUpdatedAt(
+            next.id,
+            { version: 1, card: next },
+            expectedUpdatedAt,
+            options.deleteAttachmentId,
+          )
+        ) {
+          this.recordCardMutation(existing, next);
+          return next;
+        }
+      } else if (options.ownerSlot) {
         const result = await this.cardStore.claimIfOwnerAvailable(
           next.id,
           { version: 1, card: next },

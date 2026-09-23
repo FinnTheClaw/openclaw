@@ -499,6 +499,7 @@ async function executeSessionBackfillBatchCore(
   if (params.apply) {
     await recordSessionBackfillRewindBatch({
       workspaceDir,
+      agentId: params.agentId,
       candidates: selectedDays.flatMap((day) =>
         day.candidates.map((candidate) => ({
           contentIndex: candidate.contentIndex,

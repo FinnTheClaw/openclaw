@@ -241,9 +241,15 @@ async function promptPluginFields(params: {
 
     // Handle enum fields with select
     if (schemaProp?.enum && Array.isArray(schemaProp.enum)) {
-      const options = schemaProp.enum.map((v) => ({
-        value: String(v),
-        label: String(v),
+      // Prompt choice IDs must be separate from schema values. Stringifying
+      // values both changes their types and collides for e.g. 1 and "1".
+      const labels = schemaProp.enum.map(String);
+      const options = schemaProp.enum.map((value, index) => ({
+        value: `__enum_${index}__`,
+        label:
+          labels.indexOf(labels[index] ?? "") === labels.lastIndexOf(labels[index] ?? "")
+            ? (labels[index] ?? "")
+            : `${labels[index]} (${typeof value})`,
       }));
       if (hasValue) {
         options.unshift({
@@ -257,8 +263,11 @@ async function promptPluginFields(params: {
         initialValue: hasValue ? "__keep__" : undefined,
       });
       if (selected !== "__keep__") {
-        setPathCreateStrict(updatedConfig, pathSegments, selected);
-        changed = true;
+        const index = schemaProp.enum.findIndex((_, index) => selected === `__enum_${index}__`);
+        if (index >= 0) {
+          setPathCreateStrict(updatedConfig, pathSegments, schemaProp.enum[index]);
+          changed = true;
+        }
       }
       continue;
     }

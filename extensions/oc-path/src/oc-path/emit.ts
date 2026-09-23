@@ -79,6 +79,7 @@ export function emitMd(ast: MdAst, opts: EmitOptions = {}): string {
   if (ast.frontmatter.length > 0) {
     parts.push("---");
     for (const fm of ast.frontmatter) {
+      guardSentinel(fm.key, `${guardPath}/[frontmatter]/${fm.key}`);
       guardSentinel(fm.value, `${guardPath}/[frontmatter]/${fm.key}`);
       parts.push(`${fm.key}: ${formatFrontmatterValue(fm.value)}`);
     }
@@ -94,6 +95,7 @@ export function emitMd(ast: MdAst, opts: EmitOptions = {}): string {
   }
 
   for (const block of ast.blocks) {
+    guardSentinel(block.heading, `${guardPath}/${block.slug}/[heading]`);
     if (parts.length > 0) {
       parts.push("");
     }

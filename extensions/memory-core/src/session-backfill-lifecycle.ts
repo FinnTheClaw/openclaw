@@ -23,6 +23,7 @@ type SessionBackfillRewindCandidate = {
 
 type SessionBackfillRewindBatch = {
   version: 1;
+  agentId?: string;
   candidates: SessionBackfillRewindCandidate[];
 };
 
@@ -34,17 +35,20 @@ type SessionBackfillBaseline = {
 
 export async function recordSessionBackfillRewindBatch(params: {
   workspaceDir: string;
+  agentId: string;
   candidates: SessionBackfillRewindCandidate[];
 }): Promise<void> {
   if (params.candidates.length === 0) {
     return;
   }
-  const key = createHash("sha256").update(JSON.stringify(params.candidates)).digest("hex");
+  const key = createHash("sha256")
+    .update(JSON.stringify([params.agentId, params.candidates]))
+    .digest("hex");
   await writeMemoryCoreWorkspaceEntry<SessionBackfillRewindBatch>({
     namespace: SESSION_BACKFILL_REWIND_NAMESPACE,
     workspaceDir: params.workspaceDir,
     key,
-    value: { version: 1, candidates: params.candidates },
+    value: { version: 1, agentId: params.agentId, candidates: params.candidates },
   });
 }
 
@@ -83,6 +87,35 @@ function isSessionBackfillRewindBatch(
   return value.version === 1 && "candidates" in value && Array.isArray(value.candidates);
 }
 
+function belongsToAgentRewindCandidate(
+  candidate: SessionBackfillRewindCandidate,
+  agentId: string,
+): boolean {
+  if (!belongsToAgentSeenState(candidate.scope, agentId)) {
+    return false;
+  }
+  return candidate.stateKey.startsWith("session-backfill:")
+    ? candidate.scope.startsWith(`archive:${agentId}:`)
+    : belongsToAgentFileState(candidate.stateKey, agentId);
+}
+
+function isOwnedSessionBackfillRewindBatch(
+  batch: SessionBackfillRewindBatch,
+  agentId: string,
+): boolean {
+  // Pre-owner rows are accepted only when every candidate proves the same owner.
+  // Mixed or malformed legacy rows stay untouched rather than consuming another agent's journal.
+  return (
+    (batch.agentId === undefined || batch.agentId === agentId) &&
+    batch.candidates.length > 0 &&
+    batch.candidates.every(
+      (candidate) =>
+        isSessionBackfillRewindCandidate(candidate) &&
+        belongsToAgentRewindCandidate(candidate, agentId),
+    )
+  );
+}
+
 export async function rewindSessionBackfillIngestionState(params: {
   workspaceDir: string;
   agentId: string;
@@ -102,11 +135,13 @@ export async function rewindSessionBackfillIngestionState(params: {
       "complete" in entry.value &&
       entry.value.agentId === params.agentId,
   );
-  const batchEntries = entries.filter((entry) => isSessionBackfillRewindBatch(entry.value));
+  const batchEntries = entries.filter(
+    (entry) =>
+      isSessionBackfillRewindBatch(entry.value) &&
+      isOwnedSessionBackfillRewindBatch(entry.value, params.agentId),
+  );
   const candidates = batchEntries.flatMap((entry) =>
-    isSessionBackfillRewindBatch(entry.value)
-      ? entry.value.candidates.filter(isSessionBackfillRewindCandidate)
-      : [],
+    isSessionBackfillRewindBatch(entry.value) ? entry.value.candidates : [],
   );
   if (candidates.length === 0) {
     await deleteSessionBackfillRewindBatches(params.workspaceDir, batchEntries);

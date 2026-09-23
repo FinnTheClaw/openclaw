@@ -958,7 +958,7 @@ describe("official external plugin catalog", () => {
       },
     });
     const validFeed = hostedCatalogFeed({
-      sequence: 10,
+      sequence: 11,
       pluginName: "@openclaw/repaired-current",
     });
     const valid = signedHostedCatalogFeed({

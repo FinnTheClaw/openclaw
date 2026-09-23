@@ -451,7 +451,7 @@ export function parseSlashCommandPayload(
   }
 
   try {
-    if (contentType?.includes("application/json")) {
+    if (contentType?.toLowerCase().includes("application/json")) {
       const parsed = JSON.parse(body) as Record<string, unknown>;
 
       // Validate required fields (same checks as the form-encoded branch)

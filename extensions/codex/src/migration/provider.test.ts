@@ -804,6 +804,156 @@ describe("buildCodexMigrationProvider", () => {
     expect(sourceAppServerClientScope).toHaveBeenCalledTimes(1);
   });
 
+  describe("Codex auth credential identity at apply", () => {
+    const cases = [
+      {
+        name: "both present: OAuth item imports OAuth",
+        initial: "both",
+        selected: "oauth",
+        after: "same",
+        expected: "migrated",
+      },
+      {
+        name: "both present: API-key item imports API key",
+        initial: "both",
+        selected: "api_key",
+        after: "same",
+        expected: "migrated",
+      },
+      {
+        name: "OAuth-only item imports OAuth",
+        initial: "oauth",
+        selected: "oauth",
+        after: "same",
+        expected: "migrated",
+      },
+      {
+        name: "API-key-only item imports API key",
+        initial: "api_key",
+        selected: "api_key",
+        after: "same",
+        expected: "migrated",
+      },
+      {
+        name: "removed OAuth is not replaced by remaining API key",
+        initial: "both",
+        selected: "oauth",
+        after: "api_key",
+        expected: "skipped",
+      },
+      {
+        name: "removed API key is not replaced by remaining OAuth",
+        initial: "both",
+        selected: "api_key",
+        after: "oauth",
+        expected: "skipped",
+      },
+      {
+        name: "changed OAuth account is not imported under planned identity",
+        initial: "oauth",
+        selected: "oauth",
+        after: "changed-oauth",
+        expected: "skipped",
+      },
+      {
+        name: "new OAuth does not displace planned API key",
+        initial: "api_key",
+        selected: "api_key",
+        after: "both",
+        expected: "migrated",
+      },
+      {
+        name: "new API key does not displace planned OAuth",
+        initial: "oauth",
+        selected: "oauth",
+        after: "both",
+        expected: "migrated",
+      },
+      {
+        name: "wrong API-key source profile identity is skipped",
+        initial: "both",
+        selected: "api_key",
+        after: "wrong-profile",
+        expected: "skipped",
+      },
+    ] as const;
+
+    it.each(cases)("$name", async ({ initial, selected, after, expected }) => {
+      const fixture = await createCodexFixture();
+      const authPath = path.join(fixture.codexHome, "auth.json");
+      const writeAuth = async (state: "both" | "oauth" | "api_key" | "changed-oauth") => {
+        const hasOauth = state !== "api_key";
+        const hasApiKey = state === "both" || state === "api_key";
+        const accountId = state === "changed-oauth" ? "acct_changed" : "acct_planned";
+        await writeFile(
+          authPath,
+          JSON.stringify({
+            ...(hasApiKey ? { OPENAI_API_KEY: "sk-codex-identity-test" } : {}),
+            ...(hasOauth
+              ? {
+                  auth_mode: "chatgpt",
+                  tokens: {
+                    access_token: fakeJwt({
+                      exp: Math.floor(Date.now() / 1000) + 3600,
+                      "https://api.openai.com/auth": { chatgpt_account_id: accountId },
+                    }),
+                    refresh_token: "refresh-identity-test",
+                    account_id: accountId,
+                  },
+                }
+              : {}),
+          }),
+        );
+      };
+      await writeAuth(initial);
+      const provider = buildCodexMigrationProvider();
+      const ctx = makeContext({
+        source: fixture.codexHome,
+        stateDir: fixture.stateDir,
+        workspaceDir: fixture.workspaceDir,
+        reportDir: path.join(fixture.root, "report"),
+        includeSecrets: true,
+      });
+      const plan = await provider.plan(ctx);
+      const authItem = plan.items.find(
+        (entry) => entry.kind === "auth" && entry.details?.credentialKind === selected,
+      );
+      if (!authItem) {
+        throw new Error(`Expected planned ${selected} auth item`);
+      }
+      const selectedItem =
+        after === "wrong-profile"
+          ? {
+              ...authItem,
+              details: { ...authItem.details, sourceProfileId: "openai:other-source" },
+            }
+          : authItem;
+      if (after !== "same" && after !== "wrong-profile") {
+        await writeAuth(after);
+      }
+      const result = await provider.apply(ctx, { ...plan, items: [selectedItem] });
+      const migrated = result.items.find((entry) => entry.kind === "auth");
+      expect(migrated?.status).toBe(expected);
+      const profiles = loadTargetAuthStore(fixture).profiles;
+      if (expected === "skipped") {
+        expect(Object.keys(profiles)).toEqual([]);
+      } else if (selected === "oauth") {
+        expect(profiles["openai:account-acct_planned"]).toMatchObject({
+          type: "oauth",
+          provider: "openai",
+        });
+        expect(profiles["openai:codex-import"]).toBeUndefined();
+      } else {
+        expect(profiles["openai:codex-import"]).toMatchObject({
+          type: "api_key",
+          provider: "openai",
+          key: "sk-codex-identity-test",
+        });
+        expect(profiles["openai:account-acct_planned"]).toBeUndefined();
+      }
+    });
+  });
+
   it("imports Codex auth.json OAuth into the selected agent and seeds cached models", async () => {
     const fixture = await createCodexFixture();
     const reportDir = path.join(fixture.root, "report");

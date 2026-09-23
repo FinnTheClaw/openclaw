@@ -42,7 +42,48 @@ export async function waitForTransportReady(params: WaitForTransportReadyParams)
     if (params.abortSignal?.aborted) {
       return;
     }
-    const res = await params.check();
+    // A probe may never settle. Race it against the remaining deadline and abort signal;
+    // Promise.race observes a late probe rejection even after either bound wins.
+    const checkPromise = params.check();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const deadlinePromise = new Promise<"timeout">((resolve) => {
+      timeoutId = setTimeout(() => resolve("timeout"), Math.max(0, deadline - Date.now()));
+    });
+    const contenders: Array<Promise<TransportReadyResult | "timeout" | "aborted">> = [
+      checkPromise,
+      deadlinePromise,
+    ];
+    if (params.abortSignal) {
+      const abortSignal = params.abortSignal;
+      contenders.push(
+        new Promise<"aborted">((resolve) => {
+          onAbort = () => resolve("aborted");
+          abortSignal.addEventListener("abort", onAbort, { once: true });
+          if (abortSignal.aborted) {
+            resolve("aborted");
+          }
+        }),
+      );
+    }
+    let outcome: TransportReadyResult | "timeout" | "aborted";
+    try {
+      outcome = await Promise.race(contenders);
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+      if (onAbort) {
+        params.abortSignal?.removeEventListener("abort", onAbort);
+      }
+    }
+    if (outcome === "aborted") {
+      return;
+    }
+    if (outcome === "timeout") {
+      break;
+    }
+    const res = outcome;
     if (res.ok) {
       return;
     }

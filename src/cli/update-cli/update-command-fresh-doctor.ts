@@ -176,11 +176,20 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
   } finally {
     // Clack writes directly to the child's stdout. Preserve diagnostics on either
     // exit path without letting them share the parent's JSON result stream.
+    const redaction = { env: process.env, stateDir: resolveStateDir() };
     if (typeof result?.stdout === "string" && result.stdout.trim()) {
-      defaultRuntime[params.json ? "error" : "log"](result.stdout.trimEnd());
+      defaultRuntime[params.json ? "error" : "log"](
+        redactSupportString(result.stdout.trimEnd(), redaction, {
+          maxLength: Number.MAX_SAFE_INTEGER,
+        }),
+      );
     }
     if (typeof result?.stderr === "string" && result.stderr.trim()) {
-      defaultRuntime.error(result.stderr.trimEnd());
+      defaultRuntime.error(
+        redactSupportString(result.stderr.trimEnd(), redaction, {
+          maxLength: Number.MAX_SAFE_INTEGER,
+        }),
+      );
     }
   }
 }

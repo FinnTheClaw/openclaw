@@ -29,7 +29,11 @@ vi.mock("./shared.js", async (importOriginal) => ({
   resolveNodeRunner: vi.fn(() => "/usr/bin/node"),
 }));
 
-import { completePostCorePluginUpdate } from "./update-command-fresh-doctor.js";
+import { defaultRuntime } from "../../runtime.js";
+import {
+  completePostCorePluginUpdate,
+  runUpdateFinalizationDoctorInFreshProcess,
+} from "./update-command-fresh-doctor.js";
 
 const pluginUpdate: PostCorePluginUpdateResult = {
   status: "ok",
@@ -195,5 +199,149 @@ describe("post-plugin update readiness", () => {
         }),
       ],
     });
+  });
+});
+
+describe("fresh Doctor child-output redaction", () => {
+  const privateText = "alice@example.test";
+  const cases = [
+    {
+      name: "successful stdout uses the human log sink",
+      fails: false,
+      json: false,
+      stdout: true,
+      stderr: false,
+      logs: 1,
+      errors: 0,
+    },
+    {
+      name: "successful stdout uses the JSON error sink",
+      fails: false,
+      json: true,
+      stdout: true,
+      stderr: false,
+      logs: 0,
+      errors: 1,
+    },
+    {
+      name: "successful stderr uses the human error sink",
+      fails: false,
+      json: false,
+      stdout: false,
+      stderr: true,
+      logs: 0,
+      errors: 1,
+    },
+    {
+      name: "successful stderr uses the JSON error sink",
+      fails: false,
+      json: true,
+      stdout: false,
+      stderr: true,
+      logs: 0,
+      errors: 1,
+    },
+    {
+      name: "failed stdout uses the human log sink",
+      fails: true,
+      json: false,
+      stdout: true,
+      stderr: false,
+      logs: 1,
+      errors: 0,
+    },
+    {
+      name: "failed stdout uses the JSON error sink",
+      fails: true,
+      json: true,
+      stdout: true,
+      stderr: false,
+      logs: 0,
+      errors: 1,
+    },
+    {
+      name: "failed stderr uses the human error sink",
+      fails: true,
+      json: false,
+      stdout: false,
+      stderr: true,
+      logs: 0,
+      errors: 1,
+    },
+    {
+      name: "failed stderr uses the JSON error sink",
+      fails: true,
+      json: true,
+      stdout: false,
+      stderr: true,
+      logs: 0,
+      errors: 1,
+    },
+    {
+      name: "successful dual streams remain separate",
+      fails: false,
+      json: false,
+      stdout: true,
+      stderr: true,
+      logs: 1,
+      errors: 1,
+    },
+    {
+      name: "failed dual streams retain JSON routing and redacted error",
+      fails: true,
+      json: true,
+      stdout: true,
+      stderr: true,
+      logs: 0,
+      errors: 2,
+    },
+  ] as const;
+
+  beforeEach(() => {
+    mocks.runExec.mockReset();
+    vi.mocked(defaultRuntime.log).mockClear();
+    vi.mocked(defaultRuntime.error).mockClear();
+  });
+
+  it.each(cases)("$name", async ({ fails, json, stdout, stderr, logs, errors }) => {
+    const output = {
+      stdout: stdout ? `stdout marker ${privateText}\n` : "",
+      stderr: stderr ? `stderr marker ${privateText}\n` : "",
+    };
+    if (fails) {
+      mocks.runExec.mockRejectedValue(Object.assign(new Error("Doctor exited"), output));
+    } else {
+      mocks.runExec.mockResolvedValue(output);
+    }
+    const run = runUpdateFinalizationDoctorInFreshProcess({
+      phase: "pre-plugin",
+      root: "/opt/openclaw",
+      entryPath: "/opt/openclaw/dist/index.js",
+      nodeRunner: "/usr/bin/node",
+      yes: true,
+      json,
+      timeoutMs: 5_000,
+    });
+    if (fails) {
+      await expect(run).rejects.toThrow("Updated pre-plugin Doctor failed");
+      await expect(run).rejects.not.toThrow(privateText);
+    } else {
+      await expect(run).resolves.toBeUndefined();
+    }
+    expect(defaultRuntime.log).toHaveBeenCalledTimes(logs);
+    expect(defaultRuntime.error).toHaveBeenCalledTimes(errors);
+    const logged = [
+      ...vi.mocked(defaultRuntime.log).mock.calls,
+      ...vi.mocked(defaultRuntime.error).mock.calls,
+    ]
+      .flat()
+      .join("\n");
+    expect(logged).not.toContain(privateText);
+    if (stdout) {
+      expect(logged).toContain("stdout marker");
+    }
+    if (stderr) {
+      expect(logged).toContain("stderr marker");
+    }
   });
 });

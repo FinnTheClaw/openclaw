@@ -13,6 +13,7 @@ import {
   DEVICE_PAIR_NOTIFY_SUBSCRIBER_MAX_ENTRIES,
   DEVICE_PAIR_NOTIFY_SUBSCRIBER_NAMESPACE,
   notifyRequestStoreKey,
+  notifyRequestSubscriberStoreKey,
   notifySubscriberKey,
   notifySubscriberStoreKey,
   type NotifySeenRequest,
@@ -268,36 +269,52 @@ async function notifyPendingPairingRequests(params: { api: OpenClawPluginApi }):
   const pending: PendingPairingRequest[] = pairing.pending;
   const now = Date.now();
   const pendingIds = new Set(pending.map((entry) => entry.requestId));
-  const notifiedRequestIds = new Set<string>();
+  const legacyNotifiedRequestIds = new Set<string>();
+  const notifiedSubscriberRequests = new Set<string>();
 
   for (const entry of seenRequestEntries) {
     const requestId = normalizeOptionalString(entry.value.requestId);
     const notifiedAtMs = entry.value.notifiedAtMs;
+    const subscriberKey = normalizeOptionalString(entry.value.subscriberKey);
+    const expectedKey = requestId
+      ? subscriberKey
+        ? notifyRequestSubscriberStoreKey(requestId, subscriberKey)
+        : notifyRequestStoreKey(requestId)
+      : null;
     if (
       !requestId ||
       !Number.isFinite(notifiedAtMs) ||
       notifiedAtMs <= 0 ||
       !pendingIds.has(requestId) ||
-      now - notifiedAtMs > DEVICE_PAIR_NOTIFY_MAX_SEEN_AGE_MS
+      now - notifiedAtMs > DEVICE_PAIR_NOTIFY_MAX_SEEN_AGE_MS ||
+      entry.key !== expectedKey
     ) {
       await seenRequestStore.delete(entry.key);
       continue;
     }
-    notifiedRequestIds.add(requestId);
+    if (subscriberKey) {
+      notifiedSubscriberRequests.add(entry.key);
+    } else {
+      // Existing request-wide records retain their original once-only meaning.
+      legacyNotifiedRequestIds.add(requestId);
+    }
   }
 
   if (subscribers.length > 0) {
     const deliveredOneShots = new Set<string>();
     for (const request of pending) {
-      if (notifiedRequestIds.has(request.requestId)) {
+      if (legacyNotifiedRequestIds.has(request.requestId)) {
         continue;
       }
 
       const text = buildPairingRequestNotificationText(request);
-      let delivered = false;
       for (const entry of subscribers) {
         const subscriber = entry.value;
-        if (subscriber.mode === "once" && deliveredOneShots.has(entry.key)) {
+        const deliveryKey = notifyRequestSubscriberStoreKey(request.requestId, entry.key);
+        if (
+          notifiedSubscriberRequests.has(deliveryKey) ||
+          (subscriber.mode === "once" && deliveredOneShots.has(entry.key))
+        ) {
           continue;
         }
         if (!shouldNotifySubscriberForRequest(subscriber, request)) {
@@ -308,24 +325,22 @@ async function notifyPendingPairingRequests(params: { api: OpenClawPluginApi }):
           subscriber,
           text,
         });
-        delivered = delivered || sent;
-        if (sent && subscriber.mode === "once") {
-          deliveredOneShots.add(entry.key);
-          // Delivery is fallible and uncancellable. Delete only the exact arm
-          // that was sent so an overlapping re-arm remains subscribed.
-          await subscriberStore.deleteIf(entry.key, (current) =>
-            isSameNotifySubscription(current, subscriber),
+        if (sent) {
+          await seenRequestStore.register(
+            deliveryKey,
+            { requestId: request.requestId, subscriberKey: entry.key, notifiedAtMs: now },
+            { ttlMs: DEVICE_PAIR_NOTIFY_MAX_SEEN_AGE_MS },
           );
+          notifiedSubscriberRequests.add(deliveryKey);
+          if (subscriber.mode === "once") {
+            deliveredOneShots.add(entry.key);
+            // Delivery is fallible and uncancellable. Delete only the exact arm
+            // that was sent so an overlapping re-arm remains subscribed.
+            await subscriberStore.deleteIf(entry.key, (current) =>
+              isSameNotifySubscription(current, subscriber),
+            );
+          }
         }
-      }
-
-      if (delivered) {
-        await seenRequestStore.register(
-          notifyRequestStoreKey(request.requestId),
-          { requestId: request.requestId, notifiedAtMs: now },
-          { ttlMs: DEVICE_PAIR_NOTIFY_MAX_SEEN_AGE_MS },
-        );
-        notifiedRequestIds.add(request.requestId);
       }
     }
   }

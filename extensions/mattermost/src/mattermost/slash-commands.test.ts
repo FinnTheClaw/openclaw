@@ -277,3 +277,31 @@ describe("slash-commands", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("slash JSON content-type case folding", () => {
+  const body = JSON.stringify({
+    token: "token",
+    team_id: "team",
+    channel_id: "channel",
+    user_id: "user",
+    command: "/oc_status",
+  });
+
+  it.each([
+    ["all-uppercase media type", "APPLICATION/JSON"],
+    ["title-case media type", "Application/Json"],
+    ["uppercase subtype", "application/JSON"],
+    ["uppercase type", "APPLICATION/json"],
+    ["mixed-case media type", "aPpLiCaTiOn/jSoN"],
+    ["uppercase charset parameter", "APPLICATION/JSON; CHARSET=UTF-8"],
+    ["mixed-case charset parameter", "Application/JSON; charset=utf-8"],
+    ["uppercase media type with extra parameter", "APPLICATION/JSON; profile=slash"],
+    ["mixed-case media type with parameter spacing", "Application/Json ; charset=UTF-8"],
+  ])("parses %s", (_name, contentType) => {
+    expect(parseSlashCommandPayload(body, contentType)?.command).toBe("/oc_status");
+  });
+
+  it("rejects malformed JSON under uppercase media type", () => {
+    expect(parseSlashCommandPayload("{", "APPLICATION/JSON")).toBeNull();
+  });
+});

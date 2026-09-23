@@ -286,12 +286,20 @@ async function startTailscaleTunnel(config: {
     publicUrl,
     provider: `tailscale-${config.mode}`,
     stop: async () => {
+      const failures: Error[] = [];
       for (const route of routes) {
-        await cleanupTailscaleExposureRoute({
-          mode: config.mode,
-          port: config.tailscalePort,
-          path: route.path,
-        });
+        try {
+          await cleanupTailscaleExposureRoute({
+            mode: config.mode,
+            port: config.tailscalePort,
+            path: route.path,
+          });
+        } catch (error) {
+          failures.push(error as Error);
+        }
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(failures, "Tailscale tunnel cleanup incomplete");
       }
     },
   };

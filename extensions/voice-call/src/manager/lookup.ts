@@ -11,7 +11,10 @@ export function getCallByProviderCallId(params: {
 }): CallRecord | undefined {
   const callId = params.providerCallIdMap.get(params.providerCallId);
   if (callId) {
-    return params.activeCalls.get(callId);
+    const mappedCall = params.activeCalls.get(callId);
+    if (mappedCall) {
+      return mappedCall;
+    }
   }
 
   for (const call of params.activeCalls.values()) {

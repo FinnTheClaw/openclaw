@@ -212,3 +212,51 @@ it("falls through to the next credential when the first is rejected", async () =
   );
   loader.reset();
 });
+
+it.each([
+  {
+    name: "rejects an external protocol-relative host",
+    url: "//evil.example/avatar",
+    fetched: false,
+  },
+  { name: "rejects three leading slashes", url: "///evil.example/avatar", fetched: false },
+  { name: "rejects a slash-backslash network URL", url: "/\\evil.example/avatar", fetched: false },
+  {
+    name: "rejects a tab-normalized network URL",
+    url: "/" + String.fromCharCode(9) + "/evil.example/avatar",
+    fetched: false,
+  },
+  {
+    name: "rejects a newline-normalized network URL",
+    url: "/" + String.fromCharCode(10) + "/evil.example/avatar",
+    fetched: false,
+  },
+  {
+    name: "rejects same-origin protocol-relative syntax",
+    url: "//trusted.example/avatar",
+    fetched: false,
+  },
+  { name: "loads a canonical same-origin path", url: "/avatar/main", fetched: true },
+  { name: "loads a same-origin path with query", url: "/avatar/main?size=small", fetched: true },
+  { name: "loads a same-origin path with fragment", url: "/avatar/main#photo", fetched: true },
+  {
+    name: "leaves an explicit absolute profile URL alone",
+    url: "https://trusted.example/avatar/main",
+    fetched: false,
+  },
+])("$name", ({ url, fetched }) => {
+  vi.stubGlobal("location", { href: "https://trusted.example/dashboard" });
+  const fetchMock = vi.fn(async () => ({ ok: false, status: 404 }) as Response);
+  vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+  const loader = createLoader(vi.fn());
+
+  expect(loader.resolve(url, ["secret-token"])).toBe(url.startsWith("https://") ? url : null);
+  expect(fetchMock).toHaveBeenCalledTimes(fetched ? 1 : 0);
+  if (fetched) {
+    expect(fetchMock).toHaveBeenCalledWith(url, {
+      headers: { Authorization: "Bearer secret-token" },
+      signal: expect.any(AbortSignal),
+    });
+  }
+  loader.hostDisconnected();
+});

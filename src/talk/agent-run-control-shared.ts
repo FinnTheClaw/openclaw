@@ -132,7 +132,7 @@ const FOLLOWUP_CONTROL_PATTERNS = [
 
 const STEER_CONTROL_PATTERNS = [
   /^(?:(?:ok|okay|alright|all right)[,\s]+)?(?:please\s+)?update\s+\S/,
-  /^(?:actually|instead|change|switch|focus|use|try|prefer|make|do|check|look at|go with|redirect|steer|tell it to)\b/,
+  /^(?:actually|instead|change|switch|focus|use|try|prefer|make|do(?!\s+not\s+(?:cancel|cancle|stop|abort|kill|end)\b)|check|look at|go with|redirect|steer|tell it to)\b/,
   /^(?:can|could|would)\s+you\s+(?:actually\s+)?(?:change|switch|focus|use|try|prefer|make|do|check|look at|go with|redirect|steer)\b/,
   /\b(?:instead|not that|rather than|change that|switch to|focus on|use the|try the|go with|tell it to)\b/,
 ] as const;
@@ -160,8 +160,9 @@ export function resolveRealtimeVoiceAgentControlIntent(params: {
   text: string;
   mode?: unknown;
 }): RealtimeVoiceAgentControlIntent {
+  const normalized = params.text.trim().toLowerCase();
   const explicitMode = normalizeRealtimeVoiceAgentControlMode(params.mode);
-  if (explicitMode) {
+  if (explicitMode && !(explicitMode === "cancel" && hasNegatedCancelIntent(normalized))) {
     return {
       mode: explicitMode,
       confidence: "high",
@@ -170,8 +171,6 @@ export function resolveRealtimeVoiceAgentControlIntent(params: {
     };
   }
 
-  const text = params.text;
-  const normalized = text.trim().toLowerCase();
   // "Stop using X" redirects the active work; it must not be treated as an
   // abort of the whole run just because it starts with "stop".
   if (matchesAnyPattern(normalized, STOP_REDIRECT_CONTROL_PATTERNS)) {
@@ -250,9 +249,7 @@ export function parseRealtimeVoiceAgentControlToolArgs(args: unknown): {
   if (!text) {
     throw new Error("text required");
   }
-  const mode =
-    normalizeRealtimeVoiceAgentControlMode(record.mode) ??
-    resolveRealtimeVoiceAgentControlIntent({ text }).mode;
+  const mode = resolveRealtimeVoiceAgentControlIntent({ text, mode: record.mode }).mode;
   return { text, mode };
 }
 

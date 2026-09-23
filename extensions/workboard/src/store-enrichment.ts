@@ -167,22 +167,24 @@ export class WorkboardEnrichmentStore extends WorkboardCoreStore {
     scope?: WorkboardMutationScope,
   ): Promise<WorkboardCard> {
     return await this.enqueueMutation(async () => {
-      const existing = await this.get(cardId);
-      if (!existing) {
-        throw new Error(`card not found: ${cardId}`);
-      }
-      assertCanMutateClaimedCard(existing, scope);
-      const attachments = existing.metadata?.attachments ?? [];
-      if (!attachments.some((attachment) => attachment.id === attachmentId)) {
-        throw new Error(`attachment not found: ${attachmentId}`);
-      }
-      await this.attachmentStore.delete(attachmentId);
-      return await this.updateCard(cardId, {
-        metadata: {
-          ...existing.metadata,
-          attachments: attachments.filter((attachment) => attachment.id !== attachmentId),
+      const result = await this.updateLatestCard(
+        cardId,
+        (current) => {
+          assertCanMutateClaimedCard(current, scope);
+          const attachments = current.metadata?.attachments ?? [];
+          if (!attachments.some((attachment) => attachment.id === attachmentId)) {
+            throw new Error(`attachment not found: ${attachmentId}`);
+          }
+          return {
+            metadata: {
+              ...current.metadata,
+              attachments: attachments.filter((attachment) => attachment.id !== attachmentId),
+            },
+          };
         },
-      });
+        { deleteAttachmentId: attachmentId },
+      );
+      return result.card;
     });
   }
 

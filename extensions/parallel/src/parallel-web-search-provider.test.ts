@@ -34,6 +34,15 @@ vi.mock("openclaw/plugin-sdk/provider-web-search", async (importOriginal) => {
           throw new Error("Missing mocked Parallel response.");
         }
         endpointMockState.effects.shift()?.();
+        if (response.headers.get("x-test-bind-request-id") === "true") {
+          const requestId = (JSON.parse(params.init.body as string) as JsonRecord).id;
+          return await run(
+            new Response((await response.text()).replaceAll("__request_id__", String(requestId)), {
+              status: response.status,
+              headers: response.headers,
+            }),
+          );
+        }
         return await run(response);
       },
     ),
@@ -45,9 +54,15 @@ import { runParallelMcpSearch } from "./parallel-mcp-search.runtime.js";
 import { createParallelWebSearchProvider } from "./parallel-web-search-provider.js";
 const EMPTY_SEARCH_RESPONSE = { search_id: "x", session_id: "y", results: [] };
 function jsonResponse(body: unknown, headers: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(body), {
+  const needsId =
+    body !== null &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    !("id" in body) &&
+    ("result" in body || "error" in body);
+  return new Response(JSON.stringify(needsId ? { ...body, id: "__request_id__" } : body), {
     status: 200,
-    headers: { "Content-Type": "application/json", ...headers },
+    headers: { "Content-Type": "application/json", "x-test-bind-request-id": "true", ...headers },
   });
 }
 function enqueueJson(body: unknown = EMPTY_SEARCH_RESPONSE): void {
@@ -87,13 +102,13 @@ function pushMcpHandshake(
 ): void {
   endpointMockState.responses.push(
     jsonResponse(
-      { jsonrpc: "2.0", id: "i", result: protocolVersion ? { protocolVersion } : {} },
+      { jsonrpc: "2.0", id: "__request_id__", result: protocolVersion ? { protocolVersion } : {} },
       { "mcp-session-id": sessionId },
     ),
     jsonResponse({ jsonrpc: "2.0" }),
     jsonResponse({
       jsonrpc: "2.0",
-      id: "c",
+      id: "__request_id__",
       result: { content: [{ type: "text", text: JSON.stringify(toolPayload) }] },
     }),
   );
@@ -580,24 +595,162 @@ describe("parallel web search provider", () => {
   });
 });
 describe("runParallelMcpSearch", () => {
+  it("rejects a mismatched JSON-RPC id when the initialization response has a different string id", async () => {
+    endpointMockState.responses.push(
+      jsonResponse({ jsonrpc: "2.0", id: "unrelated", result: { protocolVersion: "2025-06-18" } }),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
+  it("rejects a mismatched JSON-RPC id when the initialization response has a numeric id", async () => {
+    endpointMockState.responses.push(
+      jsonResponse({ jsonrpc: "2.0", id: 12, result: { protocolVersion: "2025-06-18" } }),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
+  it("rejects a mismatched JSON-RPC id when the initialization response has a null id", async () => {
+    endpointMockState.responses.push(
+      jsonResponse({ jsonrpc: "2.0", id: null, result: { protocolVersion: "2025-06-18" } }),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
+  it("rejects a mismatched JSON-RPC id when the initialization response omits its id", async () => {
+    endpointMockState.responses.push(
+      new Response(JSON.stringify({ jsonrpc: "2.0", result: { protocolVersion: "2025-06-18" } })),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
+  it("rejects a mismatched JSON-RPC id when the initialization batch contains only unrelated ids", async () => {
+    endpointMockState.responses.push(
+      jsonResponse([
+        { jsonrpc: "2.0", id: "other-a", result: {} },
+        { jsonrpc: "2.0", id: "other-b", result: {} },
+      ]),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
+  it("rejects a mismatched JSON-RPC id when the tool response has a different string id", async () => {
+    endpointMockState.responses.push(
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: "__request_id__",
+        result: { protocolVersion: "2025-06-18" },
+      }),
+      jsonResponse({ jsonrpc: "2.0" }),
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: "unrelated",
+        result: { structuredContent: { results: [] } },
+      }),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
+  it("rejects a mismatched JSON-RPC id when the tool response has a numeric id", async () => {
+    endpointMockState.responses.push(
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: "__request_id__",
+        result: { protocolVersion: "2025-06-18" },
+      }),
+      jsonResponse({ jsonrpc: "2.0" }),
+      jsonResponse({ jsonrpc: "2.0", id: 12, result: { structuredContent: { results: [] } } }),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
+  it("rejects a mismatched JSON-RPC id when the tool response omits its id", async () => {
+    endpointMockState.responses.push(
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: "__request_id__",
+        result: { protocolVersion: "2025-06-18" },
+      }),
+      jsonResponse({ jsonrpc: "2.0" }),
+      new Response(
+        JSON.stringify({ jsonrpc: "2.0", result: { structuredContent: { results: [] } } }),
+      ),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
+  it("rejects a mismatched JSON-RPC id when the tool batch contains only unrelated ids", async () => {
+    endpointMockState.responses.push(
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: "__request_id__",
+        result: { protocolVersion: "2025-06-18" },
+      }),
+      jsonResponse({ jsonrpc: "2.0" }),
+      jsonResponse([
+        { jsonrpc: "2.0", id: "other-a", result: { structuredContent: { results: [] } } },
+        { jsonrpc: "2.0", id: "other-b", result: { structuredContent: { results: [] } } },
+      ]),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
+  it("rejects a mismatched JSON-RPC id when the tool SSE stream contains only an unrelated response", async () => {
+    endpointMockState.responses.push(
+      jsonResponse({
+        jsonrpc: "2.0",
+        id: "__request_id__",
+        result: { protocolVersion: "2025-06-18" },
+      }),
+      jsonResponse({ jsonrpc: "2.0" }),
+      new Response(
+        'data: {"jsonrpc":"2.0","id":"unrelated","result":{"structuredContent":{"results":[]}}}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["id-check"], maxResults: 1 }),
+    ).rejects.toThrow("Parallel MCP response missing matching id");
+  });
+
   it("handles SSE notifications, multiline events, JSON batches, and structured payloads", async () => {
     endpointMockState.responses.push(
       new Response(
         [
           'data: {"jsonrpc":"2.0","method":"notifications/progress"}',
           "",
-          'data: {"jsonrpc":"2.0","id":"ignored",',
+          'data: {"jsonrpc":"2.0","id":"__request_id__",',
           'data: "result":{"protocolVersion":"2025-06-18"}}',
           "",
         ].join("\n"),
-        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream", "x-test-bind-request-id": "true" },
+        },
       ),
       jsonResponse({ jsonrpc: "2.0" }),
       jsonResponse([
         { jsonrpc: "2.0", method: "notifications/progress" },
         {
           jsonrpc: "2.0",
-          id: "ignored",
+          id: "__request_id__",
           result: {
             structuredContent: {
               search_id: "search_sse",
@@ -704,7 +857,7 @@ describe("runParallelMcpSearch", () => {
   it("throws when the initialized acknowledgement fails", async () => {
     endpointMockState.responses.push(
       jsonResponse(
-        { jsonrpc: "2.0", id: "i", result: { protocolVersion: "2025-06-18" } },
+        { jsonrpc: "2.0", id: "__request_id__", result: { protocolVersion: "2025-06-18" } },
         { "mcp-session-id": "server-session-1" },
       ),
       new Response("ack nope", { status: 500 }),

@@ -93,14 +93,17 @@ export function getAccountConfig(
           : undefined,
     };
 
-    // Merge: base-level takes precedence over accounts.default
+    // Merge only present base-level fields; absent fields inherit from accounts.default.
+    const baseLevelOverrides = Object.fromEntries(
+      Object.entries(baseLevel).filter(([, value]) => value !== undefined),
+    );
     const merged: Partial<TwitchAccountConfig> = {
       ...accountFromAccounts,
-      ...baseLevel,
-    } as Partial<TwitchAccountConfig>;
+      ...baseLevelOverrides,
+    };
 
-    // Only return if we have at least username
-    if (merged.username) {
+    // An explicitly empty username still overrides accounts.default.
+    if (typeof merged.username === "string") {
       return merged as TwitchAccountConfig;
     }
 

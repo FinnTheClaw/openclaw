@@ -129,11 +129,9 @@ function iterMcpMessages(text: string): JsonRpcMessage[] {
  *
  * Streamable-HTTP servers may emit progress/log notifications before the final
  * result, so scan the whole stream and return the result/error message whose
- * `id` matches. Falls back to the last result/error-bearing message if no id
- * matches; `{}` if none is present.
+ * `id` matches. A response for another request must never be accepted.
  */
 function selectMcpEnvelope(text: string, requestId: string): JsonRpcMessage {
-  let fallback: JsonRpcMessage = {};
   for (const msg of iterMcpMessages(text)) {
     if (!("result" in msg || "error" in msg)) {
       continue;
@@ -141,9 +139,8 @@ function selectMcpEnvelope(text: string, requestId: string): JsonRpcMessage {
     if (msg.id === requestId) {
       return msg;
     }
-    fallback = msg;
   }
-  return fallback;
+  throw new Error(`Parallel MCP response missing matching id: ${requestId}`);
 }
 
 /**

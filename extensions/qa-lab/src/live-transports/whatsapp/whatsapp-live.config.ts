@@ -238,6 +238,7 @@ export function buildWhatsAppQaConfig(
     ? {
         tools: {
           ...baseCfg.tools,
+          ...("tools" in audioPreflightConfig ? audioPreflightConfig.tools : {}),
           alsoAllow: uniqueStrings([...(baseCfg.tools?.alsoAllow ?? []), "message"]),
         },
       }

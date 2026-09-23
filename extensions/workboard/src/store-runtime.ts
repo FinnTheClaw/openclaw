@@ -1,7 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { WorkboardChange } from "@openclaw/workboard-contract";
-import type { WorkboardCardStore, WorkboardKeyedStore } from "./persistence-types.js";
+import type {
+  PersistedWorkboardCard,
+  WorkboardCardStore,
+  WorkboardKeyedStore,
+} from "./persistence-types.js";
 
 export class WorkboardStoreRuntime {
   private readonly operationScope = new AsyncLocalStorage<{ active: boolean }>();
@@ -102,6 +106,28 @@ export class WorkboardStoreRuntime {
           }
           return deleted;
         }),
+      ...(store.deleteAttachmentIfUpdatedAt
+        ? {
+            deleteAttachmentIfUpdatedAt: (
+              key: string,
+              value: PersistedWorkboardCard,
+              expectedUpdatedAt: number,
+              attachmentId: string,
+            ) =>
+              this.runOperation(async () => {
+                const deleted = await store.deleteAttachmentIfUpdatedAt!(
+                  key,
+                  value,
+                  expectedUpdatedAt,
+                  attachmentId,
+                );
+                if (deleted) {
+                  this.mutationRevision += 1;
+                }
+                return deleted;
+              }),
+          }
+        : {}),
       claimIfOwnerAvailable: (key, value, expectedUpdatedAt, ownerId, now) =>
         this.runOperation(async () => {
           const result = await store.claimIfOwnerAvailable(

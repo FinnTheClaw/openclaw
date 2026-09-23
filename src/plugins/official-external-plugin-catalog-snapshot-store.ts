@@ -185,7 +185,7 @@ function assertSignedSnapshotWriteIsMonotonic(params: {
       "hosted catalog signed feed sequence is older than current snapshot",
     );
   }
-  if (params.candidate.sequence !== current.sequence || current.generatedAt === undefined) {
+  if (params.candidate.sequence !== current.sequence) {
     return;
   }
   const candidate = readMonotonicStateFromBody(params.candidateBody);

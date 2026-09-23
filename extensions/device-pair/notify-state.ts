@@ -22,6 +22,8 @@ export type NotifySubscription = {
 export type NotifySeenRequest = {
   requestId: string;
   notifiedAtMs: number;
+  /** Absent on request-wide records written by older versions. */
+  subscriberKey?: string;
 };
 
 export type LegacyNotifyStateFile = {
@@ -130,4 +132,8 @@ export function notifySubscriberStoreKey(subscriber: {
 
 export function notifyRequestStoreKey(requestId: string): string {
   return hashStoreKey(requestId);
+}
+
+export function notifyRequestSubscriberStoreKey(requestId: string, subscriberKey: string): string {
+  return hashStoreKey(JSON.stringify([requestId, subscriberKey]));
 }

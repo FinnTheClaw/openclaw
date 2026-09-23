@@ -430,14 +430,22 @@ export function registerVoiceCallCli(params: {
         const localUrl = `http://127.0.0.1:${servePort}${servePath}`;
 
         if (mode === "off") {
+          const failures: Error[] = [];
           for (const exposurePath of [tsPath, ...streamPaths]) {
             for (const tailscaleMode of ["serve", "funnel"] as const) {
-              await cleanupTailscaleExposureRoute({
-                mode: tailscaleMode,
-                port: config.tailscale.port,
-                path: exposurePath,
-              });
+              try {
+                await cleanupTailscaleExposureRoute({
+                  mode: tailscaleMode,
+                  port: config.tailscale.port,
+                  path: exposurePath,
+                });
+              } catch (error) {
+                failures.push(error as Error);
+              }
             }
+          }
+          if (failures.length > 0) {
+            throw new AggregateError(failures, "Tailscale exposure cleanup incomplete");
           }
           writeCliJson({ ok: true, mode: "off", path: tsPath, streamPaths });
           return;

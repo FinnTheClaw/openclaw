@@ -41,19 +41,22 @@ export function runWithSqliteBusyTimeout<T>(
   if (options.lockFailureReporting) {
     lockFailureReportingByDatabase.set(database, options.lockFailureReporting);
   }
-  if (previousBusyTimeoutMs !== normalizedTimeoutMs) {
-    setSqliteBusyTimeout(database, normalizedTimeoutMs);
-  }
   try {
+    if (previousBusyTimeoutMs !== normalizedTimeoutMs) {
+      setSqliteBusyTimeout(database, normalizedTimeoutMs);
+    }
     return operation();
   } finally {
-    if (database.isOpen && previousBusyTimeoutMs !== normalizedTimeoutMs) {
-      setSqliteBusyTimeout(database, previousBusyTimeoutMs);
-    }
-    if (previousLockFailureReporting) {
-      lockFailureReportingByDatabase.set(database, previousLockFailureReporting);
-    } else {
-      lockFailureReportingByDatabase.delete(database);
+    try {
+      if (database.isOpen && previousBusyTimeoutMs !== normalizedTimeoutMs) {
+        setSqliteBusyTimeout(database, previousBusyTimeoutMs);
+      }
+    } finally {
+      if (previousLockFailureReporting) {
+        lockFailureReportingByDatabase.set(database, previousLockFailureReporting);
+      } else {
+        lockFailureReportingByDatabase.delete(database);
+      }
     }
   }
 }

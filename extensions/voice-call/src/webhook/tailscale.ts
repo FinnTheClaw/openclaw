@@ -71,7 +71,12 @@ export async function cleanupTailscaleExposureRoute(opts: {
   port: number;
   path: string;
 }): Promise<void> {
-  await runTailscaleCommand(buildTailscaleExposureArgs(opts));
+  const { code } = await runTailscaleCommand(buildTailscaleExposureArgs(opts));
+  if (code !== 0) {
+    throw new Error(
+      `[voice-call] Tailscale ${opts.mode} off failed for ${opts.path} on HTTPS ${opts.port} (exit ${code})`,
+    );
+  }
 }
 
 export async function setupTailscaleExposureRoutes(opts: {
@@ -92,8 +97,19 @@ export async function setupTailscaleExposureRoutes(opts: {
       buildTailscaleExposureArgs({ mode: opts.mode, port: opts.port, ...route }),
     );
     if (code !== 0) {
+      const rollbackFailures: Error[] = [];
       for (const path of mountedPaths.toReversed()) {
-        await cleanupTailscaleExposureRoute({ mode: opts.mode, port: opts.port, path });
+        try {
+          await cleanupTailscaleExposureRoute({ mode: opts.mode, port: opts.port, path });
+        } catch (error) {
+          rollbackFailures.push(error as Error);
+        }
+      }
+      if (rollbackFailures.length > 0) {
+        throw new AggregateError(
+          rollbackFailures,
+          `[voice-call] Tailscale ${opts.mode} exposure failed for ${route.path}; rollback incomplete for ${rollbackFailures.length} of ${mountedPaths.length} mounted route(s)`,
+        );
       }
       console.warn(
         `[voice-call] Tailscale ${opts.mode} exposure failed for ${route.path}; rolled back ${mountedPaths.length} mounted route(s)`,
@@ -141,12 +157,18 @@ export async function cleanupTailscaleExposure(config: VoiceCallConfig): Promise
   }
 
   const mode = config.tailscale.mode === "funnel" ? "funnel" : "serve";
-  await cleanupTailscaleExposureRoute({
-    mode,
-    port: config.tailscale.port,
-    path: config.tailscale.path,
-  });
-  for (const { publicPath } of resolveVoiceCallStreamExposurePaths(config)) {
-    await cleanupTailscaleExposureRoute({ mode, port: config.tailscale.port, path: publicPath });
+  const failures: Error[] = [];
+  for (const path of [
+    config.tailscale.path,
+    ...resolveVoiceCallStreamExposurePaths(config).map(({ publicPath }) => publicPath),
+  ]) {
+    try {
+      await cleanupTailscaleExposureRoute({ mode, port: config.tailscale.port, path });
+    } catch (error) {
+      failures.push(error as Error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `[voice-call] Tailscale ${mode} cleanup incomplete`);
   }
 }

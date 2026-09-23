@@ -1249,6 +1249,41 @@ class WorkboardSqliteCardStore implements WorkboardCardStore {
     });
   }
 
+  async deleteAttachmentIfUpdatedAt(
+    key: string,
+    value: PersistedWorkboardCard,
+    expectedUpdatedAt: number,
+    attachmentId: string,
+  ): Promise<boolean> {
+    this.validatePayload(key, value);
+    if (value.card.metadata?.attachments?.some((attachment) => attachment.id === attachmentId)) {
+      throw new Error("deleted attachment remains in card metadata.");
+    }
+    return runSqliteImmediateTransactionSync(this.db, () => {
+      const current = this.db
+        .prepare("SELECT updated_at FROM workboard_cards WHERE id = ?")
+        .get(key);
+      if (!isRecord(current) || numberValue(current, "updated_at") !== expectedUpdatedAt) {
+        return false;
+      }
+      const attachment = this.db
+        .prepare(
+          `SELECT a.card_id FROM workboard_card_attachments AS a
+           INNER JOIN workboard_attachment_blobs AS b ON b.attachment_id = a.id
+           WHERE a.id = ?`,
+        )
+        .get(attachmentId);
+      if (!isRecord(attachment) || attachment.card_id !== key) {
+        return false;
+      }
+      insertCard(this.db, value.card);
+      this.db
+        .prepare("DELETE FROM workboard_attachment_blobs WHERE attachment_id = ?")
+        .run(attachmentId);
+      return true;
+    });
+  }
+
   async claimIfOwnerAvailable(
     key: string,
     value: PersistedWorkboardCard,

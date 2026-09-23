@@ -11,7 +11,7 @@
  * @module @openclaw/oc-path/jsonc/emit
  */
 
-import { OcEmitSentinelError, REDACTED_SENTINEL } from "../sentinel.js";
+import { OcEmitSentinelError, REDACTED_SENTINEL, guardSentinel } from "../sentinel.js";
 import type { JsoncAst, JsoncValue } from "./ast.js";
 
 interface JsoncEmitOptions {
@@ -42,9 +42,11 @@ export function emitJsonc(ast: JsoncAst, opts: JsoncEmitOptions = {}): string {
 function renderValue(value: JsoncValue, guardPath: string, walked: readonly string[]): string {
   switch (value.kind) {
     case "object": {
-      const parts = value.entries.map(
-        (e) => `${JSON.stringify(e.key)}: ${renderValue(e.value, guardPath, [...walked, e.key])}`,
-      );
+      const parts = value.entries.map((e) => {
+        const keyPath = [...walked, e.key];
+        guardSentinel(e.key, `${guardPath}/${keyPath.join("/")}`);
+        return `${JSON.stringify(e.key)}: ${renderValue(e.value, guardPath, keyPath)}`;
+      });
       return `{ ${parts.join(", ")} }`;
     }
     case "array": {
