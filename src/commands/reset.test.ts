@@ -5,6 +5,7 @@ import {
   createCleanupCommandRuntime,
   gatewayService,
   listAgentSessionDirs,
+  removePath,
   removeStateAndLinkedPaths,
   removeWorkspaceDirs,
   resetCleanupCommandMocks,
@@ -122,19 +123,103 @@ describe("resetCommand", () => {
     });
   });
 
-  it("continues a scoped reset when session directory inspection fails", async () => {
+  const runScopedReset = (dryRun = false) =>
+    resetCommand(runtime, {
+      scope: "config+creds+sessions",
+      yes: true,
+      nonInteractive: true,
+      dryRun,
+    });
+
+  it("ST05-01 removes one enumerated agent session", async () => {
+    await runScopedReset();
+    expect(removePath).toHaveBeenCalledWith(
+      "/tmp/.openclaw/agents/main/sessions",
+      runtime,
+      expect.objectContaining({ dryRun: false }),
+    );
+  });
+
+  it("ST05-02 removes multiple enumerated agent sessions", async () => {
+    listAgentSessionDirs.mockResolvedValueOnce([
+      "/tmp/.openclaw/agents/main/sessions",
+      "/tmp/.openclaw/agents/other/sessions",
+    ]);
+    await runScopedReset();
+    expect(removePath).toHaveBeenCalledWith(
+      "/tmp/.openclaw/agents/other/sessions",
+      runtime,
+      expect.anything(),
+    );
+  });
+
+  it("ST05-03 succeeds with no session directories", async () => {
+    listAgentSessionDirs.mockResolvedValueOnce([]);
+    await runScopedReset();
+    expect(cleanupCommandLogMessages(runtime).some((message) => message.startsWith("Next:"))).toBe(
+      true,
+    );
+  });
+
+  it("ST05-04 fails on an enumeration permission error", async () => {
     listAgentSessionDirs.mockRejectedValueOnce(new Error("permission denied"));
-
-    await expect(
-      resetCommand(runtime, {
-        scope: "config+creds+sessions",
-        yes: true,
-        nonInteractive: true,
-      }),
-    ).resolves.toBeUndefined();
-
+    await expect(runScopedReset()).rejects.toMatchObject({ name: "ExitError", code: 1 });
     expect(runtime.error).toHaveBeenCalledWith(
-      "Failed to inspect session directories: Error: permission denied",
+      "Failed to inspect session directories; reset is incomplete: Error: permission denied",
+    );
+  });
+
+  it("ST05-05 fails on an enumeration I/O error", async () => {
+    listAgentSessionDirs.mockRejectedValueOnce(new Error("I/O error"));
+    await expect(runScopedReset()).rejects.toMatchObject({ name: "ExitError", code: 1 });
+  });
+
+  it("ST05-06 reports partial cleanup after config removal", async () => {
+    listAgentSessionDirs.mockRejectedValueOnce(new Error("state unavailable"));
+    await expect(runScopedReset()).rejects.toMatchObject({ code: 1 });
+    expect(removePath).toHaveBeenCalledWith(
+      "/tmp/.openclaw/openclaw.json",
+      runtime,
+      expect.anything(),
+    );
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringContaining("reset is incomplete"));
+  });
+
+  it("ST05-07 fails dry-run when enumeration fails", async () => {
+    listAgentSessionDirs.mockRejectedValueOnce(new Error("denied"));
+    await expect(runScopedReset(true)).rejects.toMatchObject({ code: 1 });
+  });
+
+  it("ST05-08 does not announce success when one session removal fails", async () => {
+    removePath.mockImplementation(async (target: string) => ({
+      ok: !target.endsWith("/sessions"),
+    }));
+    await expect(runScopedReset()).rejects.toMatchObject({ name: "ExitError", code: 1 });
+    expect(cleanupCommandLogMessages(runtime).some((message) => message.startsWith("Next:"))).toBe(
+      false,
+    );
+  });
+
+  it("ST05-09 includes nested session paths from enumeration", async () => {
+    listAgentSessionDirs.mockResolvedValueOnce(["/tmp/.openclaw/agents/nested/name/sessions"]);
+    await runScopedReset();
+    expect(removePath).toHaveBeenCalledWith(
+      "/tmp/.openclaw/agents/nested/name/sessions",
+      runtime,
+      expect.anything(),
+    );
+  });
+
+  it("ST05-10 does not claim Next or attempt sessions after failed inspection", async () => {
+    listAgentSessionDirs.mockRejectedValueOnce(new Error("denied"));
+    await expect(runScopedReset()).rejects.toMatchObject({ code: 1 });
+    expect(cleanupCommandLogMessages(runtime).some((message) => message.startsWith("Next:"))).toBe(
+      false,
+    );
+    expect(removePath).not.toHaveBeenCalledWith(
+      "/tmp/.openclaw/agents/main/sessions",
+      runtime,
+      expect.anything(),
     );
   });
 });

@@ -125,11 +125,15 @@ async function reconcilePairingInvalidation() {
   if (reconciledPairingInvalidationRevision === pairingConfigStore.invalidationRevision) {
     return;
   }
-  reconciledPairingInvalidationRevision = pairingConfigStore.invalidationRevision;
-  await syncTabsToRelay();
-  closeRelaySocket();
-  setBadge("off");
-  await detachAllDebuggerSessions();
+  const revision = pairingConfigStore.invalidationRevision;
+  try {
+    await syncTabsToRelay();
+  } finally {
+    closeRelaySocket();
+    setBadge("off");
+    await detachAllDebuggerSessions();
+  }
+  reconciledPairingInvalidationRevision = revision;
 }
 
 function setBadge(kind) {

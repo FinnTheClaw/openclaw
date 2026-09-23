@@ -2410,4 +2410,67 @@ describe("wiki corpus bridge page agent scoping", () => {
     ]);
   });
 });
+describe("ST10 sessions-only wiki page scope", () => {
+  it.each([
+    ["01 wiki override", "wiki", "sources/alpha.md", true, null],
+    ["02 all override", "all", "sources/alpha.md", true, null],
+    ["03 memory override", "memory", "sources/alpha.md", true, null],
+    ["04 default wiki", undefined, "sources/alpha.md", true, null],
+    ["05 allowed memory page", "wiki", "MEMORY.md", true, "memory"],
+    ["06 missing memory page", "all", "MISSING.md", true, null],
+    ["07 unrestricted wiki", "wiki", "sources/alpha.md", false, "wiki"],
+    ["08 unrestricted all", "all", "sources/alpha.md", false, "wiki"],
+    ["09 direct wiki path", "all", "sources/alpha.md", true, null],
+    ["10 digest claim", "wiki", "claim.alpha", true, null],
+  ] as const)("%s", async (_name, requestedCorpus, lookup, protectedRecall, expectedCorpus) => {
+    const { rootDir, config } = await createQueryVault({
+      initialize: true,
+      config: { search: { backend: "shared", corpus: "wiki" } },
+    });
+    await fs.writeFile(
+      path.join(rootDir, "sources", "alpha.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.alpha",
+          title: "Alpha",
+          claims: [{ id: "claim.alpha", text: "Alpha claim.", status: "supported" }],
+        },
+        body: "# Alpha\n\nwiki content\n",
+      }),
+    );
+    if (lookup === "claim.alpha") {
+      await compileMemoryWikiVault(config);
+    }
+    const manager = createMemoryManager({
+      readResult:
+        lookup === "MEMORY.md"
+          ? { status: "ok", path: "MEMORY.md", text: "authorized memory" }
+          : { status: "not_found" },
+    });
+    getActiveMemorySearchManagerMock.mockResolvedValue({ manager });
+    const result = await getMemoryWikiPage({
+      config,
+      appConfig: createSessionVisibilityAppConfig(),
+      agentId: "main",
+      agentSessionKey: "agent:main:child-session",
+      ...(protectedRecall
+        ? {
+            conversationRecall: {
+              anchorSessionKey: "agent:main:child-session",
+              scope: "same-agent-private" as const,
+              corpus: "sessions" as const,
+            },
+          }
+        : {}),
+      ...(requestedCorpus ? { searchCorpus: requestedCorpus } : {}),
+      lookup,
+    });
+    expect(result?.corpus ?? null).toBe(expectedCorpus);
+    if (protectedRecall) {
+      expect(result?.corpus).not.toBe("wiki");
+    }
+  });
+});
+
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

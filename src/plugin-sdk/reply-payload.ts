@@ -519,12 +519,14 @@ export async function sendMediaWithLeadingCaption(params: {
   if (params.mediaUrls.length === 0) {
     return false;
   }
+  let sentCount = 0;
 
   for (const [index, mediaUrl] of params.mediaUrls.entries()) {
     const isFirst = index === 0;
     const caption = isFirst ? params.caption : undefined;
     try {
       await params.send({ mediaUrl, caption });
+      sentCount += 1;
     } catch (error) {
       if (params.onError) {
         await params.onError({
@@ -539,7 +541,7 @@ export async function sendMediaWithLeadingCaption(params: {
       throw error;
     }
   }
-  return true;
+  return sentCount > 0;
 }
 
 /** Deliver media with leading caption when possible, otherwise fall back to chunked text. */

@@ -1946,7 +1946,7 @@ describe("agent request events", () => {
       to: "123",
     });
     const optsRecord = opts as Record<string, unknown>;
-    expect(optsRecord.runId).toBe(optsRecord.sessionId);
+    expect(optsRecord.runId).not.toBe(optsRecord.sessionId);
   });
 
   it("preserves session-scoped routing across two distinct agent.request turns", async () => {
@@ -1964,7 +1964,8 @@ describe("agent request events", () => {
     expect(agentCommandMock).toHaveBeenCalledTimes(2);
     const calls = agentCommandMock.mock.calls.map(([opts]) => opts as Record<string, unknown>);
     expect(calls.map((opts) => opts.message)).toEqual(["first turn", "second turn"]);
-    expect(calls.map((opts) => opts.runId)).toEqual(["node-session-1", "node-session-1"]);
+    expect(calls[0]?.runId).not.toBe(calls[1]?.runId);
+    expect(calls.every((opts) => opts.runId !== opts.sessionId)).toBe(true);
     expect(calls.map((opts) => opts.sessionId)).toEqual(["node-session-1", "node-session-1"]);
   });
 

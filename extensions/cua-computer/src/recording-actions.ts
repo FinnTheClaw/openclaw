@@ -81,19 +81,18 @@ async function stopOwnedRecording(params: {
   discard: boolean;
 }): Promise<void> {
   const active = params.state.active;
-  params.state.active = undefined;
   if (!active) {
     return;
   }
-  let failure: unknown;
-  try {
-    const result = await params.driver.callTool("stop_recording", {});
-    if (result.isError) {
-      failure = driverError(result, "stop_recording");
-    }
-  } catch (error) {
-    failure = error;
+  const native = RecordingStateSchema.parse(
+    structured(await params.driver.callTool("stop_recording", {}), "stop_recording"),
+  );
+  if (native.enabled) {
+    throw new Error("COMPUTER_DRIVER_ERROR: stop_recording returned active state");
   }
+  // Ambiguous driver failures retain this session's ownership for a safe retry.
+  params.state.active = undefined;
+  let failure: unknown;
   if (params.discard) {
     try {
       await params.resources.discard(active.resourceHandle);
@@ -187,10 +186,13 @@ export async function handleRecordingAct(
       if (!active) {
         return JSON.stringify({ ok: true, details: { recording: false } });
       }
-      state.active = undefined;
       const native = RecordingStateSchema.parse(
         structured(await driver.callTool("stop_recording", {}, signal), "stop_recording"),
       );
+      if (native.enabled) {
+        throw new Error("COMPUTER_DRIVER_ERROR: stop_recording returned active state");
+      }
+      state.active = undefined;
       return JSON.stringify({
         ok: true,
         details: projectRecordingState(native, active.resourceHandle),

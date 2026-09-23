@@ -52,6 +52,8 @@ export function createRealtimeVoiceOutputActivityTracker(
   const now = options.now ?? Date.now;
   let audioMs = 0;
   let chunks = 0;
+  let streamAudioMs = 0;
+  let streamChunks = 0;
   let sourceAudioBytes = 0;
   let sinkAudioBytes = 0;
   let playbackStarted = false;
@@ -74,6 +76,8 @@ export function createRealtimeVoiceOutputActivityTracker(
     markStreamOpened() {
       // A new stream clears playback markers but keeps cumulative counters until
       // reset(), so callers can preserve total output stats across stream opens.
+      streamAudioMs = 0;
+      streamChunks = 0;
       streamEnding = false;
       playbackStarted = false;
       playbackStartedAt = undefined;
@@ -93,6 +97,8 @@ export function createRealtimeVoiceOutputActivityTracker(
       // Clamp negative/provider-buggy deltas to zero while still recording that
       // a chunk arrived.
       audioMs += Math.max(0, delta.audioMs ?? 0);
+      streamAudioMs += Math.max(0, delta.audioMs ?? 0);
+      streamChunks += 1;
       sourceAudioBytes += Math.max(0, delta.sourceAudioBytes ?? 0);
       sinkAudioBytes += Math.max(0, delta.sinkAudioBytes ?? 0);
       chunks += 1;
@@ -101,6 +107,8 @@ export function createRealtimeVoiceOutputActivityTracker(
     reset() {
       audioMs = 0;
       chunks = 0;
+      streamAudioMs = 0;
+      streamChunks = 0;
       sourceAudioBytes = 0;
       sinkAudioBytes = 0;
       playbackStarted = false;
@@ -110,21 +118,21 @@ export function createRealtimeVoiceOutputActivityTracker(
     },
     isActive(sinkActive = false) {
       // Some sinks can report active playback before byte counters are visible.
-      return sinkActive || chunks > 0;
+      return sinkActive || streamChunks > 0;
     },
     isInterruptible(sinkActive = false) {
-      return sinkActive || chunks > 0 || audioMs > 0;
+      return sinkActive || streamChunks > 0 || streamAudioMs > 0;
     },
     elapsedPlaybackMs() {
       return playbackStartedAt === undefined ? 0 : now() - playbackStartedAt;
     },
     playbackWatchdogDelayMs({ marginMs, minMs = 1_000 }) {
-      if (playbackStartedAt === undefined || audioMs <= 0) {
+      if (playbackStartedAt === undefined || streamAudioMs <= 0) {
         return undefined;
       }
       // Watchdog waits for emitted audio duration plus margin, but never below
       // the configured minimum to avoid immediate false positives.
-      return Math.max(minMs, audioMs - (now() - playbackStartedAt) + marginMs);
+      return Math.max(minMs, streamAudioMs - (now() - playbackStartedAt) + marginMs);
     },
     snapshot,
   };

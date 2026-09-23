@@ -213,7 +213,10 @@ export class ClickClackDiscussionBindingStore {
   }
 
   #unindex(sessionKey: string, binding: ClickClackDiscussionBinding): void {
-    this.#sessionByChannel.delete(channelKey(binding.serverBaseUrl, binding.channelId));
+    const key = channelKey(binding.serverBaseUrl, binding.channelId);
+    if (this.#sessionByChannel.get(key) === sessionKey) {
+      this.#sessionByChannel.delete(key);
+    }
     const sideSessionKey = discussionSessionKey({
       runtime: this.#runtime,
       agentId: binding.agentId,
@@ -225,7 +228,9 @@ export class ClickClackDiscussionBindingStore {
       externalRef: binding.externalRef,
     });
     if (sideSessionKey) {
-      this.#mainByDiscussionSession.delete(sideSessionKey);
+      if (this.#mainByDiscussionSession.get(sideSessionKey) === sessionKey) {
+        this.#mainByDiscussionSession.delete(sideSessionKey);
+      }
     }
     this.#detachedAtBySession.delete(sessionKey);
   }

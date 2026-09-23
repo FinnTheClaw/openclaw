@@ -194,7 +194,10 @@ describe("skill collection reconciliation", () => {
         ...(await readCollectionReceipt()),
         plan: [{ action: "drop", name: "foo", reason: "No longer needed" }],
       }),
-    ).rejects.toThrow("forced outcome write failure");
+    ).resolves.toMatchObject({
+      dropped: [{ name: "foo", reason: "No longer needed" }],
+      postCommitWarnings: [expect.stringContaining("forced outcome write failure")],
+    });
     await writeWorkspaceSkills(workspaceDir, [
       { name: "foo", description: "Operator procedure", body: "# Operator\n" },
     ]);

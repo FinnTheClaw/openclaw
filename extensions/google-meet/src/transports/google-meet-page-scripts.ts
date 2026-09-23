@@ -86,8 +86,10 @@ export function meetStatusScript(params: {
   const joinElsewhere = findButton(/join here too/i);
   const microphoneChoice = findButton(/\\buse microphone\\b/i);
   const noMicrophoneChoice = findButton(/\\b(continue|join|use) without (microphone|mic)\\b|\\bnot now\\b/i);
+  let clickedMicrophoneChoice = false;
   if (!readOnly && allowMicrophone && microphoneChoice) {
     microphoneChoice.click();
+    clickedMicrophoneChoice = true;
     notes.push("Accepted Meet microphone prompt with browser automation.");
     await waitForUi();
   } else if (!readOnly && !allowMicrophone && noMicrophoneChoice) {
@@ -503,12 +505,12 @@ export function meetStatusScript(params: {
       "meet-audio-choice-required",
       "Select BlackHole 2ch or OpenClaw Meeting Audio as both the Meet microphone and speaker, then retry."
     );
-  } else if (!inCall && (allowMicrophone ? !microphoneChoice : !noMicrophoneChoice) && /do you want people to hear you in the meeting/i.test(pageText)) {
+  } else if (!inCall && (readOnly || (allowMicrophone ? !microphoneChoice : !noMicrophoneChoice)) && /do you want people to hear you in the meeting/i.test(pageText)) {
     manualAction = manualActionFor("meet-audio-choice-required", allowMicrophone ? "Meet is showing the microphone choice. Click Use microphone in the OpenClaw browser profile, then retry." : "Meet is showing the microphone choice. Choose the no-microphone option in the OpenClaw browser profile, then retry.");
   }
   return JSON.stringify({
     clickedJoin: Boolean(join),
-    clickedMicrophoneChoice: Boolean(allowMicrophone && microphoneChoice),
+    clickedMicrophoneChoice,
     inCall,
     micMuted: mic ? /turn on microphone/i.test(buttonLabel(mic)) : undefined,
     lobbyWaiting,

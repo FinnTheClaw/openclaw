@@ -524,7 +524,7 @@ export class PlivoProvider implements VoiceCallProvider {
     ]);
     try {
       const data = await guardedJsonApiRequest<{ call_status?: string }>({
-        url: `${this.baseUrl}/Call/${input.providerCallId}/`,
+        url: `${this.baseUrl}/Call/${this.requestUuidToCallUuid.get(input.providerCallId) ?? input.providerCallId}/`,
         method: "GET",
         headers: {
           Authorization: `Basic ${Buffer.from(`${this.authId}:${this.authToken}`).toString("base64")}`,

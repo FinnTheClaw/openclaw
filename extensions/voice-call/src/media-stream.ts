@@ -377,6 +377,11 @@ export class MediaStreamHandler {
       ws.close(1008, "Missing callSid");
       return null;
     }
+    if (this.sessions.has(streamSid)) {
+      console.warn("[MediaStream] Rejecting duplicate active stream: " + streamSid);
+      ws.close(1008, "Duplicate streamSid");
+      return null;
+    }
     if (!this.config.shouldAcceptStream) {
       console.warn("[MediaStream] Rejecting stream without an acceptance validator");
       ws.close(1008, "Unauthorized stream");
@@ -510,9 +515,11 @@ export class MediaStreamHandler {
   private handleStop(session: StreamSession): void {
     console.log(`[MediaStream] Stream stopped: ${session.streamSid}`);
 
-    this.clearTtsState(session.streamSid);
+    if (this.sessions.get(session.streamSid) === session) {
+      this.clearTtsState(session.streamSid);
+      this.sessions.delete(session.streamSid);
+    }
     session.sttSession.close();
-    this.sessions.delete(session.streamSid);
     this.emitTalkEvent(session, {
       type: "session.closed",
       final: true,

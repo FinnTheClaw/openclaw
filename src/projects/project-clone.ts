@@ -91,16 +91,13 @@ export async function materializeProjectClone(
           token: options.token,
         },
       );
-      try {
-        lease.assertOwned();
-        return await registerClonedProjectRegistry(
-          { path: target, name: displayName, originUrl: parsed.url },
-          options,
-        );
-      } catch (error) {
-        await fs.rm(target, { recursive: true, force: true }).catch(() => {});
-        throw error;
-      }
+      // Registration can fail after another actor replaces the checkout path.
+      // Leave it intact on failure: recursive rollback cannot prove ownership.
+      lease.assertOwned();
+      return await registerClonedProjectRegistry(
+        { path: target, name: displayName, originUrl: parsed.url },
+        options,
+      );
     },
   );
 }

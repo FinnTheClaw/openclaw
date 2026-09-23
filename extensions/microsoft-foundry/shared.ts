@@ -780,9 +780,11 @@ export function resolveFoundryTargetProfileId(config: FoundryConfigShape): strin
     return undefined;
   }
   // Prefer the explicitly ordered profile; fall back to the sole entry when there is exactly one.
+  const validProfileIds = new Set(configuredProfileEntries.map(([profileId]) => profileId));
   return (
-    config.auth?.order?.[PROVIDER_ID]?.find((profileId) => normalizeOptionalString(profileId)) ??
-    (configuredProfileEntries.length === 1 ? configuredProfileEntries[0]?.[0] : undefined)
+    config.auth?.order?.[PROVIDER_ID]?.find(
+      (profileId) => normalizeOptionalString(profileId) && validProfileIds.has(profileId),
+    ) ?? (configuredProfileEntries.length === 1 ? configuredProfileEntries[0]?.[0] : undefined)
   );
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

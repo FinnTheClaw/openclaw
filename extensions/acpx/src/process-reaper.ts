@@ -2,6 +2,7 @@
  * ACPX process ownership checks and cleanup. The reaper only terminates
  * OpenClaw-owned wrapper trees after validating paths, packages, and lease ids.
  */
+import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { isPidAlive, runExec } from "openclaw/plugin-sdk/process-runtime";
@@ -57,6 +58,7 @@ type AcpxProcessInfo = {
   pid: number;
   ppid: number;
   command: string;
+  startIdentity?: string;
 };
 
 /** Injectable process-listing and termination hooks for tests. */
@@ -237,17 +239,22 @@ function isOpenClawOwnedAcpxProcessCommand(params: {
 function parseProcessList(stdout: string): AcpxProcessInfo[] {
   const processes: AcpxProcessInfo[] = [];
   for (const line of stdout.split(/\r?\n/)) {
-    const match = /^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<command>.+?)\s*$/.exec(line);
+    const match =
+      /^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<startIdentity>\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(?<command>.+?)\s*$/.exec(
+        line,
+      );
     const pid = match?.groups?.pid;
     const ppid = match?.groups?.ppid;
+    const startIdentity = match?.groups?.startIdentity;
     const command = match?.groups?.command;
-    if (!pid || !ppid || !command) {
+    if (!pid || !ppid || !startIdentity || !command) {
       continue;
     }
     processes.push({
       pid: Number.parseInt(pid, 10),
       ppid: Number.parseInt(ppid, 10),
       command,
+      startIdentity,
     });
   }
   return processes;
@@ -258,7 +265,7 @@ async function listPlatformProcesses(): Promise<AcpxProcessInfo[]> {
   if (process.platform === "win32") {
     return [];
   }
-  const { stdout } = await runExec("ps", ["-axo", "pid=,ppid=,command="], {
+  const { stdout } = await runExec("ps", ["-axo", "pid=,ppid=,lstart=,command="], {
     logOutput: false,
     maxBuffer: 8 * 1024 * 1024,
     timeoutMs: ACPX_PROCESS_LIST_TIMEOUT_MS,
@@ -304,11 +311,32 @@ function uniquePids(processes: AcpxProcessInfo[]): number[] {
   );
 }
 
-async function terminatePids(
-  pids: number[],
+// Linux /proc starttime (field 22) is in kernel clock ticks. It is more
+// discriminating than ps lstart, which is only formatted to whole seconds.
+async function readLinuxProcessStartTicks(pid: number): Promise<string | undefined> {
+  try {
+    const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(") ");
+    if (!stat.startsWith(`${pid} (`) || commandEnd < 0) {
+      return undefined;
+    }
+    const fields = stat
+      .slice(commandEnd + 2)
+      .trim()
+      .split(/\s+/);
+    const ticks = fields[19];
+    return ticks && /^\d+$/.test(ticks) ? ticks : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function terminateProcesses(
+  targets: AcpxProcessInfo[],
   deps: AcpxProcessCleanupDeps | undefined,
 ): Promise<number[]> {
   const killProcess = deps?.killProcess ?? ((pid, signal) => process.kill(pid, signal));
+  const listProcesses = deps?.listProcesses ?? listPlatformProcesses;
   const sleep =
     deps?.sleep ??
     ((ms) =>
@@ -316,11 +344,51 @@ async function terminatePids(
         setTimeout(resolve, ms);
       }));
   const terminated: number[] = [];
+  const platform = deps?.platform ?? process.platform;
+  const useNativeStartTicks = !deps?.listProcesses && platform === "linux";
+  const nativeStartTicks = new Map<number, string>();
+  if (useNativeStartTicks) {
+    for (const target of targets) {
+      const ticks = await readLinuxProcessStartTicks(target.pid);
+      if (ticks) {
+        nativeStartTicks.set(target.pid, ticks);
+      }
+    }
+  }
 
-  for (const pid of pids) {
+  // A process-table row is only a snapshot. Revalidate its OS start identity
+  // immediately before each signal so a reused PID cannot inherit ownership.
+  const stillIdentical = async (target: AcpxProcessInfo): Promise<boolean> => {
+    if (!target.startIdentity || (useNativeStartTicks && !nativeStartTicks.has(target.pid))) {
+      return false;
+    }
     try {
-      killProcess(pid, "SIGTERM");
-      terminated.push(pid);
+      const fresh = await listProcesses();
+      const sameProcess = fresh.some(
+        (row) =>
+          row.pid === target.pid &&
+          row.startIdentity === target.startIdentity &&
+          row.command === target.command,
+      );
+      if (!sameProcess) {
+        return false;
+      }
+      return (
+        !useNativeStartTicks ||
+        (await readLinuxProcessStartTicks(target.pid)) === nativeStartTicks.get(target.pid)
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  for (const target of targets) {
+    if (!(await stillIdentical(target))) {
+      continue;
+    }
+    try {
+      killProcess(target.pid, "SIGTERM");
+      terminated.push(target.pid);
     } catch {
       // The process may already be gone.
     }
@@ -329,10 +397,19 @@ async function terminatePids(
     return terminated;
   }
   await sleep(750);
-  for (const pid of terminated) {
-    if (deps?.killProcess || isPidAlive(pid)) {
+  for (const target of targets) {
+    // ps lstart has one-second resolution on macOS. Without precise native
+    // identity, a delayed force-kill is unsafe; leave incomplete cleanup.
+    if (
+      !terminated.includes(target.pid) ||
+      platform !== "linux" ||
+      !(await stillIdentical(target))
+    ) {
+      continue;
+    }
+    if (deps?.killProcess || isPidAlive(target.pid)) {
       try {
-        killProcess(pid, "SIGKILL");
+        killProcess(target.pid, "SIGKILL");
       } catch {
         // Best-effort cleanup only.
       }
@@ -426,10 +503,18 @@ export async function cleanupOpenClawOwnedAcpxProcessTree(params: {
     };
   }
 
-  const pids = uniquePids(listedTree.toReversed());
+  const targets = listedTree
+    .toReversed()
+    .filter(
+      (row, index, rows) =>
+        row.pid > 0 &&
+        row.pid !== process.pid &&
+        Boolean(row.startIdentity) &&
+        rows.findIndex((candidate) => candidate.pid === row.pid) === index,
+    );
   return {
     inspectedPids: uniquePids(listedTree),
-    terminatedPids: await terminatePids(pids, params.deps),
+    terminatedPids: await terminateProcesses(targets, params.deps),
   };
 }
 
@@ -480,10 +565,18 @@ export async function cleanupOpenClawOwnedAcpxPendingLease(params: {
   }
 
   const listedTree = collectProcessTree(processes, matchingRoots[0]!.pid);
-  const pids = uniquePids(listedTree.toReversed());
+  const targets = listedTree
+    .toReversed()
+    .filter(
+      (row, index, rows) =>
+        row.pid > 0 &&
+        row.pid !== process.pid &&
+        Boolean(row.startIdentity) &&
+        rows.findIndex((candidate) => candidate.pid === row.pid) === index,
+    );
   return {
     inspectedPids: uniquePids(listedTree),
-    terminatedPids: await terminatePids(pids, params.deps),
+    terminatedPids: await terminateProcesses(targets, params.deps),
   };
 }
 
@@ -520,9 +613,17 @@ export async function reapStaleOpenClawOwnedAcpxOrphans(params: {
   // the wrapper root exits.
   const orphanTrees = orphans.map((orphan) => collectProcessTree(processes, orphan.pid));
   const inspectedPids = uniquePids(orphanTrees.flat());
-  const pids = uniquePids(orphanTrees.flatMap((tree) => tree.toReversed()));
+  const targets = orphanTrees
+    .flatMap((tree) => tree.toReversed())
+    .filter(
+      (row, index, rows) =>
+        row.pid > 0 &&
+        row.pid !== process.pid &&
+        Boolean(row.startIdentity) &&
+        rows.findIndex((candidate) => candidate.pid === row.pid) === index,
+    );
   return {
     inspectedPids,
-    terminatedPids: await terminatePids(pids, params.deps),
+    terminatedPids: await terminateProcesses(targets, params.deps),
   };
 }

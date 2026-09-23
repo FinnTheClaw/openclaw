@@ -935,7 +935,7 @@ export const handleNodeEvent = async (
         ctx,
         nodeId,
         {
-          runId: sessionId,
+          runId: randomUUID(),
           message,
           images,
           imageOrder,

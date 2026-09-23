@@ -1008,4 +1008,82 @@ describe("feishu_doc image fetch hardening", () => {
     expect(result.details.error).toContain("not under an allowed directory");
     expect(driveUploadAllMock).not.toHaveBeenCalled();
   });
+  describe("CH09 Feishu readDoc API response completeness", () => {
+    const success = {
+      raw: { code: 0, data: { content: "hello" } },
+      info: { code: 0, data: { document: { title: "Doc", revision_id: 7 } } },
+      blocks: { code: 0, data: { items: [{ block_type: 2 }] } },
+    };
+    it.each([
+      { id: "P01 all three success", expected: { title: "Doc", content: "hello", block_count: 1 } },
+      { id: "P02 rawContent error", raw: { code: 11, msg: "raw failed" }, error: "raw failed" },
+      {
+        id: "P03 document.get error",
+        info: { code: 12, msg: "info failed" },
+        error: "info failed",
+      },
+      {
+        id: "P04 block.list error",
+        blocks: { code: 13, msg: "blocks failed" },
+        error: "blocks failed",
+      },
+      {
+        id: "P05 success missing info data",
+        info: { code: 0 },
+        expected: { content: "hello", block_count: 1 },
+      },
+      {
+        id: "P06 success missing block data",
+        blocks: { code: 0 },
+        expected: { title: "Doc", block_count: 0 },
+      },
+      {
+        id: "P07 structured hint",
+        blocks: { code: 0, data: { items: [{ block_type: 27 }] } },
+        hint: true,
+      },
+      { id: "P08 title and revision", expected: { title: "Doc", revision_id: 7 } },
+      {
+        id: "P09 simultaneous errors reject",
+        raw: { code: 11, msg: "raw failed" },
+        info: { code: 12, msg: "info failed" },
+        blocks: { code: 13, msg: "blocks failed" },
+        error: "raw failed",
+      },
+      {
+        id: "P10 valid zero blocks",
+        blocks: { code: 0, data: { items: [] } },
+        expected: { content: "hello", block_count: 0 },
+      },
+    ] as Array<{
+      id: string;
+      raw?: unknown;
+      info?: unknown;
+      blocks?: unknown;
+      error?: string;
+      expected?: Record<string, unknown>;
+      hint?: boolean;
+    }>)("$id", async ({ raw, info, blocks, error, expected, hint }) => {
+      documentRawContentMock.mockResolvedValue(raw ?? success.raw);
+      documentGetMock.mockResolvedValue(info ?? success.info);
+      blockListMock.mockResolvedValue(blocks ?? success.blocks);
+      const result = await executeFeishuDocTool(resolveFeishuDocTool(), {
+        action: "read",
+        doc_token: "doc_1",
+      });
+      if (error) {
+        expect(result.details.error).toBe(error);
+        expect(result.details).not.toHaveProperty("content");
+      } else {
+        expect(result.details).toMatchObject(expected ?? {});
+        expect(result.details.error).toBeUndefined();
+        if (hint) {
+          expect(result.details.hint).toContain("list_blocks");
+        }
+      }
+      expect(documentRawContentMock).toHaveBeenCalledOnce();
+      expect(documentGetMock).toHaveBeenCalledOnce();
+      expect(blockListMock).toHaveBeenCalledOnce();
+    });
+  });
 });

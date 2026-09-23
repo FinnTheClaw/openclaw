@@ -20,17 +20,20 @@ const MAX_WORKSPACE_SKILL_ESCAPE_DETAIL_ROWS = 12;
 async function safeStat(targetPath: string): Promise<{
   ok: boolean;
   isDir: boolean;
+  isSymlink: boolean;
 }> {
   try {
     const lst = await fs.lstat(targetPath);
     return {
       ok: true,
       isDir: lst.isDirectory(),
+      isSymlink: lst.isSymbolicLink(),
     };
   } catch {
     return {
       ok: false,
       isDir: false,
+      isSymlink: false,
     };
   }
 }
@@ -57,10 +60,11 @@ function realpathWithTimeout(p: string, timeoutMs = 2000): Promise<string | null
 async function listWorkspaceSkillMarkdownFiles(
   workspaceDir: string,
   limits: WorkspaceSkillScanLimits = {},
+  allowSymlinkRoot = false,
 ): Promise<{ skillFilePaths: string[]; truncated: boolean }> {
   const skillsRoot = path.join(workspaceDir, "skills");
   const rootStat = await safeStat(skillsRoot);
-  if (!rootStat.ok || !rootStat.isDir) {
+  if (!rootStat.ok || (!rootStat.isDir && !(rootStat.isSymlink && allowSymlinkRoot))) {
     return { skillFilePaths: [], truncated: false };
   }
 
@@ -146,9 +150,27 @@ export async function collectWorkspaceSkillSymlinkEscapeFindings(params: {
   for (const workspaceDir of workspaceDirs) {
     const workspacePath = path.resolve(workspaceDir);
     const workspaceRealPath = (await realpathWithTimeout(workspacePath)) ?? workspacePath;
+    const skillsRoot = path.join(workspacePath, "skills");
+    const skillsRootStat = await safeStat(skillsRoot);
+    let allowSymlinkRoot = false;
+    if (skillsRootStat.ok && skillsRootStat.isSymlink) {
+      const skillsRootRealPath = await realpathWithTimeout(skillsRoot);
+      if (!skillsRootRealPath || !isPathInside(workspaceRealPath, skillsRootRealPath)) {
+        escapedSkillFiles.push({
+          workspaceDir: workspacePath,
+          skillFilePath: skillsRoot,
+          skillRealPath:
+            skillsRootRealPath ??
+            "(skills root realpath unavailable - symlink target unverifiable)",
+        });
+      } else {
+        allowSymlinkRoot = true;
+      }
+    }
     const { skillFilePaths, truncated } = await listWorkspaceSkillMarkdownFiles(
       workspacePath,
       params.skillScanLimits,
+      allowSymlinkRoot,
     );
 
     if (truncated) {

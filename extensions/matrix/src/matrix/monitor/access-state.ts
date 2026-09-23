@@ -50,7 +50,7 @@ function resolveMatrixGroupIngress(params: {
   if (params.effectiveRoomUsers.length > 0) {
     return { groupPolicy: "allowlist", groupAllowFrom: params.effectiveRoomUsers };
   }
-  if (params.groupPolicy === "allowlist" && params.effectiveGroupAllowFrom.length > 0) {
+  if (params.groupPolicy === "allowlist") {
     return { groupPolicy: "allowlist", groupAllowFrom: params.effectiveGroupAllowFrom };
   }
   return { groupPolicy: "open", groupAllowFrom: [] };

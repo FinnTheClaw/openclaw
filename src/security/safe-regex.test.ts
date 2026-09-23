@@ -55,4 +55,53 @@ describe("safe regex", () => {
   ] as const)("checks bounded regex windows for %s", (pattern, input, expected) => {
     expect(testRegexWithBoundedInput(pattern, input)).toBe(expected);
   });
+
+  describe("round-eight overlapping alternatives", () => {
+    it("REGEX-01 rejects duplicate one-character branches under plus", () => {
+      expect(compileSafeRegexDetailed("(a|a)+$").reason).toBe("unsafe-nested-repetition");
+    });
+
+    it("REGEX-02 rejects duplicate branches under star", () => {
+      expect(compileSafeRegexDetailed("(ab|ab)*$").reason).toBe("unsafe-nested-repetition");
+    });
+
+    it("REGEX-03 rejects overlapping equal-length character classes", () => {
+      expect(compileSafeRegexDetailed("([ab]|[bc])+$").reason).toBe("unsafe-nested-repetition");
+    });
+
+    it("REGEX-04 rejects equal-length alternatives with a shared literal prefix", () => {
+      expect(compileSafeRegexDetailed("(ab|ac)+$").reason).toBe("unsafe-nested-repetition");
+    });
+
+    it("REGEX-05 continues rejecting unequal-length overlapping alternatives", () => {
+      expect(compileSafeRegexDetailed("(a|aa)+$").reason).toBe("unsafe-nested-repetition");
+    });
+
+    it("REGEX-06 continues rejecting nested repetition", () => {
+      expect(compileSafeRegexDetailed("(a+)+$").reason).toBe("unsafe-nested-repetition");
+    });
+
+    it("REGEX-07 accepts disjoint equal-length literal alternatives", () => {
+      const re = expectCompiledRegex("^(a|b)+$");
+      expect(re.test("abba")).toBe(true);
+      expect(re.test("abbc")).toBe(false);
+    });
+
+    it("REGEX-08 preserves fixed-repeat ambiguous alternatives", () => {
+      const re = expectCompiledRegex("^(a|a){2}$");
+      expect(re.test("aa")).toBe(true);
+    });
+
+    it("REGEX-09 preserves a common safe agent filter", () => {
+      const re = expectCompiledRegex("^agent:.*:discord:");
+      expect(re.test("agent:main:discord:channel:123")).toBe(true);
+      expect(re.test("agent:main:telegram:channel:123")).toBe(false);
+    });
+
+    it("REGEX-10 runs admitted patterns on only short bounded nonmatches", () => {
+      const re = expectCompiledRegex("^(a|b)+$");
+      expect(testRegexWithBoundedInput(re, "a".repeat(12) + "!", 16)).toBe(false);
+      expect(testRegexWithBoundedInput(re, "a".repeat(12) + "!", 0)).toBe(false);
+    });
+  });
 });

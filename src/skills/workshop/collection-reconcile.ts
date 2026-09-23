@@ -217,9 +217,8 @@ export async function reconcileSkillCollection(params: {
         agentId: params.agentId,
         env: params.env,
       });
-      // Any failure from here through promotion must retire the staged pending
-      // create rows: they target files that will not exist and would consume
-      // the maxPending budget until an operator cleans them up.
+      // Proposal retirement is valid only before the collection commits.
+      let mutationCommitted = false;
       try {
         await assertResultCollectionBytes(current, plan, prepared, MAX_RECONCILED_SKILL_BYTES);
         const backup = await createCollectionBackup({
@@ -294,7 +293,7 @@ export async function reconcileSkillCollection(params: {
           }
           params.assertCurrent?.();
           await commitCollectionBackup(workspaceDir, backup);
-          params.assertCurrent?.();
+          mutationCommitted = true;
         } catch (error) {
           try {
             await rollbackSkillCollectionMutation({
@@ -316,77 +315,100 @@ export async function reconcileSkillCollection(params: {
           await discardPendingCollectionBackup(backup);
           throw error;
         }
-        bumpSkillsSnapshotVersion({ reason: "workshop" });
-        await discardStagedSkillCollectionDrops(workspaceDir, droppedSkills);
+        const postCommitWarnings: string[] = [];
+        const afterCommit = async (step: string, action: () => void | Promise<void>) => {
+          try {
+            await action();
+          } catch (error) {
+            postCommitWarnings.push(`${step}: ${String(error)}`);
+          }
+        };
+        await afterCommit("refresh", () => bumpSkillsSnapshotVersion({ reason: "workshop" }));
+        await afterCommit("staged-drop cleanup", () =>
+          discardStagedSkillCollectionDrops(workspaceDir, droppedSkills),
+        );
         if (droppedSkills.length > 0) {
-          clearSkillUsageForRemovedSkills(
-            droppedSkills.map(({ name }) => currentByName.get(name)!.filePath),
-            params.env ? { env: params.env } : {},
+          await afterCommit("usage cleanup", () =>
+            clearSkillUsageForRemovedSkills(
+              droppedSkills.map(({ name }) => currentByName.get(name)!.filePath),
+              params.env ? { env: params.env } : {},
+            ),
           );
         }
-        // Finalize the filesystem before recording ownership. Promotion failures
-        // leave newly written skills visible but read-only.
+        // A committed collection cannot be rolled back by later housekeeping.
         for (const mutation of prepared) {
           const proposal = createProposals.get(mutation.skillFile.filePath);
           if (proposal) {
-            await promoteCollectionCreateProposal({
-              proposal,
-              workspaceDir,
-              env: params.env,
-            });
+            await afterCommit(`proposal promotion ${mutation.skillFile.filePath}`, () =>
+              promoteCollectionCreateProposal({ proposal, workspaceDir, env: params.env }),
+            );
           }
         }
         const result: SkillCollectionReconcileResult = {
           backupId: backup.manifest.id,
           ...outcome,
+          ...(postCommitWarnings.length ? { postCommitWarnings } : {}),
         };
-        recordSkillCollectionReviewHistory(
-          workspaceDir,
-          Date.now(),
-          result,
-          params.env ? { env: params.env } : {},
+        await afterCommit("history", () =>
+          recordSkillCollectionReviewHistory(
+            workspaceDir,
+            Date.now(),
+            result,
+            params.env ? { env: params.env } : {},
+          ),
         );
-        await pruneOlderSkillCollectionBackups(backup.backupRoot, backup.manifest.id);
+        await afterCommit("backup prune", () =>
+          pruneOlderSkillCollectionBackups(backup.backupRoot, backup.manifest.id),
+        );
         const changes: SkillCollectionChange[] = [];
         if (shouldDispatch) {
           for (const entry of plan) {
             const existing = currentByName.get(entry.name);
             const skillDir = existing?.baseDir ?? path.join(workspaceDir, "skills", entry.name);
-            changes.push({
+            const change: SkillCollectionChange = {
               action: entry.action === "drop" ? "removed" : existing ? "updated" : "created",
               before: before.get(entry.name),
-              after:
-                entry.action === "write"
-                  ? await snapshotCommittedSkillArtifactBestEffort({
-                      skillDir,
-                      skillKey: entry.name,
-                      source: "workshop",
-                    })
-                  : undefined,
-            });
+              after: undefined,
+            };
+            if (entry.action === "write") {
+              await afterCommit(`snapshot ${entry.name}`, async () => {
+                change.after = await snapshotCommittedSkillArtifactBestEffort({
+                  skillDir,
+                  skillKey: entry.name,
+                  source: "workshop",
+                });
+              });
+            }
+            changes.push(change);
           }
         }
-        return {
-          result,
-          changes,
-        };
+        if (postCommitWarnings.length > 0) {
+          result.postCommitWarnings = postCommitWarnings;
+        }
+        return { result, changes };
       } catch (error) {
-        await retireCollectionCreateProposals({
-          proposals: createProposals.values(),
-          workspaceDir,
-          env: params.env,
-        });
+        if (!mutationCommitted) {
+          await retireCollectionCreateProposals({
+            proposals: createProposals.values(),
+            workspaceDir,
+            env: params.env,
+          });
+        }
         throw error;
       }
     },
     params.env ? { env: params.env } : {},
   );
   for (const change of commit.changes) {
-    await dispatchCommittedSkillChangeBestEffort({
-      ...change,
-      source: "workshop",
-      workspaceDir,
-    });
+    try {
+      await dispatchCommittedSkillChangeBestEffort({
+        ...change,
+        source: "workshop",
+        workspaceDir,
+      });
+    } catch (error) {
+      (commit.result.postCommitWarnings ??= []).push(`change dispatch: ${String(error)}`);
+    }
   }
   return commit.result;
 }

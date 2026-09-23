@@ -250,7 +250,7 @@ describe("resolveMatrixMonitorAccessState", () => {
     expect(allowed.messageIngress.ingress.decision).toBe("allow");
   });
 
-  it("keeps route-only room allowlists open when no sender allowlist exists", async () => {
+  it("keeps an explicit empty room allowlist closed when no sender is listed", async () => {
     const state = await resolveMatrixMonitorAccessState({
       allowFrom: [],
       storeAllowFrom: [],
@@ -261,7 +261,7 @@ describe("resolveMatrixMonitorAccessState", () => {
       groupPolicy: "allowlist",
     });
 
-    expect(state.messageIngress.ingress.decision).toBe("allow");
-    expect(state.messageIngress.ingress.reasonCode).toBe("activation_allowed");
+    expect(state.messageIngress.ingress.decision).toBe("block");
+    expect(state.messageIngress.ingress.reasonCode).toBe("group_policy_empty_allowlist");
   });
 });

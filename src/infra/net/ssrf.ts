@@ -585,6 +585,10 @@ export type PinnedDispatcherPolicy =
       proxyUrl: string;
       allowPrivateProxy?: boolean;
       proxyTls?: Record<string, unknown>;
+      /** Target TLS; kept distinct from the proxy-hop TLS below. */
+      requestTls?: Record<string, unknown>;
+      /** TLS for an HTTPS proxy hop. */
+      proxyHopTls?: Record<string, unknown>;
       pinnedHostname?: PinnedHostnameOverride;
     };
 
@@ -736,17 +740,14 @@ export function createPinnedDispatcher(
   }
 
   const proxyUrl = policy.proxyUrl.trim();
-  const requestTls = withPinnedLookup(lookup, policy.proxyTls);
-  if (!requestTls) {
-    return createHttp1ProxyAgent({ uri: proxyUrl }, timeoutMs);
-  }
+  // Legacy explicit-proxy callers used proxyTls for target TLS. New provider
+  // policy supplies requestTls and proxyHopTls as independent hop settings.
+  const requestTls = withPinnedLookup(lookup, policy.requestTls ?? policy.proxyTls);
   return createHttp1ProxyAgent(
     {
       uri: proxyUrl,
-      // `PinnedDispatcherPolicy.proxyTls` historically carried target-hop
-      // transport hints for explicit proxies. Translate that to undici's
-      // `requestTls` so HTTPS proxy tunnels keep the pinned DNS lookup.
       requestTls,
+      ...(policy.proxyHopTls ? { proxyTls: { ...policy.proxyHopTls } } : {}),
     },
     timeoutMs,
   );

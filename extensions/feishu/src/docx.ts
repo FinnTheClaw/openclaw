@@ -673,6 +673,8 @@ async function readDoc(client: Lark.Client, docToken: string) {
   ]);
 
   assertFeishuDocApiSuccess(contentRes);
+  assertFeishuDocApiSuccess(infoRes);
+  assertFeishuDocApiSuccess(blocksRes);
 
   const blocks = blocksRes.data?.items ?? [];
   const blockCounts: Record<string, number> = {};

@@ -168,22 +168,80 @@ function wrapStreamTextTransforms(
   const originalResult = stream.result.bind(stream);
   stream.result = async () => transformMessageText(await originalResult(), replacements) as never;
 
-  // Wrap async iteration so streamed deltas and the final result receive the
-  // same output replacement policy.
+  // Replacements may span provider delta boundaries. Project each contiguous
+  // text segment once, flushing at text_end, stream completion, or a non-text
+  // event so a tool event cannot stall behind later model output.
   const originalAsyncIterator = stream[Symbol.asyncIterator].bind(stream);
   (stream as { [Symbol.asyncIterator]: typeof originalAsyncIterator })[Symbol.asyncIterator] =
     function () {
       const iterator = originalAsyncIterator();
+      const ready: AssistantMessageEvent[] = [];
+      let held: AssistantMessageEvent[] = [];
+      let ended = false;
+      const flush = () => {
+        if (held.length === 0) {
+          return;
+        }
+        const rawText = held
+          .filter((event) => isRecord(event) && event.type === "text_delta")
+          .map((event) => (isRecord(event) && typeof event.delta === "string" ? event.delta : ""))
+          .join("");
+        const projected = applyPluginTextReplacements(rawText, replacements);
+        const lastDelta = held
+          .filter((event) => isRecord(event) && event.type === "text_delta")
+          .at(-1);
+        let firstDelta = true;
+        for (const event of held) {
+          if (isRecord(event) && event.type === "text_delta") {
+            if (firstDelta) {
+              const next = transformAssistantEventText(event, replacements);
+              ready.push({
+                ...next,
+                delta: projected,
+                ...(isRecord(lastDelta) && Object.hasOwn(lastDelta, "partial")
+                  ? { partial: transformMessageText(lastDelta.partial, replacements) }
+                  : {}),
+              } as AssistantMessageEvent);
+              firstDelta = false;
+            }
+            continue;
+          }
+          ready.push(transformAssistantEventText(event, replacements));
+        }
+        held = [];
+      };
       return createStreamIteratorWrapper({
         iterator,
         next: async (streamIterator) => {
-          const result = await streamIterator.next();
-          return result.done
-            ? result
-            : {
-                done: false as const,
-                value: transformAssistantEventText(result.value, replacements),
-              };
+          while (ready.length === 0) {
+            if (ended) {
+              return { done: true as const, value: undefined };
+            }
+            const result = await streamIterator.next();
+            if (result.done) {
+              ended = true;
+              flush();
+              continue;
+            }
+            const event = result.value;
+            if (isRecord(event) && event.type === "text_delta") {
+              held.push(event);
+              continue;
+            }
+            if (held.length > 0) {
+              if (isRecord(event) && event.type === "text_end") {
+                held.push(event);
+                flush();
+                continue;
+              }
+              // A tool or other non-text event is a semantic stream boundary.
+              // Release the preceding text before it rather than stalling tools
+              // behind a later text_end or the entire model response.
+              flush();
+            }
+            ready.push(transformAssistantEventText(event, replacements));
+          }
+          return { done: false as const, value: ready.shift()! };
         },
       });
     };

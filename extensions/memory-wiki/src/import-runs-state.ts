@@ -1,5 +1,5 @@
 // Memory Wiki plugin module implements import run state behavior.
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runTasksWithConcurrency } from "openclaw/plugin-sdk/concurrency-runtime";
@@ -55,12 +55,14 @@ type MemoryWikiImportRunMetaStateRecord = Omit<
 > & {
   kind: "meta";
   vaultRootKey: string;
+  generation?: string;
 };
 
 type MemoryWikiImportRunPathStateRecord = {
   kind: "created-path" | "updated-path";
   vaultRootKey: string;
   runId: string;
+  generation?: string;
   index: number;
   path: string;
   snapshotPath?: string;
@@ -96,12 +98,14 @@ function resolvePathStateEntryKey(params: {
   kind: MemoryWikiImportRunPathStateRecord["kind"];
   index: number;
   path: string;
+  generation?: string;
 }): string {
   return createHash("sha256")
     .update(
       `${params.vaultRootKey}\0${params.runId}\0${params.kind}\0${params.index}\0${params.path}`,
       "utf8",
     )
+    .update(params.generation ? `\0${params.generation}` : "", "utf8")
     .digest("hex");
 }
 
@@ -202,11 +206,13 @@ function normalizeMetaRecord(raw: unknown): MemoryWikiImportRunMetaStateRecord |
     updatedPaths: [],
   });
   const vaultRootKey = typeof record.vaultRootKey === "string" ? record.vaultRootKey : "";
+  const generation = normalizeOptionalString(record.generation);
   return normalized && vaultRootKey
     ? {
         ...normalized,
         kind: "meta",
         vaultRootKey,
+        ...(generation ? { generation } : {}),
       }
     : null;
 }
@@ -227,12 +233,14 @@ function normalizePathRecord(raw: unknown): MemoryWikiImportRunPathStateRecord |
   const snapshotPath = normalizeOptionalString(record.snapshotPath);
   const contentHash = normalizeOptionalString(record.contentHash);
   const recoveryPaths = normalizeUniqueTrimmedStringList(record.recoveryPaths);
+  const generation = normalizeOptionalString(record.generation);
   return {
     kind: record.kind,
     vaultRootKey: record.vaultRootKey,
     runId: record.runId,
     index: Math.max(0, Math.floor(record.index)),
     path: record.path,
+    ...(generation ? { generation } : {}),
     ...(snapshotPath ? { snapshotPath } : {}),
     ...(contentHash ? { contentHash } : {}),
     ...(recoveryPaths.length > 0 ? { recoveryPaths } : {}),
@@ -249,11 +257,12 @@ function composeImportRunRecord(
     ...(row.contentHash ? { contentHash: row.contentHash } : {}),
     ...(row.recoveryPaths ? { recoveryPaths: [...row.recoveryPaths] } : {}),
   });
-  const createdPaths = pathRows
+  const ownedPathRows = pathRows.filter((row) => row.generation === meta.generation);
+  const createdPaths = ownedPathRows
     .filter((row) => row.kind === "created-path")
     .toSorted((left, right) => left.index - right.index)
     .map(toEntry);
-  const updatedPaths = pathRows
+  const updatedPaths = ownedPathRows
     .filter((row) => row.kind === "updated-path")
     .toSorted((left, right) => left.index - right.index)
     .map(toEntry);
@@ -281,11 +290,13 @@ function composeImportRunRecord(
 function toMetaRecord(
   vaultRootKey: string,
   record: ChatGptImportRunRecord,
+  generation: string,
 ): MemoryWikiImportRunMetaStateRecord {
   return {
     version: 1,
     kind: "meta",
     vaultRootKey,
+    generation,
     runId: record.runId,
     importType: "chatgpt",
     exportPath: record.exportPath,
@@ -306,12 +317,14 @@ function toMetaRecord(
 function toPathRecords(
   vaultRootKey: string,
   record: ChatGptImportRunRecord,
+  generation: string,
 ): MemoryWikiImportRunPathStateRecord[] {
   return [
     ...record.createdPaths.map((entry, index): MemoryWikiImportRunPathStateRecord => ({
       kind: "created-path",
       vaultRootKey,
       runId: record.runId,
+      generation,
       index,
       path: entry.path,
       ...(entry.contentHash ? { contentHash: entry.contentHash } : {}),
@@ -321,6 +334,7 @@ function toPathRecords(
       kind: "updated-path",
       vaultRootKey,
       runId: record.runId,
+      generation,
       index,
       path: entry.path,
       ...(entry.snapshotPath ? { snapshotPath: entry.snapshotPath } : {}),
@@ -389,14 +403,16 @@ export function createMemoryWikiImportRunStateStore(
     async write(vaultRoot, record) {
       const vaultRootKey = resolveVaultRootKey(vaultRoot);
       const store = openStore();
+      const generation = randomUUID();
       const nextPathKeys = new Set<string>();
-      for (const pathRecord of toPathRecords(vaultRootKey, record)) {
+      for (const pathRecord of toPathRecords(vaultRootKey, record, generation)) {
         const key = resolvePathStateEntryKey({
           vaultRootKey,
           runId: record.runId,
           kind: pathRecord.kind,
           index: pathRecord.index,
           path: pathRecord.path,
+          generation,
         });
         nextPathKeys.add(key);
         await store.register(key, pathRecord);
@@ -405,7 +421,7 @@ export function createMemoryWikiImportRunStateStore(
       // so phase fences and rolledBackAt never become visible ahead of it.
       await store.register(
         resolveStateEntryKey(vaultRootKey, record.runId),
-        toMetaRecord(vaultRootKey, record),
+        toMetaRecord(vaultRootKey, record, generation),
       );
       for (const row of await store.entries()) {
         const pathRecord = normalizePathRecord(row.value);

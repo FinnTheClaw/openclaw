@@ -27,6 +27,8 @@ export type SkillCollectionReconcileResult = {
   kept: string[];
   written: string[];
   dropped: Array<{ name: string; reason: string }>;
+  /** The collection committed, but one or more post-commit housekeeping steps failed. */
+  postCommitWarnings?: string[];
 };
 
 export type SkillCollectionRestoreResult = {

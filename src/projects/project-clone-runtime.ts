@@ -111,24 +111,51 @@ export async function cloneProjectCheckout(
       "A managed checkout already exists for this repository. Register or remove it before retrying.",
     );
   }
-  await fs.mkdir(path.dirname(input.target), { recursive: true });
-  const result = await runCommandWithTimeout(
-    ["git", "clone", "--no-recurse-submodules", "--", input.url, input.target],
-    {
-      env: cloneCommandEnv(options.token, env),
-      timeoutMs: options.timeoutMs ?? PROJECT_CLONE_TIMEOUT_MS,
-      signal: options.signal,
-      killProcessTree: true,
-      maxOutputBytes: 256 * 1024,
-    },
-  );
-  if (result.code === 0 && result.termination === "exit") {
-    return;
+  const parent = path.dirname(input.target);
+  await fs.mkdir(parent, { recursive: true });
+  // The stage is exclusively ours; a raced-in final target is never used by Git.
+  const stage = await fs.mkdtemp(path.join(parent, `.${path.basename(input.target)}.clone-`));
+  try {
+    const result = await runCommandWithTimeout(
+      ["git", "clone", "--no-recurse-submodules", "--", input.url, stage],
+      {
+        env: cloneCommandEnv(options.token, env),
+        timeoutMs: options.timeoutMs ?? PROJECT_CLONE_TIMEOUT_MS,
+        signal: options.signal,
+        killProcessTree: true,
+        maxOutputBytes: 256 * 1024,
+      },
+    );
+    if (result.code !== 0 || result.termination !== "exit") {
+      throw classifyCloneFailure({
+        output: `${result.stderr}\n${result.stdout}`,
+        tokenConfigured: Boolean(options.token),
+        timedOut: result.termination === "timeout" || result.termination === "no-output-timeout",
+      });
+    }
+    try {
+      // mkdir reserves the final name exclusively. POSIX rename can replace an
+      // existing empty directory, so never rename the stage over the target.
+      await fs.mkdir(input.target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new ProjectCloneError(
+          "target_exists",
+          "A managed checkout already exists for this repository. Register or remove it before retrying.",
+        );
+      }
+      throw error;
+    }
+    // If publication fails, leave the reserved target in place: another actor
+    // may have entered it, so recursive cleanup would not be ownership-safe.
+    for (const entry of await fs.readdir(stage)) {
+      await fs.cp(path.join(stage, entry), path.join(input.target, entry), {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+      });
+    }
+  } finally {
+    await fs.rm(stage, { recursive: true, force: true });
   }
-  await fs.rm(input.target, { recursive: true, force: true }).catch(() => {});
-  throw classifyCloneFailure({
-    output: `${result.stderr}\n${result.stdout}`,
-    tokenConfigured: Boolean(options.token),
-    timedOut: result.termination === "timeout" || result.termination === "no-output-timeout",
-  });
 }

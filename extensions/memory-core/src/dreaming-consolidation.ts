@@ -131,11 +131,33 @@ function parseConsolidationPlan(
   }
 }
 
+function memoryEntryIndices(lines: string[]): number[] {
+  const indices: number[] = [];
+  let fence: { marker: string; length: number } | null = null;
+  for (const [index, line] of lines.entries()) {
+    const trimmed = line.trim();
+    if (fence) {
+      const closing = /^(`+|~+)\s*$/u.exec(trimmed)?.[1];
+      if (closing?.[0] === fence.marker && closing.length >= fence.length) {
+        fence = null;
+      }
+      continue;
+    }
+    const opening = /^(`{3,}|~{3,})/u.exec(trimmed)?.[1];
+    if (opening) {
+      fence = { marker: opening[0]!, length: opening.length };
+      continue;
+    }
+    if (isMemoryEntryLine(trimmed)) {
+      indices.push(index);
+    }
+  }
+  return indices;
+}
+
 function extractMemoryEntries(content: string): string[] {
-  return content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(isMemoryEntryLine);
+  const lines = content.replace(/\r\n/gu, "\n").split("\n");
+  return memoryEntryIndices(lines).map((index) => lines[index]!.trim());
 }
 
 function isMemoryEntryLine(trimmed: string): boolean {
@@ -194,18 +216,17 @@ function readAttachedLineageKey(lines: string[], entryIndex: number): string | n
 
 function findLineageEntries(content: string, lineageKey: string): string[] {
   const lines = content.replace(/\r\n/gu, "\n").split("\n");
-  return lines.flatMap((line, index) => {
-    const entry = line.trim();
-    return isMemoryEntryLine(entry) && readAttachedLineageKey(lines, index) === lineageKey
-      ? [entry]
-      : [];
-  });
+  return memoryEntryIndices(lines).flatMap((index) =>
+    readAttachedLineageKey(lines, index) === lineageKey ? [lines[index]!.trim()] : [],
+  );
 }
 
 function priorEntryHasContinuation(content: string, priorEntry: string): boolean {
   const lines = content.replace(/\r\n/gu, "\n").split("\n");
-  const index = lines.findIndex((line) => line.trim() === priorEntry);
-  return index >= 0 && /^\s+\S/u.test(lines[index + 1] ?? "");
+  const index = memoryEntryIndices(lines).find(
+    (entryIndex) => lines[entryIndex]!.trim() === priorEntry,
+  );
+  return index !== undefined && /^\s+\S/u.test(lines[index + 1] ?? "");
 }
 
 function validateConsolidationPlan(params: {
@@ -327,8 +348,10 @@ export function applyMemoryConsolidationPlan(params: {
       }
     }
     for (const priorEntry of operation.priorEntries) {
-      const index = lines.findIndex((line) => line.trim() === priorEntry);
-      if (index < 0) {
+      const index = memoryEntryIndices(lines).find(
+        (entryIndex) => lines[entryIndex]!.trim() === priorEntry,
+      );
+      if (index === undefined) {
         return null;
       }
       const attachedLineageKey = readAttachedLineageKey(lines, index);

@@ -125,7 +125,9 @@ function renderCodeBlockElement(element: Record<string, unknown>): string {
     "\n",
   );
   const trailingNewline = code.endsWith("\n") ? "" : "\n";
-  return `\`\`\`${language}\n${code}${trailingNewline}\`\`\``;
+  const maxRun = Math.max(2, ...(code.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(maxRun + 1);
+  return `${fence}${language}\n${code}${trailingNewline}${fence}`;
 }
 
 function renderElement(

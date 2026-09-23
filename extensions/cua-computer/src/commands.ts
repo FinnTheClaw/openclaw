@@ -567,17 +567,15 @@ export function createCuaComputerProvider(
           }
           closing = true;
           closePromise = queue.run(async () => {
+            // A failed recording stop is ambiguous: retain its driver and resource
+            // so this exact execution can retry instead of losing ownership.
+            await closeRecordingExecution({
+              driver: executionDriver,
+              state: executionState.recording,
+              resources,
+              reason,
+            });
             let failure: unknown;
-            try {
-              await closeRecordingExecution({
-                driver: executionDriver,
-                state: executionState.recording,
-                resources,
-                reason,
-              });
-            } catch (error) {
-              failure = error;
-            }
             await resources.dispose(reason !== "completion").catch((error: unknown) => {
               failure ??= error;
             });
@@ -590,7 +588,15 @@ export function createCuaComputerProvider(
                 : new Error("CUA Computer cleanup failed", { cause: failure });
             }
           });
-          return await closePromise;
+          try {
+            return await closePromise;
+          } catch (error) {
+            if (executionState.recording.active) {
+              closePromise = undefined;
+              closing = false;
+            }
+            throw error;
+          }
         },
       };
     },

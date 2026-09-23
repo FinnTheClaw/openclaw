@@ -311,7 +311,7 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
       allowFinalSymlinkForUnlink: true,
       signal: params.signal,
     });
-    await this.runMutation({
+    const result = await this.runMutation({
       args: [
         "remove",
         pinned.mountRootPath,
@@ -321,8 +321,12 @@ class RemoteShellSandboxFsBridge implements SandboxFsBridge {
         params.force === false ? "0" : "1",
       ],
       signal: params.signal,
-      allowFailure: params.force !== false,
     });
+    if (result.code !== 0) {
+      throw new Error(
+        `Sandbox remove failed for ${target.containerPath} (${result.code}): ${result.stderr.toString("utf8").trim()}`,
+      );
+    }
   }
 
   async rename(params: {

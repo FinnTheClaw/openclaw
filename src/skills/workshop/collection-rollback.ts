@@ -74,10 +74,17 @@ export async function discardStagedSkillCollectionDrops(
   workspaceDir: string,
   droppedSkills: readonly { stagedDir: string }[],
 ): Promise<void> {
+  const errors: unknown[] = [];
   for (const skill of droppedSkills) {
-    await removeSkillCollectionDirectory(workspaceDir, skill.stagedDir).catch((error: unknown) => {
+    try {
+      await removeSkillCollectionDirectory(workspaceDir, skill.stagedDir);
+    } catch (error) {
       logWarn(`skill-workshop: failed to discard staged skill drop: ${String(error)}`);
-    });
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "Committed collection has staged drops requiring cleanup");
   }
 }
 

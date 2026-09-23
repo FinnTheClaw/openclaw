@@ -124,7 +124,11 @@ export async function executeSkillCollectionReconcile(params: {
     }
   }
   return textResult(
-    `Reconciled the skill collection: kept ${result.kept.length}, wrote ${result.written.length}, dropped ${result.dropped.length}. Backup ${result.backupId}.`,
+    `Reconciled the skill collection: kept ${result.kept.length}, wrote ${result.written.length}, dropped ${result.dropped.length}. Backup ${result.backupId}.${
+      result.postCommitWarnings?.length
+        ? ` Collection changes committed, but housekeeping was incomplete: ${result.postCommitWarnings.join("; ")}. Do not blindly retry this mutation.`
+        : ""
+    }`,
     result,
   );
 }

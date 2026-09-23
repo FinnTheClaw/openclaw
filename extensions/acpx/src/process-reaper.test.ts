@@ -46,7 +46,12 @@ function cleanupDeps(processes: AcpxProcessInfo[]) {
   return {
     killed,
     deps: {
-      listProcesses: vi.fn(async () => processes),
+      listProcesses: vi.fn(async () =>
+        processes.map((row) => ({
+          ...row,
+          startIdentity: row.startIdentity ?? `start-${row.pid}`,
+        })),
+      ),
       killProcess: vi.fn((pid: number, signal: NodeJS.Signals) => {
         killed.push({ pid, signal });
       }),
@@ -86,7 +91,7 @@ describe("process reaper", () => {
       wrapperRoot: WRAPPER_ROOT,
     });
 
-    expect(runExecMock).toHaveBeenCalledWith("ps", ["-axo", "pid=,ppid=,command="], {
+    expect(runExecMock).toHaveBeenCalledWith("ps", ["-axo", "pid=,ppid=,lstart=,command="], {
       logOutput: false,
       maxBuffer: 8 * 1024 * 1024,
       timeoutMs: 2_000,

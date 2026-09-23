@@ -130,7 +130,10 @@ export function stripBotMention(messageText: string, botShipName: string): strin
   if (!messageText || !botShipName) {
     return messageText;
   }
-  return messageText.replace(normalizeShip(botShipName), "").trim();
+  const normalizedBotShip = normalizeShip(botShipName);
+  const escapedShip = normalizedBotShip.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const mentionPattern = new RegExp(`(^|\\s)${escapedShip}(?=\\s|$)`, "i");
+  return messageText.replace(mentionPattern, "$1").trim();
 }
 
 const tlonIngressIdentity = {

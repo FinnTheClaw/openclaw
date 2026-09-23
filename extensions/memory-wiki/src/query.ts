@@ -1251,7 +1251,14 @@ export async function getMemoryWikiPage(input: {
 }): Promise<WikiGetResult | null> {
   const agentId = resolveActiveMemoryAgentId(input);
   const params = agentId ? { ...input, agentId } : input;
-  const effectiveConfig = applySearchOverrides(params.config, params);
+  const protectedSessionRecall = params.conversationRecall?.corpus === "sessions";
+  // Page lookups must obey the same runtime-owned sessions scope as search.
+  const effectiveConfig = applySearchOverrides(
+    params.config,
+    protectedSessionRecall
+      ? { searchBackend: params.config.search.backend, searchCorpus: "memory" }
+      : params,
+  );
   assertSessionVisibilityAppConfig({
     config: effectiveConfig,
     appConfig: params.appConfig,
