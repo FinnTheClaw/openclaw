@@ -423,6 +423,225 @@ describe("PlaywrightDiffScreenshotter", () => {
       }),
     ).rejects.toThrow("hydration timeout");
   });
+  describe("browser generation leases", () => {
+    let firstPath: string;
+    let secondPath: string;
+
+    beforeEach(async () => {
+      firstPath = path.join(rootDir, "browser-one");
+      secondPath = path.join(rootDir, "browser-two");
+      await Promise.all([fs.writeFile(firstPath, ""), fs.writeFile(secondPath, "")]);
+      await Promise.all([fs.chmod(firstPath, 0o755), fs.chmod(secondPath, 0o755)]);
+    });
+
+    function render(executablePath: string, label: string): Promise<string> {
+      return new PlaywrightDiffScreenshotter({
+        config: { browser: { executablePath } },
+        browserIdleMs: 1_000,
+      }).screenshotHtml({
+        html: '<html><head></head><body><main class="oc-frame"></main></body></html>',
+        outputPath: path.join(rootDir, label + ".png"),
+        theme: "dark",
+        image: {
+          format: "png",
+          qualityPreset: "standard",
+          scale: 1,
+          maxWidth: 960,
+          maxPixels: 8_000_000,
+        },
+      });
+    }
+
+    it("shares one generation for concurrent same-key renders", async () => {
+      const first = createHeldBrowser();
+      launchMock.mockResolvedValue(first.browser);
+      const a = render(firstPath, "same-a");
+      await first.started;
+      const b = render(firstPath, "same-b");
+      await first.startedCount(2);
+      expect(launchMock).toHaveBeenCalledTimes(1);
+      first.finish();
+      await Promise.all([a, b]);
+      expect(first.browser.close).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(first.browser.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("closes a zero-user old generation on a key switch", async () => {
+      const first = createHeldBrowser();
+      const second = createHeldBrowser();
+      launchMock.mockResolvedValueOnce(first.browser).mockResolvedValueOnce(second.browser);
+      const a = render(firstPath, "zero-a");
+      await first.started;
+      first.finish();
+      await a;
+      const b = render(secondPath, "zero-b");
+      await second.started;
+      expect(first.browser.close).toHaveBeenCalledTimes(1);
+      expect(second.browser.close).not.toHaveBeenCalled();
+      second.finish();
+      await b;
+    });
+
+    it("keeps a one-user old generation alive through a switch", async () => {
+      const first = createHeldBrowser();
+      const second = createHeldBrowser();
+      launchMock.mockResolvedValueOnce(first.browser).mockResolvedValueOnce(second.browser);
+      const a = render(firstPath, "one-a");
+      await first.started;
+      const b = render(secondPath, "one-b");
+      await second.started;
+      expect(first.browser.close).not.toHaveBeenCalled();
+      first.finish();
+      await a;
+      expect(first.browser.close).toHaveBeenCalledTimes(1);
+      second.finish();
+      await b;
+    });
+
+    it("waits for both old-generation users to release", async () => {
+      const first = createHeldBrowser();
+      const second = createHeldBrowser();
+      launchMock.mockResolvedValueOnce(first.browser).mockResolvedValueOnce(second.browser);
+      const a = render(firstPath, "two-a");
+      await first.started;
+      const a2 = render(firstPath, "two-a2");
+      await first.startedCount(2);
+      const b = render(secondPath, "two-b");
+      await second.started;
+      expect(first.browser.close).not.toHaveBeenCalled();
+      first.finishOne();
+      await a;
+      expect(first.browser.close).not.toHaveBeenCalled();
+      first.finish();
+      await a2;
+      expect(first.browser.close).toHaveBeenCalledTimes(1);
+      second.finish();
+      await b;
+    });
+
+    it("does not let an old release close the new generation", async () => {
+      const first = createHeldBrowser();
+      const second = createHeldBrowser();
+      launchMock.mockResolvedValueOnce(first.browser).mockResolvedValueOnce(second.browser);
+      const a = render(firstPath, "release-old-a");
+      await first.started;
+      const b = render(secondPath, "release-old-b");
+      await second.started;
+      first.finish();
+      await a;
+      expect(first.browser.close).toHaveBeenCalledTimes(1);
+      expect(second.browser.close).not.toHaveBeenCalled();
+      second.finish();
+      await b;
+      const c = render(secondPath, "release-old-c");
+      await c;
+      expect(launchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("allows the new generation to release before the old one", async () => {
+      const first = createHeldBrowser();
+      const second = createHeldBrowser();
+      launchMock.mockResolvedValueOnce(first.browser).mockResolvedValueOnce(second.browser);
+      const a = render(firstPath, "new-first-a");
+      await first.started;
+      const b = render(secondPath, "new-first-b");
+      await second.started;
+      second.finish();
+      await b;
+      expect(first.browser.close).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(second.browser.close).toHaveBeenCalledTimes(1);
+      expect(first.browser.close).not.toHaveBeenCalled();
+      first.finish();
+      await a;
+      expect(first.browser.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("protects an old acquisition while its launch is pending", async () => {
+      const pending = deferred<ReturnType<typeof createHeldBrowser>["browser"]>();
+      const launchStarted = deferred<void>();
+      const first = createHeldBrowser();
+      const second = createHeldBrowser();
+      launchMock
+        .mockImplementationOnce(() => {
+          launchStarted.resolve();
+          return pending.promise;
+        })
+        .mockResolvedValueOnce(second.browser);
+      const a = render(firstPath, "pending-a");
+      await launchStarted.promise;
+      const b = render(secondPath, "pending-b");
+      await second.started;
+      pending.resolve(first.browser);
+      await first.started;
+      expect(first.browser.close).not.toHaveBeenCalled();
+      first.finish();
+      await a;
+      expect(first.browser.close).toHaveBeenCalledTimes(1);
+      second.finish();
+      await b;
+    });
+
+    it("does not disturb the new generation when an old launch rejects", async () => {
+      const pending = deferred<ReturnType<typeof createHeldBrowser>["browser"]>();
+      const launchStarted = deferred<void>();
+      const second = createHeldBrowser();
+      launchMock
+        .mockImplementationOnce(() => {
+          launchStarted.resolve();
+          return pending.promise;
+        })
+        .mockResolvedValueOnce(second.browser);
+      const oldResult = render(firstPath, "reject-a").catch((error: unknown) => error);
+      await launchStarted.promise;
+      const b = render(secondPath, "reject-b");
+      await second.started;
+      pending.reject(new Error("old launch failed"));
+      const error = await oldResult;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("old launch failed");
+      expect(second.browser.close).not.toHaveBeenCalled();
+      second.finish();
+      await b;
+    });
+
+    it("scopes a retired browser disconnect to its own generation", async () => {
+      const first = createHeldBrowser();
+      const second = createHeldBrowser();
+      launchMock.mockResolvedValueOnce(first.browser).mockResolvedValueOnce(second.browser);
+      const a = render(firstPath, "disconnect-a");
+      await first.started;
+      const b = render(secondPath, "disconnect-b");
+      await second.started;
+      first.disconnect();
+      expect(second.browser.close).not.toHaveBeenCalled();
+      first.finish();
+      await a;
+      second.finish();
+      await b;
+      const c = render(secondPath, "disconnect-c");
+      await c;
+      expect(launchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("prevents a stale old idle timer from closing the new generation", async () => {
+      const first = createHeldBrowser();
+      const second = createHeldBrowser();
+      launchMock.mockResolvedValueOnce(first.browser).mockResolvedValueOnce(second.browser);
+      const a = render(firstPath, "timer-a");
+      await first.started;
+      first.finish();
+      await a;
+      const b = render(secondPath, "timer-b");
+      await second.started;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(first.browser.close).toHaveBeenCalledTimes(1);
+      expect(second.browser.close).not.toHaveBeenCalled();
+      second.finish();
+      await b;
+    });
+  });
 });
 
 function createRegistrationHarness(params: {
@@ -923,5 +1142,77 @@ function createMockPage(options?: {
     screenshot,
     pdf,
     close: vi.fn(async () => {}),
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function createHeldBrowser() {
+  const pages: Array<{
+    close: ReturnType<typeof vi.fn>;
+    screenshot: ReturnType<typeof vi.fn>;
+    pdf: ReturnType<typeof vi.fn>;
+  }> = [];
+  const browser = createMockBrowser(pages);
+  const started = deferred<void>();
+  const permits: Array<ReturnType<typeof deferred<void>>> = [];
+  const queued: Array<ReturnType<typeof deferred<void>>> = [];
+  let renderCount = 0;
+  let disconnected: (() => void) | undefined;
+  browser.on.mockImplementation((event, listener) => {
+    if (event === "disconnected") {
+      disconnected = listener;
+    }
+    return browser;
+  });
+  browser.newPage.mockImplementation(async () => {
+    const page = createMockPage();
+    page.screenshot.mockImplementation(async ({ path: screenshotPath }: { path: string }) => {
+      renderCount += 1;
+      started.resolve();
+      for (const waiter of queued.splice(0)) {
+        waiter.resolve();
+      }
+      const permit = deferred<void>();
+      permits.push(permit);
+      await permit.promise;
+      await fs.writeFile(screenshotPath, Buffer.from("png"));
+    });
+    pages.push(page);
+    return page;
+  });
+  return {
+    browser,
+    started: started.promise,
+    startedCount: async (count: number) => {
+      while (renderCount < count) {
+        const waiter = deferred<void>();
+        queued.push(waiter);
+        await waiter.promise;
+      }
+    },
+    finishOne: () => {
+      permits.shift()?.resolve();
+    },
+    finish: () => {
+      for (const permit of permits.splice(0)) {
+        permit.resolve();
+      }
+      // Permit later calls too, by replacing the screenshot implementation when needed.
+      browser.newPage.mockImplementation(async () => {
+        const page = createMockPage();
+        pages.push(page);
+        return page;
+      });
+    },
+    disconnect: () => disconnected?.(),
   };
 }

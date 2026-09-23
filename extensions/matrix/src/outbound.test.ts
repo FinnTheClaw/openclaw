@@ -1,3 +1,4 @@
+import { chunkTextForOutbound as chunkTextForOutboundSdk } from "openclaw/plugin-sdk/text-chunking";
 // Matrix tests cover outbound plugin behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chunkTextForOutbound, type OpenClawConfig } from "../runtime-api.js";
@@ -78,6 +79,7 @@ describe("matrixOutbound cfg threading", () => {
       throw new Error("matrixOutbound.chunker missing");
     }
 
+    expect(chunker).toBe(chunkTextForOutboundSdk);
     expect(chunker("hello world", 5)).toEqual(["hello", "world"]);
   });
 
@@ -91,6 +93,71 @@ describe("matrixOutbound cfg threading", () => {
     expect(chunker("😀😀", 1.5)).toEqual(["😀", "😀"]);
     expect(chunkTextForOutbound("ABCD", 0.5)).toEqual(["A", "B", "C", "D"]);
     expect(chunkTextForOutbound("😀😀", 1.5)).toEqual(["😀", "😀"]);
+  });
+
+  it.each([
+    {
+      name: "empty text at zero limit preserves the Matrix empty chunk",
+      text: "",
+      limit: 0,
+      expected: [""],
+    },
+    {
+      name: "empty text at negative-one limit preserves the Matrix empty chunk",
+      text: "",
+      limit: -1,
+      expected: [""],
+    },
+    {
+      name: "nonempty text at zero limit returns one unchanged chunk",
+      text: "hello",
+      limit: 0,
+      expected: ["hello"],
+    },
+    {
+      name: "nonempty text at negative-one limit returns one unchanged chunk",
+      text: "hello",
+      limit: -1,
+      expected: ["hello"],
+    },
+    {
+      name: "nonempty text at negative-two limit returns one unchanged chunk",
+      text: "hello",
+      limit: -2,
+      expected: ["hello"],
+    },
+    { name: "positive one limit makes progress", text: "abc", limit: 1, expected: ["a", "b", "c"] },
+    {
+      name: "positive two limit prefers a space boundary",
+      text: "a bc",
+      limit: 2,
+      expected: ["a", "bc"],
+    },
+    {
+      name: "positive two limit prefers a newline boundary",
+      text: "a\nbc",
+      limit: 2,
+      expected: ["a", "bc"],
+    },
+    {
+      name: "positive fractional limit makes progress",
+      text: "ABCD",
+      limit: 0.5,
+      expected: ["A", "B", "C", "D"],
+    },
+    {
+      name: "fractional limit preserves surrogate pairs",
+      text: "😀😀",
+      limit: 1.5,
+      expected: ["😀", "😀"],
+    },
+  ])("$name", ({ text, limit, expected }) => {
+    expect(chunkTextForOutbound(text, limit)).toEqual(expected);
+    if (text.length > 0 && limit === 0) {
+      expect(chunkTextForOutbound(text, Number.NaN)).toEqual([text]);
+      expect(chunkTextForOutbound(text, Number.POSITIVE_INFINITY)).toEqual([text]);
+      expect(chunkTextForOutbound(text, Number.NEGATIVE_INFINITY)).toEqual([text]);
+    }
   });
 
   it("preserves Matrix compatibility behavior", () => {

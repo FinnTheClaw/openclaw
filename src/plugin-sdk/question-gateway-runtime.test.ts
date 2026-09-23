@@ -162,3 +162,216 @@ describe("createQuestionReactionTargetStore", () => {
     );
   });
 });
+
+describe("reaction candidate selection", () => {
+  it("skips a terminal first identity for a later live question", async () => {
+    const finalizers = new Map<string, (status: "answered") => void>();
+    const registerChannelDelivery = vi.fn<RegisterChannelDelivery>((params) => {
+      finalizers.set(params.questionId, params.finalize);
+    });
+    const resolveReaction = vi.fn<ResolveReaction>().mockResolvedValue({
+      status: "answered",
+      questionId: "live",
+      optionValue: "One",
+    });
+    const store = createStore({ registerChannelDelivery, resolveReaction });
+    const stale = { accountId: "default", messageId: "stale" };
+    const live = { accountId: "default", messageId: "live" };
+    store.register({ ...binding, questionId: "stale" }, stale);
+    store.register({ ...binding, questionId: "live" }, live);
+    finalizers.get("stale")?.("answered");
+
+    await expect(
+      store.resolve({
+        identities: [stale, live],
+        optionIndex: 0,
+        cfg: {},
+        senderId: "sender-1",
+      }),
+    ).resolves.toBe(true);
+    expect(resolveReaction).toHaveBeenCalledOnce();
+    expect(resolveReaction).toHaveBeenCalledWith(
+      expect.objectContaining({ questionId: "live", optionValue: "One" }),
+    );
+  });
+
+  it("resolves one live identity", async () => {
+    const resolveReaction = vi.fn<ResolveReaction>().mockResolvedValue({ status: "answered" });
+    const store = createStore({ registerChannelDelivery: vi.fn(), resolveReaction });
+    const live = { accountId: "default", messageId: "live" };
+    store.register({ ...binding, questionId: "live" }, live);
+    await expect(
+      store.resolve({ identities: [live], optionIndex: 1, cfg: {}, senderId: "sender" }),
+    ).resolves.toBe(true);
+    expect(resolveReaction).toHaveBeenCalledWith(
+      expect.objectContaining({ questionId: "live", optionValue: "Two" }),
+    );
+  });
+
+  it("prefers the first live identity of two", async () => {
+    const resolveReaction = vi.fn<ResolveReaction>().mockResolvedValue({ status: "answered" });
+    const store = createStore({ registerChannelDelivery: vi.fn(), resolveReaction });
+    const first = { accountId: "default", messageId: "first" };
+    const second = { accountId: "default", messageId: "second" };
+    store.register({ ...binding, questionId: "first" }, first);
+    store.register({ ...binding, questionId: "second" }, second);
+    await store.resolve({
+      identities: [first, second],
+      optionIndex: 0,
+      cfg: {},
+      senderId: "sender",
+    });
+    expect(resolveReaction).toHaveBeenCalledOnce();
+    expect(resolveReaction).toHaveBeenCalledWith(expect.objectContaining({ questionId: "first" }));
+  });
+
+  it("skips an expired first identity for a later live question", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const resolveReaction = vi.fn<ResolveReaction>().mockResolvedValue({ status: "answered" });
+    const store = createStore({ ttlMs: 1_000, registerChannelDelivery: vi.fn(), resolveReaction });
+    const expired = { accountId: "default", messageId: "expired" };
+    const live = { accountId: "default", messageId: "live" };
+    store.register({ ...binding, questionId: "expired" }, expired);
+    vi.setSystemTime(1_001);
+    store.register({ ...binding, questionId: "live" }, live);
+    await store.resolve({
+      identities: [expired, live],
+      optionIndex: 0,
+      cfg: {},
+      senderId: "sender",
+    });
+    expect(resolveReaction).toHaveBeenCalledOnce();
+    expect(resolveReaction).toHaveBeenCalledWith(expect.objectContaining({ questionId: "live" }));
+  });
+
+  it("skips a metadata mismatch for a later matching live identity", async () => {
+    const resolveReaction = vi.fn<ResolveReaction>().mockResolvedValue({ status: "answered" });
+    const store = createQuestionReactionTargetStore({
+      channel: "test",
+      channelDisplayName: "Test",
+      buildKey: (identity: string) => identity,
+      identityMatches: (stored: string | undefined, incoming: string | undefined) =>
+        stored === incoming,
+      registerChannelDelivery: vi.fn(),
+      resolveReaction,
+    });
+    store.register({ ...binding, questionId: "wrong" }, "wrong", "other");
+    store.register({ ...binding, questionId: "right" }, "right", "expected");
+    await expect(
+      store.resolve({
+        identities: ["wrong", "right"],
+        metadata: "expected",
+        optionIndex: 0,
+        cfg: {},
+        senderId: "sender",
+      }),
+    ).resolves.toBe(true);
+    expect(resolveReaction).toHaveBeenCalledOnce();
+    expect(resolveReaction).toHaveBeenCalledWith(expect.objectContaining({ questionId: "right" }));
+  });
+
+  it("handles all stale identities without calling the resolver", async () => {
+    const finalizers = new Map<string, (status: "answered") => void>();
+    const resolveReaction = vi.fn<ResolveReaction>();
+    const store = createStore({
+      registerChannelDelivery: vi.fn<RegisterChannelDelivery>((params) => {
+        finalizers.set(params.questionId, params.finalize);
+      }),
+      resolveReaction,
+    });
+    const first = { accountId: "default", messageId: "first" };
+    const second = { accountId: "default", messageId: "second" };
+    store.register({ ...binding, questionId: "first" }, first);
+    store.register({ ...binding, questionId: "second" }, second);
+    finalizers.get("first")?.("answered");
+    finalizers.get("second")?.("answered");
+    const logDebug = vi.fn();
+    await expect(
+      store.resolve({
+        identities: [first, second],
+        optionIndex: 0,
+        cfg: {},
+        senderId: "sender",
+        logDebug,
+      }),
+    ).resolves.toBe(true);
+    expect(resolveReaction).not.toHaveBeenCalled();
+    expect(logDebug).toHaveBeenCalledWith("test: stale question reaction ignored id=first");
+  });
+
+  it("returns false when all identities are missing", async () => {
+    const resolveReaction = vi.fn<ResolveReaction>();
+    const store = createStore({ registerChannelDelivery: vi.fn(), resolveReaction });
+    await expect(
+      store.resolve({
+        identities: [{ accountId: "default", messageId: "missing" }],
+        optionIndex: 0,
+        cfg: {},
+        senderId: "sender",
+      }),
+    ).resolves.toBe(false);
+    expect(resolveReaction).not.toHaveBeenCalled();
+  });
+
+  it("resolves duplicate identities only once", async () => {
+    const resolveReaction = vi.fn<ResolveReaction>().mockResolvedValue({ status: "answered" });
+    const store = createStore({ registerChannelDelivery: vi.fn(), resolveReaction });
+    const live = { accountId: "default", messageId: "live" };
+    store.register(binding, live);
+    await store.resolve({ identities: [live, live], optionIndex: 0, cfg: {}, senderId: "sender" });
+    expect(resolveReaction).toHaveBeenCalledOnce();
+  });
+
+  it("consumes an out-of-range choice on the selected live question", async () => {
+    const finalizers = new Map<string, (status: "answered") => void>();
+    const resolveReaction = vi.fn<ResolveReaction>();
+    const store = createStore({
+      registerChannelDelivery: vi.fn<RegisterChannelDelivery>((params) => {
+        finalizers.set(params.questionId, params.finalize);
+      }),
+      resolveReaction,
+    });
+    const stale = { accountId: "default", messageId: "stale" };
+    const live = { accountId: "default", messageId: "live" };
+    store.register({ ...binding, questionId: "stale" }, stale);
+    store.register({ ...binding, questionId: "live" }, live);
+    finalizers.get("stale")?.("answered");
+    const logDebug = vi.fn();
+    await expect(
+      store.resolve({
+        identities: [stale, live],
+        optionIndex: 3,
+        cfg: {},
+        senderId: "sender",
+        logDebug,
+      }),
+    ).resolves.toBe(true);
+    expect(resolveReaction).not.toHaveBeenCalled();
+    expect(logDebug).toHaveBeenCalledWith("test: out-of-range question reaction ignored id=live");
+  });
+
+  it("reports a resolver error without trying a second candidate", async () => {
+    const resolveReaction = vi.fn<ResolveReaction>().mockRejectedValue(new Error("gateway down"));
+    const store = createStore({ registerChannelDelivery: vi.fn(), resolveReaction });
+    const first = { accountId: "default", messageId: "first" };
+    const second = { accountId: "default", messageId: "second" };
+    store.register({ ...binding, questionId: "first" }, first);
+    store.register({ ...binding, questionId: "second" }, second);
+    const logDebug = vi.fn();
+    await expect(
+      store.resolve({
+        identities: [first, second],
+        optionIndex: 0,
+        cfg: {},
+        senderId: "sender",
+        logDebug,
+      }),
+    ).resolves.toBe(true);
+    expect(resolveReaction).toHaveBeenCalledOnce();
+    expect(resolveReaction).toHaveBeenCalledWith(expect.objectContaining({ questionId: "first" }));
+    expect(logDebug).toHaveBeenCalledWith(
+      "test: question reaction failed id=first: Error: gateway down",
+    );
+  });
+});

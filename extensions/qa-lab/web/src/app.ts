@@ -250,6 +250,8 @@ export async function createQaLabApp(root: HTMLDivElement) {
   let sparklineSweepCurrentStartPct: number | null = null;
   let sparklineSweepCurrentEndPct: number | null = null;
   let captureGlobalListenersBound = false;
+  let captureRefreshGeneration = 0;
+  let refreshInFlight = false;
 
   function stateFingerprint(): string {
     const msgs = state.snapshot?.messages;
@@ -344,6 +346,18 @@ export async function createQaLabApp(root: HTMLDivElement) {
   /* ---------- Data fetching ---------- */
 
   async function refresh() {
+    const captureGeneration = ++captureRefreshGeneration;
+    refreshInFlight = true;
+    try {
+      await refreshData(captureGeneration);
+    } finally {
+      if (captureGeneration === captureRefreshGeneration) {
+        refreshInFlight = false;
+      }
+    }
+  }
+
+  async function refreshData(captureGeneration: number) {
     try {
       const [bootstrap, snapshot, report, outcomes] = await Promise.all([
         getJson<Bootstrap>("/api/bootstrap"),
@@ -390,6 +404,9 @@ export async function createQaLabApp(root: HTMLDivElement) {
       const startupStatusPromise = getJson<CaptureStartupStatusEnvelope>(
         "/api/capture/startup-status",
       );
+      if (captureGeneration !== captureRefreshGeneration) {
+        return;
+      }
       state.captureSessions = sessions.sessions;
       const availableSessionIds = new Set(sessions.sessions.map((session) => session.id));
       state.selectedCaptureSessionIds = state.selectedCaptureSessionIds.filter((id) =>
@@ -399,29 +416,33 @@ export async function createQaLabApp(root: HTMLDivElement) {
         state.selectedCaptureSessionIds = sessions.sessions[0]?.id ? [sessions.sessions[0].id] : [];
       }
       const startupStatusResult = await Promise.allSettled([startupStatusPromise]);
+      if (captureGeneration !== captureRefreshGeneration) {
+        return;
+      }
       state.captureStartupStatus =
         startupStatusResult[0]?.status === "fulfilled" ? startupStatusResult[0].value.status : null;
       if (state.selectedCaptureSessionIds.length > 0) {
-        const eventsPromises = state.selectedCaptureSessionIds.map((sessionId) =>
+        const selectedSessionIds = [...state.selectedCaptureSessionIds];
+        const selectedPreset = state.captureQueryPreset;
+        const eventsPromises = selectedSessionIds.map((sessionId) =>
           getJson<CaptureEventsEnvelope>(
             `/api/capture/events?sessionId=${encodeURIComponent(sessionId)}`,
           ),
         );
-        const singleSessionId =
-          state.selectedCaptureSessionIds.length === 1 ? state.selectedCaptureSessionIds[0] : null;
+        const singleSessionId = selectedSessionIds.length === 1 ? selectedSessionIds[0] : null;
         const coveragePromise = singleSessionId
           ? getJson<CaptureCoverageEnvelope>(
               `/api/capture/coverage?sessionId=${encodeURIComponent(singleSessionId)}`,
             )
           : Promise.resolve<CaptureCoverageEnvelope | null>(null);
         const queryPromise =
-          state.captureQueryPreset === "none"
+          selectedPreset === "none"
             ? Promise.resolve<CaptureQueryEnvelope>({ rows: [] })
             : singleSessionId
               ? getJson<CaptureQueryEnvelope>(
                   `/api/capture/query?sessionId=${encodeURIComponent(
                     singleSessionId,
-                  )}&preset=${encodeURIComponent(state.captureQueryPreset)}`,
+                  )}&preset=${encodeURIComponent(selectedPreset)}`,
                 )
               : Promise.resolve<CaptureQueryEnvelope>({ rows: [] });
         const [eventsResult, coverageResult, queryResult] = await Promise.allSettled([
@@ -429,6 +450,14 @@ export async function createQaLabApp(root: HTMLDivElement) {
           coveragePromise,
           queryPromise,
         ]);
+        if (
+          captureGeneration !== captureRefreshGeneration ||
+          selectedPreset !== state.captureQueryPreset ||
+          selectedSessionIds.length !== state.selectedCaptureSessionIds.length ||
+          selectedSessionIds.some((id, index) => id !== state.selectedCaptureSessionIds[index])
+        ) {
+          return;
+        }
         if (eventsResult.status !== "fulfilled") {
           throw eventsResult.reason;
         }
@@ -441,10 +470,7 @@ export async function createQaLabApp(root: HTMLDivElement) {
         state.captureCoverage =
           coverageResult.status === "fulfilled" && coverageResult.value
             ? coverageResult.value.coverage
-            : summarizeCaptureCoverageFromEvents(
-                state.selectedCaptureSessionIds,
-                state.captureEvents,
-              );
+            : summarizeCaptureCoverageFromEvents(selectedSessionIds, state.captureEvents);
         state.captureQueryRows = queryResult.status === "fulfilled" ? queryResult.value.rows : [];
         if (
           !state.selectedCaptureEventKey ||
@@ -466,6 +492,9 @@ export async function createQaLabApp(root: HTMLDivElement) {
         state.selectedCaptureEventKey = null;
       }
     } catch (error) {
+      if (captureGeneration !== captureRefreshGeneration) {
+        return;
+      }
       state.error = formatErrorMessage(error);
     }
 
@@ -1834,7 +1863,11 @@ export async function createQaLabApp(root: HTMLDivElement) {
     await loadEvidence(initialEvidencePath);
   }
   void pollUiVersion();
-  setInterval(() => void refresh(), 1_000);
+  setInterval(() => {
+    if (!refreshInFlight) {
+      void refresh();
+    }
+  }, 1_000);
   setInterval(() => void pollUiVersion(), 1_000);
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -651,3 +651,133 @@ describe("OpenCode session upstream activity", () => {
     },
   );
 });
+describe("OpenCode repeated human text regression", () => {
+  const first = openCodeMessage("msg_001", "user", "yes", 1_700_000_000_000);
+  const second = openCodeMessage("msg_002", "user", "yes", 1_700_000_001_000);
+  const marker = { seq: 1, lastHumanMessageId: "msg_001" };
+  const fillers = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      info: {
+        id: "msg_" + String(index + 2).padStart(3, "0"),
+        role: "user",
+        time: { created: 1_700_000_000_100 + index },
+      },
+      parts: [{ id: "part-" + index, type: "text", text: "internal", synthetic: true }],
+    }));
+  const cases = [
+    {
+      name: "counts exact repeated yes with a fresh message ID",
+      messages: [first, second],
+      turns: 1,
+      lastId: "msg_002",
+      at: 1_700_000_001_000,
+      dedupe: "msg_002",
+    },
+    {
+      name: "counts a whitespace-normalized repeat with a fresh ID",
+      messages: [first, openCodeMessage("msg_002", "user", " yes \n", 1_700_000_001_000)],
+      turns: 1,
+      lastId: "msg_002",
+      at: 1_700_000_001_000,
+      dedupe: "msg_002",
+    },
+    {
+      name: "counts a repeat after 49 intervening user rows",
+      messages: [
+        first,
+        ...fillers(49),
+        openCodeMessage("msg_051", "user", "yes", 1_700_000_051_000),
+      ],
+      turns: 1,
+      lastId: "msg_051",
+      at: 1_700_000_051_000,
+      dedupe: "msg_051",
+    },
+    {
+      name: "counts a repeat after 50 intervening user rows",
+      messages: [
+        first,
+        ...fillers(50),
+        openCodeMessage("msg_052", "user", "yes", 1_700_000_052_000),
+      ],
+      turns: 1,
+      lastId: "msg_052",
+      at: 1_700_000_052_000,
+      dedupe: "msg_052",
+    },
+    {
+      name: "counts a distinct new human message",
+      messages: [first, openCodeMessage("msg_002", "user", "continue", 1_700_000_001_000)],
+      turns: 1,
+      lastId: "msg_002",
+      at: 1_700_000_001_000,
+      dedupe: "msg_002",
+    },
+    {
+      name: "does not recount the baseline marker row",
+      messages: [first],
+      turns: 0,
+      lastId: "msg_001",
+    },
+    {
+      name: "does not count a new row without a creation timestamp",
+      messages: [first, { ...second, info: { id: "msg_002", role: "user" } }],
+      turns: 0,
+      lastId: "msg_001",
+    },
+    {
+      name: "ignores synthetic ignored and compaction text",
+      messages: [
+        first,
+        {
+          info: { id: "msg_002", role: "user", time: { created: 1_700_000_001_000 } },
+          parts: [
+            { id: "synthetic", type: "text", text: "yes", synthetic: true },
+            { id: "ignored", type: "text", text: "yes", ignored: true },
+            { id: "compaction", type: "compaction" },
+          ],
+        },
+      ],
+      turns: 0,
+      lastId: "msg_001",
+    },
+    {
+      name: "suppresses matching own text while advancing the marker",
+      messages: [first, second],
+      ownTexts: ["yes"],
+      turns: 0,
+      lastId: "msg_002",
+    },
+    {
+      name: "counts two new repeated rows with the latest dedupe ID",
+      messages: [first, second, openCodeMessage("msg_003", "user", "yes", 1_700_000_002_000)],
+      turns: 2,
+      lastId: "msg_003",
+      at: 1_700_000_002_000,
+      dedupe: "msg_003",
+    },
+  ];
+
+  it.each(cases)("$name", async (testCase) => {
+    const session: StatefulOpenCodeSession = {
+      id: "ses_a",
+      title: "Session A",
+      directory: "/workspace/a",
+      seq: 20,
+      messages: testCase.messages as StatefulOpenCodeSession["messages"],
+    };
+    await installStatefulOpenCode([session]);
+    await expect(
+      checkOpenCodeUpstreamActivity([probe(marker, testCase.ownTexts)]),
+    ).resolves.toEqual([
+      {
+        kind: "activity",
+        sessionKey: "agent:main:ses-a",
+        humanTurns: testCase.turns,
+        nextMarker: { seq: 20, lastHumanMessageId: testCase.lastId },
+        ...(testCase.at === undefined ? {} : { occurredAt: testCase.at }),
+        ...(testCase.dedupe === undefined ? {} : { dedupeId: testCase.dedupe }),
+      },
+    ]);
+  });
+});

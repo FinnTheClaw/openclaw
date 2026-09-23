@@ -591,6 +591,15 @@ export function createHooksRequestHandler(
             res.end();
             return true;
           }
+          // A custom fan-out with no producer key must distinguish independent
+          // source batches even when templates render identical actions. Exact
+          // redelivery of the same payload retains the same fingerprint. The
+          // Gmail preset already identifies each message in its rendered scope,
+          // so leave its per-message replay behavior unchanged across batches.
+          const sourcePayloadFingerprint =
+            mapped.fanout && !idempotencyKey
+              ? createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex")
+              : undefined;
           // Within-batch duplicates: content identity alone would collapse two
           // identical rendered items into one dispatch while the response
           // claims both ran. Numbering repeated scopes keeps one replay entry
@@ -654,6 +663,12 @@ export function createHooksRequestHandler(
               thinking: action.thinking ?? null,
               timeoutSeconds: action.timeoutSeconds ?? null,
             };
+            if (
+              sourcePayloadFingerprint &&
+              !(subPath === "gmail" && action.mappingId === "gmail")
+            ) {
+              dispatchScope.sourcePayloadFingerprint = sourcePayloadFingerprint;
+            }
             if (mapped.fanout) {
               const fingerprint = JSON.stringify(dispatchScope);
               const occurrence = fanOutScopeOccurrences.get(fingerprint) ?? 0;

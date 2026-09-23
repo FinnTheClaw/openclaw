@@ -131,7 +131,8 @@ function sumSessionDurationMs(
 }
 
 function attendanceMergeKey(row: GoogleMeetAttendanceRow): string {
-  return (row.user ?? row.displayName ?? row.participant).trim().toLocaleLowerCase();
+  const user = row.user?.trim();
+  return user ? `user:${user}` : `participant:${row.participant}`;
 }
 
 function sortSessions(sessions: GoogleMeetParticipantSession[]): GoogleMeetParticipantSession[] {

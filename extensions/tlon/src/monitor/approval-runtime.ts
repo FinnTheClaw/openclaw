@@ -71,12 +71,11 @@ export function createTlonApprovalRuntime(params: {
     }
   };
 
-  const addToDmAllowlist = async (ship: string): Promise<void> => {
+  const addToDmAllowlist = async (ship: string): Promise<boolean> => {
     const normalizedShip = normalizeShip(ship);
     const nextAllowlist = getEffectiveDmAllowlist().includes(normalizedShip)
       ? getEffectiveDmAllowlist()
       : [...getEffectiveDmAllowlist(), normalizedShip];
-    setEffectiveDmAllowlist(nextAllowlist);
     try {
       await api.poke({
         app: "settings",
@@ -90,13 +89,21 @@ export function createTlonApprovalRuntime(params: {
           },
         },
       });
+      const latestAllowlist = getEffectiveDmAllowlist();
+      setEffectiveDmAllowlist(
+        latestAllowlist.includes(normalizedShip)
+          ? latestAllowlist
+          : [...latestAllowlist, normalizedShip],
+      );
       runtime.log?.(`[tlon] Added ${normalizedShip} to dmAllowlist`);
+      return true;
     } catch (err) {
       runtime.error?.(`[tlon] Failed to update dmAllowlist: ${String(err)}`);
+      return false;
     }
   };
 
-  const addToChannelAllowlist = async (ship: string, channelNest: string): Promise<void> => {
+  const addToChannelAllowlist = async (ship: string, channelNest: string): Promise<boolean> => {
     const normalizedShip = normalizeShip(ship);
     const currentSettings = getCurrentSettings();
     const channelRules = currentSettings.channelRules ?? {};
@@ -111,8 +118,6 @@ export function createTlonApprovalRuntime(params: {
       ...channelRules,
       [channelNest]: { ...rule, allowedShips },
     };
-    setCurrentSettings({ ...currentSettings, channelRules: updatedRules });
-
     try {
       await api.poke({
         app: "settings",
@@ -126,9 +131,27 @@ export function createTlonApprovalRuntime(params: {
           },
         },
       });
+      const latestSettings = getCurrentSettings();
+      const latestRules = latestSettings.channelRules ?? {};
+      const latestRule = latestRules[channelNest] ?? { mode: "restricted", allowedShips: [] };
+      const latestAllowedShips = latestRule.allowedShips ?? [];
+      setCurrentSettings({
+        ...latestSettings,
+        channelRules: {
+          ...latestRules,
+          [channelNest]: {
+            ...latestRule,
+            allowedShips: latestAllowedShips.includes(normalizedShip)
+              ? latestAllowedShips
+              : [...latestAllowedShips, normalizedShip],
+          },
+        },
+      });
       runtime.log?.(`[tlon] Added ${normalizedShip} to ${channelNest} allowlist`);
+      return true;
     } catch (err) {
       runtime.error?.(`[tlon] Failed to update channelRules: ${String(err)}`);
+      return false;
     }
   };
 
@@ -256,25 +279,19 @@ export function createTlonApprovalRuntime(params: {
     }
 
     if (parsed.action === "approve") {
+      let accessGrantSaved = true;
       switch (approval.type) {
         case "dm":
-          await addToDmAllowlist(approval.requestingShip);
-          if (approval.originalMessage) {
-            runtime.log?.(
-              `[tlon] Processing original message from ${approval.requestingShip} after approval`,
-            );
-            await processApprovedMessage(approval);
-          }
+          accessGrantSaved = await addToDmAllowlist(approval.requestingShip);
           break;
         case "channel":
           if (approval.channelNest) {
-            await addToChannelAllowlist(approval.requestingShip, approval.channelNest);
-            if (approval.originalMessage) {
-              runtime.log?.(
-                `[tlon] Processing original message from ${approval.requestingShip} in ${approval.channelNest} after approval`,
-              );
-              await processApprovedMessage(approval);
-            }
+            accessGrantSaved = await addToChannelAllowlist(
+              approval.requestingShip,
+              approval.channelNest,
+            );
+          } else {
+            accessGrantSaved = false;
           }
           break;
         case "group":
@@ -312,6 +329,33 @@ export function createTlonApprovalRuntime(params: {
           break;
       }
 
+      if (approval.type === "dm" || approval.type === "channel") {
+        if (!accessGrantSaved) {
+          await sendOwnerNotification(
+            `Failed to approve ${approval.requestingShip}: access grant was not saved. The request remains pending; retry approval.`,
+          );
+          return true;
+        }
+        if (approval.originalMessage) {
+          runtime.log?.(
+            `[tlon] Processing original message from ${approval.requestingShip} after approval`,
+          );
+          await processApprovedMessage(approval);
+        }
+        const pendingBeforeRemoval = getPendingApprovals();
+        setPendingApprovals(removePendingApproval(pendingBeforeRemoval, approval.id));
+        try {
+          await savePendingApprovals(true);
+        } catch {
+          setPendingApprovals(pendingBeforeRemoval);
+          await sendOwnerNotification(
+            `Access grant for ${approval.requestingShip} was saved, but the pending request could not be cleared. The request remains pending${approval.originalMessage ? " and the original message may already have been processed; do not retry until it is cleared." : "; retry after settings recover."}`,
+          );
+          return true;
+        }
+        await sendOwnerNotification(formatApprovalConfirmation(approval, "approve"));
+        return true;
+      }
       await sendOwnerNotification(formatApprovalConfirmation(approval, "approve"));
     } else if (parsed.action === "block") {
       await blockShip(approval.requestingShip);

@@ -100,19 +100,34 @@ export function createQuestionReactionTargetStore<TIdentity, TMetadata = undefin
       metadata?: TMetadata;
       logDebug?: (message: string) => void;
     }): Promise<boolean> {
-      const target = findTarget(resolveParams.identities);
-      if (
-        !target ||
-        (params.identityMatches && !params.identityMatches(target.metadata, resolveParams.metadata))
-      ) {
-        return false;
+      let target: Target | undefined;
+      let staleTarget: Target | undefined;
+      for (const identity of resolveParams.identities) {
+        const key = params.buildKey(identity);
+        const candidate = key ? targets.get(key) : undefined;
+        if (
+          !candidate ||
+          (params.identityMatches &&
+            !params.identityMatches(candidate.metadata, resolveParams.metadata))
+        ) {
+          continue;
+        }
+        if (candidate.terminal || candidate.expiresAtMs <= Date.now()) {
+          staleTarget ??= candidate;
+          continue;
+        }
+        target = candidate;
+        break;
       }
-      if (target.expiresAtMs <= Date.now() || target.terminal) {
-        target.terminal = true;
+      if (!target && staleTarget) {
+        staleTarget.terminal = true;
         resolveParams.logDebug?.(
-          `${params.channel}: stale question reaction ignored id=${target.questionId}`,
+          `${params.channel}: stale question reaction ignored id=${staleTarget.questionId}`,
         );
         return true;
+      }
+      if (!target) {
+        return false;
       }
       const optionValue = target.optionValues[resolveParams.optionIndex];
       if (!optionValue) {

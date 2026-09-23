@@ -702,9 +702,9 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     }
   }
 
-  // iMessage delivers a poll's comment as a separate inline reply to the poll
-  // balloon; fold it into the poll so the agent votes once instead of also
-  // replying to the caption in prose (a redundant restatement of the vote).
+  // A near-simultaneous same-sender inline reply may be a poll caption or a
+  // genuine message. Without caption provenance, treat the match as diagnostic
+  // only and let normal inbound policy and dispatch decide what to deliver.
   const pollCommentFolder = createPollCommentFolder();
 
   function resolveIMessageInboundBodyText(message: IMessagePayload) {
@@ -740,23 +740,19 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       return;
     }
 
-    // Remember native polls so a caption reply that lands WITH the poll is
-    // recognized and folded. The poll balloon (rendered with options + a vote
-    // cue) is still delivered; only the near-simultaneous comment is dropped so
-    // the agent votes without also answering it as a standalone question. A
-    // deliberate later inline reply to the poll falls outside the window and is
-    // delivered normally.
+    // Remember native polls only to identify ambiguous nearby replies. A
+    // matching reply must still reach normal inbound handling: timestamp,
+    // sender, and parent GUID cannot prove it is the poll's caption.
     const pollFoldAtMs = message.created_at ? Date.parse(message.created_at) : Number.NaN;
     if (message.poll) {
       pollCommentFolder.rememberPoll(message.guid, pollFoldAtMs, message.sender);
     } else if (
       message.reply_to_guid != null &&
-      pollCommentFolder.isPollComment(message.reply_to_guid, pollFoldAtMs, message.sender)
+      pollCommentFolder.isAmbiguousPollReply(message.reply_to_guid, pollFoldAtMs, message.sender)
     ) {
       logVerbose(
-        "imessage: folding poll comment (inline reply sent with a poll) into the poll; not delivering standalone",
+        "imessage: near-simultaneous poll inline reply may be caption or genuine message; delivering normally",
       );
-      return;
     }
 
     const {

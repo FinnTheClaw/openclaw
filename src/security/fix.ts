@@ -466,7 +466,7 @@ export async function fixSecurityFootguns(opts?: {
   }
 
   return {
-    ok: errors.length === 0,
+    ok: errors.length === 0 && actions.every((action) => !action.error),
     stateDir,
     configPath,
     configWritten,

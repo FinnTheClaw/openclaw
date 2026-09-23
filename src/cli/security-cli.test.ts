@@ -227,4 +227,51 @@ describe("security CLI", () => {
       expect(runSecurityAuditCore).not.toHaveBeenCalled();
     },
   );
+  it("JSON reports an action error through the fix result", async () => {
+    primeDeepAuditConfig();
+    fixSecurityFootguns.mockResolvedValue({
+      ok: false,
+      changes: [],
+      errors: [],
+      actions: [
+        {
+          kind: "chmod",
+          path: "/test/openclaw.json",
+          mode: 0o600,
+          ok: false,
+          error: "EACCES injected",
+        },
+      ],
+    });
+
+    await createProgram().parseAsync(["security", "audit", "--fix", "--json"], { from: "user" });
+
+    const payload = JSON.parse(String(runtimeLogs.at(-1)));
+    expect(payload.fix.ok).toBe(false);
+    expect(payload.fix.actions[0].error).toContain("EACCES injected");
+  });
+
+  it("text shows an action error instead of no changes applied", async () => {
+    primeDeepAuditConfig();
+    fixSecurityFootguns.mockResolvedValue({
+      ok: false,
+      changes: [],
+      errors: [],
+      actions: [
+        {
+          kind: "chmod",
+          path: "/test/openclaw.json",
+          mode: 0o600,
+          ok: false,
+          error: "EACCES injected",
+        },
+      ],
+    });
+
+    await createProgram().parseAsync(["security", "audit", "--fix"], { from: "user" });
+
+    const output = String(runtimeLogs.at(-1));
+    expect(output).toContain("EACCES injected");
+    expect(output).not.toContain("Fixes: no changes applied");
+  });
 });

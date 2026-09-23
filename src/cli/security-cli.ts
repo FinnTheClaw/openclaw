@@ -178,6 +178,7 @@ export function registerSecurityCli(program: Command) {
         if (!fixResult) {
           lines.push(muted("Fixes: failed to apply (unexpected error)"));
         } else if (
+          fixResult.ok &&
           fixResult.errors.length === 0 &&
           fixResult.changes.length === 0 &&
           fixResult.actions.every((a) => !a.ok)

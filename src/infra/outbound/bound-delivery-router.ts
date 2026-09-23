@@ -54,9 +54,6 @@ function resolveBindingForRequester(
     return exactConversation;
   }
 
-  if (matchingChannelAccount.length === 1) {
-    return matchingChannelAccount[0] ?? null;
-  }
   return null;
 }
 

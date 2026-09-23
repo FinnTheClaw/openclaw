@@ -348,6 +348,113 @@ describe("iMessage monitor last-route updates", () => {
 
   it.each([
     {
+      name: "same-instant genuine reply",
+      delayMs: 0,
+      replyToGuid: "poll-caption-boundary-guid",
+      text: "I prefer pizza now",
+    },
+    {
+      name: "half-second genuine reply",
+      delayMs: 500,
+      replyToGuid: "poll-caption-boundary-guid",
+      text: "I prefer pizza shortly",
+    },
+    {
+      name: "five-second genuine reply",
+      delayMs: 5_000,
+      replyToGuid: "poll-caption-boundary-guid",
+      text: "I prefer pizza after five seconds",
+    },
+    {
+      name: "last millisecond inside fold window",
+      delayMs: 14_999,
+      replyToGuid: "poll-caption-boundary-guid",
+      text: "I prefer pizza near boundary",
+    },
+    {
+      name: "exact fold-window boundary",
+      delayMs: 15_000,
+      replyToGuid: "poll-caption-boundary-guid",
+      text: "I prefer pizza at boundary",
+    },
+    {
+      name: "first millisecond outside fold window",
+      delayMs: 15_001,
+      replyToGuid: "poll-caption-boundary-guid",
+      text: "I prefer pizza beyond boundary",
+    },
+    {
+      name: "deliberate minute-later reply",
+      delayMs: 60_000,
+      replyToGuid: "poll-caption-boundary-guid",
+      text: "I prefer pizza later",
+    },
+    {
+      name: "earlier reply timestamp",
+      delayMs: -1,
+      replyToGuid: "poll-caption-boundary-guid",
+      text: "I prefer pizza before timestamp",
+    },
+    {
+      name: "unrelated inline reply",
+      delayMs: 500,
+      replyToGuid: "another-parent-guid",
+      text: "I prefer pizza elsewhere",
+    },
+    {
+      name: "caption-shaped ambiguous reply",
+      delayMs: 500,
+      replyToGuid: "poll-caption-boundary-guid",
+      text: "Lunch today?",
+    },
+  ])("dispatches $name after a native poll instead of silently folding it", async (testCase) => {
+    const pollAtMs = Date.now() - 70_000;
+    const poll = {
+      ...createInboundMessage({
+        id: 6_001,
+        guid: "poll-caption-boundary-guid",
+        text: "�",
+        created_at: new Date(pollAtMs).toISOString(),
+      }),
+      poll: {
+        kind: "poll",
+        question: "Lunch today?",
+        options: [
+          { id: "pizza", text: "Pizza" },
+          { id: "salad", text: "Salad" },
+        ],
+      },
+    };
+    const reply = {
+      ...createInboundMessage({
+        id: 6_002,
+        guid: "poll-reply-" + testCase.name,
+        text: testCase.text,
+        created_at: new Date(pollAtMs + testCase.delayMs).toISOString(),
+      }),
+      reply_to_guid: testCase.replyToGuid,
+      reply_to_text: "Lunch today?",
+      reply_to_sender: DEFAULT_SENDER,
+    };
+    await runMessageCase({
+      onClose: async (notify) => {
+        notify(poll);
+        await vi.waitFor(() => {
+          expect(dispatchReplyWithBufferedBlockDispatcherMock).toHaveBeenCalledTimes(1);
+        });
+        notify(reply);
+        await vi.waitFor(() => {
+          expect(dispatchReplyWithBufferedBlockDispatcherMock).toHaveBeenCalledTimes(2);
+        });
+      },
+    });
+    expect(
+      dispatchReplyWithBufferedBlockDispatcherMock.mock.calls[1]?.[0].ctx.BodyForAgent,
+    ).toContain(testCase.text);
+  });
+
+  it.each([
+    {
       label: "SMS chat with service unset",
       configuredService: undefined,
       chatGuid: "SMS;-;+15550001111",

@@ -54,12 +54,17 @@ type SetupStatus = {
   checks: SetupCheck[];
 };
 
-function resolveMode(input: string): "off" | "serve" | "funnel" {
-  const raw = normalizeOptionalLowercaseString(input) ?? "";
-  if (raw === "serve" || raw === "off") {
+function resolveMode(input?: string): "off" | "serve" | "funnel" {
+  if (input === undefined) {
+    return "funnel";
+  }
+  const raw = normalizeOptionalLowercaseString(input);
+  if (raw === "serve" || raw === "off" || raw === "funnel") {
     return raw;
   }
-  return "funnel";
+  throw new Error(
+    "Invalid Tailscale expose mode " + JSON.stringify(input) + ". Expected off, serve, or funnel.",
+  );
 }
 
 function resolveDefaultStorePath(config: VoiceCallConfig): string {
@@ -408,13 +413,13 @@ export function registerVoiceCallCli(params: {
   root
     .command("expose")
     .description("Enable/disable Tailscale serve/funnel for the webhook")
-    .option("--mode <mode>", "off | serve (tailnet) | funnel (public)", "funnel")
+    .option("--mode <mode>", "off | serve (tailnet) | funnel (public)")
     .option("--path <path>", "Tailscale path to expose (recommend matching serve.path)")
     .option("--port <port>", "Local webhook port")
     .option("--serve-path <path>", "Local webhook path")
     .action(
       async (options: { mode?: string; port?: string; path?: string; servePath?: string }) => {
-        const mode = resolveMode(options.mode ?? "funnel");
+        const mode = resolveMode(options.mode);
         const servePort = parseCliInteger(
           options.port ?? String(config.serve.port ?? 3334),
           "--port",

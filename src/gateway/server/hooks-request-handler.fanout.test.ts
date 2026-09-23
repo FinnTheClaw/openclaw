@@ -381,4 +381,177 @@ describe("hook fan-out dispatch", () => {
     await handler(req, response.res);
     expect(readJsonBodyMock).toHaveBeenLastCalledWith(expect.anything(), canonical.maxBodyBytes);
   });
+
+  describe("custom forEach replay source identity", () => {
+    beforeEach(() => {
+      readJsonBodyMock.mockReset();
+    });
+
+    function customConfig(messageTemplate = "constant"): HooksConfigResolved {
+      const canonical = createHooksConfig();
+      return {
+        ...canonical,
+        mappings: resolveHookMappings({
+          mappings: [
+            {
+              id: "custom",
+              match: { path: "custom" },
+              action: "agent",
+              forEach: "events",
+              sessionKey: "hook:custom:static",
+              messageTemplate,
+            },
+          ],
+          allowRequestSessionKey: true,
+          allowedSessionKeyPrefixes: ["hook:custom:"],
+        }),
+        sessionPolicy: {
+          ...canonical.sessionPolicy,
+          allowRequestSessionKey: true,
+          allowedSessionKeyPrefixes: ["hook:custom:"],
+        },
+      };
+    }
+
+    function customHandler(
+      messageTemplate?: string,
+      dispatch?: (
+        value: HookAgentDispatchPayload,
+      ) => HookAgentDispatchResult | Promise<HookAgentDispatchResult>,
+    ) {
+      let sequence = 0;
+      return createFanOutHandler({
+        hooksConfig: customConfig(messageTemplate),
+        dispatchAgentHook: dispatch ?? (() => ({ ok: true, runId: `run-${sequence++}` })),
+      });
+    }
+
+    async function postCustom(
+      handler: ReturnType<typeof createHooksRequestHandler>,
+      payload: Record<string, unknown>,
+      headers?: Record<string, string>,
+    ) {
+      readJsonBodyMock.mockResolvedValueOnce({ ok: true, value: payload });
+      const response = createResponse();
+      await handler(createHookRequest({ url: "/hooks/custom", headers }), response.res);
+      return {
+        status: response.res.statusCode,
+        body: JSON.parse(response.getBody()) as { runId?: string; runIds?: string[]; ok: boolean },
+      };
+    }
+
+    test("01 distinct event IDs with identical rendering dispatch separately", async () => {
+      const { handler, dispatchAgentHook } = customHandler();
+      const first = await postCustom(handler, { events: [{ id: "A" }] });
+      const second = await postCustom(handler, { events: [{ id: "B" }] });
+      expect([first.body.runId, second.body.runId]).toEqual(["run-0", "run-1"]);
+      expect(dispatchAgentHook).toHaveBeenCalledTimes(2);
+    });
+
+    test("02 distinct source metadata in separate single-item batches dispatches separately", async () => {
+      const { handler, dispatchAgentHook } = customHandler();
+      const first = await postCustom(handler, { sourceEventId: "A", events: [{ text: "same" }] });
+      const second = await postCustom(handler, { sourceEventId: "B", events: [{ text: "same" }] });
+      expect([first.body.runId, second.body.runId]).toEqual(["run-0", "run-1"]);
+      expect(dispatchAgentHook).toHaveBeenCalledTimes(2);
+    });
+
+    test("03 a different event dispatches while the first admission is pending", async () => {
+      let release!: (value: HookAgentDispatchResult) => void;
+      const pending = new Promise<HookAgentDispatchResult>((resolve) => {
+        release = resolve;
+      });
+      let calls = 0;
+      const { handler, dispatchAgentHook } = customHandler(undefined, () =>
+        ++calls === 1 ? pending : { ok: true, runId: "run-B" },
+      );
+      const first = postCustom(handler, { events: [{ id: "A" }] });
+      await vi.waitFor(() => expect(dispatchAgentHook).toHaveBeenCalledTimes(1));
+      const second = await postCustom(handler, { events: [{ id: "B" }] });
+      expect(second.body.runId).toBe("run-B");
+      expect(dispatchAgentHook).toHaveBeenCalledTimes(2);
+      release({ ok: true, runId: "run-A" });
+      expect((await first).body.runId).toBe("run-A");
+    });
+
+    test("04 separate two-item batches with identical renders dispatch four runs", async () => {
+      const { handler, dispatchAgentHook } = customHandler();
+      const first = await postCustom(handler, { events: [{ id: "A" }, { id: "B" }] });
+      const second = await postCustom(handler, { events: [{ id: "C" }, { id: "D" }] });
+      expect(first.body.runIds).toEqual(["run-0", "run-1"]);
+      expect(second.body.runIds).toEqual(["run-2", "run-3"]);
+      expect(dispatchAgentHook).toHaveBeenCalledTimes(4);
+    });
+
+    test("05 exact redelivery after partial failure retries only the failed item", async () => {
+      let fail = true;
+      let sequence = 0;
+      const { handler, dispatchAgentHook } = customHandler(undefined, () => {
+        sequence += 1;
+        return fail && sequence === 2
+          ? { ok: false, statusCode: 502, error: "admission failed" }
+          : { ok: true, runId: `run-${sequence}` };
+      });
+      const payload = { events: [{ id: "A" }, { id: "B" }] };
+      expect((await postCustom(handler, payload)).status).toBe(502);
+      fail = false;
+      const retry = await postCustom(handler, payload);
+      expect(retry.body.runIds).toEqual(["run-1", "run-3"]);
+      expect(dispatchAgentHook).toHaveBeenCalledTimes(3);
+    });
+
+    test("06 exact successful redelivery replays run IDs without dispatch", async () => {
+      const { handler, dispatchAgentHook } = customHandler();
+      const payload = { events: [{ id: "A" }, { id: "B" }] };
+      const first = await postCustom(handler, payload);
+      const replay = await postCustom(handler, payload);
+      expect(replay.body.runIds).toEqual(first.body.runIds);
+      expect(dispatchAgentHook).toHaveBeenCalledTimes(2);
+    });
+
+    test("07 identical-render siblings in one batch each dispatch and replay", async () => {
+      const { handler, dispatchAgentHook } = customHandler();
+      const payload = { events: [{ id: "same" }, { id: "same" }] };
+      expect((await postCustom(handler, payload)).body.runIds).toEqual(["run-0", "run-1"]);
+      expect((await postCustom(handler, payload)).body.runIds).toEqual(["run-0", "run-1"]);
+      expect(dispatchAgentHook).toHaveBeenCalledTimes(2);
+    });
+
+    test("08 explicit idempotency keys remain independent", async () => {
+      const { handler, dispatchAgentHook } = customHandler();
+      const payload = { events: [{ id: "A" }] };
+      const first = await postCustom(handler, payload, { "idempotency-key": "key-A" });
+      const second = await postCustom(handler, payload, { "idempotency-key": "key-B" });
+      expect([first.body.runId, second.body.runId]).toEqual(["run-0", "run-1"]);
+      const replay = await postCustom(
+        handler,
+        { events: [{ id: "B" }] },
+        { "idempotency-key": "key-A" },
+      );
+      expect(replay.body.runId).toBe("run-0");
+      expect(dispatchAgentHook).toHaveBeenCalledTimes(2);
+    });
+
+    test("09 different rendered messages stay independent", async () => {
+      const { handler, dispatchAgentHook } = customHandler("{{events[0].text}}");
+      const first = await postCustom(handler, { events: [{ id: "A", text: "one" }] });
+      const second = await postCustom(handler, { events: [{ id: "A", text: "two" }] });
+      expect([first.body.runId, second.body.runId]).toEqual(["run-0", "run-1"]);
+      expect(dispatchAgentHook).toHaveBeenCalledTimes(2);
+    });
+
+    test("10 replay expires after TTL", async () => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      try {
+        const { handler, dispatchAgentHook } = customHandler();
+        const payload = { events: [{ id: "A" }] };
+        expect((await postCustom(handler, payload)).body.runId).toBe("run-0");
+        clock.mockReturnValue(1_000_000 + 5 * 60_000 + 1);
+        expect((await postCustom(handler, payload)).body.runId).toBe("run-1");
+        expect(dispatchAgentHook).toHaveBeenCalledTimes(2);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
 });

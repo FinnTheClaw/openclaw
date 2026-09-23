@@ -45,6 +45,10 @@ type SharedBrowserState = {
   idleTimer: ReturnType<typeof setTimeout> | null;
   key: string;
   users: number;
+  acquisitions: number;
+  retired: boolean;
+  closing: boolean;
+  disconnected: boolean;
 };
 
 type ExecutablePathCache = {
@@ -389,10 +393,11 @@ async function acquireSharedBrowser(params: {
   const executablePath = await resolveBrowserExecutablePath(params.config);
   const desiredKey = executablePath || SHARED_BROWSER_KEY;
   if (sharedBrowserState && sharedBrowserState.key !== desiredKey) {
-    await closeSharedBrowser();
+    retireBrowserState(sharedBrowserState);
   }
 
   if (!sharedBrowserState) {
+    let state: SharedBrowserState;
     const browserPromise = chromium
       .launch({
         headless: true,
@@ -400,36 +405,45 @@ async function acquireSharedBrowser(params: {
         args: ["--disable-dev-shm-usage"],
       })
       .then((browser) => {
-        if (sharedBrowserState?.browserPromise === browserPromise) {
-          sharedBrowserState.browser = browser;
-          browser.on("disconnected", () => {
-            if (sharedBrowserState?.browser === browser) {
-              clearIdleTimer(sharedBrowserState);
-              sharedBrowserState = null;
-            }
-          });
-        }
+        state.browser = browser;
+        browser.on("disconnected", () => {
+          state.disconnected = true;
+          retireBrowserState(state);
+        });
         return browser;
       })
       .catch((error: unknown) => {
-        if (sharedBrowserState?.browserPromise === browserPromise) {
-          sharedBrowserState = null;
-        }
+        retireBrowserState(state);
         throw error;
       });
 
-    sharedBrowserState = {
+    state = {
       browserPromise,
       idleTimer: null,
       key: desiredKey,
       users: 0,
+      acquisitions: 0,
+      retired: false,
+      closing: false,
+      disconnected: false,
     };
+    sharedBrowserState = state;
   }
 
-  clearIdleTimer(sharedBrowserState);
   const state = sharedBrowserState;
-  const browser = await state.browserPromise;
-  state.users += 1;
+  clearIdleTimer(state);
+  // Reserve this generation before awaiting launch, not after obtaining the browser.
+  state.acquisitions += 1;
+  let browser: BrowserInstance;
+  try {
+    browser = await state.browserPromise;
+    state.users += 1;
+  } finally {
+    state.acquisitions -= 1;
+    if (state.retired) {
+      void closeRetiredBrowser(state);
+    }
+  }
 
   let released = false;
   return {
@@ -439,8 +453,10 @@ async function acquireSharedBrowser(params: {
         return;
       }
       released = true;
-      state.users = Math.max(0, state.users - 1);
-      if (state.users === 0) {
+      state.users -= 1;
+      if (state.retired) {
+        void closeRetiredBrowser(state);
+      } else if (state.users === 0) {
         scheduleIdleBrowserClose(state, params.idleMs);
       }
     },
@@ -448,10 +464,14 @@ async function acquireSharedBrowser(params: {
 }
 
 function scheduleIdleBrowserClose(state: SharedBrowserState, idleMs: number): void {
+  if (state.retired) {
+    void closeRetiredBrowser(state);
+    return;
+  }
   clearIdleTimer(state);
   state.idleTimer = setTimeout(() => {
-    if (sharedBrowserState === state && state.users === 0) {
-      void closeSharedBrowser();
+    if (sharedBrowserState === state && state.users === 0 && state.acquisitions === 0) {
+      retireBrowserState(state);
     }
   }, idleMs);
   state.idleTimer.unref();
@@ -465,13 +485,26 @@ function clearIdleTimer(state: SharedBrowserState): void {
   state.idleTimer = null;
 }
 
-async function closeSharedBrowser(): Promise<void> {
-  const state = sharedBrowserState;
-  if (!state) {
+function retireBrowserState(state: SharedBrowserState): void {
+  if (sharedBrowserState === state) {
+    sharedBrowserState = null;
+  }
+  state.retired = true;
+  clearIdleTimer(state);
+  void closeRetiredBrowser(state);
+}
+
+async function closeRetiredBrowser(state: SharedBrowserState): Promise<void> {
+  if (
+    !state.retired ||
+    state.closing ||
+    state.disconnected ||
+    state.users > 0 ||
+    state.acquisitions > 0
+  ) {
     return;
   }
-  sharedBrowserState = null;
-  clearIdleTimer(state);
+  state.closing = true;
   const browser = state.browser ?? (await state.browserPromise.catch(() => null));
   await browser?.close().catch(() => {});
 }

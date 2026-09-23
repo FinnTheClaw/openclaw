@@ -533,3 +533,213 @@ describe("QA Lab runner browser interactions", () => {
     expect(httpMock.postJson).not.toHaveBeenCalled();
   });
 });
+
+type CaptureRaceKind = "sessions" | "startup" | "events" | "coverage" | "query";
+type CaptureRaceTarget = "B" | "A-B-A" | "slow-timer" | "preset" | "timer-B";
+
+function deferredCaptureResponse() {
+  let resolve!: (value: unknown) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<unknown>((accept, fail) => {
+    resolve = accept;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushCaptureRefresh() {
+  for (let index = 0; index < 30; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+const captureSelection: RunnerSelection = {
+  alternateModel: "mock-openai/gpt-5.6-luna-alt",
+  channel: null,
+  channelDriver: "qa-channel",
+  evidenceMode: "full",
+  fastMode: false,
+  primaryModel: "mock-openai/gpt-5.6-luna",
+  profile: "all",
+  providerMode: "mock-openai",
+  runtimePair: null,
+  runtimePairLane: null,
+  scenarioIds: ["dm-chat-baseline"],
+};
+
+describe("QA Lab capture refresh selection races", () => {
+  it.each([
+    ["late A events cannot replace B events", "events", "B", false],
+    ["late A coverage cannot replace B coverage", "coverage", "B", false],
+    ["late A query cannot replace B query", "query", "B", false],
+    ["late A session list cannot reset B selection", "sessions", "B", false],
+    ["late A startup probe cannot replace B events", "startup", "B", false],
+    ["A-B-A rejects the first A events response", "events", "A-B-A", false],
+    ["A-B-A rejects the first A coverage response", "coverage", "A-B-A", false],
+    ["a 1.2s periodic response commits and polling resumes", "events", "slow-timer", true],
+    ["preset change rejects rows from the old preset", "query", "preset", false],
+    ["a timer refresh cannot overwrite a later B selection", "events", "timer-B", true],
+  ] as const)(
+    "%s",
+    async (_name, kind: CaptureRaceKind, target: CaptureRaceTarget, useTimer: boolean) => {
+      const root = await mountRunner(captureSelection);
+      const fallback = httpMock.getJson.getMockImplementation();
+      if (!fallback) {
+        throw new Error("missing baseline request handler");
+      }
+      let armed = false;
+      let delayed = false;
+      let requestNumber = 0;
+      const oldResponse = deferredCaptureResponse();
+      const marker = (_sessionId: string, label: string) => ({
+        events: [
+          {
+            id: 1,
+            ts: 1,
+            protocol: "https",
+            direction: "outbound",
+            kind: "request",
+            flowId: label,
+            host: label,
+            provider: label,
+            path: "/capture",
+          },
+        ],
+      });
+      const coverage = (sessionId: string, label: string) => ({
+        coverage: {
+          sessionId,
+          totalEvents: label === "old-A" ? 111 : label === "B-current" ? 222 : 333,
+          unlabeledEventCount: 0,
+          providers: [{ value: label, count: 1 }],
+          apis: [],
+          models: [],
+          hosts: [{ value: label, count: 1 }],
+          localPeers: [],
+        },
+      });
+      const sessions = {
+        sessions: ["A", "B"].map((id) => ({
+          id,
+          startedAt: 1,
+          mode: "proxy",
+          sourceProcess: "test",
+          eventCount: 1,
+        })),
+      };
+      httpMock.getJson.mockImplementation((url: string) => {
+        const sessionId = new URL(url, "http://qa.test").searchParams.get("sessionId") ?? "A";
+        const label = sessionId === "B" ? "B-current" : requestNumber === 1 ? "old-A" : "A-current";
+        const matching =
+          (kind === "sessions" && url === "/api/capture/sessions") ||
+          (kind === "startup" && url === "/api/capture/startup-status") ||
+          (kind === "events" && url.startsWith("/api/capture/events?")) ||
+          (kind === "coverage" && url.startsWith("/api/capture/coverage?")) ||
+          (kind === "query" && url.startsWith("/api/capture/query?"));
+        if (armed && !delayed && matching) {
+          delayed = true;
+          return oldResponse.promise;
+        }
+        if (url === "/api/capture/sessions") return Promise.resolve(sessions);
+        if (url.startsWith("/api/capture/events?"))
+          return Promise.resolve(marker(sessionId, label));
+        if (url.startsWith("/api/capture/coverage?"))
+          return Promise.resolve(coverage(sessionId, label));
+        if (url.startsWith("/api/capture/query?")) {
+          return Promise.resolve({
+            rows: [
+              { marker: label, preset: new URL(url, "http://qa.test").searchParams.get("preset") },
+            ],
+          });
+        }
+        return fallback(url);
+      });
+
+      root.querySelector<HTMLButtonElement>("[data-tab='capture']")?.click();
+      root.querySelector<HTMLButtonElement>("[data-action='refresh']")?.click();
+      await flushCaptureRefresh();
+      root.querySelector<HTMLButtonElement>("#capture-controls-toggle")?.click();
+      await flushCaptureRefresh();
+      expect(root.querySelector("#capture-session")).not.toBeNull();
+      selectValue(root, "#capture-preset", "double-sends");
+      await flushCaptureRefresh();
+      armed = true;
+      requestNumber = 1;
+      root.querySelector<HTMLButtonElement>("[data-action='refresh']")?.click();
+      await flushCaptureRefresh();
+      expect(delayed).toBe(true);
+
+      requestNumber = 2;
+      if (target === "slow-timer") {
+        const sessionsBefore = httpMock.getJson.mock.calls.filter(
+          ([url]) => url === "/api/capture/sessions",
+        ).length;
+        await vi.advanceTimersByTimeAsync(1_200);
+        await flushCaptureRefresh();
+        expect(
+          httpMock.getJson.mock.calls.filter(([url]) => url === "/api/capture/sessions"),
+        ).toHaveLength(sessionsBefore);
+        oldResponse.resolve(marker("A", "old-A"));
+        await flushCaptureRefresh();
+        expect(root.querySelector(".capture-events-scroll")?.textContent).toContain("old-A");
+        await vi.advanceTimersByTimeAsync(1_000);
+        await flushCaptureRefresh();
+        expect(root.querySelector(".capture-events-scroll")?.textContent).toContain("A-current");
+        return;
+      }
+      if (target === "B" || target === "A-B-A" || target === "timer-B") {
+        if (useTimer) {
+          await vi.advanceTimersByTimeAsync(1_000);
+          await flushCaptureRefresh();
+        }
+        selectValue(root, "#capture-session", "B");
+      } else if (target === "preset") {
+        selectValue(root, "#capture-preset", "retry-storms");
+      } else {
+        root.querySelector<HTMLButtonElement>("[data-action='refresh']")?.click();
+      }
+      await flushCaptureRefresh();
+      if (target === "A-B-A") {
+        requestNumber = 3;
+        selectValue(root, "#capture-session", "A");
+        await flushCaptureRefresh();
+      }
+
+      oldResponse.resolve(
+        kind === "sessions"
+          ? sessions
+          : kind === "startup"
+            ? { status: null }
+            : kind === "events"
+              ? marker("A", "old-A")
+              : kind === "coverage"
+                ? coverage("A", "old-A")
+                : { rows: [{ marker: "old-A", preset: "double-sends" }] },
+      );
+      await flushCaptureRefresh();
+      const expected = target === "B" || target === "timer-B" ? "B-current" : "A-current";
+      const eventText = root.querySelector(".capture-events-scroll")?.textContent ?? "";
+      expect(eventText).toContain(expected);
+      expect(eventText).not.toContain("old-A");
+      if (kind === "coverage") {
+        root.querySelector<HTMLButtonElement>("#capture-summary-toggle")?.click();
+        expect(root.textContent).toContain(
+          expected === "B-current" ? "222 total events" : "333 total events",
+        );
+        expect(root.textContent).not.toContain("111 total events");
+      }
+      if (kind === "query" || target === "preset") {
+        const queryText = [...root.querySelectorAll(".report-pre")]
+          .map((node) => node.textContent)
+          .join(" ");
+        expect(queryText).toContain(expected);
+        expect(queryText).not.toContain("old-A");
+      }
+      if (target === "preset") {
+        expect(root.querySelector<HTMLSelectElement>("#capture-preset")?.value).toBe(
+          "retry-storms",
+        );
+      }
+    },
+  );
+});

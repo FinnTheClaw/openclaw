@@ -117,6 +117,107 @@ describe("voice-call CLI status fallback", () => {
     return program;
   }
 
+  async function runExpose(mode?: string): Promise<{ output: string; error?: unknown }> {
+    tailscaleMocks.setup.mockResolvedValue("https://voice.example.ts.net/voice/webhook");
+    const program = buildProgram(
+      {},
+      {
+        serve: { port: 3334, path: "/voice/webhook" },
+        tailscale: { mode: "off", port: 443, path: "/voice/webhook" },
+        realtime: { enabled: false },
+        streaming: { enabled: false },
+      },
+    );
+    const capturer = captureStdout();
+    let error: unknown;
+    try {
+      await program.parseAsync(
+        ["voicecall", "expose", ...(mode === undefined ? [] : ["--mode", mode])],
+        { from: "user" },
+      );
+    } catch (caught) {
+      error = caught;
+    } finally {
+      capturer.restore();
+    }
+    return { output: capturer.output(), error };
+  }
+
+  function expectNoExposureMutationCalls(): void {
+    expect(tailscaleMocks.setup).not.toHaveBeenCalled();
+    expect(tailscaleMocks.getSelfInfo).not.toHaveBeenCalled();
+    expect(tailscaleMocks.cleanup).not.toHaveBeenCalled();
+  }
+
+  it("defaults an omitted expose mode to funnel", async () => {
+    const { output, error } = await runExpose();
+    expect(error).toBeUndefined();
+    expect(JSON.parse(output)).toMatchObject({ mode: "funnel", ok: true });
+    expect(tailscaleMocks.setup).toHaveBeenCalledWith(expect.objectContaining({ mode: "funnel" }));
+  });
+
+  it("accepts an explicit funnel expose mode", async () => {
+    const { output, error } = await runExpose("funnel");
+    expect(error).toBeUndefined();
+    expect(JSON.parse(output)).toMatchObject({ mode: "funnel", ok: true });
+  });
+
+  it("accepts an explicit serve expose mode", async () => {
+    const { output, error } = await runExpose("serve");
+    expect(error).toBeUndefined();
+    expect(JSON.parse(output)).toMatchObject({ mode: "serve", ok: true });
+    expect(tailscaleMocks.setup).toHaveBeenCalledWith(expect.objectContaining({ mode: "serve" }));
+  });
+
+  it("accepts off and cleans up both Tailscale exposure modes", async () => {
+    const { output, error } = await runExpose("off");
+    expect(error).toBeUndefined();
+    expect(JSON.parse(output)).toMatchObject({ mode: "off", ok: true });
+    expect(tailscaleMocks.cleanup).toHaveBeenCalledWith(expect.objectContaining({ mode: "serve" }));
+    expect(tailscaleMocks.cleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "funnel" }),
+    );
+    expect(tailscaleMocks.setup).not.toHaveBeenCalled();
+  });
+
+  it("reproduces the old-bad typo case without creating a public funnel", async () => {
+    const { error } = await runExpose("funel");
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("Invalid Tailscale expose mode");
+    expectNoExposureMutationCalls();
+  });
+
+  it("rejects an unsupported expose mode before Tailscale calls", async () => {
+    const { error } = await runExpose("private");
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("Expected off, serve, or funnel");
+    expectNoExposureMutationCalls();
+  });
+
+  it("rejects a whitespace-only expose mode before Tailscale calls", async () => {
+    const { error } = await runExpose("   ");
+    expect(error).toBeInstanceOf(Error);
+    expectNoExposureMutationCalls();
+  });
+
+  it("trims surrounding whitespace from a valid expose mode", async () => {
+    const { output, error } = await runExpose(" serve ");
+    expect(error).toBeUndefined();
+    expect(JSON.parse(output)).toMatchObject({ mode: "serve", ok: true });
+  });
+
+  it("accepts uppercase mode values case-insensitively", async () => {
+    const { output, error } = await runExpose("FUNNEL");
+    expect(error).toBeUndefined();
+    expect(JSON.parse(output)).toMatchObject({ mode: "funnel", ok: true });
+  });
+
+  it("rejects a case-mismatched unknown mode without mutation calls", async () => {
+    const { error } = await runExpose("Servee");
+    expect(error).toBeInstanceOf(Error);
+    expectNoExposureMutationCalls();
+  });
+
   it("reports an ambiguous phone-call owner during setup without starting telephony", async () => {
     const ensureRuntime = vi.fn();
     const program = new Command();

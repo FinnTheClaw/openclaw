@@ -284,10 +284,22 @@ function classifyExport(params: {
   let lastHumanMessageId = params.marker.lastHumanMessageId;
   let latestExternalMessageId: string | undefined;
   const earlierUserTexts: Array<string | undefined> = [];
+  let replayAfterCompaction = false;
   for (const message of params.messages) {
     const text = directHumanText(message);
+    if (
+      message.role === "user" &&
+      message.parts.some(
+        (part) => part.type === "compaction" || part.metadata?.compaction_continue === true,
+      )
+    ) {
+      replayAfterCompaction = true;
+    }
+    // A matching prior text is replay evidence only at an explicit compaction boundary.
+    // Ordinary repeated human replies have fresh message IDs and must remain activity.
     const replay =
       text !== undefined &&
+      replayAfterCompaction &&
       earlierUserTexts.slice(-OPENCODE_REPLAY_LOOKBACK_USER_MESSAGES).includes(text);
     const newerThanMarker =
       params.marker.lastHumanMessageId === null || message.id > params.marker.lastHumanMessageId;
@@ -308,6 +320,10 @@ function classifyExport(params: {
       latestExternalMessageId = message.id;
     }
     if (message.role === "user") {
+      if (text !== undefined) {
+        // Only the first visible user row after compaction can be a replay candidate.
+        replayAfterCompaction = false;
+      }
       earlierUserTexts.push(normalizedMessageText(message));
       if (earlierUserTexts.length > OPENCODE_REPLAY_LOOKBACK_USER_MESSAGES) {
         earlierUserTexts.shift();

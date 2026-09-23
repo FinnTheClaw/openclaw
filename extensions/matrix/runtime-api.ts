@@ -61,6 +61,11 @@ export function chunkTextForOutbound(text: string, limit: number): string[] {
   if (text.length === 0) {
     return [""];
   }
+  // Match the SDK's safe fallback: invalid limits keep the text intact.
+  // This facade retains its historical empty-text result above.
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return [text];
+  }
   if (Number.isFinite(limit) && limit > 0 && !Number.isInteger(limit)) {
     return chunkTextForOutboundSdk(text, limit);
   }
