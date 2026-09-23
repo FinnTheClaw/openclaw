@@ -63,6 +63,7 @@ const ANNOUNCE_SUPPRESSING_BLOCKED_REASONS = new Set<ConfiguredChannelBlockedRea
   "plugins-disabled",
   "blocked-by-denylist",
   "plugin-disabled",
+  "not-in-allowlist",
 ]);
 
 function normalizeChannelIds(channelIds: Iterable<string>): string[] {

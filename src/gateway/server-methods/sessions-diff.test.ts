@@ -731,6 +731,57 @@ describe("loadSessionDiff", () => {
         [untrackedPath, 2, 0],
       ]);
       expect(result.additions).toBe(3);
+      expect(result.files[0]?.patch).toContain("+later");
+      expect(result.files[0]?.truncated).not.toBe(true);
+    },
+  );
+
+  it
+    .skipIf(process.platform === "win32")
+    .each(['quote"name.txt', "back\\slash.txt", "café name.txt"])(
+    "includes a tracked patch for Git-quoted path %s",
+    async (filePath) => {
+      initRepo(repoRoot);
+      fs.writeFileSync(path.join(repoRoot, filePath), "before\n");
+      git(repoRoot, "add", ".");
+      git(repoRoot, "commit", "-qm", "init");
+      fs.appendFileSync(path.join(repoRoot, filePath), "after\n");
+      mockSession(repoRoot);
+
+      const result = await loadSessionDiff({ sessionKey: "agent:main:s1" });
+
+      expect(result.files).toHaveLength(1);
+      expect(result.files[0]).toMatchObject({ path: filePath, additions: 1 });
+      expect(result.files[0]?.patch).toContain("+after");
+      expect(result.files[0]?.truncated).not.toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "includes deleted and renamed Git-quoted paths",
+    async () => {
+      initRepo(repoRoot);
+      const deletedPath = "deleted\tname.txt";
+      const oldPath = "old\tname.txt";
+      const newPath = "new\nname.txt";
+      fs.writeFileSync(path.join(repoRoot, deletedPath), "deleted\n");
+      fs.writeFileSync(path.join(repoRoot, oldPath), "renamed\n");
+      git(repoRoot, "add", ".");
+      git(repoRoot, "commit", "-qm", "init");
+      fs.unlinkSync(path.join(repoRoot, deletedPath));
+      fs.renameSync(path.join(repoRoot, oldPath), path.join(repoRoot, newPath));
+      git(repoRoot, "add", "-A");
+      mockSession(repoRoot);
+
+      const result = await loadSessionDiff({ sessionKey: "agent:main:s1" });
+
+      const deleted = result.files.find((file) => file.path === deletedPath);
+      const renamed = result.files.find((file) => file.path === newPath);
+      expect(deleted?.patch).toContain("-deleted");
+      expect(deleted?.truncated).not.toBe(true);
+      expect(renamed).toMatchObject({ oldPath, status: "renamed" });
+      expect(renamed?.patch).toContain("rename to");
+      expect(renamed?.truncated).not.toBe(true);
     },
   );
 

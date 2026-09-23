@@ -167,6 +167,70 @@ describe("Signal approval native runtime", () => {
     });
   });
 
+  it("sends system-agent approvals with manual commands even when reactions are configured", async () => {
+    const cfg = { channels: { signal: { allowFrom: ["+15551230000"] } } };
+    const request = {
+      approvalKind: "system-agent" as const,
+      id: "system-agent-approval-123",
+      request: {
+        title: "Change settings",
+        description: "Update the agent settings",
+        command: "update",
+        proposalHash: "hash",
+        allowedDecisions: ["allow-once", "deny"] as const,
+        sessionId: "session-1",
+      },
+      createdAtMs: 1_000,
+      expiresAtMs: 61_000,
+    };
+    const view = {
+      approvalKind: "system-agent" as const,
+      approvalId: request.id,
+      phase: "pending" as const,
+      title: "OpenClaw change requires approval",
+      operationSummary: request.request.description,
+      actions: [
+        {
+          decision: "allow-once",
+          label: "Allow Once",
+          command: "/approve system-agent-approval-123 allow-once",
+        },
+        { decision: "deny", label: "Deny", command: "/approve system-agent-approval-123 deny" },
+      ],
+      expiresAtMs: request.expiresAtMs,
+    };
+    const pendingPayload = await signalApprovalNativeRuntime.presentation.buildPendingPayload({
+      request,
+      view,
+      nowMs: 1_000,
+    } as never);
+    const prepared = await signalApprovalNativeRuntime.transport.prepareTarget({
+      plannedTarget: { target: { to: "+15551230000" } },
+      accountId: "default",
+      context: { account: "+15550001111" },
+    } as never);
+    const entry = await signalApprovalNativeRuntime.transport.deliverPending({
+      cfg,
+      preparedTarget: prepared!.target,
+      pendingPayload,
+    } as never);
+    expect(sendMocks.sendMessageSignal).toHaveBeenLastCalledWith(
+      "+15551230000",
+      expect.stringContaining("/approve system-agent-approval-123"),
+      expect.any(Object),
+    );
+    expect(sendMocks.sendMessageSignal.mock.lastCall?.[1]).not.toContain("React with:");
+    expect(entry?.reactionsActive).toBe(false);
+    expect(
+      await signalApprovalNativeRuntime.interactions.bindPending({
+        entry,
+        request,
+        view,
+        pendingPayload,
+      } as never),
+    ).toBeNull();
+  });
+
   it("only renders reaction hints when the Signal target author can be bound", async () => {
     const cfg = { channels: { signal: { allowFrom: ["+15551230000"] } } };
     const unbound = await signalApprovalNativeRuntime.transport.prepareTarget({

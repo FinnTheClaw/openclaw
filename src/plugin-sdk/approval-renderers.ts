@@ -49,6 +49,7 @@ export function buildApprovalPendingReplyPayload(
       allowedDecisions,
     }),
     channelData: {
+      ...params.channelData,
       execApproval: {
         approvalId: params.approvalId,
         approvalSlug: params.approvalSlug,
@@ -58,7 +59,6 @@ export function buildApprovalPendingReplyPayload(
         sessionKey: normalizeOptionalString(params.sessionKey),
         state: "pending",
       },
-      ...params.channelData,
     },
   };
 }
@@ -92,12 +92,12 @@ export function buildApprovalResolvedReplyPayload(params: {
   return {
     text: params.text,
     channelData: {
+      ...params.channelData,
       execApproval: {
         approvalId: params.approvalId,
         approvalSlug: params.approvalSlug,
         state: "resolved",
       },
-      ...params.channelData,
     },
   };
 }

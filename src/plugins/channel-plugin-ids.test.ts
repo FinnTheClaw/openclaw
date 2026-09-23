@@ -3527,6 +3527,68 @@ describe("listConfiguredChannelIdsForReadOnlyScope", () => {
     ).toStrictEqual(["clickclack"]);
   });
 
+  it("does not announce a channel whose distinct manifest owner is excluded by the allowlist", () => {
+    const manifestRecords = [
+      {
+        id: "shared-plugin",
+        channels: ["shared"],
+        origin: "config",
+        enabledByDefault: undefined,
+        providers: [],
+        cliBackends: [],
+      } as never,
+    ];
+    const config = {
+      channels: { shared: { token: "configured" } },
+      plugins: { allow: ["shared"] },
+    } as OpenClawConfig;
+
+    expect(
+      resolveConfiguredChannelPresencePolicy({
+        config,
+        workspaceDir: "/tmp",
+        env: {},
+        manifestRecords,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        channelId: "shared",
+        effective: false,
+        blockedReasons: ["not-in-allowlist"],
+      }),
+    ]);
+    expect(
+      listConfiguredAnnounceChannelIdsForConfig({
+        config,
+        workspaceDir: "/tmp",
+        env: {},
+        manifestRecords,
+      }),
+    ).toStrictEqual([]);
+    expect(
+      listConfiguredAnnounceChannelIdsForConfig({
+        config: { ...config, plugins: { allow: ["shared-plugin"] } },
+        workspaceDir: "/tmp",
+        env: {},
+        manifestRecords,
+      }),
+    ).toStrictEqual(["shared"]);
+  });
+
+  it("preserves ownerless channel-ID allowlist compatibility", () => {
+    expect(
+      listConfiguredAnnounceChannelIdsForConfig({
+        config: {
+          channels: { shared: { token: "configured" } },
+          plugins: { allow: ["shared"] },
+        } as OpenClawConfig,
+        workspaceDir: "/tmp",
+        env: {},
+        manifestRecords: [],
+      }),
+    ).toStrictEqual(["shared"]);
+  });
+
   it("does not announce ownerless explicit channels suppressed by plugin policy", () => {
     const ownerlessChannelConfig = {
       channels: {

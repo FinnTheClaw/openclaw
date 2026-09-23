@@ -6,6 +6,7 @@ import {
   resolveSessionTranscriptRuntimeTarget,
 } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { buildHostChannelInboundEventContext } from "./inbound-event/context.js";
 import { createChannelInboundEnvelopeBuilder } from "./inbound-event/envelope.js";
 import { dispatchRoutedChannelTurn } from "./turn/lifecycle.js";
@@ -184,6 +185,7 @@ export async function runChannelFeedbackReflection(params: {
         lastReflectionBySession.delete(key);
       }
     }
+    pruneMapToMaxSize(lastReflectionBySession, MAX_COOLDOWN_ENTRIES);
   }
   return {
     status: "complete",

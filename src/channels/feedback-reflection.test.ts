@@ -149,6 +149,30 @@ describe("channel feedback reflection", () => {
     ).resolves.toMatchObject({ status: "complete", followUp: false });
   });
 
+  it("bounds fresh cooldown entries by evicting the oldest session", async () => {
+    dispatchRoutedChannelTurn.mockImplementation(async (plan) => {
+      await plan.delivery.deliver({ text: "Use a direct answer." });
+      return { admission: { kind: "dispatch" }, dispatched: true };
+    });
+    const params = (index: number) => ({
+      cfg,
+      channel: "msteams",
+      channelLabel: "Teams",
+      agentId: "main",
+      sessionKey: `agent:main:msteams:feedback-cap-${index}`,
+      conversationId: `conversation-cap-${index}`,
+      conversationKind: "direct" as const,
+      cooldownMs: 1_000_000,
+    });
+    for (let index = 0; index < 501; index++) {
+      expect((await runChannelFeedbackReflection(params(index))).status).toBe("complete");
+    }
+    await expect(runChannelFeedbackReflection(params(1))).resolves.toEqual({ status: "cooldown" });
+    await expect(runChannelFeedbackReflection(params(0))).resolves.toMatchObject({
+      status: "complete",
+    });
+  });
+
   it("records feedback through the persisted transcript owner", async () => {
     loadSessionEntry.mockReturnValue({ sessionId: "session-1" });
     resolveSessionTranscriptRuntimeTarget.mockResolvedValue({

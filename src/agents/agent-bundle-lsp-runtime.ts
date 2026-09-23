@@ -323,6 +323,22 @@ function handleIncomingData(session: LspSession, chunk: Buffer | string) {
     }
     const record = msg as Record<string, unknown>;
 
+    if ("method" in record && typeof record.method === "string") {
+      if (typeof record.id === "number" || typeof record.id === "string") {
+        session.process.stdin?.write(
+          encodeLspMessage({
+            jsonrpc: "2.0",
+            id: record.id,
+            error: { code: -32601, message: "Method not found" },
+          }),
+          "utf-8",
+        );
+      } else {
+        // A server request can share an id with a pending client request.
+        logDebug(`bundle-lsp:${session.serverName}: notification ${record.method}`);
+      }
+      continue;
+    }
     if ("id" in record && typeof record.id === "number") {
       const pending = session.pendingRequests.take(record.id);
       if (pending) {
@@ -332,10 +348,6 @@ function handleIncomingData(session: LspSession, chunk: Buffer | string) {
           pending.resolve(record.result);
         }
       }
-    }
-    // Notifications (no id) are logged but not acted on
-    if ("method" in record && !("id" in record)) {
-      logDebug(`bundle-lsp:${session.serverName}: notification ${String(record.method)}`);
     }
   }
   if (!parsed.ok) {

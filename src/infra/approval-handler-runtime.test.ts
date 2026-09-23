@@ -445,6 +445,7 @@ describe("createLazyChannelApprovalNativeRuntimeAdapter", () => {
 
   it("keeps observe hooks synchronous and only uses the already-loaded runtime", async () => {
     const onDelivered = vi.fn();
+    const onFinalized = vi.fn();
     const load = vi.fn().mockResolvedValue({
       availability: {
         isConfigured: vi.fn(),
@@ -461,6 +462,7 @@ describe("createLazyChannelApprovalNativeRuntimeAdapter", () => {
       },
       observe: {
         onDelivered,
+        onFinalized,
       },
     });
     const adapter = createLazyChannelApprovalNativeRuntimeAdapter({
@@ -470,8 +472,10 @@ describe("createLazyChannelApprovalNativeRuntimeAdapter", () => {
     });
 
     adapter.observe?.onDelivered?.({ request: { id: "exec:1" } } as never);
+    adapter.observe?.onFinalized?.({ request: { id: "exec:1" } } as never);
     expect(load).not.toHaveBeenCalled();
     expect(onDelivered).not.toHaveBeenCalled();
+    expect(onFinalized).not.toHaveBeenCalled();
 
     await adapter.presentation.buildPendingPayload({
       cfg: {} as never,
@@ -484,6 +488,8 @@ describe("createLazyChannelApprovalNativeRuntimeAdapter", () => {
 
     adapter.observe?.onDelivered?.({ request: { id: "exec:1" } } as never);
     expect(onDelivered).toHaveBeenCalledWith({ request: { id: "exec:1" } });
+    adapter.observe?.onFinalized?.({ request: { id: "exec:1" } } as never);
+    expect(onFinalized).toHaveBeenCalledExactlyOnceWith({ request: { id: "exec:1" } });
     expect(load).toHaveBeenCalledTimes(1);
   });
 

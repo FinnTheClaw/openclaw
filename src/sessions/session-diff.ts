@@ -155,23 +155,41 @@ export function parseNumstatZ(text: string): Map<string, NumstatEntry> {
   return byPath;
 }
 
+function decodeGitPatchPath(path: string): string {
+  // Git C-quotes control characters even with core.quotePath=false.
+  return path.replace(/\\([0-7]{3}|[abfnrtv"\\])/g, (_, escaped: string) =>
+    /^[0-7]/.test(escaped)
+      ? String.fromCharCode(Number.parseInt(escaped, 8))
+      : ({ a: "\x07", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" }[escaped] ?? escaped),
+  );
+}
+
 function chunkPath(chunk: string): string | null {
-  const newFile = /(?:^|\n)\+\+\+ b\/([^\n]+)(?:\n|$)/.exec(chunk);
+  const newFile = /(?:^|\n)\+\+\+ (?:"b\/((?:\\.|[^"])*)"|b\/([^\n]+))(?:\n|$)/.exec(chunk);
   if (newFile) {
-    return expectDefined(newFile[1], "new file capture group 1");
+    return decodeGitPatchPath(
+      expectDefined(newFile[1] ?? newFile[2]?.replace(/\t$/, ""), "new file path"),
+    );
   }
   // Deleted files have `+++ /dev/null`; key the chunk by the old path.
-  const oldFile = /(?:^|\n)--- a\/([^\n]+)(?:\n|$)/.exec(chunk);
+  const oldFile = /(?:^|\n)--- (?:"a\/((?:\\.|[^"])*)"|a\/([^\n]+))(?:\n|$)/.exec(chunk);
   if (oldFile) {
-    return expectDefined(oldFile[1], "old file capture group 1");
+    return decodeGitPatchPath(
+      expectDefined(oldFile[1] ?? oldFile[2]?.replace(/\t$/, ""), "old file path"),
+    );
   }
   // Pure renames and binary chunks have neither marker line.
-  const renameTo = /(?:^|\n)rename to ([^\n]+)(?:\n|$)/.exec(chunk);
+  const renameTo = /(?:^|\n)rename to ("(?:\\.|[^"])*"|[^\n]+)(?:\n|$)/.exec(chunk);
   if (renameTo) {
-    return expectDefined(renameTo[1], "rename to capture group 1");
+    const path = expectDefined(renameTo[1], "rename to path");
+    return path.startsWith('"') && path.endsWith('"')
+      ? decodeGitPatchPath(path.slice(1, -1))
+      : path;
   }
-  const header = /(?:^|\n)diff --git a\/[^\n]+ b\/([^\n]+)(?:\n|$)/.exec(chunk);
-  return header ? expectDefined(header[1], "header capture group 1") : null;
+  const header = /(?:^|\n)diff --git [^\n]+ (?:"b\/((?:\\.|[^"])*)"|b\/([^\n]+))(?:\n|$)/.exec(
+    chunk,
+  );
+  return header ? decodeGitPatchPath(expectDefined(header[1] ?? header[2], "header path")) : null;
 }
 
 /** Splits a multi-file `git diff --patch` into per-file chunks keyed by path. */

@@ -1394,6 +1394,34 @@ describe("capability cli", () => {
     expect(mocks.callGateway).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["missing result", {}],
+    ["missing payloads", { result: {} }],
+    ["empty payloads", { result: { payloads: [] } }],
+    ["blank payload", { result: { payloads: [{ text: "  " }] } }],
+  ])("fails gateway model probes with %s", async (_name, response) => {
+    mocks.callGateway.mockResolvedValueOnce(response as never);
+
+    await expect(
+      runCapability("model", "run", "--prompt", "hello", "--gateway", "--json"),
+    ).rejects.toThrow("exit 1");
+
+    expectRuntimeErrorContains("No visible output returned from gateway model run");
+    expect(mocks.runtime.writeJson).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["mediaUrl", { mediaUrl: "https://example.test/image.png" }],
+    ["mediaUrls", { mediaUrls: ["https://example.test/image.png"] }],
+  ])("accepts gateway model probes with %s output", async (_name, payload) => {
+    mocks.callGateway.mockResolvedValueOnce({ result: { payloads: [payload] } } as never);
+
+    await runCapability("model", "run", "--prompt", "hello", "--gateway", "--json");
+
+    expect(firstJsonOutput()?.ok).toBe(true);
+    expect(firstJsonOutput()?.outputs).toEqual([payload]);
+  });
+
   it("fails local model probes when the provider returns no text output", async () => {
     mocks.completeWithPreparedSimpleCompletionModel.mockResolvedValueOnce({
       content: [],

@@ -52,6 +52,27 @@ describe("plugin-sdk/approval-reaction-runtime", () => {
     expiresAtMs: 61_000,
   };
 
+  it("keeps system-agent manual fallback free of reaction hints", () => {
+    const request = {
+      approvalKind: "system-agent" as const,
+      id: "system-agent-approval-123",
+      request: {
+        title: "Change settings",
+        description: "Update the agent settings",
+        command: "update",
+        proposalHash: "hash",
+        allowedDecisions: ["allow-once", "deny"] as const,
+        sessionId: "session-1",
+      },
+      createdAtMs: 1_000,
+      expiresAtMs: 61_000,
+    };
+    const pending = buildApprovalReactionPendingContentForRequest({ request, nowMs: 1_000 });
+    expect(pending.reactionPayload.text).toContain("React with:");
+    expect(pending.manualFallbackPayload.text).not.toContain("React with:");
+    expect(pending.manualFallbackPayload.text).toContain("/approve system-agent-approval-123");
+  });
+
   it("exposes hardcoded reaction bindings in product order", () => {
     expect(APPROVAL_REACTION_BINDINGS).toEqual([
       { decision: "allow-once", emoji: "👍", label: "Allow Once" },

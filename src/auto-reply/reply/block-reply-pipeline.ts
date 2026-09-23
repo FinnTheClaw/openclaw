@@ -7,6 +7,7 @@ import {
 import { logVerbose } from "../../globals.js";
 import { runAbortableTimeout } from "../../node-host/with-timeout.js";
 import {
+  copyReplyPayloadMetadata,
   getReplyPayloadMetadata,
   isReplyPayloadStatusNotice,
   isReplyPayloadTerminalContent,
@@ -49,7 +50,10 @@ export function createAudioAsVoiceBuffer(params: {
       }
     },
     shouldBuffer: (payload) => params.isAudioPayload(payload),
-    finalize: (payload) => (seenAudioAsVoice ? { ...payload, audioAsVoice: true } : payload),
+    finalize: (payload) =>
+      seenAudioAsVoice
+        ? copyReplyPayloadMetadata(payload, { ...payload, audioAsVoice: true })
+        : payload,
   };
 }
 

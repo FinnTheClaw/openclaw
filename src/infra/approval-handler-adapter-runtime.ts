@@ -135,6 +135,7 @@ export function createLazyChannelApprovalNativeRuntimeAdapter<
       onDuplicateSkipped: (runtimeParams) =>
         loadedRuntime?.observe?.onDuplicateSkipped?.(runtimeParams),
       onDelivered: (runtimeParams) => loadedRuntime?.observe?.onDelivered?.(runtimeParams),
+      onFinalized: (runtimeParams) => loadedRuntime?.observe?.onFinalized?.(runtimeParams),
     },
   };
 }

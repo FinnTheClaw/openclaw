@@ -656,4 +656,58 @@ describe("createBlockReplyPipeline content coverage dedup", () => {
     expect(pipeline.isAborted()).toBe(true);
     setTimeoutSpy.mockRestore();
   });
+
+  it("preserves indexed and source-delivery metadata when buffered audio becomes voice", async () => {
+    const sent: ReplyPayload[] = [];
+    const pipeline = createBlockReplyPipeline({
+      onBlockReply: async (payload) => {
+        sent.push(payload);
+      },
+      timeoutMs: 5000,
+      buffer: createAudioAsVoiceBuffer({ isAudioPayload: (payload) => Boolean(payload.mediaUrl) }),
+    });
+    const original = setReplyPayloadMetadata(
+      { text: "Caption", mediaUrl: "file:///voice.ogg" },
+      {
+        assistantMessageIndex: 7,
+        assistantTranscriptMediaUrls: ["file:///voice.ogg"],
+        deliverDespiteSourceReplySuppression: true,
+      },
+    );
+    pipeline.enqueue(original);
+    pipeline.enqueue({ audioAsVoice: true });
+    await pipeline.flush({ force: true });
+
+    expect(sent[0]).toMatchObject({
+      text: "Caption",
+      mediaUrl: "file:///voice.ogg",
+      audioAsVoice: true,
+    });
+    expect(getReplyPayloadMetadata(sent[0])).toEqual(getReplyPayloadMetadata(original));
+    expect(pipeline.hasSentExactPayload(original)).toBe(true);
+    expect(
+      pipeline.hasSentPayload(
+        setReplyPayloadMetadata({ text: "Caption" }, { assistantMessageIndex: 7 }),
+      ),
+    ).toBe(true);
+    expect(pipeline.getSentMediaUrls()).toEqual(["file:///voice.ogg"]);
+  });
+
+  it("retains the original buffered audio object when no voice marker arrives", async () => {
+    const sent: ReplyPayload[] = [];
+    const pipeline = createBlockReplyPipeline({
+      onBlockReply: async (payload) => {
+        sent.push(payload);
+      },
+      timeoutMs: 5000,
+      buffer: createAudioAsVoiceBuffer({ isAudioPayload: (payload) => Boolean(payload.mediaUrl) }),
+    });
+    const original = setReplyPayloadMetadata(
+      { text: "Caption", mediaUrl: "file:///audio.ogg" },
+      { assistantMessageIndex: 8 },
+    );
+    pipeline.enqueue(original);
+    await pipeline.flush({ force: true });
+    expect(sent[0]).toBe(original);
+  });
 });

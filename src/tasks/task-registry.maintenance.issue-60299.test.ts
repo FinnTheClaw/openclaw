@@ -1,6 +1,8 @@
 // Regresses task registry maintenance behavior for issue 60299.
+/* oxlint-disable max-lines -- Keep maintenance regressions beside their shared runtime harness. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
+import * as config from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { ParsedAgentSessionKey } from "../routing/session-key.js";
 import { getDetachedTaskLifecycleRuntime } from "./detached-task-runtime.js";
@@ -48,6 +50,7 @@ type TaskRegistryMaintenanceRuntime = Parameters<
 >[0];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   stopTaskRegistryMaintenance();
   resetTaskRegistryMaintenanceRuntimeForTests();
   resetDetachedTaskLifecycleRuntimeForTests();
@@ -193,7 +196,7 @@ function createTaskRegistryMaintenanceHarness(params: {
   };
 
   setTaskRegistryMaintenanceRuntimeForTests(runtime);
-  return { currentTasks };
+  return { currentTasks, runtime };
 }
 
 function expectMaintenanceCounts(
@@ -223,6 +226,67 @@ function expectTaskStatus(
 }
 
 describe("task-registry maintenance issue #60299", () => {
+  it("does not count or deliver a cron recovery rejected by persistence", async () => {
+    const startedAt = Date.now() - GRACE_EXPIRED_MS;
+    const task = makeStaleTask({
+      sourceId: "cron-rejected",
+      runId: "cron:cron-rejected:" + startedAt,
+      startedAt,
+      lastEventAt: startedAt,
+    });
+    const { currentTasks, runtime } = createTaskRegistryMaintenanceHarness({
+      tasks: [task],
+      durableCronTaskRows: {
+        "cron-rejected": [{ ...task, status: "succeeded", endedAt: startedAt + 1000 }],
+      },
+    });
+    const deliver = vi.fn(async () => null);
+    runtime.markTaskTerminalById = () => null;
+    runtime.maybeDeliverTaskTerminalUpdate = deliver;
+
+    expect(previewTaskRegistryMaintenance().recovered).toBe(1);
+    expect((await runTaskRegistryMaintenance()).recovered).toBe(0);
+    expect(currentTasks.get(task.taskId)).toEqual(task);
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("retains stale subagent backing in the configured child-agent store", async () => {
+    const childSessionKey = "agent:child:subagent:custom-store";
+    const task = makeStaleTask({ runtime: "subagent", childSessionKey });
+    const store = "/tmp/openclaw-custom-{agentId}-sessions.json";
+    vi.spyOn(config, "getRuntimeConfig").mockReturnValue({ session: { store } } as never);
+    const resolveStorePath = vi.fn((configured: string | undefined, opts?: { agentId?: string }) =>
+      configured === store && opts?.agentId === "child"
+        ? "/tmp/custom-child.json"
+        : "/tmp/default.json",
+    );
+    const listSessionEntries = vi.fn(
+      ({ storePath, agentId }: { storePath?: string; agentId?: string }) =>
+        storePath === "/tmp/custom-child.json" && agentId === "child"
+          ? [
+              {
+                sessionKey: childSessionKey,
+                entry: { sessionId: "healthy", updatedAt: Date.now() },
+              },
+            ]
+          : [],
+    );
+    const { currentTasks } = createTaskRegistryMaintenanceHarness({
+      tasks: [task],
+      resolveStorePath,
+      listSessionEntries: listSessionEntries as never,
+    });
+
+    expect(previewTaskRegistryMaintenance().reconciled).toBe(0);
+    expect((await runTaskRegistryMaintenance()).reconciled).toBe(0);
+    expect(currentTasks.get(task.taskId)?.status).toBe("running");
+    expect(resolveStorePath).toHaveBeenCalledWith(store, { agentId: "child" });
+    expect(listSessionEntries).toHaveBeenCalledWith({
+      storePath: "/tmp/custom-child.json",
+      agentId: "child",
+    });
+  });
+
   it("reuses session entry lists across stale subagent task checks in one pass", async () => {
     const tasks = Array.from({ length: 10 }, (_, index) =>
       makeStaleTask({

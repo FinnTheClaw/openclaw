@@ -326,6 +326,16 @@ async function runModelRun(params: {
     mode: hasModelOverride ? GATEWAY_CLIENT_MODES.BACKEND : GATEWAY_CLIENT_MODES.CLI,
     ...(hasModelOverride ? { scopes: [ADMIN_SCOPE] } : {}),
   });
+  const payloads = response?.result?.payloads ?? [];
+  if (
+    !payloads.some(
+      (payload) =>
+        Boolean(payload.text?.trim() || payload.mediaUrl?.trim()) ||
+        payload.mediaUrls?.some((url) => Boolean(url.trim())),
+    )
+  ) {
+    throw new Error("No visible output returned from gateway model run.");
+  }
   return {
     ok: true,
     capability: "model.run",
@@ -333,7 +343,7 @@ async function runModelRun(params: {
     provider: response?.result?.meta?.agentMeta?.provider,
     model: response?.result?.meta?.agentMeta?.model,
     attempts: response?.result?.meta?.agentMeta?.fallbackAttempts ?? [],
-    outputs: (response?.result?.payloads ?? []).map((payload) => ({
+    outputs: payloads.map((payload) => ({
       text: payload.text,
       mediaUrl: payload.mediaUrl,
       mediaUrls: payload.mediaUrls,

@@ -245,21 +245,20 @@ function buildSessionEntryLookup(entries: SessionEntrySummary[]): SessionEntryLo
 
 function getSessionEntryLookup(
   storePath: string,
+  agentId: string | undefined,
   context?: BackingSessionLookupContext,
 ): SessionEntryLookup {
+  const scope = { storePath, agentId };
   if (!context) {
-    return buildSessionEntryLookup(
-      taskRegistryMaintenanceRuntime.listSessionEntries({ storePath }),
-    );
+    return buildSessionEntryLookup(taskRegistryMaintenanceRuntime.listSessionEntries(scope));
   }
-  const cached = context.sessionEntriesByPath.get(storePath);
+  const cacheKey = JSON.stringify([storePath, agentId]);
+  const cached = context.sessionEntriesByPath.get(cacheKey);
   if (cached) {
     return cached;
   }
-  const lookup = buildSessionEntryLookup(
-    taskRegistryMaintenanceRuntime.listSessionEntries({ storePath }),
-  );
-  context.sessionEntriesByPath.set(storePath, lookup);
+  const lookup = buildSessionEntryLookup(taskRegistryMaintenanceRuntime.listSessionEntries(scope));
+  context.sessionEntriesByPath.set(cacheKey, lookup);
   return lookup;
 }
 
@@ -297,8 +296,11 @@ function findTaskSessionEntry(
     return undefined;
   }
   const agentId = taskRegistryMaintenanceRuntime.parseAgentSessionKey(childSessionKey)?.agentId;
-  const storePath = taskRegistryMaintenanceRuntime.resolveStorePath(undefined, { agentId });
-  return findSessionEntryByKey(getSessionEntryLookup(storePath, context), childSessionKey);
+  const storePath = taskRegistryMaintenanceRuntime.resolveStorePath(
+    getRuntimeConfig().session?.store,
+    { agentId },
+  );
+  return findSessionEntryByKey(getSessionEntryLookup(storePath, agentId, context), childSessionKey);
 }
 
 function isActiveTask(task: TaskRecord): boolean {
@@ -735,18 +737,20 @@ function markTaskLost(
 }
 
 function markTaskRecovered(task: TaskRecord, recovery: CronTerminalRecovery): TaskRecord {
-  const updated =
-    taskRegistryMaintenanceRuntime.markTaskTerminalById({
-      taskId: task.taskId,
-      status: recovery.status,
-      endedAt: recovery.endedAt,
-      lastEventAt: recovery.lastEventAt,
-      error: recovery.error,
-      ...(recovery.terminalSummary !== undefined
-        ? { terminalSummary: recovery.terminalSummary, preserveTerminalSummary: true }
-        : {}),
-      ...(recovery.detail !== undefined ? { detail: recovery.detail } : {}),
-    }) ?? projectTaskRecovered(task, recovery);
+  const updated = taskRegistryMaintenanceRuntime.markTaskTerminalById({
+    taskId: task.taskId,
+    status: recovery.status,
+    endedAt: recovery.endedAt,
+    lastEventAt: recovery.lastEventAt,
+    error: recovery.error,
+    ...(recovery.terminalSummary !== undefined
+      ? { terminalSummary: recovery.terminalSummary, preserveTerminalSummary: true }
+      : {}),
+    ...(recovery.detail !== undefined ? { detail: recovery.detail } : {}),
+  });
+  if (!updated) {
+    return task;
+  }
   void taskRegistryMaintenanceRuntime.maybeDeliverTaskTerminalUpdate(updated.taskId);
   return updated;
 }

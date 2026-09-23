@@ -27,6 +27,7 @@ const ACP_LIVE_IDLE_FLUSH_FLOOR_MS = 750;
 const ACP_LIVE_IDLE_MIN_CHARS = 80;
 const ACP_LIVE_SOFT_FLUSH_CHARS = 220;
 const ACP_LIVE_HARD_FLUSH_CHARS = 480;
+const ACP_OUTPUT_TRUNCATED_NOTICE = "\n\n[output truncated]";
 
 const HIDDEN_BOUNDARY_TAGS = new Set<AcpSessionUpdateTag>(["tool_call", "tool_call_update"]);
 
@@ -402,20 +403,19 @@ export function createAcpReplyProjector(params: {
     lastToolHash = hash;
   };
 
-  const emitTruncationNotice = async () => {
+  const emitTruncationNotice = () => {
     if (truncationNoticeEmitted) {
       return;
     }
     truncationNoticeEmitted = true;
-    await emitSystemStatus(
-      "output truncated",
-      {
-        tag: "session_info_update",
-      },
-      {
-        dedupe: false,
-      },
-    );
+    // Lost answer content belongs to the answer lane, not optional tool progress.
+    if (settings.deliveryMode === "final_only") {
+      finalOnlyOutputText += ACP_OUTPUT_TRUNCATED_NOTICE;
+    } else {
+      liveBufferText += ACP_OUTPUT_TRUNCATED_NOTICE;
+      clearLiveIdleTimer();
+      flushLiveBuffer({ force: true });
+    }
   };
 
   // One projector serves one dispatch; terminal settlement belongs to tryDispatchAcpReply.

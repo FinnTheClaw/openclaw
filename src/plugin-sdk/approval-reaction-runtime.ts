@@ -515,7 +515,7 @@ export function buildApprovalReactionPendingContent(params: {
           approvalKind: "system-agent",
           approvalId: request.id,
           approvalSlug: request.id.slice(0, 8),
-          text: reactionPayload.text ?? "",
+          text: buildApprovalNativeControlsPromptText(params),
           agentId: params.view.agentId ?? null,
           allowedDecisions: reactionPayload.allowedDecisions,
           sessionKey: request.request.sessionKey ?? null,

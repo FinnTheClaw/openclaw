@@ -320,6 +320,105 @@ describe("bundle LSP runtime", () => {
     await runtime.dispose();
   });
 
+  it("handles server requests independently from colliding client response ids", async () => {
+    configureSingleLspServer();
+    const child = new MockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const runtime = await createBundleLspToolRuntime({ workspaceDir: "/tmp/workspace" });
+    const hoverTool = runtime.tools.find((tool) => tool.name === "lsp_hover_typescript");
+    if (!hoverTool) {
+      throw new Error("expected hover tool");
+    }
+    const request = hoverTool.execute("call-1", {
+      uri: "file:///tmp/workspace/index.ts",
+      line: 0,
+      character: 0,
+    });
+    const hoverRequest = child.receivedMessages.find(
+      (message) => message.method === "textDocument/hover",
+    );
+    if (typeof hoverRequest?.id !== "number") {
+      throw new Error("expected numeric hover request id");
+    }
+
+    child.stdout.write(
+      encodeLspMessage({
+        jsonrpc: "2.0",
+        id: hoverRequest.id,
+        method: "workspace/configuration",
+        params: { items: [] },
+      }),
+    );
+    child.stdout.write(
+      encodeLspMessage({
+        jsonrpc: "2.0",
+        id: hoverRequest.id,
+        result: { contents: "hover result" },
+      }),
+    );
+
+    await expect(request).resolves.toMatchObject({
+      content: [{ text: '{\n  "contents": "hover result"\n}' }],
+    });
+    expect(child.receivedMessages).toContainEqual({
+      jsonrpc: "2.0",
+      id: hoverRequest.id,
+      error: { code: -32601, message: "Method not found" },
+    });
+
+    await runtime.dispose();
+  });
+
+  it("responds to string-id server requests without disturbing client responses", async () => {
+    configureSingleLspServer();
+    const child = new MockChildProcess();
+    spawnMock.mockReturnValue(child);
+
+    const runtime = await createBundleLspToolRuntime({ workspaceDir: "/tmp/workspace" });
+    const hoverTool = runtime.tools.find((tool) => tool.name === "lsp_hover_typescript");
+    if (!hoverTool) {
+      throw new Error("expected hover tool");
+    }
+    const request = hoverTool.execute("call-1", {
+      uri: "file:///tmp/workspace/index.ts",
+      line: 0,
+      character: 0,
+    });
+    const hoverRequest = child.receivedMessages.find(
+      (message) => message.method === "textDocument/hover",
+    );
+    if (typeof hoverRequest?.id !== "number") {
+      throw new Error("expected numeric hover request id");
+    }
+
+    child.stdout.write(
+      encodeLspMessage({
+        jsonrpc: "2.0",
+        id: "server-request",
+        method: "workspace/configuration",
+        params: { items: [] },
+      }),
+    );
+    child.stdout.write(
+      encodeLspMessage({
+        jsonrpc: "2.0",
+        id: hoverRequest.id,
+        result: { contents: "hover result" },
+      }),
+    );
+
+    await expect(request).resolves.toMatchObject({
+      content: [{ text: '{\n  "contents": "hover result"\n}' }],
+    });
+    expect(child.receivedMessages).toContainEqual({
+      jsonrpc: "2.0",
+      id: "server-request",
+      error: { code: -32601, message: "Method not found" },
+    });
+
+    await runtime.dispose();
+  });
   it("keeps LSP framing aligned after multibyte messages in the same chunk", async () => {
     configureSingleLspServer();
     const prefix = encodeLspMessage({

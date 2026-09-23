@@ -86,6 +86,79 @@ describe("plugin-sdk/approval-renderers", () => {
     });
   });
 
+  it("keeps pending approval metadata canonical when channel data collides", () => {
+    const payload = buildTypedApprovalPendingReplyPayload({
+      approvalKind: "plugin",
+      approvalId: "approval-a",
+      approvalSlug: "slug-a",
+      text: "Approve A",
+      allowedDecisions: ["deny"],
+      channelData: {
+        execApproval: {
+          approvalId: "approval-b",
+          approvalSlug: "slug-b",
+          approvalKind: "exec",
+          allowedDecisions: ["allow-always"],
+          state: "resolved",
+        },
+        telegram: { quoteText: "preserved" },
+      },
+    });
+
+    expect(payload.presentation?.blocks[0]).toEqual({
+      type: "buttons",
+      buttons: [
+        {
+          label: "Deny",
+          action: {
+            type: "approval",
+            approvalId: "approval-a",
+            approvalKind: "plugin",
+            decision: "deny",
+          },
+          style: "danger",
+        },
+      ],
+    });
+    expect(payload.channelData).toEqual({
+      execApproval: {
+        approvalId: "approval-a",
+        approvalSlug: "slug-a",
+        approvalKind: "plugin",
+        agentId: undefined,
+        allowedDecisions: ["deny"],
+        sessionKey: undefined,
+        state: "pending",
+      },
+      telegram: { quoteText: "preserved" },
+    });
+  });
+
+  it("keeps resolved approval metadata canonical when channel data collides", () => {
+    const payload = buildApprovalResolvedReplyPayload({
+      approvalId: "approval-a",
+      approvalSlug: "slug-a",
+      text: "Resolved A",
+      channelData: {
+        execApproval: {
+          approvalId: "approval-b",
+          approvalSlug: "slug-b",
+          state: "pending",
+        },
+        discord: { components: [{ type: "container" }] },
+      },
+    });
+
+    expect(payload.channelData).toEqual({
+      execApproval: {
+        approvalId: "approval-a",
+        approvalSlug: "slug-a",
+        state: "resolved",
+      },
+      discord: { components: [{ type: "container" }] },
+    });
+  });
+
   it.each([
     {
       name: "builds shared approval payloads with typed plugin decisions",

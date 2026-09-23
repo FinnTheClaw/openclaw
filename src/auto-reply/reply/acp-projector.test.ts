@@ -685,4 +685,67 @@ describe("createAcpReplyProjector", () => {
 
     expect(combinedBlockText(deliveries)).toBe("AB");
   });
+
+  it.each(["live", "final_only"] as const)(
+    "shows one answer truncation notice in %s mode while tool summaries are disabled",
+    async (deliveryMode) => {
+      const { deliveries, projector } = createStreamHarness(
+        deliveryMode,
+        { tagVisibility: { tool_call: true } },
+        { shouldSendToolSummaries: false },
+      );
+      await emitTool(projector, {
+        tag: "tool_call",
+        toolCallId: "hidden-command",
+        status: "in_progress",
+        title: "private tool detail",
+        text: "private tool detail",
+      });
+      const answerText = Array.from(
+        { length: 24 },
+        (_, index) => `${index.toString().padStart(4, "0")}${"A".repeat(996)}`,
+      ).join("");
+      await emitText(projector, answerText);
+      await emitText(projector, "discarded suffix");
+      await emitText(projector, "another discarded suffix");
+      await projector.flush(true);
+
+      const answer = deliveries.map((entry) => entry.text ?? "").join("");
+      expect(answer).toBe(`${answerText}\n\n[output truncated]`);
+      expect(deliveries.some((entry) => entry.kind === "tool")).toBe(false);
+      expect(answer).not.toContain("private tool detail");
+      expect(
+        countMatching(deliveries, (entry) => entry.text?.includes("[output truncated]") === true),
+      ).toBe(1);
+    },
+  );
+
+  it("does not report truncation at the exact answer limit", async () => {
+    const { deliveries, projector } = createStreamHarness(
+      "final_only",
+      {},
+      {
+        shouldSendToolSummaries: false,
+      },
+    );
+    await emitText(projector, "A".repeat(24_000));
+    await projector.flush(true);
+    expect(deliveries).toEqual([{ kind: "final", text: "A".repeat(24_000) }]);
+  });
+
+  it("keeps a split surrogate intact and reports discarded content", async () => {
+    const { deliveries, projector } = createStreamHarness(
+      "final_only",
+      {},
+      {
+        shouldSendToolSummaries: false,
+      },
+    );
+    await emitText(projector, `${"A".repeat(23_999)}😀tail`);
+    await emitText(projector, "later");
+    await projector.flush(true);
+    expect(deliveries).toEqual([
+      { kind: "final", text: `${"A".repeat(23_999)}\n\n[output truncated]` },
+    ]);
+  });
 });

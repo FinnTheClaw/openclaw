@@ -34,7 +34,9 @@ import { sendMessageSignal, sendTypingSignal } from "./send.js";
 const log = createSubsystemLogger("signal/approvals");
 
 type ApprovalRequest = ExecApprovalRequest | PluginApprovalRequest | SystemAgentApprovalRequest;
-type SignalPendingDelivery = ApprovalReactionPendingContent;
+type SignalPendingDelivery = ApprovalReactionPendingContent & {
+  approvalKind: PendingApprovalView["approvalKind"];
+};
 type PreparedSignalApprovalTarget = {
   to: string;
   accountId: string;
@@ -85,7 +87,7 @@ function buildPendingPayload(params: {
   nowMs: number;
   view: PendingApprovalView;
 }): SignalPendingDelivery {
-  return buildApprovalReactionPendingContent(params);
+  return { ...buildApprovalReactionPendingContent(params), approvalKind: params.view.approvalKind };
 }
 
 export const signalApprovalNativeRuntime = createChannelApprovalNativeRuntimeAdapter<
@@ -169,6 +171,7 @@ export const signalApprovalNativeRuntime = createChannelApprovalNativeRuntimeAda
         ...(preparedTarget.account ? { account: preparedTarget.account } : {}),
       }).catch(() => {});
       const reactionsActive =
+        pendingPayload.approvalKind !== "system-agent" &&
         preparedTarget.targetAuthorKeys.length > 0 &&
         hasSignalApprovalReactionApprovers({ cfg, accountId: preparedTarget.accountId });
       const payload = reactionsActive
