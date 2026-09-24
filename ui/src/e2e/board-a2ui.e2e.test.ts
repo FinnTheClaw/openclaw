@@ -35,6 +35,7 @@ let sandboxPort: number;
 let rendererServer: HttpServer;
 let rendererOrigin: string;
 let rendererBundle: Buffer;
+let legacyRendererBundle: Buffer;
 const contexts = new Set<BrowserContext>();
 
 async function openDashboard(page: Page): Promise<void> {
@@ -63,10 +64,13 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
     rendererBundle = await readFile(
       path.resolve("extensions/canvas/src/host/a2ui/a2ui-v0.9.bundle.js"),
     );
-    rendererServer = createServer((_request, response) => {
+    legacyRendererBundle = await readFile(
+      path.resolve("extensions/canvas/src/host/a2ui/a2ui.bundle.js"),
+    );
+    rendererServer = createServer((request, response) => {
       response.statusCode = 200;
       response.setHeader("Content-Type", "text/javascript; charset=utf-8");
-      response.end(rendererBundle);
+      response.end(request.url === "/renderer-legacy.js" ? legacyRendererBundle : rendererBundle);
     });
     await new Promise<void>((resolve) => {
       rendererServer.listen(0, "127.0.0.1", resolve);
@@ -301,7 +305,7 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
       route.fulfill({ status: 200, contentType: "text/html", body: "<html><body></body></html>" }),
     );
     await page.goto(fixtureUrl);
-    await page.addScriptTag({ url: rendererOrigin + "/renderer.js" });
+    await page.addScriptTag({ url: rendererOrigin + "/renderer-legacy.js" });
     const result = await page.evaluate(
       ({ reconnects, dispatchDisconnected, actionName }) => {
         const actions: unknown[] = [];
