@@ -293,7 +293,7 @@ describeControlUiE2e("Control UI dashboard A2UI", () => {
       "current-bridge",
     ],
   ] as const)("%s", async (_name, reconnects, dispatchDisconnected, actionName) => {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ permissions: ["local-network-access"] });
     contexts.add(context);
     const page = await context.newPage();
     const fixtureUrl = controlUi.baseUrl + "/__a2ui_listener_round9";
