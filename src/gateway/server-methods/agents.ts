@@ -2,6 +2,7 @@
 // reads/writes, identity merging, and safe deletion for operator clients.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString as resolveOptionalStringParam } from "@openclaw/normalization-core/string-coerce";
 import {
   GATEWAY_CLIENT_CAPS,
@@ -47,6 +48,7 @@ import {
   claimCompletedAgentDeletion,
 } from "../../agents/agent-lifecycle-registry.js";
 import {
+  listAgentEntries,
   listAgentIds,
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -681,11 +683,18 @@ function prepareJournaledAgentDirOwnership(
   registerResolvedAgentDir({ agentId, agentDir });
 }
 
-function respondWorkspaceFileUnsafe(respond: RespondFn, name: string): void {
+function respondWorkspaceFileUnsafe(
+  respond: RespondFn,
+  name: string,
+  configCommitted = false,
+): void {
   respond(
     false,
     undefined,
-    errorShape(ErrorCodes.INVALID_REQUEST, `unsafe workspace file "${name}"`),
+    errorShape(
+      ErrorCodes.INVALID_REQUEST,
+      `unsafe workspace file "${name}"${configCommitted ? "; agent config is committed but workspace sync is incomplete; retry after fixing the file" : ""}`,
+    ),
   );
 }
 
@@ -719,6 +728,7 @@ async function writeWorkspaceFileOrRespond(params: {
   workspaceDir: string;
   name: string;
   content: string;
+  configCommitted?: boolean;
 }): Promise<boolean> {
   await fs.mkdir(params.workspaceDir, { recursive: true });
   try {
@@ -726,7 +736,7 @@ async function writeWorkspaceFileOrRespond(params: {
     await workspaceRoot.write(params.name, params.content, { encoding: "utf8" });
   } catch (err) {
     if (err instanceof FsSafeError) {
-      respondWorkspaceFileUnsafe(params.respond, params.name);
+      respondWorkspaceFileUnsafe(params.respond, params.name, params.configCommitted);
       return false;
     }
     throw err;
@@ -788,12 +798,13 @@ async function buildIdentityMarkdownOrRespondUnsafe(params: {
   identity: IdentityConfig;
   fallbackWorkspaceDir?: string;
   preferFallbackWorkspaceContent?: boolean;
+  configCommitted?: boolean;
 }): Promise<string | null> {
   try {
     return await buildIdentityMarkdownForWrite(params);
   } catch (err) {
     if (err instanceof FsSafeError) {
-      respondWorkspaceFileUnsafe(params.respond, DEFAULT_IDENTITY_FILENAME);
+      respondWorkspaceFileUnsafe(params.respond, DEFAULT_IDENTITY_FILENAME, params.configCommitted);
       return null;
     }
     throw err;
@@ -902,60 +913,110 @@ export const agentsHandlers: GatewayRequestHandlers = {
       ...(model !== undefined ? { model } : {}),
       ...(identity ? { identity } : {}),
     };
-    const nextConfig = applyAgentConfig(cfg, agentConfigUpdate);
-
-    let ensuredWorkspace: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
-    if (workspaceDir) {
-      const skipBootstrap = Boolean(nextConfig.agents?.defaults?.skipBootstrap);
-      ensuredWorkspace = await ensureAgentWorkspace({
-        dir: workspaceDir,
-        ensureBootstrapFiles: !skipBootstrap,
-        skipOptionalBootstrapFiles: nextConfig.agents?.defaults?.skipOptionalBootstrapFiles,
-      });
-    }
-
-    const persistedIdentity = normalizeIdentityForFile(resolveAgentIdentity(nextConfig, agentId));
-    if (persistedIdentity && (workspaceDir || hasIdentityFields)) {
-      const identityWorkspaceDir = resolveAgentWorkspaceDir(nextConfig, agentId);
-      const previousWorkspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-      const fallbackWorkspaceDir =
-        workspaceDir && identityWorkspaceDir !== previousWorkspaceDir
-          ? previousWorkspaceDir
-          : undefined;
-      const identityContent = await buildIdentityMarkdownOrRespondUnsafe({
-        respond,
-        workspaceDir: identityWorkspaceDir,
-        identity: persistedIdentity,
-        fallbackWorkspaceDir,
-        preferFallbackWorkspaceContent:
-          Boolean(fallbackWorkspaceDir) && ensuredWorkspace?.identityPathCreated === true,
-      });
-      if (identityContent === null) {
-        return;
-      }
-      if (
-        !(await writeWorkspaceFileOrRespond({
-          respond,
-          workspaceDir: identityWorkspaceDir,
-          name: DEFAULT_IDENTITY_FILENAME,
-          content: identityContent,
-        }))
-      ) {
-        return;
-      }
-    }
-
-    try {
-      await updateAgentConfigEntry(agentConfigUpdate);
-    } catch (error) {
-      if (error instanceof AgentConfigPreconditionError) {
+    await withConfigMutationExclusive(async (latestCfg) => {
+      if (!isConfiguredAgent(latestCfg, agentId)) {
         respondAgentNotFound(respond, agentId);
         return;
       }
-      throw error;
-    }
+      const nextConfig = applyAgentConfig(latestCfg, agentConfigUpdate);
+      const previousEntry = listAgentEntries(latestCfg).find((entry) => entry.id === agentId);
+      const expectedEntry = listAgentEntries(nextConfig).find((entry) => entry.id === agentId);
+      let persistedAfterWriteError: unknown;
 
-    respond(true, { ok: true, agentId }, undefined);
+      try {
+        await updateAgentConfigEntry(agentConfigUpdate);
+      } catch (error) {
+        if (error instanceof AgentConfigPreconditionError) {
+          respondAgentNotFound(respond, agentId);
+          return;
+        }
+        let persistedEntry: typeof expectedEntry;
+        try {
+          const persisted = (await readConfigFileSnapshotForWrite()).snapshot.sourceConfig;
+          persistedEntry = listAgentEntries(persisted).find((entry) => entry.id === agentId);
+        } catch (readError) {
+          throw new AggregateError(
+            [error, readError],
+            "agents.update config write failed; persisted state could not be verified",
+          );
+        }
+        if (!expectedEntry || !previousEntry || isDeepStrictEqual(previousEntry, expectedEntry)) {
+          throw error;
+        }
+        if (isDeepStrictEqual(persistedEntry, previousEntry)) {
+          // Rejected before commit, or the config writer restored its old snapshot.
+          throw error;
+        }
+        if (!isDeepStrictEqual(persistedEntry, expectedEntry)) {
+          throw new Error(
+            "agents.update config write failed; agent entry changed unexpectedly, so workspace was not touched",
+            { cause: error },
+          );
+        }
+        // A writer can throw after rename when its rollback fails. Finish only
+        // this agent's effects; never delete unowned workspace/bootstrap state.
+        persistedAfterWriteError = error;
+      }
+
+      try {
+        let ensuredWorkspace: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
+        if (workspaceDir) {
+          const skipBootstrap = Boolean(nextConfig.agents?.defaults?.skipBootstrap);
+          ensuredWorkspace = await ensureAgentWorkspace({
+            dir: workspaceDir,
+            ensureBootstrapFiles: !skipBootstrap,
+            skipOptionalBootstrapFiles: nextConfig.agents?.defaults?.skipOptionalBootstrapFiles,
+          });
+        }
+        const persistedIdentity = normalizeIdentityForFile(
+          resolveAgentIdentity(nextConfig, agentId),
+        );
+        if (persistedIdentity && (workspaceDir || hasIdentityFields)) {
+          const identityWorkspaceDir = resolveAgentWorkspaceDir(nextConfig, agentId);
+          const previousWorkspaceDir = resolveAgentWorkspaceDir(latestCfg, agentId);
+          const fallbackWorkspaceDir =
+            workspaceDir && identityWorkspaceDir !== previousWorkspaceDir
+              ? previousWorkspaceDir
+              : undefined;
+          // Merge after config commit so an intervening identity edit is included.
+          const identityContent = await buildIdentityMarkdownOrRespondUnsafe({
+            respond,
+            workspaceDir: identityWorkspaceDir,
+            identity: persistedIdentity,
+            fallbackWorkspaceDir,
+            preferFallbackWorkspaceContent:
+              Boolean(fallbackWorkspaceDir) && ensuredWorkspace?.identityPathCreated === true,
+            configCommitted: true,
+          });
+          if (identityContent === null) {
+            return;
+          }
+          if (
+            !(await writeWorkspaceFileOrRespond({
+              respond,
+              workspaceDir: identityWorkspaceDir,
+              name: DEFAULT_IDENTITY_FILENAME,
+              content: identityContent,
+              configCommitted: true,
+            }))
+          ) {
+            return;
+          }
+        }
+      } catch (effectError) {
+        throw new Error(
+          "agents.update config is committed but workspace sync is incomplete; retry the update",
+          { cause: effectError },
+        );
+      }
+      if (persistedAfterWriteError) {
+        throw new Error(
+          "agents.update config persisted despite a config writer error; workspace sync completed, but runtime activation should be verified",
+          { cause: persistedAfterWriteError },
+        );
+      }
+      respond(true, { ok: true, agentId }, undefined);
+    });
   },
   "agents.delete": async ({ params, respond, context }) => {
     if (!validateAgentsDeleteParams(params)) {

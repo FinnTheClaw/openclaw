@@ -1263,7 +1263,7 @@ describe("agents.update", () => {
     expectStringNotContaining(write.data, "Old workspace role.");
   });
 
-  it("does not persist config when IDENTITY.md write fails on update", async () => {
+  it("reports committed config when IDENTITY.md write fails on update", async () => {
     mocks.rootWrite.mockRejectedValueOnce(
       new FsSafeError("path-mismatch", "path escapes workspace root"),
     );
@@ -1275,11 +1275,11 @@ describe("agents.update", () => {
     });
     await promise;
 
-    expectRespondErrorContaining(respond, "unsafe workspace file");
-    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+    expectRespondErrorContaining(respond, "config is committed");
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(1);
   });
 
-  it("treats unsafe IDENTITY.md reads as invalid update requests", async () => {
+  it("treats unsafe IDENTITY.md reads as incomplete update requests", async () => {
     agentsTesting.setDepsForTests({
       root: makeRootForTest({
         read: async () => {
@@ -1294,8 +1294,8 @@ describe("agents.update", () => {
     });
     await promise;
 
-    expectRespondErrorContaining(respond, 'unsafe workspace file "IDENTITY.md"');
-    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+    expectRespondErrorContaining(respond, "config is committed");
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(1);
     expect(mocks.rootWrite).not.toHaveBeenCalled();
   });
 
@@ -1315,6 +1315,198 @@ describe("agents.update", () => {
       relativePath: "IDENTITY.md",
       nonBlockingRead: true,
     });
+  });
+  it("GM08-N1 rejects a concurrent delete before filesystem effects", async () => {
+    let checks = 0;
+    mocks.findAgentEntryIndex.mockImplementation(() => (++checks < 2 ? 0 : -1));
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+      name: "Late Name",
+    });
+    await promise;
+    expectRespondErrorContaining(respond, "not found");
+    expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+  });
+
+  it("GM08-N2 leaves a new workspace untouched on precommit rejection", async () => {
+    mocks.writeConfigFile.mockRejectedValueOnce(new Error("precommit rejection"));
+    const { promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await expect(promise).rejects.toThrow("precommit rejection");
+    expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+  });
+
+  it("GM08-N3 leaves an existing identity untouched on precommit rejection", async () => {
+    mocks.writeConfigFile.mockRejectedValueOnce(new Error("precommit identity rejection"));
+    const { promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "New Name",
+    });
+    await expect(promise).rejects.toThrow("precommit identity rejection");
+    expect(mocks.rootRead).not.toHaveBeenCalled();
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+  });
+
+  it("GM08-N4 leaves filesystem untouched after post-rename rollback succeeds", async () => {
+    const before = structuredClone(mocks.loadConfigReturn);
+    mocks.writeConfigFile.mockImplementationOnce(async (next) => {
+      mocks.loadConfigReturn = next as Record<string, unknown>;
+      mocks.loadConfigReturn = before;
+      throw new Error("post-rename rolled back");
+    });
+    const { promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await expect(promise).rejects.toThrow("post-rename rolled back");
+    expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+  });
+
+  it("GM08-N5 reconciles the exact agent when post-rename rollback fails", async () => {
+    mocks.writeConfigFile.mockImplementationOnce(async (next) => {
+      mocks.loadConfigReturn = structuredClone(next as Record<string, unknown>);
+      throw new Error("post-rename rollback failed");
+    });
+    const { promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await expect(promise).rejects.toThrow("config persisted despite a config writer error");
+    expect(mocks.ensureAgentWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.rootWrite).toHaveBeenCalledTimes(1);
+    expect(getAgentList(mocks.loadConfigReturn)[0]?.workspace).toBe("/resolved/new/workspace");
+  });
+
+  it("GM08-N6 reports postcommit setup failure and finishes on same-ID retry", async () => {
+    mocks.writeConfigFile.mockImplementation(async (next) => {
+      mocks.loadConfigReturn = structuredClone(next as Record<string, unknown>);
+    });
+    mocks.ensureAgentWorkspace.mockRejectedValueOnce(new Error("setup unavailable"));
+    const first = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await expect(first.promise).rejects.toThrow(
+      "config is committed but workspace sync is incomplete",
+    );
+    expect(getAgentList(mocks.loadConfigReturn)[0]?.workspace).toBe("/resolved/new/workspace");
+    const retry = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await retry.promise;
+    expectRespondOk(retry.respond, { ok: true, agentId: "test-agent" });
+    expect(mocks.ensureAgentWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("GM08-N7 merges an identity edit made during config commit", async () => {
+    let identityFile = "# IDENTITY.md - Agent Identity\n\n- Name: Current Agent\n";
+    mocks.writeConfigFile.mockImplementationOnce(async () => {
+      identityFile += "\n## User Note\nKeep this edit.\n";
+    });
+    agentsTesting.setDepsForTests({
+      root: makeRootForTest({
+        read: async () => ({
+          buffer: Buffer.from(identityFile),
+          realPath: "/workspace/test-agent/IDENTITY.md",
+          stat: makeFileStat(),
+        }),
+      }),
+    });
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "Updated Name",
+    });
+    await promise;
+    expectRespondOk(respond, { ok: true, agentId: "test-agent" });
+    const write = expectRecordFields(mockCallArg(mocks.rootWrite), {});
+    expectStringContaining(write.data, "Keep this edit.");
+    expectStringContaining(write.data, "Updated Name");
+  });
+
+  it("GM08-N8 preserves previous identity content on a workspace move", async () => {
+    mocks.ensureAgentWorkspace.mockResolvedValueOnce({
+      dir: "/resolved/new/workspace",
+      identityPathCreated: true,
+    });
+    agentsTesting.setDepsForTests({
+      root: makeRootForTest({
+        read: async ({ rootDir }) => {
+          if (rootDir === "/workspace/test-agent") {
+            return {
+              buffer: Buffer.from(
+                "# IDENTITY.md - Agent Identity\n\n- Name: Current Agent\n\n## Role\nKeep old role.\n",
+              ),
+              realPath: "/workspace/test-agent/IDENTITY.md",
+              stat: makeFileStat(),
+            };
+          }
+          return {
+            buffer: Buffer.from("# IDENTITY.md - Agent Identity\n\n- Name: Template\n"),
+            realPath: "/resolved/new/workspace/IDENTITY.md",
+            stat: makeFileStat(),
+          };
+        },
+      }),
+    });
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await promise;
+    expectRespondOk(respond, { ok: true, agentId: "test-agent" });
+    const write = expectRecordFields(mockCallArg(mocks.rootWrite), {});
+    expectStringContaining(write.data, "Keep old role.");
+  });
+
+  it("GM08-N9 reports unsafe identity read and write as committed-incomplete", async () => {
+    agentsTesting.setDepsForTests({
+      root: makeRootForTest({
+        read: async () => {
+          throw new FsSafeError("invalid-path", "unsafe identity read");
+        },
+      }),
+    });
+    const readFailure = makeCall("agents.update", { agentId: "test-agent", name: "Read Fail" });
+    await readFailure.promise;
+    expectRespondErrorContaining(readFailure.respond, "config is committed");
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+
+    agentsTesting.setDepsForTests({
+      root: makeRootForTest({
+        read: async () => ({
+          buffer: Buffer.from("# IDENTITY.md - Agent Identity\n\n- Name: Current Agent\n"),
+          realPath: "/workspace/test-agent/IDENTITY.md",
+          stat: makeFileStat(),
+        }),
+      }),
+    });
+    mocks.rootWrite.mockRejectedValueOnce(
+      new FsSafeError("path-mismatch", "unsafe identity write"),
+    );
+    const writeFailure = makeCall("agents.update", { agentId: "test-agent", name: "Write Fail" });
+    await writeFailure.promise;
+    expectRespondErrorContaining(writeFailure.respond, "config is committed");
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("GM08-N10 keeps model-only success free of workspace effects", async () => {
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      model: "moira/brain",
+    });
+    await promise;
+    expectRespondOk(respond, { agentId: "test-agent" });
+    expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(1);
   });
 });
 
