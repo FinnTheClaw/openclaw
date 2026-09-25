@@ -141,7 +141,9 @@ export class CallManager {
         const elapsed = Date.now() - maxDurationAnchor;
         const maxDurationMs = resolveVoiceCallSecondsTimerDelayMs(this.config.maxDurationSeconds);
         if (elapsed >= maxDurationMs) {
-          // Already expired — remove instead of keeping
+          // Verification can cross the deadline. Settle the provider call and
+          // durable record before removing its restored lookup identity.
+          await this.settleExpiredRestoredCall(provider, callId, call);
           verified.delete(callId);
           if (call.providerCallId) {
             this.providerCallIdMap.delete(call.providerCallId);
@@ -209,20 +211,7 @@ export class CallManager {
       // Skip calls older than maxDurationSeconds (time-based fallback)
       if (now - call.startedAt > maxAgeMs) {
         skippedOlderThanMaxDuration += 1;
-        markRestoredCallSkipped(call, "timeout");
-        persistCallRecord(this.storePath, call);
-        await provider
-          .hangupCall({
-            callId,
-            providerCallId: call.providerCallId,
-            reason: "timeout",
-          })
-          .catch((err: unknown) => {
-            console.warn(
-              `[voice-call] Failed to hang up expired restored call ${callId}:`,
-              err instanceof Error ? err.message : String(err),
-            );
-          });
+        await this.settleExpiredRestoredCall(provider, callId, call);
         continue;
       }
 
@@ -285,6 +274,30 @@ export class CallManager {
       );
     }
     return verified;
+  }
+
+  private async settleExpiredRestoredCall(
+    provider: VoiceCallProvider,
+    callId: CallId,
+    call: CallRecord,
+  ): Promise<void> {
+    markRestoredCallSkipped(call, "timeout");
+    persistCallRecord(this.storePath, call);
+    if (!call.providerCallId) {
+      return;
+    }
+    await provider
+      .hangupCall({
+        callId,
+        providerCallId: call.providerCallId,
+        reason: "timeout",
+      })
+      .catch((err: unknown) => {
+        console.warn(
+          `[voice-call] Failed to hang up expired restored call ${callId}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      });
   }
 
   /**

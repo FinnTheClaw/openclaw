@@ -8,7 +8,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getMatrixRuntime } from "../../runtime.js";
 import { installMatrixTestRuntime } from "../../test-runtime.js";
 import { readMatrixRecoveryKeyStateForPath } from "../crypto-state-store.js";
-import { MatrixRecoveryKeyStore } from "./recovery-key-store.js";
+import { MatrixClient } from "../sdk.js";
+import { MatrixRecoveryKeyPersistenceError, MatrixRecoveryKeyStore } from "./recovery-key-store.js";
 import type { MatrixCryptoBootstrapApi, MatrixSecretStorageStatus } from "./types.js";
 
 function createTempRecoveryKeyPath(): string {
@@ -524,5 +525,166 @@ describe("MatrixRecoveryKeyStore", () => {
     expect(persisted.keyId).toBe("NEW");
     expect(persisted.encodedPrivateKey).toBe(freshEncoded);
     expect(persisted.encodedPrivateKey).not.toBe(oldEncoded);
+  });
+});
+
+describe("staged Matrix recovery-key persistence failure", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetPluginStateStoreForTests();
+    installMatrixTestRuntime();
+  });
+
+  const keyBytes = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 1));
+  const encodedKey = encodeRecoveryKey(keyBytes) as string;
+  const readyBackup = {
+    serverVersion: "1",
+    activeVersion: "1",
+    trusted: true,
+    matchesDecryptionKey: true,
+    decryptionKeyCached: true,
+    keyLoadAttempted: true,
+    keyLoadError: null,
+  };
+
+  function blockedStore() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-recovery-sqlite-failure-"));
+    const blocker = path.join(root, "blocked-state-dir");
+    fs.writeFileSync(blocker, "not a directory");
+    const store = new MatrixRecoveryKeyStore(path.join(blocker, "recovery-key.json"));
+    return { root, blocker, store };
+  }
+
+  function stage(store: MatrixRecoveryKeyStore) {
+    store.stageEncodedRecoveryKey({ encodedPrivateKey: encodedKey, keyId: "K" });
+  }
+
+  function harness(store: MatrixRecoveryKeyStore, overrides: Record<string, unknown> = {}) {
+    const crypto = {
+      getSecretStorageStatus: vi.fn(async () => ({
+        ready: true,
+        defaultKeyId: "K",
+        secretStorageKeyValidityMap: { K: true },
+      })),
+      restoreKeyBackup: vi.fn(async () => ({ imported: 1, total: 1 })),
+    };
+    const status = { verified: true, backup: readyBackup, recoveryKeyStored: false };
+    const client = Object.assign(Object.create(MatrixClient.prototype), {
+      encryptionEnabled: true,
+      client: { getCrypto: () => crypto },
+      crypto: null,
+      cryptoBootstrapper: {
+        bootstrap: vi.fn(async () => {
+          await store
+            .buildCryptoCallbacks()
+            .getSecretStorageKey?.({ keys: { K: {} } }, "m.cross_signing.master");
+          return null;
+        }),
+      },
+      recoveryKeyStore: store,
+      ensureStartedForCryptoControlPlane: vi.fn(async () => {}),
+      ensureCryptoSupportInitialized: vi.fn(async () => {}),
+      resolveDefaultSecretStorageKeyId: vi.fn(async () => "K"),
+      getRoomKeyBackupStatus: vi.fn(async () => readyBackup),
+      getOwnDeviceVerificationStatus: vi.fn(async () => status),
+      getOwnCrossSigningPublicationStatus: vi.fn(async () => ({ published: true })),
+      enableTrustedRoomKeyBackupIfPossible: vi.fn(async () => {}),
+      ensureRoomKeyBackupEnabled: vi.fn(async () => {}),
+      ...overrides,
+    }) as MatrixClient;
+    return { client, crypto, status };
+  }
+
+  it("1: commits a staged key to temporary SQLite and retains the summary return", () => {
+    const store = new MatrixRecoveryKeyStore(createTempRecoveryKeyPath());
+    stage(store);
+    const summary = store.commitStagedRecoveryKey({ keyId: "K" });
+    expect(summary?.encodedPrivateKey).toBe(encodedKey);
+    expect(store.getRecoveryKeySummary()?.encodedPrivateKey).toBe(encodedKey);
+  });
+
+  it("2: reports a real temporary SQLite-open failure without clearing staging", async () => {
+    const { store } = blockedStore();
+    stage(store);
+    expect(() => store.commitStagedRecoveryKey()).toThrow(MatrixRecoveryKeyPersistenceError);
+    const recovered = await store
+      .buildCryptoCallbacks()
+      .getSecretStorageKey?.({ keys: { K: {} } }, "m.cross_signing.master");
+    expect(recovered?.[0]).toBe("K");
+  });
+
+  it("3: retries the same staged key after temporary SQLite storage is repaired", () => {
+    const { blocker, store } = blockedStore();
+    stage(store);
+    expect(() => store.commitStagedRecoveryKey()).toThrow(MatrixRecoveryKeyPersistenceError);
+    fs.rmSync(blocker);
+    fs.mkdirSync(blocker);
+    expect(store.commitStagedRecoveryKey()?.encodedPrivateKey).toBe(encodedKey);
+    expect(store.getRecoveryKeySummary()?.encodedPrivateKey).toBe(encodedKey);
+  });
+
+  it("4: refuses to claim durable commit when no recovery-key path exists", () => {
+    const store = new MatrixRecoveryKeyStore();
+    stage(store);
+    expect(() => store.commitStagedRecoveryKey()).toThrow(MatrixRecoveryKeyPersistenceError);
+    expect(store.getSecretStorageKeyCandidate("K")).toEqual(keyBytes);
+  });
+
+  it("5: preserves the staged callback key after a failed SQLite write", async () => {
+    const { store } = blockedStore();
+    stage(store);
+    const callbacks = store.buildCryptoCallbacks();
+    expect(() => store.commitStagedRecoveryKey()).toThrow(MatrixRecoveryKeyPersistenceError);
+    expect((await callbacks.getSecretStorageKey?.({ keys: { K: {} } }, "secret"))?.[1]).toEqual(
+      keyBytes,
+    );
+  });
+
+  it("6: leaves non-staged best-effort saves unchanged on SQLite failure", () => {
+    const { store } = blockedStore();
+    expect(() =>
+      store.storeEncodedRecoveryKey({ encodedPrivateKey: encodedKey, keyId: "K" }),
+    ).not.toThrow();
+    expect(store.getRecoveryKeySummary()).toBeNull();
+  });
+
+  it("7: returns failure on the already-usable backup verification path", async () => {
+    const { store } = blockedStore();
+    vi.spyOn(store, "getRecoveryKeySummary").mockReturnValue({
+      encodedPrivateKey: encodedKey,
+      keyId: "K",
+    });
+    const { client } = harness(store);
+    const result = await client.verifyWithRecoveryKey(encodedKey);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Failed to persist Matrix recovery key");
+    expect(store.getSecretStorageKeyCandidate("K")).toEqual(keyBytes);
+  });
+
+  it("8: returns failure without discarding staging on the bootstrap verification path", async () => {
+    const { store } = blockedStore();
+    const { client } = harness(store);
+    const result = await client.verifyWithRecoveryKey(encodedKey);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Failed to persist Matrix recovery key");
+    expect(store.getSecretStorageKeyCandidate("K")).toEqual(keyBytes);
+  });
+
+  it("9: does not report backup restore success after staged-key SQLite failure", async () => {
+    const { store } = blockedStore();
+    const { client } = harness(store);
+    const result = await client.restoreRoomKeyBackup({ recoveryKey: encodedKey });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Failed to persist Matrix recovery key");
+    expect(store.getSecretStorageKeyCandidate("K")).toEqual(keyBytes);
+  });
+
+  it("10: returns structured bootstrap failure without clearing the staged key", async () => {
+    const { store } = blockedStore();
+    const { client } = harness(store);
+    const result = await client.bootstrapOwnDeviceVerification({ recoveryKey: encodedKey });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Failed to persist Matrix recovery key");
+    expect(store.getSecretStorageKeyCandidate("K")).toEqual(keyBytes);
   });
 });

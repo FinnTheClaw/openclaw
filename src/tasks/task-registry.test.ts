@@ -4419,6 +4419,290 @@ describe("task-registry", () => {
     });
   });
 
+  it("F02-01 delivers running and progress events at the same millisecond", async () => {
+    await withTaskRegistryTempDir(async () => {
+      hoisted.sendMessageMock.mockResolvedValue({
+        channel: "guildchat",
+        to: "guildchat:123",
+        via: "direct",
+      });
+      const task = createTaskFixture("acp", {
+        requesterOrigin: GUILDCHAT_ORIGIN,
+        childSessionKey: "agent:codex:acp:f02-01",
+        runId: "run-f02-01",
+        task: "Same-time state changes",
+        status: "queued",
+        notifyPolicy: "state_changes",
+      });
+      markTaskRunningByRunId({ runId: "run-f02-01", lastEventAt: 250, eventSummary: "Started." });
+      await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1));
+      recordTaskProgressByRunId({
+        runId: "run-f02-01",
+        lastEventAt: 250,
+        eventSummary: "Still working.",
+      });
+      await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(2));
+      expect(sentMessageCall(0).idempotencyKey).not.toBe(sentMessageCall(1).idempotencyKey);
+      expect(requireTaskById(task.taskId).lastStateEventOrdinal).toBe(2);
+    });
+  });
+
+  it("F02-02 delivers distinct progress summaries at the same millisecond", async () => {
+    await withTaskRegistryTempDir(async () => {
+      hoisted.sendMessageMock.mockResolvedValue({
+        channel: "guildchat",
+        to: "guildchat:123",
+        via: "direct",
+      });
+      const task = createTaskFixture("acp", {
+        requesterOrigin: GUILDCHAT_ORIGIN,
+        childSessionKey: "agent:codex:acp:f02-02",
+        runId: "run-f02-02",
+        task: "Distinct progress",
+        notifyPolicy: "state_changes",
+      });
+      recordTaskProgressByRunId({ runId: "run-f02-02", lastEventAt: 250, eventSummary: "One." });
+      await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1));
+      recordTaskProgressByRunId({ runId: "run-f02-02", lastEventAt: 250, eventSummary: "Two." });
+      await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(2));
+      expect(sentMessageCall(0).idempotencyKey).not.toBe(sentMessageCall(1).idempotencyKey);
+      expect(requireTaskById(task.taskId).lastStateEventOrdinal).toBe(2);
+    });
+  });
+
+  it("F02-03 delivers repeated progress summaries as distinct events", async () => {
+    await withTaskRegistryTempDir(async () => {
+      hoisted.sendMessageMock.mockResolvedValue({
+        channel: "guildchat",
+        to: "guildchat:123",
+        via: "direct",
+      });
+      const task = createTaskFixture("acp", {
+        requesterOrigin: GUILDCHAT_ORIGIN,
+        childSessionKey: "agent:codex:acp:f02-03",
+        runId: "run-f02-03",
+        task: "Repeated progress",
+        notifyPolicy: "state_changes",
+      });
+      for (let index = 1; index <= 2; index += 1) {
+        recordTaskProgressByRunId({
+          runId: "run-f02-03",
+          lastEventAt: 250,
+          eventSummary: "Still working.",
+        });
+        await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(index));
+      }
+      expect(sentMessageCall(0).idempotencyKey).not.toBe(sentMessageCall(1).idempotencyKey);
+      expect(requireTaskById(task.taskId).lastStateEventOrdinal).toBe(2);
+    });
+  });
+
+  it("F02-04 suppresses a replay of the same numbered direct event", async () => {
+    await withTaskRegistryTempDir(async () => {
+      hoisted.sendMessageMock.mockResolvedValue({
+        channel: "guildchat",
+        to: "guildchat:123",
+        via: "direct",
+      });
+      const task = createTaskFixture("acp", {
+        requesterOrigin: GUILDCHAT_ORIGIN,
+        childSessionKey: "agent:codex:acp:f02-04",
+        runId: "run-f02-04",
+        task: "Replay direct event",
+        notifyPolicy: "state_changes",
+      });
+      const event = { at: 250, ordinal: 1, kind: "progress" as const, summary: "Working." };
+      await maybeDeliverTaskStateChangeUpdate(task.taskId, event);
+      await maybeDeliverTaskStateChangeUpdate(task.taskId, event);
+      expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(sentMessageCall().idempotencyKey).toBe(`task-event:${task.taskId}:1`);
+    });
+  });
+
+  it("F02-05 suppresses a replay of the same numbered session event", async () => {
+    await withTaskRegistryTempDir(async () => {
+      resetSystemEventsForTest();
+      const task = createTaskFixture("acp", {
+        childSessionKey: "agent:codex:acp:f02-05",
+        runId: "run-f02-05",
+        task: "Replay session event",
+        notifyPolicy: "state_changes",
+      });
+      const event = { at: 250, ordinal: 1, kind: "progress" as const, summary: "Working." };
+      await maybeDeliverTaskStateChangeUpdate(task.taskId, event);
+      const firstEvents = peekSystemEvents("agent:main:main");
+      expect(firstEvents).toHaveLength(1);
+      await maybeDeliverTaskStateChangeUpdate(task.taskId, event);
+      expect(peekSystemEvents("agent:main:main")).toEqual(firstEvents);
+      expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("F02-06 leaves the ordinal unchanged for a no-event update", async () => {
+    await withTaskRegistryTempDir(async () => {
+      hoisted.sendMessageMock.mockResolvedValue({
+        channel: "guildchat",
+        to: "guildchat:123",
+        via: "direct",
+      });
+      const task = createTaskFixture("acp", {
+        requesterOrigin: GUILDCHAT_ORIGIN,
+        childSessionKey: "agent:codex:acp:f02-06",
+        runId: "run-f02-06",
+        task: "No event",
+        notifyPolicy: "state_changes",
+      });
+      recordTaskProgressByRunId({
+        runId: "run-f02-06",
+        lastEventAt: 250,
+        progressSummary: "Internal progress only.",
+      });
+      expect(requireTaskById(task.taskId).lastStateEventOrdinal).toBeUndefined();
+      expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
+      recordTaskProgressByRunId({
+        runId: "run-f02-06",
+        lastEventAt: 250,
+        eventSummary: "Visible.",
+      });
+      await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1));
+      expect(requireTaskById(task.taskId).lastStateEventOrdinal).toBe(1);
+    });
+  });
+
+  it("F02-07 does not burn an ordinal when task persistence rejects the event", async () => {
+    await withTaskRegistryTempDir(async () => {
+      const backing = createInMemoryTaskRegistryStore();
+      let rejectWrites = false;
+      configureTaskRegistryRuntime({
+        store: {
+          ...backing,
+          upsertTaskWithDeliveryState: (params) => {
+            if (rejectWrites) {
+              throw new Error("fixture write failure");
+            }
+            backing.upsertTaskWithDeliveryState(params);
+          },
+        },
+      });
+      const task = createTaskFixture("acp", {
+        childSessionKey: "agent:codex:acp:f02-07",
+        runId: "run-f02-07",
+        task: "Persistence failure",
+        notifyPolicy: "state_changes",
+      });
+      rejectWrites = true;
+      expect(
+        recordTaskProgressByRunId({
+          runId: "run-f02-07",
+          lastEventAt: 250,
+          eventSummary: "First.",
+        }),
+      ).toEqual([]);
+      expect(requireTaskById(task.taskId).lastStateEventOrdinal).toBeUndefined();
+      expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
+      rejectWrites = false;
+      recordTaskProgressByRunId({
+        runId: "run-f02-07",
+        lastEventAt: 250,
+        eventSummary: "Retried.",
+      });
+      expect(requireTaskById(task.taskId).lastStateEventOrdinal).toBe(1);
+    });
+  });
+
+  it("F02-08 keeps the highest cursor when direct sends finish out of order", async () => {
+    await withTaskRegistryTempDir(async () => {
+      let resolveFirst: ((value: { channel: string; to: string; via: string }) => void) | undefined;
+      let resolveSecond:
+        | ((value: { channel: string; to: string; via: string }) => void)
+        | undefined;
+      hoisted.sendMessageMock
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFirst = resolve;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveSecond = resolve;
+            }),
+        );
+      const task = createTaskFixture("acp", {
+        requesterOrigin: GUILDCHAT_ORIGIN,
+        childSessionKey: "agent:codex:acp:f02-08",
+        runId: "run-f02-08",
+        task: "Out-of-order sends",
+        notifyPolicy: "state_changes",
+      });
+      const first = maybeDeliverTaskStateChangeUpdate(task.taskId, {
+        at: 250,
+        ordinal: 1,
+        kind: "progress",
+        summary: "First.",
+      });
+      const second = maybeDeliverTaskStateChangeUpdate(task.taskId, {
+        at: 250,
+        ordinal: 2,
+        kind: "progress",
+        summary: "Second.",
+      });
+      await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(2));
+      if (!resolveFirst || !resolveSecond) {
+        throw new Error("expected both sends");
+      }
+      resolveSecond({ channel: "guildchat", to: "guildchat:123", via: "direct" });
+      await second;
+      resolveFirst({ channel: "guildchat", to: "guildchat:123", via: "direct" });
+      await first;
+      await maybeDeliverTaskStateChangeUpdate(task.taskId, {
+        at: 250,
+        ordinal: 2,
+        kind: "progress",
+        summary: "Second.",
+      });
+      expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("F02-09 restores task and delivery cursors from durable SQLite", async () => {
+    await withTaskRegistryTempDir(
+      async () => {
+        hoisted.sendMessageMock.mockResolvedValue({
+          channel: "guildchat",
+          to: "guildchat:123",
+          via: "direct",
+        });
+        const task = createTaskFixture("acp", {
+          requesterOrigin: GUILDCHAT_ORIGIN,
+          childSessionKey: "agent:codex:acp:f02-09",
+          runId: "run-f02-09",
+          task: "Durable same-time events",
+          notifyPolicy: "state_changes",
+        });
+        recordTaskProgressByRunId({
+          runId: "run-f02-09",
+          lastEventAt: 250,
+          eventSummary: "First.",
+        });
+        await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(1));
+        resetTaskRegistryForTests({ persist: false });
+        reloadTaskRegistryFromStore();
+        expect(requireTaskById(task.taskId).lastStateEventOrdinal).toBe(1);
+        recordTaskProgressByRunId({
+          runId: "run-f02-09",
+          lastEventAt: 250,
+          eventSummary: "Second.",
+        });
+        await waitForAssertion(() => expect(hoisted.sendMessageMock).toHaveBeenCalledTimes(2));
+        expect(requireTaskById(task.taskId).lastStateEventOrdinal).toBe(2);
+        expect(sentMessageCall(0).idempotencyKey).not.toBe(sentMessageCall(1).idempotencyKey);
+      },
+      { durableStore: true },
+    );
+  });
+
   it("delivers concise state-change updates only when notify policy requests them", async () => {
     await withTaskRegistryTempDir(async () => {
       hoisted.sendMessageMock.mockResolvedValue({

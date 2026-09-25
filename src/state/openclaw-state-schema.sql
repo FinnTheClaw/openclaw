@@ -1592,6 +1592,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
   started_at INTEGER,
   ended_at INTEGER,
   last_event_at INTEGER,
+  last_state_event_ordinal INTEGER,
   cleanup_after INTEGER,
   tool_use_count INTEGER,
   last_tool_name TEXT,
@@ -1673,6 +1674,7 @@ CREATE TABLE IF NOT EXISTS task_delivery_state (
   task_id TEXT NOT NULL PRIMARY KEY,
   requester_origin_json TEXT,
   last_notified_event_at INTEGER,
+  last_notified_event_ordinal INTEGER,
   FOREIGN KEY (task_id) REFERENCES task_runs(task_id) ON DELETE CASCADE
 ) STRICT;
 

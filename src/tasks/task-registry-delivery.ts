@@ -57,10 +57,14 @@ function resolveTaskStateChangeIdempotencyKey(params: {
   latestEvent: TaskEventRecord;
   owner: TaskDeliveryOwner;
 }): string {
+  const eventIdentity =
+    params.latestEvent.ordinal === undefined
+      ? `${params.latestEvent.at}:${params.latestEvent.kind}`
+      : String(params.latestEvent.ordinal);
   if (params.owner.flowId) {
-    return `flow-event:${params.owner.flowId}:${params.task.taskId}:${params.latestEvent.at}:${params.latestEvent.kind}`;
+    return `flow-event:${params.owner.flowId}:${params.task.taskId}:${eventIdentity}`;
   }
-  return `task-event:${params.task.taskId}:${params.latestEvent.at}:${params.latestEvent.kind}`;
+  return `task-event:${params.task.taskId}:${eventIdentity}`;
 }
 
 function resolveTaskTerminalIdempotencyKey(task: TaskRecord, owner: TaskDeliveryOwner): string {
@@ -392,7 +396,12 @@ async function maybeDeliverTaskStateChangeUpdateUnderAdmission(
     return current ? cloneTaskRecord(current) : null;
   }
   const deliveryState = getTaskDeliveryState(taskId);
-  if (!latestEvent || (deliveryState?.lastNotifiedEventAt ?? 0) >= latestEvent.at) {
+  if (
+    !latestEvent ||
+    (latestEvent.ordinal === undefined
+      ? (deliveryState?.lastNotifiedEventAt ?? 0) >= latestEvent.at
+      : (deliveryState?.lastNotifiedEventOrdinal ?? 0) >= latestEvent.ordinal)
+  ) {
     return cloneTaskRecord(current);
   }
   const eventText = formatTaskStateChangeMessage(current, latestEvent);
@@ -414,6 +423,7 @@ async function maybeDeliverTaskStateChangeUpdateUnderAdmission(
         taskId,
         requesterOrigin: deliveryState?.requesterOrigin,
         lastNotifiedEventAt: latestEvent.at,
+        lastNotifiedEventOrdinal: latestEvent.ordinal,
       });
       return updateTask(taskId, {
         lastEventAt: Date.now(),
@@ -457,6 +467,7 @@ async function maybeDeliverTaskStateChangeUpdateUnderAdmission(
       taskId,
       requesterOrigin: deliveryState?.requesterOrigin,
       lastNotifiedEventAt: latestEvent.at,
+      lastNotifiedEventOrdinal: latestEvent.ordinal,
     });
     return updateTask(taskId, {
       lastEventAt: Date.now(),

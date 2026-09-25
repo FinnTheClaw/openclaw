@@ -59,13 +59,6 @@ export async function loginMSTeamsDelegated(
     return manualFlow(ctx, authUrl, state, verifier, params);
   }
 
-  ctx.progress.update("Complete sign-in in browser...");
-  try {
-    await ctx.openUrl(authUrl);
-  } catch {
-    ctx.log(`\nOpen this URL in your browser:\n\n${authUrl}\n`);
-  }
-
   try {
     const { code } = await waitForLocalOAuthCallback({
       expectedState: state,
@@ -75,7 +68,17 @@ export async function loginMSTeamsDelegated(
       redirectUri: MSTEAMS_OAUTH_REDIRECT_URI,
       successTitle: "MSTeams Delegated OAuth complete",
       progressMessage: `Waiting for OAuth callback on ${MSTEAMS_OAUTH_REDIRECT_URI}...`,
-      onProgress: (msg) => ctx.progress.update(msg),
+      onProgress: (msg) => {
+        ctx.progress.update(msg);
+        ctx.progress.update("Complete sign-in in browser...");
+        // onProgress runs only after the loopback listener is ready. Do not
+        // await browser launch: some openers wait for the callback to finish.
+        void Promise.resolve()
+          .then(() => ctx.openUrl(authUrl))
+          .catch(() => {
+            ctx.log(`\nOpen this URL in your browser:\n\n${authUrl}\n`);
+          });
+      },
     });
     ctx.progress.update("Exchanging authorization code for tokens...");
     return await exchangeMSTeamsCodeForTokens({

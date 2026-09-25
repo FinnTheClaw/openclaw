@@ -4,6 +4,7 @@ import { resolveEnvelopeFormatOptions } from "openclaw/plugin-sdk/channel-inboun
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SlackMessageEvent } from "../../types.js";
+import type { SlackEventScope } from "../event-scope.js";
 import * as mediaModule from "../media.js";
 import { resolveSlackThreadContextData } from "./prepare-thread-context.js";
 import {
@@ -605,5 +606,203 @@ describe("resolveSlackThreadContextData", () => {
       "actually it's Sunday 12:30 pm - apologize and correct",
     );
     expect(result.threadLabel).toContain("Confirmed Saturday 12:30pm");
+  });
+
+  describe("Slack thread history event scope", () => {
+    const scopedCases = [
+      {
+        name: "Grid team A display uses its event client scope",
+        teamId: "T_A",
+        mode: "all",
+        allowFrom: [],
+        allowNameMatching: false,
+        messages: [{ text: "prior A", user: "U1", ts: "100.100" }],
+        expected: "Alice A (user)",
+        lookups: 1,
+      },
+      {
+        name: "Grid team B does not reuse team A display identity",
+        teamId: "T_B",
+        mode: "all",
+        allowFrom: [],
+        allowNameMatching: false,
+        messages: [{ text: "prior B", user: "U1", ts: "100.100" }],
+        expected: "Alice B (user)",
+        lookups: 1,
+      },
+      {
+        name: "ID allowlist still displays the scoped name",
+        teamId: "T_A",
+        mode: "allowlist",
+        allowFrom: ["u1"],
+        allowNameMatching: false,
+        messages: [{ text: "allowed ID", user: "U1", ts: "100.100" }],
+        expected: "Alice A (user)",
+        lookups: 1,
+      },
+      {
+        name: "name allowlist uses the same scope for filtering and display",
+        teamId: "T_A",
+        mode: "allowlist",
+        allowFrom: ["alice a"],
+        allowNameMatching: true,
+        messages: [{ text: "allowed name", user: "U1", ts: "100.100" }],
+        expected: "Alice A (user)",
+        lookups: 2,
+      },
+      {
+        name: "filtered sender is not looked up for display",
+        teamId: "T_A",
+        mode: "allowlist",
+        allowFrom: ["alice a"],
+        allowNameMatching: true,
+        messages: [
+          { text: "allowed", user: "U1", ts: "100.100" },
+          { text: "blocked", user: "U2", ts: "100.200" },
+        ],
+        expected: "Alice A (user)",
+        absent: "blocked",
+        lookups: 3,
+      },
+      {
+        name: "repeated user ID is resolved once for display",
+        teamId: "T_A",
+        mode: "all",
+        allowFrom: [],
+        allowNameMatching: false,
+        messages: [
+          { text: "first", user: "U1", ts: "100.100" },
+          { text: "second", user: "U1", ts: "100.200" },
+        ],
+        expected: "Alice A (user)",
+        lookups: 1,
+      },
+      {
+        name: "unscoped workspace event preserves normal lookup",
+        mode: "all",
+        allowFrom: [],
+        allowNameMatching: false,
+        messages: [{ text: "workspace", user: "U1", ts: "100.100" }],
+        expected: "Workspace Alice (user)",
+        lookups: 1,
+      },
+      {
+        name: "bot root remains assistant while human display uses scope",
+        teamId: "T_A",
+        mode: "all",
+        allowFrom: [],
+        allowNameMatching: false,
+        messages: [
+          { text: "bot root", bot_id: "B1", ts: "100.000" },
+          { text: "human reply", user: "U1", ts: "100.100" },
+        ],
+        starterBot: true,
+        expected: "Alice A (user)",
+        alsoExpected: "Bot (this assistant) (assistant)",
+        lookups: 1,
+      },
+      {
+        name: "empty history performs no name lookup",
+        teamId: "T_A",
+        mode: "all",
+        allowFrom: [],
+        allowNameMatching: false,
+        messages: [],
+        lookups: 0,
+      },
+    ] as const;
+
+    async function resolveCase(testCase: {
+      teamId?: string;
+      mode: "all" | "allowlist";
+      allowFrom: readonly string[];
+      allowNameMatching: boolean;
+      messages: readonly Record<string, string>[];
+      starterBot?: boolean;
+    }) {
+      const { storePath } = storeFixture.makeTmpStorePath();
+      const replies = vi.fn().mockResolvedValue({
+        messages: [...testCase.messages, { text: "current", user: "U1", ts: "101.000" }],
+        response_metadata: { next_cursor: "" },
+      });
+      const ctx = createThreadContext({ replies });
+      ctx.botUserId = "U_BOT";
+      ctx.botId = "B1";
+      const eventScope = testCase.teamId
+        ? { teamId: testCase.teamId, client: { conversations: { replies } } as App["client"] }
+        : undefined;
+      const resolveUserName = vi.fn(async (id: string, scope?: SlackEventScope) => ({
+        name:
+          id === "U1"
+            ? scope?.teamId === "T_A"
+              ? "Alice A"
+              : scope?.teamId === "T_B"
+                ? "Alice B"
+                : "Workspace Alice"
+            : "Mallory",
+      }));
+      ctx.resolveUserName = resolveUserName;
+      const result = await resolveSlackThreadContextData({
+        ctx,
+        agentId: "main",
+        account: createSlackTestAccount({ thread: { initialHistoryLimit: 20 } }),
+        message: createThreadMessage({ text: "current" }),
+        isGroupDm: false,
+        isThreadReply: true,
+        threadTs: "100.000",
+        threadStarter: testCase.starterBot
+          ? { text: "bot root", botId: "B1", ts: "100.000" }
+          : null,
+        roomLabel: "#general",
+        storePath,
+        sessionKey: "thread-session",
+        allowFromLower: [...testCase.allowFrom],
+        allowNameMatching: testCase.allowNameMatching,
+        contextVisibilityMode: testCase.mode,
+        envelopeOptions: resolveEnvelopeFormatOptions({} as OpenClawConfig),
+        effectiveDirectMedia: null,
+        eventScope,
+      });
+      return { result, resolveUserName, eventScope };
+    }
+
+    it.each(scopedCases)("$name", async (testCase) => {
+      const { result, resolveUserName, eventScope } = await resolveCase(testCase);
+      expect(resolveUserName).toHaveBeenCalledTimes(testCase.lookups);
+      expect(resolveUserName.mock.calls.every(([, scope]) => scope === eventScope)).toBe(true);
+      if ("expected" in testCase) {
+        expect(result.threadHistoryBody).toContain(testCase.expected);
+      } else {
+        expect(result.threadHistoryBody).toBeUndefined();
+      }
+      if ("alsoExpected" in testCase) {
+        expect(result.threadHistoryBody).toContain(testCase.alsoExpected);
+      }
+      if ("absent" in testCase) {
+        expect(result.threadHistoryBody).not.toContain(testCase.absent);
+      }
+    });
+
+    it("two sequential Grid scopes resolve the same user independently", async () => {
+      const first = await resolveCase({
+        teamId: "T_A",
+        mode: "all",
+        allowFrom: [],
+        allowNameMatching: false,
+        messages: [{ text: "first team", user: "U1", ts: "100.100" }],
+      });
+      const second = await resolveCase({
+        teamId: "T_B",
+        mode: "all",
+        allowFrom: [],
+        allowNameMatching: false,
+        messages: [{ text: "second team", user: "U1", ts: "100.100" }],
+      });
+      expect(first.result.threadHistoryBody).toContain("Alice A (user)");
+      expect(second.result.threadHistoryBody).toContain("Alice B (user)");
+      expect(second.result.threadHistoryBody).not.toContain("Alice A (user)");
+      expect(first.resolveUserName).toHaveBeenCalledWith("U1", first.eventScope);
+      expect(second.resolveUserName).toHaveBeenCalledWith("U1", second.eventScope);
+    });
   });
 });

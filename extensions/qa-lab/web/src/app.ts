@@ -1187,12 +1187,19 @@ export async function createQaLabApp(root: HTMLDivElement) {
           if (!confirmed) {
             return;
           }
-          await postJson("/api/capture/delete-sessions", {
-            sessionIds: state.selectedCaptureSessionIds,
-          });
-          state.selectedCaptureSessionIds = [];
-          state.selectedCaptureEventKey = null;
-          await refresh();
+          state.error = null;
+          render();
+          try {
+            await postJson("/api/capture/delete-sessions", {
+              sessionIds: state.selectedCaptureSessionIds,
+            });
+            state.selectedCaptureSessionIds = [];
+            state.selectedCaptureEventKey = null;
+            await refresh();
+          } catch (error) {
+            state.error = formatErrorMessage(error);
+            render();
+          }
         })();
       });
     root.querySelector<HTMLButtonElement>("#capture-purge-all")?.addEventListener("click", () => {
@@ -1201,10 +1208,17 @@ export async function createQaLabApp(root: HTMLDivElement) {
         if (!confirmed) {
           return;
         }
-        await postJson("/api/capture/purge", {});
-        state.selectedCaptureSessionIds = [];
-        state.selectedCaptureEventKey = null;
-        await refresh();
+        state.error = null;
+        render();
+        try {
+          await postJson("/api/capture/purge", {});
+          state.selectedCaptureSessionIds = [];
+          state.selectedCaptureEventKey = null;
+          await refresh();
+        } catch (error) {
+          state.error = formatErrorMessage(error);
+          render();
+        }
       })();
     });
     root.querySelector<HTMLSelectElement>("#capture-preset")?.addEventListener("change", (e) => {

@@ -280,14 +280,36 @@ export function upsertTaskDeliveryState(state: TaskDeliveryState): TaskDeliveryS
   const current = taskDeliveryStates.get(state.taskId);
   const next: TaskDeliveryState = {
     taskId: state.taskId,
-    ...(state.requesterOrigin
-      ? { requesterOrigin: normalizeDeliveryContext(state.requesterOrigin) }
+    ...((state.requesterOrigin ?? current?.requesterOrigin)
+      ? {
+          requesterOrigin: normalizeDeliveryContext(
+            state.requesterOrigin ?? current?.requesterOrigin,
+          ),
+        }
       : {}),
-    ...(state.lastNotifiedEventAt != null
-      ? { lastNotifiedEventAt: state.lastNotifiedEventAt }
+    ...((state.lastNotifiedEventAt ?? current?.lastNotifiedEventAt) != null
+      ? {
+          lastNotifiedEventAt: Math.max(
+            state.lastNotifiedEventAt ?? 0,
+            current?.lastNotifiedEventAt ?? 0,
+          ),
+        }
+      : {}),
+    ...((state.lastNotifiedEventOrdinal ?? current?.lastNotifiedEventOrdinal) != null
+      ? {
+          lastNotifiedEventOrdinal: Math.max(
+            state.lastNotifiedEventOrdinal ?? 0,
+            current?.lastNotifiedEventOrdinal ?? 0,
+          ),
+        }
       : {}),
   };
-  if (!next.requesterOrigin && typeof next.lastNotifiedEventAt !== "number" && !current) {
+  if (
+    !next.requesterOrigin &&
+    typeof next.lastNotifiedEventAt !== "number" &&
+    typeof next.lastNotifiedEventOrdinal !== "number" &&
+    !current
+  ) {
     return cloneTaskDeliveryState({ taskId: state.taskId });
   }
   if (!tryPersistTaskDeliveryStateUpsert(next)) {

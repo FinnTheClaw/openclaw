@@ -120,6 +120,7 @@ export function formatConfigIssueSummary(
   const visibleIssues = issues.slice(0, maxIssues);
   const lines = formatConfigIssueLines(visibleIssues, "", {
     normalizeRoot: opts.normalizeRoot ?? true,
+    sourceFile: opts.sourceFile,
   });
   const hiddenIssueCount = issues.length - visibleIssues.length;
   if (hiddenIssueCount <= 0) {

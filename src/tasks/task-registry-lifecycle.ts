@@ -126,19 +126,23 @@ function ensureListener() {
         continue;
       }
       patch.lastEventAt = now;
-      const stateChangeEvent =
-        patch.status && patch.status !== current.status
-          ? appendTaskEvent({
-              at: now,
-              kind: patch.status,
-              summary:
-                patch.status === "failed"
-                  ? (patch.error ?? current.error)
-                  : patch.status === "succeeded"
-                    ? current.terminalSummary
-                    : undefined,
-            })
-          : undefined;
+      const stateChangeKind = patch.status !== current.status ? patch.status : undefined;
+      if (stateChangeKind) {
+        patch.lastStateEventOrdinal = (current.lastStateEventOrdinal ?? 0) + 1;
+      }
+      const stateChangeEvent = stateChangeKind
+        ? appendTaskEvent({
+            at: now,
+            ordinal: patch.lastStateEventOrdinal,
+            kind: stateChangeKind,
+            summary:
+              stateChangeKind === "failed"
+                ? (patch.error ?? current.error)
+                : stateChangeKind === "succeeded"
+                  ? current.terminalSummary
+                  : undefined,
+          })
+        : undefined;
       const updated = updateTask(current.taskId, patch);
       if (updated) {
         void maybeDeliverTaskStateChangeUpdate(current.taskId, stateChangeEvent);

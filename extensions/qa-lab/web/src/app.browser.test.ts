@@ -743,3 +743,124 @@ describe("QA Lab capture refresh selection races", () => {
     },
   );
 });
+
+describe("QA Lab capture destructive actions", () => {
+  async function mountCaptureActions() {
+    const root = await mountRunner(captureSelection);
+    const fallback = httpMock.getJson.getMockImplementation();
+    if (!fallback) {
+      throw new Error("missing baseline request handler");
+    }
+    let sessions = ["A", "B"];
+    httpMock.getJson.mockImplementation((url: string) => {
+      if (url === "/api/capture/sessions") {
+        return Promise.resolve({
+          sessions: sessions.map((id) => ({
+            id,
+            startedAt: 1,
+            mode: "proxy",
+            sourceProcess: "test",
+            eventCount: 0,
+          })),
+        });
+      }
+      if (url.startsWith("/api/capture/events?")) {
+        return Promise.resolve({ events: [] });
+      }
+      if (url.startsWith("/api/capture/coverage?")) {
+        return Promise.resolve({ coverage: null });
+      }
+      if (url.startsWith("/api/capture/query?")) {
+        return Promise.resolve({ rows: [] });
+      }
+      return fallback(url);
+    });
+    root.querySelector<HTMLButtonElement>("[data-tab='capture']")?.click();
+    root.querySelector<HTMLButtonElement>("[data-action='refresh']")?.click();
+    await flushCaptureRefresh();
+    root.querySelector<HTMLButtonElement>("#capture-controls-toggle")?.click();
+    await flushCaptureRefresh();
+    expect(
+      root.querySelector<HTMLSelectElement>("#capture-session")?.selectedOptions[0]?.value,
+    ).toBe("A");
+    httpMock.postJson.mockClear();
+    return {
+      root,
+      setSessions: (next: string[]) => {
+        sessions = next;
+      },
+    };
+  }
+
+  it.each([
+    { id: "D1", action: "delete", outcome: "cancel" },
+    { id: "D2", action: "delete", outcome: "success" },
+    { id: "D3", action: "delete", outcome: "http" },
+    { id: "D4", action: "delete", outcome: "network" },
+    { id: "D5", action: "delete", outcome: "timeout" },
+    { id: "P1", action: "purge", outcome: "cancel" },
+    { id: "P2", action: "purge", outcome: "success" },
+    { id: "P3", action: "purge", outcome: "http" },
+    { id: "P4", action: "purge", outcome: "malformed" },
+    { id: "P5", action: "purge", outcome: "timeout" },
+  ] as const)(
+    "$id $action $outcome uses the production click handler",
+    async ({ action, outcome }) => {
+      const { root, setSessions } = await mountCaptureActions();
+      const confirm = vi.fn(() => outcome !== "cancel");
+      vi.stubGlobal("confirm", confirm);
+      const endpoint = action === "delete" ? "/api/capture/delete-sessions" : "/api/capture/purge";
+      const body = action === "delete" ? { sessionIds: ["A"] } : {};
+      const errors = {
+        http: new httpMock.QaLabHttpError("capture rejected", action === "delete" ? 400 : 500, {}),
+        network: new Error("capture network unavailable"),
+        malformed: new Error("capture malformed JSON response"),
+        timeout: new Error("capture request timed out"),
+      };
+      const expectedError = outcome in errors ? errors[outcome as keyof typeof errors] : null;
+      httpMock.postJson.mockImplementation(async (url: string, requestBody: unknown) => {
+        expect(url).toBe(endpoint);
+        expect(requestBody).toEqual(body);
+        if (expectedError) {
+          throw expectedError;
+        }
+        setSessions(action === "delete" ? ["B"] : []);
+        return { ok: true };
+      });
+      const selector =
+        action === "delete" ? "#capture-delete-selected-sessions" : "#capture-purge-all";
+      const button = root.querySelector<HTMLButtonElement>(selector);
+      expect(button?.disabled).toBe(false);
+      button?.click();
+      await flushCaptureRefresh();
+      expect(confirm).toHaveBeenCalledTimes(1);
+      if (outcome === "cancel") {
+        expect(httpMock.postJson).not.toHaveBeenCalled();
+        expect(
+          root.querySelector<HTMLSelectElement>("#capture-session")?.selectedOptions[0]?.value,
+        ).toBe("A");
+        return;
+      }
+      expect(httpMock.postJson).toHaveBeenCalledTimes(1);
+      expect(httpMock.postJson).toHaveBeenCalledWith(endpoint, body);
+      if (expectedError) {
+        expect(root.querySelector(".badge-fail")?.textContent).toContain(expectedError.message);
+        expect(
+          root.querySelector<HTMLSelectElement>("#capture-session")?.selectedOptions[0]?.value,
+        ).toBe("A");
+        return;
+      }
+      expect(root.querySelector(".badge-fail")?.textContent ?? "").toBe("");
+      expect(
+        root.querySelector<HTMLSelectElement>("#capture-session option[value='A']"),
+      ).toBeNull();
+      if (action === "delete") {
+        expect(
+          root.querySelector<HTMLSelectElement>("#capture-session")?.selectedOptions[0]?.value,
+        ).toBe("B");
+      } else {
+        expect(root.querySelectorAll("#capture-session option")).toHaveLength(0);
+      }
+    },
+  );
+});

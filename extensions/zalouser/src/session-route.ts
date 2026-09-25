@@ -118,6 +118,6 @@ export function resolveZalouserOutboundSessionRoute(params: ChannelOutboundSessi
     },
     chatType: isGroup ? "group" : "direct",
     from: isGroup ? `zalouser:group:${peerId}` : `zalouser:${peerId}`,
-    to: `zalouser:${peerId}`,
+    to: isGroup ? `zalouser:group:${peerId}` : `zalouser:${peerId}`,
   });
 }

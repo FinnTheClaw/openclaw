@@ -13,6 +13,7 @@ import {
 const IRC_ERROR_CODES = new Set(["432", "464", "465"]);
 const IRC_NICK_COLLISION_CODES = new Set(["433", "436"]);
 const IRC_MAX_LINE_BYTES = 512;
+const IRC_MAX_INBOUND_LINE_BYTES = 8_703; // IRCv3 tags plus the 512-byte message, including CRLF.
 
 function takeIrcPrivmsgChunk(text: string, maxChars: number, maxBytes: number): string {
   let end = 0;
@@ -165,7 +166,7 @@ export async function connectIrcClient(options: IrcClientOptions): Promise<IrcCl
       })
     : net.connect({ host: options.host, port: options.port });
 
-  socket.setEncoding("utf8");
+  // Keep inbound chunks as bytes so UTF-8 and CRLF count toward the framing limit.
 
   let resolveReady: (() => void) | null = null;
   let rejectReady: ((error: Error) => void) | null = null;
@@ -284,14 +285,31 @@ export async function connectIrcClient(options: IrcClientOptions): Promise<IrcCl
     socket.destroy();
   };
 
-  let buffer = "";
-  socket.on("data", (chunk: string) => {
-    buffer += chunk;
-    let idx = buffer.indexOf("\n");
-    while (idx !== -1) {
-      const rawLine = buffer.slice(0, idx).replace(/\r$/, "");
-      buffer = buffer.slice(idx + 1);
-      idx = buffer.indexOf("\n");
+  let pendingLine = Buffer.alloc(0);
+  socket.on("data", (chunk: Buffer) => {
+    if (closed) {
+      return;
+    }
+    let offset = 0;
+    while (offset < chunk.length) {
+      const newlineIndex = chunk.indexOf(0x0a, offset);
+      const end = newlineIndex === -1 ? chunk.length : newlineIndex + 1;
+      const segment = chunk.subarray(offset, end);
+      if (pendingLine.length + segment.length > IRC_MAX_INBOUND_LINE_BYTES) {
+        failAndClose(new Error("IRC inbound line exceeds 8703-byte limit"));
+        return;
+      }
+      pendingLine =
+        pendingLine.length === 0 ? Buffer.from(segment) : Buffer.concat([pendingLine, segment]);
+      offset = end;
+      if (newlineIndex === -1) {
+        break;
+      }
+      const rawLine = pendingLine
+        .subarray(0, pendingLine.length - 1)
+        .toString("utf8")
+        .replace(/\r$/, "");
+      pendingLine = Buffer.alloc(0);
 
       if (!rawLine) {
         continue;

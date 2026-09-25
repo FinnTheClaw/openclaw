@@ -639,3 +639,126 @@ describe("FeishuConfigSchema defaultAccount", () => {
     }
   });
 });
+
+describe("Feishu named-account webhook inheritance", () => {
+  const named = {
+    appId: "cli_main",
+    appSecret: "secret_main", // pragma: allowlist secret
+    verificationToken: "token_main",
+    encryptKey: "encrypt_main",
+  };
+  const cases = [
+    {
+      name: "named-only account inherits webhook mode",
+      config: { connectionMode: "webhook", accounts: { main: named } },
+      accepted: true,
+    },
+    {
+      name: "two named accounts keep independent event secrets",
+      config: {
+        connectionMode: "webhook",
+        accounts: {
+          main: named,
+          backup: {
+            ...named,
+            appId: "cli_backup",
+            verificationToken: "token_backup",
+            encryptKey: "encrypt_backup",
+          },
+        },
+      },
+      accepted: true,
+    },
+    {
+      name: "explicit defaultAccount selects the named account",
+      config: { connectionMode: "webhook", defaultAccount: "main", accounts: { main: named } },
+      accepted: true,
+    },
+    {
+      name: "missing account verificationToken reports account path only",
+      config: {
+        connectionMode: "webhook",
+        accounts: {
+          main: { appId: named.appId, appSecret: named.appSecret, encryptKey: named.encryptKey },
+        },
+      },
+      issue: "accounts.main.verificationToken",
+      absentIssue: "verificationToken",
+    },
+    {
+      name: "missing account encryptKey reports account path only",
+      config: {
+        connectionMode: "webhook",
+        accounts: {
+          main: {
+            appId: named.appId,
+            appSecret: named.appSecret,
+            verificationToken: named.verificationToken,
+          },
+        },
+      },
+      issue: "accounts.main.encryptKey",
+      absentIssue: "encryptKey",
+    },
+    {
+      name: "named account inherits one top-level event secret",
+      config: {
+        connectionMode: "webhook",
+        verificationToken: "token_shared",
+        accounts: {
+          main: { appId: named.appId, appSecret: named.appSecret, encryptKey: named.encryptKey },
+        },
+      },
+      accepted: true,
+    },
+    {
+      name: "named websocket override needs no webhook secrets",
+      config: {
+        connectionMode: "webhook",
+        accounts: {
+          main: { connectionMode: "websocket", appId: named.appId, appSecret: named.appSecret },
+        },
+      },
+      accepted: true,
+    },
+    {
+      name: "implicit top-level webhook account still requires verificationToken",
+      config: { ...topLevelWebhookBase, encryptKey: "encrypt_top", accounts: { main: named } },
+      issue: "verificationToken",
+    },
+    {
+      name: "implicit top-level webhook account still requires encryptKey",
+      config: { ...topLevelWebhookBase, verificationToken: "token_top", accounts: { main: named } },
+      issue: "encryptKey",
+    },
+    {
+      name: "account-level SecretRefs work without top-level app credentials",
+      config: {
+        connectionMode: "webhook",
+        accounts: {
+          main: {
+            appId: "cli_main",
+            appSecret: { source: "env", provider: "default", id: "FEISHU_MAIN_SECRET" },
+            verificationToken: { source: "env", provider: "default", id: "FEISHU_MAIN_TOKEN" },
+            encryptKey: { source: "env", provider: "default", id: "FEISHU_MAIN_ENCRYPT" },
+          },
+        },
+      },
+      accepted: true,
+    },
+  ] as const;
+
+  it.each(cases)("$name", ({ config, ...expected }) => {
+    const result = FeishuConfigSchema.safeParse(config);
+    if ("accepted" in expected) {
+      expect(result.success).toBe(true);
+      return;
+    }
+    expectSchemaIssue(result, expected.issue);
+    if (!result.success && "absentIssue" in expected) {
+      expect(result.error.issues.map((issue) => issue.path.join("."))).not.toContain(
+        expected.absentIssue,
+      );
+    }
+  });
+});

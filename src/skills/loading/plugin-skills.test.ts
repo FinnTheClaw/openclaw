@@ -800,7 +800,7 @@ describe("publishPluginSkills", () => {
     expect(fsSync.readlinkSync(linkPath)).toBe(currentDir);
   });
 
-  it("replaces generated Windows directory entries before publishing a current skill", async () => {
+  it("preserves an ordinary Windows directory that collides with a published skill", async () => {
     const skillParent = await tempDirs.make("plugin-skills-");
     const managedDir = await tempDirs.make("managed-skills-");
 
@@ -813,7 +813,8 @@ describe("publishPluginSkills", () => {
       publishPluginSkills([dir], { pluginSkillsDir: managedDir });
     });
 
-    expect(fsSync.readlinkSync(existingDir)).toBe(dir);
+    expect((await fs.lstat(existingDir)).isDirectory()).toBe(true);
+    expect(await fs.readFile(path.join(existingDir, "stale.txt"), "utf8")).toBe("stale");
   });
 
   it("cleans up stale symlinks whose targets still exist", async () => {
@@ -831,20 +832,21 @@ describe("publishPluginSkills", () => {
     expect(fsSync.existsSync(path.join(managedDir, "stale-skill"))).toBe(false);
   });
 
-  it("cleans up stale generated junction-like directories on Windows", async () => {
+  it("preserves an ordinary Windows directory during stale-link cleanup", async () => {
     const skillParent = await tempDirs.make("plugin-skills-");
     const managedDir = await tempDirs.make("managed-skills-");
 
     const dir = await writeSkillDir(skillParent, "current-skill");
     const staleDir = path.join(managedDir, "stale-skill");
     await fs.mkdir(staleDir, { recursive: true });
+    await fs.writeFile(path.join(staleDir, "sentinel.txt"), "preserve");
 
-    await withPlatform("win32", async () => {
+    withPlatform("win32", () => {
       publishPluginSkills([dir], { pluginSkillsDir: managedDir });
     });
 
     expect(fsSync.existsSync(path.join(managedDir, "current-skill"))).toBe(true);
-    expect(fsSync.existsSync(staleDir)).toBe(false);
+    expect(await fs.readFile(path.join(staleDir, "sentinel.txt"), "utf8")).toBe("preserve");
   });
 
   it("cleans up broken symlinks (dangling)", async () => {
@@ -951,5 +953,111 @@ describe("publishPluginSkills", () => {
 
     // First one wins.
     expect(fsSync.readlinkSync(path.join(managedDir, "shared-name"))).toBe(dir1);
+  });
+  describe("generated-link cleanup safety pack", () => {
+    it("[PS-01] preserves a stale ordinary directory under Windows selection", async () => {
+      const managedDir = await tempDirs.make("managed-skills-");
+      const entry = path.join(managedDir, "local");
+      await fs.mkdir(entry);
+      await fs.writeFile(path.join(entry, "sentinel"), "keep");
+      withPlatform("win32", () => publishPluginSkills([], { pluginSkillsDir: managedDir }));
+      expect(await fs.readFile(path.join(entry, "sentinel"), "utf8")).toBe("keep");
+    });
+
+    it("[PS-02] preserves a colliding ordinary directory under Windows selection", async () => {
+      const skillParent = await tempDirs.make("plugin-skills-");
+      const managedDir = await tempDirs.make("managed-skills-");
+      const skill = await writeSkillDir(skillParent, "local");
+      const entry = path.join(managedDir, "local");
+      await fs.mkdir(entry);
+      await fs.writeFile(path.join(entry, "sentinel"), "keep");
+      withPlatform("win32", () => publishPluginSkills([skill], { pluginSkillsDir: managedDir }));
+      expect(await fs.readFile(path.join(entry, "sentinel"), "utf8")).toBe("keep");
+      expect((await fs.lstat(entry)).isSymbolicLink()).toBe(false);
+    });
+
+    it("[PS-03] preserves a stale ordinary directory on the actual filesystem", async () => {
+      const managedDir = await tempDirs.make("managed-skills-");
+      const entry = path.join(managedDir, "local");
+      await fs.mkdir(entry);
+      await fs.writeFile(path.join(entry, "sentinel"), "keep");
+      publishPluginSkills([], { pluginSkillsDir: managedDir });
+      expect(await fs.readFile(path.join(entry, "sentinel"), "utf8")).toBe("keep");
+    });
+
+    it("[PS-04] preserves a stale regular file", async () => {
+      const managedDir = await tempDirs.make("managed-skills-");
+      const entry = path.join(managedDir, "local");
+      await fs.writeFile(entry, "keep");
+      withPlatform("win32", () => publishPluginSkills([], { pluginSkillsDir: managedDir }));
+      expect(await fs.readFile(entry, "utf8")).toBe("keep");
+    });
+
+    it("[PS-05] preserves a regular file that collides with a published skill", async () => {
+      const skillParent = await tempDirs.make("plugin-skills-");
+      const managedDir = await tempDirs.make("managed-skills-");
+      const skill = await writeSkillDir(skillParent, "local");
+      const entry = path.join(managedDir, "local");
+      await fs.writeFile(entry, "keep");
+      withPlatform("win32", () => publishPluginSkills([skill], { pluginSkillsDir: managedDir }));
+      expect(await fs.readFile(entry, "utf8")).toBe("keep");
+    });
+
+    it("[PS-06] removes a stale symlink without deleting its target", async () => {
+      const skillParent = await tempDirs.make("plugin-skills-");
+      const managedDir = await tempDirs.make("managed-skills-");
+      const target = await writeSkillDir(skillParent, "stale");
+      const entry = path.join(managedDir, "stale");
+      await fs.symlink(target, entry, directorySymlinkType);
+      publishPluginSkills([], { pluginSkillsDir: managedDir });
+      await expectPathMissing(entry);
+      expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toContain("stale");
+    });
+
+    it("[PS-07] replaces a changed symlink without deleting its old target", async () => {
+      const oldParent = await tempDirs.make("plugin-skills-old-");
+      const newParent = await tempDirs.make("plugin-skills-new-");
+      const managedDir = await tempDirs.make("managed-skills-");
+      const oldTarget = await writeSkillDir(oldParent, "local", "old");
+      const newTarget = await writeSkillDir(newParent, "local", "new");
+      const entry = path.join(managedDir, "local");
+      await fs.symlink(oldTarget, entry, directorySymlinkType);
+      publishPluginSkills([newTarget], { pluginSkillsDir: managedDir });
+      expect(await fs.readlink(entry)).toBe(newTarget);
+      expect(await fs.readFile(path.join(oldTarget, "SKILL.md"), "utf8")).toContain("old");
+    });
+
+    it("[PS-08] leaves a matching symlink unchanged", async () => {
+      const skillParent = await tempDirs.make("plugin-skills-");
+      const managedDir = await tempDirs.make("managed-skills-");
+      const target = await writeSkillDir(skillParent, "local");
+      const entry = path.join(managedDir, "local");
+      await fs.symlink(target, entry, directorySymlinkType);
+      const before = await fs.lstat(entry);
+      publishPluginSkills([target], { pluginSkillsDir: managedDir });
+      const after = await fs.lstat(entry);
+      expect(await fs.readlink(entry)).toBe(target);
+      expect(after.ino).toBe(before.ino);
+    });
+
+    it("[PS-09] removes a dangling stale symlink", async () => {
+      const skillParent = await tempDirs.make("plugin-skills-");
+      const managedDir = await tempDirs.make("managed-skills-");
+      const entry = path.join(managedDir, "local");
+      await fs.symlink(path.join(skillParent, "missing"), entry, directorySymlinkType);
+      publishPluginSkills([], { pluginSkillsDir: managedDir });
+      await expectPathMissing(entry);
+    });
+
+    it("[PS-10] removes an actual stale link under Windows selection without target traversal", async () => {
+      const skillParent = await tempDirs.make("plugin-skills-");
+      const managedDir = await tempDirs.make("managed-skills-");
+      const target = await writeSkillDir(skillParent, "stale");
+      const entry = path.join(managedDir, "stale");
+      await fs.symlink(target, entry, directorySymlinkType);
+      withPlatform("win32", () => publishPluginSkills([], { pluginSkillsDir: managedDir }));
+      await expectPathMissing(entry);
+      expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toContain("stale");
+    });
   });
 });

@@ -537,7 +537,12 @@ export async function discoverBedrockModels(params: {
         return cached.value;
       }
       if (cached.inFlight) {
-        return cached.inFlight;
+        try {
+          return await cached.inFlight;
+        } catch {
+          // A joined caller has the same empty-result contract as the request owner.
+          return [];
+        }
       }
     }
     if (cached) {
@@ -620,32 +625,24 @@ export async function discoverBedrockModels(params: {
     }
   })();
 
+  let ownedCacheEntry: BedrockDiscoveryCacheEntry | undefined;
   if (refreshIntervalSeconds > 0) {
     const expiresAt = resolveExpiresAtMsFromDurationSeconds(refreshIntervalSeconds, { nowMs: now });
     if (expiresAt !== undefined) {
-      discoveryCache.set(cacheKey, {
-        expiresAt,
-        inFlight: discoveryPromise,
-      });
+      ownedCacheEntry = { expiresAt, inFlight: discoveryPromise };
+      discoveryCache.set(cacheKey, ownedCacheEntry);
     }
   }
 
   try {
     const value = await discoveryPromise;
-    if (refreshIntervalSeconds > 0) {
-      const expiresAt = resolveExpiresAtMsFromDurationSeconds(refreshIntervalSeconds, {
-        nowMs: now,
-      });
-      if (expiresAt !== undefined) {
-        discoveryCache.set(cacheKey, {
-          expiresAt,
-          value,
-        });
-      }
+    // Expired requests may finish after a replacement; only the current owner may publish.
+    if (ownedCacheEntry && discoveryCache.get(cacheKey) === ownedCacheEntry) {
+      discoveryCache.set(cacheKey, { expiresAt: ownedCacheEntry.expiresAt, value });
     }
     return value;
   } catch (error) {
-    if (refreshIntervalSeconds > 0) {
+    if (ownedCacheEntry && discoveryCache.get(cacheKey) === ownedCacheEntry) {
       discoveryCache.delete(cacheKey);
     }
     if (!hasLoggedBedrockError) {

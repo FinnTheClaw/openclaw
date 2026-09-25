@@ -71,7 +71,7 @@ export function parseJsonc(raw: string): JsoncParseResult {
     disallowComments: false,
     allowEmptyContent: true,
   }) as JsoncParserNode | undefined;
-  const lineMap = createLineMap(raw);
+  const lineMap = createLineMap(parseSource);
   const diagnostics = errors.map((error) => toDiagnostic(error, lineMap, tree));
   let root: JsoncValue | null = null;
   if (tree && diagnostics.every((d) => d.severity !== "error")) {

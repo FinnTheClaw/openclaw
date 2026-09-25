@@ -409,6 +409,7 @@ export async function resolveSlackThreadContextData(params: {
       const userMap = await resolveSlackThreadUserMap({
         ctx: params.ctx,
         messages: filteredThreadHistory,
+        eventScope: params.eventScope,
       });
       if (omittedHistoryCount > 0 || omittedCurrentBotHistoryCount > 0) {
         logVerbose(

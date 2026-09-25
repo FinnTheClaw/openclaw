@@ -377,6 +377,90 @@ describe("slack config schema", () => {
     );
   });
 
+  it.each([
+    {
+      name: "R13 relay validation: rejects missing relay fields when accounts are omitted",
+      config: { mode: "relay" },
+      issue: "relay.url",
+    },
+    {
+      name: "R13 relay validation: rejects missing relay fields when accounts are empty",
+      config: { mode: "relay", accounts: {} },
+      issue: "relay.url",
+    },
+    {
+      name: "R13 relay validation: rejects missing auth token with empty accounts",
+      config: { mode: "relay", accounts: {}, relay: { url: "wss://router.example/ws" } },
+      issue: "relay.authToken",
+    },
+    {
+      name: "R13 relay validation: rejects missing gateway ID with empty accounts",
+      config: {
+        mode: "relay",
+        accounts: {},
+        relay: { url: "wss://router.example/ws", authToken: "test-token" },
+      },
+      issue: "relay.gatewayId",
+    },
+    {
+      name: "R13 relay validation: accepts complete string relay credentials with empty accounts",
+      config: {
+        mode: "relay",
+        accounts: {},
+        relay: { url: "wss://router.example/ws", authToken: "test-token", gatewayId: "gateway" },
+      },
+    },
+    {
+      name: "R13 relay validation: accepts complete SecretInput relay credentials with empty accounts",
+      config: {
+        mode: "relay",
+        accounts: {},
+        relay: {
+          url: "wss://router.example/ws",
+          authToken: { source: "env", provider: "default", id: "SLACK_RELAY_AUTH_TOKEN" },
+          gatewayId: "gateway",
+        },
+      },
+    },
+    {
+      name: "R13 relay validation: does not require relay fields for disabled Slack with empty accounts",
+      config: { enabled: false, mode: "relay", accounts: {} },
+    },
+    {
+      name: "R13 relay validation: accepts complete relay credentials on a named account without root relay",
+      config: {
+        mode: "relay",
+        accounts: {
+          ops: {
+            relay: {
+              url: "wss://router.example/ws",
+              authToken: "test-token",
+              gatewayId: "gateway",
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "R13 relay validation: inherits complementary root relay fields for a named account",
+      config: {
+        mode: "relay",
+        relay: { url: "wss://router.example/ws", authToken: "test-token" },
+        accounts: { ops: { relay: { gatewayId: "gateway" } } },
+      },
+    },
+    {
+      name: "R13 relay validation: honors a named account socket override without root relay fields",
+      config: { mode: "relay", accounts: { ops: { mode: "socket" } } },
+    },
+  ])("$name", ({ config, issue }) => {
+    if (issue) {
+      expectSlackConfigIssue(config, issue);
+    } else {
+      expectSlackConfigValid(config);
+    }
+  });
+
   it.each(["http", "relay"] as const)(
     "does not require %s transport credentials when Slack is disabled",
     (mode) => {

@@ -12,15 +12,18 @@ export function splitCommandParts(value: string): string[] {
   const parts: string[] = [];
   let current = "";
   let quote: "'" | '"' | null = null;
+  let tokenStarted = false;
   let escaping = false;
 
   for (const ch of value) {
     if (escaping) {
       current += ch;
+      tokenStarted = true;
       escaping = false;
       continue;
     }
     if (ch === "\\" && quote !== "'") {
+      tokenStarted = true;
       escaping = true;
       continue;
     }
@@ -33,23 +36,26 @@ export function splitCommandParts(value: string): string[] {
       continue;
     }
     if (ch === "'" || ch === '"') {
+      tokenStarted = true;
       quote = ch;
       continue;
     }
     if (/\s/.test(ch)) {
-      if (current) {
+      if (tokenStarted) {
         parts.push(current);
         current = "";
+        tokenStarted = false;
       }
       continue;
     }
+    tokenStarted = true;
     current += ch;
   }
 
   if (escaping) {
     current += "\\";
   }
-  if (current) {
+  if (tokenStarted) {
     parts.push(current);
   }
   return parts;

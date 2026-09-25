@@ -95,8 +95,8 @@ export function matchRealtimeVoiceConsultQuestions(
   // "can you" around the same short question.
   if (
     normalizedLeft === normalizedRight ||
-    normalizedLeft.includes(normalizedRight) ||
-    normalizedRight.includes(normalizedLeft)
+    ` ${normalizedLeft} `.includes(` ${normalizedRight} `) ||
+    ` ${normalizedRight} `.includes(` ${normalizedLeft} `)
   ) {
     return true;
   }

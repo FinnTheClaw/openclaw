@@ -36,6 +36,26 @@ function digest(content: Uint8Array): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 
+function sameWorkspaceRef(
+  left: PersistedClawWorkspaceFile | undefined,
+  right: PersistedClawWorkspaceFile | undefined,
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.agentId === right.agentId &&
+    left.workspace === right.workspace &&
+    left.path === right.path &&
+    left.sourcePath === right.sourcePath &&
+    left.contentDigest === right.contentDigest &&
+    left.status === right.status &&
+    left.createdAtMs === right.createdAtMs &&
+    left.updatedAtMs === right.updatedAtMs
+  );
+}
+
 export async function applyClawWorkspaceUpdate(
   updatePlan: ClawUpdatePlan,
   targetAddPlan: ClawAddPlan,
@@ -69,6 +89,8 @@ export async function applyClawWorkspaceUpdate(
   );
   const undo: Array<() => Promise<void>> = [];
   const appliedPaths: string[] = [];
+  const readCurrentRef = (path: string) =>
+    readClawWorkspaceFiles(updatePlan.agentId, options).find((record) => record.path === path);
 
   const rollback = async () => {
     const failures = await collectClawRollbackFailures(undo.toReversed());
@@ -112,13 +134,26 @@ export async function applyClawWorkspaceUpdate(
 
       if (action.action === "remove") {
         undo.push(async () => {
-          if (await workspace.exists(path)) {
-            throw new Error(`Workspace file ${JSON.stringify(path)} appeared before rollback.`);
+          const currentRef = readCurrentRef(path);
+          if (!sameWorkspaceRef(currentRef, previousRef) && currentRef !== undefined) {
+            throw new Error(
+              `Workspace file ${JSON.stringify(path)} changed ownership before rollback.`,
+            );
           }
-          if (previousContent) {
+          const currentExists = await workspace.exists(path);
+          const currentContent = currentExists
+            ? await workspace.readBytes(path, { maxBytes: MAX_UPDATE_FILE_BYTES })
+            : undefined;
+          if (
+            currentContent &&
+            (!previousContent || digest(currentContent) !== digest(previousContent))
+          ) {
+            throw new Error(`Workspace file ${JSON.stringify(path)} changed before rollback.`);
+          }
+          if (!currentContent && previousContent) {
             await workspace.write(path, previousContent, { mkdir: true, overwrite: true });
           }
-          if (previousRef) {
+          if (!sameWorkspaceRef(currentRef, previousRef) && previousRef) {
             upsertClawWorkspaceFile(previousRef, options);
           }
         });
@@ -160,24 +195,39 @@ export async function applyClawWorkspaceUpdate(
         updatedAtMs: nowMs,
       };
       undo.push(async () => {
-        if (!(await workspace.exists(path))) {
-          throw new Error(`Workspace file ${JSON.stringify(path)} disappeared before rollback.`);
+        const currentRef = readCurrentRef(path);
+        const refIsPrevious = sameWorkspaceRef(currentRef, previousRef);
+        const refIsApplied = sameWorkspaceRef(currentRef, record);
+        if (!refIsPrevious && !refIsApplied) {
+          throw new Error(
+            `Workspace file ${JSON.stringify(path)} changed ownership before rollback.`,
+          );
         }
-        const currentContent = await workspace.readBytes(path, {
-          maxBytes: MAX_UPDATE_FILE_BYTES,
-        });
-        if (digest(currentContent) !== target.digest) {
+        const currentExists = await workspace.exists(path);
+        const currentContent = currentExists
+          ? await workspace.readBytes(path, { maxBytes: MAX_UPDATE_FILE_BYTES })
+          : undefined;
+        const fileIsPrevious = previousContent
+          ? currentContent !== undefined && digest(currentContent) === digest(previousContent)
+          : currentContent === undefined;
+        const fileIsApplied =
+          currentContent !== undefined && digest(currentContent) === target.digest;
+        if (!fileIsPrevious && !fileIsApplied) {
           throw new Error(`Workspace file ${JSON.stringify(path)} changed before rollback.`);
         }
-        if (previousContent) {
-          await workspace.write(path, previousContent, { mkdir: true, overwrite: true });
-        } else if (await workspace.exists(path)) {
-          await workspace.remove(path);
+        if (!fileIsPrevious) {
+          if (previousContent) {
+            await workspace.write(path, previousContent, { mkdir: true, overwrite: true });
+          } else {
+            await workspace.remove(path);
+          }
         }
-        if (previousRef) {
-          upsertClawWorkspaceFile(previousRef, options);
-        } else {
-          deleteClawWorkspaceFileRecord(updatePlan.agentId, path, options);
+        if (!refIsPrevious) {
+          if (previousRef) {
+            upsertClawWorkspaceFile(previousRef, options);
+          } else {
+            deleteClawWorkspaceFileRecord(updatePlan.agentId, path, options);
+          }
         }
       });
       await workspace.write(path, content, { mkdir: true, overwrite: existed });

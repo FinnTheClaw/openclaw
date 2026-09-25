@@ -415,6 +415,7 @@ export function findLatestIMessageEntryForChat(
   if (!ctx.accountId) {
     return undefined;
   }
+  hydrateFromStoreOnce();
   const cutoff = Date.now() - LATEST_FALLBACK_MS;
   let best: IMessageReplyCacheEntry | undefined;
   for (const entry of imessageReplyCacheByMessageId.values()) {

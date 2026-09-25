@@ -275,8 +275,8 @@ function hasPublishableSkillFile(params: { skillDir: string; rootDir: string }):
  * plugin skills directory (~/.openclaw/plugin-skills/) so the agent SDK can
  * discover them at the conventional file-system path.
  *
- * The plugin-skills directory is fully owned by OpenClaw — every entry is
- * a generated symlink. Cleanup of stale links is therefore safe.
+ * OpenClaw publishes generated links here. Unexpected ordinary files and
+ * directories are preserved, even when they share a managed skill name.
  */
 function publishPluginSkills(skillDirs: string[], opts?: { pluginSkillsDir?: string }): void {
   const pluginSkillsDir = opts?.pluginSkillsDir ?? resolveDefaultPluginSkillsDir();
@@ -316,9 +316,13 @@ function publishPluginSkills(skillDirs: string[], opts?: { pluginSkillsDir?: str
         if (existingTarget === target) {
           continue;
         }
-        removeGeneratedPluginSkillEntry(linkPath);
-      } else if (isGeneratedPluginSkillEntry(existingEntry)) {
-        removeGeneratedPluginSkillEntry(linkPath);
+        if (!removeGeneratedPluginSkillEntry(linkPath)) {
+          continue;
+        }
+      } else if (isGeneratedPluginSkillEntry(existingEntry, linkPath)) {
+        if (!removeGeneratedPluginSkillEntry(linkPath)) {
+          continue;
+        }
       } else {
         log.warn(`plugin skill entry is not a generated symlink: ${linkPath}`);
         continue;
@@ -336,9 +340,8 @@ function publishPluginSkills(skillDirs: string[], opts?: { pluginSkillsDir?: str
     }
   }
 
-  // Clean up stale symlinks for plugin skills that are no longer active.
-  // The plugin-skills directory is fully owned by OpenClaw: every entry is a
-  // generated symlink, so stale-link removal is safe without extra proof.
+  // Clean up stale generated links for plugin skills that are no longer active.
+  // Preserve any ordinary file or directory that appears in this location.
   let existingEntries: fs.Dirent[];
   try {
     existingEntries = fs.readdirSync(pluginSkillsDir, { withFileTypes: true });
@@ -346,13 +349,13 @@ function publishPluginSkills(skillDirs: string[], opts?: { pluginSkillsDir?: str
     return;
   }
   for (const entry of existingEntries) {
-    if (!isGeneratedPluginSkillEntry(entry)) {
+    const linkPath = path.join(pluginSkillsDir, entry.name);
+    if (!isGeneratedPluginSkillEntry(entry, linkPath)) {
       continue;
     }
     if (managedTargets.has(entry.name)) {
       continue;
     }
-    const linkPath = path.join(pluginSkillsDir, entry.name);
     removeGeneratedPluginSkillEntry(linkPath);
   }
   if (opts?.pluginSkillsDir === undefined) {
@@ -362,26 +365,41 @@ function publishPluginSkills(skillDirs: string[], opts?: { pluginSkillsDir?: str
 
 function isGeneratedPluginSkillEntry(
   entry: Pick<fs.Dirent, "isDirectory" | "isSymbolicLink">,
+  linkPath: string,
 ): boolean {
-  // Windows directory symlinks are junctions and lstat reports them as directories.
-  return entry.isSymbolicLink() || (process.platform === "win32" && entry.isDirectory());
+  if (entry.isSymbolicLink()) {
+    return true;
+  }
+  if (process.platform !== "win32" || !entry.isDirectory()) {
+    return false;
+  }
+  // Some Windows junctions appear as directories. A successful readlink is
+  // positive link proof; an ordinary directory must never be treated as generated.
+  try {
+    fs.readlinkSync(linkPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function removeGeneratedPluginSkillEntry(linkPath: string): void {
+function removeGeneratedPluginSkillEntry(linkPath: string): boolean {
   try {
     const entry = fs.lstatSync(linkPath);
     if (entry.isSymbolicLink()) {
       fs.unlinkSync(linkPath);
-      return;
+      return true;
+    }
+    if (isGeneratedPluginSkillEntry(entry, linkPath)) {
+      // rmdir removes a proven junction itself without recursive target traversal.
+      fs.rmdirSync(linkPath);
+      return true;
     }
   } catch (err) {
     if (isMissingPathError(err)) {
-      return;
+      return true;
     }
+    log.warn(`failed to remove plugin skill symlink "${linkPath}": ${String(err)}`);
   }
-  try {
-    fs.rmSync(linkPath, { recursive: true, force: true });
-  } catch {
-    // best-effort cleanup
-  }
+  return false;
 }

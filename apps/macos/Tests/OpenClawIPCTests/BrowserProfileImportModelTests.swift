@@ -335,6 +335,183 @@ struct BrowserProfileImportModelTests {
 }
 
 @MainActor
+private final class BrowserImportModeRaceFixture {
+    let stub = BrowserImportTransportStub()
+    let eligibility = BrowserImportEligibilityGate()
+    let gate = ContinuationBox()
+    lazy var model: BrowserProfileImportModel = {
+        let eligibility = self.eligibility
+        return self.stub.makeModel(
+            isOnboarded: { eligibility.isOnboarded },
+            isLocalMode: { eligibility.isLocalMode })
+    }()
+
+    init() {
+        self.eligibility.isOnboarded = true
+        self.eligibility.isLocalMode = true
+    }
+
+    func armStatusResponse() {
+        self.stub.beforeStatusResponse = {
+            await withCheckedContinuation { self.gate.continuation = $0 }
+        }
+    }
+
+    func startForcedRefresh() async -> Task<BrowserProfileImportModel.ForceRefreshOutcome, Never> {
+        self.armStatusResponse()
+        let task = Task { await self.model.refresh(force: true) }
+        while self.gate.continuation == nil {
+            await Task.yield()
+        }
+        return task
+    }
+
+    func startAutomaticRefresh() async -> Task<Bool, Never> {
+        self.armStatusResponse()
+        let task = Task { await self.model.requestAutomaticOfferIfEligible() }
+        while self.gate.continuation == nil {
+            await Task.yield()
+        }
+        return task
+    }
+
+    func switchToRemote() {
+        self.eligibility.isLocalMode = false
+        self.model.handleConnectionModeChange()
+    }
+
+    func resumeStatusResponse() {
+        let continuation = self.gate.continuation
+        self.gate.continuation = nil
+        continuation?.resume()
+    }
+}
+
+@MainActor
+struct BrowserProfileImportModeRaceTests {
+    private func expectLocalModeUnavailable(_ outcome: BrowserProfileImportModel.ForceRefreshOutcome) {
+        #expect(outcome == .unavailable(
+            title: "Browser import requires Local mode",
+            message: "Switch this Mac app to a local Gateway before importing browser cookies."))
+    }
+
+    @Test("F05-01 Remote preflight never requests status")
+    func f05RemotePreflight() async {
+        let fixture = BrowserImportModeRaceFixture()
+        fixture.switchToRemote()
+        let outcome = await fixture.model.refresh(force: true)
+        self.expectLocalModeUnavailable(outcome)
+        #expect(fixture.model.phase == .hidden)
+        #expect(fixture.stub.requests.isEmpty)
+    }
+
+    @Test("F05-02 Local forced refresh still offers")
+    func f05LocalForcedOffer() async {
+        let fixture = BrowserImportModeRaceFixture()
+        let outcome = await fixture.model.refresh(force: true)
+        #expect(outcome == .offering)
+        guard case .offering = fixture.model.phase else {
+            Issue.record("expected an offer in Local mode")
+            return
+        }
+        #expect(fixture.stub.requests(for: "/system-profile-import/status").count == 1)
+    }
+
+    @Test("F05-03 Local to Remote during forced status hides an importable offer")
+    func f05ForcedImportableStatusAfterRemote() async {
+        let fixture = BrowserImportModeRaceFixture()
+        let request = await fixture.startForcedRefresh()
+        fixture.switchToRemote()
+        fixture.resumeStatusResponse()
+        self.expectLocalModeUnavailable(await request.value)
+        #expect(fixture.model.phase == .hidden)
+        #expect(fixture.stub.requests(for: "/system-profile-import/status").count == 1)
+    }
+
+    @Test("F05-04 Local to Remote during forced disabled status reports mode")
+    func f05ForcedDisabledStatusAfterRemote() async {
+        let fixture = BrowserImportModeRaceFixture()
+        fixture.stub.statusJSON = #"{"enabled":false,"systemProfiles":[],"state":null,"suggestedTarget":"imported"}"#
+        let request = await fixture.startForcedRefresh()
+        fixture.switchToRemote()
+        fixture.resumeStatusResponse()
+        self.expectLocalModeUnavailable(await request.value)
+        #expect(fixture.model.phase == .hidden)
+    }
+
+    @Test("F05-05 Onboarding withdrawn during forced status does not offer")
+    func f05ForcedStatusAfterOnboardingWithdrawn() async {
+        let fixture = BrowserImportModeRaceFixture()
+        let request = await fixture.startForcedRefresh()
+        fixture.eligibility.isOnboarded = false
+        fixture.resumeStatusResponse()
+        self.expectLocalModeUnavailable(await request.value)
+        #expect(fixture.model.phase == .hidden)
+    }
+
+    @Test("F05-06 Local to Remote during automatic status does not offer")
+    func f05AutomaticStatusAfterRemote() async {
+        let fixture = BrowserImportModeRaceFixture()
+        let request = await fixture.startAutomaticRefresh()
+        fixture.switchToRemote()
+        fixture.resumeStatusResponse()
+        #expect(await !request.value)
+        #expect(fixture.model.phase == .hidden)
+    }
+
+    @Test("F05-07 Forced refresh of a dismissed status does not override Remote")
+    func f05ForcedDismissedStatusAfterRemote() async {
+        let fixture = BrowserImportModeRaceFixture()
+        fixture.stub.statusJSON = #"{"enabled":true,"systemProfiles":[{"browser":"chrome","id":"Default","name":"Personal","hasCookies":true}],"state":{"status":"dismissed"},"suggestedTarget":"imported"}"#
+        let request = await fixture.startForcedRefresh()
+        fixture.switchToRemote()
+        fixture.resumeStatusResponse()
+        self.expectLocalModeUnavailable(await request.value)
+        #expect(fixture.model.phase == .hidden)
+    }
+
+    @Test("F05-08 Forced status does not clobber an active Local import")
+    func f05ForcedStatusDuringImport() async {
+        let fixture = BrowserImportModeRaceFixture()
+        let request = await fixture.startForcedRefresh()
+        let profile = BrowserSystemProfile(browser: "chrome", id: "Default", name: "Personal", hasCookies: true)
+        let importing = BrowserProfileImportModel.Phase.importing(profile: profile, target: "imported")
+        fixture.model._testSetPhase(importing)
+        fixture.resumeStatusResponse()
+        #expect(await request.value == .offering)
+        #expect(fixture.model.phase == importing)
+    }
+
+    @Test("F05-09 Failed forced status after Remote never offers")
+    func f05FailedStatusAfterRemote() async {
+        let fixture = BrowserImportModeRaceFixture()
+        fixture.stub.failingPaths = ["/system-profile-import/status"]
+        let request = await fixture.startForcedRefresh()
+        fixture.switchToRemote()
+        fixture.resumeStatusResponse()
+        let outcome = await request.value
+        guard case .unavailable = outcome else {
+            Issue.record("expected an unavailable outcome")
+            return
+        }
+        #expect(fixture.model.phase == .hidden)
+    }
+
+    @Test("F05-10 A newer Remote denial cannot be undone by the first status")
+    func f05SecondRemoteDenialBeforeFirstStatus() async {
+        let fixture = BrowserImportModeRaceFixture()
+        let first = await fixture.startForcedRefresh()
+        fixture.switchToRemote()
+        let second = await fixture.model.refresh(force: true)
+        self.expectLocalModeUnavailable(second)
+        fixture.resumeStatusResponse()
+        self.expectLocalModeUnavailable(await first.value)
+        #expect(fixture.model.phase == .hidden)
+        #expect(fixture.stub.requests(for: "/system-profile-import/status").count == 1)
+    }
+}
+
+@MainActor
 struct BrowserProfileImportBannerContentTests {
     @Test func `offering banner lists distinct browsers and offers all profiles`() throws {
         let profiles = [

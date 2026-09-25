@@ -29,6 +29,26 @@ describe("realtime voice consult question helpers", () => {
     expect(matchRealtimeVoiceConsultQuestions("restart server", "check server")).toBe(false);
   });
 
+  it.each([
+    { id: "F01-01", left: "delete file", right: "undelete file", expected: false },
+    { id: "F01-02", left: "delete file", right: "redeleted file", expected: false },
+    { id: "F01-03", left: "delete file", right: "delete files", expected: false },
+    { id: "F01-04", left: "delete file", right: "delete file2", expected: false },
+    { id: "F01-05", left: "write report", right: "rewrite report", expected: false },
+    { id: "F01-06", left: "\u00e9crire rapport", right: "r\u00e9crire rapport", expected: false },
+    { id: "F01-07", left: "delete file", right: "please delete file", expected: true },
+    { id: "F01-08", left: "delete file", right: "delete file now", expected: true },
+    { id: "F01-09", left: "Delete-file?", right: "please: delete file!", expected: true },
+    {
+      id: "F01-10",
+      left: "Send me a Discord message after checking the branch",
+      right: "check branch and send Discord message",
+      expected: true,
+    },
+  ])("$id keeps consult question matching at phrase boundaries", ({ left, right, expected }) => {
+    expect(matchRealtimeVoiceConsultQuestions(left, right)).toBe(expected);
+  });
+
   it("extracts bounded speakable text from tool results", () => {
     expect(readSpeakableRealtimeVoiceToolResult({ text: " Answer " })).toBe("Answer");
     expect(readSpeakableRealtimeVoiceToolResult({ result: "Result" })).toBe("Result");

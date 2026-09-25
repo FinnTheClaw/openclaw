@@ -105,6 +105,7 @@ export function mergeExistingTaskForCreate(
       taskId: existing.taskId,
       requesterOrigin,
       lastNotifiedEventAt: currentDeliveryState?.lastNotifiedEventAt,
+      lastNotifiedEventOrdinal: currentDeliveryState?.lastNotifiedEventOrdinal,
     });
     if (!deliveryState.requesterOrigin) {
       return null;

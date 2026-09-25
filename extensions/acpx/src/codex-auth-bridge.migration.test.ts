@@ -80,6 +80,24 @@ afterEach(async () => {
 });
 
 describe("prepareAcpxCodexAuthConfig command migration", () => {
+  it("F10-10 forwards an explicit empty configured argv through the generated wrapper", async () => {
+    const root = testWorkspace.dir;
+    const stateDir = path.join(root, "state");
+    const installedBinPath = path.join(root, "codex-acp.js");
+    await fs.writeFile(installedBinPath, "console.log('ready');\n", "utf8");
+    const pluginConfig = resolveAcpxPluginConfig({
+      rawConfig: { agents: { codex: { command: 'custom-acp "" tail' } } },
+      workspaceDir: root,
+    });
+    const resolved = await prepareAcpxCodexAuthConfig({
+      pluginConfig,
+      stateDir,
+      resolveInstalledCodexAcpBinPath: async () => installedBinPath,
+    });
+    const parts = splitCommandParts(resolved.agents.codex ?? "");
+    expect(parts.slice(-3)).toStrictEqual(["custom-acp", "", "tail"]);
+  });
+
   it("migrates an explicitly configured Zed Codex ACP command to the local wrapper", async () => {
     const root = testWorkspace.dir;
     const sourceCodexHome = path.join(root, "source-codex");

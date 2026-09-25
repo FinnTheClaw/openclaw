@@ -1,6 +1,7 @@
 import { defineChannelSetupContract } from "openclaw/plugin-sdk/channel-setup";
 // Googlechat plugin module implements setup core behavior.
 import type { ChannelSetupInput } from "openclaw/plugin-sdk/channel-setup";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   createPatchedAccountSetupAdapter,
   createSetupInputPresenceValidator,
@@ -15,7 +16,32 @@ type GoogleChatSetupInput = ChannelSetupInput & {
   webhookUrl?: string;
 };
 
-export const googlechatSetupAdapter = createPatchedAccountSetupAdapter({
+export function clearDefaultGoogleChatCredentialOverrides(
+  cfg: OpenClawConfig,
+  accountId: string,
+): OpenClawConfig {
+  if (accountId !== "default") {
+    return cfg;
+  }
+  const channelConfig = cfg.channels?.googlechat;
+  const defaultAccount = channelConfig?.accounts?.default;
+  if (!defaultAccount) {
+    return cfg;
+  }
+  const { serviceAccount: _inline, serviceAccountFile: _file, ...shared } = defaultAccount;
+  return {
+    ...cfg,
+    channels: {
+      ...cfg.channels,
+      googlechat: {
+        ...channelConfig,
+        accounts: { ...channelConfig.accounts, default: shared },
+      },
+    },
+  };
+}
+
+const baseGooglechatSetupAdapter = createPatchedAccountSetupAdapter({
   channelKey: channel,
   validateInput: createSetupInputPresenceValidator({
     defaultAccountOnlyEnvError:
@@ -30,11 +56,11 @@ export const googlechatSetupAdapter = createPatchedAccountSetupAdapter({
   buildPatch: (input) => {
     const setupInput = input as GoogleChatSetupInput;
     const patch = setupInput.useEnv
-      ? {}
+      ? { serviceAccount: "", serviceAccountFile: "" }
       : setupInput.tokenFile
-        ? { serviceAccountFile: setupInput.tokenFile }
+        ? { serviceAccount: "", serviceAccountFile: setupInput.tokenFile }
         : setupInput.token
-          ? { serviceAccount: setupInput.token }
+          ? { serviceAccount: setupInput.token, serviceAccountFile: "" }
           : {};
     const audienceType = setupInput.audienceType?.trim();
     const audience = setupInput.audience?.trim();
@@ -49,6 +75,19 @@ export const googlechatSetupAdapter = createPatchedAccountSetupAdapter({
     };
   },
 });
+
+export const googlechatSetupAdapter = {
+  ...baseGooglechatSetupAdapter,
+  applyAccountConfig: (
+    params: Parameters<NonNullable<typeof baseGooglechatSetupAdapter.applyAccountConfig>>[0],
+  ) => {
+    const next = baseGooglechatSetupAdapter.applyAccountConfig!(params);
+    const input = params.input as GoogleChatSetupInput;
+    return input.useEnv || input.tokenFile || input.token
+      ? clearDefaultGoogleChatCredentialOverrides(next, params.accountId)
+      : next;
+  },
+};
 
 export const googlechatSetupContract = defineChannelSetupContract({
   fields: {

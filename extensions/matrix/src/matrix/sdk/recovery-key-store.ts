@@ -35,6 +35,10 @@ export function isRepairableSecretStorageAccessError(err: unknown): boolean {
   return false;
 }
 
+export class MatrixRecoveryKeyPersistenceError extends Error {
+  override name = "MatrixRecoveryKeyPersistenceError";
+}
+
 export class MatrixRecoveryKeyStore {
   private readonly secretStorageKeyCache = new Map<
     string,
@@ -247,12 +251,15 @@ export class MatrixRecoveryKeyStore {
     const privateKey = new Uint8Array(Buffer.from(staged.privateKeyBase64, "base64"));
     const keyId =
       typeof params?.keyId === "string" && params.keyId.trim() ? params.keyId.trim() : staged.keyId;
-    this.saveRecoveryKeyToDisk({
-      keyId,
-      keyInfo: params?.keyInfo ?? staged.keyInfo,
-      privateKey,
-      encodedPrivateKey: staged.encodedPrivateKey,
-    });
+    this.saveRecoveryKeyToDisk(
+      {
+        keyId,
+        keyInfo: params?.keyInfo ?? staged.keyInfo,
+        privateKey,
+        encodedPrivateKey: staged.encodedPrivateKey,
+      },
+      { strict: true },
+    );
     this.clearStagedRecoveryKeyTracking();
     return this.getRecoveryKeySummary();
   }
@@ -455,8 +462,16 @@ export class MatrixRecoveryKeyStore {
     return null;
   }
 
-  private saveRecoveryKeyToDisk(params: MatrixGeneratedSecretStorageKey): void {
+  private saveRecoveryKeyToDisk(
+    params: MatrixGeneratedSecretStorageKey,
+    options: { strict?: boolean } = {},
+  ): void {
     if (!this.recoveryKeyPath) {
+      if (options.strict) {
+        throw new MatrixRecoveryKeyPersistenceError(
+          "Failed to persist Matrix recovery key: no local state path",
+        );
+      }
       return;
     }
     try {
@@ -478,6 +493,12 @@ export class MatrixRecoveryKeyStore {
         payload,
       });
     } catch (err) {
+      if (options.strict) {
+        throw new MatrixRecoveryKeyPersistenceError(
+          "Failed to persist Matrix recovery key to local state",
+          { cause: err },
+        );
+      }
       LogService.warn("MatrixClientLite", "Failed to persist recovery key:", err);
     }
   }

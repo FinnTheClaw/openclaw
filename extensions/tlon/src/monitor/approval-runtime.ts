@@ -324,39 +324,47 @@ export function createTlonApprovalRuntime(params: {
               }, 2000);
             } catch (err) {
               runtime.error?.(`[tlon] Failed to join group ${approval.groupFlag}: ${String(err)}`);
+              accessGrantSaved = false;
             }
+          } else {
+            accessGrantSaved = false;
           }
           break;
       }
 
-      if (approval.type === "dm" || approval.type === "channel") {
-        if (!accessGrantSaved) {
-          await sendOwnerNotification(
-            `Failed to approve ${approval.requestingShip}: access grant was not saved. The request remains pending; retry approval.`,
-          );
-          return true;
-        }
-        if (approval.originalMessage) {
-          runtime.log?.(
-            `[tlon] Processing original message from ${approval.requestingShip} after approval`,
-          );
-          await processApprovedMessage(approval);
-        }
-        const pendingBeforeRemoval = getPendingApprovals();
-        setPendingApprovals(removePendingApproval(pendingBeforeRemoval, approval.id));
-        try {
-          await savePendingApprovals(true);
-        } catch {
-          setPendingApprovals(pendingBeforeRemoval);
-          await sendOwnerNotification(
-            `Access grant for ${approval.requestingShip} was saved, but the pending request could not be cleared. The request remains pending${approval.originalMessage ? " and the original message may already have been processed; do not retry until it is cleared." : "; retry after settings recover."}`,
-          );
-          return true;
-        }
-        await sendOwnerNotification(formatApprovalConfirmation(approval, "approve"));
+      if (!accessGrantSaved) {
+        await sendOwnerNotification(
+          approval.type === "group"
+            ? `Failed to join group for ${approval.requestingShip}. The request remains pending; retry approval.`
+            : `Failed to approve ${approval.requestingShip}: access grant was not saved. The request remains pending; retry approval.`,
+        );
         return true;
       }
-      await sendOwnerNotification(formatApprovalConfirmation(approval, "approve"));
+      if (approval.type !== "group" && approval.originalMessage) {
+        runtime.log?.(
+          `[tlon] Processing original message from ${approval.requestingShip} after approval`,
+        );
+        await processApprovedMessage(approval);
+      }
+      const pendingBeforeRemoval = getPendingApprovals();
+      setPendingApprovals(removePendingApproval(pendingBeforeRemoval, approval.id));
+      try {
+        await savePendingApprovals(true);
+      } catch {
+        setPendingApprovals(pendingBeforeRemoval);
+        await sendOwnerNotification(
+          approval.type === "group"
+            ? `Group join for ${approval.requestingShip} may have succeeded, but the pending request could not be cleared. Verify group membership before retrying.`
+            : `Access grant for ${approval.requestingShip} was saved, but the pending request could not be cleared. The request remains pending${approval.originalMessage ? " and the original message may already have been processed; do not retry until it is cleared." : "; retry after settings recover."}`,
+        );
+        return true;
+      }
+      await sendOwnerNotification(
+        approval.type === "group"
+          ? `Joined group ${approval.groupFlag} after approval from ${approval.requestingShip}.`
+          : formatApprovalConfirmation(approval, "approve"),
+      );
+      return true;
     } else if (parsed.action === "block") {
       await blockShip(approval.requestingShip);
       await sendOwnerNotification(formatApprovalConfirmation(approval, "block"));

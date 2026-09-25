@@ -197,8 +197,14 @@ export class UrbitSSEClient {
     this.lastHeardEventId = -1;
     this.lastAcknowledgedEventId = -1;
     await this.createCurrentChannel();
+    if (this.aborted) {
+      return;
+    }
 
     await this.openStream();
+    if (this.aborted) {
+      return;
+    }
     this.isConnected = true;
     this.reconnectAttempts = 0;
   }
@@ -229,6 +235,11 @@ export class UrbitSSEClient {
         signal: controller.signal,
         auditContext: "tlon-urbit-sse-stream",
       });
+    } catch (error) {
+      if (this.streamController === controller) {
+        this.streamController = null;
+      }
+      throw error;
     } finally {
       // The deadline only covers waiting for response headers. Always disarm it
       // before response handling so failed connects cannot retain the process.
@@ -236,6 +247,15 @@ export class UrbitSSEClient {
     }
 
     const { response, release } = stream;
+    // A custom fetch may resolve after abort. Do not install or process a
+    // stream whose owner stopped while headers were pending.
+    if (this.aborted || controller.signal.aborted) {
+      if (this.streamController === controller) {
+        this.streamController = null;
+      }
+      await release();
+      return;
+    }
     this.streamRelease = release;
 
     if (!response.ok) {
@@ -502,12 +522,21 @@ export class UrbitSSEClient {
       if (this.onReconnect) {
         await this.onReconnect(this);
       }
+      if (this.aborted || !this.autoReconnect) {
+        return;
+      }
 
       try {
         // Reopen the same Eyre channel. Its queue retains every unacked event;
         // switching ids here would discard the cursor and strand failed admission.
         await this.openStream();
+        if (this.aborted || !this.autoReconnect) {
+          return;
+        }
       } catch (error) {
+        if (this.aborted || !this.autoReconnect) {
+          return;
+        }
         if (!(error instanceof UrbitHttpError) || error.status !== 404) {
           throw error;
         }
@@ -515,12 +544,21 @@ export class UrbitSSEClient {
         // permits losing the old cursor and rebuilding every subscription.
         this.resetChannelIdentity();
         await this.createCurrentChannel();
+        if (this.aborted || !this.autoReconnect) {
+          return;
+        }
         await this.openStream();
+        if (this.aborted || !this.autoReconnect) {
+          return;
+        }
       }
       this.isConnected = true;
       this.reconnectAttempts = 0;
       this.logger.log?.("[SSE] Reconnection successful!");
     } catch (error) {
+      if (this.aborted || !this.autoReconnect) {
+        return;
+      }
       this.logger.error?.(`[SSE] Reconnection failed: ${String(error)}`);
       await this.attemptReconnect();
     }

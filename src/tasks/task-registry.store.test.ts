@@ -196,8 +196,48 @@ describe("task-registry store runtime", () => {
       },
     );
   });
-  let testState: OpenClawTestState;
+  it("F02-10 reports missing ordinal columns read-only and migrates existing rows on writable open", async () => {
+    await withOpenClawTestState(
+      { layout: "state-only", prefix: "openclaw-task-store-f02-legacy-" },
+      async () => {
+        const database = openOpenClawStateDatabase();
+        const task = createStoredTask();
+        saveTaskRegistryStateToSqlite({
+          tasks: new Map([[task.taskId, task]]),
+          deliveryStates: new Map([
+            [task.taskId, { taskId: task.taskId, lastNotifiedEventAt: 100 }],
+          ]),
+        });
+        database.db.exec("ALTER TABLE task_runs DROP COLUMN last_state_event_ordinal");
+        database.db.exec("ALTER TABLE task_delivery_state DROP COLUMN last_notified_event_ordinal");
+        closeOpenClawStateDatabase();
 
+        expect(loadTaskRegistryStateFromSqliteReadOnlyResult()).toEqual({
+          state: "migration-required",
+          snapshot: { tasks: new Map(), deliveryStates: new Map() },
+        });
+        const reopened = openOpenClawStateDatabase();
+        const restored = loadTaskRegistryStateFromSqlite();
+        expect(restored.tasks.get(task.taskId)?.lastStateEventOrdinal).toBeUndefined();
+        expect(restored.deliveryStates.get(task.taskId)?.lastNotifiedEventAt).toBe(100);
+        expect(restored.deliveryStates.get(task.taskId)?.lastNotifiedEventOrdinal).toBeUndefined();
+        expect(
+          reopened.db
+            .prepare("PRAGMA table_info(task_runs)")
+            .all()
+            .some((column) => column.name === "last_state_event_ordinal"),
+        ).toBe(true);
+        expect(
+          reopened.db
+            .prepare("PRAGMA table_info(task_delivery_state)")
+            .all()
+            .some((column) => column.name === "last_notified_event_ordinal"),
+        ).toBe(true);
+      },
+    );
+  });
+
+  let testState: OpenClawTestState;
   beforeAll(async () => {
     testState = await createOpenClawTestState({
       layout: "state-only",

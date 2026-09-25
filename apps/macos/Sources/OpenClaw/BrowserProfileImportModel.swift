@@ -156,19 +156,18 @@ final class BrowserProfileImportModel {
         -> (outcome: ForceRefreshOutcome, didApply: Bool)
     {
         guard self.isOnboarded(), self.isLocalMode() else {
-            self.setPhase(.hidden)
-            return (
-                .unavailable(
-                    title: String(localized: "Browser import requires Local mode"),
-                    message: String(
-                        localized: "Switch this Mac app to a local Gateway before importing browser cookies.")),
-                false)
+            return self.localModeUnavailable()
         }
         let generation = self.phaseGeneration
         do {
             let status: BrowserProfileImportStatus = try await self.request(
                 method: "GET",
                 path: "/system-profile-import/status")
+            // A status request may finish after onboarding or Local mode changed.
+            // Forced refreshes must not restore an offer hidden by that change.
+            guard self.isOnboarded(), self.isLocalMode() else {
+                return self.localModeUnavailable()
+            }
             // The status await interleaves with user actions. Idle polls apply
             // only if nothing changed since they started (a dismissal mid-poll
             // must stay dismissed); a forced refresh wins over everything
@@ -207,6 +206,16 @@ final class BrowserProfileImportModel {
                     message: error.localizedDescription),
                 false)
         }
+    }
+
+    private func localModeUnavailable() -> (outcome: ForceRefreshOutcome, didApply: Bool) {
+        self.setPhase(.hidden)
+        return (
+            .unavailable(
+                title: String(localized: "Browser import requires Local mode"),
+                message: String(
+                    localized: "Switch this Mac app to a local Gateway before importing browser cookies.")),
+            false)
     }
 
     func importProfile(_ profile: BrowserSystemProfile) async {

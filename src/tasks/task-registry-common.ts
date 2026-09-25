@@ -283,12 +283,14 @@ export function resolveTaskLifecycleTerminalError(params: {
 export function appendTaskEvent(event: {
   at: number;
   kind: TaskEventKind;
+  ordinal?: number;
   summary?: string | null;
 }): TaskEventRecord {
   const summary = normalizeTaskSummary(event.summary);
   return {
     at: event.at,
     kind: event.kind,
+    ...(event.ordinal !== undefined ? { ordinal: event.ordinal } : {}),
     ...(summary ? { summary } : {}),
   };
 }

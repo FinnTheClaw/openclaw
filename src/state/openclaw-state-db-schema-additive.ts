@@ -503,6 +503,8 @@ export function ensureAdditiveStateColumns(db: DatabaseSync): void {
   ensureColumn(db, "task_runs", "tool_use_count INTEGER");
   ensureColumn(db, "task_runs", "last_tool_name TEXT");
   ensureColumn(db, "task_runs", "detail_json TEXT");
+  ensureColumn(db, "task_runs", "last_state_event_ordinal INTEGER");
+  ensureColumn(db, "task_delivery_state", "last_notified_event_ordinal INTEGER");
   repairLegacySubagentSuspensionReasons(db);
   repairLegacySubagentExecutionPayloads(db);
   repairLegacySubagentTaskBindings(db);

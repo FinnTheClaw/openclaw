@@ -1,5 +1,8 @@
 // Feishu helper module supports config schema behavior.
-import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+import {
+  hasConfiguredAccountValue,
+  normalizeAccountId,
+} from "openclaw/plugin-sdk/account-resolution";
 import {
   ContextVisibilityModeSchema,
   DmPolicySchema,
@@ -339,7 +342,11 @@ export const FeishuConfigSchema = buildMultiAccountChannelSchema(FeishuConfigSch
   const defaultConnectionMode = value.connectionMode ?? "websocket";
   const defaultVerificationTokenConfigured = hasConfiguredSecretInput(value.verificationToken);
   const defaultEncryptKeyConfigured = hasConfiguredSecretInput(value.encryptKey);
-  if (defaultConnectionMode === "webhook") {
+  // Only top-level app credentials create an implicit default account. Named
+  // accounts validate their own effective webhook secrets below.
+  const hasImplicitDefaultAccount =
+    hasConfiguredAccountValue(value.appId) && hasConfiguredAccountValue(value.appSecret);
+  if (defaultConnectionMode === "webhook" && hasImplicitDefaultAccount) {
     if (!defaultVerificationTokenConfigured) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

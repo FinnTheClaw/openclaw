@@ -1308,6 +1308,7 @@ export interface SubagentRuns {
 
 export interface TaskDeliveryState {
   last_notified_event_at: number | null;
+  last_notified_event_ordinal: number | null;
   requester_origin_json: string | null;
   task_id: string;
 }
@@ -1323,6 +1324,7 @@ export interface TaskRuns {
   error: string | null;
   label: string | null;
   last_event_at: number | null;
+  last_state_event_ordinal: number | null;
   last_tool_name: string | null;
   notify_policy: string;
   owner_key: string;

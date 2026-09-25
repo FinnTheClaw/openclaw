@@ -17,6 +17,7 @@ import {
   normalizeStringifiedOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveDefaultGoogleChatAccountId, resolveGoogleChatAccount } from "./accounts.js";
+import { clearDefaultGoogleChatCredentialOverrides } from "./setup-core.js";
 
 const t = createSetupTranslator();
 
@@ -82,12 +83,18 @@ function createServiceAccountTextInput(params: {
     validate: ({ value }) => (normalizeStringifiedOptionalString(value) ? undefined : "Required"),
     normalizeValue: ({ value }) => normalizeStringifiedOptionalString(value) ?? "",
     applySet: async ({ cfg, accountId, value }) =>
-      applySetupAccountConfigPatch({
-        cfg,
-        channelKey: channel,
+      clearDefaultGoogleChatCredentialOverrides(
+        applySetupAccountConfigPatch({
+          cfg,
+          channelKey: channel,
+          accountId,
+          patch: {
+            serviceAccount: params.patchKey === "serviceAccount" ? value : "",
+            serviceAccountFile: params.patchKey === "serviceAccountFile" ? value : "",
+          },
+        }),
         accountId,
-        patch: { [params.patchKey]: value },
-      }),
+      ),
   };
 }
 
@@ -126,12 +133,15 @@ export const googlechatSetupWizard: ChannelSetupWizard = {
       });
       if (useEnv) {
         return {
-          cfg: applySetupAccountConfigPatch({
-            cfg,
-            channelKey: channel,
+          cfg: clearDefaultGoogleChatCredentialOverrides(
+            applySetupAccountConfigPatch({
+              cfg,
+              channelKey: channel,
+              accountId,
+              patch: { serviceAccount: "", serviceAccountFile: "" },
+            }),
             accountId,
-            patch: {},
-          }),
+          ),
           credentialValues: {
             ...credentialValues,
             [USE_ENV_FLAG]: "1",

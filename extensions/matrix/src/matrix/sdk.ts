@@ -27,6 +27,7 @@ import {
 import { MatrixClientVerification } from "./sdk/client-verification.js";
 import type { MatrixCryptoBootstrapResult } from "./sdk/crypto-bootstrap.js";
 import { ConsoleLogger, LogService } from "./sdk/logger.js";
+import { MatrixRecoveryKeyPersistenceError } from "./sdk/recovery-key-store.js";
 import type { MatrixCryptoBootstrapApi } from "./sdk/types.js";
 
 export { ConsoleLogger, LogService };
@@ -123,9 +124,15 @@ export class MatrixClient extends MatrixClientVerification {
       const recoveryKeyAccepted = backupUsable;
       if (!status.verified) {
         if (recoveryKeyAccepted) {
-          this.recoveryKeyStore.commitStagedRecoveryKey({
-            keyId: stagedKeyId,
-          });
+          try {
+            this.recoveryKeyStore.commitStagedRecoveryKey({ keyId: stagedKeyId });
+          } catch (err) {
+            return await fail(formatErrorMessage(err), {
+              recoveryKeyAccepted,
+              backupUsable,
+              deviceOwnerVerified: false,
+            });
+          }
         } else {
           this.recoveryKeyStore.discardStagedRecoveryKey();
         }
@@ -150,9 +157,15 @@ export class MatrixClient extends MatrixClientVerification {
           ...status,
         };
       }
-      this.recoveryKeyStore.commitStagedRecoveryKey({
-        keyId: stagedKeyId,
-      });
+      try {
+        this.recoveryKeyStore.commitStagedRecoveryKey({ keyId: stagedKeyId });
+      } catch (err) {
+        return await fail(formatErrorMessage(err), {
+          recoveryKeyAccepted: true,
+          backupUsable,
+          deviceOwnerVerified: true,
+        });
+      }
       return {
         success: true,
         recoveryKeyAccepted: true,
@@ -260,7 +273,9 @@ export class MatrixClient extends MatrixClientVerification {
         ...committedStatus,
       };
     } catch (err) {
-      this.recoveryKeyStore.discardStagedRecoveryKey();
+      if (!(err instanceof MatrixRecoveryKeyPersistenceError)) {
+        this.recoveryKeyStore.discardStagedRecoveryKey();
+      }
       return await fail(formatErrorMessage(err));
     }
   }
@@ -335,7 +350,9 @@ export class MatrixClient extends MatrixClientVerification {
         backup: finalBackup,
       };
     } catch (err) {
-      this.recoveryKeyStore.discardStagedRecoveryKey();
+      if (!(err instanceof MatrixRecoveryKeyPersistenceError)) {
+        this.recoveryKeyStore.discardStagedRecoveryKey();
+      }
       return await fail(formatErrorMessage(err));
     }
   }
@@ -528,17 +545,24 @@ export class MatrixClient extends MatrixClientVerification {
             requireServerBackup: true,
           })
         : null;
-    const success = verificationError === null && backupError === null;
-    if (success) {
-      this.recoveryKeyStore.commitStagedRecoveryKey({
-        keyId: await this.resolveDefaultSecretStorageKeyId(
-          this.client.getCrypto() as MatrixCryptoBootstrapApi | undefined,
-        ),
-      });
+    const ready = verificationError === null && backupError === null;
+    let persistenceError: string | undefined;
+    if (ready) {
+      try {
+        this.recoveryKeyStore.commitStagedRecoveryKey({
+          keyId: await this.resolveDefaultSecretStorageKeyId(
+            this.client.getCrypto() as MatrixCryptoBootstrapApi | undefined,
+          ),
+        });
+      } catch (err) {
+        persistenceError = formatErrorMessage(err);
+      }
     } else {
       this.recoveryKeyStore.discardStagedRecoveryKey();
     }
-    const error = success ? undefined : (backupError ?? verificationError ?? undefined);
+    const success = ready && !persistenceError;
+    const error =
+      persistenceError ?? (success ? undefined : (backupError ?? verificationError ?? undefined));
     return {
       success,
       error,

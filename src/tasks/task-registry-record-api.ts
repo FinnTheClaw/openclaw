@@ -405,9 +405,14 @@ export function updateTaskStateByRunId(params: {
     const shouldAppendEvent =
       (params.status && params.status !== current.status) ||
       Boolean(normalizeTaskSummary(params.eventSummary));
+    const eventOrdinal = shouldAppendEvent ? (current.lastStateEventOrdinal ?? 0) + 1 : undefined;
+    if (eventOrdinal !== undefined) {
+      patch.lastStateEventOrdinal = eventOrdinal;
+    }
     const nextEvent = shouldAppendEvent
       ? appendTaskEvent({
           at: eventAt,
+          ordinal: eventOrdinal,
           kind:
             params.status && normalizeTaskStatus(params.status) !== current.status
               ? normalizeTaskStatus(params.status)

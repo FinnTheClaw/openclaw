@@ -92,6 +92,7 @@ const TASK_RUN_SELECT_COLUMNS = [
   "started_at",
   "ended_at",
   "last_event_at",
+  "last_state_event_ordinal",
   "cleanup_after",
   "tool_use_count",
   "last_tool_name",
@@ -106,6 +107,7 @@ const TASK_DELIVERY_STATE_SELECT_COLUMNS = [
   "task_id",
   "requester_origin_json",
   "last_notified_event_at",
+  "last_notified_event_ordinal",
 ] as const;
 
 type TaskRegistryReadOnlyLoadResult = {
@@ -123,6 +125,7 @@ function rowToTaskRecord(row: TaskRegistryRow): TaskRecord {
   const startedAt = normalizeSqliteNumber(row.started_at);
   const endedAt = normalizeSqliteNumber(row.ended_at);
   const lastEventAt = normalizeSqliteNumber(row.last_event_at);
+  const lastStateEventOrdinal = normalizeSqliteNumber(row.last_state_event_ordinal);
   const cleanupAfter = normalizeSqliteNumber(row.cleanup_after);
   const toolUseCount = normalizeSqliteNumber(row.tool_use_count);
   const scopeKind = parseTaskScopeKind(row.scope_kind);
@@ -154,6 +157,7 @@ function rowToTaskRecord(row: TaskRegistryRow): TaskRecord {
     ...(startedAt != null ? { startedAt } : {}),
     ...(endedAt != null ? { endedAt } : {}),
     ...(lastEventAt != null ? { lastEventAt } : {}),
+    ...(lastStateEventOrdinal != null ? { lastStateEventOrdinal } : {}),
     ...(cleanupAfter != null ? { cleanupAfter } : {}),
     ...(toolUseCount != null ? { toolUseCount } : {}),
     ...(row.last_tool_name ? { lastToolName: row.last_tool_name } : {}),
@@ -168,10 +172,12 @@ function rowToTaskRecord(row: TaskRegistryRow): TaskRecord {
 function rowToTaskDeliveryState(row: TaskDeliveryStateRow): TaskDeliveryState {
   const requesterOrigin = parseDeliveryContextJson(row.requester_origin_json);
   const lastNotifiedEventAt = normalizeSqliteNumber(row.last_notified_event_at);
+  const lastNotifiedEventOrdinal = normalizeSqliteNumber(row.last_notified_event_ordinal);
   return {
     taskId: row.task_id,
     ...(requesterOrigin ? { requesterOrigin } : {}),
     ...(lastNotifiedEventAt != null ? { lastNotifiedEventAt } : {}),
+    ...(lastNotifiedEventOrdinal != null ? { lastNotifiedEventOrdinal } : {}),
   };
 }
 
@@ -203,6 +209,7 @@ export function bindTaskRecord(record: TaskRecord): BoundTaskRecord {
     started_at: normalized.startedAt ?? null,
     ended_at: normalized.endedAt ?? null,
     last_event_at: normalized.lastEventAt ?? null,
+    last_state_event_ordinal: normalized.lastStateEventOrdinal ?? null,
     cleanup_after: normalized.cleanupAfter ?? null,
     tool_use_count: normalized.toolUseCount ?? null,
     last_tool_name: normalized.lastToolName ?? null,
@@ -219,6 +226,7 @@ function bindTaskDeliveryState(state: TaskDeliveryState): Insertable<TaskDeliver
     task_id: state.taskId,
     requester_origin_json: serializeJson(state.requesterOrigin),
     last_notified_event_at: state.lastNotifiedEventAt ?? null,
+    last_notified_event_ordinal: state.lastNotifiedEventOrdinal ?? null,
   };
 }
 
@@ -345,6 +353,7 @@ function replaceTaskDeliveryStateRow(
         conflict.column("task_id").doUpdateSet({
           requester_origin_json: (eb) => eb.ref("excluded.requester_origin_json"),
           last_notified_event_at: (eb) => eb.ref("excluded.last_notified_event_at"),
+          last_notified_event_ordinal: (eb) => eb.ref("excluded.last_notified_event_ordinal"),
         }),
       ),
   );

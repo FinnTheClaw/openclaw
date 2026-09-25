@@ -261,7 +261,7 @@ export const SlackConfigSchema = SlackAccountSchema.safeExtend({
 
   const baseMode = value.mode ?? "socket";
   const accountIds = value.accounts ? Object.keys(value.accounts) : [];
-  if (!value.accounts) {
+  if (accountIds.length === 0) {
     if (baseMode === "relay") {
       requireRelayConfig(value.relay, ["relay"]);
     }

@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-paths";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveTelegramAccountOwnerAgentId } from "./account-owner.js";
 
 export const TTL_MS = 24 * 60 * 60 * 1000;
@@ -77,17 +78,20 @@ function resolveSentMessageStorePath(
 // runtime store is authoritative once doctor has migrated.
 function readLegacySentMessages(filePath: string): Map<string, Map<string, number>> {
   const store = new Map<string, Map<string, number>>();
-  let parsed: Record<string, Record<string, number>>;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Record<
-      string,
-      Record<string, number>
-    >;
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
   } catch {
+    return store;
+  }
+  if (!isRecord(parsed)) {
     return store;
   }
   const now = Date.now();
   for (const [chatId, entry] of Object.entries(parsed)) {
+    if (!isRecord(entry)) {
+      continue;
+    }
     const messages = new Map<string, number>();
     for (const [messageId, timestamp] of Object.entries(entry)) {
       if (typeof timestamp === "number" && Number.isFinite(timestamp) && now - timestamp < TTL_MS) {

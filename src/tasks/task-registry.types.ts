@@ -124,6 +124,7 @@ export type TaskEventKind = TaskStatus | "progress";
 export type TaskEventRecord = {
   at: number;
   kind: TaskEventKind;
+  ordinal?: number;
   summary?: string;
 };
 
@@ -131,6 +132,7 @@ export type TaskDeliveryState = {
   taskId: string;
   requesterOrigin?: DeliveryContext;
   lastNotifiedEventAt?: number;
+  lastNotifiedEventOrdinal?: number;
 };
 
 export type TaskRecord = {
@@ -158,6 +160,7 @@ export type TaskRecord = {
   startedAt?: number;
   endedAt?: number;
   lastEventAt?: number;
+  lastStateEventOrdinal?: number;
   cleanupAfter?: number;
   /** Tool invocations observed on this run's agent-event stream. */
   toolUseCount?: number;
