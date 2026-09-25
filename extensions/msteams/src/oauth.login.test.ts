@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MSTeamsDelegatedOAuthContext } from "./oauth.shared.js";
 
 const control = vi.hoisted(() => ({ port: 0, failure: "" }));
@@ -80,8 +80,10 @@ const params = { tenantId: "tenant", clientId: "client", clientSecret: "secret" 
 let login: typeof import("./oauth.js").loginMSTeamsDelegated;
 let occupied: Server | undefined;
 
-beforeEach(async () => {
+beforeAll(async () => {
   control.port = await freePort();
+});
+beforeEach(async () => {
   control.failure = "";
   exchange.mockReset().mockImplementation(async ({ code }: { code: string }) => ({
     accessToken: code,

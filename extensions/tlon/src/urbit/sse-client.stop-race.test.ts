@@ -260,9 +260,17 @@ describe("UrbitSSEClient stop during reconnect await edges", () => {
     await client.subscribe({ app: "chat", path: "/foo" });
     await client.attemptReconnect();
     expect(proof.getCount()).toBe(2);
-    expect(proof.requests.filter((request) => request.startsWith("PUT "))).toHaveLength(1);
+    expect(proof.requests.filter((request) => request.startsWith("PUT "))).toHaveLength(2);
     expect(JSON.parse(proof.putBodies[0] ?? "null")).toEqual([
       { id: 1, action: "subscribe", ship: "zod", app: "chat", path: "/foo" },
+    ]);
+    expect(JSON.parse(proof.putBodies[1] ?? "null")).toEqual([
+      expect.objectContaining({
+        action: "poke",
+        ship: "zod",
+        app: "hood",
+        mark: "helm-hi",
+      }),
     ]);
     expect(client.channelId).not.toBe(channelId);
     expect(client.isConnected).toBe(true);

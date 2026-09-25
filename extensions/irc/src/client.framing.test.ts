@@ -14,11 +14,22 @@ type FramingPeer = {
   messages: string[];
 };
 
-async function withFramingPeer(run: (peer: FramingPeer) => Promise<void>): Promise<void> {
+async function withFramingPeer(
+  run: (peer: FramingPeer) => Promise<void>,
+  options?: { expectPeerReset?: boolean },
+): Promise<void> {
   let acceptedSocket: net.Socket | undefined;
   const outgoing: string[] = [];
+  const unexpectedServerErrors: Error[] = [];
   const server = await startIrcTestServer((socket) => {
     acceptedSocket = socket;
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      // The overlong-frame cases deliberately destroy the client socket.
+      if (options?.expectPeerReset && error.code === "ECONNRESET") {
+        return;
+      }
+      unexpectedServerErrors.push(error);
+    });
     onIrcTestLine(socket, (line) => {
       outgoing.push(line);
       if (line.startsWith("USER ")) {
@@ -52,6 +63,7 @@ async function withFramingPeer(run: (peer: FramingPeer) => Promise<void>): Promi
     client?.close();
     await server.close();
   }
+  expect(unexpectedServerErrors).toEqual([]);
 }
 
 function taggedPingLine(totalBytes: number, multibyte = false): string {
@@ -95,18 +107,24 @@ describe("IRC inbound framing loopback pack", () => {
   });
 
   it("[IRC-03] rejects a completed line of 8704 bytes", async () => {
-    await withFramingPeer(async ({ socket, lines, errors }) => {
-      socket.write(Buffer.from(taggedPingLine(MAX_INBOUND_LINE_BYTES + 1)));
-      await expectEventually(() => expect(errors[0]?.message).toMatch(/8703-byte limit/));
-      expect(lines).not.toContain("PING :tag");
-    });
+    await withFramingPeer(
+      async ({ socket, lines, errors }) => {
+        socket.write(Buffer.from(taggedPingLine(MAX_INBOUND_LINE_BYTES + 1)));
+        await expectEventually(() => expect(errors[0]?.message).toMatch(/8703-byte limit/));
+        expect(lines).not.toContain("PING :tag");
+      },
+      { expectPeerReset: true },
+    );
   });
 
   it("[IRC-04] rejects an oversized unterminated tail", async () => {
-    await withFramingPeer(async ({ socket, errors }) => {
-      socket.write(Buffer.alloc(100_000, 0x61));
-      await expectEventually(() => expect(errors[0]?.message).toMatch(/8703-byte limit/));
-    });
+    await withFramingPeer(
+      async ({ socket, errors }) => {
+        socket.write(Buffer.alloc(100_000, 0x61));
+        await expectEventually(() => expect(errors[0]?.message).toMatch(/8703-byte limit/));
+      },
+      { expectPeerReset: true },
+    );
   });
 
   it("[IRC-05] accepts many coalesced valid lines even when the chunk exceeds 8703 bytes", async () => {
@@ -141,13 +159,16 @@ describe("IRC inbound framing loopback pack", () => {
   });
 
   it("[IRC-08] rejects multibyte UTF-8 one byte over the boundary", async () => {
-    await withFramingPeer(async ({ socket, outgoing, errors }) => {
-      socket.write(
-        Buffer.from(taggedPingLine(MAX_INBOUND_LINE_BYTES + 1, true) + "PING :later\r\n"),
-      );
-      await expectEventually(() => expect(errors[0]?.message).toMatch(/8703-byte limit/));
-      expect(outgoing).not.toContain("PONG :later");
-    });
+    await withFramingPeer(
+      async ({ socket, outgoing, errors }) => {
+        socket.write(
+          Buffer.from(taggedPingLine(MAX_INBOUND_LINE_BYTES + 1, true) + "PING :later\r\n"),
+        );
+        await expectEventually(() => expect(errors[0]?.message).toMatch(/8703-byte limit/));
+        expect(outgoing).not.toContain("PONG :later");
+      },
+      { expectPeerReset: true },
+    );
   });
 
   it("[IRC-09] preserves a tagged raw line without changing command parsing", async () => {

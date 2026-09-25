@@ -153,11 +153,20 @@ async function wakeUrbitChannel(deps: UrbitChannelDeps): Promise<void> {
 
 export async function ensureUrbitChannelOpen(
   deps: UrbitChannelDeps,
-  params: { createBody: unknown; createAuditContext: string },
+  params: {
+    createBody: unknown;
+    createAuditContext: string;
+    shouldContinue?: () => boolean;
+  },
 ): Promise<void> {
   await createUrbitChannel(deps, {
     body: params.createBody,
     auditContext: params.createAuditContext,
   });
+  // Creation and activation are separate HTTP requests. The owning monitor
+  // may stop while creation is in flight; do not wake its abandoned channel.
+  if (params.shouldContinue?.() === false) {
+    return;
+  }
   await wakeUrbitChannel(deps);
 }

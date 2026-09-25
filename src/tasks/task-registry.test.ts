@@ -4432,6 +4432,7 @@ describe("task-registry", () => {
         runId: "run-f02-01",
         task: "Same-time state changes",
         status: "queued",
+        deliveryStatus: "pending",
         notifyPolicy: "state_changes",
       });
       markTaskRunningByRunId({ runId: "run-f02-01", lastEventAt: 250, eventSummary: "Started." });
@@ -4459,6 +4460,7 @@ describe("task-registry", () => {
         childSessionKey: "agent:codex:acp:f02-02",
         runId: "run-f02-02",
         task: "Distinct progress",
+        deliveryStatus: "pending",
         notifyPolicy: "state_changes",
       });
       recordTaskProgressByRunId({ runId: "run-f02-02", lastEventAt: 250, eventSummary: "One." });
@@ -4482,6 +4484,7 @@ describe("task-registry", () => {
         childSessionKey: "agent:codex:acp:f02-03",
         runId: "run-f02-03",
         task: "Repeated progress",
+        deliveryStatus: "pending",
         notifyPolicy: "state_changes",
       });
       for (let index = 1; index <= 2; index += 1) {
@@ -4509,6 +4512,7 @@ describe("task-registry", () => {
         childSessionKey: "agent:codex:acp:f02-04",
         runId: "run-f02-04",
         task: "Replay direct event",
+        deliveryStatus: "pending",
         notifyPolicy: "state_changes",
       });
       const event = { at: 250, ordinal: 1, kind: "progress" as const, summary: "Working." };
@@ -4526,6 +4530,7 @@ describe("task-registry", () => {
         childSessionKey: "agent:codex:acp:f02-05",
         runId: "run-f02-05",
         task: "Replay session event",
+        deliveryStatus: "pending",
         notifyPolicy: "state_changes",
       });
       const event = { at: 250, ordinal: 1, kind: "progress" as const, summary: "Working." };
@@ -4550,6 +4555,7 @@ describe("task-registry", () => {
         childSessionKey: "agent:codex:acp:f02-06",
         runId: "run-f02-06",
         task: "No event",
+        deliveryStatus: "pending",
         notifyPolicy: "state_changes",
       });
       recordTaskProgressByRunId({
@@ -4588,6 +4594,7 @@ describe("task-registry", () => {
         childSessionKey: "agent:codex:acp:f02-07",
         runId: "run-f02-07",
         task: "Persistence failure",
+        deliveryStatus: "pending",
         notifyPolicy: "state_changes",
       });
       rejectWrites = true;
@@ -4634,6 +4641,7 @@ describe("task-registry", () => {
         childSessionKey: "agent:codex:acp:f02-08",
         runId: "run-f02-08",
         task: "Out-of-order sends",
+        deliveryStatus: "pending",
         notifyPolicy: "state_changes",
       });
       const first = maybeDeliverTaskStateChangeUpdate(task.taskId, {
@@ -4679,6 +4687,7 @@ describe("task-registry", () => {
           childSessionKey: "agent:codex:acp:f02-09",
           runId: "run-f02-09",
           task: "Durable same-time events",
+          deliveryStatus: "pending",
           notifyPolicy: "state_changes",
         });
         recordTaskProgressByRunId({
