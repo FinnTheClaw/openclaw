@@ -1,6 +1,7 @@
 // Doctor WhatsApp responsiveness tests cover warning heuristics and note output for stale connections.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as pidAlive from "../shared/pid-alive.js";
 
 const noteMock = vi.hoisted(() => vi.fn());
 const spawnSyncMock = vi.hoisted(() => vi.fn());
@@ -23,6 +24,8 @@ const { listLocalTuiProcesses, terminateLocalTuiProcesses } =
 
 describe("doctor WhatsApp responsiveness", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(pidAlive, "getFileLockProcessStartTime").mockReturnValue(17);
     vi.clearAllMocks();
   });
 
@@ -46,9 +49,9 @@ describe("doctor WhatsApp responsiveness", () => {
       expect(spawnSyncMock).not.toHaveBeenCalled();
     } else {
       expect(listLocalTuiProcesses()).toEqual([
-        { pid: 101, command: "openclaw-tui" },
-        { pid: 104, command: "openclaw tui --local" },
-        { pid: 105, command: "/usr/bin/openclaw chat" },
+        { pid: 101, command: "openclaw-tui", startTime: 17 },
+        { pid: 104, command: "openclaw tui --local", startTime: 17 },
+        { pid: 105, command: "/usr/bin/openclaw chat", startTime: 17 },
       ]);
       expect(spawnSyncMock).toHaveBeenCalledWith("ps", ["-axo", "pid=,command="], {
         encoding: "utf8",
@@ -60,6 +63,7 @@ describe("doctor WhatsApp responsiveness", () => {
 
   it("terminates stale local TUI processes with a kill fallback", async () => {
     const alive = new Set([101]);
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: " 101 openclaw-tui" });
     const signals: Array<[number, string | number]> = [];
     const controller = {
       kill: vi.fn((pid: number, signal: string | number) => {
@@ -72,7 +76,7 @@ describe("doctor WhatsApp responsiveness", () => {
           if (alive.has(pid)) {
             return true;
           }
-          throw new Error("gone");
+          throw Object.assign(new Error("gone"), { code: "ESRCH" });
         }
         return true;
       }),
@@ -80,7 +84,7 @@ describe("doctor WhatsApp responsiveness", () => {
 
     await expect(
       terminateLocalTuiProcesses({
-        processes: [{ pid: 101, command: "openclaw-tui" }],
+        processes: [{ pid: 101, command: "openclaw-tui", startTime: 17 }],
         controller,
         graceMs: 0,
       }),

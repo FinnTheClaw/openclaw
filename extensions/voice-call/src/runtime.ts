@@ -131,14 +131,6 @@ function createRuntimeResourceLifecycle(params: {
   let tunnelResult: TunnelResult | null = null;
   let stopPromise: Promise<void> | null = null;
 
-  const runStep = async (step: () => Promise<void>, suppressErrors: boolean) => {
-    if (suppressErrors) {
-      await step().catch(() => {});
-      return;
-    }
-    await step();
-  };
-
   return {
     setTunnelResult: (result) => {
       tunnelResult = result;
@@ -149,17 +141,29 @@ function createRuntimeResourceLifecycle(params: {
       }
       const suppressErrors = opts?.suppressErrors ?? false;
       stopPromise = (async () => {
+        const errors: unknown[] = [];
+        const runStep = async (step: () => Promise<void>) => {
+          try {
+            await step();
+          } catch (error) {
+            errors.push(error);
+          }
+        };
         await runStep(async () => {
           if (tunnelResult) {
             await tunnelResult.stop();
           }
-        }, suppressErrors);
+        });
         await runStep(async () => {
           await cleanupTailscaleExposure(params.config);
-        }, suppressErrors);
+        });
         await runStep(async () => {
           await params.webhookServer.stop();
-        }, suppressErrors);
+        });
+        // Release the other resources before reporting the original failure.
+        if (!suppressErrors && errors.length > 0) {
+          throw errors[0];
+        }
       })();
       return stopPromise;
     },

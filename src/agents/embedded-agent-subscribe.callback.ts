@@ -14,17 +14,28 @@ export function runBestEffortCallback(params: {
   onError?: (error: unknown) => void;
 }): void {
   const failed = (error: unknown) => {
-    params.onError?.(error);
-    params.log.warn(`${params.label} callback failed: ${String(error)}`);
+    try {
+      params.onError?.(error);
+    } catch {
+      // Completion is best-effort; preserve the original callback failure.
+    }
+    try {
+      params.log.warn(`${params.label} callback failed: ${String(error)}`);
+    } catch {
+      // Logging must not turn a contained callback failure into a fatal one.
+    }
   };
   try {
     const result = params.callback();
     if (isPromiseLike(result)) {
-      const task = Promise.resolve(result).then(() => params.onSuccess?.(), failed);
-      if (params.pending) {
-        params.pending.add(task);
-        void task.finally(() => params.pending?.delete(task));
-      }
+      let task: Promise<void>;
+      task = Promise.resolve(result)
+        .then(() => params.onSuccess?.())
+        .catch(failed)
+        .finally(() => {
+          params.pending?.delete(task);
+        });
+      params.pending?.add(task);
     } else {
       params.onSuccess?.();
     }

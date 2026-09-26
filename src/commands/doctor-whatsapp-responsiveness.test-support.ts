@@ -1,6 +1,6 @@
 import "./doctor-whatsapp-responsiveness.js";
 
-type LocalTuiProcess = { pid: number; command: string };
+type LocalTuiProcess = { pid: number; command: string; startTime?: number | null };
 type ProcessSignal = "SIGTERM" | "SIGKILL";
 type ProcessController = { kill(pid: number, signal: ProcessSignal | 0): boolean };
 

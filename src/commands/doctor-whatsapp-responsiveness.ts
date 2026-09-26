@@ -5,12 +5,14 @@ import { note } from "../../packages/terminal-core/src/note.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { HealthFinding } from "../flows/health-checks.js";
+import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 import type { StatusSummary } from "../status/types.js";
 import { sleep } from "../utils/sleep.js";
 
 type LocalTuiProcess = {
   pid: number;
   command: string;
+  startTime?: number | null;
 };
 
 type ProcessSignal = "SIGTERM" | "SIGKILL";
@@ -77,7 +79,10 @@ function listLocalTuiProcesses(): LocalTuiProcess[] {
       continue;
     }
     seen.add(proc.pid);
-    processes.push(proc);
+    processes.push({
+      ...proc,
+      startTime: getFileLockProcessStartTime(proc.pid),
+    });
   }
   return processes;
 }
@@ -135,12 +140,22 @@ export function collectWhatsappResponsivenessHealthFindings(params: {
   ];
 }
 
+/** Require the captured PID start identity and command to remain unchanged. */
+function isCurrentLocalTuiProcess(proc: LocalTuiProcess): boolean {
+  if (proc.startTime == null || getFileLockProcessStartTime(proc.pid) !== proc.startTime) {
+    return false;
+  }
+  const current = listLocalTuiProcesses().find((candidate) => candidate.pid === proc.pid);
+  return current?.command === proc.command && current.startTime === proc.startTime;
+}
+
 function isProcessAlive(controller: ProcessController, pid: number): boolean {
   try {
     controller.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // EPERM proves that a process occupies the PID; do not report it as stopped.
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 
@@ -154,20 +169,36 @@ async function terminateLocalTuiProcesses(params: {
   const graceMs = Math.max(0, params.graceMs ?? 500);
   const stopped: number[] = [];
   const failed: number[] = [];
+  const signalled: LocalTuiProcess[] = [];
 
   for (const proc of params.processes) {
+    if (!isCurrentLocalTuiProcess(proc)) {
+      // A missing/unreadable identity or changed process is not safe to signal.
+      if (!isProcessAlive(controller, proc.pid)) {
+        stopped.push(proc.pid);
+      } else {
+        failed.push(proc.pid);
+      }
+      continue;
+    }
     try {
       controller.kill(proc.pid, "SIGTERM");
     } catch {
       // Already gone is success for this repair.
     }
+    signalled.push(proc);
   }
   if (graceMs > 0) {
     await sleep(graceMs);
   }
-  for (const proc of params.processes) {
+  for (const proc of signalled) {
     if (!isProcessAlive(controller, proc.pid)) {
       stopped.push(proc.pid);
+      continue;
+    }
+    if (!isCurrentLocalTuiProcess(proc)) {
+      // A replacement or unknown identity may occupy this PID; never escalate.
+      failed.push(proc.pid);
       continue;
     }
     try {
