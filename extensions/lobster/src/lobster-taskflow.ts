@@ -157,6 +157,15 @@ async function executeManagedLobsterFlow(
             waitJson: buildApprovalWaitState(envelope),
           })
         : params.taskFlow.finish(flowMutation);
+    if (!mutation.applied) {
+      const phase = envelope.status === "needs_approval" ? "waiting" : "completion";
+      return {
+        ok: false,
+        flow,
+        mutation,
+        error: new Error(`TaskFlow ${phase} failed: ${mutation.code}`),
+      };
+    }
     return { ok: true, envelope, flow, mutation };
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));

@@ -253,8 +253,20 @@ export function registerSecretsCli(program: Command): void {
             allowExecInPreflight: Boolean(opts.allowExec),
           });
           if (opts.planOut) {
-            const { writeFileSync } = await fsModuleLoader.load();
-            writeFileSync(opts.planOut, serializePlanFile(configured.plan, opts.planOut), "utf8");
+            const raw = serializePlanFile(configured.plan, opts.planOut);
+            const fsModule = await fsModuleLoader.load();
+            const fd = fsModule.openSync(
+              opts.planOut,
+              fsModule.constants.O_WRONLY | fsModule.constants.O_CREAT,
+              0o600,
+            );
+            try {
+              fsModule.fchmodSync(fd, 0o600);
+              fsModule.ftruncateSync(fd, 0);
+              fsModule.writeFileSync(fd, raw, "utf8");
+            } finally {
+              fsModule.closeSync(fd);
+            }
           }
 
           let shouldApply = Boolean(opts.apply || opts.yes);

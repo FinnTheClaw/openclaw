@@ -72,11 +72,6 @@ export async function collectTelegramSecurityAuditFindings(params: {
     entries: Array.isArray(telegramCfg.allowFrom) ? telegramCfg.allowFrom : [],
     target: invalidTelegramAllowFromEntries,
   });
-  if (params.cfg.commands?.text === false) {
-    appendInvalidTelegramAllowFromFinding(findings, invalidTelegramAllowFromEntries);
-    return findings;
-  }
-
   const defaultGroupPolicy = params.cfg.channels?.defaults?.groupPolicy;
   const groupPolicy =
     (telegramCfg.groupPolicy as string | undefined) ?? defaultGroupPolicy ?? "allowlist";
@@ -150,6 +145,10 @@ export async function collectTelegramSecurityAuditFindings(params: {
     storeAllowFrom.length > 0 || groupAllowFrom.length > 0 || anyGroupOverride;
 
   appendInvalidTelegramAllowFromFinding(findings, invalidTelegramAllowFromEntries);
+
+  if (params.cfg.commands?.text === false) {
+    return findings;
+  }
 
   if (storeHasWildcard || groupAllowFromHasWildcard) {
     findings.push({
