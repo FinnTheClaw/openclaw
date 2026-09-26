@@ -1,4 +1,5 @@
 /** Doctor checks and repairs for workspace memory files and legacy workspace hints. */
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { note } from "../../packages/terminal-core/src/note.js";
@@ -301,7 +302,28 @@ export async function migrateLegacyRootMemoryFile(
       legacyText,
       archivedLegacyPath: shortenHomePath(archivedLegacyPath),
     })}`;
-    await fs.promises.writeFile(detection.canonicalPath, merged, "utf-8");
+    const canonicalMode = (await fs.promises.stat(detection.canonicalPath)).mode & 0o7777;
+    const tempPath = path.join(
+      path.dirname(detection.canonicalPath),
+      ".MEMORY.md." + process.pid + "." + randomUUID() + ".tmp",
+    );
+    let staged = false;
+    try {
+      const handle = await fs.promises.open(tempPath, "wx", canonicalMode);
+      staged = true;
+      try {
+        await handle.writeFile(merged, "utf-8");
+        await handle.chmod(canonicalMode);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.promises.rename(tempPath, detection.canonicalPath);
+    } finally {
+      if (staged) {
+        await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
+      }
+    }
   }
   return {
     changed: true,

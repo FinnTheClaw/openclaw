@@ -446,7 +446,6 @@ export function createTelegramThreadBindingManager(params: {
       if (!removed) {
         return null;
       }
-      getThreadBindingsState().bindingsByAccountConversation.delete(key);
       persistBindingMutation({
         accountId,
         persist: manager.shouldPersistMutations(),
@@ -455,6 +454,7 @@ export function createTelegramThreadBindingManager(params: {
         reason: "unbind-conversation",
         throwOnError: unbindParams.throwOnPersistError,
       });
+      getThreadBindingsState().bindingsByAccountConversation.delete(key);
       return removed;
     },
     unbindBySessionKey: (unbindParams) => {
@@ -471,7 +471,6 @@ export function createTelegramThreadBindingManager(params: {
           accountId,
           conversationId: entry.conversationId,
         });
-        getThreadBindingsState().bindingsByAccountConversation.delete(key);
         persistBindingMutation({
           accountId,
           persist: manager.shouldPersistMutations(),
@@ -480,6 +479,7 @@ export function createTelegramThreadBindingManager(params: {
           reason: "unbind-session",
           throwOnError: unbindParams.throwOnPersistError,
         });
+        getThreadBindingsState().bindingsByAccountConversation.delete(key);
         removed.push(entry);
       }
       return removed;
@@ -580,10 +580,6 @@ export function createTelegramThreadBindingManager(params: {
           metadata: input.metadata,
         },
       });
-      getThreadBindingsState().bindingsByAccountConversation.set(
-        resolveBindingKey({ accountId, conversationId }),
-        record,
-      );
       persistBindingMutation({
         accountId,
         persist: manager.shouldPersistMutations(),
@@ -591,6 +587,10 @@ export function createTelegramThreadBindingManager(params: {
         reason: "bind",
         throwOnError: true,
       });
+      getThreadBindingsState().bindingsByAccountConversation.set(
+        resolveBindingKey({ accountId, conversationId }),
+        record,
+      );
       logVerbose(
         `telegram: bound conversation ${conversationId} -> ${targetSessionKey} (${summarizeLifecycleForLog(
           record,

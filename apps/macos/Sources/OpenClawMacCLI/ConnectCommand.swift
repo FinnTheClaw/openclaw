@@ -198,7 +198,7 @@ func runConnect(_ args: [String]) async {
 
         let output = ConnectOutput(
             status: "ok",
-            url: endpoint.url.absoluteString,
+            url: gatewayURLForDisplay(endpoint.url),
             mode: endpoint.mode,
             role: opts.role,
             clientId: opts.clientId,
@@ -213,7 +213,7 @@ func runConnect(_ args: [String]) async {
         let fallbackMode = (opts.mode ?? config.mode ?? "local").lowercased()
         let output = ConnectOutput(
             status: "error",
-            url: endpoint?.url.absoluteString ?? "unknown",
+            url: endpoint.map { gatewayURLForDisplay($0.url) } ?? "unknown",
             mode: endpoint?.mode ?? fallbackMode,
             role: opts.role,
             clientId: opts.clientId,
@@ -388,6 +388,14 @@ func makeGatewayConnectOptions(
 }
 
 func gatewayURLDeviceAuthOwner(_ url: URL, mode: String) -> String {
+    let endpoint = gatewayURLForDisplay(url)
+    let route = "\(mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())|\(endpoint)"
+    let digest = SHA256.hash(data: Data(route.utf8))
+    let fingerprint = digest.map { String(format: "%02x", $0) }.joined()
+    return "openclaw-mac-cli:route:\(fingerprint)"
+}
+
+func gatewayURLForDisplay(_ url: URL) -> String {
     var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
     components?.user = nil
     components?.password = nil
@@ -399,11 +407,7 @@ func gatewayURLDeviceAuthOwner(_ url: URL, mode: String) -> String {
         components?.query = nil
     }
     components?.fragment = nil
-    let endpoint = components?.string ?? "\(url.scheme ?? "")://\(url.host ?? "")\(url.path)"
-    let route = "\(mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())|\(endpoint)"
-    let digest = SHA256.hash(data: Data(route.utf8))
-    let fingerprint = digest.map { String(format: "%02x", $0) }.joined()
-    return "openclaw-mac-cli:route:\(fingerprint)"
+    return components?.string ?? "\(url.scheme ?? "")://\(url.host ?? "")\(url.path)"
 }
 
 private func isSensitiveGatewayQueryItem(_ value: String) -> Bool {
