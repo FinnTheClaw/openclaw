@@ -227,6 +227,9 @@ function buildFallbackStepFields(params: {
     if (!lastPreviousAttempt) {
       return undefined;
     }
+    const previousObserved = buildErrorObservationFields(lastPreviousAttempt.error);
+    const previousDetail =
+      previousObserved.providerErrorMessagePreview ?? previousObserved.errorPreview;
     return {
       fallbackStepType: "fallback_step",
       fallbackStepFromModel: `${lastPreviousAttempt.provider}/${lastPreviousAttempt.model}`,
@@ -234,9 +237,7 @@ function buildFallbackStepFields(params: {
       ...(lastPreviousAttempt.reason
         ? { fallbackStepFromFailureReason: lastPreviousAttempt.reason }
         : {}),
-      ...(lastPreviousAttempt.error
-        ? { fallbackStepFromFailureDetail: lastPreviousAttempt.error }
-        : {}),
+      ...(previousDetail ? { fallbackStepFromFailureDetail: previousDetail } : {}),
       ...(typeof params.attempt === "number" ? { fallbackStepChainPosition: params.attempt } : {}),
       fallbackStepFinalOutcome: "succeeded",
     };

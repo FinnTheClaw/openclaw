@@ -21,6 +21,7 @@ import {
   WILDCARD_RECURSIVE,
   WILDCARD_SINGLE,
   evaluatePredicate,
+  formatOcPath,
   isOrdinalSeg,
   isPositionalSeg,
   isPredicateSeg,
@@ -100,9 +101,15 @@ export function findOcPaths(ast: OcAst, pattern: OcPath): readonly OcPathMatch[]
   }
 
   const out: OcPathMatch[] = [];
+  const seen = new Set<string>();
   for (const concrete of concretePaths) {
     const m = resolveOcPath(ast, concrete);
     if (m !== null) {
+      const key = formatOcPath(concrete);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
       out.push({ path: concrete, match: m });
     }
   }
@@ -218,14 +225,11 @@ function dispatchSeg<T>(
   }
 
   if (cur.value === WILDCARD_RECURSIVE) {
-    // `**` — descend with `**` consumed (i+1) AND retained (i) so
-    // deeper structures still match. Emit if no subs remain.
-    if (i + 1 >= subs.length) {
-      onMatch(walked);
-    }
+    // `**` matches zero segments here, or one or more by staying active
+    // after descending. The zero-segment branch must run on this node.
+    ops.walk(node, subs, i + 1, walked, onMatch);
     for (const m of ops.enumerate(node)) {
       const nextWalked: readonly SlotSub[] = [...walked, { slot: cur.slot, value: m.keySub }];
-      ops.walk(m.child, subs, i + 1, nextWalked, onMatch);
       ops.walk(m.child, subs, i, nextWalked, onMatch);
     }
     return;

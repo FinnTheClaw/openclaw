@@ -337,7 +337,9 @@ export function createSettingsManager(api: UrbitSSEClient, logger?: SettingsLogg
         const deskData = allData?.all?.[SETTINGS_DESK];
         state.current = parseSettingsResponse(deskData ?? {});
         state.loaded = true;
-        logger?.log?.(`[settings] Loaded: ${JSON.stringify(state.current)}`);
+        logger?.log?.(
+          "[settings] Loaded: pendingApprovals=" + (state.current.pendingApprovals?.length ?? 0),
+        );
         return state.current;
       } catch (err) {
         // Settings desk may not exist yet - that's fine, use defaults
