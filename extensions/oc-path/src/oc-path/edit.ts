@@ -12,6 +12,7 @@
 import type { AstBlock, AstItem, FrontmatterEntry, MdAst } from "./ast.js";
 import { formatFrontmatterValue } from "./frontmatter-format.js";
 import { formatOcPath, type OcPath } from "./oc-path.js";
+import { parseMd } from "./parse.js";
 import { guardSentinel } from "./sentinel.js";
 
 type MdEditResult =
@@ -80,34 +81,27 @@ export function setMdOcPath(ast: MdAst, path: OcPath, newValue: string): MdEditR
   const newBlock: AstBlock = {
     ...block,
     items: newItems,
-    bodyText: rebuildBlockBody(block, newItems),
+    bodyText: rebuildBlockBody(block, item, newValue),
   };
   const newBlocks = ast.blocks.slice();
   newBlocks[blockIdx] = newBlock;
   return finalize({ ...ast, blocks: newBlocks });
 }
 
-// In-place substitution on `bodyText` so round-trip emit reflects the
-// edit. Items without a matching bullet line are skipped (render mode
-// uses structural fields anyway).
-function rebuildBlockBody(block: AstBlock, newItems: readonly AstItem[]): string {
-  let body = block.bodyText;
-  for (let i = 0; i < newItems.length; i++) {
-    const newItem = newItems[i];
-    const oldItem = block.items[i];
-    if (newItem === undefined || oldItem === undefined) {
-      continue;
-    }
-    if (newItem.kv === undefined || oldItem.kv === undefined) {
-      continue;
-    }
-    if (newItem.kv.value === oldItem.kv.value) {
-      continue;
-    }
-    const re = new RegExp(`^(\\s*-\\s*${escapeRegex(oldItem.kv.key)}\\s*:\\s*).*$`, "m");
-    body = body.replace(re, (_match, prefix: string) => `${prefix}${newItem.kv.value}`);
+// The parser's source line identifies the selected list item, even when an
+// earlier fenced/indented example contains the same text.
+function rebuildBlockBody(block: AstBlock, item: AstItem, newValue: string): string {
+  const lines = block.bodyText.split("\n");
+  const index = item.line - block.line - 1;
+  const line = lines[index];
+  if (line === undefined || item.kv === undefined) {
+    return block.bodyText;
   }
-  return body;
+  const re = new RegExp(
+    `^([ \\t]*(?:[-+*]|\\d+[.)])[ \\t]+${escapeRegex(item.kv.key)}[ \\t]*:[ \\t]*).*$`,
+  );
+  lines[index] = line.replace(re, (_match, prefix: string) => `${prefix}${newValue}`);
+  return lines.join("\n");
 }
 
 function escapeRegex(s: string): string {
@@ -138,5 +132,5 @@ function finalize(ast: MdAst): MdEditResult {
       parts.push(block.bodyText);
     }
   }
-  return { ok: true, ast: { ...ast, raw: parts.join("\n") } };
+  return { ok: true, ast: parseMd(parts.join("\n")).ast };
 }

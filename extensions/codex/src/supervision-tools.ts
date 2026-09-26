@@ -728,6 +728,7 @@ async function resolveEndpointForThread(params: {
     return endpoint;
   }
   const matches: ResolvedSupervisionEndpoint[] = [];
+  let lookupIncomplete = false;
   for (const endpoint of params.endpoints) {
     try {
       const thread = await readThread({
@@ -744,7 +745,7 @@ async function resolveEndpointForThread(params: {
         throw error;
       }
       if (!isLoadedThreadReadMiss(error)) {
-        continue;
+        lookupIncomplete = true;
       }
     }
   }
@@ -753,6 +754,11 @@ async function resolveEndpointForThread(params: {
   }
   if (matches.length > 1) {
     throw new Error(`Codex thread id is ambiguous across endpoints: ${params.threadId}`);
+  }
+  if (lookupIncomplete) {
+    throw new Error(
+      "Codex thread lookup incomplete: one or more endpoints could not be read; retry or specify endpoint_id.",
+    );
   }
   throw new Error(`Codex thread not found: ${params.threadId}`);
 }
