@@ -1,0 +1,27 @@
+{
+  "id": "refresh-efficiency",
+  "name": "Refresh Efficiency",
+  "description": "Proportionate prompt guidance and observational efficiency metrics.",
+  "activation": {
+    "onStartup": true,
+    "onConfigPaths": ["plugins.entries.refresh-efficiency.config"]
+  },
+  "enabledByDefault": false,
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "guidanceEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable compact candidate guidance in model system prompts. Metrics remain enabled when this is false."
+      }
+    }
+  },
+  "uiHints": {
+    "guidanceEnabled": {
+      "label": "Efficiency Guidance",
+      "help": "Enable compact candidate guidance while retaining observational metrics."
+    }
+  }
+}
