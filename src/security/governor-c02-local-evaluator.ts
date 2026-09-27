@@ -89,6 +89,7 @@ export function createGovernorC02EvaluationScope(params: {
   let pressurePending = false;
   let pressureIssued = false;
   let restartTransitionFailed = false;
+  let releaseRestartWait: (() => void) | undefined;
   let disposed = false;
   let scope: GovernorAgentLoopRunScope;
 
@@ -97,6 +98,26 @@ export function createGovernorC02EvaluationScope(params: {
     restart.blocked ||
     restartTransitionFailed ||
     restartBlocked(params.evaluation, params.restartMarkers, restart.generation);
+
+  const waitForRestartAbort = (signal: AbortSignal | undefined): Promise<void> => {
+    if (!signal) {
+      throw new Error("C02_RESTART_SIGNAL_REQUIRED");
+    }
+    if (signal.aborted) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const release = () => {
+        if (releaseRestartWait === release) {
+          releaseRestartWait = undefined;
+        }
+        signal.removeEventListener("abort", release);
+        resolve();
+      };
+      releaseRestartWait = release;
+      signal.addEventListener("abort", release, { once: true });
+    });
+  };
 
   scope = Object.freeze({
     taskId: params.evaluation.stableSessionId,
@@ -133,7 +154,7 @@ export function createGovernorC02EvaluationScope(params: {
       }
       return { kind: "allow", ticket: Object.freeze({ opaque }) };
     },
-    afterTool(observation) {
+    async afterTool(observation) {
       const admittedStage = observation.ticket ? pending.get(observation.ticket.opaque) : undefined;
       if (observation.ticket) {
         pending.delete(observation.ticket.opaque);
@@ -162,6 +183,9 @@ export function createGovernorC02EvaluationScope(params: {
       }
       if (completed === "observe-b" && params.evaluation.restartAfterObserveB) {
         restartTransitionFailed = !params.restartMarkers.arm(params.evaluation, restart.generation);
+        if (!restartTransitionFailed) {
+          await waitForRestartAbort(observation.signal);
+        }
       }
       if (completed === "aggregate" && params.evaluation.restartAfterObserveB) {
         restartTransitionFailed = !params.restartMarkers.complete(
@@ -213,6 +237,7 @@ export function createGovernorC02EvaluationScope(params: {
         return;
       }
       disposed = true;
+      releaseRestartWait?.();
       params.restartMarkers.release(params.evaluation, restart.generation);
       params.onDispose?.(scope);
     },

@@ -106,6 +106,68 @@ async function complete(
 }
 
 describe("C02 local evaluator", () => {
+  it("keeps only an F beta turn open until its existing abort signal releases it", async () => {
+    const item = evaluation("F", "171717171717171717171717");
+    const value = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
+    await complete(value, "read", { path: item.alphaPath }, 11);
+    const beta = value.beforeTool({
+      toolCallId: "beta",
+      toolName: "read",
+      args: { path: item.betaPath },
+      tool: undefined,
+      now: 12,
+    });
+    expect(beta.kind).toBe("allow");
+    const controller = new AbortController();
+    let settled = false;
+    const pending = value.afterTool({
+      ...(beta.kind === "allow" ? { ticket: beta.ticket } : {}),
+      toolCallId: "beta",
+      toolName: "read",
+      result: "not retained",
+      isError: false,
+      now: 13,
+      signal: controller.signal,
+    });
+    void Promise.resolve(pending).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    controller.abort();
+    await pending;
+    expect(value.afterTurn({ assistantText: "", toolCallCount: 2, now: 14 })).toEqual({
+      kind: "interrupt",
+      reasonCode: "C02_RESTART_REQUIRED",
+    });
+    value.dispose();
+  });
+
+  it("releases an F beta wait when the local scope closes", async () => {
+    const item = evaluation("F", "181818181818181818181818");
+    const value = scope(item, createC02EvaluationRestartMarkers({ stateDir }));
+    await complete(value, "read", { path: item.alphaPath }, 11);
+    const beta = value.beforeTool({
+      toolCallId: "beta-close",
+      toolName: "read",
+      args: { path: item.betaPath },
+      tool: undefined,
+      now: 12,
+    });
+    expect(beta.kind).toBe("allow");
+    const pending = value.afterTool({
+      ...(beta.kind === "allow" ? { ticket: beta.ticket } : {}),
+      toolCallId: "beta-close",
+      toolName: "read",
+      result: "not retained",
+      isError: false,
+      now: 13,
+      signal: new AbortController().signal,
+    });
+    value.dispose();
+    await pending;
+  });
+
   let stateDir: string;
 
   beforeEach(() => {
