@@ -1,5 +1,5 @@
 import { redactSensitiveText } from "openclaw/plugin-sdk/logging-core";
-import type { DurableMemoryEmbedding } from "./durable-memory-runtime.js";
+import type { DurableMemoryEmbedding } from "./memory-embedding.js";
 
 export class MemorySensitiveContentError extends Error {
   readonly code = "memory_sensitive_content";

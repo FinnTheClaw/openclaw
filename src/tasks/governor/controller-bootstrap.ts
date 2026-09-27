@@ -1,3 +1,4 @@
+import type { MemoryGovernorBackend } from "../../plugins/memory-state.js";
 import type {
   GovernorTrustedApprovalResolver,
   GovernorTrustedDeliveryResolver,
@@ -44,6 +45,7 @@ export function createGovernorControllerIfEnabled(params: {
     secrets: GovernorStoreSecrets;
     stateEnv: NodeJS.ProcessEnv;
     lifecycle?: GovernorStoreLifecycle;
+    memoryBackend?: MemoryGovernorBackend;
   };
 }): GovernorController | null {
   const env = params.env ?? {};

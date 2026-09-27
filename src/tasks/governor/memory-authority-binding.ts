@@ -1,6 +1,6 @@
 // Defines the canonical content/provenance payload authenticated by host memory authority.
 import type { GovernorMemoryAuthorityBinding } from "../../security/governor-host-readonly.js";
-import { governorDigest } from "./canonical-json.js";
+import { governorDigest, type GovernorJsonValue } from "./canonical-json.js";
 import type { GovernorMemoryRecord } from "./memory-types.js";
 
 export function createGovernorMemoryAuthorityBinding(
@@ -28,6 +28,12 @@ export function createGovernorMemoryAuthorityBinding(
     sourceReference: memory.provenance.sourceRef,
     freshnessExpiresAt: memory.freshnessExpiresAt ?? null,
     sensitivity: memory.sensitivity,
+    authority: memory.sourceRank / 1000,
+    authorityRank: memory.sourceRank,
+    generation: memory.authorityGeneration ?? 0,
+    sourceEvidenceId: memory.verifiedEvidenceId!,
+    sourceEvidenceLineage: [],
+    sourceMemoryLineage: memory.supersedesId ? [memory.supersedesId] : [],
     factDigest: governorDigest({
       scopeKey: memory.scopeKey,
       scopeEpoch: memory.scopeEpoch,
@@ -55,5 +61,5 @@ export function governorMemoryAuthorityBindingDigest(memory: GovernorMemoryRecor
   return governorDigest({
     kind: "memory-current",
     ...createGovernorMemoryAuthorityBinding(memory),
-  });
+  } as unknown as GovernorJsonValue);
 }

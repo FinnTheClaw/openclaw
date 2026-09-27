@@ -1,3 +1,7 @@
+import {
+  createGovernorMemoryRetirementDecision,
+  type MemoryGovernorRetirementDecision,
+} from "../plugins/memory-governor-capability.js";
 /** Host-owned monotonic authority for verified memory generations. */
 import { governorDigest } from "../tasks/governor/canonical-json.js";
 import { assertGovernorJsonResources } from "../tasks/governor/resource-guard.js";
@@ -6,6 +10,7 @@ import type {
   GovernorHostAntiRollbackLedger,
   GovernorLedgerOrdering,
   GovernorLedgerState,
+  GovernorMemoryRetirementReason,
 } from "./governor-host-anti-rollback-ledger.js";
 
 export type GovernorMemoryAuthorityBinding = Readonly<{
@@ -18,6 +23,12 @@ export type GovernorMemoryAuthorityBinding = Readonly<{
   sourceReference: string;
   freshnessExpiresAt: number | null;
   sensitivity: string;
+  authority: number;
+  authorityRank: number;
+  generation: number;
+  sourceEvidenceId: string;
+  sourceEvidenceLineage: readonly string[];
+  sourceMemoryLineage: readonly string[];
   factDigest: string;
   contentDigest: string;
   provenanceDigest: string;
@@ -31,6 +42,8 @@ export type GovernorMemoryAuthorityState = Readonly<{
   status: "current" | "retired";
   bindingDigest: string;
   ledgerDigest: string;
+  retirementReason?: GovernorMemoryRetirementReason;
+  retirementDecision?: MemoryGovernorRetirementDecision;
   ordering?: GovernorLedgerOrdering;
 }>;
 
@@ -44,7 +57,14 @@ export type GovernorMemoryAuthorityAdvance =
 
 export type GovernorTrustedMemoryAuthority = Readonly<{
   advance: (binding: GovernorMemoryAuthorityBinding) => GovernorMemoryAuthorityAdvance;
-  retire: (binding: GovernorMemoryAuthorityBinding) => GovernorMemoryAuthorityState;
+  retire: (
+    binding: GovernorMemoryAuthorityBinding,
+    params: Readonly<{
+      reason: GovernorMemoryRetirementReason;
+      semanticCutoff: number;
+      issuedAt: number;
+    }>,
+  ) => GovernorMemoryAuthorityState;
   state: (scopeKey: string, factKey: string) => GovernorMemoryAuthorityState | null;
   matches: (
     binding: GovernorMemoryAuthorityBinding,
@@ -74,6 +94,8 @@ function toState(state: GovernorLedgerState | null): GovernorMemoryAuthorityStat
     status: state.status === "memory_current" ? "current" : "retired",
     bindingDigest: state.bindingDigest,
     ledgerDigest: state.digest,
+    ...(state.retirementReason ? { retirementReason: state.retirementReason } : {}),
+    ...(state.memoryRetirement ? { retirementDecision: state.memoryRetirement } : {}),
     ...(state.ordering ? { ordering: state.ordering } : {}),
   };
 }
@@ -91,7 +113,12 @@ function rejectAdvance(
   if (next.scopeEpoch < prior.scopeEpoch || next.observedAt < prior.observedAt) {
     return { accepted: false, state, reason: "stale" };
   }
-  if (current.status === "memory_retired" && next.scopeEpoch <= prior.scopeEpoch) {
+  if (
+    current.status === "memory_retired" &&
+    (current.retirementReason === "expiry"
+      ? next.scopeEpoch < prior.scopeEpoch || next.observedAt <= prior.observedAt
+      : next.scopeEpoch <= prior.scopeEpoch)
+  ) {
     return { accepted: false, state, reason: "retired" };
   }
   if (
@@ -128,6 +155,7 @@ function rejectAdvance(
 export function createGovernorMemoryAuthority(
   ledger: GovernorHostAntiRollbackLedger,
   afterLedgerAppend?: () => void,
+  signingKey?: string,
 ): GovernorTrustedMemoryAuthority {
   let closed = false;
   const assertOpen = () => {
@@ -138,10 +166,12 @@ export function createGovernorMemoryAuthority(
   const authority: GovernorTrustedMemoryAuthority = Object.freeze({
     advance: (binding) => {
       assertOpen();
-      const digest = authorityBinding(binding);
       const key = authorityKey(binding.scopeKey, binding.factKey);
       const current = ledger.state("memory", key);
-      if (current?.status === "memory_current" && current.bindingDigest === digest) {
+      if (
+        current?.status === "memory_current" &&
+        current.bindingDigest === authorityBinding(binding)
+      ) {
         return { accepted: true, state: toState(current) as GovernorMemoryAuthorityState };
       }
       if (current) {
@@ -150,24 +180,40 @@ export function createGovernorMemoryAuthority(
           return rejection;
         }
       }
+      const generation = (current?.generation ?? 0) + 1;
+      const finalBinding = { ...binding, generation };
       const next = ledger.append({
         kind: "memory",
         key,
-        generation: (current?.generation ?? 0) + 1,
+        generation,
         status: "memory_current",
-        bindingDigest: digest,
+        bindingDigest: authorityBinding(finalBinding),
         ordering: binding.ordering,
       });
       afterLedgerAppend?.();
       return { accepted: true, state: toState(next) as GovernorMemoryAuthorityState };
     },
-    retire: (binding) => {
+    retire: (binding, params) => {
       assertOpen();
+      if (!signingKey) {
+        throw new Error("GOVERNOR_MEMORY_AUTHORITY_KEY_REQUIRED");
+      }
       assertGovernorBoundarySafe("memory", assertGovernorJsonResources(binding));
+      const { reason: retirementReason, semanticCutoff, issuedAt } = params;
       const key = authorityKey(binding.scopeKey, binding.factKey);
-      const digest = governorDigest({ kind: "memory-retired", ...binding });
       const current = ledger.state("memory", key);
-      if (current?.status === "memory_retired" && current.bindingDigest === digest) {
+      if (current?.status === "memory_retired" && current.memoryRetirement) {
+        const prior = current.memoryRetirement;
+        if (
+          prior.scopeKey !== binding.scopeKey ||
+          prior.factKey !== binding.factKey ||
+          prior.staleMemoryId !== binding.memoryId ||
+          prior.reason !== retirementReason ||
+          prior.semanticCutoff !== semanticCutoff ||
+          prior.priorAuthorityBindingDigest !== authorityBinding(binding)
+        ) {
+          throw new Error("GOVERNOR_MEMORY_RETIREMENT_CONFLICT");
+        }
         return toState(current) as GovernorMemoryAuthorityState;
       }
       if (
@@ -176,13 +222,34 @@ export function createGovernorMemoryAuthority(
       ) {
         throw new Error("Governor memory retirement does not match current host authority");
       }
+      const priorGeneration = current?.generation ?? binding.generation;
+      const retirementDecision = createGovernorMemoryRetirementDecision(
+        {
+          scopeKey: binding.scopeKey,
+          factKey: binding.factKey,
+          staleMemoryId: binding.memoryId,
+          priorGeneration,
+          newGeneration: priorGeneration + 1,
+          semanticCutoff,
+          issuedAt,
+          reason: retirementReason,
+          priorAuthorityBindingDigest: authorityBinding(binding),
+        },
+        signingKey,
+      );
       const next = ledger.append({
         kind: "memory",
         key,
-        generation: (current?.generation ?? 0) + 1,
+        generation: retirementDecision.newGeneration,
         status: "memory_retired",
-        bindingDigest: digest,
-        ordering: binding.ordering,
+        bindingDigest: retirementDecision.retirementBindingDigest,
+        retirementReason,
+        memoryRetirement: retirementDecision,
+        ordering: {
+          ...binding.ordering,
+          observedAt: semanticCutoff,
+          recordedAt: Math.max(binding.ordering.recordedAt, issuedAt, semanticCutoff),
+        },
       });
       afterLedgerAppend?.();
       return toState(next) as GovernorMemoryAuthorityState;

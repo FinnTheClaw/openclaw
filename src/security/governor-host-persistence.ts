@@ -317,7 +317,7 @@ export function createGovernorHostPersistence(params: {
       }
     },
     physicalExecutions: createGovernorPhysicalExecutionCoordinator(ledger),
-    memoryAuthority: createGovernorMemoryAuthority(ledger, params.testAfterLedgerAppend),
+    memoryAuthority: createGovernorMemoryAuthority(ledger, params.testAfterLedgerAppend, ledgerKey),
     taskAuthority: createGovernorTaskAuthority(ledger, params.testAfterLedgerAppend),
     ...createGovernorOwnerIngressPersistence(options, ledger),
     ...createGovernorHostDeliveryPersistence({

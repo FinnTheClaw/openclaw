@@ -8,6 +8,9 @@ import type {
 } from "../config/types.behavior-governor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef } from "../config/types.secrets.js";
+import { isOwnedGovernorMemoryBackend } from "../plugins/memory-governor-capability.js";
+import { createRegisteredGovernorMemoryBackend } from "../plugins/memory-governor-private.js";
+import { createInertMemoryGovernorBackend } from "../plugins/memory-state.js";
 import type { GovernorAgentLoopConfiguration } from "../security/governor-agent-loop-config.js";
 import type {
   GovernorHostIntegrationConfiguration,
@@ -155,6 +158,7 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
         key: string;
         runtime: GovernorHostRuntime;
         hostClose?: () => void | Promise<void>;
+        memoryClose?: () => void | Promise<void>;
         closeFailure?: AggregateError;
       }
     | undefined;
@@ -171,12 +175,21 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     }
     const errors: unknown[] = [];
     try {
-      current.runtime.close();
+      if (current.runtime.closeAsync) {
+        await current.runtime.closeAsync();
+      } else {
+        current.runtime.close();
+      }
     } catch (error) {
       errors.push(error);
     }
     try {
       await current.hostClose?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await current.memoryClose?.();
     } catch (error) {
       errors.push(error);
     }
@@ -264,6 +277,7 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
     }
     let host: Awaited<ReturnType<NonNullable<typeof params.hostFactory>>> | undefined;
     let runtime: GovernorHostRuntime | null = null;
+    let memoryClose: (() => void | Promise<void>) | undefined;
     try {
       host = await params.hostFactory({
         config: factoryConfig,
@@ -272,6 +286,26 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
       });
       const { createGovernorHostRuntimeIfEnabled } =
         await import("../security/governor-host-bootstrap.js");
+      const suppliedMemory = host.integrations.memory;
+      const registeredMemory =
+        governor.mode === "enforce"
+          ? createRegisteredGovernorMemoryBackend({
+              mode: "enforce",
+              authorityBindingKey: resolved.secrets.ledgerSigningKey,
+            })
+          : undefined;
+      const memory =
+        governor.mode === "shadow"
+          ? createInertMemoryGovernorBackend()
+          : suppliedMemory
+            ? undefined
+            : registeredMemory;
+      if (governor.mode === "enforce" && (!memory || !isOwnedGovernorMemoryBackend(memory))) {
+        throw new Error("GOVERNOR_GATEWAY_MEMORY_CAPABILITY_REQUIRED");
+      }
+      if (memory && memory === registeredMemory && memory.close) {
+        memoryClose = () => memory.close?.();
+      }
       runtime = createGovernorHostRuntimeIfEnabled({
         enabled: true,
         env: { ...resolved.env, OPENCLAW_STATE_DIR: stateDir },
@@ -279,22 +313,32 @@ export function createGatewayBehaviorGovernorLifecycle(params: {
         capabilities: host.capabilities,
         integrations: {
           ...host.integrations,
+          ...(memory ? { memory } : {}),
           agentLoop: loopConfig(governor) as GovernorAgentLoopConfiguration,
         },
       });
       if (!runtime) {
         throw new Error("GOVERNOR_GATEWAY_RUNTIME_NOT_CREATED");
       }
-      active = { key, runtime, hostClose: host.close };
+      active = { key, runtime, hostClose: host.close, memoryClose };
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try {
-        runtime?.close();
+        if (runtime?.closeAsync) {
+          await runtime.closeAsync();
+        } else {
+          runtime?.close();
+        }
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }
       try {
         await host?.close?.();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      try {
+        await memoryClose?.();
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }

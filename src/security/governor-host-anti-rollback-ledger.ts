@@ -9,13 +9,16 @@ import {
   isValidGovernorLedgerOrdering,
   isValidGovernorTaskFence,
   type GovernorLedgerAppendInput,
-  type GovernorLedgerOrdering,
   type GovernorLedgerState,
-  type GovernorLedgerTaskFence,
 } from "./governor-host-ledger-codec.js";
 import { createGovernorLedgerStorage } from "./governor-host-ledger-storage.js";
 
-export type { GovernorLedgerOrdering, GovernorLedgerState, GovernorLedgerTaskFence };
+export type {
+  GovernorLedgerOrdering,
+  GovernorLedgerState,
+  GovernorLedgerTaskFence,
+  GovernorMemoryRetirementReason,
+} from "./governor-host-ledger-codec.js";
 
 export type GovernorHostAntiRollbackLedger = Readonly<{
   append: (input: GovernorLedgerAppendInput) => GovernorLedgerState;
@@ -38,7 +41,10 @@ function validateInput(input: GovernorLedgerAppendInput): void {
     (input.priorTaskFence === undefined) !== (input.priorBindingDigest === undefined) ||
     (input.priorBindingDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.priorBindingDigest)) ||
     (input.status !== "task_intent" && input.priorTaskFence !== undefined) ||
-    (input.kind !== "task" && input.priorTaskFence !== undefined)
+    (input.kind !== "task" && input.priorTaskFence !== undefined) ||
+    (input.retirementReason !== undefined &&
+      (input.status !== "memory_retired" ||
+        (input.retirementReason !== "expiry" && input.retirementReason !== "explicit_forget")))
   ) {
     throw new Error("GOVERNOR_HOST_LEDGER_INPUT_INVALID");
   }

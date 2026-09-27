@@ -114,6 +114,10 @@ import {
   restoreRegisteredMemoryEmbeddingProviders,
 } from "./memory-embedding-providers.js";
 import {
+  claimGovernorMemoryFactoryOwner,
+  type BundledGovernorMemoryRegistrationHost,
+} from "./memory-governor-private.js";
+import {
   clearMemoryPluginState,
   getMemoryCapabilityRegistration,
   listMemoryCorpusSupplements,
@@ -177,6 +181,8 @@ import type {
   PluginLogger,
   PluginRegistrationMode,
 } from "./types.js";
+
+const governorMemoryFactoryOwner = claimGovernorMemoryFactoryOwner();
 
 export type PluginLoadResult = PluginRegistry;
 export { PluginLoadReentryError } from "./loader-cache-state.js";
@@ -370,6 +376,7 @@ type CachedPluginState = {
   commands?: ReturnType<typeof listRegisteredPluginCommands>;
   interactiveHandlers?: ReturnType<typeof listPluginInteractiveHandlers>;
   memoryCapability: ReturnType<typeof getMemoryCapabilityRegistration>;
+  governorMemoryFactory: ReturnType<typeof governorMemoryFactoryOwner.snapshot>;
   memoryCorpusSupplements: ReturnType<typeof listMemoryCorpusSupplements>;
   agentHarnesses: ReturnType<typeof listRegisteredAgentHarnesses>;
   compactionProviders: ReturnType<typeof listRegisteredCompactionProviders>;
@@ -436,6 +443,7 @@ export function clearActivatedPluginRuntimeState(): void {
   clearPluginInteractiveHandlers();
   clearEmbeddingProviders();
   clearMemoryEmbeddingProviders();
+  governorMemoryFactoryOwner.clear();
   clearMemoryPluginState();
 }
 
@@ -630,10 +638,13 @@ function createGuardedPluginRegistrationApi(api: OpenClawPluginApi): {
 function runPluginRegisterSync(
   register: NonNullable<OpenClawPluginDefinition["register"]>,
   api: Parameters<NonNullable<OpenClawPluginDefinition["register"]>>[0],
+  privateHost?: BundledGovernorMemoryRegistrationHost,
 ): void {
   const guarded = createGuardedPluginRegistrationApi(api);
   try {
-    const result = register(guarded.api);
+    const result = privateHost
+      ? Reflect.apply(register, undefined, [guarded.api, privateHost])
+      : register(guarded.api);
     if (isPromiseLike(result)) {
       void Promise.resolve(result).catch(() => {});
       throw new Error("plugin register must be synchronous");
@@ -1887,6 +1898,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
           corpusSupplements: cached.state.memoryCorpusSupplements,
           promptSupplements: cached.state.memoryPromptSupplements,
         });
+        governorMemoryFactoryOwner.restore(cached.state.governorMemoryFactory);
         activatePluginRegistry(
           cached.state.registry,
           cached.cacheKey,
@@ -2853,18 +2865,28 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       const previousDetachedTaskRuntimeRegistration = getDetachedTaskLifecycleRuntimeRegistration();
       const previousEmbeddingProviders = listRegisteredEmbeddingProviders();
       const previousMemoryCapability = getMemoryCapabilityRegistration();
+      const previousGovernorMemoryFactory = governorMemoryFactoryOwner.snapshot();
       const previousMemoryEmbeddingProviders = listRegisteredMemoryEmbeddingProviders();
       const previousMemoryCorpusSupplements = listMemoryCorpusSupplements();
       const previousMemoryPromptSupplements = listMemoryPromptSupplements();
 
       const beforeRegister = performance.now();
       let registerFailed = false;
+      const privateMemoryRegistration = shouldActivate
+        ? governorMemoryFactoryOwner.createRegistrationHost({
+            id: record.id,
+            origin: record.origin,
+            source: record.source,
+            ...(record.rootDir ? { rootDir: record.rootDir } : {}),
+          })
+        : undefined;
       try {
         withProfile(
           { pluginId: record.id, source: record.source },
           `${registrationMode}:register`,
-          () => runPluginRegisterSync(register, api),
+          () => runPluginRegisterSync(register, api, privateMemoryRegistration?.host),
         );
+        privateMemoryRegistration?.commit();
         // Snapshot loads should not replace process-global runtime prompt state.
         if (!shouldActivate) {
           restoreRegisteredAgentHarnesses(previousAgentHarnesses);
@@ -2877,6 +2899,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
             corpusSupplements: previousMemoryCorpusSupplements,
             promptSupplements: previousMemoryPromptSupplements,
           });
+          governorMemoryFactoryOwner.restore(previousGovernorMemoryFactory);
         }
         registry.plugins.push(record);
         seenIds.set(pluginId, candidate.origin);
@@ -2893,6 +2916,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
           corpusSupplements: previousMemoryCorpusSupplements,
           promptSupplements: previousMemoryPromptSupplements,
         });
+        governorMemoryFactoryOwner.restore(previousGovernorMemoryFactory);
         recordPluginError({
           logger,
           registry,
@@ -2907,6 +2931,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
         });
         registerFailed = true;
       } finally {
+        privateMemoryRegistration?.close();
         const registerMs = performance.now() - beforeRegister;
         detailPluginStartupTrace(options.startupTrace, record.id, [
           ["registerMs", registerMs],
@@ -2962,6 +2987,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
           detachedTaskRuntimeRegistration: getDetachedTaskLifecycleRuntimeRegistration(),
           interactiveHandlers: listPluginInteractiveHandlers(),
           memoryCapability: getMemoryCapabilityRegistration(),
+          governorMemoryFactory: governorMemoryFactoryOwner.snapshot(),
           memoryCorpusSupplements: listMemoryCorpusSupplements(),
           registry,
           agentHarnesses: listRegisteredAgentHarnesses(),

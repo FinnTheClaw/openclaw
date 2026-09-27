@@ -1,3 +1,4 @@
+import type { MemoryGovernorBackend } from "../../plugins/memory-state.js";
 import type { HostGovernorEvidenceInvalidationReceiptId } from "../../security/governor-host-readonly.js";
 import type { GovernorActionIntent } from "./action-intent.js";
 import {
@@ -15,7 +16,6 @@ import {
 // Orchestrates the feature-flagged governed task loop over durable state.
 import type { GovernorJsonValue } from "./canonical-json.js";
 import { GovernorCapabilityRegistry } from "./capability-registry.js";
-import { assertValidGovernorPlan } from "./contracts.js";
 import {
   recordGovernorContradiction,
   resolveGovernorContradiction,
@@ -32,6 +32,7 @@ import {
   type GovernorRuntimeEventRequest,
   type GovernorRuntimeFinishRequest,
   type GovernorRuntimeBlockReason,
+  type GovernorRuntimeReplanMetadata,
 } from "./controller-runtime.js";
 import { dispatchGovernorOutbox, type GovernorDispatchOutboxParams } from "./delivery-dispatch.js";
 import { createGovernorEventRecord } from "./events.js";
@@ -41,6 +42,10 @@ import {
   type GovernorFinishDecision,
   type GovernorRecoveryDirective,
 } from "./finish-gate.js";
+import {
+  clearGovernorPendingFinishPhase,
+  rejectPendingGovernorFinish,
+} from "./finish-pending-rejection.js";
 import { admitGovernorMaterialClaims } from "./material-claim-admission.js";
 import {
   assertGovernorResponseDraft,
@@ -53,13 +58,13 @@ import {
   resolveGovernorMutation,
   type GovernorMutationResolution,
 } from "./mutation-reconciliation.js";
+import { prepareGovernorPlan } from "./plan-preparation.js";
 import {
   createGovernorCheckpoint,
   type GovernorCheckpoint,
   type GovernorWorkProfile,
   type GovernorVerifiedCheckpointFact,
 } from "./planning-policy.js";
-import { assertGovernorBoundarySafe } from "./secret-filter.js";
 import { applyGovernorTransition, reclaimGovernorLease } from "./state-machine.js";
 import {
   GovernorSqliteStore,
@@ -100,6 +105,7 @@ function nextTaskVersion(task: GovernorTaskProjection, now: number): GovernorTas
 export class GovernorController {
   readonly actions: GovernorActionRuntime;
   readonly memoryRemediation: GovernorMemoryRemediationRuntime;
+  readonly memoryBackend?: MemoryGovernorBackend;
 
   constructor(
     readonly store: GovernorSqliteStore,
@@ -110,6 +116,7 @@ export class GovernorController {
     }
     this.actions = new GovernorActionRuntime(store, capabilities);
     this.memoryRemediation = new GovernorMemoryRemediationRuntime(store, this.actions);
+    this.memoryBackend = store.memory.backend;
   }
   close(): void {
     this.store.close();
@@ -174,36 +181,13 @@ export class GovernorController {
     plan: GovernorPlan;
     now: number;
   }): GovernorTaskProjection {
-    let task = this.#task(params.taskId);
-    const plan = assertGovernorBoundarySafe(
-      "session",
-      params.plan as unknown as GovernorJsonValue,
-    ) as unknown as GovernorPlan;
-    assertValidGovernorPlan(plan, task.contract);
-    if (task.state === "RECEIVED") {
-      task = this.#transition(task, "CONTRACTING", params.now);
-    }
-    if (task.state === "CONTRACTING" || task.state === "REPLAN_REQUIRED") {
-      task = this.#transition(task, "PLANNING", params.now + 1);
-    }
-    if (task.state !== "PLANNING") {
-      throw new Error("GOVERNOR_PLAN_STATE_INVALID");
-    }
-    const planned: GovernorTaskProjection = {
-      ...task,
-      plan,
-      planVersion: task.planVersion + 1,
-      taskVersion: task.taskVersion + 1,
-      updatedAt: params.now + 2,
-    };
-    const event = createGovernorEventRecord({
-      task: planned,
-      eventType: "plan_replaced",
-      payload: { kind: plan.kind, stepCount: plan.steps.length },
-      now: params.now + 2,
+    return prepareGovernorPlan({
+      task: this.#task(params.taskId),
+      plan: params.plan,
+      now: params.now,
+      store: this.store,
+      transition: (task, to, now) => this.#transition(task, to, now),
     });
-    task = assertApplied(this.store.commit({ current: task, next: planned, event }));
-    return this.#transition(task, "READY", params.now + 3);
   }
   startExecution(taskId: GovernorTaskId, now: number): GovernorTaskProjection {
     return this.#transition(this.#task(taskId), "EXECUTING", now);
@@ -327,8 +311,9 @@ export class GovernorController {
     taskId: GovernorTaskId,
     now: number,
     reasonCode?: Parameters<typeof requestGovernorRuntimeReplan>[3],
+    metadata?: GovernorRuntimeReplanMetadata,
   ): GovernorTaskProjection {
-    return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now, reasonCode);
+    return requestGovernorRuntimeReplan(this.store, this.#task(taskId), now, reasonCode, metadata);
   }
 
   recordRuntimeReplanGuidance(
@@ -394,6 +379,32 @@ export class GovernorController {
     return assertApplied(this.store.commit({ current: task, ...admission }));
   }
 
+  resumePendingFinish(params: {
+    taskId: GovernorTaskId;
+    response: GovernorResponseDraft;
+    now: number;
+  }): GovernorFinishResult {
+    const state = this.#task(params.taskId).state;
+    if (state !== "VERIFYING" && state !== "FINISH_CANDIDATE") {
+      throw new Error("GOVERNOR_PENDING_FINISH_STATE_INVALID");
+    }
+    return this.proposeFinish(params);
+  }
+
+  rejectPendingFinish(params: {
+    taskId: GovernorTaskId;
+    now: number;
+    pendingUserUpdate: string;
+    allowExecutingPending?: boolean;
+    pendingProgressFingerprint?: string;
+  }): GovernorTaskProjection {
+    return rejectPendingGovernorFinish({
+      store: this.store,
+      task: this.#task(params.taskId),
+      ...params,
+    });
+  }
+
   proposeFinish(params: {
     taskId: GovernorTaskId;
     response: GovernorResponseDraft;
@@ -401,10 +412,11 @@ export class GovernorController {
   }): GovernorFinishResult {
     let task = this.#task(params.taskId);
     const responseDraft = assertGovernorResponseDraft(params.response);
-    if (task.state !== "VERIFYING") {
+    if (task.state === "VERIFYING") {
+      task = this.#transition(task, "FINISH_CANDIDATE", params.now);
+    } else if (task.state !== "FINISH_CANDIDATE") {
       throw new Error("GOVERNOR_FINISH_STATE_INVALID");
     }
-    task = this.#transition(task, "FINISH_CANDIDATE", params.now);
     const runningActionIds = [
       ...this.store.actionIntents.listPendingIds(task.taskId, task.objectiveRevision, params.now),
       ...this.store.listUnfinishedFanoutJobIds(task),
@@ -428,8 +440,9 @@ export class GovernorController {
       if (!transition.applied) {
         throw new Error("GOVERNOR_RECOVERY_TRANSITION_REJECTED");
       }
+      const next = clearGovernorPendingFinishPhase(transition.task);
       const event = createGovernorEventRecord({
-        task: transition.task,
+        task: next,
         eventType: "finish_rejected",
         payload: {
           unmetCriteria: [...decision.recovery.unmetCriteria],
@@ -441,9 +454,7 @@ export class GovernorController {
         },
         now: params.now + 1,
       });
-      const recovered = assertApplied(
-        this.store.commit({ current: task, next: transition.task, event }),
-      );
+      const recovered = assertApplied(this.store.commit({ current: task, next, event }));
       return { completed: false, task: recovered, recovery: decision.recovery };
     }
     const response = renderGovernorResponse({ task, draft: responseDraft });
@@ -457,6 +468,7 @@ export class GovernorController {
     if (!transition.applied) {
       throw new Error("GOVERNOR_COMPLETION_TRANSITION_REJECTED");
     }
+    const completedTask = clearGovernorPendingFinishPhase(transition.task);
     const effectId = `completion_${transition.task.objectiveRevision}`;
     const payload: GovernorJsonValue = {
       kind: "completion",
@@ -464,13 +476,13 @@ export class GovernorController {
       certificateDigest: decision.certificate.certificateDigest,
     };
     const outbox = this.store.outbox.createCompletion({
-      task: transition.task,
+      task: completedTask,
       effectId,
       payload,
       now: params.now + 1,
     });
     const event = createGovernorEventRecord({
-      task: transition.task,
+      task: completedTask,
       eventType: "completion_certified",
       payload: {
         certificateDigest: decision.certificate.certificateDigest,
@@ -484,7 +496,7 @@ export class GovernorController {
       now: params.now + 1,
     });
     const completed = assertApplied(
-      this.store.commit({ current: task, next: transition.task, event, outbox: [outbox] }),
+      this.store.commit({ current: task, next: completedTask, event, outbox: [outbox] }),
     );
     return { completed: true, task: completed, certificate: decision.certificate };
   }

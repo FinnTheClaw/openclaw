@@ -106,9 +106,16 @@ export class GovernorMemoryAuthorityStore {
     };
   }
 
-  retire(memory: GovernorMemoryRecord): GovernorMemoryAuthorityState {
+  retire(
+    memory: GovernorMemoryRecord,
+    params: Readonly<{
+      reason: "expiry" | "explicit_forget";
+      semanticCutoff: number;
+      issuedAt: number;
+    }>,
+  ): GovernorMemoryAuthorityState {
     assertGovernorPersistedJson("memory", memory);
-    return this.#authority.retire(governorMemoryAuthorityBinding(memory));
+    return this.#authority.retire(governorMemoryAuthorityBinding(memory), params);
   }
 
   state(memory: GovernorMemoryRecord): "current" | "legacy" | "stale" {
@@ -245,6 +252,25 @@ export class GovernorMemoryAuthorityStore {
             .where("status", "=", "verified"),
         );
         continue;
+      }
+      if (parsed.freshnessExpiresAt !== undefined && parsed.freshnessExpiresAt <= now) {
+        try {
+          if (this.state(parsed) === "current") {
+            this.quarantineMismatch(
+              db,
+              parsed,
+              this.retire(parsed, {
+                reason: "expiry",
+                semanticCutoff: parsed.freshnessExpiresAt,
+                issuedAt: now,
+              }),
+              now,
+            );
+            continue;
+          }
+        } catch {
+          // Fall through to the normal evidence and authority checks.
+        }
       }
       let memory: GovernorMemoryRecord;
       try {

@@ -5,6 +5,7 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import type { GovernorJsonValue } from "./canonical-json.js";
+import { GovernorController } from "./controller.js";
 import { governorMemoryFactPredicate } from "./memory-contradiction-policy.js";
 import {
   correctMemoryTestTask,
@@ -49,6 +50,7 @@ function promote(params: {
   factKey: string;
   content: GovernorJsonValue;
   observedAt: number;
+  freshnessExpiresAt?: number;
   sourceKind?: "tool" | "structured_external" | "authenticated_user";
 }) {
   const evidenceId = `evidence-${params.memoryId}`;
@@ -70,6 +72,9 @@ function promote(params: {
     factKey: params.factKey,
     scope: params.scope,
     expectedScopeEpoch: params.harness.store.memory.getScopeEpoch(params.scope),
+    ...(params.freshnessExpiresAt === undefined
+      ? {}
+      : { freshnessExpiresAt: params.freshnessExpiresAt }),
     now: params.observedAt,
   });
 }
@@ -194,6 +199,75 @@ describe("governor memory integrity", () => {
         expect.objectContaining({ memoryId: "memory-forget", status: "tombstoned" }),
         expect.objectContaining({ memoryId: "memory-keep", status: "quarantined" }),
       ]);
+    });
+  });
+
+  it("retires expired authority before backend retirement and accepts a newer observation", async () => {
+    await withMemoryTestHarness(async (harness) => {
+      const firstTask = startMemoryTestTask(harness.controller, scopeA, 1);
+      expect(
+        promote({
+          harness,
+          taskId: firstTask,
+          scope: scopeA,
+          memoryId: "memory-expiring",
+          factKey: "fixture.expiring",
+          content: { value: "old" },
+          observedAt: 100,
+          freshnessExpiresAt: 102,
+        }).stored,
+      ).toBe(true);
+      expect(harness.store.memory.retrieve({ scope: scopeA, now: 103 })).toEqual([]);
+      expect(harness.store.memory.retrieveAudit({ scope: scopeA })).toEqual([
+        expect.objectContaining({ memoryId: "memory-expiring", status: "tombstoned" }),
+      ]);
+      const retiredScopeKey = harness.store.memory.retrieveAudit({ scope: scopeA })[0]!.scopeKey;
+      const beforeRestart = harness.broker.memoryAuthority.state(
+        retiredScopeKey,
+        "fixture.expiring",
+      );
+      expect(beforeRestart).toMatchObject({
+        generation: 2,
+        status: "retired",
+        ordering: { observedAt: 102, recordedAt: 103 },
+        retirementDecision: {
+          priorGeneration: 1,
+          newGeneration: 2,
+          semanticCutoff: 102,
+          issuedAt: 103,
+          reason: "expiry",
+        },
+      });
+      closeOpenClawStateDatabase();
+      const restartedCapabilities = memoryTestRegistry();
+      const restarted = createGovernorTestStore({
+        stateDir: harness.stateDir,
+        capabilities: restartedCapabilities,
+      });
+      const restartedHarness = {
+        ...restarted,
+        controller: new GovernorController(restarted.store, restartedCapabilities),
+        stateDir: harness.stateDir,
+      } as MemoryTestHarness;
+      expect(
+        restartedHarness.broker.memoryAuthority.state(retiredScopeKey, "fixture.expiring"),
+      ).toEqual(beforeRestart);
+      const replacementTask = startMemoryTestTask(restartedHarness.controller, scopeA, 2);
+      expect(
+        promote({
+          harness: restartedHarness,
+          taskId: replacementTask,
+          scope: scopeA,
+          memoryId: "memory-reobserved",
+          factKey: "fixture.expiring",
+          content: { value: "new" },
+          observedAt: 200,
+          freshnessExpiresAt: 300,
+        }).stored,
+      ).toBe(true);
+      expect(
+        restartedHarness.store.memory.retrieve({ scope: scopeA, now: 201 }).map((m) => m.memoryId),
+      ).toEqual(["memory-reobserved"]);
     });
   });
 

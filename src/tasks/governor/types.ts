@@ -185,6 +185,12 @@ export type GovernorTaskProjection = {
   plan?: GovernorPlan;
   conditions: GovernorTaskConditions;
   claims: readonly GovernorTaskClaim[];
+  finalResponsePhase?: Readonly<{
+    progressDigest: string;
+    planVersion: number;
+    objectiveRevision: number;
+    requestedAt: number;
+  }>;
   taskVersion: number;
   objectiveRevision: number;
   planVersion: number;

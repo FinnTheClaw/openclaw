@@ -563,7 +563,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "package.json",
-      sha256: "a857bca973b0a21d3be5ced0a8e755e49ae1bdd7f0ac5e54210f9ace9a72c00b",
+      sha256: "c0b455a8837d557045c1f002000b11ea949b8c886238942b3d7b33a048c6f0c2",
     },
     {
       path: "packages/agent-core/src/agent-loop.ts",
@@ -1019,7 +1019,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/memory-host-sdk/src/host/openclaw-runtime-memory.ts",
-      sha256: "0110fa921a2d7b9b57bd96662385e9cd34f844f9aca3197475d4497b19909fa0",
+      sha256: "c1e7f2808a433bcd2a1a4694a65d638b7b270b759e2d9749a6635a0f75c49e88",
     },
     {
       path: "packages/memory-host-sdk/src/host/openclaw-runtime-session.ts",
@@ -1027,7 +1027,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "packages/memory-host-sdk/src/host/openclaw-runtime.ts",
-      sha256: "e4d8cbc8f414d1f5a69c409f7945e769e69f8d4ddb9f8c44f35b746198c7ada6",
+      sha256: "53b4a50da77c05119123715592c37064c674c3c4ad283c41a462ce41315f926f",
     },
     {
       path: "packages/memory-host-sdk/src/host/qmd-process.ts",
@@ -2435,7 +2435,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/embedded-agent-runner/governor-loop-bridge.ts",
-      sha256: "bca07fbf89af562246c5700a6085f7bb5726384a47f18f667e875378713274da",
+      sha256: "1c1d532de2abc4e35d6451bba4e1fda34a75bdf0580e827e3bdb3b5b1084eb2e",
     },
     {
       path: "src/agents/embedded-agent-runner/history.ts",
@@ -4179,7 +4179,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-child-intent-store-lifecycle.sqlite.ts",
-      sha256: "bf9fbbc30e27c6db7689c10d60dae2e4ee41fa7cf606a26d7e67cda6291e24c4",
+      sha256: "82b514bd75713f0c1789f2f37a3b50ce14a0973ed643b85e5426c1624e585826",
     },
     {
       path: "src/agents/subagent-child-intent-store.sqlite.ts",
@@ -4215,7 +4215,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-gateway-acceptance-receipt-auth.ts",
-      sha256: "a20bb54d74cb6259df397fcf341802e1fc6b8ab4525b86be7dedc547a70c90ef",
+      sha256: "46dfc0b0cc4000c17c7f8a5863548052933e0d6aa0905bb794a9f7d7b7c299d3",
     },
     {
       path: "src/agents/subagent-gateway-acceptance-receipt-persistence-values.ts",
@@ -4235,7 +4235,15 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-gateway-acceptance-receipt-store.sqlite.ts",
-      sha256: "69631132e5c2d32785b0848f386b1ef3f12da3a56788063863cf1038db98b96f",
+      sha256: "a9d409da3a3f2c168b6da11c0248c7bd4237ba14d7c385ab332f6310377be587",
+    },
+    {
+      path: "src/agents/subagent-gateway-acceptance-receipt-transitions.sqlite.ts",
+      sha256: "4cff5ac8b1e2f462e77e9851a63cf6e1a49e1be998b5c5f02ab166ed07831a0f",
+    },
+    {
+      path: "src/agents/subagent-gateway-child-intent-binding.sqlite.ts",
+      sha256: "ab8ba1db91c03e2faed70365bbc2aeec6dbfce2cbfaf66326058bec0a50540a4",
     },
     {
       path: "src/agents/subagent-governed-admission.ts",
@@ -4299,7 +4307,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-registry-run-manager.ts",
-      sha256: "6ca3b2ef85989938841433b32c81ad789cf63a805546285adcb24c5192b31e14",
+      sha256: "bc635e77a3de348275536cb6127523b0d63613cbaba45e3106ac77b624aaf88e",
     },
     {
       path: "src/agents/subagent-registry-runtime.ts",
@@ -4379,7 +4387,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/agents/subagent-spawn.ts",
-      sha256: "9ae9acc6adae6fd2c6f56804290924c73159ede11c73e4cd36da9c176d427613",
+      sha256: "0e52957524ae2209078a4297947ba42a41c1a8d8ed27d01606aec44351bc68be",
     },
     {
       path: "src/agents/subagent-spawn.types.ts",
@@ -9923,7 +9931,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/behavior-governor-lifecycle.ts",
-      sha256: "e84d650617b7a81143a6e2389489afaeb0be272d8bacb605aa3db06bc9c30972",
+      sha256: "27eb11eed09866c742b5c274cd557e54ae2d61064b2bf9175ae96445d87c2977",
     },
     {
       path: "src/gateway/boot-echo-guard.ts",
@@ -10519,7 +10527,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/gateway/server-methods/agent.ts",
-      sha256: "4542088a8cc17aba46804272af96fe7378672a9871bffb6ba75dcfc83bf9c732",
+      sha256: "968deaa5ca7eb9b357c8badce4da19dde165c4769e8b5b90376ff09a0958e4ac",
     },
     {
       path: "src/gateway/server-methods/agents-config-mutations.ts",
@@ -14711,7 +14719,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/plugins/loader.ts",
-      sha256: "52855820cd3cc5d42897e3e1b6402ed664ca847b48d589eb68184d7e462595b4",
+      sha256: "3df89e3ee550b91b1524ecba3613c85ca7d32819092fac2d0be5003b2e3d05d5",
     },
     {
       path: "src/plugins/logger.ts",
@@ -14782,12 +14790,20 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "c507c64a4394e4a42df950cab602841ba03fc609118c1ee18907ebb9abc9fac5",
     },
     {
+      path: "src/plugins/memory-governor-capability.ts",
+      sha256: "3126fddcb6c13b4ecb6669de75fd6b50a5a1b701c71dbccfe7261acd682a6daa",
+    },
+    {
+      path: "src/plugins/memory-governor-private.ts",
+      sha256: "453845b362c246c5e95a016e041d9a8fb6625fea4b3ec918b1d44d9a5cac2f6a",
+    },
+    {
       path: "src/plugins/memory-runtime.ts",
       sha256: "b951ce375af34db475641807887ae48e9cde97adeb17efa859b6aa4ecafc97b0",
     },
     {
       path: "src/plugins/memory-state.ts",
-      sha256: "ef246beb105a769f47606b10d2f723e0674ad5cd0da6b1adb6b48d5b06f4d5e4",
+      sha256: "87ca9b9deede0cb4909133f0e7c5535e51471b95583e3873ab8cab4acb6212f5",
     },
     {
       path: "src/plugins/migration-provider-runtime.ts",
@@ -15099,7 +15115,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/plugins/registry.ts",
-      sha256: "dbea89d7d6160eb3f7463e7b571e734f686e1cb9b09055f17f2614ca4df28e98",
+      sha256: "4c5036e277be4649f59fe76499b27345cdaecb36aa3aa1652598fb973c5f4715",
     },
     {
       path: "src/plugins/roots.ts",
@@ -15763,7 +15779,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-completed-replay.ts",
-      sha256: "40f0ce3482d86ea216cc704de8013a7323ef506bb8c7cf6057508dd8d9761406",
+      sha256: "6265006cd2bd07598d0304803339fa01162400521f369a91599f7fdf0c0f9779",
     },
     {
       path: "src/security/governor-agent-loop-config.ts",
@@ -15774,8 +15790,16 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "9ce93d5168344e6ead5e983f963a06e20d1a9bb1c25fe8c1d80e61b8f92f6175",
     },
     {
-      path: "src/security/governor-agent-loop-guidance-recovery.ts",
-      sha256: "c31091ffa0e0203081ee3fa6afadc0b9eda885fc20f27a1cb1e63c86fbd3a8b2",
+      path: "src/security/governor-agent-loop-criterion-arguments.ts",
+      sha256: "20ce2bcef0a9b53e76bba3d10efbfd0017081a243a88d1a01a38262a60a20df3",
+    },
+    {
+      path: "src/security/governor-agent-loop-final-response.ts",
+      sha256: "70606127fdda31201667d88084374a3295d6889e094685cc1790ac86f3ec29e1",
+    },
+    {
+      path: "src/security/governor-agent-loop-finish-recovery.ts",
+      sha256: "d1a054e1ac798cd33f6897657764096a7d36e08fa8c78dc251fa65206e096214",
     },
     {
       path: "src/security/governor-agent-loop-host-close.ts",
@@ -15787,7 +15811,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-agent-loop-host.ts",
-      sha256: "2f1137aec4006754146686cc50668bb4ed52e9336427dac1177cf8925e3ffb5a",
+      sha256: "6bd94a4f50848f0e30e041f425aaf3f29985302b90ca4db26c7f31469936b4ca",
     },
     {
       path: "src/security/governor-agent-loop-inert-registry.ts",
@@ -15796,6 +15820,14 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     {
       path: "src/security/governor-agent-loop-ingress.ts",
       sha256: "b62ecf0ec3d5815d09be65a02121405a563727593aae9d76c4eb3a0f1653dc24",
+    },
+    {
+      path: "src/security/governor-agent-loop-phase.ts",
+      sha256: "b4d3e458011f860b0f98a1cdb5f8b80322c4a66e46944b09c14106e3cad661a4",
+    },
+    {
+      path: "src/security/governor-agent-loop-plan.ts",
+      sha256: "89902fd991973a64a6cf1bda71c2e07ade985cfb63c39f700e568f776efecd58",
     },
     {
       path: "src/security/governor-agent-loop-progress.ts",
@@ -15814,12 +15846,16 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "63416003b06ef7a16fd280f628bde24a709ee22213f319c38a975ba41ca2d66f",
     },
     {
+      path: "src/security/governor-agent-loop-scope-disposal.ts",
+      sha256: "74d06f5f8802247aec2130c3858711c1f15cef9e83e001e4199a0ed9642fca8d",
+    },
+    {
       path: "src/security/governor-agent-loop-scope-token.ts",
       sha256: "41fe60afa815029108ba433d2c7640b174bd7b7cf5b5056d40ccb5215c664ebf",
     },
     {
       path: "src/security/governor-agent-loop-task.ts",
-      sha256: "edf512684d5c8f9d8fad04b6e5788ba196fd2a549b5affe29338dcfa523861f4",
+      sha256: "b7fe517f10482c81d689b7ce82cfc1eff9fd0974c43b09e4d682ae1cdbbe5476",
     },
     {
       path: "src/security/governor-agent-loop-terminal-replay.ts",
@@ -15834,8 +15870,16 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "b3fbbe71073084cb04775c0bdc80e0cdeaa635cc470cccc2b518a7a3a9c45f55",
     },
     {
+      path: "src/security/governor-agent-loop-transient-failure.ts",
+      sha256: "150c77d06193288e20ac2d73476cea2a309fcb0f81d43e82b3b45f0f454e6526",
+    },
+    {
       path: "src/security/governor-agent-loop-turn-handler.ts",
-      sha256: "864178fedeee0421948927c6c5d4c0ad89fdccf7fd04da7c2f658078e67582dd",
+      sha256: "4019d87abba305361aad0ea015ff15870a6bbbe438c642beb42546f40367a31c",
+    },
+    {
+      path: "src/security/governor-agent-loop-turn-state.ts",
+      sha256: "e5c9a6050962cb6336ef15e32290d2c5ed4b1218ec9d13d8acd57f8a0f5aed09",
     },
     {
       path: "src/security/governor-agent-loop-values.ts",
@@ -15843,7 +15887,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-anti-rollback-ledger.ts",
-      sha256: "0a2e0568e2911284087b12e4377c71c359c5460a0aa0628e6524124d5c9a2908",
+      sha256: "d4ba85d618bcb26c97c3489ae5c6296d5d18f3cd2cef495ac1d3f8b5fa04c054",
     },
     {
       path: "src/security/governor-host-approval-capabilities.ts",
@@ -15851,7 +15895,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-bootstrap.ts",
-      sha256: "3267ee1c072fd54cfeeb1733fe40248d6c3a66bddee74a3eb6ef2deeb117260e",
+      sha256: "32a7d0c66fe9b2ca1cc31e47f856cb5b5a30dded9db4d9099abe566db8361531",
     },
     {
       path: "src/security/governor-host-broker-resolvers.ts",
@@ -15899,7 +15943,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-ledger-codec.ts",
-      sha256: "05cd68a20475182fe595838ee75ce3b36056f1a6f89383aec34cc02a7816eb62",
+      sha256: "547acdf53d1d6b2f85cf71e296727234370bc4673bcbef15c888acfe934a8104",
     },
     {
       path: "src/security/governor-host-ledger-storage.ts",
@@ -15907,7 +15951,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-memory-authority.ts",
-      sha256: "01bf97d6aa03eb34bf02d7f285c0daeab2c086dfe73dafdfc1b848cfc3a6129c",
+      sha256: "1e023d01461000dc65ec36c48cde33b245812b064b077040a6484a4378fbdef7",
     },
     {
       path: "src/security/governor-host-owner-ingress-persistence.ts",
@@ -15923,7 +15967,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/security/governor-host-persistence.ts",
-      sha256: "882e186144d3138daac1d17d52acf647b07c6935519008ca30f3f76167f2c076",
+      sha256: "be3aac8a168751ff367c1c74738e220277b086e9fa5e7834b70fcd5705d2e515",
     },
     {
       path: "src/security/governor-host-physical-execution.ts",
@@ -15936,6 +15980,10 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     {
       path: "src/security/governor-host-receipt-capabilities.ts",
       sha256: "d751660301ebfdd4a472c8e4987acf9d3c7043faca26b838feba787c879cb24e",
+    },
+    {
+      path: "src/security/governor-host-runtime-close.ts",
+      sha256: "d92c8842d05156378d8e11ecfbcde4850b9c580f8b48bdedc3b64faf5cbc5921",
     },
     {
       path: "src/security/governor-host-secrets.ts",
@@ -16603,7 +16651,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/state/openclaw-state-schema.generated.ts",
-      sha256: "d799d61aae19dacb41dce1b011d40e96f573d47a50327142c7f9a357f9d338a6",
+      sha256: "034ddb880141215d8bd7fd42b977b6a5be6a13e811b32f42ef42921a7a5037a1",
     },
     {
       path: "src/status/agent-runtime-label.ts",
@@ -16783,7 +16831,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/controller-bootstrap.ts",
-      sha256: "0731fbbded0b6fa694ddc6adc04cc973fc08b26246c06834cb647b21448a650b",
+      sha256: "ae7218725043ce8f5dd6c58905033358a3dcb80405183cb08ae17ce489a1cb04",
     },
     {
       path: "src/tasks/governor/controller-conditions.ts",
@@ -16795,11 +16843,11 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/controller-runtime.ts",
-      sha256: "c578cf8f3f6c338273d048c03ce07f3f74ced2ef37ef742b833b8ba4d3c9c680",
+      sha256: "c632b9466094f52336eeac3007f2c726a62dce964d57a39f3502942ab2e0d3e8",
     },
     {
       path: "src/tasks/governor/controller.ts",
-      sha256: "6d53ea209370f2469f2334f4b5fcb79e684e2938ea5b0d1afe6c87fc5730b5da",
+      sha256: "c76b915e6dd5dba1fe54ac68ad70fe026c33da46235907c4f749e3cdb5464f1b",
     },
     {
       path: "src/tasks/governor/current-evidence.ts",
@@ -16819,7 +16867,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/evidence.ts",
-      sha256: "8ca0fcdafc1cb7be6ebc28885ee817f91cddb9982f35933ae2b1b8beb55b313d",
+      sha256: "4bb2a3be58d0300e2194cf9dd7c5b56a8c23b2199dc28142e253100b90d8fe7d",
     },
     {
       path: "src/tasks/governor/external-child-runs.ts",
@@ -16858,6 +16906,10 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "542170f957a3b985f9a7ab74661f745f3ae03e6951b7c3092b6c3d5413348037",
     },
     {
+      path: "src/tasks/governor/finish-pending-rejection.ts",
+      sha256: "1cb1199920f10ac23b6c4d087dc0ee147642f218f061bf2f754523a76aca3994",
+    },
+    {
       path: "src/tasks/governor/integrity-error.ts",
       sha256: "8e9ad8b888e8988892d1c394388ddb325a46077a48403c364d10c3529b23a7e5",
     },
@@ -16875,11 +16927,15 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/memory-authority-binding.ts",
-      sha256: "0431303b409d8c6820ab464065f944569da44b463314a0a6069458dc255fb85d",
+      sha256: "ecc8f19fc2a68be8ad842d990c66151a3d8ae535748ab6be9bd031e01a2ac177",
     },
     {
       path: "src/tasks/governor/memory-authority.ts",
-      sha256: "f7d3574569a9c07fc602f94b0e726cc57ebe7542725b4e0bf3015201032360e3",
+      sha256: "2a581f19e99ca6780aa53634ce7334cf74cecbbfe8b6eecac9c0c4a8bde47200",
+    },
+    {
+      path: "src/tasks/governor/memory-backend-binding.ts",
+      sha256: "63eb765b4d7e277c97f372f872b481e91ae09926cb796836f04064fbe5dc4ebc",
     },
     {
       path: "src/tasks/governor/memory-contradiction-policy.ts",
@@ -16898,12 +16954,16 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
       sha256: "ec255365eee1b0b799d20d70e65b7eb2995787f23e291c35398bc4afee1a0251",
     },
     {
+      path: "src/tasks/governor/memory-forget.ts",
+      sha256: "4c295e1b76d256317511efee00b64dee1c0d39208c522d8cc1139405a8167ea4",
+    },
+    {
       path: "src/tasks/governor/memory-input-validation.ts",
       sha256: "428e6e11cdc1884b930ccf4a076be19c6e2ea6c8307d01b6d2d480ddfac65ef5",
     },
     {
       path: "src/tasks/governor/memory-integrity.ts",
-      sha256: "2f18c3d0630ceaf3aeea9cf31a9d79b8b236288baea738d4ec1bbac78a431e8d",
+      sha256: "538ab410f0b24be41172c679dfc15041a9c31f19df1524b4c3651d4a37b7311b",
     },
     {
       path: "src/tasks/governor/memory-record-codec.ts",
@@ -16939,7 +16999,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/memory-subsystem.ts",
-      sha256: "ba0c4901f21730630a317f080b34df624223b97051a15f6cfbd1ac3003ddc848",
+      sha256: "6ac0aac4c0d9b297dd565aba721d5bf39e2d84627091c7671c52f7ff2f6f061e",
     },
     {
       path: "src/tasks/governor/memory-types.ts",
@@ -16964,6 +17024,14 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     {
       path: "src/tasks/governor/persistence-guard.ts",
       sha256: "eb291902399abdb9d7b93cb7b6aef28b5d4b845ad29a4deabf344feb567d60c2",
+    },
+    {
+      path: "src/tasks/governor/plan-preparation.ts",
+      sha256: "4398d0752b0e79e5c5f0e310494eb4100eb430d6e08baaf1b7e82dbcdb858797",
+    },
+    {
+      path: "src/tasks/governor/plan-replacement.ts",
+      sha256: "eadfe298e2e88e2904b27969a32f2bcbaa44927348bbd9fefa78dc4b4b1ccc2f",
     },
     {
       path: "src/tasks/governor/planning-policy.ts",
@@ -16999,7 +17067,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/state-schema.ts",
-      sha256: "6ce7dacae90600a8ffdef363313602f5a3498ca029e2dd994361507cc7f9fd8d",
+      sha256: "9c896ec79557b60b2f0f90fc2523b46ad0057d69ba0ccebf78e8069e11b036fa",
     },
     {
       path: "src/tasks/governor/store-audit.ts",
@@ -17007,23 +17075,31 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/store-bootstrap.ts",
-      sha256: "c6f3fbcc0b65b3b6bbc2aa7545644fd52408f1bee598eafe353b72fdd7b78cc1",
+      sha256: "89ef5e3814a9d39b09a415acdc6938df5445ed005ae2211e286f65e452fe895d",
     },
     {
       path: "src/tasks/governor/store-codec.ts",
-      sha256: "72e02f740139584809ac911938faa0dd87b1ee18b0c0846e73a0424f54810a8c",
+      sha256: "847840575ee047cf1da10363907179a593a02236a95426ed9756bc61ad6e35f4",
     },
     {
       path: "src/tasks/governor/store-commit-validation.ts",
-      sha256: "de112d4ec94341d8dead6b578242cf174f51ab3fc27b7caf30686b602e94c33d",
+      sha256: "32146498827fbf4e6861f13e94d658fcf0d5df2033460cb3851deb48114534e1",
     },
     {
       path: "src/tasks/governor/store-evidence-admission.ts",
-      sha256: "349eb4a1c36bb0c79d498207baca2c4a5149aa4f615af2f3ab79ed48f8dd8010",
+      sha256: "85485eb411dc4be044f5dffd69615239c6e76119daecc674474c82a0fc9db500",
     },
     {
       path: "src/tasks/governor/store-evidence-invalidation.ts",
-      sha256: "b3dfed139ede13eb0ffd881cbecea42b4c946d93b1f3c7643fe47520e3cacc1c",
+      sha256: "d6a6826f6a7da2152411cae322029a2d0310543b29417dc0f45da3e36bbb2f1c",
+    },
+    {
+      path: "src/tasks/governor/store-evidence-lineage.ts",
+      sha256: "2e4f2ac253d1c44f43254a6ea82e595a2c8c87484d4419f303cef45a2ed90060",
+    },
+    {
+      path: "src/tasks/governor/store-evidence-transaction.ts",
+      sha256: "ba0b92508eeeed5ab2464f3c5e2e78d53d39dea10c6bd72bce4daa9fd5c92dc3",
     },
     {
       path: "src/tasks/governor/store-ingress.ts",
@@ -17035,7 +17111,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/store-queries.ts",
-      sha256: "c45c1d1e3a10ae000808ee0fb0e6bdbfff09f479290f884ab5d2d3dc3c6a3acc",
+      sha256: "6e527becbf78fb4f92b26b0e3d99832204590cb636b008c55fcdd06d5a8d9f97",
     },
     {
       path: "src/tasks/governor/store-recovery.ts",
@@ -17043,7 +17119,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/store.ts",
-      sha256: "12d956958517450b5a230c7fc47d81bfef7f177aa3d52f05b1cb73874e8e40a7",
+      sha256: "63e7657ccae0692857824cc3130cd06238a8510e1cecb1861fe7b476a44461b9",
     },
     {
       path: "src/tasks/governor/task-authority.ts",
@@ -17055,7 +17131,7 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
     },
     {
       path: "src/tasks/governor/types.ts",
-      sha256: "71d1bef8b439af7444cf2b3a01b6fe32594974da9a06cb5f911e87142a53a5d3",
+      sha256: "7a51239c433dd3d51ec998f2c4be2fd0ccb3c61fd72f99a3f34e61cfe810de2e",
     },
     {
       path: "src/tasks/governor/work-classification.ts",
@@ -17672,4 +17748,4 @@ export const GOVERNOR_DELIVERY_BUILD_MANIFEST = {
   ],
 } as const;
 export const GOVERNOR_DELIVERY_BUILD_MANIFEST_DIGEST =
-  "8c00eeca706c7be94f9f7236f0cb79eb746c1e1b15990bac84b6c038672cb030";
+  "31066eadf407cb0ec53034085aea0480a8cdc5b35fa89a86abfde5f4036de092";

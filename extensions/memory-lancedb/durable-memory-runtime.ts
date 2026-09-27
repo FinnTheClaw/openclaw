@@ -3,9 +3,18 @@ import { createReadStream } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
+import type { MemoryGovernorBackend } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
+import {
+  createShadowGovernorMemoryBackend,
+  GovernorMemoryLanceDbAdapter,
+} from "./governor-memory-adapter.js";
+import { GovernorMemoryLedger } from "./governor-memory-ledger.js";
+import { governorMemoryProjection } from "./governor-memory-projection.js";
 import { HybridMemoryIndex, type MemoryProjectionInput } from "./hybrid-memory-index.js";
 import { assertMemoryContentSafe, MemorySensitiveContentError } from "./memory-content-guard.js";
+import type { DurableMemoryEmbedding } from "./memory-embedding.js";
 import { memoryScopeMetadata, resolveTrustedMemoryScope } from "./memory-scope.js";
 import {
   TemporalMemoryLedger,
@@ -37,10 +46,7 @@ export type DurableMemoryLogger = {
   error?: (message: string) => void;
 };
 
-export type DurableMemoryEmbedding = {
-  embed(text: string, options?: { timeoutMs?: number }): Promise<number[]>;
-  embedBatch?(texts: string[], options?: { timeoutMs?: number }): Promise<number[][]>;
-};
+export type { DurableMemoryEmbedding } from "./memory-embedding.js";
 
 export type DurableMemoryRuntimeOptions = {
   ledgerPath: string;
@@ -311,6 +317,7 @@ export class DurableMemoryRuntime {
   private drainRequested = false;
   private maintenanceCounter = 0;
   private stopped = false;
+  private governorLedger?: GovernorMemoryLedger;
 
   constructor(private readonly options: DurableMemoryRuntimeOptions) {
     this.ledger = new TemporalMemoryLedger(options.ledgerPath);
@@ -340,6 +347,34 @@ export class DurableMemoryRuntime {
       repaired += await this.index.rekeyAgentId(mapping.fromAgentId, mapping.toAgentId);
     }
     return repaired;
+  }
+
+  /** Create the real governed backend only after an enabled host requests it. */
+  createGovernorMemoryBackend(params: {
+    mode: "shadow" | "enforce";
+    authorityBindingKey?: string;
+    refreshDerived?: () => Promise<void>;
+  }): MemoryGovernorBackend {
+    if (params.mode === "shadow") {
+      return createShadowGovernorMemoryBackend();
+    }
+    if (!params.authorityBindingKey) {
+      throw new Error("GOVERNOR_MEMORY_AUTHORITY_KEY_REQUIRED");
+    }
+    this.governorLedger ??= new GovernorMemoryLedger(this.options.ledgerPath, {
+      enqueueProjection: true,
+      authorityBindingKey: params.authorityBindingKey,
+    });
+    return new GovernorMemoryLanceDbAdapter({
+      ledgerPath: this.options.ledgerPath,
+      ledger: this.governorLedger,
+      ownsLedger: false,
+      index: this.index,
+      embeddings: this.options.embeddings,
+      refreshDerived: params.refreshDerived,
+      enqueueProjection: true,
+      authorityBindingKey: params.authorityBindingKey,
+    });
   }
 
   captureInbound(options: {
@@ -925,10 +960,45 @@ export class DurableMemoryRuntime {
       return;
     }
     this.stopped = true;
-    await this.flush(5_000).catch(() => false);
-    this.index.close();
-    this.ledger.checkpoint("TRUNCATE");
-    this.ledger.close();
+    const errors: unknown[] = [];
+    try {
+      await this.flush(5_000);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await this.index.closeAsync();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      this.ledger.checkpoint("TRUNCATE");
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      this.ledger.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      this.governorLedger?.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      const cleanupDb = new DatabaseSync(this.options.ledgerPath);
+      try {
+        cleanupDb.exec("PRAGMA journal_mode=DELETE;");
+      } finally {
+        cleanupDb.close();
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "MEMORY_RUNTIME_CLOSE_FAILED");
+    }
   }
 
   private async drainProjection(): Promise<void> {
@@ -1082,6 +1152,10 @@ export class DurableMemoryRuntime {
   }
 
   private projectionForEvent(event: ProjectionLease, vector: number[]): MemoryProjectionInput {
+    const governorProjection = governorMemoryProjection(event, vector);
+    if (governorProjection) {
+      return governorProjection;
+    }
     const memoryScope =
       typeof event.metadata.memoryScope === "string" ? event.metadata.memoryScope : "global";
     const retrievalStatus = event.metadata.retrievalStatus === "active" ? "active" : "retracted";

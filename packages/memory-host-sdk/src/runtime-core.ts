@@ -32,6 +32,10 @@ export type { MemoryCitationsMode } from "./host/openclaw-runtime-config.js";
 export type {
   MemoryFlushPlan,
   MemoryFlushPlanResolver,
+  MemoryGovernorBackend,
+  MemoryGovernorCapability,
+  MemoryGovernorFact,
+  MemoryGovernorRecall,
   MemoryPluginCapability,
   MemoryPluginPublicArtifact,
   MemoryPluginPublicArtifactsProvider,

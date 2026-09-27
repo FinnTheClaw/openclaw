@@ -459,7 +459,7 @@ describe("host-governed production Agent loop bridge", () => {
         expect(turn).toBe(24);
         const finished = task(runtime, scope);
         expect(finished.state).toBe("COMPLETED");
-        expect(finished.planVersion).toBe(1);
+        expect(finished.planVersion).toBe(2);
         expect(runtime.adapter.controller.store.listEvidence(scope.taskId as never)).toHaveLength(
           21,
         );

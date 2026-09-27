@@ -3,6 +3,27 @@ import type { MemoryCitationsMode } from "../config/types.memory.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { MemorySearchManager } from "../memory-host-sdk/host/types.js";
+export {
+  authenticateGovernorMemoryFact,
+  createGovernorMemoryRetirementDecision,
+  createInertMemoryGovernorBackend,
+  governorMemoryAuthorityBindingDigest,
+  governorMemoryContentDigest,
+  governorMemoryFactMac,
+  verifyGovernorMemoryRetirementDecision,
+  verifyGovernorMemoryFact,
+  type MemoryGovernorBackend,
+  type MemoryGovernorFact,
+  type MemoryGovernorRecall,
+  type MemoryGovernorRetirementDecision,
+  type MemoryGovernorRetirementReason,
+  type MemoryGovernorSourceKind,
+} from "./memory-governor-capability.js";
+
+export type MemoryCapabilityProvenance = Readonly<{
+  origin: string;
+  source: string;
+}>;
 
 const log = createSubsystemLogger("plugins/memory-state");
 
@@ -185,6 +206,24 @@ export function registerMemoryCapability(
   pluginId: string,
   capability: MemoryPluginCapability,
 ): void {
+  registerMemoryCapabilityInternal(pluginId, capability);
+}
+
+/** Called only by the loader after it has attached verified plugin provenance. */
+export function registerTrustedMemoryCapability(
+  pluginId: string,
+  capability: MemoryPluginCapability,
+  _provenance: MemoryCapabilityProvenance,
+): void {
+  registerMemoryCapabilityInternal(pluginId, capability);
+}
+
+function registerMemoryCapabilityInternal(
+  pluginId: string,
+  capability: MemoryPluginCapability,
+): void {
+  const { governorMemory: _ignored, ...capabilityWithoutGovernor } =
+    capability as MemoryPluginCapability & { governorMemory?: unknown };
   const existingCapability = memoryPluginState.capability?.capability;
   // A selected memory plugin can add bridge artifacts while memory-core owns sidecar runtime hooks.
   const shouldPreserveExisting =
@@ -197,7 +236,7 @@ export function registerMemoryCapability(
     pluginId,
     capability: {
       ...(shouldPreserveExisting ? existingCapability : {}),
-      ...capability,
+      ...capabilityWithoutGovernor,
     },
   };
 }

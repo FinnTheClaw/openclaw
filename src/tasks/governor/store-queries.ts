@@ -174,6 +174,22 @@ export class GovernorStoreQueries {
     ).rows.map((row) => parseEvidenceRow(row, this.#verifyEvidence));
   }
 
+  listAllEvidence(taskId: GovernorTaskId): GovernorEvidenceRecord[] {
+    const { db } = openOpenClawStateDatabase(this.#options);
+    if (!loadGovernorTask(db, taskId, this.#tasks)) {
+      return [];
+    }
+    return executeSqliteQuerySync(
+      db,
+      governorDb(db)
+        .selectFrom("governor_evidence")
+        .selectAll()
+        .where("task_id", "=", taskId)
+        .orderBy("created_at", "asc")
+        .orderBy("evidence_id", "asc"),
+    ).rows.map((row) => parseEvidenceRow(row, this.#verifyEvidence));
+  }
+
   loadEvidence(taskId: GovernorTaskId, evidenceId: string): GovernorEvidenceRecord | null {
     const db = openOpenClawStateDatabase(this.#options).db;
     const task = loadGovernorTask(db, taskId, this.#tasks);
