@@ -8,6 +8,7 @@
  */
 import crypto from "node:crypto";
 import { canonicalGovernorJson, type GovernorJsonValue } from "../tasks/governor/canonical-json.js";
+import { createGovernorC02AttestationAuthority } from "./governor-c02-runtime-attestation.js";
 import { createHostApprovalCapabilities } from "./governor-host-approval-capabilities.js";
 import {
   createHostBrokerResolvers,
@@ -124,6 +125,7 @@ export function createHostGovernorBroker(params: {
   physicalExecutionCoordinator: GovernorTrustedPhysicalExecutionCoordinator;
   memoryAuthority: import("./governor-host-memory-authority.js").GovernorTrustedMemoryAuthority;
   taskAuthority: import("./governor-host-task-authority.js").GovernorTrustedTaskAuthority;
+  c02AttestationAuthority: ReturnType<typeof createGovernorC02AttestationAuthority>;
   close: () => void;
 } {
   if (!isGovernorSecrets(params.secrets) || !isGovernorHostPersistence(params.persistence)) {
@@ -154,6 +156,12 @@ export function createHostGovernorBroker(params: {
       throw new Error("GOVERNOR_HOST_CAPABILITY_CLOSED");
     }
   };
+  const c02AttestationAuthority = createGovernorC02AttestationAuthority({
+    sign: (value) => {
+      assertOpen();
+      return sign(state.key, value);
+    },
+  });
   const { submitObservedReceipt, submitEvidenceInvalidation } = createHostReceiptCapabilities({
     state,
     capability,
@@ -375,6 +383,7 @@ export function createHostGovernorBroker(params: {
     physicalExecutionCoordinator,
     memoryAuthority,
     taskAuthority,
+    c02AttestationAuthority,
     close,
   };
 }

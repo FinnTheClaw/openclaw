@@ -28,6 +28,7 @@ import {
   createGovernorStoreDependencies,
   type GovernorSqliteStoreParams,
 } from "./store-bootstrap.js";
+import { readGovernorC02AttestationSnapshot } from "./store-c02-attestation.js";
 import {
   bindEffect,
   bindEvent,
@@ -224,6 +225,16 @@ export class GovernorSqliteStore {
       capabilities: this.capabilities,
       tasks: this.#tasks,
       ingress: params,
+    });
+  }
+
+  readC02AttestationSnapshot(taskId: GovernorTaskId) {
+    return readGovernorC02AttestationSnapshot({
+      options: this.#options,
+      tasks: this.#tasks,
+      identity: this.identity,
+      verifyEvidence: (evidence) => this.#evidenceAdmissions.verify(evidence),
+      taskId,
     });
   }
 

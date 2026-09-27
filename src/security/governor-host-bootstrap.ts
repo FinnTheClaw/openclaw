@@ -11,6 +11,7 @@ import {
   installGovernorAgentLoopHost,
   type GovernorAgentLoopConfiguration,
 } from "./governor-agent-loop-host.js";
+import { createGovernorC02AttestationOwner } from "./governor-c02-attestation-owner.js";
 /** Trusted host bootstrap for feature-gated governor read-only bindings. */
 import { createHostGovernorBroker } from "./governor-host-broker.js";
 import { createGovernorHostDeliveryRuntime } from "./governor-host-channel-delivery.js";
@@ -87,6 +88,7 @@ export type GovernorHostRuntime = Readonly<{
       >["capabilities"]["submitObservedReceipt"];
     }>;
   }>;
+  c02Attestation: ReturnType<typeof createGovernorC02AttestationOwner>;
   deliveryHandles: readonly ReturnType<
     ReturnType<typeof createHostGovernorBroker>["capabilities"]["registerStaticDeliveryAdapter"]
   >[];
@@ -303,6 +305,7 @@ export function createGovernorHostRuntimeBindings(params: {
     physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
     memoryAuthority: broker.memoryAuthority,
     taskAuthority: broker.taskAuthority,
+    c02AttestationAuthority: broker.c02AttestationAuthority,
     secrets,
     owners,
     deliveryHandles: Object.freeze(deliveryHandles),
@@ -399,6 +402,10 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   if (!controller) {
     throw new Error("GOVERNOR_HOST_CONTROLLER_UNAVAILABLE");
   }
+  const c02Attestation = createGovernorC02AttestationOwner({
+    store: controller.store,
+    authority: bindings.c02AttestationAuthority,
+  });
   let closed = false;
   let closeFailure: AggregateError | undefined;
   const close = () => {
@@ -416,6 +423,11 @@ export function createGovernorHostRuntimeIfEnabled(params: {
     }
     try {
       agentLoopLifecycle?.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      c02Attestation.close();
     } catch (error) {
       errors.push(error);
     }
@@ -446,6 +458,11 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       cleanupErrors.push(cleanupError);
     }
     try {
+      c02Attestation.close();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    try {
       controller.close();
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
@@ -467,6 +484,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   return Object.freeze({
     adapter,
     owners: bindings.owners,
+    c02Attestation,
     deliveryHandles: bindings.deliveryHandles,
     freeze: () => {
       bindings.freeze();
