@@ -902,60 +902,66 @@ export const agentsHandlers: GatewayRequestHandlers = {
       ...(model !== undefined ? { model } : {}),
       ...(identity ? { identity } : {}),
     };
-    const nextConfig = applyAgentConfig(cfg, agentConfigUpdate);
-
-    let ensuredWorkspace: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
-    if (workspaceDir) {
-      const skipBootstrap = Boolean(nextConfig.agents?.defaults?.skipBootstrap);
-      ensuredWorkspace = await ensureAgentWorkspace({
-        dir: workspaceDir,
-        ensureBootstrapFiles: !skipBootstrap,
-        skipOptionalBootstrapFiles: nextConfig.agents?.defaults?.skipOptionalBootstrapFiles,
-      });
-    }
-
-    const persistedIdentity = normalizeIdentityForFile(resolveAgentIdentity(nextConfig, agentId));
-    if (persistedIdentity && (workspaceDir || hasIdentityFields)) {
-      const identityWorkspaceDir = resolveAgentWorkspaceDir(nextConfig, agentId);
-      const previousWorkspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-      const fallbackWorkspaceDir =
-        workspaceDir && identityWorkspaceDir !== previousWorkspaceDir
-          ? previousWorkspaceDir
-          : undefined;
-      const identityContent = await buildIdentityMarkdownOrRespondUnsafe({
-        respond,
-        workspaceDir: identityWorkspaceDir,
-        identity: persistedIdentity,
-        fallbackWorkspaceDir,
-        preferFallbackWorkspaceContent:
-          Boolean(fallbackWorkspaceDir) && ensuredWorkspace?.identityPathCreated === true,
-      });
-      if (identityContent === null) {
-        return;
-      }
-      if (
-        !(await writeWorkspaceFileOrRespond({
-          respond,
-          workspaceDir: identityWorkspaceDir,
-          name: DEFAULT_IDENTITY_FILENAME,
-          content: identityContent,
-        }))
-      ) {
-        return;
-      }
-    }
-
-    try {
-      await updateAgentConfigEntry(agentConfigUpdate);
-    } catch (error) {
-      if (error instanceof AgentConfigPreconditionError) {
+    await withConfigMutationExclusive(async (latestCfg) => {
+      if (!isConfiguredAgent(latestCfg, agentId)) {
         respondAgentNotFound(respond, agentId);
         return;
       }
-      throw error;
-    }
+      const nextConfig = applyAgentConfig(latestCfg, agentConfigUpdate);
 
-    respond(true, { ok: true, agentId }, undefined);
+      let ensuredWorkspace: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
+      if (workspaceDir) {
+        const skipBootstrap = Boolean(nextConfig.agents?.defaults?.skipBootstrap);
+        ensuredWorkspace = await ensureAgentWorkspace({
+          dir: workspaceDir,
+          ensureBootstrapFiles: !skipBootstrap,
+          skipOptionalBootstrapFiles: nextConfig.agents?.defaults?.skipOptionalBootstrapFiles,
+        });
+      }
+
+      const persistedIdentity = normalizeIdentityForFile(resolveAgentIdentity(nextConfig, agentId));
+      if (persistedIdentity && (workspaceDir || hasIdentityFields)) {
+        const identityWorkspaceDir = resolveAgentWorkspaceDir(nextConfig, agentId);
+        const previousWorkspaceDir = resolveAgentWorkspaceDir(latestCfg, agentId);
+        const fallbackWorkspaceDir =
+          workspaceDir && identityWorkspaceDir !== previousWorkspaceDir
+            ? previousWorkspaceDir
+            : undefined;
+        const identityContent = await buildIdentityMarkdownOrRespondUnsafe({
+          respond,
+          workspaceDir: identityWorkspaceDir,
+          identity: persistedIdentity,
+          fallbackWorkspaceDir,
+          preferFallbackWorkspaceContent:
+            Boolean(fallbackWorkspaceDir) && ensuredWorkspace?.identityPathCreated === true,
+        });
+        if (identityContent === null) {
+          return;
+        }
+        if (
+          !(await writeWorkspaceFileOrRespond({
+            respond,
+            workspaceDir: identityWorkspaceDir,
+            name: DEFAULT_IDENTITY_FILENAME,
+            content: identityContent,
+          }))
+        ) {
+          return;
+        }
+      }
+
+      try {
+        await updateAgentConfigEntry(agentConfigUpdate);
+      } catch (error) {
+        if (error instanceof AgentConfigPreconditionError) {
+          respondAgentNotFound(respond, agentId);
+          return;
+        }
+        throw error;
+      }
+
+      respond(true, { ok: true, agentId }, undefined);
+    });
   },
   "agents.delete": async ({ params, respond, context }) => {
     if (!validateAgentsDeleteParams(params)) {

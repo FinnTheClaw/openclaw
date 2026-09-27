@@ -1316,6 +1316,83 @@ describe("agents.update", () => {
       nonBlockingRead: true,
     });
   });
+  it.each([
+    ["GM08-N1-name", { name: "Late Name" }],
+    ["GM08-N2-emoji", { emoji: "🦊" }],
+    ["GM08-N3-avatar", { avatar: "https://example.com/new.png" }],
+    ["GM08-N4-new-workspace", { workspace: "/new/workspace" }],
+    ["GM08-N5-existing-workspace", { workspace: "/existing/workspace" }],
+  ] as const)(
+    "%s rejects a concurrent delete before workspace or identity effects",
+    async (_id, update) => {
+      let checks = 0;
+      mocks.findAgentEntryIndex.mockImplementation(() => (++checks < 2 ? 0 : -1));
+      const { respond, promise } = makeCall("agents.update", {
+        agentId: "test-agent",
+        ...update,
+      });
+      await promise;
+      expectRespondErrorContaining(respond, "not found");
+      expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+      expect(mocks.rootWrite).not.toHaveBeenCalled();
+      expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it("GM08-N6 keeps successful identity update semantics", async () => {
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "Updated Name",
+    });
+    await promise;
+    expectRespondOk(respond, { agentId: "test-agent" });
+    expect(mocks.rootWrite).toHaveBeenCalledTimes(1);
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("GM08-N7 keeps successful workspace bootstrap semantics", async () => {
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await promise;
+    expectRespondOk(respond, { agentId: "test-agent" });
+    expect(mocks.ensureAgentWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("GM08-N8 records generic late config-write failure as unresolved", async () => {
+    mocks.writeConfigFile.mockRejectedValueOnce(new Error("injected generic write failure"));
+    const { promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await expect(promise).rejects.toThrow("injected generic write failure");
+    expect(mocks.ensureAgentWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("GM08-N9 still rejects unsafe identity writes before config mutation", async () => {
+    mocks.rootWrite.mockRejectedValueOnce(new FsSafeError("path-mismatch", "unsafe destination"));
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "Unsafe Name",
+    });
+    await promise;
+    expectRespondErrorContaining(respond, "unsafe workspace file");
+    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+  });
+
+  it("GM08-N10 keeps model-only updates free of workspace effects", async () => {
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      model: "moira/brain",
+    });
+    await promise;
+    expectRespondOk(respond, { agentId: "test-agent" });
+    expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("agents.delete", () => {
