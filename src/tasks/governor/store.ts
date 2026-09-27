@@ -28,6 +28,7 @@ import {
   createGovernorStoreDependencies,
   type GovernorSqliteStoreParams,
 } from "./store-bootstrap.js";
+import { registerGovernorC02Store } from "./store-c02-attestation.js";
 import {
   bindEffect,
   bindEvent,
@@ -111,6 +112,12 @@ export class GovernorSqliteStore {
     this.fanout = dependencies.fanout;
     this.children = dependencies.children;
     this.outbox = dependencies.outbox;
+    registerGovernorC02Store(this, {
+      options: this.#options,
+      tasks: this.#tasks,
+      identity: this.identity,
+      verifyEvidence: (evidence) => this.#evidenceAdmissions.verify(evidence),
+    });
   }
 
   opaqueReference(kind: string, value: string): string {

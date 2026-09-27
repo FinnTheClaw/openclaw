@@ -11,6 +11,7 @@ import {
   installGovernorAgentLoopHost,
   type GovernorAgentLoopConfiguration,
 } from "./governor-agent-loop-host.js";
+import { createGovernorC02AttestationOwner } from "./governor-c02-runtime-attestation.js";
 /** Trusted host bootstrap for feature-gated governor read-only bindings. */
 import { createHostGovernorBroker } from "./governor-host-broker.js";
 import { createGovernorHostDeliveryRuntime } from "./governor-host-channel-delivery.js";
@@ -41,6 +42,7 @@ export type GovernorHostIntegrationConfiguration = Readonly<{
 
 export type GovernorHostRuntime = Readonly<{
   adapter: GovernorRuntimeAdapter;
+  wrapC02Scope: ReturnType<typeof createGovernorC02AttestationOwner>["wrap"];
   owners: Readonly<{
     evidence: Readonly<{
       ownerId: string;
@@ -303,6 +305,7 @@ export function createGovernorHostRuntimeBindings(params: {
     physicalExecutionCoordinator: broker.physicalExecutionCoordinator,
     memoryAuthority: broker.memoryAuthority,
     taskAuthority: broker.taskAuthority,
+    c02AttestationAuthority: broker.c02AttestationAuthority,
     secrets,
     owners,
     deliveryHandles: Object.freeze(deliveryHandles),
@@ -340,6 +343,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   });
   let agentLoopLifecycle: GovernorAgentLoopHostLifecycle | undefined;
   let controller: NonNullable<ReturnType<typeof createGovernorControllerIfEnabled>> | undefined;
+  let c02AttestationOwner: ReturnType<typeof createGovernorC02AttestationOwner> | undefined;
   try {
     const created = createGovernorControllerIfEnabled({
       ...params,
@@ -362,6 +366,11 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       throw new Error("Enabled governor controller failed to initialize");
     }
     controller = created;
+    c02AttestationOwner = createGovernorC02AttestationOwner({
+      store: controller.store,
+      authority: bindings.c02AttestationAuthority,
+      capabilities: params.capabilities,
+    });
     agentLoopLifecycle = agentLoop
       ? installGovernorAgentLoopHost({
           controller,
@@ -372,6 +381,11 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       : undefined;
   } catch (error) {
     const cleanupErrors: unknown[] = [];
+    try {
+      c02AttestationOwner?.close();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
     try {
       agentLoopLifecycle?.close();
     } catch (cleanupError) {
@@ -415,6 +429,11 @@ export function createGovernorHostRuntimeIfEnabled(params: {
       errors.push(error);
     }
     try {
+      c02AttestationOwner?.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       agentLoopLifecycle?.close();
     } catch (error) {
       errors.push(error);
@@ -441,6 +460,11 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   } catch (error) {
     const cleanupErrors: unknown[] = [];
     try {
+      c02AttestationOwner?.close();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    try {
       agentLoopLifecycle?.close();
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
@@ -466,6 +490,7 @@ export function createGovernorHostRuntimeIfEnabled(params: {
   }
   return Object.freeze({
     adapter,
+    wrapC02Scope: c02AttestationOwner!.wrap,
     owners: bindings.owners,
     deliveryHandles: bindings.deliveryHandles,
     freeze: () => {
