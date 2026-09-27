@@ -237,6 +237,26 @@ describe("llm-task tool (json-only)", () => {
     expect(call.model).toBeUndefined();
   });
 
+  it.each([
+    { label: "host defaults", config: {} },
+    {
+      label: "configured primary alias",
+      config: {
+        agents: {
+          defaults: {
+            model: { primary: "fast" },
+            models: { "openai/gpt-5.5": { alias: "fast" } },
+          },
+        },
+      },
+    },
+  ])("delegates $label without requiring a locally split model ref", async ({ config }) => {
+    mockIsolatedCompletionJson({ ok: true });
+    const result = await createLlmTaskTool(fakeApi({ config })).execute("id", { prompt: "x" });
+    expect(resultJson(result)).toEqual({ ok: true });
+    expect(firstIsolatedCompletionCall().model).toBeUndefined();
+  });
+
   it("reports the canonical provider and model returned by the execution owner", async () => {
     complete.mockImplementationOnce(async (params) => ({
       ...completionResult(params, '{"ok":true}'),

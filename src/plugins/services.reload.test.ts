@@ -159,3 +159,39 @@ it.each(["stop", "start"] as const)(
     expect(siblingStop).not.toHaveBeenCalled();
   },
 );
+
+it("retains every selected service for retry after an earlier replacement fails", async () => {
+  const starts = new Map<string, number>();
+  const live = new Set<string>();
+  const registry = createEmptyPluginRegistry();
+  for (const id of ["first", "pending"]) {
+    registry.services.push({
+      pluginId: id,
+      origin: "workspace",
+      source: "test",
+      service: {
+        id,
+        start() {
+          const count = (starts.get(id) ?? 0) + 1;
+          starts.set(id, count);
+          if (id === "first" && count === 2) {
+            throw new Error("replacement start rejected once");
+          }
+          live.add(id);
+        },
+        stop() {
+          live.delete(id);
+        },
+      },
+    });
+  }
+  const handle = await startPluginServices({ registry, config: {} });
+  handles.add(handle);
+  const selected = new Set(["first", "pending"]);
+
+  await expect(handle.reload({}, selected)).rejects.toThrow("replacement start rejected once");
+  await expect(handle.reload({}, selected)).resolves.toBeUndefined();
+
+  expect([...live].toSorted()).toEqual(["first", "pending"]);
+  expect(Object.fromEntries(starts)).toEqual({ first: 3, pending: 2 });
+});

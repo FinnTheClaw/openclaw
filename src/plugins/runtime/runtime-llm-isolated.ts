@@ -172,8 +172,8 @@ export async function runIsolatedAgentRuntimeCompletion(params: {
     if (params.request.signal?.aborted) {
       throw completionError("LLM_COMPLETION_ABORTED", "Plugin LLM completion was aborted.", error);
     }
-    const isolatedError = error as { code?: unknown; message?: unknown };
-    if (isolatedError.code === "unsupported") {
+    const isolatedError = error as { code?: unknown; message?: unknown } | null | undefined;
+    if (isolatedError?.code === "unsupported") {
       throw completionError(
         "LLM_ISOLATED_UNSUPPORTED",
         typeof isolatedError.message === "string"
@@ -182,7 +182,7 @@ export async function runIsolatedAgentRuntimeCompletion(params: {
         error,
       );
     }
-    if (isolatedError.code === "runtime-unavailable") {
+    if (isolatedError?.code === "runtime-unavailable") {
       throw completionError(
         "LLM_RUNTIME_UNAVAILABLE",
         typeof isolatedError.message === "string"
@@ -191,7 +191,7 @@ export async function runIsolatedAgentRuntimeCompletion(params: {
         error,
       );
     }
-    if (isolatedError.code === "input-rejected") {
+    if (isolatedError?.code === "input-rejected") {
       throw completionError(
         "LLM_ISOLATED_INPUT_REJECTED",
         typeof isolatedError.message === "string"
@@ -200,7 +200,7 @@ export async function runIsolatedAgentRuntimeCompletion(params: {
         error,
       );
     }
-    if (isolatedError.code === "output-rejected") {
+    if (isolatedError?.code === "output-rejected") {
       throw completionError(
         "LLM_COMPLETION_OUTPUT_REJECTED",
         typeof isolatedError.message === "string"
