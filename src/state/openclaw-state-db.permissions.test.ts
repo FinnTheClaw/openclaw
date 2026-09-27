@@ -2,7 +2,7 @@
 // filesystems without POSIX permission support (Azure Files, NFS, certain
 // Docker volume drivers).
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 
 // The permission helper hardens via the named import `chmodSync` from node:fs.
@@ -15,6 +15,13 @@ const chmodFailHook = vi.hoisted(() => ({
   failProbe: true,
   removeTargetSuffix: undefined as string | undefined,
   targets: [] as string[],
+  latePath: undefined as string | undefined,
+  lateDb: undefined as import("node:sqlite").DatabaseSync | undefined,
+  lateMaintenance: undefined as import("../infra/sqlite-wal.js").SqliteWalMaintenance | undefined,
+  lateClose: undefined as
+    | MockInstance<import("../infra/sqlite-wal.js").SqliteWalMaintenance["close"]>
+    | undefined,
+  lateReached: false,
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -29,6 +36,10 @@ vi.mock("node:fs", async (importOriginal) => {
       // Remove the file after existsSync reaches chmod to reproduce the exact race.
       actual.unlinkSync(String(target));
     }
+    if (chmodFailHook.lateDb && String(target) === chmodFailHook.latePath) {
+      chmodFailHook.lateReached = true;
+      throw chmodError("EACCES");
+    }
     const isProbe = String(target).includes(".openclaw-chmod-probe-");
     if (chmodFailHook.error && (chmodFailHook.failProbe || !isProbe)) {
       throw chmodFailHook.error;
@@ -36,6 +47,24 @@ vi.mock("node:fs", async (importOriginal) => {
     return (actual.chmodSync as (...args: unknown[]) => unknown)(target, mode);
   }) as typeof actual.chmodSync;
   return { ...actual, chmodSync, default: { ...actual, chmodSync } };
+});
+
+vi.mock("../infra/sqlite-wal.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../infra/sqlite-wal.js")>();
+  return {
+    ...actual,
+    configureSqliteConnectionPragmas: (
+      ...args: Parameters<typeof actual.configureSqliteConnectionPragmas>
+    ) => {
+      const maintenance = actual.configureSqliteConnectionPragmas(...args);
+      if (args[1]?.databasePath === chmodFailHook.latePath) {
+        chmodFailHook.lateDb = args[0];
+        chmodFailHook.lateMaintenance = maintenance;
+        chmodFailHook.lateClose = vi.spyOn(maintenance, "close");
+      }
+      return maintenance;
+    },
+  };
 });
 
 const fs = await import("node:fs");
@@ -142,6 +171,48 @@ describe("state database permission hardening without chmod support", () => {
     expect(() => openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: stateDir } })).toThrow(
       /EACCES/,
     );
+  });
+
+  it("closes the native database and WAL owner when final permission hardening fails", () => {
+    const stateDir = tempDirs.make("openclaw-state-late-chmod-");
+    chmodFailHook.latePath = join(stateDir, "state", "openclaw.sqlite");
+    try {
+      expect(() => openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: stateDir } })).toThrow(
+        /EACCES/,
+      );
+      expect(chmodFailHook.lateReached).toBe(true);
+      const database = chmodFailHook.lateDb;
+      expect(database).toBeDefined();
+      // This is the actual native handle, not a replacement SQLite implementation.
+      expect
+        .soft(database?.isOpen, "failed open must release the native SQLite handle")
+        .toBe(false);
+      expect
+        .soft(chmodFailHook.lateClose, "failed open must release its real WAL maintenance owner")
+        .toHaveBeenCalledTimes(1);
+      if (database?.isOpen) {
+        expect(database.prepare("PRAGMA journal_mode").get()).toMatchObject({
+          journal_mode: "wal",
+        });
+        expect(
+          database
+            .prepare("SELECT count(*) AS tables FROM sqlite_master WHERE type = 'table'")
+            .get()?.tables,
+        ).toBeGreaterThan(0);
+      }
+    } finally {
+      // Close the real resources even on the unfixed failure, before fixture removal.
+      chmodFailHook.latePath = undefined;
+      chmodFailHook.lateMaintenance?.close();
+      if (chmodFailHook.lateDb?.isOpen) {
+        chmodFailHook.lateDb.close();
+      }
+      chmodFailHook.lateClose?.mockRestore();
+      chmodFailHook.lateDb = undefined;
+      chmodFailHook.lateMaintenance = undefined;
+      chmodFailHook.lateClose = undefined;
+      chmodFailHook.lateReached = false;
+    }
   });
 
   it.each(["-wal", "-shm", "-journal"])(

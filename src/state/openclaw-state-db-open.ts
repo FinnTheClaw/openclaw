@@ -80,6 +80,7 @@ export function openUnpublishedStateDatabase(params: {
           synchronous: "NORMAL",
         });
         params.ensureSchema(db);
+        ensureOpenClawStatePermissions(params.pathname, params.env);
         return maintenance;
       } catch (error) {
         maintenance?.close();
@@ -95,6 +96,5 @@ export function openUnpublishedStateDatabase(params: {
     },
     { lockFailureReporting },
   );
-  ensureOpenClawStatePermissions(params.pathname, params.env);
   return { db, path: params.pathname, walMaintenance };
 }

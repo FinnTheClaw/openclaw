@@ -253,6 +253,16 @@ export async function dumpGitBackupDatabase(params: {
       )
       .map((entry) => requireSafeTableName(entry.name))
       .toSorted();
+    const includedDataTables = new Set(dataTables);
+    if (
+      database
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'")
+        .get()
+    ) {
+      // Seed high-water marks before loading retained rows. Older readers already
+      // load manifest tables in this order and SQLite creates this table itself.
+      dataTables.unshift("sqlite_sequence");
+    }
     const userVersionRow = database.prepare("PRAGMA user_version").get() as {
       user_version?: unknown;
     };
@@ -265,16 +275,19 @@ export async function dumpGitBackupDatabase(params: {
     const tables: Record<string, { rows: number; sha256: string }> = {};
     for (const table of dataTables) {
       const rowFilter =
-        table === "config_machine_state" && excludedConfigStateKeyPrefixes.length > 0
-          ? (row: Record<string, unknown>) => {
-              // Fail closed: a malformed state_key is dropped, never risked into a backup.
-              const stateKey = row.state_key;
-              return (
-                typeof stateKey === "string" &&
-                !excludedConfigStateKeyPrefixes.some((prefix) => stateKey.startsWith(prefix))
-              );
-            }
-          : undefined;
+        table === "sqlite_sequence"
+          ? (row: Record<string, unknown>) =>
+              typeof row.name === "string" && includedDataTables.has(row.name)
+          : table === "config_machine_state" && excludedConfigStateKeyPrefixes.length > 0
+            ? (row: Record<string, unknown>) => {
+                // Fail closed: a malformed state_key is dropped, never risked into a backup.
+                const stateKey = row.state_key;
+                return (
+                  typeof stateKey === "string" &&
+                  !excludedConfigStateKeyPrefixes.some((prefix) => stateKey.startsWith(prefix))
+                );
+              }
+            : undefined;
       const serialized = serializeTable(database, table, rowFilter);
       await fs.writeFile(path.join(tablesPath, `${table}.jsonl`), serialized.content, {
         encoding: "utf8",

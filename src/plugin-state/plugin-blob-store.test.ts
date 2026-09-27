@@ -36,6 +36,31 @@ function createPluginBlobStore<TMetadata>(pluginId: string, testOptions: TestBlo
 }
 
 describe("plugin blob store", () => {
+  it("preserves an accepted embedded-NUL blob key in read results", async () => {
+    await withOpenClawTestState({ label: "plugin-blob-nul-key" }, async (state) => {
+      const store = createPluginBlobStore<{ order: number }>("diffs", options(state.env));
+      const key = "a\0tail";
+      await store.register(key, new Uint8Array([1]), { order: 1 });
+      await expect(store.lookup(key)).resolves.toMatchObject({ key });
+      expect((await store.entries()).map((entry) => entry.key)).toEqual([key]);
+    });
+  });
+
+  it("evicts accepted embedded-NUL blob keys without exceeding the entry limit", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    await withOpenClawTestState({ label: "plugin-blob-nul-evict" }, async (state) => {
+      const store = createPluginBlobStore<{ order: number }>(
+        "diffs",
+        options(state.env, { maxEntries: 1 }),
+      );
+      await store.register("a\0tail", new Uint8Array([1]), { order: 1 });
+      vi.setSystemTime(1_001);
+      await store.register("b", new Uint8Array([2]), { order: 2 });
+      expect((await store.entries()).map((entry) => entry.key)).toEqual(["b"]);
+      await expect(store.lookup("a\0tail")).resolves.toBeUndefined();
+    });
+  });
   it("round-trips metadata and copies bytes on both sides", async () => {
     await withOpenClawTestState({ label: "plugin-blob-roundtrip" }, async (state) => {
       const store = createPluginBlobStore<{ kind: string }>("diffs", options(state.env));
