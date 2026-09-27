@@ -199,6 +199,13 @@ vi.mock("../../config/sessions.js", async (importOriginal) => ({
 }));
 
 vi.mock("../../agents/agent-scope.js", () => ({
+  toAgentEntriesRecord: (entries: MockAgentEntry[]) =>
+    Object.fromEntries(
+      entries.map((entry) => {
+        const { id, ...config } = entry;
+        return [id, config];
+      }),
+    ),
   listAgentIds: () => ["main"],
   listAgentEntries: mocks.listAgentEntries,
   resolveDefaultAgentId: (cfg: unknown) => {
@@ -596,13 +603,16 @@ type MockAgentEntry = {
 type MockConfig = {
   agents?: {
     list?: MockAgentEntry[];
+    entries?: Record<string, Omit<MockAgentEntry, "id">>;
   };
 };
 
 function getAgentList(cfg: unknown): MockAgentEntry[] {
-  return ((cfg as MockConfig | undefined)?.agents?.list ?? []).map((entry) =>
-    Object.assign({}, entry),
-  );
+  const agents = (cfg as MockConfig | undefined)?.agents;
+  if (agents?.entries) {
+    return Object.entries(agents.entries).map(([id, entry]) => ({ id, ...entry }));
+  }
+  return (agents?.list ?? []).map((entry) => Object.assign({}, entry));
 }
 
 function mergeAgentConfig(cfg: unknown, opts: unknown): MockConfig {
@@ -1263,7 +1273,13 @@ describe("agents.update", () => {
     expectStringNotContaining(write.data, "Old workspace role.");
   });
 
-  it("does not persist config when IDENTITY.md write fails on update", async () => {
+  it("restores config when IDENTITY.md write fails on update", async () => {
+    const before = structuredClone(getAgentList(mocks.loadConfigReturn));
+    for (let index = 0; index < 2; index++) {
+      mocks.writeConfigFile.mockImplementationOnce(async (nextConfig) => {
+        mocks.loadConfigReturn = nextConfig as Record<string, unknown>;
+      });
+    }
     mocks.rootWrite.mockRejectedValueOnce(
       new FsSafeError("path-mismatch", "path escapes workspace root"),
     );
@@ -1276,10 +1292,17 @@ describe("agents.update", () => {
     await promise;
 
     expectRespondErrorContaining(respond, "unsafe workspace file");
-    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(2);
+    expect(getAgentList(mocks.loadConfigReturn)).toEqual(before);
   });
 
   it("treats unsafe IDENTITY.md reads as invalid update requests", async () => {
+    const before = structuredClone(getAgentList(mocks.loadConfigReturn));
+    for (let index = 0; index < 2; index++) {
+      mocks.writeConfigFile.mockImplementationOnce(async (nextConfig) => {
+        mocks.loadConfigReturn = nextConfig as Record<string, unknown>;
+      });
+    }
     agentsTesting.setDepsForTests({
       root: makeRootForTest({
         read: async () => {
@@ -1295,7 +1318,8 @@ describe("agents.update", () => {
     await promise;
 
     expectRespondErrorContaining(respond, 'unsafe workspace file "IDENTITY.md"');
-    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(2);
+    expect(getAgentList(mocks.loadConfigReturn)).toEqual(before);
     expect(mocks.rootWrite).not.toHaveBeenCalled();
   });
 
@@ -1315,6 +1339,137 @@ describe("agents.update", () => {
       relativePath: "IDENTITY.md",
       nonBlockingRead: true,
     });
+  });
+  it.each([
+    ["GM08-F1-name", { name: "Late Name" }],
+    ["GM08-F2-emoji", { emoji: "🦊" }],
+    ["GM08-F3-avatar", { avatar: "https://example.com/new.png" }],
+    ["GM08-F4-new-workspace", { workspace: "/new/workspace" }],
+    ["GM08-F5-existing-workspace", { workspace: "/existing/workspace" }],
+  ] as const)("%s rejects config without identity or workspace effects", async (_id, update) => {
+    mocks.writeConfigFile.mockRejectedValueOnce(new Error("injected late config failure"));
+    const { promise } = makeCall("agents.update", { agentId: "test-agent", ...update });
+    await expect(promise).rejects.toThrow("injected late config failure");
+    expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+  });
+  it("GM08-F6 leaves no workspace effects when persistence throws after writing", async () => {
+    mocks.writeConfigFile.mockImplementationOnce(async (nextConfig) => {
+      mocks.loadConfigReturn = nextConfig as Record<string, unknown>;
+      throw new Error("post-write refresh failed");
+    });
+    mocks.writeConfigFile.mockImplementationOnce(async (nextConfig) => {
+      mocks.loadConfigReturn = nextConfig as Record<string, unknown>;
+    });
+    const { promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await expect(promise).rejects.toThrow("post-write refresh failed");
+    expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+    expect(getAgentList(mocks.loadConfigReturn)[0]?.workspace).toBe("/workspace/test-agent");
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("GM08-F7 rechecks a deleted agent under the config lock", async () => {
+    let checks = 0;
+    mocks.findAgentEntryIndex.mockImplementation(() => (++checks < 2 ? 0 : -1));
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      workspace: "/new/workspace",
+    });
+    await promise;
+    expectRespondErrorContaining(respond, "not found");
+    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+    expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("GM08-F8 writes config before a successful identity update", async () => {
+    const order: string[] = [];
+    mocks.writeConfigFile.mockImplementationOnce(async () => {
+      order.push("config");
+    });
+    mocks.rootWrite.mockImplementationOnce(async () => {
+      order.push("identity");
+    });
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "Updated Name",
+    });
+    await promise;
+    expectRespondOk(respond, { agentId: "test-agent" });
+    expect(order).toEqual(["config", "identity"]);
+  });
+
+  it("GM08-F9 compensates a rejected identity write without changing the agent entry", async () => {
+    const before = structuredClone(getAgentList(mocks.loadConfigReturn));
+    for (let index = 0; index < 2; index++) {
+      mocks.writeConfigFile.mockImplementationOnce(async (nextConfig) => {
+        mocks.loadConfigReturn = nextConfig as Record<string, unknown>;
+      });
+    }
+    mocks.rootWrite.mockRejectedValueOnce(new FsSafeError("path-mismatch", "unsafe destination"));
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "Rejected Name",
+    });
+    await promise;
+    expectRespondErrorContaining(respond, "unsafe workspace file");
+    expect(getAgentList(mocks.loadConfigReturn)).toEqual(before);
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("GM08-F10 reverts only its name while preserving a disjoint user model edit", async () => {
+    for (let index = 0; index < 2; index++) {
+      mocks.writeConfigFile.mockImplementationOnce(async (nextConfig) => {
+        mocks.loadConfigReturn = nextConfig as Record<string, unknown>;
+      });
+    }
+    mocks.rootRead.mockImplementationOnce(async () => {
+      mocks.loadConfigReturn = {
+        agents: {
+          list: getAgentList(mocks.loadConfigReturn).map((entry) => ({
+            ...entry,
+            model: "user/model",
+          })),
+        },
+      };
+      throw new FsSafeError("invalid-path", "unsafe identity");
+    });
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "Proposed Name",
+    });
+    await promise;
+    expectRespondErrorContaining(respond, "unsafe workspace file");
+    expect(getAgentList(mocks.loadConfigReturn)[0]?.name).toBeUndefined();
+    expect(getAgentList(mocks.loadConfigReturn)[0]?.model).toBe("user/model");
+    expect(mocks.rootWrite).not.toHaveBeenCalled();
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(2);
+  });
+  it("GM08-CONFLICT preserves a concurrent edit to the touched name field", async () => {
+    mocks.writeConfigFile.mockImplementationOnce(async (nextConfig) => {
+      mocks.loadConfigReturn = nextConfig as Record<string, unknown>;
+    });
+    mocks.rootRead.mockImplementationOnce(async () => {
+      mocks.loadConfigReturn = {
+        agents: {
+          list: getAgentList(mocks.loadConfigReturn).map((entry) => ({
+            ...entry,
+            name: "User Edit",
+          })),
+        },
+      };
+      throw new FsSafeError("invalid-path", "unsafe identity");
+    });
+    const { promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "Proposed Name",
+    });
+    await expect(promise).rejects.toThrow("compensation skipped");
+    expect(getAgentList(mocks.loadConfigReturn)[0]?.name).toBe("User Edit");
+    expect(mocks.writeConfigFile).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -2,6 +2,7 @@
 // reads/writes, identity merging, and safe deletion for operator clients.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString as resolveOptionalStringParam } from "@openclaw/normalization-core/string-coerce";
 import {
   GATEWAY_CLIENT_CAPS,
@@ -47,7 +48,9 @@ import {
   claimCompletedAgentDeletion,
 } from "../../agents/agent-lifecycle-registry.js";
 import {
+  listAgentEntries,
   listAgentIds,
+  toAgentEntriesRecord,
   resolveAgentDir,
   resolveAgentWorkspaceDir,
   tryResolveSoleAgentId,
@@ -80,8 +83,9 @@ import {
   isWorkspaceSetupCompleted,
   WORKSPACE_BOOTSTRAP_FILENAMES,
 } from "../../agents/workspace.js";
-import { applyAgentConfig } from "../../commands/agents.config.js";
+import { applyAgentConfig, findAgentEntryIndex } from "../../commands/agents.config.js";
 import {
+  mutateConfigFileWithRetry,
   readConfigFileSnapshotForWrite,
   withConfigMutationExclusive,
 } from "../../config/config.js";
@@ -328,6 +332,98 @@ function respondInvalidMethodParams(
 
 function respondAgentNotFound(respond: RespondFn, agentId: string): void {
   respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, `agent "${agentId}" not found`));
+}
+
+type AgentUpdateEntry = ReturnType<typeof listAgentEntries>[number];
+type AgentUpdateParams = Parameters<typeof updateAgentConfigEntry>[0];
+
+function changedAgentUpdateFields(params: {
+  before: AgentUpdateEntry;
+  after: AgentUpdateEntry;
+  update: AgentUpdateParams;
+}) {
+  const before = params.before as unknown as Record<string, unknown>;
+  const after = params.after as unknown as Record<string, unknown>;
+  const topLevelKeys = (["name", "workspace", "model"] as const).filter(
+    (key) => Object.hasOwn(params.update, key) && !isDeepStrictEqual(before[key], after[key]),
+  );
+  const beforeIdentity = (before.identity ?? {}) as Record<string, unknown>;
+  const afterIdentity = (after.identity ?? {}) as Record<string, unknown>;
+  const identityKeys = Object.keys(params.update.identity ?? {}).filter(
+    (key) => !isDeepStrictEqual(beforeIdentity[key], afterIdentity[key]),
+  );
+  return { topLevelKeys, identityKeys };
+}
+
+function matchesAgentUpdateFields(
+  candidate: AgentUpdateEntry,
+  reference: AgentUpdateEntry,
+  fields: ReturnType<typeof changedAgentUpdateFields>,
+): boolean {
+  const current = candidate as unknown as Record<string, unknown>;
+  const expected = reference as unknown as Record<string, unknown>;
+  if (fields.topLevelKeys.some((key) => !isDeepStrictEqual(current[key], expected[key]))) {
+    return false;
+  }
+  const currentIdentity = (current.identity ?? {}) as Record<string, unknown>;
+  const expectedIdentity = (expected.identity ?? {}) as Record<string, unknown>;
+  return fields.identityKeys.every((key) =>
+    isDeepStrictEqual(currentIdentity[key], expectedIdentity[key]),
+  );
+}
+
+async function restoreAgentConfigAfterFailedEffects(params: {
+  agentId: string;
+  before: AgentUpdateEntry;
+  after: AgentUpdateEntry;
+  update: AgentUpdateParams;
+}): Promise<void> {
+  const fields = changedAgentUpdateFields(params);
+  if (fields.topLevelKeys.length === 0 && fields.identityKeys.length === 0) {
+    return;
+  }
+  await mutateConfigFileWithRetry({
+    afterWrite: { mode: "auto" },
+    mutate: (draft) => {
+      const entries = listAgentEntries(draft);
+      const index = findAgentEntryIndex(entries, params.agentId);
+      const entry = entries[index];
+      if (!entry || !matchesAgentUpdateFields(entry, params.after, fields)) {
+        throw new Error("agents.update compensation skipped because its config entry changed");
+      }
+      const current = entry as unknown as Record<string, unknown>;
+      const previous = params.before as unknown as Record<string, unknown>;
+      const currentIdentity = (current.identity ?? {}) as Record<string, unknown>;
+      const previousIdentity = (previous.identity ?? {}) as Record<string, unknown>;
+      const restored = structuredClone(current);
+      for (const key of fields.topLevelKeys) {
+        if (Object.hasOwn(previous, key)) {
+          restored[key] = structuredClone(previous[key]);
+        } else {
+          delete restored[key];
+        }
+      }
+      if (fields.identityKeys.length > 0) {
+        const restoredIdentity = { ...currentIdentity };
+        for (const key of fields.identityKeys) {
+          if (Object.hasOwn(previousIdentity, key)) {
+            restoredIdentity[key] = structuredClone(previousIdentity[key]);
+          } else {
+            delete restoredIdentity[key];
+          }
+        }
+        if (Object.keys(restoredIdentity).length === 0 && !Object.hasOwn(previous, "identity")) {
+          delete restored.identity;
+        } else {
+          restored.identity = restoredIdentity;
+        }
+      }
+      const nextEntries = [...entries];
+      nextEntries[index] = restored as AgentUpdateEntry;
+      const { list: _legacyList, ...agentsConfig } = draft.agents ?? {};
+      draft.agents = { ...agentsConfig, entries: toAgentEntriesRecord(nextEntries) };
+    },
+  });
 }
 
 type AgentDeleteRemovedPath = NonNullable<AgentsDeleteResult["removed"]>[number];
@@ -902,60 +998,124 @@ export const agentsHandlers: GatewayRequestHandlers = {
       ...(model !== undefined ? { model } : {}),
       ...(identity ? { identity } : {}),
     };
-    const nextConfig = applyAgentConfig(cfg, agentConfigUpdate);
-
-    let ensuredWorkspace: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
-    if (workspaceDir) {
-      const skipBootstrap = Boolean(nextConfig.agents?.defaults?.skipBootstrap);
-      ensuredWorkspace = await ensureAgentWorkspace({
-        dir: workspaceDir,
-        ensureBootstrapFiles: !skipBootstrap,
-        skipOptionalBootstrapFiles: nextConfig.agents?.defaults?.skipOptionalBootstrapFiles,
-      });
-    }
-
-    const persistedIdentity = normalizeIdentityForFile(resolveAgentIdentity(nextConfig, agentId));
-    if (persistedIdentity && (workspaceDir || hasIdentityFields)) {
-      const identityWorkspaceDir = resolveAgentWorkspaceDir(nextConfig, agentId);
-      const previousWorkspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-      const fallbackWorkspaceDir =
-        workspaceDir && identityWorkspaceDir !== previousWorkspaceDir
-          ? previousWorkspaceDir
-          : undefined;
-      const identityContent = await buildIdentityMarkdownOrRespondUnsafe({
-        respond,
-        workspaceDir: identityWorkspaceDir,
-        identity: persistedIdentity,
-        fallbackWorkspaceDir,
-        preferFallbackWorkspaceContent:
-          Boolean(fallbackWorkspaceDir) && ensuredWorkspace?.identityPathCreated === true,
-      });
-      if (identityContent === null) {
-        return;
-      }
-      if (
-        !(await writeWorkspaceFileOrRespond({
-          respond,
-          workspaceDir: identityWorkspaceDir,
-          name: DEFAULT_IDENTITY_FILENAME,
-          content: identityContent,
-        }))
-      ) {
-        return;
-      }
-    }
-
-    try {
-      await updateAgentConfigEntry(agentConfigUpdate);
-    } catch (error) {
-      if (error instanceof AgentConfigPreconditionError) {
+    await withConfigMutationExclusive(async (latestCfg) => {
+      if (!isConfiguredAgent(latestCfg, agentId)) {
         respondAgentNotFound(respond, agentId);
         return;
       }
-      throw error;
-    }
+      const nextConfig = applyAgentConfig(latestCfg, agentConfigUpdate);
+      const previousEntries = listAgentEntries(latestCfg);
+      const expectedEntries = listAgentEntries(nextConfig);
+      const previousIndex = findAgentEntryIndex(previousEntries, agentId);
+      const expectedIndex = findAgentEntryIndex(expectedEntries, agentId);
+      if (previousIndex < 0 || expectedIndex < 0) {
+        throw new Error("agents.update config entry disappeared while preparing mutation");
+      }
+      const before = structuredClone(previousEntries[previousIndex]!);
+      const after = structuredClone(expectedEntries[expectedIndex]!);
+      const compensate = async () =>
+        await restoreAgentConfigAfterFailedEffects({
+          agentId,
+          before,
+          update: agentConfigUpdate,
+          after,
+        });
 
-    respond(true, { ok: true, agentId }, undefined);
+      try {
+        await updateAgentConfigEntry(agentConfigUpdate);
+      } catch (error) {
+        if (error instanceof AgentConfigPreconditionError) {
+          respondAgentNotFound(respond, agentId);
+          return;
+        }
+        let persisted: OpenClawConfig;
+        try {
+          persisted = (await readConfigFileSnapshotForWrite()).snapshot.sourceConfig;
+        } catch (readError) {
+          throw new AggregateError(
+            [error, readError],
+            "agents.update config write failed and its persisted state is unknown",
+          );
+        }
+        const persistedEntries = listAgentEntries(persisted);
+        const persistedIndex = findAgentEntryIndex(persistedEntries, agentId);
+        const persistedEntry = persistedEntries[persistedIndex];
+        const fields = changedAgentUpdateFields({
+          before,
+          after,
+          update: agentConfigUpdate,
+        });
+        if (
+          persistedEntry &&
+          !matchesAgentUpdateFields(persistedEntry, before, fields) &&
+          matchesAgentUpdateFields(persistedEntry, after, fields)
+        ) {
+          try {
+            await compensate();
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              "agents.update config write failed and committed fields could not be restored",
+            );
+          }
+        }
+        throw error;
+      }
+
+      let effectsCompleted = false;
+      try {
+        let ensuredWorkspace: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
+        if (workspaceDir) {
+          const skipBootstrap = Boolean(nextConfig.agents?.defaults?.skipBootstrap);
+          ensuredWorkspace = await ensureAgentWorkspace({
+            dir: workspaceDir,
+            ensureBootstrapFiles: !skipBootstrap,
+            skipOptionalBootstrapFiles: nextConfig.agents?.defaults?.skipOptionalBootstrapFiles,
+          });
+        }
+
+        const persistedIdentity = normalizeIdentityForFile(
+          resolveAgentIdentity(nextConfig, agentId),
+        );
+        if (persistedIdentity && (workspaceDir || hasIdentityFields)) {
+          const identityWorkspaceDir = resolveAgentWorkspaceDir(nextConfig, agentId);
+          const previousWorkspaceDir = resolveAgentWorkspaceDir(latestCfg, agentId);
+          const fallbackWorkspaceDir =
+            workspaceDir && identityWorkspaceDir !== previousWorkspaceDir
+              ? previousWorkspaceDir
+              : undefined;
+          const identityContent = await buildIdentityMarkdownOrRespondUnsafe({
+            respond,
+            workspaceDir: identityWorkspaceDir,
+            identity: persistedIdentity,
+            fallbackWorkspaceDir,
+            preferFallbackWorkspaceContent:
+              Boolean(fallbackWorkspaceDir) && ensuredWorkspace?.identityPathCreated === true,
+          });
+          if (identityContent === null) {
+            return;
+          }
+          if (
+            !(await writeWorkspaceFileOrRespond({
+              respond,
+              workspaceDir: identityWorkspaceDir,
+              name: DEFAULT_IDENTITY_FILENAME,
+              content: identityContent,
+            }))
+          ) {
+            return;
+          }
+        }
+
+        effectsCompleted = true;
+      } finally {
+        if (!effectsCompleted) {
+          await compensate();
+        }
+      }
+
+      respond(true, { ok: true, agentId }, undefined);
+    });
   },
   "agents.delete": async ({ params, respond, context }) => {
     if (!validateAgentsDeleteParams(params)) {
