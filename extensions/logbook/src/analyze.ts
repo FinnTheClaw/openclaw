@@ -15,7 +15,7 @@ export const MAX_FRAMES_PER_CALL = 16;
 type ParsedSegment = { startMs: number; endMs: number; text: string };
 
 /** Parses "HH:MM:SS" (or "H:MM", with optional am/pm) on a local day into epoch ms. */
-function clockToMs(day: string, clock: string): number | null {
+function clockToMs(day: string, clock: string, endBoundaryMs?: number): number | null {
   const match = /^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?\s*$/i.exec(clock);
   if (!match) {
     return null;
@@ -55,6 +55,15 @@ function clockToMs(day: string, clock: string): number | null {
     date.getSeconds() !== seconds
   ) {
     return null;
+  }
+  // A same-day batch can end exactly at the following local midnight.
+  // Only end clocks receive this boundary; midnight start clocks stay on day.
+  if (hours === 0 && minutes === 0 && seconds === 0 && endBoundaryMs !== undefined) {
+    const nextDay = new Date(date);
+    nextDay.setHours(24, 0, 0, 0);
+    if (nextDay.getTime() === endBoundaryMs) {
+      return endBoundaryMs;
+    }
   }
   return date.getTime();
 }
@@ -102,7 +111,8 @@ export function parseObservationSegments(params: {
     const record = entry as Record<string, unknown>;
     const description = typeof record.description === "string" ? record.description.trim() : "";
     const startMs = typeof record.start === "string" ? clockToMs(params.day, record.start) : null;
-    const endMs = typeof record.end === "string" ? clockToMs(params.day, record.end) : null;
+    const endMs =
+      typeof record.end === "string" ? clockToMs(params.day, record.end, params.endMs) : null;
     if (!description || startMs === null || endMs === null) {
       continue;
     }
@@ -143,7 +153,11 @@ function normalizeDomain(value: unknown): string | undefined {
   return domain && domain.length <= 100 ? domain : undefined;
 }
 
-function parseDistractions(day: string, value: unknown): LogbookDistraction[] {
+function parseDistractions(
+  day: string,
+  value: unknown,
+  endBoundaryMs: number,
+): LogbookDistraction[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -154,7 +168,8 @@ function parseDistractions(day: string, value: unknown): LogbookDistraction[] {
     }
     const record = entry as Record<string, unknown>;
     const startMs = typeof record.startTime === "string" ? clockToMs(day, record.startTime) : null;
-    const endMs = typeof record.endTime === "string" ? clockToMs(day, record.endTime) : null;
+    const endMs =
+      typeof record.endTime === "string" ? clockToMs(day, record.endTime, endBoundaryMs) : null;
     const title = typeof record.title === "string" ? record.title.trim() : "";
     if (startMs === null || endMs === null || !title || endMs <= startMs) {
       continue;
@@ -190,7 +205,10 @@ export function parseCardsJson(params: {
     const title = typeof raw.title === "string" ? raw.title.trim() : "";
     const summary = typeof raw.summary === "string" ? raw.summary.trim() : "";
     const startMs = typeof raw.startTime === "string" ? clockToMs(params.day, raw.startTime) : null;
-    const endMs = typeof raw.endTime === "string" ? clockToMs(params.day, raw.endTime) : null;
+    const endMs =
+      typeof raw.endTime === "string"
+        ? clockToMs(params.day, raw.endTime, params.windowEndMs)
+        : null;
     if (startMs === null || endMs === null) {
       problems.push(`Card ${index}: startTime/endTime must be HH:MM:SS local time.`);
       return;
@@ -217,7 +235,7 @@ export function parseCardsJson(params: {
       category: normalizeCategory(raw.category),
       appPrimary: normalizeDomain(appSites.primary),
       appSecondary: normalizeDomain(appSites.secondary),
-      distractions: parseDistractions(params.day, raw.distractions),
+      distractions: parseDistractions(params.day, raw.distractions, params.windowEndMs),
       keyframeId: undefined,
     });
   });
@@ -236,7 +254,7 @@ export function parseCardsJson(params: {
       continue;
     }
     const overlapMs = previous.endMs - current.startMs;
-    if (overlapMs > 60 * 1000) {
+    if (overlapMs > 60 * 1000 || current.endMs <= previous.endMs) {
       return {
         ok: false,
         error: `Cards ${normalized.length - 1} and ${normalized.length} overlap by ${Math.round(overlapMs / 60000)} minutes; adjacent cards must meet cleanly.`,

@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type {
   MemorySearchConfig,
   OpenClawConfig,
@@ -10,6 +11,8 @@ import type {
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { configureMemoryCoreDreamingStateForTests, resetMemoryCoreDreamingStateForTests } from "../test-helpers.js";
 
 type WatchIgnoredFn = (watchPath: string, stats?: { isDirectory?: () => boolean }) => boolean;
 
@@ -155,6 +158,8 @@ vi.mock("./sqlite-vec.js", () => ({
   loadSqliteVecExtension: async () => ({ ok: false, error: "sqlite-vec disabled in tests" }),
 }));
 
+const embeddingGate = vi.hoisted(() => ({ current: null as null | (() => Promise<void>) }));
+
 vi.mock("./embeddings.js", () => ({
   resolveEmbeddingProviderAdapterTransport: (providerId: string) =>
     providerId === "local" ? "local" : "remote",
@@ -165,7 +170,7 @@ vi.mock("./embeddings.js", () => ({
       id: "mock",
       model: "mock-embed",
       embed: async () => [1, 0],
-      embedBatch: async (texts: string[]) => texts.map(() => [1, 0]),
+      embedBatch: async (texts: string[]) => { await embeddingGate.current?.(); return texts.map(() => [1, 0]); },
     },
   }),
 }));
@@ -1081,6 +1086,61 @@ describe("memory watcher config", () => {
       },
     );
   });
+
+
+  it("keeps a write observed during an in-flight watch sync eligible for follow-up", async () => {
+    Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+    await setupWatcherWorkspace({ name: "notes.md", contents: "Initial sentinel." });
+    await configureMemoryCoreDreamingStateForTests();
+    const activeManager = await expectWatcherManager(createWatcherConfig());
+    await activeManager.sync({ reason: "test-initial-index" });
+    const dbPath = activeManager.status().dbPath;
+    if (!dbPath) throw new Error("missing index path");
+    const index = new DatabaseSync(dbPath, { readOnly: true });
+    const notes = path.join(extraDir, "notes.md");
+    const watcher = createdNativeWatchers.find((entry) => entry.dir === extraDir);
+    if (!watcher) throw new Error("missing file watcher");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    embeddingGate.current = async () => {
+      entered.resolve();
+      await release.promise;
+    };
+    const sync = vi.spyOn(activeManager, "sync");
+    vi.useFakeTimers();
+    try {
+      await fs.writeFile(notes, "Amethyst first revision.");
+      watcher.emit("change", "notes.md");
+      await vi.advanceTimersByTimeAsync(BUILT_IN_WATCH_DEBOUNCE_MS);
+      await entered.promise;
+      await fs.writeFile(notes, "Cobalt second revision.");
+      watcher.emit("change", "notes.md");
+      await vi.advanceTimersByTimeAsync(BUILT_IN_WATCH_DEBOUNCE_MS);
+      expect(sync).toHaveBeenCalledTimes(2);
+      embeddingGate.current = null;
+      release.resolve();
+      const outcomes = await Promise.allSettled(sync.mock.results.map((result) => result.value));
+      expect(outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
+      await vi.advanceTimersByTimeAsync(BUILT_IN_WATCH_DEBOUNCE_MS * 2);
+      const rows = index.prepare("SELECT text FROM memory_index_chunks").all();
+      console.log("watch-race-evidence", JSON.stringify({
+        rows, dirty: activeManager.status().dirty, syncCalls: sync.mock.calls.length,
+      }));
+      expect(rows).toEqual([{ text: "Initial sentinel." }]);
+      expect(activeManager.status().dirty).toBe(true);
+      await activeManager.sync({ reason: "test-retry" });
+      expect(index.prepare("SELECT text FROM memory_index_chunks").all()).toEqual([{ text: "Cobalt second revision." }]);
+      expect(activeManager.status().dirty).toBe(false);
+    } finally {
+      embeddingGate.current = null;
+      release.resolve();
+      await Promise.allSettled(sync.mock.results.map((result) => result.value));
+      index.close();
+      resetMemoryCoreDreamingStateForTests();
+      sync.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 30_000);
 
   it("settles changed file stats before running watch sync", async () => {
     await setupWatcherWorkspace({ name: "notes.md", contents: "hello" });

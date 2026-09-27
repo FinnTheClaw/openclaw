@@ -16,7 +16,11 @@ afterEach(() => {
   for (const root of workspaces.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 function status(text: string) {
-  return JSON.parse(text.split("\n")[1]) as { status: string; nativeToolError: boolean };
+  const payload = text.split("\n")[1];
+  if (payload === undefined) {
+    throw new Error("Missing memory receipt payload");
+  }
+  return JSON.parse(payload) as { status: string; nativeToolError: boolean };
 }
 
 describe("native memory readback receipts", () => {
@@ -125,7 +129,11 @@ describe("native memory readback receipts", () => {
     } as unknown as OpenClawPluginApi);
     const prompt = on.mock.calls.find(([name]) => name === "before_prompt_build")?.[1];
     const before = on.mock.calls.find(([name]) => name === "before_tool_call")?.[1];
-    const middleware = registerAgentToolResultMiddleware.mock.calls[0][0];
+    const registration = registerAgentToolResultMiddleware.mock.calls[0];
+    if (!registration) {
+      throw new Error("Missing result middleware registration");
+    }
+    const middleware = registration[0];
     const context = { runId: "run", workspaceDir: root };
     expect(
       prompt({ prompt: "remember this", messages: [] }, context).appendSystemContext,
