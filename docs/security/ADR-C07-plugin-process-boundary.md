@@ -215,8 +215,10 @@ unsigned big-endian.
   and the 32-byte random HMAC key at 48-79. It is supervisor-to-bootstrap only after completed
   attestation. The bootstrap accepts it only from the pinned Linux fd 4 or Mach-port peer.
 
-Any other pre-key byte, length, order, peer, retry, or second packet revokes the instance. Key
-installation is not readiness. The trusted bootstrap installs the final sandbox, then emits the
+Any other pre-key byte, length, order, peer, retry, or second packet revokes the instance. The
+decoder returns one owned key copy and, on every candidate long enough to contain key material,
+zeroes the received intersection with bytes 48-79 in a `finally` path on both success and rejection.
+Key installation is not readiness. The trusted bootstrap installs the final sandbox, then emits the
 authenticated `SESSION_READY`; it cannot import the plugin until authenticated `LOAD_PACKAGE`.
 
 ### Authenticated v1 frame
@@ -246,7 +248,14 @@ Each direction starts at sequence `1`; duplicates, gaps, zero, and out-of-order 
 Usable sequences end at `2^64-2`; `2^64-1` is an exhaustion sentinel that is never emitted or
 accepted. Reaching it fences new work and drains if the supervisor can still send, otherwise it
 performs exact stop; no direction wraps. Channel, boot, and request IDs are random supervisor-made
-128-bit values. Lifecycle and registration kinds require zero request ID/deadline. `INVOKE`,
+128-bit values. While active, installed outbound obligations consume sequence capacity immediately
+and the controller retains
+one last usable supervisor sequence for `DRAIN`. A local invoke that would consume that reserve gets
+an exact caller-facing rejection and orders `DRAIN`; a local terminal remains final but likewise
+drains instead of adding a `CANCEL`. If a drain is already ordered or no usable sequence remains,
+inability to add the required terminal frame performs exact stop rather than preparing a non-drain
+frame at the last sequence.
+Lifecycle and registration kinds require zero request ID/deadline. `INVOKE`,
 `RESULT`, and `CANCEL` are request-bearing, repeat one nonzero retained ID/deadline, and `INVOKE`'s
 deadline must be future monotonic time no more than 300 seconds away. Only the retained deadline is
 authoritative; a different carried value revokes rather than extending it.
@@ -261,8 +270,88 @@ Supervisor-to-worker-only kinds are `LOAD_PACKAGE`, `REGISTER_ACCEPT`, `INVOKE`,
 `CLOSE_ACK`, and `FATAL`. Base v1 has no credit or streaming frame and no active flow-control
 semantics. Streaming categories remain unsupported.
 
-The raw slice authenticates bodies as opaque bytes, returns owned non-aliasing copies of every
-decoded byte field, and does no CBOR or semantic-schema decoding.
+Every supervisor-to-worker frame uses one closed authority path owned by one opaque, linear,
+per-generation kernel. No aggregate controller is exported or returned. One internal installer
+binds five frozen, non-nested facets directly to their distinct owners: aggregate observer, governed
+work, authenticated ingress, transport, and OS lifecycle. The installer returns no facet collection,
+accepts no key, channel ID, sequence, session object, or restart key, and has no restart method. It is
+test-harness-only in this slice; the sole production composition sites remain unavailable until the
+native Linux and macOS adapters own them.
+
+Every mutating facet enters one shared synchronous, non-reentrant attempt before inspecting a caller
+property or invoking an external capability. A nested mutator never waits for a lock: it invalidates
+the outer attempt, immediately fences and zeroizes the generation with the fixed
+`controller-reentry` fault, and leaves the original outer invocation as the sole owner of the one
+stop action. The outer invocation revalidates its opaque attempt after every property read, copy, or
+callback and cannot resume an authoritative mutation after invalidation. The observer is read-only
+and may reenter to report one coherent pre-mutation snapshot.
+
+Each installer call creates a random channel and, only after the lifecycle facet reports completed
+attestation, creates a fresh key with the OS CSPRNG inside the sealed codec authority. An irreversible
+one-shot delivery latch is armed before key generation and before entering the adapter callback. A
+false return, exception, reentry, repeat, or callback-triggered fence immediately fences the
+generation and synchronously zeroizes every candidate key and key-packet alias. Successful delivery
+zeroizes the packet alias after the callback while retaining the key only inside the sealed codec.
+Factories called elsewhere create random disjoint authorities whose tokens, channel, and key are
+foreign to the live generation. There is no old-controller restart or caller-selected key reuse path.
+
+Facets receive no structural session. Observer snapshots contain only phase, configured limits,
+aggregate registration/request/queue/cleanup counts, and a fault from one closed fixed vocabulary:
+no adapter exception text, generation, channel, boot epoch, sequence, clock value, deadline, request
+binding, key, packet data, reservation, or private record. Actions likewise contain no decoded field
+or request binding; `SEND_PREPARED` carries only an empty opaque token. Direct raw encoding of a
+supervisor frame is rejected.
+
+An outbound obligation becomes authoritative in one synchronous controller step: exact kind,
+request, deadline, owned body, lane, byte charge, generation, sequence, install revision, and
+provisional authenticated packet are installed in the private FIFO before the controller emits the
+empty opaque `SEND_PREPARED(token)` action. Sequence and quota are consumed at that installation
+point and are never rolled back. The action exposes neither obligation metadata nor packet bytes.
+There is no caller-visible provisional authorization step.
+
+The dedicated instance-bound transport facet has only `takeForSend(token)` and `commitSent(token)`;
+it is not reachable through observer, work, ingress, or lifecycle. No facet method accepts a caller
+clock value. The kernel consumes an injected monotonic-clock capability; the raw tests use a fake
+clock and make no provenance claim, while the native adapters must bind and prove the trusted clock.
+At runtime a clock result must be a primitive bigint in the closed unsigned 64-bit range; any throw,
+type mismatch, negative value, or overflow produces only `monotonic-clock`. Facet inputs are captured
+as owned copies of explicitly named fields without enumeration before state use. Getter, proxy, and
+runtime-shape failures produce only `facet-input`, except malformed ingress packet objects retain the
+bounded frame-decode fault family. Attempt validity is rechecked after every clock and key-delivery
+callback and immediately before the authoritative mutation.
+Atomic take rechecks the live generation, controller fence, installed revision, exact outbound FIFO
+token, `INVOKE` deadline, and `CANCEL` retained pending/tombstone binding, then rechecks the fence
+immediately before releasing the bytes once.
+Commit succeeds exactly once for that consumed FIFO token after the adapter accepted the exact
+bytes. Consumed-but-uncommitted state has no dependent FSM effect. Lifecycle transitions, pending
+acquisition, and drain grace begin only at commit. A stale/foreign/replayed/skipped token, commit
+before take, repeated commit, failed send, or ambiguous adapter outcome fences, revokes, and stops;
+no abandoned sequence is reused. An exact token taken while its binding is live may commit first when
+the commit call observes its deadline or tombstone expiry; that resolves already-accepted transport
+before expiry reconciliation. Any other expired installed or consumed time-bound obligation fences
+and stops. Raw tests simulate adapter acceptance and failure only; syscall receipt and exact-write
+proof remain mandatory in the native slices.
+
+Installed outbound obligations count against the same ordinary/cancel byte and slot caps as inbound
+reservations. Each direction has an independent private FIFO. On any fault, cleanup uncertainty,
+drain-grace stop, clean close, or terminal exit, the controller first increments its fence and
+synchronously zeroizes every provisional, authorized, or consumed-but-uncommitted packet, including
+the exact `Buffer` alias already returned to transport. Successful commit zeroizes that same alias
+after acceptance. Only afterward may cleanup erase model records, enter a terminal state, or emit a
+close/stop action. Real Linux and macOS adapters must prove the same
+instance binding, trusted clock, atomic take/commit, and fence ordering in C07a.2.2 and C07a.2.3.
+
+The raw slice authenticates bodies as opaque bytes, returns no caller-visible decoded fields, and
+does no CBOR or semantic-schema decoding. Successful decode installs owned non-aliasing copies of
+the authenticated record directly into the controller's private inbound reservation. Snapshots and
+actions expose only aggregate counts and no decoded body, identity, request binding, reservation,
+or private record. Packet mutation, snapshot mutation/replay, TypeScript assertion, structural
+clone, foreign-generation object, or reuse cannot alter or recover authoritative fields.
+Admission projects the committed phase, registration count, and registration bytes through the
+bounded private inbound FIFO before granting the new frame any authority. A frame that is legal only
+against stale committed state, including registration after a queued `REGISTER_DONE`, is rejected
+before queue or sequence mutation. Projection is recomputed from owned reservations; it introduces
+no second mutable authority record.
 Header schema ID is zero in that slice. `SESSION_READY`, `LOAD_PACKAGE`, `REGISTER_DONE`,
 `REGISTER_ACCEPT`, `CANCEL`, `DRAIN`, `CLOSE_ACK`, and `FATAL` require an empty body. The fixed unit
 already selects the package/generation. The absolute body cap is 1,048,576 bytes; `REGISTER` is
@@ -270,50 +359,88 @@ already selects the package/generation. The absolute body cap is 1,048,576 bytes
 most 4096 descriptors. Lower signed manifest limits are allowed; runtime/config cannot raise them.
 
 `recvmsg` uses a 1,048,704-byte fixed cap and `MSG_TRUNC` to learn packet size without allocation.
-It rejects truncation, wrong exact packet/body length, header values, peer credentials, sequence,
-reserved bytes, or request binding before verifying HMAC in constant time. Work is bounded by the
-verified effective kernel send/receive buffer cap of 4,194,304 bytes each, 64 queued frames,
-4,194,304 queued bytes, and 32 in-flight invocations.
-`CANCEL` is admitted only for a pending request or terminal-grace tombstone and `FATAL` only once per
-generation. They bypass ordinary queue accounting using exactly 32 cancellation slots plus one
-fatal slot and a separate `33 * 128 = 4224` byte reserve; bodies stay empty and HMAC/sequence applies.
+The adapter rejects truncation, peer-identity failure, and a wrong exact datagram size. The codec
+performs only the bounded framing checks needed to locate the tag and body—minimum/maximum size,
+magic, version, and exact claimed body length—before constant-time HMAC verification. It checks
+kind, reserved fields, channel/generation/sequence, and request/deadline semantics only after HMAC.
+Work is bounded by the verified effective kernel send/receive buffer cap of 4,194,304 bytes each, 64
+ordinary queued frames, 4,194,304 ordinary queued bytes, and 32 total tracked requests across
+installed invokes, pending work, and live terminal tombstones.
+`CANCEL` is admitted only for a pending request or terminal-grace tombstone. It bypasses ordinary
+queue accounting using exactly 32 cancellation slots. One additional fatal admission reserve and a
+separate `33 * 128 = 4224` byte reserve ensure that an authenticated `FATAL` can always pass bounded
+capacity checks. `FATAL` is never queued: after authentication, projected-authority, capacity, and
+sequence checks it immediately fences, zeroizes all packet aliases, clears reservations, and stops.
+All reserved-lane bodies stay empty and HMAC/sequence applies.
 
 ### Session and cleanup state machine
 
-| State          | Accepted event                                     | Required action and next state                                                                    |
-| -------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `NEW`          | systemd/Mach connection                            | Pin expected package/generation; `ATTESTING`.                                                     |
-| `ATTESTING`    | exact liveness plus complete OS/package proof      | Deliver key; `KEYED`. Any mismatch revokes.                                                       |
-| `KEYED`        | valid `SESSION_READY` plus verified final sandbox  | Send `LOAD_PACKAGE`; `LOADING`.                                                                   |
-| `LOADING`      | first `REGISTER`                                   | Enter `REGISTERING`; no runtime dispatch.                                                         |
-| `LOADING`      | `REGISTER_DONE`                                    | Compare the valid zero-registration inventory, return `REGISTER_ACCEPT`; `ACTIVE`.                |
-| `REGISTERING`  | one-descriptor `REGISTER` or final `REGISTER_DONE` | Retain one descriptor, or compare inventory and return `REGISTER_ACCEPT`; `ACTIVE` only on final. |
-| `ACTIVE`       | valid invoke/result/cancel                         | Apply exact context, deadline, and quota rules; remain `ACTIVE`.                                  |
-| `ACTIVE`       | shutdown/update/sequence drain                     | Fence local work; on Linux stop/verify socket unit; send `DRAIN`; `DRAINING`.                     |
-| `DRAINING`     | matching terminal/local cancel/timeout             | Complete only already-pending work and grace accounting; remain `DRAINING`.                       |
-| `DRAINING`     | `CLOSE_ACK` and no pending work                    | Close channel and stop fixed service/job; `STOPPING`.                                             |
-| `DRAINING`     | five-second grace expires                          | Reject pending once, force close and exact service/job stop; `STOPPING`.                          |
-| any live state | protocol/identity/package/process fault            | Fence ingress, revoke handles/pending, close, exact stop; `STOPPING`.                             |
-| `STOPPING`     | complete transport/process exit proof              | Release generation only after every platform condition agrees; `EXIT_VERIFIED`.                   |
-| any live state | cleanup or identity uncertainty                    | Fence the whole host; `RECOVERY_REQUIRED`.                                                        |
+| State            | Accepted event                                     | Required action and next state                                                              |
+| ---------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `NEW`            | systemd/Mach connection                            | Pin expected package/generation; `ATTESTING`.                                               |
+| `ATTESTING`      | exact liveness plus complete OS/package proof      | Deliver key; `KEYED`. Any mismatch revokes.                                                 |
+| `KEYED`          | valid `SESSION_READY` plus verified final sandbox  | Install exact `LOAD_PACKAGE` obligation and token; `LOAD_PENDING`.                          |
+| `LOAD_PENDING`   | matching consumed packet commits                   | Apply the send effect; `LOADING`.                                                           |
+| `LOADING`        | first `REGISTER`                                   | Enter `REGISTERING`; no runtime dispatch.                                                   |
+| `LOADING`        | `REGISTER_DONE`                                    | Compare valid zero-registration inventory; create `REGISTER_ACCEPT`; `ACCEPT_PENDING`.      |
+| `REGISTERING`    | one-descriptor `REGISTER` or final `REGISTER_DONE` | Retain one descriptor, or compare inventory and create `REGISTER_ACCEPT`; `ACCEPT_PENDING`. |
+| `ACCEPT_PENDING` | matching consumed packet commits                   | Apply the inventory acceptance effect; `ACTIVE`.                                            |
+| `ACTIVE`         | valid invoke/result/cancel                         | Apply exact context, deadline, and quota rules; remain `ACTIVE`.                            |
+| `ACTIVE`         | local invoke accepted                              | Install exact `INVOKE` obligation/token; acquire pending only after matching commit.        |
+| `ACTIVE`         | shutdown/update/sequence drain                     | Fence local work and create exact `DRAIN` obligation; `DRAIN_PENDING`.                      |
+| `DRAIN_PENDING`  | matching prepared `DRAIN` commits                  | Start the five-second close grace; `DRAINING`.                                              |
+| `DRAINING`       | matching terminal/local cancel/timeout             | Complete only already-pending work and grace accounting; remain `DRAINING`.                 |
+| `DRAINING`       | `CLOSE_ACK` and no pending work                    | Close channel and stop fixed service/job; `STOPPING`.                                       |
+| `DRAINING`       | five-second grace expires                          | Reject pending once, force close and exact service/job stop; `STOPPING`.                    |
+| any live state   | protocol/identity/package/process fault            | Fence ingress, revoke handles/pending, close, exact stop; `STOPPING`.                       |
+| `STOPPING`       | complete transport/process exit proof              | Release generation only after every platform condition agrees; `EXIT_VERIFIED`.             |
+| any live state   | cleanup or identity uncertainty                    | Fence the whole host; `RECOVERY_REQUIRED`.                                                  |
 
-`EXIT_VERIFIED` and `RECOVERY_REQUIRED` are terminal. Cleanup is idempotent and records whether
-ingress/path, handles, pending work, channel, service/job, pidfd/port, unit state, and cgroup were
-completed; a closed channel is not process exit. Worker sends `CLOSE_ACK` only after `DRAIN`, after
-rejecting new work and reaching zero pending; early/duplicate ACK revokes.
+`EXIT_VERIFIED` and `RECOVERY_REQUIRED` are sticky terminal states. Every stale facet is inert after
+either state: it performs no caller getter or proxy inspection, input copy, clock read, packet
+inspection, external callback, state/revision/fault rewrite, action, or phase transition. Cleanup is
+idempotent and records whether ingress/path, handles, pending work,
+channel, service/job, pidfd/port, unit state, and cgroup were completed; a closed channel is not
+process exit. Worker sends `CLOSE_ACK` only after `DRAIN`, after rejecting new work and reaching zero
+pending. At arrival, an ACK is authoritative only when the projected FIFO phase is `DRAINING`, pending
+work is zero, and no installed or consumed outbound obligation remains. An ACK behind an already
+admitted winning `RESULT` may therefore remain legal, because the admission-time CAS has already
+removed that pending work. An early or queued duplicate ACK revokes; later host progress cannot make
+a premature ACK valid. Any authenticated frame delivered after `STOPPING` escalates to
+`RECOVERY_REQUIRED` rather than preserving a falsely clean stop.
 
-Local accounting events are closed: `ACQUIRE_INVOKE` reserves one unique pending slot below 32;
-`QUEUE_FRAME` reserves one frame and its exact bytes below both queue caps; `PROCESS_FRAME` releases
-that queue reservation exactly once; and `TERMINAL` CASes result, local cancel, or timeout, releases
-the invocation exactly once, and retains only a two-second terminal-grace tombstone when a cancel or
-late result may still cross. Invalid transitions cannot acquire or release resources.
+Local accounting is closed. A local invoke is admitted only when its installed outbound obligation,
+every pending invocation, and every live tombstone together remain at or below 32 and its exact
+ordinary frame/byte capacity is available. Saturation returns typed caller backpressure while leaving
+the healthy session active. Commit atomically transfers one installed reservation to pending; terminal
+CAS atomically transfers that same tracked-request reservation from pending to one two-second
+tombstone. Queue processing releases one exact frame/byte reservation once. Invalid transitions
+cannot acquire or release resources.
 
-Deadline expiry is a normal request terminal outcome, not by itself a session fault. Local cancel or
-timeout wins the same single-terminal CAS as a valid result, releases its invocation once, creates
-the terminal-grace tombstone, and sends exactly one reserved-slot `CANCEL` against it. One losing
-matching terminal frame is discarded and counted during that tombstone's two-second grace. A
-duplicate terminal, continued request traffic, wrong request, or traffic after grace revokes; no
-losing path reports success or releases resources twice.
+Deadline expiry is a normal request terminal outcome, not by itself a session fault. A valid
+authenticated `RESULT` wins the single-terminal CAS at admission after all fallible frame and queue
+checks: pending moves immediately to a result tombstone and the FIFO stores only an immutable winner
+classification. A later local cancel/timeout is the one discardable loser and never creates
+`CANCEL`. If local cancel or timeout wins first, it releases the invocation once, creates the
+terminal-grace tombstone, and creates exactly one reserved-slot `CANCEL` obligation against it. The
+cancellation packet is subject to the same prepare/commit lifecycle, but the local terminal winner is
+not rolled back if transmission fails; failure revokes the session. One matching result admitted
+while `tombstone.expiresNs > arrivalNow` atomically claims the loser and stores only an immutable
+discard classification. Winner and loser proofs grant no request, cancellation, tombstone, or
+capacity authority and cannot affect a later request that reuses the ID. A second loser or same-cause
+replay is rejected at admission.
+
+Every tombstone expires exactly when `expiresNs <= now`, even while a classification proof remains
+queued. Healthy same-generation request-ID and capacity reuse occurs immediately when no outbound
+obligation still depends on it. If a provisional or consumed-but-uncommitted `CANCEL` remains at
+expiry, the generation fences and stops because its installed sequence may not be sent stale,
+skipped, rewritten, or reused; reuse is then available only in a fresh generation. An exact token
+taken while live may commit first at expiry, after which normal pruning continues. An installed
+`INVOKE` reaching its take deadline follows the same exact-stop rule. Thus expiry never extends
+`CANCEL` authority or permits a sequence gap. A duplicate terminal, continued request traffic, wrong
+request, or new arrival after grace revokes. No losing path reports success or releases resources
+twice. Atomic transport take performs the final current-time and retained-binding checks; a stale
+installed packet never reaches transport.
 
 The raw FSM counts one registration per `REGISTER` frame and consumes a host-local
 `inventoryMatches` result at `REGISTER_DONE`; this is a model boundary, not semantic wire proof.
@@ -414,20 +541,49 @@ The first slice implements only transport-independent raw frame encoding/decodin
 state machine. It creates no socket or process, loads no module, reads no config or secret, exposes no
 plugin API, writes no state, changes no gateway path, and cannot affect OFF, shadow, or enforce.
 
-Target files and non-comment, nonblank ceilings:
+Target files and hard non-comment, nonblank ceilings:
 
-- `src/plugins/process-boundary/frame-codec.ts`: 280 lines;
-- `src/plugins/process-boundary/session-fsm.ts`: 260 lines;
-- `src/plugins/process-boundary/frame-codec.test.ts`: 500 lines; and
-- `src/plugins/process-boundary/session-fsm.test.ts`: 500 lines.
+- `bootstrap-codec.ts`: 120 lines; `bootstrap-codec.test.ts`: 100;
+- `frame-codec.ts`: 500 lines; `frame-token-store.ts`: 100;
+  `frame-codec.test-helpers.ts`: 180;
+  `frame-codec.test.ts`: 250; `frame-codec.hostile.test.ts`: 320;
+- `session-capabilities.ts`: 100 lines; `session-fault.ts`: 80; `session-state.ts`: 400 lines;
+  `session-expiry.ts`: 100; `session-inbound.ts`: 180; `session-outbound.ts`: 180;
+  `session-terminal.ts`: 120;
+- `session-mutation-boundary.ts`: 60 lines; `session-input-capture.ts`: 240;
+  `session-facades.ts`: 320;
+  `session-fsm.ts`: 360 lines; and
+- `session-test-harness.ts`: 220; `session-fsm.test-helpers.ts`: 180;
+  `session-fsm.test.ts`: 300; `session-fsm.authority.test.ts`: 200;
+  `session-fsm.terminal.test.ts`: 200;
+  `session-fsm.outbound.test.ts`: 250; `session-fsm.limits.test.ts`: 180;
+  `session-fsm.ingress-authority.test.ts`: 180; `session-fsm.reentry.test.ts`: 240;
+  `session-fsm.boundary-hostile.test.ts`: 200.
 
-The codec tests cover every offset and byte order, exact lengths, truncation, cap boundaries,
-opaque-body preservation and post-MAC caller-mutation isolation, bodyless-control rejection, MAC
-mismatch, kind/flag/direction rejection, and no body inspection before authentication. FSM tests cover
-duplicate/gap/wrap,
-wrong-generation, nonpending, expiry, queue/byte/in-flight exhaustion, cancellation/result races,
-revocation, drain, close, and restart isolation. These are unit proofs only and make no OS-boundary
-or body-schema claim.
+All paths above are under `src/plugins/process-boundary/`. These ceilings include the reviewed
+prepared-token protocol and are not permission to grow toward 500. A change that would cross a
+ceiling requires a cohesive responsibility extraction and a reviewed ADR amendment; suppressing
+formatting/lint or compressing statements is not an alternative.
+
+The codec tests cover every offset and byte order, exact lengths, truncation and partial-key
+zeroization, cap boundaries, opaque-body ownership, bodyless-control rejection, MAC mismatch,
+kind/flag/direction rejection, no body inspection before authentication, and direct outbound encode
+rejection. Controller and static tests cover absence of ambient mint/authorize/take and structural
+session reducers; separately bound non-nested facets; fresh random wire-disjoint factory authority;
+identity-free snapshots and request-free actions; state installation before send; private inbound/
+outbound reservations; atomic take-time generation/FIFO/fence/revision/deadline/binding checks;
+same-alias zeroization after commit or fence; consumed-but-uncommitted neutrality; exactly-once
+commit; foreign-generation and snapshot mutation/replay; tracked-request and queue backpressure;
+every fault/uncertainty/grace/close fence path; exact tombstone expiry with 32 queued loser proofs;
+admission-time result winning; old winner/loser proof noninterference with a reused request; sticky
+terminal facets with zero caller or callback access; pre-callback key-delivery latching and
+zeroization; projected inbound registration and phase authority; arrival-time ACK rejection with
+pending, provisional, consumed, or committed cancellation cases; immediate fatal zeroization of a
+consumed packet alias; exact cleanup-getter reentry and a cross-facet hostile-input matrix; harmless
+observer reentry; one stop action under nested mutation; runtime clock type/range/reentry failures;
+bounded hostile exception faults; and exact stop for expired installed `INVOKE`/`CANCEL` obligations.
+These are unit proofs only and
+make no native clock, syscall-send, cleanup/exit, OS-boundary, or body-schema claim.
 
 ### C07a.2.2: Linux identity and channel adapter
 
