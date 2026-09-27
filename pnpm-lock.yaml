@@ -1904,6 +1904,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
 
+  extensions/refresh-efficiency:
+    devDependencies:
+      '@openclaw/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+
   extensions/runway:
     devDependencies:
       '@openclaw/plugin-sdk':
