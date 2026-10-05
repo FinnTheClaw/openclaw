@@ -397,11 +397,16 @@ function createStreamFnWithExtraParams(
     );
     // Retry overrides must beat the Agent's normal thinking level, but must not
     // become cached model defaults or affect incompatible APIs/providers.
+    const compat = callModel.compat;
     const disableResponsesReasoning =
       callModel.api === "openai-responses" &&
       callModel.reasoning === true &&
-      callModel.compat?.supportsReasoningEffort !== false &&
-      callModel.compat?.supportedReasoningEfforts?.includes("none") === true &&
+      (!compat ||
+        !("supportsReasoningEffort" in compat) ||
+        compat.supportsReasoningEffort !== false) &&
+      !!compat &&
+      "supportedReasoningEfforts" in compat &&
+      compat.supportedReasoningEfforts?.includes("none") === true &&
       (requestParams?.reasoningEffort === "none" || requestParams?.reasoning === "off");
     if (Object.keys(streamParams).length === 0 && !cacheRetention && !disableResponsesReasoning) {
       return underlying(callModel, context, options);

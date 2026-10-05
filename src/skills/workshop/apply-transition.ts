@@ -353,14 +353,15 @@ export async function applySkillProposalTransition(
       }),
     );
   }
-  if (result.skillChange) {
+  const skillChange = result.skillChange;
+  if (skillChange) {
     await afterCommit("skill notification", () =>
       dispatchCommittedSkillChangeBestEffort({
         action: result.result.record.kind === "create" ? "created" : "updated",
         source: "workshop",
         workspaceDir: input.workspaceDir,
-        before: result.skillChange.before,
-        after: result.skillChange.after,
+        before: skillChange.before,
+        after: skillChange.after,
         proposal: {
           id: result.result.record.id,
           revision: result.result.record.proposedVersion,

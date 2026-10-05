@@ -153,7 +153,7 @@ function tokenizePattern(source: string): PatternToken[] {
   let inCharClass = false;
 
   for (let i = 0; i < source.length; i += 1) {
-    const ch = source[i];
+    const ch = source.charAt(i);
 
     if (inCharClass) {
       if (ch === "\\") {

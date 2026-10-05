@@ -357,7 +357,6 @@ function handleIncomingData(session: LspSession, chunk: Buffer | string) {
             id: record.id,
             error: { code: -32601, message: "Method not found" },
           }),
-          "utf-8",
         );
       } else {
         // A server request can share an id with a pending client request.
