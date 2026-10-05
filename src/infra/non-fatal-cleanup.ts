@@ -11,7 +11,7 @@ export async function runBestEffortCleanup<T>(params: {
     try {
       params.onError?.(error);
     } catch {
-      // Diagnostics must not turn best-effort cleanup into a fatal failure.
+      // A failed warning sink must not replace the result that cleanup preserves.
     }
     return undefined;
   }

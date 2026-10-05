@@ -1,24 +1,21 @@
-// Feishu plugin module implements directory behavior.
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type { ClawdbotConfig } from "../runtime-api.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import {
   listFeishuDirectoryGroups,
   listFeishuDirectoryPeers,
   type FeishuDirectoryGroup,
+  type FeishuDirectoryParams,
   type FeishuDirectoryPeer,
 } from "./directory.static.js";
 
 const MAX_FEISHU_DIRECTORY_PAGES = 100;
 
-export async function listFeishuDirectoryPeersLive(params: {
-  cfg: ClawdbotConfig;
-  query?: string;
-  limit?: number;
-  accountId?: string;
-  fallbackToStatic?: boolean;
-}): Promise<FeishuDirectoryPeer[]> {
+export async function listFeishuDirectoryPeersLive(
+  params: FeishuDirectoryParams & {
+    fallbackToStatic?: boolean;
+  },
+): Promise<FeishuDirectoryPeer[]> {
   const account = resolveFeishuAccount({ cfg: params.cfg, accountId: params.accountId });
   if (!account.configured) {
     return listFeishuDirectoryPeers(params);
@@ -28,15 +25,15 @@ export async function listFeishuDirectoryPeersLive(params: {
     const client = createFeishuClient(account);
     const peers: FeishuDirectoryPeer[] = [];
     const limit = params.limit ?? 50;
-
     const q = normalizeLowercaseStringOrEmpty(params.query);
+    const pageSize = q ? 50 : Math.min(limit, 50);
     let pageToken: string | undefined;
-    let pages = 0;
     const seenPageTokens = new Set<string>();
-    do {
+
+    for (let page = 0; page < MAX_FEISHU_DIRECTORY_PAGES; page += 1) {
       const response = await client.contact.user.list({
         params: {
-          page_size: Math.min(limit, 50),
+          page_size: pageSize,
           page_token: pageToken,
         },
       });
@@ -59,24 +56,24 @@ export async function listFeishuDirectoryPeersLive(params: {
           }
         }
         if (peers.length >= limit) {
-          break;
+          return peers;
         }
       }
-      pages += 1;
-      const nextPageToken = response.data?.has_more ? response.data.page_token : undefined;
-      if (nextPageToken && seenPageTokens.has(nextPageToken)) {
+      if (!response.data?.has_more) {
+        return peers;
+      }
+
+      const nextPageToken = response.data.page_token;
+      if (!nextPageToken) {
+        throw new Error("Feishu live peer directory returned an empty page token");
+      }
+      if (seenPageTokens.has(nextPageToken)) {
         throw new Error("Feishu live peer directory returned a repeated page token");
       }
-      if (nextPageToken) {
-        seenPageTokens.add(nextPageToken);
-      }
+      seenPageTokens.add(nextPageToken);
       pageToken = nextPageToken;
-    } while (pageToken && peers.length < limit && pages < MAX_FEISHU_DIRECTORY_PAGES);
-    if (pageToken && pages >= MAX_FEISHU_DIRECTORY_PAGES) {
-      throw new Error("Feishu live peer directory pagination limit exceeded");
     }
-
-    return peers;
+    throw new Error("Feishu live peer directory pagination limit exceeded");
   } catch (err) {
     if (params.fallbackToStatic === false) {
       throw err instanceof Error ? err : new Error("Feishu live peer lookup failed");
@@ -85,14 +82,12 @@ export async function listFeishuDirectoryPeersLive(params: {
   }
 }
 
-export async function listFeishuDirectoryGroupsLive(params: {
-  cfg: ClawdbotConfig;
-  query?: string;
-  limit?: number;
-  accountId?: string;
-  fallbackToStatic?: boolean;
-  filter?: (group: FeishuDirectoryGroup) => boolean;
-}): Promise<FeishuDirectoryGroup[]> {
+export async function listFeishuDirectoryGroupsLive(
+  params: FeishuDirectoryParams & {
+    fallbackToStatic?: boolean;
+    filter?: (group: FeishuDirectoryGroup) => boolean;
+  },
+): Promise<FeishuDirectoryGroup[]> {
   const account = resolveFeishuAccount({ cfg: params.cfg, accountId: params.accountId });
   if (!account.configured) {
     return listFeishuDirectoryGroups(params);

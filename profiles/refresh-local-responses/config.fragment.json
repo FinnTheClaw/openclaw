@@ -1,0 +1,44 @@
+{
+  "models": {
+    "providers": {
+      "finn-coordinator": {
+        "api": "openai-responses",
+        "models": [
+          {
+            "id": "moira/brain",
+            "name": "Coordinator brain",
+            "api": "openai-responses",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "compat": {
+              "supportsStore": false,
+              "supportsReasoningEffort": true,
+              "supportedReasoningEfforts": [
+                "none",
+                "low",
+                "medium",
+                "high"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "models": {
+        "finn-coordinator/moira/brain": {
+          "params": {
+            "chat_template_kwargs": {
+              "enable_thinking": true
+            },
+            "transport": "sse"
+          }
+        }
+      }
+    }
+  }
+}

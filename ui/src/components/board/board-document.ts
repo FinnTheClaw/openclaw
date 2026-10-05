@@ -5,24 +5,25 @@ import {
 } from "@openclaw/gateway-protocol";
 import { html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
-import type { GatewaySessionRow } from "../../api/types.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/context.ts";
 import { hasOperatorApprovalsAccess, hasOperatorWriteAccess } from "../../app/operator-access.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import {
   acquireBoardProviderForSession,
-  hasLoadedBoardSnapshot,
   type BoardProvider,
   type BoardProviderLease,
 } from "../../lib/board/provider.ts";
 import type { BoardViewCallbacks } from "../../lib/board/view-types.ts";
+import { isPassiveBoardWidget } from "../../lib/board/widgets/index.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import {
   isGatewayCapabilityAdvertised,
   isGatewayMethodAdvertised,
 } from "../../lib/gateway-methods.ts";
+import type { SessionCapability } from "../../lib/sessions/session-capability.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
+import { renderPanelLoadingSkeleton } from "../panel-loading-skeleton.ts";
 import "../../styles/board-document.css";
 import "./board-view.ts";
 
@@ -36,12 +37,14 @@ type DashboardDocumentState =
 
 type ProviderBinding = {
   client: NonNullable<ApplicationGatewaySnapshot["client"]>;
+  sessions: Pick<SessionCapability, "describe">;
   sessionKey: string;
   capabilityKey: string;
 };
 
 export class OpenClawBoardDocument extends OpenClawLightDomElement {
   @property({ attribute: false }) gatewaySnapshot?: ApplicationGatewaySnapshot;
+  @property({ attribute: false }) sessions!: Pick<SessionCapability, "describe">;
   @property({ attribute: false }) sessionKey: string | null = null;
   @property({ attribute: false }) preparedSession: BoardGetParams | null = null;
   @property({ attribute: false }) onDocumentClose: (() => void) | null = null;
@@ -75,6 +78,7 @@ export class OpenClawBoardDocument extends OpenClawLightDomElement {
     if (
       changed.has("sessionKey") ||
       changed.has("preparedSession") ||
+      changed.has("sessions") ||
       changed.has("gatewaySnapshot")
     ) {
       this.synchronizeProvider();
@@ -128,6 +132,7 @@ export class OpenClawBoardDocument extends OpenClawLightDomElement {
     const capabilityKey = JSON.stringify(capabilities);
     if (
       this.binding?.client === client &&
+      this.binding.sessions === this.sessions &&
       this.binding.sessionKey === sessionKey &&
       (!this.preparedSession || this.binding.session.agentId === this.preparedSession.agentId) &&
       this.binding.capabilityKey === capabilityKey
@@ -139,7 +144,7 @@ export class OpenClawBoardDocument extends OpenClawLightDomElement {
     this.documentState = "loading";
     const generation = this.bindingGeneration;
     void this.bindProvider(
-      { client, sessionKey, capabilityKey },
+      { client, sessions: this.sessions, sessionKey, capabilityKey },
       capabilities,
       generation,
       this.preparedSession,
@@ -155,10 +160,7 @@ export class OpenClawBoardDocument extends OpenClawLightDomElement {
     try {
       const described = preparedSession
         ? null
-        : await binding.client.request<{ session?: GatewaySessionRow | null }>(
-            "sessions.describe",
-            { key: binding.sessionKey },
-          );
+        : await binding.sessions.describe({ key: binding.sessionKey }, { client: binding.client });
       if (generation !== this.bindingGeneration) {
         return;
       }
@@ -226,7 +228,7 @@ export class OpenClawBoardDocument extends OpenClawLightDomElement {
     if (this.provider !== provider) {
       return;
     }
-    if (hasLoadedBoardSnapshot(provider)) {
+    if (provider.hasLoadedSnapshot) {
       this.snapshot = provider.snapshot$.value;
       this.selectAvailableTab();
       this.documentState = "ready";
@@ -261,24 +263,18 @@ export class OpenClawBoardDocument extends OpenClawLightDomElement {
 
   private renderState() {
     if (this.documentState === "loading") {
-      return html`<div class="board-document__state" role="status" aria-live="polite">
-        ${t("common.loading")}
-      </div>`;
+      return renderPanelLoadingSkeleton("board", t("common.loading"));
     }
-    if (this.documentState === "missing-session") {
-      return html`<div class="board-document__state" role="status">
-        ${t("dashboardDocument.missingSession")}
-      </div>`;
-    }
-    if (this.documentState === "not-found") {
-      return html`<div class="board-document__state" role="status">
-        ${t("dashboardDocument.notFound")}
-      </div>`;
-    }
-    if (this.documentState === "unavailable") {
-      return html`<div class="board-document__state" role="status">
-        ${t("dashboardDocument.unavailable")}
-      </div>`;
+    const statusText =
+      this.documentState === "missing-session"
+        ? t("dashboardDocument.missingSession")
+        : this.documentState === "not-found"
+          ? t("dashboardDocument.notFound")
+          : this.documentState === "unavailable"
+            ? t("dashboardDocument.unavailable")
+            : null;
+    if (statusText !== null) {
+      return html`<div class="board-document__state" role="status">${statusText}</div>`;
     }
     if (this.documentState === "error") {
       return html`<div class="board-document__state board-document__state--error" role="alert">
@@ -306,10 +302,15 @@ export class OpenClawBoardDocument extends OpenClawLightDomElement {
           }
         : {}),
     } satisfies BoardViewCallbacks;
-    // A gallery thumbnail may render saved HTML, but it must not bootstrap
-    // executable plugin surfaces or MCP App leases merely by entering view.
+    // Only saved HTML and declared pure core widgets may render in a preview;
+    // arbitrary plugins and MCP apps can acquire active runtime resources.
     const renderSnapshot = this.passive
-      ? { ...snapshot, widgets: snapshot.widgets.filter((widget) => widget.contentKind === "html") }
+      ? {
+          ...snapshot,
+          widgets: snapshot.widgets.filter((widget) =>
+            isPassiveBoardWidget(widget, this.gatewaySnapshot?.hello?.controlUiWidgetKinds ?? []),
+          ),
+        }
       : snapshot;
     return html`<openclaw-board-view
       .active=${true}

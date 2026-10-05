@@ -1,8 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
-import { startHeartbeatRunner } from "./heartbeat-runner.js";
+import { startHeartbeatRunner } from "./heartbeat-runner-scheduler.js";
 import * as heartbeatWake from "./heartbeat-wake.js";
+
+// The fixture supplies cfg and runOnce. Configuration IO and the higher-level
+// agent facade are outside this scheduler contract; keep the actual roster
+// helper while avoiding unrelated model/workspace worker initialization.
+vi.mock("../config/config.js", () => ({
+  getRuntimeConfig: () => {
+    throw new Error("The broadcast fixture must use its explicit configuration");
+  },
+}));
+vi.mock("../agents/agent-scope.js", async () => {
+  const { listAgentIds } = await import("../agents/agent-scope-config.js");
+  return { listAgentIds };
+});
 
 describe("heartbeat broadcast outcomes", () => {
   beforeEach(() => {
@@ -115,7 +128,6 @@ describe("heartbeat broadcast outcomes", () => {
     await run({ source: "manual", intent: "manual", agentId: "ops" });
     vi.setSystemTime(1);
     runOnce.mockResolvedValue(terminal);
-
     expect(await run({ source: "cron", intent: "task" })).toEqual({
       status: "skipped",
       reason: "min-spacing",
@@ -138,23 +150,40 @@ describe("heartbeat broadcast outcomes", () => {
     runOnce
       .mockResolvedValueOnce(result)
       .mockResolvedValue({ status: "skipped", reason: "disabled" });
-
     expect(await run({ source: "cron", intent: "task" })).toEqual(result);
   });
 
-  it("preserves the busy retry fast path even when another agent ran", async () => {
+  it("reports failure even after a sibling successfully ran", async () => {
+    const { runOnce } = startRunner();
+    const failure = { status: "failed", reason: "agent-tool-failure" } as const;
+    runOnce.mockImplementation(async ({ agentId }) =>
+      agentId === "ops" ? failure : { status: "ran", durationMs: 1 },
+    );
+    const completion = heartbeatWake.requestHeartbeatAndWait({
+      source: "manual",
+      intent: "manual",
+      coalesceMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(completion).resolves.toEqual(failure);
+    expect(runOnce).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { status: "ran", durationMs: 1 },
+    { status: "failed", reason: "agent-tool-failure" },
+  ] as const)("preserves a busy retry beside a sibling $status outcome", async (terminal) => {
     const { run, runOnce } = startRunner();
     const busy = {
       status: "skipped",
       reason: heartbeatWake.HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
     } as const;
-    runOnce.mockResolvedValueOnce(busy);
-
+    runOnce.mockResolvedValueOnce(busy).mockResolvedValue(terminal);
     expect(await run({ source: "cron", intent: "task" })).toEqual({
       ...busy,
       broadcastResults: [
         { agentId: "main", result: busy },
-        { agentId: "ops", result: { status: "ran", durationMs: 1 } },
+        { agentId: "ops", result: terminal },
       ],
     });
     expect(runOnce).toHaveBeenCalledTimes(2);
@@ -283,40 +312,55 @@ describe("heartbeat broadcast outcomes", () => {
     expect(runOnce).toHaveBeenCalledTimes(2);
   });
 
-  it("hands only unfinished broadcast targets to a replacement runner", async () => {
-    const first = startRunner();
-    await first.run({ source: "manual", intent: "manual", agentId: "ops" });
-    first.runOnce.mockClear();
-    vi.setSystemTime(1);
-    const tasks = [{ jobId: "a", name: "Work", prompt: "Retained on replacement" }];
-    let settled = false;
-    const done = heartbeatWake
-      .requestHeartbeatAndWait({
-        source: "cron",
-        intent: "task",
-        tasks,
-        coalesceMs: 0,
-      })
-      .then((result) => {
-        settled = true;
-        return result;
-      });
-    await vi.advanceTimersByTimeAsync(1);
-    expect(first.runOnce.mock.calls.map(([opts]) => opts.agentId)).toEqual(["main"]);
-    expect(settled).toBe(false);
+  it.each(["replace-before-stop", "stop-before-replace"] as const)(
+    "hands only unfinished broadcast targets to a replacement runner (%s)",
+    async (order) => {
+      const first = startRunner();
+      await first.run({ source: "manual", intent: "manual", agentId: "ops" });
+      first.runOnce.mockClear();
+      vi.setSystemTime(1);
+      const tasks = [{ jobId: "a", name: "Work", prompt: "Retained on replacement" }];
+      let settled = false;
+      const done = heartbeatWake
+        .requestHeartbeatAndWait({
+          source: "cron",
+          intent: "task",
+          tasks,
+          coalesceMs: 0,
+        })
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(first.runOnce.mock.calls.map(([opts]) => opts.agentId)).toEqual(["main"]);
+      expect(settled).toBe(false);
 
-    first.runner.stop();
-    const second = startRunner();
-    await vi.advanceTimersByTimeAsync(250);
+      // A continuous handler replacement preserves waiters. An explicit stop
+      // must settle them rather than make them depend on a future runner, while
+      // queued unfinished work still belongs to the replacement.
+      if (order === "stop-before-replace") {
+        first.runner.stop();
+      }
+      const second = startRunner();
+      if (order === "replace-before-stop") {
+        first.runner.stop();
+      }
+      await vi.advanceTimersByTimeAsync(250);
 
-    expect(await done).toMatchObject({ status: "ran" });
-    expect(
-      second.runOnce.mock.calls.map(([opts]) => ({ agentId: opts.agentId, tasks: opts.tasks })),
-    ).toEqual([{ agentId: "ops", tasks }]);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(first.runOnce).toHaveBeenCalledTimes(1);
-    expect(second.runOnce).toHaveBeenCalledTimes(1);
-  });
+      if (order === "replace-before-stop") {
+        expect(await done).toMatchObject({ status: "ran" });
+      } else {
+        expect(await done).toEqual({ status: "skipped", reason: "handler-unavailable" });
+      }
+      expect(
+        second.runOnce.mock.calls.map(([opts]) => ({ agentId: opts.agentId, tasks: opts.tasks })),
+      ).toEqual([{ agentId: "ops", tasks }]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(first.runOnce).toHaveBeenCalledTimes(1);
+      expect(second.runOnce).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("retries a channel-not-ready alert without consuming its scheduled cadence", async () => {
     const { run, runOnce } = startRunner();

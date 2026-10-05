@@ -19,14 +19,6 @@ type CollectEmptyAllowlistPolicyWarningsParams = {
   shouldSkipDefaultEmptyGroupAllowlistWarning?: typeof shouldSkipChannelDoctorDefaultEmptyGroupAllowlistWarning;
 };
 
-function usesSenderBasedGroupAllowlist(channelName?: string): boolean {
-  return getDoctorChannelCapabilities(channelName).warnOnEmptyGroupSenderAllowlist;
-}
-
-function allowsGroupAllowFromFallback(channelName?: string): boolean {
-  return getDoctorChannelCapabilities(channelName).groupAllowFromFallbackToAllowFrom;
-}
-
 export function resolveDoctorEffectiveDmAllowlist(params: {
   account: DoctorAccountRecord;
   channelName?: string;
@@ -76,7 +68,10 @@ export function collectEmptyAllowlistPolicyWarningsForAccount(
     (params.parent?.groupPolicy as string | undefined) ??
     undefined;
 
-  if (groupPolicy !== "allowlist" || !usesSenderBasedGroupAllowlist(params.channelName)) {
+  if (
+    groupPolicy !== "allowlist" ||
+    !getDoctorChannelCapabilities(params.channelName).warnOnEmptyGroupSenderAllowlist
+  ) {
     return warnings;
   }
 
@@ -104,7 +99,9 @@ export function collectEmptyAllowlistPolicyWarningsForAccount(
   // Match runtime semantics: resolveGroupAllowFromSources treats empty arrays as
   // unset and falls back to allowFrom.
   const groupAllowFrom = hasAllowFromEntries(rawGroupAllowFrom) ? rawGroupAllowFrom : undefined;
-  const fallbackToAllowFrom = allowsGroupAllowFromFallback(params.channelName);
+  const fallbackToAllowFrom = getDoctorChannelCapabilities(
+    params.channelName,
+  ).groupAllowFromFallbackToAllowFrom;
   const effectiveGroupAllowFrom =
     groupAllowFrom ?? (fallbackToAllowFrom ? effectiveAllowFrom : undefined);
 

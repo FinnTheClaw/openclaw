@@ -1,6 +1,6 @@
 str0m and native realtime audio dependency notices
 
-The component index identifies the versions pinned by Cargo.lock. Build-time dependencies are included conservatively. Identical license texts are reproduced once and referenced by their identifiers below. The Rust standard library notices correspond to nightly-2026-08-31.
+The component index identifies the versions pinned by Cargo.lock. Build-time dependencies are included conservatively. Identical license texts are reproduced once and referenced by their identifiers below. The Rust standard library notices correspond to nightly-2026-09-05.
 
 COMPONENT INDEX
 
@@ -90,7 +90,7 @@ Source: https://github.com/tokio-rs/bytes
 Declared license: MIT
 LICENSE: L016
 
-cc 1.4.4
+cc 1.4.7
 Source: https://github.com/rust-lang/cc-rs
 Declared license: MIT OR Apache-2.0
 LICENSE-APACHE: L005
@@ -102,7 +102,7 @@ Declared license: Apache-2.0 OR MIT
 LICENSE-APACHE: L001
 LICENSE-MIT: L018
 
-cfg-if 1.0.4
+cfg-if 1.0.5
 Source: https://github.com/rust-lang/cfg-if
 Declared license: MIT OR Apache-2.0
 LICENSE-APACHE: L005
@@ -219,7 +219,7 @@ Declared license: MIT OR Apache-2.0
 LICENSE-APACHE: L001
 LICENSE-MIT: L036
 
-dimpl 0.7.3
+dimpl 0.7.4
 Source: https://github.com/algesten/dimpl
 Declared license: MIT OR Apache-2.0
 LICENSE-APACHE.txt: L037
@@ -260,7 +260,7 @@ Declared license: MIT/Apache-2.0
 LICENSE-APACHE: L005
 LICENSE-MIT: L044
 
-find-msvc-tools 0.1.11
+find-msvc-tools 0.1.13
 Source: https://github.com/rust-lang/cc-rs
 Declared license: MIT OR Apache-2.0
 LICENSE-APACHE: L005
@@ -292,6 +292,12 @@ Source: https://github.com/rust-random/getrandom
 Declared license: MIT OR Apache-2.0
 LICENSE-APACHE: L047
 LICENSE-MIT: L049
+
+getrandom 0.4.3
+Source: https://github.com/rust-random/getrandom
+Declared license: MIT OR Apache-2.0
+LICENSE-APACHE: L047
+LICENSE-MIT: L149
 
 ghash 0.5.1
 Source: https://github.com/RustCrypto/universal-hashes
@@ -559,7 +565,7 @@ Declared license: MIT OR Apache-2.0
 LICENSE-APACHE: L079
 LICENSE-MIT: L080
 
-sctp-proto 0.10.4
+sctp-proto 0.10.5
 Source: https://github.com/algesten/sctp-proto
 Declared license: MIT OR Apache-2.0
 LICENSE-APACHE: L081
@@ -656,7 +662,7 @@ Declared license: MIT OR Apache-2.0
 LICENSE-APACHE: L055
 LICENSE-MIT: L039
 
-syn 3.0.4
+syn 3.0.6
 Source: https://github.com/dtolnay/syn
 Declared license: MIT OR Apache-2.0
 LICENSE-APACHE: L055
@@ -719,7 +725,7 @@ LICENSE: L094
 LICENSE-APACHE: L095
 LICENSE-MIT: L096
 
-unicode-ident 1.0.24
+unicode-ident 1.0.26
 Source: https://github.com/dtolnay/unicode-ident
 Declared license: (MIT OR Apache-2.0) AND Unicode-3.0
 LICENSE-APACHE: L055
@@ -1679,6 +1685,24 @@ License text: L119
 URL: https://crates.io/crates/hermit-abi/0.5.2
 
 Authors: Stefan Lankes
+
+License: MIT OR Apache-2.0
+
+Notices:
+
+LICENSE-APACHE
+
+License text: L005
+
+LICENSE-MIT
+
+License text: L039
+
+📦 hermit-abi-0.5.3
+
+URL: https://crates.io/crates/hermit-abi/0.5.3
+
+Authors:
 
 License: MIT OR Apache-2.0
 
@@ -12148,3 +12172,32 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+L149
+========================================================================
+Copyright (c) 2018-2026 The rust-random Project Developers
+Copyright (c) 2014 The Rust Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.

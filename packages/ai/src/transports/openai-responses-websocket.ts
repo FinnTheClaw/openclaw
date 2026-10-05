@@ -11,6 +11,7 @@ import { getAiTransportHost, resolveAiTransportHeaderSentinels } from "../host.j
 import { registerSessionResourceCleanup } from "../session-resources.js";
 import type { StreamOptions, UserMessage } from "../types.js";
 import {
+  recordResponsesContinuationState,
   resolveResponsesContinuationRequest,
   type ResponsesContinuationRequest,
   type ResponsesContinuationState,
@@ -62,6 +63,7 @@ export type OpenAIResponsesWebSocketMode = "websocket" | "websocket-cached" | "a
 type OpenAIResponsesWebSocketStream = {
   stream: AsyncIterable<unknown>;
   request: ResponsesContinuationRequest;
+  fullRequest: ResponsesContinuationRequest;
   reusedConnection: boolean;
   continuationStatus: ResponsesContinuationStatus | "socket_not_cached";
   inputReplay?: ResponsesInputReplay;
@@ -345,6 +347,7 @@ function readServerEvent(
 export function createOpenAIResponsesWebSocketStream(params: {
   client: OpenAI;
   request: Record<string, unknown>;
+  restoreRequest?: (request: ResponsesContinuationRequest) => ResponsesContinuationRequest;
   mode: OpenAIResponsesWebSocketMode;
   sessionId?: string;
   headers?: Record<string, string>;
@@ -355,7 +358,7 @@ export function createOpenAIResponsesWebSocketStream(params: {
   steeringInput?: (messages: readonly UserMessage[]) => ResponseInput | Promise<ResponseInput>;
 }): OpenAIResponsesWebSocketStream {
   const connection = prepareWebSocketConnection(params.client, params.headers);
-  const fullRequest = sanitizeWebSocketRequest(params.request);
+  let fullRequest = sanitizeWebSocketRequest(params.request);
   const requestModel = typeof fullRequest.model === "string" ? fullRequest.model : "";
   const degradationKey = `${params.sessionId ?? ""}\0${connection.identity}\0${requestModel}`;
   const degraded = degradedWebSocketConnections.get(degradationKey);
@@ -384,6 +387,7 @@ export function createOpenAIResponsesWebSocketStream(params: {
   }
   let prepared: Omit<ReturnType<typeof resolveResponsesContinuationRequest>, "continuationStatus"> &
     Pick<OpenAIResponsesWebSocketStream, "continuationStatus">;
+  let previousContinuation: ResponsesContinuationState | undefined;
   const resumedSteering = lease.steeringContinuation;
   const steeringMode = resumedSteering
     ? resumedSteering.requiresInput
@@ -391,12 +395,13 @@ export function createOpenAIResponsesWebSocketStream(params: {
       : "automatic"
     : undefined;
   try {
-    const continuation = lease.entry?.continuation;
+    const continuation = (previousContinuation = lease.entry?.continuation);
     if (continuation && lease.entry) {
       // Consume before dispatch so incomplete/error terminals cannot reuse stale state.
       lease.entry.continuation = undefined;
       prepared = resolveResponsesContinuationRequest(continuation, fullRequest, steeringMode);
     } else {
+      fullRequest = params.restoreRequest?.(fullRequest) ?? fullRequest;
       prepared = {
         request: fullRequest,
         continuationStatus: lease.entry ? "no_previous_response" : "socket_not_cached",
@@ -485,11 +490,12 @@ export function createOpenAIResponsesWebSocketStream(params: {
     }
     released = true;
     if (keep && lease.entry && terminalResponse) {
-      lease.entry.continuation = {
-        lastRequest: prepared.fullRequest ?? fullRequest,
-        lastResponseId: terminalResponse.id,
-        lastResponseItems: terminalResponse.output,
-      };
+      lease.entry.continuation = recordResponsesContinuationState(
+        previousContinuation,
+        prepared.fullRequest ?? fullRequest,
+        terminalResponse,
+        previousContinuation?.lastResponseId === prepared.request.previous_response_id,
+      );
     }
     lease.release({ keep });
   };
@@ -663,6 +669,7 @@ export function createOpenAIResponsesWebSocketStream(params: {
   return {
     stream,
     request: prepared.request,
+    fullRequest: prepared.fullRequest ?? fullRequest,
     reusedConnection: lease.reusedConnection,
     continuationStatus: prepared.continuationStatus,
     inputReplay,

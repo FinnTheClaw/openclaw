@@ -2,6 +2,7 @@ import type {
   WorkboardBoardSummary,
   WorkboardCard,
   WorkboardDiagnostic,
+  WorkboardEvent,
   WorkboardWorkspace,
   WorkboardWorkspaceAccess,
 } from "@openclaw/workboard-contract";
@@ -17,7 +18,6 @@ type WorkboardCardInput = {
   agentId?: unknown;
   sessionKey?: unknown;
   runId?: unknown;
-  taskId?: unknown;
   sourceUrl?: unknown;
   execution?: unknown;
   metadata?: unknown;
@@ -39,7 +39,18 @@ type WorkboardCardInput = {
   parents?: unknown;
 };
 
-export type WorkboardCardPatch = Partial<WorkboardCardInput>;
+export type WorkboardCardPatch = WorkboardCardInput;
+export type WorkboardUpdateCardOptions = {
+  allowAutomationLaunch?: boolean;
+  allowMetadataDependencyLinks?: boolean;
+  enforceStatusHolds?: boolean;
+  event?: Omit<WorkboardEvent, "id" | "at">;
+  eventAt?: number;
+  expectedUpdatedAt?: number;
+  deleteAttachmentId?: string;
+  ownerSlot?: { ownerId: string; now: number };
+  preserveProofId?: string;
+};
 export type WorkboardCommentInput = { body?: unknown };
 export type WorkboardLinkInput = {
   type?: unknown;
@@ -47,9 +58,7 @@ export type WorkboardLinkInput = {
   title?: unknown;
   url?: unknown;
 };
-export type WorkboardLinkedCreateInput = WorkboardCardInput & {
-  parents?: unknown;
-};
+export type WorkboardLinkedCreateInput = WorkboardCardInput;
 export type WorkboardProofInput = {
   status?: unknown;
   label?: unknown;
@@ -86,6 +95,7 @@ export type WorkboardClaimInput = {
   ttlSeconds?: unknown;
 };
 export type WorkboardClaimOptions = {
+  assertOwnerCurrent?: () => void;
   /** Trusted dispatcher guard; never accepted from public tool or gateway input. */
   expectedAuthority?: {
     boardId: string;
@@ -133,6 +143,7 @@ export type WorkboardListOptions = {
 };
 export type WorkboardDispatchOptions = WorkboardListOptions & {
   now?: unknown;
+  assertOwnerCurrent?: () => void;
 };
 export type WorkboardStatsResult = WorkboardBoardSummary & {
   byAgent: Record<string, number>;
@@ -158,6 +169,7 @@ export type WorkboardBoardInput = {
   description?: unknown;
   icon?: unknown;
   color?: unknown;
+  clearAppearance?: unknown;
   automationJobId?: unknown;
   defaultWorkspace?: unknown;
   orchestration?: unknown;
@@ -166,9 +178,7 @@ export type WorkboardBoardInput = {
 export type WorkboardSpecifyInput = WorkboardCardPatch & {
   summary?: unknown;
 };
-export type WorkboardDecomposeChildInput = WorkboardLinkedCreateInput & {
-  idempotencyKey?: unknown;
-};
+export type WorkboardDecomposeChildInput = WorkboardLinkedCreateInput;
 export type WorkboardDecomposeInput = {
   summary?: unknown;
   children?: unknown;

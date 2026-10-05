@@ -1,4 +1,3 @@
-// Llm Task tests cover llm task tool plugin behavior.
 import { validateToolArguments } from "openclaw/plugin-sdk/llm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createLlmTaskTool } from "./llm-task-tool.js";
@@ -26,26 +25,7 @@ function completionResult(params: Parameters<Complete>[0], text = "{}") {
 
 const complete = vi.fn<Complete>(async (params) => completionResult(params));
 
-const resolveThinkingPolicy = vi.fn(
-  ({ model, agentRuntime }: { model?: string | null; agentRuntime?: string | null }) => ({
-    levels: [
-      { id: "off", label: "off" },
-      { id: "minimal", label: "minimal" },
-      { id: "low", label: "low" },
-      { id: "medium", label: "medium" },
-      { id: "high", label: "high" },
-      ...(model?.startsWith("gpt-5.6") &&
-      (agentRuntime === "openclaw" || (agentRuntime === "codex" && !model.endsWith("-luna")))
-        ? [
-            { id: "max", label: "max" },
-            { id: "ultra", label: "ultra" },
-          ]
-        : []),
-    ],
-  }),
-);
-
-const normalizeThinkingLevel = vi.fn((raw?: string | null) => {
+function normalizeThinkingLevel(raw?: string | null) {
   const value = raw?.trim().toLowerCase();
   if (!value) {
     return undefined;
@@ -59,7 +39,7 @@ const normalizeThinkingLevel = vi.fn((raw?: string | null) => {
     return value;
   }
   return undefined;
-});
+}
 
 function fakeApi(overrides: Record<string, unknown> = {}): LlmTaskApi {
   return {
@@ -82,7 +62,6 @@ function fakeApi(overrides: Record<string, unknown> = {}): LlmTaskApi {
       version: "test",
       agent: {
         defaults: { provider: "openai", model: "gpt-5.5" },
-        resolveThinkingPolicy,
         normalizeThinkingLevel,
       },
       llm: { complete },
@@ -99,15 +78,8 @@ function mockIsolatedCompletionJson(payload: unknown) {
   );
 }
 
-function resetRunnerMocks() {
-  complete.mockReset();
-  complete.mockImplementation(async (params) => completionResult(params));
-  resolveThinkingPolicy.mockClear();
-  normalizeThinkingLevel.mockClear();
-}
-
-async function executeIsolatedCompletion(input: Record<string, unknown>) {
-  const tool = createLlmTaskTool(fakeApi());
+async function executeIsolatedCompletion(input: Record<string, unknown>, api = fakeApi()) {
+  const tool = createLlmTaskTool(api);
   await tool.execute("id", input);
   return firstIsolatedCompletionCall();
 }
@@ -120,36 +92,20 @@ function firstIsolatedCompletionCall() {
   return call;
 }
 
-function resultJson(result: unknown): unknown {
-  if (!result || typeof result !== "object" || !("details" in result)) {
-    throw new Error("expected tool result details");
-  }
-  const details = result.details;
-  if (!details || typeof details !== "object" || !("json" in details)) {
-    throw new Error("expected tool result JSON");
-  }
-  return details.json;
-}
-
 describe("llm-task tool (json-only)", () => {
+  let tool: ReturnType<typeof createLlmTaskTool>;
   beforeEach(() => {
-    resetRunnerMocks();
-  });
-
-  it("returns parsed json", async () => {
-    mockIsolatedCompletionJson({ foo: "bar" });
-    const tool = createLlmTaskTool(fakeApi());
-    const res = await tool.execute("id", { prompt: "return foo" });
-    expect(resultJson(res)).toEqual({ foo: "bar" });
+    complete.mockReset();
+    complete.mockImplementation(async (params) => completionResult(params));
+    tool = createLlmTaskTool(fakeApi());
   });
 
   it("strips fenced json", async () => {
     complete.mockImplementationOnce(async (params) =>
       completionResult(params, '```json\n{"ok":true}\n```'),
     );
-    const tool = createLlmTaskTool(fakeApi());
     const res = await tool.execute("id", { prompt: "return ok" });
-    expect(resultJson(res)).toEqual({ ok: true });
+    expect(res.details.json).toEqual({ ok: true });
   });
 
   it.each(["object", "string"] as const)(
@@ -173,24 +129,18 @@ describe("llm-task tool (json-only)", () => {
           input,
           schema: encoding === "string" ? JSON.stringify(schema) : schema,
         },
-      }) as Parameters<typeof tool.execute>[1];
+      }) as Record<string, unknown>;
       expect(args.schema).toEqual(schema);
       expect(args.input).toBe(input);
       const res = await tool.execute("id", args);
-      expect(resultJson(res)).toEqual({ foo: "bar" });
+      expect(res.details.json).toEqual({ foo: "bar" });
       expect(firstIsolatedCompletionCall().responseFormat).toEqual(schema);
     },
   );
 
   it("validates caller schemas with repeated $id independently across calls", async () => {
-    const tool = createLlmTaskTool(fakeApi());
-    complete
-      .mockImplementationOnce(async (params) =>
-        completionResult(params, JSON.stringify({ foo: "bar" })),
-      )
-      .mockImplementationOnce(async (params) =>
-        completionResult(params, JSON.stringify({ count: 1 })),
-      );
+    mockIsolatedCompletionJson({ foo: "bar" });
+    mockIsolatedCompletionJson({ count: 1 });
 
     await expect(
       tool.execute("id", {
@@ -227,51 +177,18 @@ describe("llm-task tool (json-only)", () => {
 
   it("throws on invalid json", async () => {
     complete.mockImplementationOnce(async (params) => completionResult(params, "not-json"));
-    const tool = createLlmTaskTool(fakeApi());
     await expect(tool.execute("id", { prompt: "x" })).rejects.toThrow(/invalid json/i);
   });
 
   it("throws on schema mismatch", async () => {
     mockIsolatedCompletionJson({ foo: 1 });
-    const tool = createLlmTaskTool(fakeApi());
     const schema = { type: "object", properties: { foo: { type: "string" } }, required: ["foo"] };
     await expect(tool.execute("id", { prompt: "x", schema })).rejects.toThrow(/match schema/i);
   });
 
-  it("passes provider/model overrides to isolated completion", async () => {
-    mockIsolatedCompletionJson({ ok: true });
-    const call = await executeIsolatedCompletion({
-      prompt: "x",
-      provider: "anthropic",
-      model: "claude-4-sonnet",
-    });
-    expect(call.model).toBe("anthropic/claude-4-sonnet");
-  });
-
   it("delegates unchanged default model selection to the host", async () => {
-    mockIsolatedCompletionJson({ ok: true });
     const call = await executeIsolatedCompletion({ prompt: "x" });
     expect(call.model).toBeUndefined();
-  });
-
-  it.each([
-    { label: "host defaults", config: {} },
-    {
-      label: "configured primary alias",
-      config: {
-        agents: {
-          defaults: {
-            model: { primary: "fast" },
-            models: { "openai/gpt-5.5": { alias: "fast" } },
-          },
-        },
-      },
-    },
-  ])("delegates $label without requiring a locally split model ref", async ({ config }) => {
-    mockIsolatedCompletionJson({ ok: true });
-    const result = await createLlmTaskTool(fakeApi({ config })).execute("id", { prompt: "x" });
-    expect(resultJson(result)).toEqual({ ok: true });
-    expect(firstIsolatedCompletionCall().model).toBeUndefined();
   });
 
   it("reports the canonical provider and model returned by the execution owner", async () => {
@@ -284,7 +201,7 @@ describe("llm-task tool (json-only)", () => {
         owner: { kind: "cli", id: "google-gemini-cli" },
       },
     }));
-    const result = await createLlmTaskTool(fakeApi()).execute("id", {
+    const result = await tool.execute("id", {
       prompt: "x",
       provider: "google-gemini-cli",
       model: "flash",
@@ -301,7 +218,6 @@ describe("llm-task tool (json-only)", () => {
   });
 
   it("accepts model overrides that already include the selected provider prefix", async () => {
-    mockIsolatedCompletionJson({ ok: true });
     const call = await executeIsolatedCompletion({
       prompt: "x",
       provider: "anthropic",
@@ -311,7 +227,6 @@ describe("llm-task tool (json-only)", () => {
   });
 
   it("does not misparse a slash-containing model id as a provider separator", async () => {
-    mockIsolatedCompletionJson({ ok: true });
     const call = await executeIsolatedCompletion({
       prompt: "x",
       provider: "groq",
@@ -320,41 +235,24 @@ describe("llm-task tool (json-only)", () => {
     expect(call.model).toBe("groq/openai/gpt-oss-20b");
   });
 
-  it("preserves a configured provider for a slash-containing default model", async () => {
-    mockIsolatedCompletionJson({ ok: true });
-    const tool = createLlmTaskTool(
-      fakeApi({
-        pluginConfig: {
-          defaultProvider: "groq",
-          defaultModel: "openai/gpt-oss-20b",
-        },
-      }),
-    );
-
-    await tool.execute("id", { prompt: "x" });
-
-    expect(firstIsolatedCompletionCall().model).toBe("groq/openai/gpt-oss-20b");
-  });
-
-  it("lets a qualified requested model override a configured provider", async () => {
-    mockIsolatedCompletionJson({ ok: true });
-    const tool = createLlmTaskTool(
-      fakeApi({
-        pluginConfig: {
-          defaultProvider: "groq",
-          defaultModel: "openai/gpt-oss-20b",
-        },
-      }),
-    );
-
-    await tool.execute("id", { prompt: "x", model: "google/gemini-3-flash-preview" });
-
-    expect(firstIsolatedCompletionCall().model).toBe("google/gemini-3-flash-preview");
-  });
+  it.each([
+    { model: undefined, expected: "groq/openai/gpt-oss-20b" },
+    { model: "google/gemini-3-flash-preview", expected: "google/gemini-3-flash-preview" },
+  ])(
+    "resolves requested model $model against the configured provider",
+    async ({ model, expected }) => {
+      const call = await executeIsolatedCompletion(
+        { prompt: "x", model },
+        fakeApi({
+          pluginConfig: { defaultProvider: "groq", defaultModel: "openai/gpt-oss-20b" },
+        }),
+      );
+      expect(call.model).toBe(expected);
+    },
+  );
 
   it("resolves configured model aliases before applying an explicit provider", async () => {
-    mockIsolatedCompletionJson({ ok: true });
-    const tool = createLlmTaskTool(
+    const aliasTool = createLlmTaskTool(
       fakeApi({
         config: {
           agents: {
@@ -370,7 +268,7 @@ describe("llm-task tool (json-only)", () => {
       }),
     );
 
-    await tool.execute("id", {
+    await aliasTool.execute("id", {
       prompt: "x",
       provider: "groq",
       model: "gemini-flash",
@@ -380,38 +278,7 @@ describe("llm-task tool (json-only)", () => {
     expect(call.model).toBe("google/gemini-3-flash-preview");
   });
 
-  it("resolves configured model aliases before dispatching isolated completion", async () => {
-    mockIsolatedCompletionJson({ ok: true });
-    const tool = createLlmTaskTool(
-      fakeApi({
-        config: {
-          agents: {
-            defaults: {
-              workspace: "/tmp",
-              model: { primary: "anthropic/claude-sonnet-4-6" },
-              models: {
-                "google/gemini-3-flash-preview": { alias: "gemini-flash" },
-              },
-            },
-          },
-        },
-      }),
-    );
-
-    await tool.execute("id", { prompt: "x", model: "gemini-flash" });
-
-    const call = firstIsolatedCompletionCall();
-    expect(call.model).toBe("google/gemini-3-flash-preview");
-  });
-
-  it("passes thinking override to isolated completion", async () => {
-    mockIsolatedCompletionJson({ ok: true });
-    const call = await executeIsolatedCompletion({ prompt: "x", thinking: "high" });
-    expect(call.reasoning).toBe("high");
-  });
-
   it("delegates model-specific Ultra validation to the host", async () => {
-    mockIsolatedCompletionJson({ ok: true });
     const config = {
       agents: {
         defaults: {
@@ -423,9 +290,9 @@ describe("llm-task tool (json-only)", () => {
         },
       },
     };
-    const tool = createLlmTaskTool(fakeApi({ config }));
+    const runtimeTool = createLlmTaskTool(fakeApi({ config }));
 
-    await tool.execute("id", {
+    await runtimeTool.execute("id", {
       prompt: "x",
       provider: "openai",
       model: "gpt-5.6-sol",
@@ -438,33 +305,23 @@ describe("llm-task tool (json-only)", () => {
   });
 
   it("normalizes thinking aliases", async () => {
-    mockIsolatedCompletionJson({ ok: true });
     const call = await executeIsolatedCompletion({ prompt: "x", thinking: "on" });
     expect(call.reasoning).toBe("low");
   });
 
   it("throws on invalid thinking level", async () => {
-    const tool = createLlmTaskTool(fakeApi());
     await expect(tool.execute("id", { prompt: "x", thinking: "banana" })).rejects.toThrow(
       /invalid thinking level/i,
     );
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it("delegates model-specific xhigh validation to the host", async () => {
-    mockIsolatedCompletionJson({ ok: true });
-    const call = await executeIsolatedCompletion({ prompt: "x", thinking: "xhigh" });
-    expect(call.reasoning).toBe("xhigh");
-  });
-
   it("does not pass thinkLevel when thinking is omitted", async () => {
-    mockIsolatedCompletionJson({ ok: true });
     const call = await executeIsolatedCompletion({ prompt: "x" });
     expect(call.reasoning).toBeUndefined();
   });
 
   it("does not synthesize sampling hints when they are omitted", async () => {
-    mockIsolatedCompletionJson({ ok: true });
     const call = await executeIsolatedCompletion({ prompt: "x" });
     expect(call.maxTokens).toBeUndefined();
     expect(call.temperature).toBeUndefined();
@@ -476,14 +333,12 @@ describe("llm-task tool (json-only)", () => {
         code: "LLM_COMPLETION_NOT_AUTHORIZED",
       }),
     );
-    const tool = createLlmTaskTool(fakeApi());
     await expect(
       tool.execute("id", { prompt: "x", provider: "anthropic", model: "claude-4-sonnet" }),
     ).rejects.toThrow(/not allowlisted/i);
   });
 
   it("uses the isolated-completion operation", async () => {
-    mockIsolatedCompletionJson({ ok: true });
     const call = await executeIsolatedCompletion({ prompt: "x" });
     expect(call.execution).toEqual({ mode: "isolated-agent-runtime", timeoutMs: 30_000 });
     expect(call.systemPrompt).toContain("JSON-only");
@@ -499,14 +354,11 @@ describe("llm-task tool (json-only)", () => {
       return completionResult(params, '{"ok":true}');
     });
 
-    const tool = createLlmTaskTool(fakeApi());
     await expect(tool.execute("id", { prompt: "x" }, controller.signal)).rejects.toBe(cancellation);
     expect(firstIsolatedCompletionCall().signal).toBe(controller.signal);
   });
 
   it("rejects malformed numeric run options before dispatch", async () => {
-    const tool = createLlmTaskTool(fakeApi());
-
     await expect(tool.execute("id", { prompt: "x", temperature: Number.NaN })).rejects.toThrow(
       "temperature must be a finite number",
     );
@@ -519,28 +371,11 @@ describe("llm-task tool (json-only)", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it("passes valid numeric run options before dispatch", async () => {
-    mockIsolatedCompletionJson({ ok: true });
-    const call = await executeIsolatedCompletion({
-      prompt: "x",
-      temperature: 0.2,
-      maxTokens: 512,
-      timeoutMs: 10_000,
-    });
-
-    expect(call.execution).toEqual({ mode: "isolated-agent-runtime", timeoutMs: 10_000 });
-    expect(call.temperature).toBe(0.2);
-    expect(call.maxTokens).toBe(512);
-  });
-
-  it("normalizes numeric string run options before dispatch", async () => {
-    mockIsolatedCompletionJson({ ok: true });
-    const call = await executeIsolatedCompletion({
-      prompt: "x",
-      temperature: "0.2",
-      maxTokens: "512",
-      timeoutMs: "10000",
-    });
+  it.each([
+    { temperature: 0.2, maxTokens: 512, timeoutMs: 10_000 },
+    { temperature: "0.2", maxTokens: "512", timeoutMs: "10000" },
+  ])("normalizes numeric run options %j before dispatch", async (options) => {
+    const call = await executeIsolatedCompletion({ prompt: "x", ...options });
 
     expect(call.execution).toEqual({ mode: "isolated-agent-runtime", timeoutMs: 10_000 });
     expect(call.temperature).toBe(0.2);

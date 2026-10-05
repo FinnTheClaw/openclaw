@@ -1,8 +1,16 @@
+import { createServer } from "node:http";
+import { createLlmRuntime } from "@openclaw/ai";
+import { Agent, type StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { writeOpenAiResponsesText } from "../../../../test/helpers/openai-responses-sse.js";
+import type { Context, Model, SimpleStreamOptions } from "../../../llm/types.js";
+import { applyExtraParamsToAgent } from "../extra-params.js";
+import { resolveEmbeddedAgentStream } from "../stream-resolution.js";
 import { describe, expect, it } from "vitest";
 import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
+import { createZeroUsageFixture } from "../../test-helpers/usage-fixtures.js";
 import {
   resolveEmptyResponseRetryInstruction,
   resolveReasoningOnlyRetryInstruction,
@@ -33,15 +41,29 @@ function emptyAttempt(assistant = emptyAssistant()) {
 }
 
 describe("incomplete-turn recovery policy", () => {
-  it.each(["required", "optional"] as const)(
-    "keeps async-owned work out of completed silence (reply=%s)",
-    (terminalReplyExpectation) => {
+  it.each(
+    (["required", "optional"] as const).flatMap((terminalReplyExpectation) =>
+      ["async tool", "active lifecycle item", "unfinished lifecycle item"].map((owner) => ({
+        terminalReplyExpectation,
+        owner,
+      })),
+    ),
+  )(
+    "keeps $owner out of completed silence (reply=$terminalReplyExpectation)",
+    ({ terminalReplyExpectation, owner }) => {
       const assistant = emptyAssistant({ content: [{ type: "text", text: "NO_REPLY" }] });
       const attempt = makeEmbeddedRunnerAttempt({
         assistantTexts: ["NO_REPLY"],
         lastAssistant: assistant,
         currentAttemptAssistant: assistant,
-        toolMetas: [{ toolName: "image_generate", asyncStarted: true, replaySafe: false }],
+        toolMetas: [
+          { toolName: "image_generate", asyncStarted: owner === "async tool", replaySafe: false },
+        ],
+        itemLifecycle: {
+          startedCount: 1,
+          completedCount: owner === "async tool" ? 1 : 0,
+          activeCount: owner === "active lifecycle item" ? 1 : 0,
+        },
         replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
         currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
       });
@@ -52,7 +74,6 @@ describe("incomplete-turn recovery policy", () => {
         shouldTreatEmptyAssistantReplyAsSilent({
           ...state,
           allowEmptyAssistantReplyAsSilent: true,
-          onlyExplicitSilentReply: true,
           terminalReplyExpectation,
         }),
       ).toBe(false);
@@ -62,49 +83,45 @@ describe("incomplete-turn recovery policy", () => {
   );
 
   it.each([
-    {
-      name: "a completed reaction",
-      aborted: false,
-      timedOut: false,
-      yielded: false,
-      error: false,
-      silent: true,
-    },
-    {
-      name: "a failed reaction",
-      aborted: false,
-      timedOut: false,
-      yielded: false,
-      error: true,
-      silent: false,
-    },
-    {
-      name: "an aborted turn",
-      aborted: true,
-      timedOut: false,
-      yielded: false,
-      error: false,
-      silent: false,
-    },
-    {
-      name: "a timed-out turn",
-      aborted: false,
-      timedOut: true,
-      yielded: false,
-      error: false,
-      silent: false,
-    },
-    {
-      name: "pending work",
-      aborted: false,
-      timedOut: false,
-      yielded: true,
-      error: false,
-      silent: false,
-    },
+    { name: "visible terminal stop", text: "The final answer.", stopReason: "stop" },
+    { name: "failed terminal sentinel", text: "NO_REPLY", stopReason: "error" },
+    { name: "aborted terminal sentinel", text: "NO_REPLY", stopReason: "aborted" },
+  ] as const)("does not revive earlier silence after $name", ({ text, stopReason }) => {
+    const assistant = emptyAssistant({ content: [{ type: "text", text }], stopReason });
+    const attempt = emptyAttempt(assistant);
+    attempt.assistantTexts = ["NO_REPLY"];
+    expect(
+      shouldTreatEmptyAssistantReplyAsSilent({
+        allowEmptyAssistantReplyAsSilent: true,
+        terminalReplyExpectation: "optional",
+        payloadCount: 0,
+        aborted: false,
+        timedOut: false,
+        attempt,
+      }),
+    ).toBe(false);
+    if (stopReason === "error") {
+      expect(
+        resolveIncompleteTurnPayloadText({
+          payloadCount: 0,
+          aborted: false,
+          externalAbort: false,
+          timedOut: false,
+          attempt,
+        }),
+      ).toContain("couldn't generate a response");
+    }
+  });
+
+  it.each([
+    { name: "a completed reaction", aborted: false, timedOut: false, yielded: false, error: false },
+    { name: "a failed reaction", aborted: false, timedOut: false, yielded: false, error: true },
+    { name: "an aborted turn", aborted: true, timedOut: false, yielded: false, error: false },
+    { name: "a timed-out turn", aborted: false, timedOut: true, yielded: false, error: false },
+    { name: "pending work", aborted: false, timedOut: false, yielded: true, error: false },
   ])(
-    "classifies explicit silence after $name without replaying tools",
-    ({ aborted, timedOut, yielded, error, silent }) => {
+    "classifies optional NO_REPLY after $name without replay",
+    ({ aborted, timedOut, yielded, error }) => {
       const assistant = emptyAssistant({ content: [{ type: "text", text: "NO_REPLY" }] });
       const attempt = makeEmbeddedRunnerAttempt({
         assistantTexts: ["NO_REPLY"],
@@ -116,19 +133,18 @@ describe("incomplete-turn recovery policy", () => {
         ...(yielded ? { yieldDetected: true } : {}),
         ...(error ? { lastToolError: { toolName: "message", error: "reaction failed" } } : {}),
       });
-      // A user-triggered turn can intentionally end with only a reaction. Do not
-      // conflate permission to stay silent with permission to replay that effect.
+      // Optional replies can tolerate completed effects, but never replay them
+      // or take completion ownership from failed, cancelled, or pending work.
       expect(
         shouldTreatEmptyAssistantReplyAsSilent({
-          allowEmptyAssistantReplyAsSilent: true,
-          terminalReplyExpectation: "required",
-          onlyExplicitSilentReply: true,
+          allowEmptyAssistantReplyAsSilent: false,
+          terminalReplyExpectation: "optional",
           payloadCount: 0,
           aborted,
           timedOut,
           attempt,
         }),
-      ).toBe(silent);
+      ).toBe(!aborted && !timedOut && !yielded && !error);
       expect(
         resolveEmptyResponseRetryInstruction({
           payloadCount: 0,
@@ -150,14 +166,7 @@ describe("incomplete-turn recovery policy", () => {
         provider: "anthropic",
         model: "claude-opus-4.7",
         content: [],
-        usage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-        },
+        usage: createZeroUsageFixture(),
       }),
     },
     {
@@ -310,6 +319,34 @@ describe("incomplete-turn recovery policy", () => {
       }),
     ).toBe(false);
   });
+
+  it("settles a heartbeat reasoning-only stop as silence under its declared contract", () => {
+    const assistant = emptyAssistant({
+      content: [
+        {
+          type: "thinking",
+          thinking: "internal reasoning",
+          thinkingSignature: JSON.stringify({ id: "heartbeat_rs", type: "reasoning" }),
+        },
+      ],
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+    });
+
+    expect(
+      shouldTreatEmptyAssistantReplyAsSilent({
+        allowEmptyAssistantReplyAsSilent: true,
+        terminalReplyExpectation: "optional",
+        payloadCount: 0,
+        aborted: false,
+        timedOut: false,
+        attempt,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("reasoning-only retry stream params", () => {
@@ -338,14 +375,14 @@ describe("reasoning-only retry stream params", () => {
       ).toBeUndefined();
     },
   );
-  it("does not change Responses requests", () => {
+  it("uses a native request-local Responses override", () => {
     expect(
       resolveReasoningOnlyRetryStreamParams({
         modelApi: "openai-responses",
         reasoningOnlyAttempts: 2,
         modelParams,
       }),
-    ).toBeUndefined();
+    ).toEqual({ reasoningEffort: "none" });
   });
   it("preserves kwargs and request controls without mutating inputs", () => {
     const streamParams = {
@@ -385,3 +422,359 @@ describe("reasoning-only retry stream params", () => {
     ).toEqual({ chat_template_kwargs: { enable_thinking: false } });
   });
 });
+
+// Exercise the actual managed transport and SDK serialization, not a payload stand-in.
+describe("custom Responses reasoning wire contracts", () => {
+  const supportsNone = {
+    supportsStore: false,
+    supportsReasoningEffort: true,
+    supportedReasoningEfforts: ["none", "low", "medium", "high"],
+  };
+  it.each([
+    {
+      name: "omits undeclared off for moira/brain",
+      compat: undefined,
+      level: "off",
+      expected: undefined,
+    },
+    {
+      name: "sends declared off as native none",
+      compat: supportsNone,
+      level: "off",
+      expected: { effort: "none" },
+    },
+    {
+      name: "keeps enabled reasoning",
+      compat: supportsNone,
+      level: "high",
+      expected: { effort: "high", summary: "auto" },
+    },
+    {
+      name: "omits incompatible off",
+      compat: { supportsReasoningEffort: false },
+      level: "off",
+      expected: undefined,
+    },
+  ] as const)("$name through Agent and real HTTP", async ({ compat, level, expected }) => {
+    const result = await captureCustomResponsesWire({ compat, thinkingLevel: level });
+    expect(result.payload.reasoning).toEqual(expected);
+    expect(result.options.reasoning).toBe(level);
+  });
+
+  it("sends native reasoningEffort none directly without mutating request controls", async () => {
+    const controls = { reasoningEffort: "none", temperature: 0.5, maxTokens: 128 };
+    const before = structuredClone(controls);
+    const result = await captureCustomResponsesWire({
+      compat: supportsNone,
+      nativeOptions: controls,
+    });
+    expect(result.payload).toMatchObject({
+      reasoning: { effort: "none" },
+      temperature: 0.5,
+      max_output_tokens: 128,
+    });
+    expect(controls).toEqual(before);
+  });
+
+  it.each([{ reasoningEffort: "none" }, { reasoning: "off" }])(
+    "forwards the request-local native disabling override for %j",
+    async (override) => {
+      const controls = { ...override, temperature: 0.5, maxTokens: 128 };
+      const before = structuredClone(controls);
+      const result = await captureCustomResponsesWire({
+        compat: supportsNone,
+        thinkingLevel: "high",
+        extraParamsOverride: controls,
+      });
+      expect(result.options).toMatchObject({ reasoningEffort: "none", reasoning: "off" });
+      expect(result.payload).toMatchObject({
+        reasoning: { effort: "none" },
+        temperature: 0.5,
+        max_output_tokens: 128,
+      });
+      expect(controls).toEqual(before);
+    },
+  );
+  it.each([0, 1, 2, 3])(
+    "keeps the Responses fallback local to retry %s",
+    async (reasoningOnlyAttempts) => {
+      const modelParams = { chat_template_kwargs: { enable_thinking: true, model_option: "kept" } };
+      const streamParams = {
+        temperature: 0.5,
+        maxTokens: 128,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "answer",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: { answer: { type: "number" } },
+              required: ["answer"],
+              additionalProperties: false,
+            },
+          },
+        },
+      };
+      const before = structuredClone({ modelParams, streamParams });
+      const override = resolveReasoningOnlyRetryStreamParams({
+        modelApi: "openai-responses",
+        reasoningOnlyAttempts,
+        modelParams,
+        streamParams,
+      });
+      if (reasoningOnlyAttempts !== 2) {
+        expect(override).toBe(streamParams);
+      }
+      const result = await captureCustomResponsesWire({
+        compat: supportsNone,
+        thinkingLevel: "high",
+        extraParamsOverride: override,
+      });
+      expect(result.payload.reasoning).toEqual(
+        reasoningOnlyAttempts === 2 ? { effort: "none" } : { effort: "high", summary: "auto" },
+      );
+      expect(result.payload).toMatchObject({
+        temperature: 0.5,
+        max_output_tokens: 128,
+        text: {
+          format: {
+            type: "json_schema",
+            name: "answer",
+            strict: true,
+            schema: streamParams.response_format.json_schema.schema,
+          },
+        },
+      });
+      expect({ modelParams, streamParams }).toEqual(before);
+    },
+  );
+
+  it.each([undefined, false, "true"])(
+    "requires explicit Responses model opt-in (%s)",
+    (enable_thinking) => {
+      const streamParams = { temperature: 0.5 };
+      expect(
+        resolveReasoningOnlyRetryStreamParams({
+          modelApi: "openai-responses",
+          reasoningOnlyAttempts: 2,
+          modelParams: { chat_template_kwargs: { enable_thinking } },
+          defaultParams: { chat_template_kwargs: { enable_thinking: true } },
+          streamParams,
+        }),
+      ).toBe(streamParams);
+    },
+  );
+
+  it.each(["anthropic-messages", "openai-chatgpt-responses", "azure-openai-responses", undefined])(
+    "leaves incompatible API %s unchanged",
+    (modelApi) => {
+      const streamParams = { temperature: 0.5 };
+      expect(
+        resolveReasoningOnlyRetryStreamParams({
+          modelApi,
+          reasoningOnlyAttempts: 2,
+          modelParams: { chatTemplateKwargs: { enable_thinking: true } },
+          streamParams,
+        }),
+      ).toBe(streamParams);
+    },
+  );
+
+  it.each([
+    undefined,
+    { supportsReasoningEffort: false },
+    { supportedReasoningEfforts: ["low", "high"] },
+  ])("does not forward disabling overrides without declared none (%j)", async (compat) => {
+    const result = await captureCustomResponsesWire({
+      compat,
+      thinkingLevel: "high",
+      extraParamsOverride: { reasoningEffort: "none" },
+    });
+    expect(result.options).not.toHaveProperty("reasoningEffort");
+    expect(result.options.reasoning).toBe("high");
+    expect(result.payload.reasoning).toEqual(
+      compat?.supportsReasoningEffort === false ? undefined : { effort: "high", summary: "auto" },
+    );
+  });
+});
+
+describe("stateless custom Responses enabled reasoning wire", () => {
+  const compat = {
+    supportsStore: false,
+    supportsReasoningEffort: true,
+    supportedReasoningEfforts: ["none", "low", "medium", "high"] as const,
+  };
+
+  it("keeps native low effort and summary without the rejected encrypted include", async () => {
+    const result = await captureCustomResponsesWire({ compat, thinkingLevel: "low" });
+    expect(result.payload.reasoning).toEqual({ effort: "low", summary: "auto" });
+    expect(result.payload).not.toHaveProperty("include");
+  });
+
+  it("replays visible reasoning and tool results without encrypted reasoning state", async () => {
+    const result = await captureCustomResponsesWire({
+      compat,
+      nativeOptions: { reasoningEffort: "low" },
+      messages: [
+        { role: "user", content: "Compute 6*7.", timestamp: 0 },
+        buildEmbeddedRunnerAssistant({
+          api: "openai-responses",
+          provider: "finn-coordinator",
+          model: "moira/brain",
+          content: [
+            {
+              type: "thinking",
+              thinking: "Use the completed computation.",
+              thinkingSignature: JSON.stringify({
+                type: "reasoning",
+                summary: [{ type: "summary_text", text: "Use the completed computation." }],
+                encrypted_content: "must-not-reach-coordinator",
+              }),
+            },
+            { type: "toolCall", id: "call_42", name: "exec", arguments: { command: "6*7" } },
+          ],
+          stopReason: "toolUse",
+        }),
+        {
+          role: "toolResult",
+          toolCallId: "call_42",
+          toolName: "exec",
+          content: [{ type: "text", text: "42" }],
+          isError: false,
+          timestamp: 1,
+        },
+      ],
+    });
+    expect(result.payload.reasoning).toEqual({ effort: "low", summary: "auto" });
+    const input = result.payload.input as Array<Record<string, unknown>>;
+    expect(input).toContainEqual({
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: "Use the completed computation." }],
+    });
+    expect(input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "function_call", call_id: "call_42", name: "exec" }),
+        expect.objectContaining({ type: "function_call_output", call_id: "call_42", output: "42" }),
+      ]),
+    );
+    expect(JSON.stringify(input)).not.toContain("must-not-reach-coordinator");
+  });
+});
+
+async function captureCustomResponsesWire(params: {
+  compat?: Model<"openai-responses">["compat"];
+  thinkingLevel?: "off" | "low" | "high";
+  messages?: Context["messages"];
+  nativeOptions?: Record<string, unknown>;
+  extraParamsOverride?: Record<string, unknown>;
+}) {
+  const requests: Array<{ url: string | undefined; payload: Record<string, unknown> }> = [];
+  const server = createServer((request, response) => {
+    request.setEncoding("utf8");
+    let body = "";
+    request.on("data", (chunk: string) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      requests.push({ url: request.url, payload: JSON.parse(body) });
+      writeOpenAiResponsesText(response, {
+        text: "wire-ok",
+        messageId: "msg_wire",
+        responseId: "resp_wire",
+      });
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Missing wire-test address");
+    }
+    const model: Model<"openai-responses"> = {
+      id: "moira/brain",
+      name: "Coordinator brain wire fixture",
+      api: "openai-responses",
+      provider: "finn-coordinator",
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 8192,
+      maxTokens: 128,
+      compat: params.compat,
+    };
+    const providerStream = resolveEmbeddedAgentStream({
+      llmRuntime: createLlmRuntime(),
+      currentStreamFn: undefined,
+      model,
+      sessionId: "custom-responses-wire",
+      resolvedApiKey: "synthetic-wire-key",
+    }).streamFn;
+    let options: SimpleStreamOptions = {};
+    const streamFn: StreamFn = (requestModel, context, callOptions) => {
+      options = { ...callOptions };
+      return providerStream(requestModel, context, {
+        ...callOptions,
+        apiKey: "synthetic-wire-key",
+        cacheRetention: "none",
+        transport: "sse",
+      });
+    };
+    const owner = { streamFn };
+    if (params.extraParamsOverride) {
+      applyExtraParamsToAgent(
+        owner,
+        undefined,
+        model.provider,
+        model.id,
+        params.extraParamsOverride,
+        params.thinkingLevel,
+        undefined,
+        undefined,
+        model,
+        undefined,
+        undefined,
+        { preparedExtraParams: params.extraParamsOverride },
+      );
+    }
+    if (params.nativeOptions) {
+      const stream = await owner.streamFn(
+        model,
+        {
+          messages: params.messages ?? [{ role: "user", content: "Return wire-ok.", timestamp: 0 }],
+        },
+        params.nativeOptions,
+      );
+      expect((await stream.result()).stopReason).toBe("stop");
+    } else {
+      const agent = new Agent({
+        initialState: { model, thinkingLevel: params.thinkingLevel },
+        streamFn: owner.streamFn,
+      });
+      await agent.prompt("Return wire-ok.");
+      expect(agent.state.errorMessage).toBeUndefined();
+    }
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe("/v1/responses");
+    const payload = requests[0].payload;
+    expect(payload.store).not.toBe(true);
+    expect(payload).not.toHaveProperty("previous_response_id");
+    expect(payload).not.toHaveProperty("chat_template_kwargs");
+    const reasoning = payload.reasoning as { effort?: string } | undefined;
+    expect(payload.include ?? []).toEqual(
+      params.compat?.supportsStore !== false && reasoning?.effort && reasoning.effort !== "none"
+        ? ["reasoning.encrypted_content"]
+        : [],
+    );
+    return { payload, options };
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+}

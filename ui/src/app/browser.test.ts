@@ -25,4 +25,19 @@ describe("Control UI route and resource bases", () => {
       expect(resolveControlUiPaths(pathname)).toEqual(["", ""]);
     },
   );
+
+  it("keeps an explicit root mount for a cold trailing-slash plugin link", () => {
+    document.documentElement.setAttribute(CONTROL_UI_BASE_PATH_ATTRIBUTE, "");
+
+    expect(resolveControlUiPaths("/reports/")).toEqual(["", ""]);
+  });
+
+  it.each(["/__openclaw__", "/portable"])(
+    "keeps inferred %s routes separate from an explicit root resource mount",
+    (basePath) => {
+      document.documentElement.setAttribute(CONTROL_UI_BASE_PATH_ATTRIBUTE, "");
+
+      expect(resolveControlUiPaths(`${basePath}/new`)).toEqual([basePath, ""]);
+    },
+  );
 });

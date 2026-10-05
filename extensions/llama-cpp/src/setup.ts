@@ -29,11 +29,11 @@ import {
   resolveManagedLlamaServerPaths,
   selectLlamaServerAsset,
   type LlamaServerAsset,
-} from "./llama-server-install.js";
+} from "./llama-server-assets.js";
+import type { ManagedLlamaChatModel } from "./llama-server-preset.js";
 import {
   ensureLlamaCppModel,
   prepareManagedLlamaServer,
-  type ManagedLlamaChatModel,
   type ManagedLlamaServer,
 } from "./managed-server.js";
 import { recommendLlamaCppModel, resolveLlamaCppModelCandidates } from "./model-catalog.js";
@@ -109,7 +109,7 @@ async function resolveCachedArtifact(source: string, cacheDir: string, signal?: 
 }
 
 async function resolveCachedCandidate(
-  candidate: { model: ModelDefinitionConfig; provider: ModelProviderConfig },
+  candidate: LlamaCppChatCandidate,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
   const source = resolveLlamaCppModelSource(candidate.model);
@@ -439,6 +439,8 @@ export async function runLlamaCppSetup(ctx: ProviderAuthContext): Promise<Provid
     });
     const managed = await prepareManagedLlamaServer({
       chatModel,
+      configuredChatModelIds:
+        plan.kind === "chat" ? plan.candidate.provider.models.map((model) => model.id) : [],
       embeddingModelIsDefault: embeddingModel.isDefault,
       embeddingModelPath,
       asset,

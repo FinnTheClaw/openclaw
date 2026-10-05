@@ -1,6 +1,6 @@
-// Msteams plugin module implements pending uploads fs behavior.
 import { createHash, randomUUID } from "node:crypto";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type { PendingUpload } from "./pending-uploads.js";
 import { getMSTeamsRuntime } from "./runtime.js";
 import {
   resolveMSTeamsSqliteStateEnv,
@@ -22,28 +22,7 @@ const PENDING_UPLOAD_META_NAMESPACE = "pending-uploads";
 const PENDING_UPLOAD_CHUNKS_NAMESPACE = "pending-upload-chunks";
 const PENDING_UPLOAD_MUTATION_KEY = "pending-uploads";
 
-type PendingUploadFsRecord = {
-  id: string;
-  bufferBase64: string;
-  filename: string;
-  contentType?: string;
-  conversationId: string;
-  /** Activity ID of the original FileConsentCard, used to replace it after upload */
-  consentCardActivityId?: string;
-  createdAt: number;
-};
-
-type PendingUploadFs = {
-  id: string;
-  buffer: Buffer;
-  filename: string;
-  contentType?: string;
-  conversationId: string;
-  consentCardActivityId?: string;
-  createdAt: number;
-};
-
-type PendingUploadMetaRecord = Omit<PendingUploadFsRecord, "bufferBase64"> & {
+type PendingUploadMetaRecord = Omit<PendingUpload, "buffer"> & {
   chunkCount: number;
   byteLength: number;
   chunkGeneration?: string;
@@ -99,10 +78,7 @@ function buildChunkKey(id: string, index: number, generation?: string): string {
   return `${prefix}:${String(index).padStart(4, "0")}`;
 }
 
-function recordToUpload(
-  record: PendingUploadFsRecord | PendingUploadMetaRecord,
-  buffer: Buffer,
-): PendingUploadFs {
+function recordToUpload(record: PendingUploadMetaRecord, buffer: Buffer): PendingUpload {
   return {
     id: record.id,
     buffer,
@@ -138,13 +114,12 @@ async function deleteChunkRows(
 }
 
 async function registerUploadRows(
-  record: PendingUploadFsRecord,
+  record: PendingUpload,
   metaStore: PluginStateKeyedStore<PendingUploadMetaRecord>,
   chunkStore: PluginStateKeyedStore<PendingUploadChunkRecord>,
   ttlMs: number,
-  overwrite: boolean,
 ): Promise<void> {
-  const buffer = Buffer.from(record.bufferBase64, "base64");
+  const buffer = Buffer.from(record.buffer);
   const chunkCount = Math.max(1, Math.ceil(buffer.byteLength / RAW_CHUNK_BYTES));
   if (chunkCount > MAX_CHUNKS_PER_UPLOAD) {
     throw new Error(
@@ -212,14 +187,29 @@ async function readUploadRows(
   id: string,
   metaStore: PluginStateKeyedStore<PendingUploadMetaRecord>,
   chunkStore: PluginStateKeyedStore<PendingUploadChunkRecord>,
-): Promise<PendingUploadFs | undefined> {
+): Promise<PendingUpload | undefined> {
   const meta = await metaStore.lookup(buildMetaKey(id));
   if (!meta) {
     return undefined;
   }
+  if (
+    !Number.isSafeInteger(meta.chunkCount) ||
+    meta.chunkCount < 1 ||
+    meta.chunkCount > MAX_CHUNKS_PER_UPLOAD
+  ) {
+    return undefined;
+  }
+  // Published Teams packages retain support for hosts with point reads only.
+  const records = await chunkStore.lookupMany?.(
+    Array.from({ length: meta.chunkCount }, (_, index) => buildChunkKey(id, index, meta.chunkGeneration)),
+  );
   const chunks: Buffer[] = [];
   for (let index = 0; index < meta.chunkCount; index += 1) {
-    const chunk = await chunkStore.lookup(buildChunkKey(id, index, meta.chunkGeneration));
+    const result = records?.[index];
+    if (result && !result.ok) {
+      throw result.error;
+    }
+    const chunk = records ? result?.value : await chunkStore.lookup(buildChunkKey(id, index, meta.chunkGeneration));
     if (!chunk || chunk.id !== id || chunk.index !== index) {
       return undefined;
     }
@@ -282,14 +272,7 @@ async function pruneUploadStore(
  * context) so the in-memory and FS stores share the same key.
  */
 export async function storePendingUploadFs(
-  upload: {
-    id: string;
-    buffer: Buffer;
-    filename: string;
-    contentType?: string;
-    conversationId: string;
-    consentCardActivityId?: string;
-  },
+  upload: Omit<PendingUpload, "createdAt">,
   options?: PendingUploadsFsOptions,
 ): Promise<void> {
   const ttlMs = options?.ttlMs ?? PENDING_UPLOAD_TTL_MS;
@@ -299,7 +282,7 @@ export async function storePendingUploadFs(
     await registerUploadRows(
       {
         id: upload.id,
-        bufferBase64: upload.buffer.toString("base64"),
+        buffer: upload.buffer,
         filename: upload.filename,
         contentType: upload.contentType,
         conversationId: upload.conversationId,
@@ -309,19 +292,15 @@ export async function storePendingUploadFs(
       metaStore,
       chunkStore,
       ttlMs,
-      true,
     );
     await pruneUploadStore(metaStore, chunkStore, ttlMs, 0, upload.id);
   });
 }
 
-/**
- * Retrieve a persisted pending upload. Expired entries are treated as absent.
- */
 export async function getPendingUploadFs(
   id: string | undefined,
   options?: PendingUploadsFsOptions,
-): Promise<PendingUploadFs | undefined> {
+): Promise<PendingUpload | undefined> {
   if (!id) {
     return undefined;
   }
@@ -341,10 +320,6 @@ export async function getPendingUploadFs(
   });
 }
 
-/**
- * Remove a persisted pending upload (after successful upload or decline).
- * No-op if the entry is already gone.
- */
 export async function removePendingUploadFs(
   id: string | undefined,
   options?: PendingUploadsFsOptions,
@@ -359,10 +334,6 @@ export async function removePendingUploadFs(
   });
 }
 
-/**
- * Set the consent card activity ID on a persisted entry. Called after the
- * FileConsentCard activity is sent and we know its message id.
- */
 export async function setPendingUploadActivityIdFs(
   id: string,
   activityId: string,

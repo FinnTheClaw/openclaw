@@ -1,7 +1,5 @@
 package ai.openclaw.app
 
-import ai.openclaw.app.i18n.NativeText
-import ai.openclaw.app.i18n.resolveNativeText
 import ai.openclaw.app.i18n.verbatimText
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -92,7 +90,10 @@ class NodeRuntimeExpiryIntervalTest {
     val runtime = runtime()
     val now = System.currentTimeMillis()
     schedule(runtime, listOf(approval("first", now + 250), approval("second", now + 800)))
-    invoke(runtime, "markExecApprovalResolved", String::class.java, "first")
+    runtime.javaClass
+      .getDeclaredMethod("markExecApprovalResolved", String::class.java, GatewayExecApprovalNotice::class.java)
+      .apply { isAccessible = true }
+      .invoke(runtime, "first", null)
     assertEquals(listOf("second"), ids(runtime))
     awaitIds(runtime, emptyList())
   }
@@ -134,37 +135,6 @@ class NodeRuntimeExpiryIntervalTest {
     awaitIds(runtime, emptyList())
   }
 
-  @Test
-  fun intervalZeroIsNotPresentedAsElapsedTime() = assertInterval(0, "Repeating")
-
-  @Test
-  fun intervalSubsecondUsesExactMilliseconds() = assertInterval(999, "Every 999ms")
-
-  @Test
-  fun intervalOneSecondUsesSeconds() = assertInterval(1_000, "Every 1s")
-
-  @Test
-  fun intervalFractionalSecondPreservesRemainder() = assertInterval(1_500, "Every 1500ms")
-
-  @Test
-  fun intervalOneMinuteUsesMinutes() = assertInterval(60_000, "Every 1m")
-
-  @Test
-  fun intervalOneHourUsesHours() = assertInterval(3_600_000, "Every 1h")
-
-  @Test
-  fun intervalOneDayUsesDays() = assertInterval(86_400_000, "Every 1d")
-
-  @Test
-  fun intervalDayAndHalfHourDoesNotClaimOneDay() = assertInterval(88_200_000, "Every 1470m")
-
-  @Test
-  fun intervalHourAndThreeSecondsDoesNotClaimOneHour() = assertInterval(3_603_000, "Every 3603s")
-
-  @Test
-  fun intervalMaximumLongDoesNotOverflowOrTruncate() =
-    assertInterval(Long.MAX_VALUE, "Every " + Long.MAX_VALUE + "ms")
-
   private fun runtime(): NodeRuntime {
     val app = RuntimeEnvironment.getApplication()
     val securePrefs =
@@ -191,24 +161,18 @@ class NodeRuntimeExpiryIntervalTest {
 
   private fun schedule(runtime: NodeRuntime, rows: List<GatewayExecApprovalSummary>) {
     synchronized(field<Any>(runtime, "execApprovalsStateLock")) {
-      field<MutableStateFlow<List<GatewayExecApprovalSummary>>>(runtime, "_execApprovals").value = rows
+      field<MutableStateFlow<GatewayExecApprovalInboxState>>(runtime, "mutableExecApprovalInbox").value = GatewayExecApprovalInboxState(approvals = rows)
       invoke(runtime, "scheduleExecApprovalExpiryPrune", List::class.java, rows)
     }
   }
 
-  private fun ids(runtime: NodeRuntime): List<String> = runtime.execApprovals.value.map { it.id }
+  private fun ids(runtime: NodeRuntime): List<String> = runtime.execApprovalInbox.value.approvals.map { it.id }
 
   private suspend fun awaitIds(runtime: NodeRuntime, expected: List<String>) {
     withTimeout(5_000) {
       while (ids(runtime) != expected) delay(10)
     }
     assertEquals(expected, ids(runtime))
-  }
-
-  private fun assertInterval(everyMs: Long, expected: String) {
-    val runtime = runtime()
-    val actual = invoke(runtime, "cronIntervalText", java.lang.Long.TYPE, everyMs) as NativeText
-    assertEquals(expected, actual.resolveNativeText())
   }
 
   private fun invoke(runtime: NodeRuntime, name: String, parameter: Class<*>, value: Any): Any? =

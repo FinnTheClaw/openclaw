@@ -40,7 +40,7 @@ const deprecationMarkingSurfaceCounts: Record<(typeof deprecationMarkingCodes)[n
   "agent-harness-terminal-result-aliases": 10,
   "official-plugin-export-aliases": 7,
   "memory-host-compatibility-aliases": 4,
-  "plugin-runtime-api-compat-aliases": 27,
+  "plugin-runtime-api-compat-aliases": 28,
   "plugin-provider-manifest-compat-aliases": 9,
 };
 function expectNonEmptyStringList(values: readonly string[], label: string) {
@@ -129,6 +129,22 @@ describe("plugin compatibility registry", () => {
       removalGate: "next-plugin-sdk-major",
       removeAfter: undefined,
     });
+    expect(records.get("plugin-state-sync-keyed-store")).toMatchObject({
+      status: "deprecated",
+      owner: "sdk",
+      deprecated: "2026-09-11",
+      warningStarts: "2026-09-11",
+      removalGate: "next-plugin-sdk-major",
+      docsPath: "/plugins/sdk-runtime/state-and-system#synchronous-keyed-store-migration",
+      surfaces: [
+        "api.runtime.state.openSyncKeyedStore",
+        "PluginStateSyncKeyedStore",
+        "createPluginStateSyncKeyedStore",
+        "PluginStateKeyedStore.update",
+        "PluginStateKeyedStore.deleteIf",
+      ],
+    });
+    expect(records.get("plugin-state-sync-keyed-store")?.removeAfter).toBeUndefined();
     expect(records.get("agent-harness-sdk-alias")?.surfaces).toEqual([
       "openclaw/plugin-sdk/agent-harness",
       "openclaw/plugin-sdk/agent-harness-runtime",
@@ -147,7 +163,7 @@ describe("plugin compatibility registry", () => {
     }
   });
 
-  it("tracks the deprecation-marking families through the approved window", () => {
+  it("keeps elapsed annotation windows pending their reader migrations", () => {
     const records = new Map(listPluginCompatRecords().map((record) => [record.code, record]));
 
     expect(deprecationMarkingCodes.map((code) => records.get(code)?.code)).toEqual(
@@ -155,13 +171,19 @@ describe("plugin compatibility registry", () => {
     );
     for (const code of deprecationMarkingCodes) {
       expect(records.get(code)).toMatchObject({
-        status: "deprecated",
+        status: "removal-pending",
         deprecated: "2026-07-25",
         warningStarts: "2026-07-25",
         removeAfter: "2026-10-01",
       });
+      expect(records.get(code)?.replacement, code).toMatch(/retain (?:each field )?until/u);
       expect(records.get(code)?.surfaces, code).toHaveLength(deprecationMarkingSurfaceCounts[code]);
     }
+    expect(records.get("media-legacy-projection")).toMatchObject({
+      status: "removal-pending",
+      removeAfter: "2026-10-01",
+      replacement: expect.stringContaining("clean published-plugin artifact sweep"),
+    });
     expect(records.get("plugin-sdk-broad-runtime-barrels")?.surfaces).toEqual(
       expect.arrayContaining([
         "openclaw/plugin-sdk/agent-runtime",

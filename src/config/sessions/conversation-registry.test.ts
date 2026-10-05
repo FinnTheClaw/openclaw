@@ -1,9 +1,10 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { normalizeLegacySessionEntryDelivery } from "../../infra/state-migrations.legacy-session-store.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
@@ -43,10 +44,14 @@ describe("conversation registry", () => {
   let tempDir: string;
   let storePath: string;
 
-  afterEach(() => {
-    closeOpenClawAgentDatabasesForTest();
+  const tempDirs = createTempDirTracker();
+  afterEach(async () => {
+    for (const dir of tempDirs.dirs) {
+      await closeOpenClawAgentDatabasesAsync(dir);
+      closeOpenClawAgentDatabasesForTest(dir);
+    }
+    tempDirs.cleanup();
   });
-  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
   beforeEach(() => {
     tempDir = tempDirs.make("openclaw-conversations-");
@@ -73,6 +78,7 @@ describe("conversation registry", () => {
         chatType: "direct",
         deliveryContext: { channel: "reef", accountId: "default", to: "reef:peer-b" },
         origin: { provider: "reef", accountId: "default", nativeDirectUserId: "peer-b" },
+        skillsSnapshot: { prompt: "Saved instructions. ".repeat(4096), skills: [] },
       });
 
       const conversations = listConversations({ agentId: "main", storePath }, { channel: "reef" });
@@ -208,6 +214,7 @@ describe("conversation registry", () => {
         afterCurrentWrite!.firstSeenAt,
         afterCurrentWrite!.lastSeenAt,
       );
+    await closeOpenClawAgentDatabasesAsync(tempDir);
     closeOpenClawAgentDatabasesForTest();
 
     expect(resolveConversation({ agentId: "main", storePath }, conversationRef)).not.toMatchObject({
@@ -345,6 +352,10 @@ describe("conversation registry", () => {
   it.each([
     { entry_valid: 0 },
     { entry_json: JSON.stringify({ sessionId: "wrong-session", updatedAt: 100 }) },
+    { entry_json: '{"sessionId":"peer-a-session","updatedAt":100}\u0000trailing' },
+    {
+      entry_json: '{"sessionId":"peer-a-session","sessionId":"wrong-session","updatedAt":100}',
+    },
   ])("does not bind an invalid current entry to its primary address: %j", async (invalid) => {
     const scope = { agentId: "main", sessionKey: "agent:main:reef:direct:peer-a", storePath };
     await upsertSessionEntry(scope, {
@@ -365,6 +376,12 @@ describe("conversation registry", () => {
     expect(
       resolveCurrentSessionPrimaryConversation({ ...scope, sessionId: "peer-a-session" }),
     ).toBeUndefined();
+    if (invalid.entry_json !== undefined) {
+      const [conversation] = listConversations(scope);
+      expect(conversation).toMatchObject({ target: "reef:peer-a" });
+      expect(conversation?.sessionId).toBeUndefined();
+      expect(conversation?.sessionKey).toBeUndefined();
+    }
   });
 
   it("orders fresh directory addresses with session-backed conversation activity", async () => {

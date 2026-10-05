@@ -381,7 +381,7 @@ final class WatchDirectNode {
         defer { releaseActiveSession(session) }
         self.isConnected = true
         self.statusText = self.voiceConnection == nil
-            ? String(localized: "Connected directly. Enable voice from iPhone Settings.")
+            ? String(localized: "Connected directly. Reconnect from iPhone Settings → Apple Watch to add voice.")
             : String(localized: "Connected directly. Voice setup saved.")
         while self.isCurrentConnection(generation, configuration: configuration) {
             let pollData = try await request(
@@ -405,7 +405,7 @@ final class WatchDirectNode {
                 path: "result",
                 method: "POST",
                 token: response.sessionToken,
-                body: result)
+                encodedBody: JSONEncoder().encode(result))
             try self.requireCurrentConnection(generation, configuration: configuration)
         }
     }
@@ -459,7 +459,7 @@ final class WatchDirectNode {
             path: "connect",
             method: "POST",
             token: nil,
-            body: params)
+            encodedBody: JSONEncoder().encode(params))
         return try JSONDecoder().decode(WatchNodeConnectResponse.self, from: connectData)
     }
 
@@ -529,38 +529,8 @@ final class WatchDirectNode {
         baseURL: URL,
         path: String,
         method: String,
-        token: String?) async throws -> Data
-    {
-        try await self.performRequest(
-            baseURL: baseURL,
-            path: path,
-            method: method,
-            token: token,
-            body: nil)
-    }
-
-    private func request(
-        baseURL: URL,
-        path: String,
-        method: String,
         token: String?,
-        body: some Encodable) async throws -> Data
-    {
-        let encodedBody = try JSONEncoder().encode(body)
-        return try await self.performRequest(
-            baseURL: baseURL,
-            path: path,
-            method: method,
-            token: token,
-            body: encodedBody)
-    }
-
-    private func performRequest(
-        baseURL: URL,
-        path: String,
-        method: String,
-        token: String?,
-        body: Data?) async throws -> Data
+        encodedBody: Data? = nil) async throws -> Data
     {
         let url = baseURL
             .appendingPathComponent("api")
@@ -574,8 +544,8 @@ final class WatchDirectNode {
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        if let body {
-            request.httpBody = body
+        if let encodedBody {
+            request.httpBody = encodedBody
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         let (data, response) = try await urlSession.data(for: request)
@@ -624,7 +594,8 @@ final class WatchDirectNode {
     }
 
     private func handleNotification(_ request: BridgeInvokeRequest) async throws -> BridgeInvokeResponse {
-        let params = try Self.decode(OpenClawSystemNotifyParams.self, from: request.paramsJSON)
+        let params = try JSONDecoder().decode(
+            OpenClawSystemNotifyParams.self, from: Data((request.paramsJSON ?? "{}").utf8))
         let title = params.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = params.body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty || !body.isEmpty else {
@@ -688,10 +659,16 @@ final class WatchDirectNode {
         case .unknown: .unknown
         @unknown default: .unknown
         }
+        let level = device.batteryLevel >= 0 ? Double(device.batteryLevel) : nil
+        // WKInterfaceDevice.batteryLevel is a normalized 0.0–1.0 fraction, matching
+        // the shared OpenClawBatteryStatusPayload.level contract. `levelPercent`
+        // mirrors it as an integer 0–100 percentage.
+        let levelPercent = level.map { Int(($0 * 100).rounded()) }
         let battery = OpenClawBatteryStatusPayload(
-            level: device.batteryLevel >= 0 ? Double(device.batteryLevel) : nil,
+            level: level,
             state: batteryState,
-            lowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled)
+            lowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            levelPercent: levelPercent)
         let thermalState: OpenClawThermalState = switch ProcessInfo.processInfo.thermalState {
         case .nominal: .nominal
         case .fair: .fair
@@ -724,10 +701,6 @@ final class WatchDirectNode {
             throw CocoaError(.fileWriteInapplicableStringEncoding)
         }
         return BridgeInvokeResponse(id: id, ok: true, payloadJSON: json)
-    }
-
-    private static func decode<T: Decodable>(_ type: T.Type, from json: String?) throws -> T {
-        try JSONDecoder().decode(type, from: Data((json ?? "{}").utf8))
     }
 
     private static func errorResponse(
@@ -832,9 +805,7 @@ final class WatchURLSessionMetrics: NSObject, URLSessionTaskDelegate, @unchecked
     private var latest: WatchNetworkMetricsSnapshot?
 
     fileprivate func snapshot() -> WatchNetworkMetricsSnapshot? {
-        self.lock.lock()
-        defer { lock.unlock() }
-        return self.latest
+        self.lock.withLock { self.latest }
     }
 
     func urlSession(
@@ -847,9 +818,7 @@ final class WatchURLSessionMetrics: NSObject, URLSessionTaskDelegate, @unchecked
             isCellular: transaction.isCellular,
             isExpensive: transaction.isExpensive,
             isConstrained: transaction.isConstrained)
-        self.lock.lock()
-        self.latest = snapshot
-        self.lock.unlock()
+        self.lock.withLock { self.latest = snapshot }
     }
 
     func urlSession(

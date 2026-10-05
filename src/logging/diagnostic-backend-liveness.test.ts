@@ -11,6 +11,11 @@ import {
   resetDiagnosticEventsForTest,
 } from "../infra/diagnostic-events.js";
 import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
+import {
+  BLOCKED_TOOL_CALL_ABORT_FLOOR_MS,
   beginDiagnosticBackendActivity,
   closeDiagnosticEmbeddedRunOwner,
   createDiagnosticEmbeddedRunOwner,
@@ -20,6 +25,13 @@ import {
   resetDiagnosticRunActivityForTest,
   startDiagnosticRunActivityTracking,
 } from "./diagnostic-run-activity.js";
+import { markDiagnosticToolStartedForTest } from "./diagnostic-run-activity.test-support.js";
+import { resetDiagnosticSessionStateForTest } from "./diagnostic-session-state.js";
+import {
+  logSessionStateChange,
+  startGatewayDiagnosticHeartbeat,
+  stopGatewayDiagnosticHeartbeat,
+} from "./diagnostic.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -156,6 +168,45 @@ describe("owned backend silence allowances", () => {
     expect(closed.activeBackendLivenessDeadlineAtMs).toBeUndefined();
   });
 
+  it.each([30_000, 1_200_000])(
+    "changes the %ims allowance without manufacturing output or progress",
+    (noOutputTimeoutMs) => {
+      vi.useFakeTimers();
+      const startedAt = 1_000_000;
+      vi.setSystemTime(startedAt);
+      const ref = { sessionId: "background-allowance", runId: "background-allowance-run" };
+      const owner = createDiagnosticEmbeddedRunOwner(ref);
+      markDiagnosticEmbeddedRunStarted({ ...ref, owner });
+      const backend = beginDiagnosticBackendActivity({
+        owner,
+        noOutputTimeoutMs,
+        assertCurrent: () => {},
+      });
+      try {
+        vi.setSystemTime(startedAt + 60_000);
+        backend.setOutstandingWork(true);
+        const deadline = startedAt + Math.max(noOutputTimeoutMs, BLOCKED_TOOL_CALL_ABORT_FLOOR_MS);
+        expect(getDiagnosticSessionActivitySnapshot(ref)).toMatchObject({
+          activeBackendLivenessDeadlineAtMs: deadline,
+          lastProgressAgeMs: 60_000,
+          lastProgressReason: "embedded_run:started",
+        });
+        vi.setSystemTime(deadline);
+        backend.setOutstandingWork(true);
+        expect(getDiagnosticSessionActivitySnapshot(ref).activeBackendLivenessDeadlineAtMs).toBe(
+          deadline,
+        );
+        backend.setOutstandingWork(false);
+        expect(getDiagnosticSessionActivitySnapshot(ref).activeBackendLivenessDeadlineAtMs).toBe(
+          startedAt + noOutputTimeoutMs,
+        );
+      } finally {
+        backend.close();
+        closeDiagnosticEmbeddedRunOwner(owner);
+      }
+    },
+  );
+
   it.each(["attempt close", "owner close", "authority expiry", "owner replacement"] as const)(
     "revokes the allowance and retained observations after %s",
     (closure) => {
@@ -177,6 +228,7 @@ describe("owned backend silence allowances", () => {
         },
       });
       expect(backend.observeOutput(true)).toBe(true);
+      backend.setOutstandingWork(true);
 
       if (closure === "attempt close") {
         backend.close();
@@ -212,9 +264,79 @@ describe("owned backend silence allowances", () => {
       now += 1_000;
       const before = getDiagnosticSessionActivitySnapshot(ref);
       expect(backend.observeOutput(true)).toBe(false);
+      backend.setOutstandingWork(false);
+      backend.setOutstandingWork(true);
       backend.close();
       expect(getDiagnosticSessionActivitySnapshot(ref)).toEqual(before);
       replacement?.close();
     },
   );
+
+  it("does not abort an Agent call while attributed subagent progress stays inside the floor", async () => {
+    const clock = createGatewaySchedulerClock(Date.parse("2026-09-24T00:00:00Z"));
+    const scheduler = createTestGatewayScheduler(clock.clock);
+    vi.spyOn(Date, "now").mockImplementation(clock.clock.now);
+    const advanceHeartbeats = async (durationMs: number) => {
+      // Recovery discounts scheduler lateness, so advance ordinary heartbeat windows.
+      for (let elapsed = 0; elapsed < durationMs; elapsed += 30_000) {
+        await clock.advanceBy(30_000);
+      }
+    };
+    const recoverStuckSession = vi.fn();
+    startGatewayDiagnosticHeartbeat(
+      scheduler,
+      { diagnostics: { enabled: true } },
+      {
+        recoverStuckSession,
+        testTimings: { stuckSessionWarnMs: 30_000, stuckSessionAbortMs: 60_000 },
+      },
+    );
+    const ref = {
+      sessionId: "agent-progress",
+      sessionKey: "agent:main:agent-progress",
+      runId: "agent-run",
+    };
+    logSessionStateChange({ ...ref, state: "processing" });
+    const owner = createDiagnosticEmbeddedRunOwner(ref);
+    markDiagnosticEmbeddedRunStarted({ ...ref, owner });
+    markDiagnosticToolStartedForTest({
+      ...ref,
+      toolName: "Agent",
+      toolCallId: "toolu_parent",
+    });
+    const backend = beginDiagnosticBackendActivity({
+      owner,
+      noOutputTimeoutMs: 180_000,
+      assertCurrent: () => {},
+    });
+    try {
+      await advanceHeartbeats(14 * 60_000);
+      expect(recoverStuckSession).not.toHaveBeenCalled();
+      expect(backend.observeAttributedAgentProgress("toolu_bash")).toBe(false);
+      expect(getDiagnosticSessionActivitySnapshot(ref)).toMatchObject({
+        activeToolName: "Agent",
+        activeToolCallId: "toolu_parent",
+        lastProgressReason: "tool:Agent:started",
+        lastProgressAgeMs: 14 * 60_000,
+      });
+
+      expect(backend.observeAttributedAgentProgress("toolu_parent")).toBe(true);
+      expect(getDiagnosticSessionActivitySnapshot(ref)).toMatchObject({
+        lastProgressReason: "tool:Agent:subagent_progress",
+        lastProgressAgeMs: 0,
+        activeToolAgeMs: 14 * 60_000,
+      });
+
+      await advanceHeartbeats(14 * 60_000);
+      expect(recoverStuckSession).not.toHaveBeenCalled();
+      await advanceHeartbeats(60_000);
+      expect(recoverStuckSession).toHaveBeenCalled();
+    } finally {
+      backend.close();
+      closeDiagnosticEmbeddedRunOwner(owner);
+      stopGatewayDiagnosticHeartbeat();
+      await scheduler.stop();
+      resetDiagnosticSessionStateForTest();
+    }
+  });
 });

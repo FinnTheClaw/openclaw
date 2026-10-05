@@ -3,25 +3,28 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import { describe, expect, it } from "vitest";
 import type { WorkboardCardStore } from "./persistence-types.js";
+import { workboardSqliteBackendEntrypoint } from "./sqlite-backend-entrypoint.test-support.js";
 import { createWorkboardSqliteStores } from "./sqlite-store.js";
 import { WorkboardStore } from "./store.js";
 
 type Stores = ReturnType<typeof createWorkboardSqliteStores>;
+const workerModuleUrl = resolveRuntimeWorkerUrl(workboardSqliteBackendEntrypoint);
 
 async function withSqlite(
   run: (store: WorkboardStore, stores: Stores, dbPath: string) => Promise<void>,
 ): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "workboard-attachment-delete-"));
   const dbPath = path.join(dir, "workboard.sqlite");
-  const stores = createWorkboardSqliteStores({ dbPath });
+  const stores = createWorkboardSqliteStores({ dbPath, workerModuleUrl });
   const store = new WorkboardStore(stores.cards, { attachments: stores.attachments });
   try {
     await run(store, stores, dbPath);
   } finally {
     await store.close();
-    stores.close();
+    await stores.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -199,7 +202,7 @@ describe("workboard SQLite attachment deletion", () => {
 
   it("10 rejects a paused stale deletion after another instance commits deletion", async () => {
     await withSqlite(async (host, _stores, dbPath) => {
-      const operationStores = createWorkboardSqliteStores({ dbPath });
+      const operationStores = createWorkboardSqliteStores({ dbPath, workerModuleUrl });
       let signalReached = () => {};
       let signalResume = () => {};
       const reached = new Promise<void>((resolve) => {
@@ -247,7 +250,7 @@ describe("workboard SQLite attachment deletion", () => {
       } finally {
         signalResume();
         await operation.close();
-        operationStores.close();
+        await operationStores.close();
       }
     });
   });

@@ -39,7 +39,7 @@ import {
   recordSkillLibraryEvent,
   requireSkillLibraryEntry,
   requireSkillLibraryProfile,
-  requireSkillLibraryUpload,
+  requireSkillLibraryUploadMetadata,
   resolveSkillLibraryActor,
   selectSkillLibraryRevision,
   selectSkillLibraryRevisionMetadata,
@@ -260,7 +260,12 @@ export async function saveSkillLibrary(
       "Skill security scan found critical issues. Review the instructions and support files before publishing.",
     );
   }
-  const staged = await stageSkillLibraryBundle(skillId, bundle, options.env);
+  const staged = await stageSkillLibraryBundle(
+    skillId,
+    bundle,
+    options.env,
+    authority.assertFileMutationAllowed,
+  );
   try {
     const policy = await evaluateSkillInstallPolicy({
       config: authority.getConfig(),
@@ -282,7 +287,7 @@ export async function saveSkillLibrary(
       ({ db }) => {
         const actor = requireSkillLibraryProfile(db, authority);
         if (uploadId) {
-          const upload = requireSkillLibraryUpload(db, uploadId, authority);
+          const upload = requireSkillLibraryUploadMetadata(db, uploadId, authority);
           if (upload.slug !== params.slug) {
             throw new SkillLibraryError(
               "NOT_FOUND",

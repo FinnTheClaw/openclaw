@@ -18,6 +18,23 @@ vi.mock("./project-registry.js", () => ({
   removeProjectCheckoutReference: vi.fn(),
   withProjectCheckoutLifecycle: vi.fn(),
 }));
+vi.mock("../state/openclaw-state-worker-context.js", () => ({
+  captureOpenClawStateWorkerContext: () => ({
+    admission: { databasePath: "/synthetic/state/openclaw.sqlite" },
+  }),
+}));
+vi.mock("./project-checkout.js", () => ({
+  resolveProjectDirectory: async (target: string) => target,
+  withProjectCheckoutLifecycle: async (
+    _target: string,
+    _options: unknown,
+    run: (lease: { signal: AbortSignal; assertOwned: () => void }) => Promise<unknown>,
+  ) => run({ signal: new AbortController().signal, assertOwned: () => {} }),
+}));
+vi.mock("./project-registration.js", () => ({
+  prepareProjectRegistration: async (input: { path: string }) => input,
+  registerPreparedProjectRegistry: runner.register,
+}));
 import { cloneProjectCheckout } from "./project-clone-runtime.js";
 import { materializeProjectClone } from "./project-clone.js";
 

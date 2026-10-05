@@ -14,6 +14,7 @@ import * as questionChannel from "../infra/question-channel-runtime.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { issueOperatorToken } from "./device-authz.test-helpers.js";
+import { observeHeldGatewayWorkDrain } from "./server-held-work.test-support.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { resetTestPluginRegistry, setTestPluginRegistry } from "./test-helpers.plugin-registry.js";
 import {
@@ -175,14 +176,6 @@ describe("public Gateway close operator observer lifetime", () => {
             return wait;
           });
         await admitObserverRpc(started.admin, "question.waitAnswer", { id }, entered.promise);
-        if (connection === "disconnected") {
-          const disconnected = once(started.admin, "close");
-          started.admin.close();
-          await disconnected;
-        }
-        await nextTurn();
-        expect(settled).toBe(false);
-        expect(started.questionManager.get(id)?.status).toBe("pending");
         // Baseline cleanup uses local retirement, never a fabricated terminal answer.
         releaseTimer = setTimeout(() => {
           if (!settled) {
@@ -190,6 +183,15 @@ describe("public Gateway close operator observer lifetime", () => {
             unblock();
           }
         }, 5_000);
+        if (connection === "disconnected") {
+          const disconnected = once(started.admin, "close");
+          started.admin.close();
+          await disconnected;
+          await observed;
+        }
+        await nextTurn();
+        expect(settled).toBe(connection === "disconnected");
+        expect(started.questionManager.get(id)?.status).toBe("pending");
         closing = started.gateway.server.close({
           reason: "question observer lifetime proof",
           drainTimeoutMs: 0,
@@ -240,6 +242,7 @@ describe("public Gateway close operator observer lifetime", () => {
     "retires $name before state release without changing the pairing decision",
     async ({ name, disconnected, read }, { signal }) => {
       const holdRead = read === "held-pending" || read === "held-absent";
+      const expectHeldWork = holdRead ? await observeHeldGatewayWorkDrain() : undefined;
       const entered = createDeferredCore();
       const releaseRead = createDeferredCore();
       const readPending = devicePairing.getPendingDevicePairing;
@@ -250,7 +253,9 @@ describe("public Gateway close operator observer lifetime", () => {
       let observation: MockInstance<ObserverGateway["upgrades"]["wait"]> | undefined;
       let pendingObservation: MockInstance<typeof readPending> | undefined;
       let pairedObservation: MockInstance<typeof readPaired> | undefined;
-      let observed: ReturnType<ObserverGateway["upgrades"]["wait"]> | undefined;
+      let observed:
+        | Promise<PromiseSettledResult<Awaited<ReturnType<ObserverGateway["upgrades"]["wait"]>>>>
+        | undefined;
       let closing: Promise<void> | undefined;
       let rejection: Promise<void> | undefined;
       let stateDir: string | undefined;
@@ -293,10 +298,16 @@ describe("public Gateway close operator observer lifetime", () => {
         observation = vi.spyOn(started.upgrades, "wait").mockImplementation((...args) => {
           const wait = originalWait(...args);
           if (args[0] === requestId) {
-            observed = wait.then((result) => {
-              settled = true;
-              return result;
-            });
+            observed = wait.then(
+              (value) => {
+                settled = true;
+                return { status: "fulfilled", value };
+              },
+              (reason: unknown) => {
+                settled = true;
+                return { status: "rejected", reason };
+              },
+            );
           }
           return wait;
         });
@@ -341,28 +352,28 @@ describe("public Gateway close operator observer lifetime", () => {
           { requestId },
           entered.promise,
         );
+        if (!holdRead) {
+          releaseTimer = setTimeout(() => {
+            if (!settled) {
+              emergencyRelease = true;
+              unblock();
+            }
+          }, 5_000);
+        }
         if (disconnected) {
           const disconnectedSocket = once(limited.ws, "close");
           limited.ws.close();
           await disconnectedSocket;
+          await observed;
         }
         if (read === "held-pending") {
-          // Wake the already-captured poll promise through a real accepted mutation.
-          // A leaked continuation will reread immediately, not after a timing-dependent sleep.
+          // A real decision wakes the captured read without waiting for its poll timer.
           expect((await rpcReq(started.admin, "device.pair.reject", { requestId })).ok).toBe(true);
           pendingBefore = await readPending(requestId, stateDir);
           expect(pendingBefore).toBeNull();
         }
         await nextTurn();
-        expect(settled).toBe(false);
-        releaseTimer = setTimeout(() => {
-          if (holdRead) {
-            releaseRead.resolve();
-          } else if (!settled) {
-            emergencyRelease = true;
-            unblock();
-          }
-        }, 5_000);
+        expect(settled).toBe(disconnected);
         if (read === "queued-wake") {
           // Queue a poll continuation before the synchronous close fence. The
           // notification itself is not a durable decision; pending state stays intact.
@@ -373,20 +384,23 @@ describe("public Gateway close operator observer lifetime", () => {
           .close({ reason: `scope observer lifetime proof: ${name}`, drainTimeoutMs: 0 })
           .then(() => {
             atClose = { observerSettled: settled, heldReadFinished };
-            // Early public close releases the original read immediately on a broken owner;
-            // a correct join stays blocked until the independently bounded gate release.
+            // Early public close releases the original read on a broken owner.
             releaseRead.resolve();
           });
-        if (holdRead) {
-          await nextTurn();
+        if (expectHeldWork) {
+          await expectHeldWork(closing);
           expect(atClose).toBeUndefined();
           expect(heldReadFinished).toBe(false);
+          releaseRead.resolve();
         }
         await closing;
         expect(emergencyRelease).toBe(false);
         expect(atClose).toEqual({ observerSettled: true, heldReadFinished: holdRead });
         expect(postCloseReads).toBe(0);
-        await expect(observed).resolves.toBeNull();
+        await expect(observed).resolves.toMatchObject({
+          status: "rejected",
+          reason: { name: "AbortError" },
+        });
         if (holdRead) {
           expect(pendingReads).toBe(1);
         }

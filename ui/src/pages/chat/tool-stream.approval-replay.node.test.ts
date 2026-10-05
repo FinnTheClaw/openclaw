@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { reconcileWaitingApprovalsFromSnapshot } from "./tool-stream-status.ts";
 import { agentEvent, createHost } from "./tool-stream.test-helpers.ts";
-import { handleAgentEvent, resetToolStream } from "./tool-stream.ts";
+import { handleAgentEvent } from "./tool-stream.ts";
+import { resetToolStream } from "./tool-stream-state.ts";
 
 describe("approval lifecycle replay ownership", () => {
   it("applies a current approval and its later resolution", () => {

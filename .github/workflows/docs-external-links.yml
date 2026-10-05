@@ -1,8 +1,7 @@
 name: Docs External Link Audit
 
 on:
-  schedule:
-    - cron: "47 7 * * 1"
+  # Recurring trigger disabled by the Finn standing no-recurring-GitHub rule.
   workflow_dispatch:
 
 permissions:
@@ -14,6 +13,7 @@ concurrency:
 
 jobs:
   audit:
+    if: github.repository == 'openclaw/openclaw'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

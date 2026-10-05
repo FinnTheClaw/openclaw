@@ -6,11 +6,11 @@ import { readAssistantDisplayContent } from "../shared/assistant-display-content
 import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-only-openclaw-assistant.js";
 import {
   extractAssistantTextForSilentCheck,
+  extractProjectedText,
   hasAssistantDisplayableNonTextContent,
-  isProjectedSessionsSendForwardedMessage,
-  isSessionsSendInterSessionUserMessage,
+  isProjectedForwardedMessage as isProjectedSessionsSendForwardedMessage,
+  isForwardedUserMessage as isSessionsSendInterSessionUserMessage,
 } from "./chat-display-projection.helpers.js";
-import { displayTextForDuplicateCheck } from "./chat-display-projection.history.js";
 import { isSuppressedControlReplyText } from "./control-reply-text.js";
 
 type PendingMessageToolVisibleReply = {
@@ -401,7 +401,8 @@ function readMessageToolDeliveryMirrorText(message: Record<string, unknown>): st
   if (!isOpenClawDeliveryMirrorAssistantMessage(message)) {
     return undefined;
   }
-  return displayTextForDuplicateCheck(message);
+  const text = extractProjectedText(message.content ?? message.text).trim();
+  return text || undefined;
 }
 
 function readMessageToolDeliveryMirrorCallId(message: Record<string, unknown>): string | undefined {

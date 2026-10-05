@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildOpenAIResponsesCompactSystemMessage,
   buildOpenAIResponsesParams,
+  sanitizeOpenAICodexResponsesParams,
 } from "./openai-responses-params-internal.js";
 
 const reasoningModel = {
@@ -17,6 +18,40 @@ const reasoningModel = {
   contextWindow: 256_000,
   maxTokens: 8_192,
 } satisfies Model<"openai-responses">;
+
+describe("sanitizeOpenAICodexResponsesParams", () => {
+  it.each([
+    "https://chatgpt.com/backend-api/codex",
+    "https://chatgpt.com/backend-api/codex/responses",
+  ])("restores stateless Codex payload policy after hooks at %s", (baseUrl) => {
+    const codexModel = {
+      ...reasoningModel,
+      api: "openai-chatgpt-responses",
+      baseUrl,
+    } satisfies Model;
+    const params = sanitizeOpenAICodexResponsesParams(codexModel, {
+      model: codexModel.id,
+      store: true,
+      max_output_tokens: 128,
+      metadata: { purpose: "dashboard-title" },
+      text: { format: { type: "text" }, verbosity: "low" },
+    });
+
+    expect(params.store).toBe(false);
+    expect(params).not.toHaveProperty("max_output_tokens");
+    expect(params).not.toHaveProperty("metadata");
+    expect(params.text).toEqual({ verbosity: "low" });
+  });
+
+  it("does not rewrite non-Codex Responses endpoints", () => {
+    const params = sanitizeOpenAICodexResponsesParams(reasoningModel, {
+      store: true,
+      max_output_tokens: 128,
+    });
+
+    expect(params).toEqual({ store: true, max_output_tokens: 128 });
+  });
+});
 
 describe("buildOpenAIResponsesCompactSystemMessage", () => {
   it("uses the developer role for reasoning models that support it", () => {
@@ -152,5 +187,71 @@ describe("buildOpenAIResponsesParams reasoning capabilities", () => {
     } else {
       expect(params).not.toHaveProperty("include");
     }
+  });
+});
+
+describe("buildOpenAIResponsesParams structured schema", () => {
+  const schema = {
+    type: "object",
+    properties: { answer: { type: "string" } },
+    required: ["answer"],
+    additionalProperties: false,
+  };
+  const context = {
+    messages: [{ role: "user" as const, content: "Return an answer.", timestamp: 0 }],
+  };
+  const nativeFormat = { type: "json_schema", name: "answer", strict: true, schema };
+
+  it.each([
+    {
+      name: "maps a raw llm-task schema to native Responses text.format",
+      responseFormat: schema,
+      expected: { type: "json_schema", name: "openclaw_response", schema },
+    },
+    {
+      name: "keeps an already native Responses format intact",
+      responseFormat: nativeFormat,
+      expected: nativeFormat,
+    },
+    {
+      name: "unwraps a Chat Completions schema envelope for Responses",
+      responseFormat: {
+        type: "json_schema",
+        json_schema: { name: "answer", strict: true, schema },
+      },
+      expected: nativeFormat,
+    },
+  ])("$name", ({ responseFormat, expected }) => {
+    const before = JSON.stringify(responseFormat);
+    const params = buildOpenAIResponsesParams(reasoningModel, context, {
+      responseFormat,
+      reasoningEffort: "high",
+    });
+    expect(params.text?.format).toEqual(expected);
+    expect(params.reasoning).toEqual({ effort: "high", summary: "auto" });
+    expect(JSON.stringify(responseFormat)).toBe(before);
+  });
+
+  it("preserves explicit JSON-object mode without wrapping it as a schema", () => {
+    const params = buildOpenAIResponsesParams(reasoningModel, context, {
+      responseFormat: { type: "json_object" },
+    });
+    expect(params.text?.format).toEqual({ type: "json_object" });
+  });
+
+  it("does not invent a schema when responseFormat is omitted", () => {
+    const params = buildOpenAIResponsesParams(reasoningModel, context, undefined);
+    expect(params.text?.format).toBeUndefined();
+  });
+
+  it("retains native Codex unsupported-format stripping", () => {
+    const model = {
+      ...reasoningModel,
+      api: "openai-chatgpt-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+    } satisfies Model;
+    const params = buildOpenAIResponsesParams(model, context, { responseFormat: schema });
+    expect(params.text?.format).toBeUndefined();
+    expect(params.store).toBe(false);
   });
 });

@@ -1,8 +1,7 @@
 name: Dependency Audit
 
 on:
-  schedule:
-    - cron: "23 7 * * *"
+  # Recurring trigger disabled by the Finn standing no-recurring-GitHub rule.
   workflow_dispatch:
 
 permissions:
@@ -14,6 +13,7 @@ concurrency:
 
 jobs:
   audit:
+    if: github.event_name != 'schedule' || github.repository == 'openclaw/openclaw'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

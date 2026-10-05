@@ -8,35 +8,25 @@ import {
   type ControlUiEnvironment,
   type ControlUiPluginFrameGrantAck,
 } from "../../../src/gateway/control-ui-bootstrap-contract.js";
+import { uiDevGatewayResourceUrl } from "../dev-gateway.ts";
 import { normalizeAssistantIdentity } from "../lib/assistant-identity.ts";
-import { resolveControlUiAuthCandidates } from "./control-ui-auth.ts";
+import { resolveControlUiAuthCandidates, type ControlUiAuthSource } from "./control-ui-auth.ts";
 import { canReloadControlUiDocument } from "./document-reload-guard.ts";
 
-type ApplicationConfigAuthSource = {
-  hello?: { auth?: { deviceToken?: string | null } | null } | null;
-  settings?: { token?: string | null } | null;
-  password?: string | null;
-};
-
 type ApplicationConfig = {
-  assistantIdentity: {
-    agentId: string | null;
-    name: string;
-    avatar: string | null;
-    avatarSource: string | null;
-    avatarStatus: "none" | "local" | "remote" | "data" | null;
-    avatarReason: string | null;
-  };
+  assistantIdentity: ReturnType<typeof normalizeAssistantIdentity>;
   serverVersion: string | null;
   serverBuildId?: string | null;
   devGitBranch: string | null;
   environment: ControlUiEnvironment | null;
-  localMediaPreviewRoots: string[];
   embedSandboxMode: ControlUiEmbedSandboxMode;
   allowExternalEmbedUrls: boolean;
   automaticallyFetchFavicons: boolean;
   communityInvite: boolean;
+  /** Null until the serving Gateway publishes its bootstrap policy. */
+  newSessionModelDefaults?: "last-used" | "configured" | null;
   terminalEnabled: boolean;
+  uploadsEnabled: boolean;
   cliAgentsEnabled?: boolean;
   pluginAssetsRequireAuth: boolean;
   pluginFrameGrants: ControlUiPluginFrameGrantAck[];
@@ -65,12 +55,13 @@ const DEFAULT_APPLICATION_CONFIG: ApplicationConfig = {
   serverBuildId: null,
   devGitBranch: null,
   environment: null,
-  localMediaPreviewRoots: [],
   embedSandboxMode: "strict",
   allowExternalEmbedUrls: false,
   automaticallyFetchFavicons: false,
   communityInvite: false,
+  newSessionModelDefaults: null,
   terminalEnabled: readDocumentTerminalEnabled() ?? false,
+  uploadsEnabled: true,
   cliAgentsEnabled: false,
   pluginAssetsRequireAuth: true,
   pluginFrameGrants: [],
@@ -112,20 +103,27 @@ function normalizeApplicationConfig(parsed: ControlUiBootstrapConfig): Applicati
     serverBuildId: parsed.serverBuildId ?? null,
     devGitBranch: parsed.devGitBranch?.trim() || null,
     environment: parsed.environment ?? null,
-    localMediaPreviewRoots: parsed.localMediaPreviewRoots ?? [],
     embedSandboxMode: parsed.embedSandbox ?? "scripts",
     allowExternalEmbedUrls: Boolean(parsed.allowExternalEmbedUrls),
     automaticallyFetchFavicons: Boolean(parsed.automaticallyFetchFavicons),
     communityInvite: parsed.communityInvite === true,
+    newSessionModelDefaults: parsed.newSessionModelDefaults ?? "last-used",
     terminalEnabled: Boolean(parsed.terminalEnabled),
+    uploadsEnabled: parsed.uploadsEnabled !== false,
     cliAgentsEnabled: Boolean(parsed.cliAgentsEnabled),
     pluginAssetsRequireAuth: parsed.pluginAssetsRequireAuth !== false,
-    pluginFrameGrants: (parsed.pluginFrameGrants ?? []).filter(
-      (grant): grant is ControlUiPluginFrameGrantAck =>
-        typeof grant?.pluginId === "string" &&
-        typeof grant.path === "string" &&
-        (grant.match === "exact" || grant.match === "prefix"),
-    ),
+    pluginFrameGrants: (parsed.pluginFrameGrants ?? [])
+      .filter(
+        (grant): grant is ControlUiPluginFrameGrantAck =>
+          typeof grant?.pluginId === "string" &&
+          typeof grant.path === "string" &&
+          (grant.match === "exact" || grant.match === "prefix"),
+      )
+      .map((grant) => ({
+        pluginId: grant.pluginId,
+        path: uiDevGatewayResourceUrl(grant.path),
+        match: grant.match,
+      })),
   };
 }
 
@@ -170,7 +168,7 @@ async function loadApplicationConfig(params: {
 
 export function createApplicationConfigCapability(params: {
   resourceBasePath: string;
-  getAuth?: () => ApplicationConfigAuthSource;
+  getAuth?: () => ControlUiAuthSource;
 }): ApplicationConfigCapability {
   let current = DEFAULT_APPLICATION_CONFIG;
   let authVersion = 0;

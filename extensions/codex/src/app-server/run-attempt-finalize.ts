@@ -1,11 +1,10 @@
-import { addAbortListener } from "node:events";
 import {
   buildEmbeddedForegroundPromptContext,
   embeddedAgentLog,
   formatErrorMessage,
   runAgentHarnessLlmOutputHook,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { appendSessionYieldContext } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { classifyCodexModelCallFailureKind } from "./attempt-diagnostics.js";
 import {
   buildCodexAppServerPromptTimeoutOutcome,
@@ -14,7 +13,6 @@ import {
   resolveCodexAppServerReplayBlockedReason,
 } from "./attempt-results.js";
 import { attemptTerminal, type EmbeddedRunAttemptResult } from "./attempt-terminal.js";
-import { TURN_FINALIZE_DRAIN_ABORT_GRACE_MS } from "./attempt-timeouts.js";
 import { buildCodexContinuityCalibration } from "./context-engine-projection.js";
 import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import { readCodexRateLimitsRevision, readRecentCodexRateLimits } from "./rate-limit-cache.js";
@@ -26,7 +24,9 @@ import {
   shouldKeepCodexSharedAbortOpen,
 } from "./run-attempt-lifecycle.js";
 import type { CodexAttemptNotificationController } from "./run-attempt-notification-controller.js";
+import { settleReplyMedia } from "./run-attempt-reply-media.js";
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
+import { beginCodexAttemptSettlement } from "./run-attempt-settlement.js";
 import {
   clearCodexBindingAfterInvalidImagePayload,
   shouldUseFreshCodexThreadAfterContextEngineOverflow,
@@ -43,6 +43,7 @@ import {
   markCodexAuthProfileBlockedFromRateLimits,
   refreshCodexUsageLimitPromptError,
 } from "./usage-limit-error.js";
+import { buildCodexUserPromptMessage } from "./user-prompt-message.js";
 
 export async function finalizeCodexAttempt(
   resources: CodexAttemptResources,
@@ -55,7 +56,7 @@ export async function finalizeCodexAttempt(
   const { prompt, state: resourceState, trajectoryRecorder, markTrajectoryEndRecorded } = resources;
   const { context, systemPromptReport } = prompt;
   const { runtime, attemptTools, activeTranscriptTarget, hookContext } = context;
-  const { hookContextWindowFields, hookRunner } = context;
+  const { hookRunner } = context;
   const { connection, preparedAuthBinding } = runtime;
   const { effectiveRuntimeProviderId, effectiveRuntimeModelId } = runtime;
   const {
@@ -90,10 +91,9 @@ export async function finalizeCodexAttempt(
     assertCodexBindingMayBeReplaced(resourceState.thread, operation);
     return true;
   };
-  const { state, completion, deadlines } = turnRuntime;
+  const { state, completion } = turnRuntime;
   const { emitLifecycleTerminal, buildLifecycleTerminalMeta } = lifecycle;
-  const { drainNotificationQueue } = notifications;
-  const { codexModelCallDiagnostics } = requestRuntime;
+  const { codexModelCallDiagnostics, buildLlmOutputEvent } = requestRuntime;
   const {
     activeTurnId,
     activeProjector,
@@ -103,38 +103,15 @@ export async function finalizeCodexAttempt(
     notifyUserMessagePersisted,
   } = activeTurn;
   await completion;
-  const abortGraceElapsed = createDeferred<void>();
-  let settlementPhase: "active" | "expired" | "closed" = "active";
-  let abortGraceTimer: ReturnType<typeof setTimeout> | undefined;
-  const beginAbortGrace = () => {
-    if (settlementPhase !== "active") {
-      return;
-    }
-    abortGraceTimer = setTimeout(() => {
-      settlementPhase = "expired";
-      abortGraceElapsed.resolve();
-    }, TURN_FINALIZE_DRAIN_ABORT_GRACE_MS);
-    abortGraceTimer.unref?.();
-  };
-  const abortListener = addAbortListener(runAbortController.signal, () => {
-    // Abort may first arrive after native completion. Its authoritative cleanup
-    // must finish before projection gets the full five-second drain grace.
-    void state.abortCleanup.then(beginAbortGrace, beginAbortGrace);
-  });
-  const closeProjection = () => {
-    state.projectionClosed = true;
-    return activeProjector.closeProjection();
-  };
-  const closeSettlement = () => {
-    if (settlementPhase === "closed") {
-      return;
-    }
-    settlementPhase = "closed";
-    abortListener[Symbol.dispose]();
-    clearTimeout(abortGraceTimer);
-    deadlines.dispose();
-  };
-  const settlement = drainNotificationQueue().then(closeProjection);
+  const {
+    settlement,
+    degradedSettlement,
+    drainGraceElapsed,
+    closeProjection,
+    closeSettlement,
+    isActive: isSettlementActive,
+    readRetainedNativeCommands,
+  } = await beginCodexAttemptSettlement(resources, turnRuntime, notifications, activeTurn);
   let projectionDrained = false;
   try {
     try {
@@ -142,7 +119,8 @@ export async function finalizeCodexAttempt(
       // Both remain under the original receipt-anchored settlement deadline.
       projectionDrained = await Promise.race([
         settlement.then(() => true),
-        abortGraceElapsed.promise.then(() => false),
+        drainGraceElapsed.promise.then(() => false),
+        degradedSettlement.then(() => false),
       ]);
       if (runAbortController.signal.aborted) {
         await state.abortCleanup;
@@ -154,6 +132,11 @@ export async function finalizeCodexAttempt(
     }
     const result = activeProjector.buildResult(toolBridge.telemetry, {
       yieldDetected: toolState.yieldDetected,
+      readRetainedNativeCommands,
+      // The original transcript fence excludes steering accepted during this turn.
+      steeringMessages: params.pluginRuntimeRefreshPending?.()
+        ? turnRuntime.steeringQueueRef.current?.getAcceptedMessages()
+        : undefined,
     });
     const projectedTerminal = attemptTerminal.project(result.terminal);
     // Transport loss aborts in-flight work mechanically, but its terminal outcome
@@ -163,14 +146,13 @@ export async function finalizeCodexAttempt(
       (!resourceState.executionDisconnectError &&
         (projectedTerminal.aborted ||
           (runAbortController.signal.aborted && !state.clientClosedAbort)));
-    let enrichedPromptError =
+    const currentPromptError = (fallback: unknown) =>
       resourceState.executionDisconnectError ??
       state.clientClosedPromptError ??
-      (state.timeout?.kind === "settlement"
-        ? "codex app-server terminal settlement timed out"
-        : state.timeout?.kind === "execution"
-          ? "codex app-server execution budget timed out"
-          : projectedTerminal.promptError);
+      (state.timeout
+        ? `codex app-server ${state.timeout.kind === "execution" ? "execution budget" : "terminal settlement"} timed out`
+        : fallback);
+    let enrichedPromptError = currentPromptError(projectedTerminal.promptError);
     const enrichedPromptErrorMessage =
       typeof enrichedPromptError === "string"
         ? enrichedPromptError
@@ -242,14 +224,7 @@ export async function finalizeCodexAttempt(
     const projectTerminalOutcome = () => {
       const effectiveTimedOut = state.timeout !== undefined;
       const clientClosedPromptErrorForFinal = state.clientClosedPromptError;
-      const finalPromptError =
-        resourceState.executionDisconnectError ??
-        clientClosedPromptErrorForFinal ??
-        (state.timeout?.kind === "settlement"
-          ? "codex app-server terminal settlement timed out"
-          : state.timeout?.kind === "execution"
-            ? "codex app-server execution budget timed out"
-            : enrichedPromptError);
+      const finalPromptError = currentPromptError(enrichedPromptError);
       const finalPromptErrorSource =
         effectiveTimedOut || clientClosedPromptErrorForFinal
           ? "prompt"
@@ -310,6 +285,7 @@ export async function finalizeCodexAttempt(
       const attemptSucceeded =
         turnSucceeded && result.agentHarnessResultClassification === undefined;
       result.terminal = attemptTerminal.normalize({
+        settlementWarning: state.settlementWarning,
         timedOut: effectiveTimedOut,
         aborted: finalAborted,
         promptError: finalPromptError,
@@ -351,45 +327,89 @@ export async function finalizeCodexAttempt(
     };
     // Message-write hooks see the enriched native outcome. The same projection
     // runs after the bounded mirror join if Stop or the deadline arrives there.
-    const mirrorTerminal = projectTerminalOutcome();
+    projectTerminalOutcome();
     type MirrorOutcome = Awaited<ReturnType<typeof codexTranscriptMirrorRuntime.mirrorBestEffort>>;
     const unavailableMirror: MirrorOutcome = {
       assistantTranscriptOwned: false,
       mirroredMessages: [],
     };
     let mirrorOutcome = unavailableMirror;
+    const mirrorFinal = () => {
+      const warning = state.settlementWarning;
+      const mirrorTerminal = projectTerminalOutcome();
+      state.pendingSettlementStage = "transcript/mirror";
+      return codexTranscriptMirrorRuntime.mirrorBestEffort({
+        assertWriteCurrent: () => {
+          // Expiry replaces this exact pending write; it cannot borrow the degraded final's owner.
+          if (!isSettlementActive() || state.settlementWarning !== warning) {
+            throw new Error("Codex transcript settlement is no longer active");
+          }
+          const current = projectTerminalOutcome();
+          if (
+            current.finalAborted !== mirrorTerminal.finalAborted ||
+            current.effectiveTimedOut !== mirrorTerminal.effectiveTimedOut ||
+            current.finalPromptError !== mirrorTerminal.finalPromptError
+          ) {
+            throw new Error("Codex transcript terminal outcome changed before write");
+          }
+        },
+        params,
+        settlementWarning: warning,
+        agentId: sessionAgentId,
+        notifyUserMessagePersisted,
+        result,
+        sessionKey: contextSessionKey,
+        cwd: effectiveCwd,
+        threadId: resourceState.thread.threadId,
+        turnId: activeTurnId,
+      });
+    };
     try {
-      if (projectionDrained && settlementPhase === "active") {
+      // Canceling retired media can drain the queue; that cannot reopen ordinary settlement.
+      if (projectionDrained && isSettlementActive() && !state.settlementWarning) {
         mirrorOutcome = await Promise.race([
-          codexTranscriptMirrorRuntime.mirrorBestEffort({
-            assertWriteCurrent: () => {
-              if (settlementPhase !== "active") {
-                throw new Error("Codex transcript settlement is no longer active");
-              }
-              const current = projectTerminalOutcome();
-              if (
-                current.finalAborted !== mirrorTerminal.finalAborted ||
-                current.effectiveTimedOut !== mirrorTerminal.effectiveTimedOut ||
-                current.finalPromptError !== mirrorTerminal.finalPromptError
-              ) {
-                throw new Error("Codex transcript terminal outcome changed before write");
-              }
-            },
-            params,
-            agentId: sessionAgentId,
-            notifyUserMessagePersisted,
-            result,
-            sessionKey: contextSessionKey,
-            cwd: effectiveCwd,
-            threadId: resourceState.thread.threadId,
-            turnId: activeTurnId,
-          }),
-          abortGraceElapsed.promise.then(() => unavailableMirror),
+          mirrorFinal(),
+          drainGraceElapsed.promise.then(() => unavailableMirror),
+          degradedSettlement.then(() => unavailableMirror),
         ]);
       }
-      if (runAbortController.signal.aborted) {
-        await state.abortCleanup;
+      if (state.settlementWarning && !runAbortController.signal.aborted) {
+        // Preserve transcript ordering and hooks. Only the retired projection is abandoned;
+        // the completed answer, with its warning, uses the existing final transcript owner.
+        mirrorOutcome = await Promise.race([
+          mirrorFinal(),
+          drainGraceElapsed.promise.then(() => unavailableMirror),
+        ]);
+        if (mirrorOutcome === unavailableMirror) {
+          trajectoryRecorder?.recordEvent("turn.settlement_persistence_unavailable", {
+            pendingStage: "transcript/mirror",
+            threadId: resourceState.thread.threadId,
+            turnId: activeTurnId,
+          });
+        }
       }
+      if (toolState.yieldMessage && projectTerminalOutcome().turnSucceeded) {
+        state.pendingSettlementStage = "transcript/yield-context";
+        await Promise.race([
+          appendSessionYieldContext({
+            ...activeTranscriptTarget.sessionTarget,
+            agentId: activeTranscriptTarget.agentId,
+            sessionId: activeTranscriptTarget.sessionId,
+            sessionKey: activeTranscriptTarget.sessionKey,
+            config: params.config,
+            message: toolState.yieldMessage,
+            assertCurrent: () => {
+              connection.assertCurrent();
+              if (!isSettlementActive() || !projectTerminalOutcome().turnSucceeded) {
+                throw new Error("Codex yield settlement is no longer active");
+              }
+            },
+          }),
+          drainGraceElapsed.promise,
+          degradedSettlement,
+        ]);
+      }
+      await settleReplyMedia(activeTurn, result, turnRuntime, runAbortController.signal);
     } finally {
       // Retire this exact write before releasing the run. A queued mirror cannot
       // borrow a later session writer after its settlement deadline has elapsed.
@@ -405,7 +425,15 @@ export async function finalizeCodexAttempt(
       attemptSucceeded,
       completedTurnStatus,
     } = projectTerminalOutcome();
-    terminalState.turnSucceeded = turnSucceeded;
+    terminalState.settledTurnStatus = turnSucceeded
+      ? "completed"
+      : completedTurnStatus === "failed" &&
+          !finalAborted &&
+          !effectiveTimedOut &&
+          !state.clientClosedPromptError &&
+          !resourceState.executionDisconnectError
+        ? "failed"
+        : undefined;
     terminalState.sharedAbortAllowedAfterTerminalOutcome = shouldKeepCodexSharedAbortOpen({
       trigger: params.trigger,
       result,
@@ -470,22 +498,7 @@ export async function finalizeCodexAttempt(
     }
     runAgentHarnessLlmOutputHook({
       event: {
-        runId: params.runId,
-        sessionId: params.sessionId,
-        provider: usesSupervisionConnection
-          ? (resourceState.thread.modelProvider ?? effectiveRuntimeProviderId)
-          : params.provider,
-        model: usesSupervisionConnection
-          ? (resourceState.thread.model ?? effectiveRuntimeModelId)
-          : params.modelId,
-        ...hookContextWindowFields,
-        resolvedRef: usesSupervisionConnection
-          ? `${resourceState.thread.modelProvider ?? effectiveRuntimeProviderId}/${resourceState.thread.model ?? effectiveRuntimeModelId}`
-          : (params.runtimePlan?.observability.resolvedRef ??
-            `${params.provider}/${params.modelId}`),
-        ...(!usesSupervisionConnection && params.runtimePlan?.observability.harnessId
-          ? { harnessId: params.runtimePlan.observability.harnessId }
-          : {}),
+        ...buildLlmOutputEvent(),
         assistantTexts: result.assistantTexts,
         ...(result.lastAssistant ? { lastAssistant: result.lastAssistant } : {}),
         ...(result.attemptUsage ? { usage: result.attemptUsage } : {}),
@@ -493,7 +506,13 @@ export async function finalizeCodexAttempt(
       ctx: hookContext,
       hookRunner,
     });
+    // A non-retryable refusal is a visible terminal reply, not learning evidence
+    // for another call to the same provider. User-aborted turns remain eligible.
+    const providerRefusal = result.currentAttemptAssistant?.diagnostics?.some(
+      (diagnostic) => diagnostic.type === "provider_refusal",
+    );
     await runCodexAgentEndHook(params, {
+      skillExperienceReviewSource: providerRefusal ? undefined : terminalAnchor,
       event: {
         messages: result.messagesSnapshot,
         success: !finalAborted && !finalPromptError,
@@ -524,7 +543,8 @@ export async function finalizeCodexAttempt(
       !runAbortController.signal.aborted &&
       !finalAborted &&
       !finalPromptError;
-    if (state.shouldDelayNativeHookRelayUnregister) {
+    // Refresh replies did not reach the native thread; successful handoff clears its binding.
+    if (turnSucceeded && !runAbortController.signal.aborted && !state.pluginRuntimeRefreshStop) {
       try {
         // Only no-engine continuity prompts may calibrate their measured history.
         // Billing spans every model call; density needs only the latest full prompt.
@@ -593,34 +613,54 @@ export async function finalizeCodexAttempt(
     const terminalAssistantText = collectTerminalAssistantText(result);
     if (
       terminalAssistantText &&
-      (!streamState.eventEmitted || streamState.needsTerminalSnapshot) &&
-      !finalAborted &&
-      !finalPromptError
+      (assistantTranscriptIdempotencyKey ||
+        ((!streamState.eventEmitted || streamState.needsTerminalSnapshot) &&
+          !finalAborted &&
+          !finalPromptError))
     ) {
       void emitCodexAppServerEvent(params, {
         stream: "assistant",
-        data: { text: terminalAssistantText },
+        data: {
+          text: terminalAssistantText,
+          // The receipt identifies the selected persisted occurrence, which can
+          // exclude candidates streamed before a native tool or sleep boundary.
+          ...(assistantTranscriptIdempotencyKey
+            ? {
+                itemId: assistantTranscriptIdempotencyKey,
+                replace: true,
+                replaceable: true,
+              }
+            : {}),
+        },
       });
     }
-    emitLifecycleTerminal(
-      finalPromptError
-        ? {
-            phase: "error",
-            error: formatErrorMessage(finalPromptError),
-            ...buildLifecycleTerminalMeta({ aborted: finalAborted, timedOut: effectiveTimedOut }),
-          }
-        : {
-            phase: "end",
-            ...buildLifecycleTerminalMeta({
-              aborted: finalAborted,
-              timedOut: effectiveTimedOut,
-              yielded: toolState.yieldDetected,
-            }),
-          },
-    );
+    emitLifecycleTerminal({
+      phase: finalPromptError ? "error" : "end",
+      ...(finalPromptError ? { error: formatErrorMessage(finalPromptError) } : {}),
+      ...(assistantTranscriptIdempotencyKey ? { assistantTranscriptIdempotencyKey } : {}),
+      ...buildLifecycleTerminalMeta({
+        aborted: finalAborted,
+        timedOut: effectiveTimedOut,
+        yielded: finalPromptError ? undefined : toolState.yieldDetected,
+      }),
+    });
     // Preserve the exact result identity carrying host-issued TTS delivery provenance.
     const finalizedResult: EmbeddedRunAttemptResult = Object.assign(result, {
       ...(runtimeModelSelection ? { runtimeModelSelection } : {}),
+      ...(turnSucceeded && params.pluginRuntimeRefreshPending?.()
+        ? {
+            // Host-persisted input is absent from the native snapshot. The first
+            // handoff carries it once; later handoffs retain that existing prefix.
+            pluginRuntimeRefreshMessages:
+              params.suppressNextUserMessagePersistence && !params.pluginRuntimeRefreshMessages
+                ? [
+                    params.userTurnTranscriptRecorder?.getPersistedMessage?.() ??
+                      buildCodexUserPromptMessage(params),
+                    ...result.messagesSnapshot,
+                  ]
+                : result.messagesSnapshot,
+          }
+        : {}),
       ...(toolState.yieldAcknowledgment
         ? { yieldAcknowledgment: toolState.yieldAcknowledgment }
         : {}),

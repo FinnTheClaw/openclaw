@@ -1,5 +1,6 @@
-// Lazy heartbeat runtime facade keeps tests from importing the full auto-reply
-// runtime unless the runner path needs it.
+// Compatibility facade for callers retaining published reply runtimes.
+// The current heartbeat runner owns execution through routed reply dispatch.
+// A distinct per-run config must not inherit a stale published snapshot.
 import {
   loadPublishedGatewayReplyDispatchRuntime,
   preparedModelRuntimeConfigsMatch,

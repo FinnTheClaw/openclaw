@@ -33,8 +33,8 @@ import {
   type DeviceManagementAuthz,
 } from "./device-management-authz.js";
 import { emitDeviceManagementSecurityEvent } from "./device-management-security.js";
-import { respondUnavailableOnThrow } from "./nodes.helpers.js";
 import { refreshConnectedNodeSurfaceCaches } from "./nodes.read.js";
+import { respondUnavailableOnThrow } from "./response.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./shared-types.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -139,19 +139,11 @@ function emitNodeRoleRemovalSecurityEvent(params: {
 async function removePairedDeviceBackedNode(params: {
   nodeId: string;
   client: GatewayClient | null;
-  context: Pick<
-    GatewayRequestContext,
-    | "disconnectClientsForDevice"
-    | "invalidateClientsForDevice"
-    | "logGateway"
-    | "workerEnvironmentService"
-    | "workerPlacementDispatchService"
-  >;
+  context: Pick<GatewayRequestContext, "invalidateClientsForDevice" | "logGateway">;
 }): Promise<
   | {
       status: "removed";
       nodeId: string;
-      disconnectDeviceId: string;
     }
   | { status: "denied"; message: string }
   | { status: "unknown" }
@@ -210,19 +202,9 @@ async function removePairedDeviceBackedNode(params: {
     role: "node",
     reason: "device-pair-removed",
   });
-  try {
-    await reconcileRevokedDeviceWorker(params.context, removed.deviceId);
-  } catch {
-    // The node role is already removed and its connection invalidated.
-    // Let the caller clear runtime state, reply, and hard-close the socket.
-    params.context.logGateway.warn(
-      "device worker reconciliation failed after node-role removal device=" + removed.deviceId,
-    );
-  }
   return {
     status: "removed",
     nodeId: removed.deviceId,
-    disconnectDeviceId: removed.deviceId,
   };
 }
 
@@ -332,19 +314,28 @@ export const nodePairingHandlers: GatewayRequestHandlers = {
               },
             )
           : null;
+      const resolved = {
+        requestId,
+        nodeId: approvedNode.nodeId,
+        decision: "approved",
+        ts: Date.now(),
+      };
       if (updatedNode) {
         refreshConnectedNodeSurfaceCaches({ context, nodeSession: updatedNode });
+        const notified = await context.nodeRegistry.sendEventForPairingIdentity({
+          nodeId: updatedNode.nodeId,
+          connId: updatedNode.connId,
+          pairingIdentity: approved.pairingIdentity,
+          event: "node.pair.resolved",
+          payload: resolved,
+        });
+        if (!notified) {
+          context.logGateway.warn(
+            `node approval refresh was not delivered for ${approvedNode.nodeId}; the current node must republish after reconnect`,
+          );
+        }
       }
-      context.broadcast(
-        "node.pair.resolved",
-        {
-          requestId,
-          nodeId: approvedNode.nodeId,
-          decision: "approved",
-          ts: Date.now(),
-        },
-        { dropIfSlow: true },
-      );
+      context.broadcast("node.pair.resolved", resolved, { dropIfSlow: true });
       respond(true, { requestId: approved.requestId, node: approvedNode }, undefined);
     });
   },
@@ -384,7 +375,7 @@ export const nodePairingHandlers: GatewayRequestHandlers = {
     });
   },
   // Remove a node pairing (CLI: `openclaw nodes remove`). This revokes the
-  // device's `node` role in devices/paired.json, which drops the approved node
+  // device's `node` role in the paired-device store, which drops the approved node
   // surface with it, and disconnects the device's node-role sessions: a
   // mixed-role device keeps its row and only loses the `node` role, a
   // node-only device row is deleted. Authz mirrors device.pair.remove:
@@ -408,13 +399,20 @@ export const nodePairingHandlers: GatewayRequestHandlers = {
       }
       try {
         clearRemovedNodeRuntimeState({ nodeId: deviceBacked.nodeId, context });
+        try {
+          await reconcileRevokedDeviceWorker(context, deviceBacked.nodeId);
+        } catch {
+          context.logGateway.warn(
+            "device worker reconciliation failed after node-role removal device=" + deviceBacked.nodeId,
+          );
+        }
         broadcastRemovedNodePairing({ nodeId: deviceBacked.nodeId, context });
         respond(true, { nodeId: deviceBacked.nodeId }, undefined);
       } finally {
         // Preserve response-first shutdown on success, while guaranteeing the
         // hard close when runtime cleanup or later bookkeeping throws.
         queueMicrotask(() => {
-          context.disconnectClientsForDevice?.(deviceBacked.disconnectDeviceId, {
+          context.disconnectClientsForDevice?.(deviceBacked.nodeId, {
             role: "node",
           });
         });

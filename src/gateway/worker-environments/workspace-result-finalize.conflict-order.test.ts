@@ -6,7 +6,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { runCommandWithTimeout } from "../../process/exec.js";
 import type { WorkerSessionTurnClaim } from "./placement-store.js";
 import type { WorkerWorkspaceResultConflict } from "./workspace-conflicts.js";
-import { finalizeWorkspaceResultConflicts } from "./workspace-result-finalize.js";
+import { finalizeWorkspaceResultConflicts } from "./workspace-result-settlement.js";
 import {
   hasWorkerWorkspaceResultRef,
   workerWorkspaceResultRef,
@@ -158,7 +158,8 @@ describe("worker conflict ref durability — ten-case checkpoint pack", () => {
       stagedResultRef: input.next === "clear" ? null : nextRef,
       retainPriorConflict: input.retain,
       report,
-      root,
+      workspace: { kind: "local", path: root },
+      assertCurrent: () => {},
     });
     if (input.fail) {
       await expect(operation).rejects.toThrow("controlled");

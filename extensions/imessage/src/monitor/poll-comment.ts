@@ -17,9 +17,6 @@ type SeenPoll = { atMs: number; sender: string };
 
 export function createPollCommentFolder(options?: { windowMs?: number }) {
   const windowMs = options?.windowMs ?? DEFAULT_COMMENT_WINDOW_MS;
-  // poll guid -> the poll's send time + creator. Bounded: pruned on every write
-  // against the newest poll time, so at most the polls seen within `windowMs`
-  // are kept.
   const seenPolls = new Map<string, SeenPoll>();
 
   function prune(referenceMs: number): void {

@@ -74,11 +74,11 @@ function projectRecordingState(
   };
 }
 
-async function stopOwnedRecording(params: {
+export async function closeRecordingExecution(params: {
   driver: CuaDriverSession;
   state: CuaRecordingState;
   resources: CuaExecutionResources;
-  discard: boolean;
+  reason: string;
 }): Promise<void> {
   const active = params.state.active;
   if (!active) {
@@ -93,7 +93,7 @@ async function stopOwnedRecording(params: {
   // Ambiguous driver failures retain this session's ownership for a safe retry.
   params.state.active = undefined;
   let failure: unknown;
-  if (params.discard) {
+  if (params.reason !== "completion") {
     try {
       await params.resources.discard(active.resourceHandle);
     } catch (error) {
@@ -116,18 +116,6 @@ function projectReplayTurn(turn: z.infer<typeof ReplayTurnSchema>) {
     projected.parseError = true;
   }
   return projected;
-}
-
-export async function closeRecordingExecution(params: {
-  driver: CuaDriverSession;
-  state: CuaRecordingState;
-  resources: CuaExecutionResources;
-  reason: string;
-}): Promise<void> {
-  await stopOwnedRecording({
-    ...params,
-    discard: params.reason !== "completion",
-  });
 }
 
 export async function handleRecordingAct(
@@ -243,6 +231,7 @@ export async function handleRecordingAct(
         },
       });
     }
+    default:
+      return undefined;
   }
-  return undefined;
 }

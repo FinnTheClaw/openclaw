@@ -26,7 +26,7 @@ export type HeartbeatWakeSource =
   | "retry"
   | "other";
 
-export type HeartbeatWakeOverride = {
+type HeartbeatWakeOverride = {
   target?: string;
   to?: string | undefined;
   accountId?: string | undefined;
@@ -45,6 +45,7 @@ export type HeartbeatWakeRequest = {
   reason?: string;
   agentId?: string;
   sessionKey?: string;
+  sessionStorePath?: string | null;
   heartbeat?: HeartbeatWakeOverride;
   /** Persisted cron monitor cadence carried with a scheduled heartbeat tick. */
   scheduledEveryMs?: number;

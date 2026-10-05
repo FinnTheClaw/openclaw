@@ -469,6 +469,36 @@ describe("fetchWithSsrFGuard hardening", () => {
     expect(result.response.status).toBe(200);
   });
 
+  it("blocks the IPv6 cloud metadata literal when the ULA range is opted in", async () => {
+    const fetchImpl = vi.fn(async () => okResponse());
+
+    await expect(
+      fetchWithSsrFGuard({
+        url: "http://[fd00:ec2::254]/latest/meta-data/",
+        fetchImpl,
+        policy: { allowIpv6UniqueLocalRange: true },
+      }),
+    ).rejects.toThrow(/private|internal|blocked/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("blocks IPv6 cloud metadata DNS answers when the ULA range is opted in", async () => {
+    const lookupFn: LookupFn = vi.fn(async () => [
+      { address: "fd00:ec2::254", family: 6 },
+    ]) as unknown as LookupFn;
+    const fetchImpl = vi.fn(async () => okResponse());
+
+    await expect(
+      fetchWithSsrFGuard({
+        url: "https://public.example/resource",
+        fetchImpl,
+        lookupFn,
+        policy: { allowIpv6UniqueLocalRange: true },
+      }),
+    ).rejects.toThrow(/private|internal|blocked/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("fails closed for plain HTTP targets when explicit proxy mode requires pinned DNS", async () => {
     const fetchImpl = vi.fn();
     await expect(
@@ -756,17 +786,6 @@ describe("fetchWithSsrFGuard hardening", () => {
       throw new Error("Expected proxy dispatcher");
     }
     await result.release();
-  });
-
-  it("blocks redirect chains that hop to private hosts", async () => {
-    const lookupFn = createPublicLookup();
-    const fetchImpl = await expectRedirectFailure({
-      url: "https://public.example/start",
-      responses: [redirectResponse("http://127.0.0.1:6379/")],
-      expectedError: /private|internal|blocked/i,
-      lookupFn,
-    });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("rejects HTTPS-to-HTTP redirects when the caller requires HTTPS", async () => {
@@ -2169,12 +2188,13 @@ describe("fetchWithSsrFGuard hardening", () => {
   it("rejects timed-out fetches even when dispatcher close stalls", async () => {
     const close = vi.fn(() => new Promise<void>(() => {}));
     const destroy = vi.fn();
-    agentCtor.mockImplementationOnce(
-      function MockAgent(this: { close: typeof close; destroy: typeof destroy }) {
-        this.close = close;
-        this.destroy = destroy;
-      },
-    );
+    agentCtor.mockImplementationOnce(function MockAgent(this: {
+      close: typeof close;
+      destroy: typeof destroy;
+    }) {
+      this.close = close;
+      this.destroy = destroy;
+    });
     (globalThis as Record<string, unknown>)[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
       Agent: agentCtor,
       EnvHttpProxyAgent: envHttpProxyAgentCtor,

@@ -1,8 +1,7 @@
 name: Stale
 
 on:
-  schedule:
-    - cron: "17 3 * * *"
+  # Recurring trigger disabled by the Finn standing no-recurring-GitHub rule.
   workflow_dispatch:
     inputs:
       backfill_stale_closures:
@@ -38,7 +37,7 @@ permissions: {}
 
 jobs:
   stale:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true }}
+    if: ${{ github.repository == 'openclaw/openclaw' && (github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true) }}
     permissions:
       issues: write
       pull-requests: write
@@ -247,7 +246,7 @@ jobs:
             That channel is the escape hatch for high-quality PRs that get auto-closed.
 
   stale-bug-verification:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true }}
+    if: ${{ github.repository == 'openclaw/openclaw' && (github.event_name != 'workflow_dispatch' || inputs.backfill_stale_closures != true) }}
     permissions:
       issues: write
     runs-on: ubuntu-24.04
@@ -431,7 +430,7 @@ jobs:
               .write();
 
   backfill-stale-closures:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill_stale_closures == true }}
+    if: ${{ github.repository == 'openclaw/openclaw' && github.event_name == 'workflow_dispatch' && inputs.backfill_stale_closures == true }}
     permissions:
       issues: write
       pull-requests: write

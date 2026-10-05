@@ -28,11 +28,11 @@ export function shouldReportSqliteLockFailure(database: DatabaseSync): boolean {
   return lockFailureReportingByDatabase.get(database) !== "suppress";
 }
 
-/** Run one synchronous operation with a temporary connection-local busy timeout. */
+/** Run with a temporary busy policy; restore early when write admission finishes. */
 export function runWithSqliteBusyTimeout<T>(
   database: DatabaseSync,
   busyTimeoutMs: number,
-  operation: () => T,
+  operation: (restore: () => void) => T,
   options: { lockFailureReporting?: SqliteLockFailureReporting } = {},
 ): T {
   const normalizedTimeoutMs = normalizeSqliteNonNegativeInteger(busyTimeoutMs, "busyTimeoutMs");
@@ -41,12 +41,7 @@ export function runWithSqliteBusyTimeout<T>(
   if (options.lockFailureReporting) {
     lockFailureReportingByDatabase.set(database, options.lockFailureReporting);
   }
-  try {
-    if (previousBusyTimeoutMs !== normalizedTimeoutMs) {
-      setSqliteBusyTimeout(database, normalizedTimeoutMs);
-    }
-    return operation();
-  } finally {
+  const restore = () => {
     try {
       if (database.isOpen && previousBusyTimeoutMs !== normalizedTimeoutMs) {
         setSqliteBusyTimeout(database, previousBusyTimeoutMs);
@@ -58,5 +53,13 @@ export function runWithSqliteBusyTimeout<T>(
         lockFailureReportingByDatabase.delete(database);
       }
     }
+  };
+  try {
+    if (previousBusyTimeoutMs !== normalizedTimeoutMs) {
+      setSqliteBusyTimeout(database, normalizedTimeoutMs);
+    }
+    return operation(restore);
+  } finally {
+    restore();
   }
 }

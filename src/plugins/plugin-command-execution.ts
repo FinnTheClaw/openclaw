@@ -22,7 +22,6 @@ import {
 import { pluginCommandSupportsChannel } from "./plugin-command-metadata.js";
 import type { PluginCommandDispatchContext } from "./plugin-command-runtime.js";
 import type { PluginRegistry } from "./registry-types.js";
-import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.js";
 import type { PluginCommandContext, PluginCommandResult } from "./types.js";
 
 const MAX_ARGS_LENGTH = 4096;
@@ -80,15 +79,11 @@ function resolveBindingConversation(params: {
   });
 }
 
-type PluginCommandRuntimeLlm = NonNullable<PluginCommandContext["runtimeContext"]>["llm"];
-type PluginCommandLlmCompleteParams = Parameters<
-  NonNullable<PluginCommandRuntimeLlm>["complete"]
->[0];
-
 function buildRuntimeContext(
   command: RegisteredPluginCommand,
   params: PluginCommandDispatchContext,
   invocationSignal: AbortSignal,
+  assertOwnerCurrent?: () => void,
 ): PluginCommandContext["runtimeContext"] {
   const sessionKey = params.sessionKey?.trim();
   const agentId = resolveBoundAgentIdForSession({
@@ -102,7 +97,7 @@ function buildRuntimeContext(
   }
   return {
     llm: {
-      complete: async (request: PluginCommandLlmCompleteParams) => {
+      complete: async (request) => {
         const { createRuntimeLlm } = await import("./runtime/runtime-llm.runtime.js");
         return await createRuntimeLlm({
           getConfig: () => params.config,
@@ -131,10 +126,7 @@ function buildRuntimeContext(
             if (invocationSignal.aborted) {
               return blockedCompaction("command invocation closed");
             }
-            const result = await compactCurrent(invocationSignal);
-            return invocationSignal.aborted
-              ? blockedCompaction("command invocation closed")
-              : result;
+            return await compactCurrent(invocationSignal, assertOwnerCurrent);
           },
         }
       : {}),
@@ -145,6 +137,7 @@ export async function executeRegisteredPluginCommand(
   registry: PluginRegistry,
   params: PluginCommandExecutionParams,
 ): Promise<PluginCommandResult> {
+  const assertAdmittedOwner = params.assertOwnerCurrent;
   const { command, args, senderId, channel, isAuthorizedSender, commandBody, config } = params;
   if (!pluginCommandSupportsChannel(command, channel)) {
     logVerbose(`Plugin command /${command.name} skipped on unsupported channel ${channel}`);
@@ -161,12 +154,11 @@ export async function executeRegisteredPluginCommand(
     return { text: "⚠️ This command has invalid gateway scope configuration." };
   }
   const requiredScopes = command.requiredScopes ?? [];
-  const unknownScopeIndex = (requiredScopes as readonly unknown[]).findIndex(
-    (scope) => !isOperatorScope(scope),
-  );
-  if (unknownScopeIndex !== -1) {
-    logVerbose(`Plugin command /${command.name} blocked: unknown gateway scope`);
-    return { text: "⚠️ This command has invalid gateway scope configuration." };
+  for (const scope of requiredScopes) {
+    if (!isOperatorScope(scope)) {
+      logVerbose(`Plugin command /${command.name} blocked: unknown gateway scope`);
+      return { text: "⚠️ This command has invalid gateway scope configuration." };
+    }
   }
   if (requiredScopes.length > 0) {
     const scopes = Array.isArray(params.gatewayClientScopes)
@@ -202,12 +194,22 @@ export async function executeRegisteredPluginCommand(
   const senderIsOwner =
     canExposeSenderIsOwner(command) || trustedReservedOwner ? params.senderIsOwner : undefined;
   const commandInvocationAbort = new AbortController();
+  const assertOwnerCurrent =
+    senderIsOwner === true
+      ? () => {
+          if (commandInvocationAbort.signal.aborted) {
+            throw new Error("Plugin command invocation closed.");
+          }
+          assertAdmittedOwner?.();
+        }
+      : undefined;
   const ctx: PluginCommandContext = {
     senderId,
     channel,
     channelId: params.channelId,
     isAuthorizedSender,
     ...(senderIsOwner === undefined ? {} : { senderIsOwner }),
+    ...(assertOwnerCurrent ? { assertOwnerCurrent } : {}),
     gatewayClientScopes: params.gatewayClientScopes,
     agentId: params.agentId,
     sessionKey: params.sessionKey,
@@ -223,7 +225,12 @@ export async function executeRegisteredPluginCommand(
     messageThreadId: params.messageThreadId,
     threadParentId: params.threadParentId,
     diagnosticsSessions: params.diagnosticsSessions,
-    runtimeContext: buildRuntimeContext(command, params, commandInvocationAbort.signal),
+    runtimeContext: buildRuntimeContext(
+      command,
+      params,
+      commandInvocationAbort.signal,
+      assertOwnerCurrent,
+    ),
     ...(trustedReservedOwner && params.diagnosticsUploadApproved !== undefined
       ? { diagnosticsUploadApproved: params.diagnosticsUploadApproved }
       : {}),
@@ -244,6 +251,7 @@ export async function executeRegisteredPluginCommand(
         requestedBySenderId: senderId,
         conversation: bindingConversation,
         binding: bindingParams,
+        assertCurrent: assertOwnerCurrent,
       });
     },
     detachConversationBinding: async () =>
@@ -263,9 +271,10 @@ export async function executeRegisteredPluginCommand(
   };
 
   try {
-    const execution = await withPluginCommandExecution(registry, () =>
-      withPluginRuntimeRegistryScope(registry, () => command.handler(ctx)),
-    );
+    if (requiredScopes.length > 0 && !Array.isArray(params.gatewayClientScopes)) {
+      assertOwnerCurrent?.();
+    }
+    const execution = await withPluginCommandExecution(registry, () => command.handler(ctx));
     if (!execution.admitted) {
       return {
         text: "⚠️ This command is no longer available after the plugin registry changed. Please try again.",
