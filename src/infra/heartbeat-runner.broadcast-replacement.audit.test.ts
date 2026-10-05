@@ -1,8 +1,20 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import { startHeartbeatRunner } from "./heartbeat-runner.js";
-import { beginHeartbeatWakeBroadcast } from "./heartbeat-wake-lifecycle.js";
+import { startHeartbeatRunner } from "./heartbeat-runner-scheduler.js";
 import { requestHeartbeatAndWait, setHeartbeatWakeHandler } from "./heartbeat-wake.js";
+import { beginSessionEventWakeBroadcast } from "./session-event-wake.js";
+
+// This fixture owns cfg/runOnce and exercises the real scheduler/wake runtime.
+// Avoid unrelated configuration IO and the higher-level agent initialization.
+vi.mock("../config/config.js", () => ({
+  getRuntimeConfig: () => {
+    throw new Error("The broadcast fixture must use its explicit configuration");
+  },
+}));
+vi.mock("../agents/agent-scope.js", async () => {
+  const { listAgentIds } = await import("../agents/agent-scope-config.js");
+  return { listAgentIds };
+});
 
 afterEach(async () => {
   const dispose = setHeartbeatWakeHandler(async () => ({ status: "skipped", reason: "disabled" }));
@@ -55,16 +67,17 @@ it.each([false, true])(
     const second = startHeartbeatRunner({ cfg, runOnce: secondRun });
     try {
       await vi.advanceTimersByTimeAsync(250);
-      expect(await done).toMatchObject({ status: "ran" });
+      expect(await done).toEqual({ status: "skipped", reason: "handler-unavailable" });
       expect(secondRun.mock.calls.map(([opts]) => opts.agentId)).toEqual(["ops"]);
       if (later) {
-        expect(await later).toMatchObject({ status: "ran" });
+        // An explicit stop settles existing waiters; it does not discard queued work.
+        expect(await later).toEqual({ status: "skipped", reason: "handler-unavailable" });
         expect(secondRun.mock.calls[0]?.[0].tasks).toEqual(laterTasks);
       }
       finishOps();
       await vi.advanceTimersByTimeAsync(60_000);
       expect(secondRun).toHaveBeenCalledOnce();
-      expect(await done).toMatchObject({ status: "ran" });
+      expect(await done).toEqual({ status: "skipped", reason: "handler-unavailable" });
     } finally {
       finishOps();
       await vi.advanceTimersByTimeAsync(0);
@@ -77,7 +90,7 @@ it("settles a fully completed broadcast when replacement wins before the aggrega
   vi.useFakeTimers();
   const replacement = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
   const dispose = setHeartbeatWakeHandler(async () => {
-    const record = beginHeartbeatWakeBroadcast(["main", "ops"]);
+    const record = beginSessionEventWakeBroadcast(["main", "ops"]);
     record(0, { status: "ran", durationMs: 1 });
     record(1, { status: "ran", durationMs: 1 });
     setHeartbeatWakeHandler(replacement);
