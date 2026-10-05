@@ -1,16 +1,16 @@
 import { createServer } from "node:http";
 import { createLlmRuntime } from "@openclaw/ai";
 import { Agent, type StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { describe, expect, it } from "vitest";
 import { writeOpenAiResponsesText } from "../../../../test/helpers/openai-responses-sse.js";
 import type { Context, Model, SimpleStreamOptions } from "../../../llm/types.js";
-import { applyExtraParamsToAgent } from "../extra-params.js";
-import { resolveEmbeddedAgentStream } from "../stream-resolution.js";
-import { describe, expect, it } from "vitest";
 import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { createZeroUsageFixture } from "../../test-helpers/usage-fixtures.js";
+import { applyExtraParamsToAgent } from "../extra-params.js";
+import { resolveEmbeddedAgentStream } from "../stream-resolution.js";
 import {
   resolveEmptyResponseRetryInstruction,
   resolveReasoningOnlyRetryInstruction,

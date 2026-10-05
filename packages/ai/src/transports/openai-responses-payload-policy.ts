@@ -374,7 +374,8 @@ export function resolveOpenAIResponsesPayloadPolicy(
     explicitContinuationOptIn: capabilities.explicitContinuationOptIn,
     explicitStore,
     shouldStripDisabledReasoningPayload,
-    // Explicit no-store opts a stateless endpoint out of encrypted reasoning replay.
+    // An explicit no-store capability opts a stateless endpoint out of encrypted
+    // replay, unlike native OpenAI's ordinary per-request store:false mode.
     shouldStripEncryptedReasoningState:
       isResponsesApi && readCompatPayloadBoolean(model.compat, "supportsStore") === false,
     shouldStripInputStatus,

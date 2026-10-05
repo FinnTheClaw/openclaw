@@ -395,7 +395,8 @@ function createStreamFnWithExtraParams(
       readCacheCompat(callModel),
       callModel.baseUrl,
     );
-    // Retry overrides beat the normal thinking level without becoming cached defaults.
+    // Retry overrides must beat the Agent's normal thinking level, but must not
+    // become cached model defaults or affect incompatible APIs/providers.
     const disableResponsesReasoning =
       callModel.api === "openai-responses" &&
       callModel.reasoning === true &&
