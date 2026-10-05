@@ -163,6 +163,7 @@ describe("subagent registry archive behavior", () => {
     vi.mocked(captureSubagentCompletionReply).mockReset();
     vi.mocked(runSubagentAnnounceFlow).mockReset();
     vi.mocked(getAgentRunContext).mockReset().mockReturnValue(undefined);
+    vi.mocked(onAgentEvent).mockClear();
     sessionAccessorMocks.loadSessionEntryReadOnly.mockReset();
     mod.resetSubagentRegistryForTests({ persist: false });
     settleRootWork = observeRootWork();
@@ -245,21 +246,23 @@ describe("subagent registry archive behavior", () => {
     await vi.advanceTimersByTimeAsync(90_000);
 
     const endedAt = Date.now();
-    const lifecycleHandler = vi.mocked(onAgentEvent).mock.calls.at(-1)?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-    lifecycleHandler?.({
-      runId: "run-delete-completed",
-      stream: "lifecycle",
-      seq: 1,
-      ts: endedAt,
-      data: { phase: "end", endedAt, terminalReply: { disposition: "visible", text: "done" } },
-    });
-
-    await vi.waitFor(() => {
-      expect(mod.listSubagentRunsForRequester("agent:main:main")[0]).toMatchObject({
-        execution: { status: "terminal", endedAt },
-        archiveAtMs: endedAt + 60_000,
+    const lifecycleHandlers = vi.mocked(onAgentEvent).mock.calls.map(([handler]) => handler);
+    expect(lifecycleHandlers.length).toBeGreaterThan(0);
+    // The native event bus broadcasts to every registered listener. Await the
+    // admitted completion work before checking its durable terminal publication.
+    for (const handler of lifecycleHandlers) {
+      handler({
+        runId: "run-delete-completed",
+        stream: "lifecycle",
+        seq: 1,
+        ts: endedAt,
+        data: { phase: "end", endedAt, terminalReply: { disposition: "visible", text: "done" } },
       });
+    }
+    await settleRootWork(true);
+    expect(mod.listSubagentRunsForRequester("agent:main:main")[0]).toMatchObject({
+      execution: { status: "terminal", endedAt },
+      archiveAtMs: endedAt + 60_000,
     });
   });
 
@@ -938,6 +941,7 @@ describe("subagent registry archive behavior", () => {
       const runId = `run-${id}`;
       await fs.mkdir(owned, { recursive: true });
       await fs.mkdir(outside);
+      await fs.writeFile(path.join(outside, "sentinel.txt"), "must-survive");
       await fs.writeFile(path.join(owned, "artifact.txt"), "artifact");
       await fs.symlink(outside, symlink, "dir");
       try {
@@ -972,6 +976,18 @@ describe("subagent registry archive behavior", () => {
         if (fault === "none") {
           expect(retained).toBeUndefined();
           await expect(fs.access(owned)).rejects.toMatchObject({ code: "ENOENT" });
+          return;
+        }
+        if (fault === "symlink") {
+          // Native leaf cleanup unlinks the owned identity without traversing its target.
+          expect(retained).toBeUndefined();
+          await expect(fs.lstat(symlink)).rejects.toMatchObject({ code: "ENOENT" });
+          await expect(fs.readFile(path.join(outside, "sentinel.txt"), "utf8")).resolves.toBe(
+            "must-survive",
+          );
+          await expect(fs.readFile(path.join(owned, "artifact.txt"), "utf8")).resolves.toBe(
+            "artifact",
+          );
           return;
         }
         expect(retained).toBeDefined();
@@ -1022,7 +1038,10 @@ describe("subagent registry archive behavior", () => {
     await fs.mkdir(root, { recursive: true });
     await fs.mkdir(outside);
     await fs.writeFile(path.join(outside, "artifact.txt"), "artifact");
-    await fs.symlink(outside, attachmentDir, "dir");
+    await fs.mkdir(attachmentDir);
+    await fs.writeFile(path.join(attachmentDir, "artifact.txt"), "owned artifact");
+    // An unavailable ownership root is a real retryable cleanup failure.
+    await fs.rename(root, root + ".retained-fixture");
     const cleanupSpy = vi.spyOn(registryHelpers, "safeRemoveAttachmentsDir");
     try {
       await mod.registerSubagentRun({
@@ -1053,7 +1072,20 @@ describe("subagent registry archive behavior", () => {
         childSessionKey,
         attachmentId,
       });
-      await expect(fs.access(path.join(outside, "artifact.txt"))).resolves.toBeUndefined();
+      await expect(
+        fs.readFile(path.join(root + ".retained-fixture", attachmentId, "artifact.txt"), "utf8"),
+      ).resolves.toBe("owned artifact");
+      await expect(fs.readFile(path.join(outside, "artifact.txt"), "utf8")).resolves.toBe(
+        "artifact",
+      );
+      await fs.rename(root + ".retained-fixture", root);
+      const replacement = mod.getSubagentRunByRunId("run-A1-C10-new");
+      expect(replacement).toBeDefined();
+      await expect(registryHelpers.safeRemoveAttachmentsDir(replacement!)).resolves.toBe(true);
+      await expect(fs.access(attachmentDir)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.readFile(path.join(outside, "artifact.txt"), "utf8")).resolves.toBe(
+        "artifact",
+      );
     } finally {
       cleanupSpy.mockRestore();
       if (previousStateDir === undefined) {
