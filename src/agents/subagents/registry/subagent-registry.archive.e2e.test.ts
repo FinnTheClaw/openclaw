@@ -1,5 +1,6 @@
 // Subagent registry archive tests cover keep/delete cleanup modes, retryable
 // session deletion, and context-engine lifecycle callbacks.
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,11 @@ import {
   captureSubagentCompletionReply,
   runSubagentAnnounceFlow,
 } from "../announce/subagent-announce.js";
+import {
+  resolveSubagentAttachmentDir,
+  resolveSubagentSessionAttachmentRootDir,
+} from "../subagent-attachment-paths.js";
+import * as registryHelpers from "./subagent-registry-helpers.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import * as registryState from "./subagent-registry-state.js";
 import { observeRootWork } from "./subagent-registry.browser-cleanup.test-support.js";
@@ -917,10 +923,18 @@ describe("subagent registry archive behavior", () => {
     "$id retains attachment retry ownership only when cleanup fails",
     async ({ id, mode, fault }) => {
       const temp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-a1-retry-"));
-      const root = path.join(temp, "root");
-      const owned = path.join(root, "owned");
+      const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+      process.env.OPENCLAW_STATE_DIR = temp;
+      const childSessionKey = `agent:main:subagent:${id}`;
+      const attachmentId = randomUUID();
+      const symlinkId = randomUUID();
+      const root = resolveSubagentSessionAttachmentRootDir({
+        agentId: "main",
+        childSessionKey,
+      });
+      const owned = resolveSubagentAttachmentDir("main", childSessionKey, attachmentId);
       const outside = path.join(temp, "outside");
-      const symlink = path.join(root, "escape");
+      const symlink = path.join(root, symlinkId);
       const runId = `run-${id}`;
       await fs.mkdir(owned, { recursive: true });
       await fs.mkdir(outside);
@@ -930,9 +944,14 @@ describe("subagent registry archive behavior", () => {
         if (fault === "nonwritable") {
           await fs.chmod(root, 0o500);
         }
+        if (fault === "missing-root") {
+          // The attachment still exists under a displaced ownership root.
+          // Keep its retry owner until the canonical root becomes available.
+          await fs.rename(root, `${root}.retained-fixture`);
+        }
         addCanonicalSubagentRunForTests({
           runId,
-          childSessionKey: `agent:main:subagent:${id}`,
+          childSessionKey,
           requesterSessionKey: "agent:main:main",
           requesterDisplayKey: "main",
           task: "attachment cleanup retry",
@@ -944,13 +963,8 @@ describe("subagent registry archive behavior", () => {
           ...(mode === "archive"
             ? { archiveAtMs: Date.now() - 1 }
             : { cleanupCompletedAt: Date.now() - 6 * 60_000 }),
-          attachmentsRootDir: fault === "missing-root" ? path.join(temp, "missing") : root,
-          attachmentsDir:
-            fault === "sibling" || fault === "missing-root"
-              ? outside
-              : fault === "symlink"
-                ? symlink
-                : owned,
+          attachmentId:
+            fault === "sibling" ? "../outside" : fault === "symlink" ? symlinkId : attachmentId,
         });
 
         await sweepAndSettleCleanup();
@@ -963,16 +977,34 @@ describe("subagent registry archive behavior", () => {
         expect(retained).toBeDefined();
         await expect(fs.access(fault === "nonwritable" ? owned : outside)).resolves.toBeUndefined();
         // Repair only this owned fixture and let the same production sweeper retry.
+        if (fault === "missing-root") {
+          await expect(
+            fs.readFile(
+              path.join(`${root}.retained-fixture`, attachmentId, "artifact.txt"),
+              "utf8",
+            ),
+          ).resolves.toBe("artifact");
+          await fs.rename(`${root}.retained-fixture`, root);
+        }
         await fs.chmod(root, 0o700);
         if (retained) {
-          retained.attachmentsRootDir = root;
-          retained.attachmentsDir = owned;
+          retained.attachmentId = attachmentId;
         }
         await sweepAndSettleCleanup();
         expect(mod.getSubagentRunByRunId(runId)).toBeUndefined();
         await expect(fs.access(owned)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
-        await fs.chmod(root, 0o700);
+        if (previousStateDir === undefined) {
+          delete process.env.OPENCLAW_STATE_DIR;
+        } else {
+          process.env.OPENCLAW_STATE_DIR = previousStateDir;
+        }
+        const cleanupRoot = fault === "missing-root" ? `${root}.retained-fixture` : root;
+        await fs.chmod(cleanupRoot, 0o700).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") {
+            throw error;
+          }
+        });
         await fs.rm(temp, { recursive: true, force: true });
       }
     },
@@ -980,22 +1012,27 @@ describe("subagent registry archive behavior", () => {
 
   it("A1-C10 leaves a failed eager attachment cleanup with its replacement owner", async () => {
     const temp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-a1-replace-"));
-    const root = path.join(temp, "root");
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = temp;
+    const childSessionKey = "agent:main:subagent:A1-C10";
+    const attachmentId = randomUUID();
+    const root = resolveSubagentSessionAttachmentRootDir({ agentId: "main", childSessionKey });
+    const attachmentDir = resolveSubagentAttachmentDir("main", childSessionKey, attachmentId);
     const outside = path.join(temp, "outside");
-    await fs.mkdir(root);
+    await fs.mkdir(root, { recursive: true });
     await fs.mkdir(outside);
     await fs.writeFile(path.join(outside, "artifact.txt"), "artifact");
-    const realpathSpy = vi.spyOn(fs, "realpath");
+    await fs.symlink(outside, attachmentDir, "dir");
+    const cleanupSpy = vi.spyOn(registryHelpers, "safeRemoveAttachmentsDir");
     try {
       await mod.registerSubagentRun({
         runId: "run-A1-C10-old",
-        childSessionKey: "agent:main:subagent:A1-C10",
+        childSessionKey,
         requesterSessionKey: "agent:main:main",
         requesterDisplayKey: "main",
         task: "replace failed attachment cleanup",
         cleanup: "delete",
-        attachmentsRootDir: root,
-        attachmentsDir: outside,
+        attachmentId,
       });
       expect(
         mod.replaceSubagentRunAfterSteerCore({
@@ -1003,15 +1040,27 @@ describe("subagent registry archive behavior", () => {
           nextRunId: "run-A1-C10-new",
         }),
       ).toBe(true);
-      await vi.waitFor(() => expect(realpathSpy).toHaveBeenCalledWith(outside));
+      await vi.waitFor(() =>
+        expect(cleanupSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ runId: "run-A1-C10-old", childSessionKey, attachmentId }),
+        ),
+      );
+      const cleanupResult = cleanupSpy.mock.results.find((result) => result.type === "return");
+      expect(cleanupResult).toBeDefined();
+      await expect(cleanupResult?.value).resolves.toBe(false);
       expect(mod.getSubagentRunByRunId("run-A1-C10-old")).toBeUndefined();
       expect(mod.getSubagentRunByRunId("run-A1-C10-new")).toMatchObject({
-        attachmentsRootDir: root,
-        attachmentsDir: outside,
+        childSessionKey,
+        attachmentId,
       });
       await expect(fs.access(path.join(outside, "artifact.txt"))).resolves.toBeUndefined();
     } finally {
-      realpathSpy.mockRestore();
+      cleanupSpy.mockRestore();
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
       await fs.rm(temp, { recursive: true, force: true });
     }
   });

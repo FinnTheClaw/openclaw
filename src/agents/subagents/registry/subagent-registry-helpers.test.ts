@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultRuntime } from "../../../runtime.js";
+import { removeSubagentAttachmentTree } from "../subagent-attachment-cleanup.js";
 import { resolveSubagentAttachmentDir } from "../subagent-attachment-paths.js";
 import { updateSwarmCollectorCompletion } from "../swarm/swarm-collector.js";
 import {
@@ -188,6 +189,77 @@ describe("updateSubagentArchiveAtMs", () => {
 });
 
 describe("safeRemoveAttachmentsDir", () => {
+  it("retains cleanup ownership when the canonical root is absent but its data was renamed", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-attachment-root-retry-"));
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const attachmentId = "2d4a8398-4d5a-4c20-9c16-0a5f6627cf92";
+    const childSessionKey = "agent:main:subagent:missing-attachment-root";
+    const attachmentDir = resolveSubagentAttachmentDir("main", childSessionKey, attachmentId, {
+      ...process.env,
+      OPENCLAW_STATE_DIR: stateDir,
+    });
+    const rootDir = path.dirname(attachmentDir);
+    const retainedRoot = `${rootDir}.retained-fixture`;
+    const entry = createRunEntry({ attachmentId, childSessionKey });
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    try {
+      await fs.mkdir(attachmentDir, { recursive: true });
+      await fs.writeFile(path.join(attachmentDir, "artifact.txt"), "must-survive");
+      await fs.rename(rootDir, retainedRoot);
+      await expect(removeSubagentAttachmentTree(rootDir, attachmentId)).rejects.toMatchObject({
+        code: "not-found",
+      });
+      await expect(safeRemoveAttachmentsDir(entry)).resolves.toBe(false);
+      await expect(
+        fs.readFile(path.join(retainedRoot, attachmentId, "artifact.txt"), "utf8"),
+      ).resolves.toBe("must-survive");
+      await fs.rename(retainedRoot, rootDir);
+      await expect(safeRemoveAttachmentsDir(entry)).resolves.toBe(true);
+      await expect(fs.access(attachmentDir)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.access(rootDir)).resolves.toBeUndefined();
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a missing UUID child idempotent under an existing canonical root", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-attachment-child-absent-"));
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const attachmentId = "2d4a8398-4d5a-4c20-9c16-0a5f6627cf92";
+    const childSessionKey = "agent:main:subagent:missing-attachment-child";
+    const attachmentDir = resolveSubagentAttachmentDir("main", childSessionKey, attachmentId, {
+      ...process.env,
+      OPENCLAW_STATE_DIR: stateDir,
+    });
+    const rootDir = path.dirname(attachmentDir);
+    const siblingId = "11111111-1111-4111-8111-111111111111";
+    const sentinel = path.join(rootDir, siblingId, "artifact.txt");
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    try {
+      await fs.mkdir(path.dirname(sentinel), { recursive: true });
+      await fs.writeFile(sentinel, "unrelated-owned-data");
+      await expect(fs.access(attachmentDir)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(removeSubagentAttachmentTree(rootDir, attachmentId)).resolves.toBeUndefined();
+      await expect(
+        safeRemoveAttachmentsDir(createRunEntry({ attachmentId, childSessionKey })),
+      ).resolves.toBe(true);
+      await expect(fs.access(rootDir)).resolves.toBeUndefined();
+      await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("unrelated-owned-data");
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("removes only the generated directory under the host-owned root", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-attachment-state-"));
     const attachmentId = "2d4a8398-4d5a-4c20-9c16-0a5f6627cf92";

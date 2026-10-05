@@ -14,10 +14,11 @@ export async function removeSubagentAttachmentTree(
     throw new Error("invalid subagent attachment identity");
   }
   assertBeforeMutation?.();
+  // An unavailable ownership root cannot prove that its attachment is gone.
+  // Only a missing child under an acquired root is an idempotent removal.
+  const attachmentRoot = await root(rootDir);
   try {
-    await (
-      await root(rootDir)
-    ).remove(attachmentId, {
+    await attachmentRoot.remove(attachmentId, {
       recursive: true,
       force: true,
       ...(assertBeforeMutation ? { assertBeforeMutation } : {}),

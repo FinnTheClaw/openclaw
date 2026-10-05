@@ -410,8 +410,6 @@ export async function fetchChannelPermissionsDiscord(
   ]);
   opts.signal?.throwIfAborted();
 
-  const permissionChannel = await resolveChannelPermissionSubject(rest, channel);
-  opts.signal?.throwIfAborted();
   const permissions = resolveMemberChannelPermissionBits({
     guildId,
     userId: botId,

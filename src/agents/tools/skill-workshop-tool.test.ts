@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SkillLibraryAuthoringCapability } from "../../skills/library/authoring.js";
 import { consumeRunSkillUsage, recordRunSkillUsage } from "../../skills/runtime/run-usage.js";
 import { listSkillProposalEvents } from "../../skills/workshop/service.js";
+import * as workshopService from "../../skills/workshop/service.js";
 import { SKILL_AUTHORING_STANDARDS_PROMPT } from "../../skills/workshop/skill-authoring-standards.js";
 import { resolveWorkshopSkillsDir } from "../../skills/workshop/skills-root.js";
 import type { SkillWorkshopProposalMutationBudget } from "../../skills/workshop/types.js";
@@ -814,28 +815,26 @@ describe("skill_workshop tool", () => {
     const workspaceDir = await tempDirs.make("openclaw-skill-workshop-r9-already-applied-");
     const runId = "r9-already-applied";
     const skillName = "r9-used-skill";
+    const skillFile = workshopSkillPath(skillName, "SKILL.md");
     const config = { skills: { workshop: { autonomous: { mode: "auto" as const } } } };
-    await writeWorkspaceSkills(workspaceDir, [
-      {
-        name: skillName,
-        description: "A used skill",
-        body: "# Used Skill\n\nUse OLD_TOKEN.\n",
-      },
-    ]);
+    const setupTool = createSkillWorkshopTool({
+      workspaceDir,
+      env: testState.env,
+      config,
+      agentId: "main",
+    });
+    const created = await setupTool.execute("r9-create", {
+      action: "create",
+      name: skillName,
+      description: "A used skill",
+      proposal_content: "# Used Skill\n\nUse OLD_TOKEN.\n",
+    });
+    await setupTool.execute("r9-create-apply", {
+      action: "apply",
+      proposal_id: (created.details as { id: string }).id,
+    });
 
     const proposalMutationBudget: SkillWorkshopProposalMutationBudget = { remaining: 1 };
-    const proposalReviewCompletion = {
-      completed: false,
-      complete: async () => {},
-      recordProgress: async ({ proposalIds }: { proposalIds: string[] }) => {
-        await applySkillProposal({
-          workspaceDir,
-          env: testState.env,
-          proposalId: proposalIds[0]!,
-          eventActor: { type: "gateway" },
-        });
-      },
-    };
     const tool = createSkillWorkshopTool({
       workspaceDir,
       env: testState.env,
@@ -843,7 +842,6 @@ describe("skill_workshop tool", () => {
       agentId: "main",
       origin: { agentId: "main", runId },
       proposalMutationBudget,
-      proposalReviewCompletion,
     });
     await tool.execute("r9-read", { action: "read", skill_name: skillName });
     recordRunSkillUsage({
@@ -851,17 +849,53 @@ describe("skill_workshop tool", () => {
       name: skillName,
       source: "workspace",
       activation: "read",
-      skillFile: path.join(workspaceDir, "skills", skillName, "SKILL.md"),
+      skillFile,
     });
-    const result = await tool.execute("r9-patch", {
-      action: "patch",
-      skill_name: skillName,
-      old_string: "Use OLD_TOKEN.",
-      new_string: "Use NEW_TOKEN.",
+
+    // Replace the retired review-completion latch with the live proposal boundary:
+    // the operator applies the real proposal before foreground apply receives it.
+    const proposeUpdate = workshopService.proposeUpdateSkill;
+    const proposalSpy = vi.spyOn(workshopService, "proposeUpdateSkill");
+    proposalSpy.mockImplementationOnce(async (input) => {
+      const proposal = await proposeUpdate(input);
+      await workshopService.applySkillProposal({
+        workspaceDir,
+        env: testState.env,
+        config,
+        agentId: "main",
+        proposalId: proposal.record.id,
+        expectedRevisionHash: proposal.revisionHash,
+        eventActor: { type: "gateway" },
+        reason: "R9-A09 operator approval",
+      });
+      return proposal;
     });
-    expect(result.details).toMatchObject({ status: "applied" });
-    expect((result.content[0] as { text: string }).text).toContain("was already repaired");
-    consumeRunSkillUsage(runId);
+    try {
+      const result = await tool.execute("r9-patch", {
+        action: "patch",
+        skill_name: skillName,
+        old_string: "Use OLD_TOKEN.",
+        new_string: "Use NEW_TOKEN.",
+      });
+      expect(proposalSpy).toHaveBeenCalledOnce();
+      expect(result.details).toMatchObject({ status: "applied", alreadyApplied: true });
+      expect((result.content[0] as { text: string }).text).toContain("was already applied");
+      await expect(fs.readFile(skillFile, "utf8")).resolves.toContain("Use NEW_TOKEN.");
+      const proposalId = (result.details as { id: string }).id;
+      await expect(
+        readSkillWorkshopTestProposalRecord(proposalId, { env: testState.env }),
+      ).resolves.toMatchObject({ status: "applied", statusReason: "R9-A09 operator approval" });
+      const events = await listSkillProposalEvents({
+        config,
+        agentId: "main",
+        env: testState.env,
+        proposalId,
+      });
+      expect(events.events.filter((event) => event.type === "applied")).toHaveLength(1);
+    } finally {
+      proposalSpy.mockRestore();
+      consumeRunSkillUsage(runId);
+    }
   });
 
   it.each(["off", "propose", "auto"] as const)(
@@ -945,7 +979,7 @@ describe("skill_workshop tool", () => {
     const workspaceDir = await tempDirs.make("openclaw-skill-workshop-delete-");
     const runId = "repair-delete";
     const skillName = "delete-span";
-    const skillFile = path.join(workspaceDir, "skills", skillName, "SKILL.md");
+    const skillFile = workshopSkillPath(skillName, "SKILL.md");
     const tool = createSkillWorkshopTool({
       workspaceDir,
       config: { skills: { workshop: { autonomous: { mode: "auto" } } } },
