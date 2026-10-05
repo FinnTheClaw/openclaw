@@ -23,6 +23,7 @@ import { runDiscordVoiceAgentTurn } from "./ingress.js";
 const context = { senderIsOwner: false, speakerLabel: "Guest" };
 const shared = {
   entry: {
+    sessionLifecycle: { status: "active" },
     guildId: "guild-1",
     channelId: "channel-1",
     voiceSessionKey: "voice-1",
@@ -81,7 +82,7 @@ describe("CH06 Discord voice speakable payloads", () => {
     async ({ payloads, expected, diagnostic }) => {
       mocks.run.mockResolvedValue({ payloads });
       const result = await runDiscordVoiceAgentTurn(shared);
-      expect(result?.text).toBe(expected);
+      expect(result).toBe(expected);
       expect(mocks.run).toHaveBeenCalledTimes(1);
       if (diagnostic) {
         expect(mocks.loggerInfo).toHaveBeenCalledWith(

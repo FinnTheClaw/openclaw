@@ -1,4 +1,4 @@
-import { ChannelType, PermissionFlagsBits } from "discord-api-types/v10";
+import { ChannelType, PermissionFlagsBits, Routes } from "discord-api-types/v10";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RequestClient } from "./internal/discord.js";
 import { fetchChannelPermissionsDiscord } from "./send.permissions.js";
@@ -81,7 +81,9 @@ const cases: Scenario[] = [
 ];
 
 describe("CH01 Discord thread permission summaries", () => {
-  beforeEach(() => rest.get.mockReset());
+  beforeEach(() => {
+    rest.get.mockReset();
+  });
 
   it.each(cases)("$name", async (scenario) => {
     const overwrites = [
@@ -114,26 +116,33 @@ describe("CH01 Discord thread permission summaries", () => {
       type: ChannelType.GuildText,
       permission_overwrites: overwrites,
     };
-    rest.get.mockResolvedValueOnce(requested);
-    if (!scenario.dm) {
-      rest.get.mockResolvedValueOnce({ id: "bot-1" });
-      rest.get.mockResolvedValueOnce({
-        id: "guild-1",
-        owner_id: "owner-1",
-        roles: [
-          { id: "guild-1", permissions: String(scenario.everyoneBits ?? 0n) },
-          { id: "role-1", permissions: String(scenario.roleBits ?? 0n) },
-        ],
-      });
-      rest.get.mockResolvedValueOnce({ roles: ["role-1"] });
-      if (scenario.thread) {
-        if (scenario.parentFailure) {
-          rest.get.mockRejectedValueOnce(new Error("parent unavailable"));
-        } else {
-          rest.get.mockResolvedValueOnce(parent);
-        }
+    // Bind responses to the actual REST route, not an obsolete fetch order.
+    const responses = new Map<string, unknown>([
+      [Routes.channel("thread-1"), requested],
+      [Routes.channel("parent-1"), parent],
+      [Routes.user("@me"), { id: "bot-1" }],
+      [
+        Routes.guild("guild-1"),
+        {
+          id: "guild-1",
+          owner_id: "owner-1",
+          roles: [
+            { id: "guild-1", permissions: String(scenario.everyoneBits ?? 0n) },
+            { id: "role-1", permissions: String(scenario.roleBits ?? 0n) },
+          ],
+        },
+      ],
+      [Routes.guildMember("guild-1", "bot-1"), { roles: ["role-1"] }],
+    ]);
+    rest.get.mockImplementation(async (route: string) => {
+      if (route === Routes.channel("parent-1") && scenario.parentFailure) {
+        throw new Error("parent unavailable");
       }
-    }
+      if (!responses.has(route)) {
+        throw new Error("Unexpected Discord route: " + route);
+      }
+      return responses.get(route);
+    });
     if (scenario.parentFailure) {
       await expect(
         fetchChannelPermissionsDiscord("thread-1", EMPTY_DISCORD_TEST_OPTS),

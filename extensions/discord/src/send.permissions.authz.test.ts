@@ -213,7 +213,7 @@ describe("discord guild permission authorization", () => {
       "applies parent overwrites for a thread",
       {
         everyone: P.ManageThreads,
-        channel: { type: ChannelType.GuildPublicThread, parent_id: "parent-1" },
+        channel: { type: ChannelType.PublicThread, parent_id: "parent-1" },
         parentOverwrites: deny(P.ManageThreads),
       },
       P.ManageThreads,

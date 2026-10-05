@@ -2,14 +2,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { resolveSubagentSessionAttachmentRootDir } from "../subagent-attachment-paths.js";
 import { materializeSubagentAttachments } from "./subagent-attachments.js";
 
 const gate = vi.hoisted(() => ({
   wait: Promise.resolve(),
-  finished: Promise.resolve(),
-  failObserved: () => {},
-  finish: () => {},
+  entered: () => {},
   pending: false,
+  writes: [] as string[],
+  cleanupWhileWriterPending: false,
 }));
 
 vi.mock("../../../infra/private-file-store.js", async (importOriginal) => {
@@ -21,86 +22,144 @@ vi.mock("../../../infra/private-file-store.js", async (importOriginal) => {
       return {
         ...store,
         async writeText(name: string, content: string | Buffer) {
-          if (name === "slow.txt") {
+          gate.writes.push(path.basename(name));
+          if (path.basename(name) === "slow.txt") {
             gate.pending = true;
+            gate.entered();
             try {
               await gate.wait;
               return await store.writeText(name, content);
             } finally {
               gate.pending = false;
-              gate.finish();
             }
           }
-          try {
-            return await store.writeText(name, content);
-          } catch (error) {
-            gate.failObserved();
-            throw error;
-          }
+          return await store.writeText(name, content);
         },
       };
     },
   };
 });
 
-afterEach(() => vi.restoreAllMocks());
+vi.mock("../../../infra/fs-safe.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../infra/fs-safe.js")>();
+  return {
+    ...actual,
+    async root(rootDir: string) {
+      const ownedRoot = await actual.root(rootDir);
+      return {
+        ...ownedRoot,
+        async remove(...args: Parameters<typeof ownedRoot.remove>) {
+          gate.cleanupWhileWriterPending ||= gate.pending;
+          return await ownedRoot.remove(...args);
+        },
+      };
+    },
+  };
+});
 
-it("settles all attachment writers before cleanup after a real store-key rejection", async () => {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "lane3-attachment-race-"));
-  let release = () => {};
-  let observedFailure = () => {};
-  gate.wait = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  gate.finished = new Promise<void>((resolve) => {
-    gate.finish = resolve;
-  });
-  const failure = new Promise<void>((resolve) => {
-    observedFailure = resolve;
-  });
-  gate.failObserved = observedFailure;
-  let cleanupWhileWriterPending = false;
-  let cleanupComplete = () => {};
-  const cleanupCompleted = new Promise<void>((resolve) => {
-    cleanupComplete = resolve;
-  });
-  const realRm = fs.rm.bind(fs);
-  vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
-    if (String(target).includes(path.join(workspace, ".openclaw", "attachments"))) {
-      cleanupWhileWriterPending ||= gate.pending;
-    }
-    const result = await realRm(target, options);
-    cleanupComplete();
-    return result;
-  });
-  const result = materializeSubagentAttachments({
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
+
+async function fixture() {
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "lane3-attachment-race-"));
+  vi.stubEnv("OPENCLAW_STATE_DIR", state);
+  gate.writes = [];
+  gate.pending = false;
+  gate.cleanupWhileWriterPending = false;
+  gate.wait = Promise.resolve();
+  gate.entered = () => {};
+  const childSessionKey = "agent:main:subagent:cleanup-race";
+  return {
+    state,
+    childSessionKey,
+    root: resolveSubagentSessionAttachmentRootDir({ agentId: "main", childSessionKey }),
     config: { tools: { sessions_spawn: { attachments: { enabled: true } } } },
-    targetAgentId: "main",
-    workspaceDir: workspace,
-    attachments: [
-      { name: "bad.", content: "invalid canonical store name" },
-      { name: "slow.txt", content: "retained private input" },
-    ],
-  });
+  };
+}
+
+// Upstream now stages serially in a Gateway-owned per-session root. Preserve
+// the prior no-cleanup-during-write invariant without resurrecting parallel IO
+// or treating the retired workspace-relative staging path as authoritative.
+it("does not start a sibling writer after a real store-key rejection", async () => {
+  const f = await fixture();
   try {
-    await failure;
-    // A pending native write may resume on a later I/O turn. Drain all rejection
-    // continuations before releasing that real write; no arbitrary elapsed delay.
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
+    const result = await materializeSubagentAttachments({
+      config: f.config,
+      targetAgentId: "main",
+      childSessionKey: f.childSessionKey,
+      attachments: [
+        { name: "bad.", content: "invalid canonical store name" },
+        { name: "slow.txt", content: "must not start after rejection" },
+      ],
     });
-    if (cleanupWhileWriterPending) {
-      await cleanupCompleted;
-    }
-    release();
-    await gate.finished;
-    expect(await result).toMatchObject({ status: "error" });
-    expect(await fs.readdir(path.join(workspace, ".openclaw", "attachments"))).toEqual([]);
-    expect(cleanupWhileWriterPending).toBe(false);
+    expect(result).toMatchObject({ status: "error" });
+    expect(gate.writes).toEqual(["bad."]);
+    expect(gate.pending).toBe(false);
+    expect(gate.cleanupWhileWriterPending).toBe(false);
+    // The invalid native key is rejected before any staging directory exists.
+    await expect(fs.stat(f.root)).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
-    release();
-    await gate.finished;
-    await result;
-    await realRm(workspace, { recursive: true, force: true });
+    await fs.rm(f.state, { recursive: true, force: true });
   }
 });
+
+it.each([false, true])(
+  "settles an in-flight native writer before cancellation cleanup (active=%s)",
+  async (remainsActive) => {
+    const f = await fixture();
+    let release = () => {};
+    let active = true;
+    gate.wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      gate.entered = resolve;
+    });
+    const result = materializeSubagentAttachments({
+      config: f.config,
+      targetAgentId: "main",
+      childSessionKey: f.childSessionKey,
+      assertActive: () => {
+        if (!active) {
+          throw new Error("owned staging cancelled");
+        }
+      },
+      attachments: [
+        { name: "slow.txt", content: "retained private input" },
+        { name: "next.txt", content: "only while active" },
+      ],
+    });
+    try {
+      await entered;
+      expect(gate.pending).toBe(true);
+      active = remainsActive;
+      release();
+      const outcome = await result;
+      expect(gate.pending).toBe(false);
+      expect(gate.cleanupWhileWriterPending).toBe(false);
+      if (remainsActive) {
+        expect(outcome).toMatchObject({ status: "ok", receipt: { count: 2 } });
+        expect(gate.writes).toEqual(["slow.txt", "next.txt"]);
+        if (outcome.status !== "ok") {
+          throw new Error("Expected native attachment receipt");
+        }
+        expect(await fs.readFile(path.join(f.root, outcome.attachmentId, "slow.txt"), "utf8")).toBe(
+          "retained private input",
+        );
+        expect(await fs.readFile(path.join(f.root, outcome.attachmentId, "next.txt"), "utf8")).toBe(
+          "only while active",
+        );
+      } else {
+        expect(outcome).toMatchObject({ status: "error", error: "owned staging cancelled" });
+        expect(gate.writes).toEqual(["slow.txt"]);
+        expect(await fs.readdir(f.root)).toEqual([]);
+      }
+    } finally {
+      release();
+      await result;
+      await fs.rm(f.state, { recursive: true, force: true });
+    }
+  },
+);
