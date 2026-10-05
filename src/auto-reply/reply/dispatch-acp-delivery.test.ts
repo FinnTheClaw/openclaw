@@ -99,7 +99,7 @@ describe("AUTO-R4-01 settled answer-final delivery pack", () => {
     { id: "AUTO-R4-01-C03", mode: "cancelled", answer: false, failed: true, calls: 0 },
     { id: "AUTO-R4-01-C04", mode: "hook-error", answer: false, failed: true, calls: 0 },
     { id: "AUTO-R4-01-C05", mode: "not-visible", answer: false, failed: true, calls: 1 },
-    { id: "AUTO-R4-01-C06", mode: "uncertain-send", answer: true, failed: false, calls: 1 },
+    { id: "AUTO-R4-01-C06", mode: "uncertain-send", answer: false, failed: false, calls: 1 },
     { id: "AUTO-R4-01-C07", mode: "media-and-text", answer: true, failed: false, calls: 1 },
     { id: "AUTO-R4-01-C08", mode: "status-notice", answer: false, failed: false, calls: 1 },
   ] as const)(
@@ -143,7 +143,9 @@ describe("AUTO-R4-01 settled answer-final delivery pack", () => {
         await dispatcher.waitForIdle();
       }
 
-      expect(accepted).toBe(mode === "status-notice" || answer);
+      // Ambiguous sends retain custody without claiming confirmed user delivery.
+      expect(accepted).toBe(mode === "status-notice" || mode === "uncertain-send" || answer);
+      expect(coordinator.hasPendingAnswerDelivery()).toBe(mode === "uncertain-send");
       expect(coordinator.hasDeliveredAnswerFinalToUser()).toBe(answer);
       expect(coordinator.hasFailedVisibleTextDelivery()).toBe(failed);
       expect(sent).toHaveBeenCalledTimes(calls);

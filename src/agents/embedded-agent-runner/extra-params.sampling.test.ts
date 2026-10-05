@@ -545,9 +545,17 @@ describe("request-local Responses reasoning overrides", () => {
         extraParamsOverride,
       }),
     );
-    expect(prepareProviderExtraParams).toHaveBeenCalledTimes(1);
-    expect(prepared[0]).toBe(prepared[1]);
-    expect(prepared[1]).toBe(prepared[2]);
+    // Native provider-runtime handles prepare independently; request controls
+    // must not enter any of the provider preparations or leak to the next attempt.
+    expect(prepareProviderExtraParams).toHaveBeenCalledTimes(3);
+    expect(prepared[0]).not.toBe(prepared[1]);
+    expect(prepared[1]).not.toBe(prepared[2]);
+    expect(prepared[0]).toEqual(prepared[1]);
+    expect(prepared[1]).toEqual(prepared[2]);
+    for (const [call] of prepareProviderExtraParams.mock.calls) {
+      expect(call.context.extraParams).not.toHaveProperty("reasoningEffort");
+      expect(call.context.extraParams).not.toHaveProperty("reasoning");
+    }
     for (const params of prepared) {
       expect(params).not.toHaveProperty("reasoningEffort");
       expect(params).not.toHaveProperty("reasoning");

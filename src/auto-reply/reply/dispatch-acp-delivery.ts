@@ -396,7 +396,7 @@ export function createAcpDispatchDeliveryCoordinator(params: AcpDispatchDelivery
         // Coverage belongs to this payload. Hidden text and independent final audio
         // remain deliverable, and commentary never stands in for an answer.
         const pendingAnswer =
-          tracksVisibleText &&
+          (tracksVisibleText || isAnswerBearingFinal) &&
           sendKind !== "tool" &&
           !isStatusNotice &&
           !ttsPayload.isCommentary &&
@@ -600,7 +600,9 @@ export function createAcpDispatchDeliveryCoordinator(params: AcpDispatchDelivery
       }
       if (delivered && transcriptOutcome?.isTracked()) {
         const settlement = transcriptOutcome.promise.then((outcome) => {
-          if (transcriptOutcome.hasPendingDelivery()) {
+          if (transcriptOutcome.hasPendingDelivery() || outcome === "failed-deliver") {
+            // A transport failure after send is ambiguous: retain answer custody,
+            // but never manufacture confirmed delivery or a competing retry.
             recordPendingDelivery(tracksVisibleText);
           } else if (outcome === "delivered") {
             recordDeliveredReply(tracksVisibleText);
@@ -612,18 +614,17 @@ export function createAcpDispatchDeliveryCoordinator(params: AcpDispatchDelivery
               }
               coverFinalBlockText(ttsPayload, finalBlocks);
             }
-            if (tracksVisibleText) {
-              state.failedVisibleTextDelivery ||=
-                outcome === "failed-before-deliver" || outcome === "failed-deliver";
-              state.deliveredVisibleText ||= outcome === "failed-deliver";
+            if (tracksVisibleText || isAnswerBearingFinal) {
+              state.failedVisibleTextDelivery ||= shouldRetryReplyDispatch(outcome);
             }
           }
+          return transcriptOutcome.hasPendingDelivery() || !shouldRetryReplyDispatch(outcome);
         });
-        state.pendingTranscriptOutcomes.push(settlement);
+        state.pendingTranscriptOutcomes.push(settlement.then(() => undefined));
         if (sendKind === "final") {
           // Outer dispatch races cancellation. This owner retains the admitted final
           // until its receipt can safely decide fallback and cancelled-turn history.
-          await settlement;
+          return await settlement;
         }
       } else if (delivered) {
         recordFinalReply();

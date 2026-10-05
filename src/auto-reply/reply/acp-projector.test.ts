@@ -698,7 +698,7 @@ describe("createAcpReplyProjector", () => {
       expect(deliveries.some((entry) => entry.kind === "tool")).toBe(false);
       expect(answer).not.toContain("private tool detail");
       expect(
-        countMatching(deliveries, (entry) => entry.text?.includes("[output truncated]") === true),
+        deliveries.filter((entry) => entry.text?.includes("[output truncated]") === true).length,
       ).toBe(1);
     },
   );
