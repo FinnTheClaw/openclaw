@@ -68,7 +68,13 @@ const providerRuntimeDeps = {
 };
 
 let preparedExtraParamsCache = new WeakMap<OpenClawConfig, Map<string, Record<string, unknown>>>();
-const REQUEST_SCOPED_EXTRA_PARAM_KEYS = new Set(["response_format", "responseFormat", "stop"]);
+const REQUEST_SCOPED_EXTRA_PARAM_KEYS = new Set([
+  "response_format",
+  "responseFormat",
+  "stop",
+  "reasoningEffort",
+  "reasoning",
+]);
 const GPT_PARALLEL_TOOL_CALLS_APIS = new Set([
   "openai-completions",
   "openai-responses",
@@ -478,6 +484,7 @@ function createStreamFnWithExtraParams(
   extraParams: Record<string, unknown> | undefined,
   provider: string,
   model?: ProviderRuntimeModel,
+  requestParams?: Record<string, unknown>,
 ): StreamFn | undefined {
   if (!extraParams || Object.keys(extraParams).length === 0) {
     return undefined;
@@ -588,7 +595,15 @@ function createStreamFnWithExtraParams(
       typeof callModel.id === "string" ? callModel.id : undefined,
       readCacheCompat(callModel),
     );
-    if (Object.keys(streamParams).length === 0 && !cacheRetention) {
+    // Retry overrides must beat the Agent's normal thinking level, but must not
+    // become cached model defaults or affect incompatible APIs/providers.
+    const disableResponsesReasoning =
+      callModel.api === "openai-responses" &&
+      callModel.reasoning === true &&
+      callModel.compat?.supportsReasoningEffort !== false &&
+      callModel.compat?.supportedReasoningEfforts?.includes("none") === true &&
+      (requestParams?.reasoningEffort === "none" || requestParams?.reasoning === "off");
+    if (Object.keys(streamParams).length === 0 && !cacheRetention && !disableResponsesReasoning) {
       return underlying(callModel, context, options);
     }
     const effectiveCacheRetention = options?.cacheRetention ?? cacheRetention;
@@ -597,6 +612,7 @@ function createStreamFnWithExtraParams(
       ...options,
       // Own undefined means no request override; explicit none/short/long still wins.
       ...(effectiveCacheRetention ? { cacheRetention: effectiveCacheRetention } : {}),
+      ...(disableResponsesReasoning ? { reasoningEffort: "none", reasoning: "off" as const } : {}),
     });
   };
 
@@ -837,6 +853,7 @@ function applyPrePluginStreamWrappers(ctx: ApplyExtraParamsContext): void {
     streamParams,
     ctx.provider,
     ctx.model,
+    ctx.override,
   );
 
   if (wrappedStreamFn) {

@@ -566,3 +566,99 @@ describe("createStreamFnWithExtraParams sampling overrides", () => {
     },
   );
 });
+
+describe("request-local Responses reasoning overrides", () => {
+  it.each([
+    {
+      api: "openai-responses",
+      compat: { supportedReasoningEfforts: ["none", "high"] },
+      allowed: true,
+    },
+    {
+      api: "openai-responses",
+      compat: { supportsReasoningEffort: false, supportedReasoningEfforts: ["none"] },
+      allowed: false,
+    },
+    { api: "openai-responses", compat: { supportedReasoningEfforts: ["high"] }, allowed: false },
+    { api: "openai-completions", compat: { supportedReasoningEfforts: ["none"] }, allowed: false },
+    { api: "anthropic-messages", compat: { supportedReasoningEfforts: ["none"] }, allowed: false },
+  ])("gates native disabling on $api / $compat", ({ api, compat, allowed }) => {
+    const underlying = vi.fn(() => ({
+      push() {},
+      async result() {
+        return undefined;
+      },
+      async *[Symbol.asyncIterator]() {},
+    })) as unknown as StreamFn;
+    const owner = { streamFn: underlying };
+    const model = {
+      id: "moira/brain",
+      provider: "finn-coordinator",
+      api,
+      reasoning: true,
+      compat,
+    } as never;
+    const override = { reasoningEffort: "none", temperature: 0.5 };
+    const before = structuredClone(override);
+    applyExtraParamsToAgent(
+      owner,
+      undefined,
+      "finn-coordinator",
+      "moira/brain",
+      override,
+      undefined,
+      undefined,
+      undefined,
+      model,
+      undefined,
+      undefined,
+      { preparedExtraParams: override },
+    );
+    const options = { reasoning: "high", maxTokens: 256, headers: { "x-test": "kept" } } as const;
+    void owner.streamFn(model, { messages: [] }, options);
+    const calls = (underlying as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const actual = calls[0]?.[2] as Record<string, unknown>;
+    expect(actual).toMatchObject({
+      temperature: 0.5,
+      maxTokens: 256,
+      headers: { "x-test": "kept" },
+    });
+    expect(actual.reasoning).toBe(allowed ? "off" : "high");
+    expect(actual.reasoningEffort).toBe(allowed ? "none" : undefined);
+    expect(override).toEqual(before);
+    expect(options.reasoning).toBe("high");
+  });
+
+  it("does not cache request-local reasoning controls across attempts", () => {
+    const prepareProviderExtraParams = vi.fn((params) => ({
+      ...params.context.extraParams,
+      prepared: true,
+    }));
+    extraParamsTesting.setProviderRuntimeDepsForTest({
+      prepareProviderExtraParams,
+      resolveProviderExtraParamsForTransport: () => undefined,
+      wrapProviderStreamFn: () => undefined,
+    });
+    const cfg = { agents: { defaults: {} } } as never;
+    const prepared = [
+      { reasoningEffort: "none", temperature: 0.5 },
+      { reasoning: "off", temperature: 0.5 },
+      { temperature: 0.5 },
+    ].map((extraParamsOverride) =>
+      resolvePreparedExtraParams({
+        cfg,
+        provider: "finn-coordinator",
+        modelId: "moira/brain",
+        extraParamsOverride,
+      }),
+    );
+    expect(prepareProviderExtraParams).toHaveBeenCalledTimes(1);
+    expect(prepared[0]).toBe(prepared[1]);
+    expect(prepared[1]).toBe(prepared[2]);
+    for (const params of prepared) {
+      expect(params).not.toHaveProperty("reasoningEffort");
+      expect(params).not.toHaveProperty("reasoning");
+      expect(params.temperature).toBe(0.5);
+    }
+  });
+});

@@ -38,7 +38,7 @@ const EMPTY_RESPONSE_RETRY_INSTRUCTION =
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The recorded tool calls have finished. Use their results to answer the original user request. Report what those results establish and any remaining incompleteness or uncertainty. Do not repeat completed calls or claim unperformed work.";
 
-/** Keep the last reasoning-only retry request-local on explicitly enabled Chat routes. */
+/** Keep the last reasoning-only retry request-local on explicitly enabled routes. */
 export function resolveReasoningOnlyRetryStreamParams(params: {
   modelApi?: string;
   reasoningOnlyAttempts: number;
@@ -54,11 +54,16 @@ export function resolveReasoningOnlyRetryStreamParams(params: {
       : {};
   };
   if (
-    params.modelApi !== "openai-completions" ||
+    (params.modelApi !== "openai-completions" && params.modelApi !== "openai-responses") ||
     params.reasoningOnlyAttempts !== DEFAULT_REASONING_ONLY_RETRY_LIMIT ||
     kwargs(params.modelParams).enable_thinking !== true
   ) {
     return params.streamParams;
+  }
+  if (params.modelApi === "openai-responses") {
+    // Native Responses control: Chat template kwargs are not serialized there.
+    // The transport wrapper also requires declared disabled-effort support.
+    return { ...params.streamParams, reasoningEffort: "none" };
   }
   return {
     ...params.streamParams,

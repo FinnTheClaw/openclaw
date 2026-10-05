@@ -59,6 +59,7 @@ type OpenAIResponsesPayloadPolicy = {
   defaultReasoningEffort: "none" | undefined;
   explicitStore: boolean | undefined;
   shouldStripDisabledReasoningPayload: boolean;
+  shouldStripEncryptedReasoningState: boolean;
   shouldStripInputStatus: boolean;
   shouldStripPromptCache: boolean;
   shouldStripStore: boolean;
@@ -387,6 +388,35 @@ function stripInputItemStatuses(input: unknown): void {
   }
 }
 
+function stripEncryptedReasoningState(payloadObj: Record<string, unknown>): void {
+  if (Array.isArray(payloadObj.include)) {
+    const include = payloadObj.include.filter((value) => value !== "reasoning.encrypted_content");
+    if (include.length > 0) {
+      payloadObj.include = include;
+    } else {
+      delete payloadObj.include;
+    }
+  }
+  if (!Array.isArray(payloadObj.input)) {
+    return;
+  }
+  payloadObj.input = payloadObj.input.flatMap((item: unknown) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return [item];
+    }
+    const reasoning = item as Record<string, unknown>;
+    // Strip protocol state only, never similarly named values in user/tool data.
+    if (reasoning.type !== "reasoning" || !("encrypted_content" in reasoning)) {
+      return [item];
+    }
+    const { encrypted_content: _encryptedContent, ...visibleReasoning } = reasoning;
+    const hasVisibleReasoning =
+      (Array.isArray(visibleReasoning.summary) && visibleReasoning.summary.length > 0) ||
+      (Array.isArray(visibleReasoning.content) && visibleReasoning.content.length > 0);
+    return hasVisibleReasoning ? [visibleReasoning] : [];
+  });
+}
+
 /** Resolve payload mutation policy for one OpenAI Responses-style model endpoint. */
 export function resolveOpenAIResponsesPayloadPolicy(
   model: OpenAIResponsesPayloadModel,
@@ -447,6 +477,10 @@ export function resolveOpenAIResponsesPayloadPolicy(
         : undefined,
     explicitStore,
     shouldStripDisabledReasoningPayload,
+    // An explicit no-store capability opts a stateless endpoint out of encrypted
+    // replay, unlike native OpenAI's ordinary per-request store:false mode.
+    shouldStripEncryptedReasoningState:
+      isResponsesApi && readCompatPayloadBoolean(model.compat, "supportsStore") === false,
     shouldStripInputStatus,
     shouldStripPromptCache:
       options.enablePromptCacheStripping === true && capabilities.shouldStripResponsesPromptCache,
@@ -488,6 +522,9 @@ export function applyOpenAIResponsesPayloadPolicy(
   }
   if (policy.shouldStripDisabledReasoningPayload) {
     stripDisabledOpenAIReasoningPayload(payloadObj);
+  }
+  if (policy.shouldStripEncryptedReasoningState) {
+    stripEncryptedReasoningState(payloadObj);
   }
   if (policy.shouldStripInputStatus) {
     stripInputItemStatuses(payloadObj.input);
