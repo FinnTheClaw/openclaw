@@ -179,7 +179,10 @@ export async function runDiscordVoiceAgentTurn(params: {
   }
   const payloads = result.payloads ?? [];
   const text = payloads
-    .filter((payload) => payload && !payload.isReasoning && !payload.isError)
+    .filter(
+      (payload) =>
+        payload && !("isReasoning" in payload && payload.isReasoning) && !payload.isError,
+    )
     .map((payload) => payload.text)
     .filter((entry) => typeof entry === "string" && entry.trim())
     .join("\n")
