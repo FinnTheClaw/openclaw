@@ -16,6 +16,43 @@ import {
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("memory dreaming host helpers", () => {
+  it.each(["low", "medium", "high"] as const)(
+    "inherits the shared %s thinking default in every dreaming phase",
+    (thinkingDefault) => {
+      const resolved = resolveMemoryDreamingConfig({
+        cfg: { agents: { defaults: { thinkingDefault } } },
+      });
+      expect(resolved.execution.defaults.thinking).toBe(thinkingDefault);
+      for (const phase of Object.values(resolved.phases)) {
+        expect(phase.execution.thinking).toBe(thinkingDefault);
+      }
+    },
+  );
+
+  it("uses medium for all dreaming phases when no default is configured", () => {
+    const resolved = resolveMemoryDreamingConfig({});
+    expect(resolved.execution.defaults.thinking).toBe("medium");
+    for (const phase of Object.values(resolved.phases)) {
+      expect(phase.execution.thinking).toBe("medium");
+    }
+  });
+
+  it("preserves explicit dreaming defaults and phase overrides", () => {
+    const resolved = resolveMemoryDreamingConfig({
+      cfg: { agents: { defaults: { thinkingDefault: "medium" } } },
+      pluginConfig: {
+        dreaming: {
+          execution: { defaults: { thinking: "high" } },
+          phases: { light: { execution: { thinking: "low" } } },
+        },
+      },
+    });
+    expect(resolved.execution.defaults.thinking).toBe("high");
+    expect(resolved.phases.light.execution.thinking).toBe("low");
+    expect(resolved.phases.deep.execution.thinking).toBe("high");
+    expect(resolved.phases.rem.execution.thinking).toBe("high");
+  });
+
   it("normalizes string settings from the dreaming config", () => {
     const resolved = resolveMemoryDreamingConfig({
       pluginConfig: {

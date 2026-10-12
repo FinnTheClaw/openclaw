@@ -388,7 +388,9 @@ export function resolveMemoryDreamingConfig(params: {
 
   const defaultExecution = resolveExecutionConfig(execution?.defaults, {
     speed: DEFAULT_MEMORY_DREAMING_SPEED,
-    thinking: DEFAULT_MEMORY_DREAMING_THINKING,
+    thinking:
+      normalizeChoice(params.cfg?.agents?.defaults?.thinkingDefault, ["low", "medium", "high"]) ??
+      DEFAULT_MEMORY_DREAMING_THINKING,
     budget: DEFAULT_MEMORY_DREAMING_BUDGET,
     ...(topLevelModel ? { model: topLevelModel } : {}),
   });
@@ -432,7 +434,6 @@ export function resolveMemoryDreamingConfig(params: {
         execution: resolveExecutionConfig(light?.execution, {
           ...defaultExecution,
           speed: "fast",
-          thinking: "low",
           budget: "cheap",
         }),
       },
@@ -483,7 +484,6 @@ export function resolveMemoryDreamingConfig(params: {
         execution: resolveExecutionConfig(deep?.execution, {
           ...defaultExecution,
           speed: "balanced",
-          thinking: "high",
           budget: "medium",
         }),
       },
@@ -502,7 +502,6 @@ export function resolveMemoryDreamingConfig(params: {
         execution: resolveExecutionConfig(rem?.execution, {
           ...defaultExecution,
           speed: "slow",
-          thinking: "high",
           budget: "expensive",
         }),
       },

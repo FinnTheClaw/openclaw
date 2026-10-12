@@ -955,6 +955,8 @@ describe("voice transcript events", () => {
       messageChannel: "node",
     });
     const optsRecord = opts as Record<string, unknown>;
+    // Voice must inherit the normal agent/session thinking selection.
+    expect(optsRecord).not.toHaveProperty("thinking");
     expectFields(optsRecord.inputProvenance, {
       kind: "external_user",
       sourceChannel: "voice",
