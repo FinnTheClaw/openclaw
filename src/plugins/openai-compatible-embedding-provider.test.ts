@@ -639,7 +639,7 @@ describe("openai-compatible generic embedding provider", () => {
     const { provider, client } = await createOpenAICompatibleEmbeddingProvider(
       createOptions({
         model: "text-embedding-bge-m3",
-        dimensions: 1024,
+        dimensions: 3,
         remote: {
           baseUrl: `  ${server.baseUrl}/  `,
           apiKey: `  ${token}  `,
@@ -652,7 +652,7 @@ describe("openai-compatible generic embedding provider", () => {
 
     expect(provider.id).toBe("openai-compatible");
     expect(provider.model).toBe("text-embedding-bge-m3");
-    expect(provider.dimensions).toBe(1024);
+    expect(provider.dimensions).toBe(3);
     expect(client.baseUrl).toBe(server.baseUrl);
     expect(server.requests).toHaveLength(0);
 
@@ -669,7 +669,7 @@ describe("openai-compatible generic embedding provider", () => {
       body: {
         model: "text-embedding-bge-m3",
         input: ["hello"],
-        dimensions: 1024,
+        dimensions: 3,
       },
     });
     expect(server.requests[0]?.body).not.toHaveProperty("encoding_format");
@@ -680,7 +680,7 @@ describe("openai-compatible generic embedding provider", () => {
     expect(server.requests[1]?.body).toEqual({
       model: "text-embedding-bge-m3",
       input: ["a", "abcd"],
-      dimensions: 1024,
+      dimensions: 3,
     });
   });
 
