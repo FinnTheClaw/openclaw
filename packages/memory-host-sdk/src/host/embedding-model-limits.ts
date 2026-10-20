@@ -9,7 +9,11 @@ const DEFAULT_LOCAL_EMBEDDING_MAX_INPUT_TOKENS = 2048;
 export function resolveEmbeddingMaxInputTokens(
   provider: Pick<EmbeddingProvider, "id" | "maxInputTokens">,
 ): number {
-  if (typeof provider.maxInputTokens === "number") {
+  if (
+    typeof provider.maxInputTokens === "number" &&
+    Number.isSafeInteger(provider.maxInputTokens) &&
+    provider.maxInputTokens > 0
+  ) {
     return provider.maxInputTokens;
   }
 

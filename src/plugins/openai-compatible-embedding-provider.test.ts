@@ -293,6 +293,98 @@ afterEach(async () => {
 });
 
 describe("openai-compatible generic embedding provider", () => {
+  it("rejects configured output-width mismatches before accepting vectors", async () => {
+    const server = await startEmbeddingServer();
+    const { provider } = await createOpenAICompatibleEmbeddingProvider(
+      createOptions({
+        remote: { baseUrl: server.baseUrl },
+        dimensions: 4096,
+      }),
+    );
+    await expect(provider.embed("hello")).rejects.toThrow("malformed JSON response");
+  });
+  it("rejects inconsistent vector widths within a batch", async () => {
+    const server = await startEmbeddingServer({
+      respond: () => ({
+        data: [
+          { index: 0, embedding: [1, 2] },
+          { index: 1, embedding: [1] },
+        ],
+      }),
+    });
+    const { provider } = await createOpenAICompatibleEmbeddingProvider(
+      createOptions({
+        remote: { baseUrl: server.baseUrl },
+      }),
+    );
+    await expect(provider.embedBatch(["first", "second"])).rejects.toThrow(
+      "malformed JSON response",
+    );
+  });
+  it.each([
+    { name: "matching wire model", model: "moira/memory-embedding", remote: false, limit: 32768 },
+    {
+      name: "prefixed wire model",
+      model: "remote-llm/moira/memory-embedding",
+      remote: false,
+      limit: 32768,
+    },
+    { name: "different model", model: "moira/brain", remote: false, limit: undefined },
+    {
+      name: "foreign destination",
+      model: "moira/memory-embedding",
+      remote: true,
+      limit: undefined,
+    },
+  ])("resolves destination-owned input budget: $name", async ({ model, remote, limit }) => {
+    const result = await openAICompatibleEmbeddingProviderAdapter.create(
+      createOptions({
+        provider: "remote-llm",
+        model,
+        config: {
+          models: {
+            providers: {
+              "remote-llm": {
+                api: "openai-responses",
+                baseUrl: "http://127.0.0.1:8300/v1",
+                models: [{ id: "moira/memory-embedding", contextWindow: 32768 }],
+              },
+            },
+          },
+        } as EmbeddingProviderCreateOptions["config"],
+        ...(remote ? { remote: { baseUrl: "http://127.0.0.1:8301/v1" } } : {}),
+      }),
+    );
+    expect(result.provider?.maxInputTokens).toBe(limit);
+    expect(result.runtime?.cacheKeyData).not.toHaveProperty("maxInputTokens");
+    expect(result.runtime?.cacheKeyData).not.toHaveProperty("contextWindow");
+  });
+
+  it("takes the conservative limit for duplicate catalog identities", async () => {
+    const result = await openAICompatibleEmbeddingProviderAdapter.create(
+      createOptions({
+        provider: "remote-llm",
+        model: "moira/memory-embedding",
+        config: {
+          models: {
+            providers: {
+              "remote-llm": {
+                api: "openai-responses",
+                baseUrl: "http://127.0.0.1:8300/v1",
+                models: [
+                  { id: "moira/memory-embedding", contextWindow: 32768 },
+                  { id: "moira/memory-embedding", contextWindow: 16384 },
+                  { id: "moira/memory-embedding", contextWindow: Number.NaN },
+                ],
+              },
+            },
+          },
+        } as EmbeddingProviderCreateOptions["config"],
+      }),
+    );
+    expect(result.provider?.maxInputTokens).toBe(16384);
+  });
+
   it("is registered as a core generic embedding provider", () => {
     expect(getRegisteredEmbeddingProvider("openai-compatible")).toMatchObject({
       adapter: openAICompatibleEmbeddingProviderAdapter,

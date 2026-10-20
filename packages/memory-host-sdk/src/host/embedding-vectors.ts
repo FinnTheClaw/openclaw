@@ -6,6 +6,7 @@ export function readEmbeddingVectors(
   data: unknown,
   expectedCount: number | undefined,
   errorPrefix: string,
+  expectedDimensions?: number,
 ): number[][] {
   const malformedResponse = () => new Error(`${errorPrefix}: malformed JSON response`);
   if (!Array.isArray(data) || (expectedCount !== undefined && data.length !== expectedCount)) {
@@ -21,6 +22,8 @@ export function readEmbeddingVectors(
       !entry ||
       !Array.isArray(embedding) ||
       embedding.length === 0 ||
+      (expectedDimensions !== undefined && embedding.length !== expectedDimensions) ||
+      vectors.some((vector) => vector !== undefined && vector.length !== embedding.length) ||
       (indexed !== undefined && indexed !== usesIndex)
     ) {
       throw malformedResponse();

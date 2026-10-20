@@ -70,6 +70,10 @@ export function shouldSkipRootMemoryAuxiliaryPath(params: {
   }
   const normalized = normalizeWorkspaceRelativePath(relative);
   return (
+    // Light-dream files contain staged candidates and recalled snippets, not
+    // accepted memory. Indexing them recursively turns diagnostic output into facts.
+    normalized === "memory/dreaming/light" ||
+    normalized.startsWith("memory/dreaming/light/") ||
     normalized === LEGACY_ROOT_MEMORY_FILENAME ||
     normalized === ROOT_MEMORY_REPAIR_RELATIVE_DIR ||
     normalized.startsWith(`${ROOT_MEMORY_REPAIR_RELATIVE_DIR}/`)

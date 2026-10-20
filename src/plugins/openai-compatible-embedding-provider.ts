@@ -59,6 +59,7 @@ type ConfiguredEmbeddingProvider = {
   apiKey?: unknown;
   headers?: Record<string, unknown>;
   localService?: ModelProviderLocalServiceConfig;
+  models?: Array<{ id: string; contextWindow?: number }>;
 };
 
 type ResolvedConfiguredEmbeddingProvider = {
@@ -356,6 +357,7 @@ async function postEmbeddingRequest(params: {
           ),
           input.length,
           "openai-compatible embeddings failed",
+          client.dimensions,
         );
       },
     });
@@ -449,11 +451,29 @@ export const openAICompatibleEmbeddingProviderAdapter: EmbeddingProviderAdapter 
         deadlineControl: callOptions?.[MEMORY_SEARCH_DEADLINE_CONTROL],
       });
     };
+    // A model catalog limit belongs to its exact configured destination and wire model.
+    // It is a conservative UTF-8 byte budget, not a tokenizer claim, and must not
+    // change vector/cache identity when only transport capacity is corrected.
+    const configured = resolveConfiguredProvider(options);
+    const providerBaseUrl = normalizeOptionalString(configured?.config.baseUrl);
+    const { embeddingProviderOwnsDestination } =
+      await import("../plugin-sdk/memory-core-host-engine-embeddings.js");
+    const ownsDestination =
+      providerBaseUrl !== undefined &&
+      embeddingProviderOwnsDestination({ baseUrl: client.baseUrl, providerBaseUrl });
+    const limits = ownsDestination
+      ? (configured?.config.models ?? [])
+          .filter((entry) => normalizeModel(entry.id, options.provider) === client.model)
+          .map((entry) => entry.contextWindow)
+          .filter((value): value is number => Number.isSafeInteger(value) && Number(value) > 0)
+      : [];
+    const maxInputTokens = limits.length > 0 ? Math.min(...limits) : undefined;
     const cacheHeaders = sanitizeCacheHeaders(client.headers);
     return {
       provider: {
         id: OPENAI_COMPATIBLE_EMBEDDING_PROVIDER_ID,
         model: client.model,
+        ...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
         ...(typeof client.dimensions === "number" ? { dimensions: client.dimensions } : {}),
         embed: async (input, callOptions) => {
           const [embedding] = await embedBatch([input], callOptions);
