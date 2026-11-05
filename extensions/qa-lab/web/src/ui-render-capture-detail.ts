@@ -12,7 +12,7 @@ function renderCaptureRadioOptions(
   return options
     .map(
       ([value, label]) => `<label class="capture-detail-view-option">
-              <input type="radio" name="${esc(name)}" value="${esc(value)}"${selected === value ? " checked" : ""} />
+              <input type="radio" id="${esc(`${name}-${value}`)}" name="${esc(name)}" value="${esc(value)}"${selected === value ? " checked" : ""} />
               <span>${esc(label)}</span>
             </label>`,
     )

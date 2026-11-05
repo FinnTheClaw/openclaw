@@ -133,7 +133,7 @@ export function renderCaptureWorkspace(model: CaptureViewModel): string {
                     .filter((view) => view.available)
                     .map(
                       (view) => `<label class="capture-detail-view-option">
-                        <input type="radio" name="capture-detail-view" value="${view.value}"${
+                        <input type="radio" id="${esc(`capture-detail-view-${view.value}`)}" name="capture-detail-view" value="${view.value}"${
                           effectiveDetailView === view.value ? " checked" : ""
                         } />
                         <span>${view.label}${view.recommended ? ' <em class="capture-detail-view-hint">recommended</em>' : ""}</span>

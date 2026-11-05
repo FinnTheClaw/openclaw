@@ -74,6 +74,88 @@ setupAppBrowserTests();
 
 describe("QA Lab runner browser interactions", () => {
   it.each([
+    { name: "capture-detail-view", parentView: "overview", value: "flow" },
+    { name: "capture-flow-layout", parentView: "flow", value: "nav-first" },
+    { name: "capture-payload-layout", parentView: "payload", value: "raw" },
+    { name: "capture-payload-extent", parentView: "payload", value: "full" },
+    { name: "capture-payload-event-sort", parentView: "payload", value: "name" },
+  ])(
+    "retains capture radio focus after option changes ($name)",
+    async ({ name, parentView, value }) => {
+      const root = await mountRunner(createRunnerSelection());
+      const getJson = httpMock.getJson.getMockImplementation()!;
+      httpMock.getJson.mockImplementation(async (url: string) => {
+        if (url === "/api/capture/sessions") {
+          return {
+            sessions: [{ id: "capture-focus", startedAt: 0, mode: "proxy", eventCount: 2 }],
+          };
+        }
+        if (url.startsWith("/api/capture/events?")) {
+          return {
+            events: ["request", "response"].map((kind, index) => ({
+              id: index + 1,
+              ts: index * 600,
+              kind,
+              flowId: "SYNTHETIC_FOCUS_FLOW",
+              direction: index === 0 ? "outbound" : "inbound",
+              protocol: "https",
+              host: "example.test",
+              path: "/synthetic-focus",
+              method: "GET",
+              contentType: "text/event-stream",
+              [parentView === "payload" ? "dataText" : "payloadPreview"]:
+                'event: synthetic\ndata: {"value":"FAKE_FOCUS_PAYLOAD"}\n\n',
+            })),
+          };
+        }
+        if (url.startsWith("/api/capture/coverage?")) return { coverage: null };
+        return getJson(url);
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      root.querySelector<HTMLButtonElement>('[data-tab="capture"]')!.click();
+      const parent = root.querySelector<HTMLInputElement>(
+        `input[name="capture-detail-view"][value="${parentView}"]`,
+      );
+      expect(parent).not.toBeNull();
+      parent!.checked = true;
+      parent!.dispatchEvent(new Event("change", { bubbles: true }));
+      const selector = `input[name="${name}"][value="${value}"]`;
+      const target = root.querySelector<HTMLInputElement>(selector);
+      expect(target).not.toBeNull();
+      target!.focus();
+      const prerequisites = {
+        enabled: !target!.disabled,
+        checked: target!.checked,
+        focused: document.activeElement === target,
+        inRoot: root.contains(target),
+      };
+      // These are component setup prerequisites, not assertions about browser arrow-key handling.
+      expect(prerequisites).toEqual({ enabled: true, checked: false, focused: true, inRoot: true });
+      target!.checked = true;
+      target!.dispatchEvent(new Event("change", { bubbles: true }));
+      const replacement = root.querySelector<HTMLInputElement>(selector);
+      const facts = {
+        oldConnected: target!.isConnected,
+        replaced: replacement != null && replacement !== target,
+        name: replacement?.name,
+        value: replacement?.value,
+        checked: replacement?.checked,
+        checkedCount: root.querySelectorAll(`input[name="${name}"]:checked`).length,
+        focusedReplacement: replacement != null && document.activeElement === replacement,
+      };
+      expect.soft(facts).toEqual({
+        oldConnected: false,
+        replaced: true,
+        name,
+        value,
+        checked: true,
+        checkedCount: 1,
+        focusedReplacement: true,
+      });
+    },
+  );
+
+  it.each([
     { name: "previous kind-filter target", navigation: "previous", exclusion: "kind", target: 0 },
     { name: "next kind-filter target", navigation: "next", exclusion: "kind", target: 2 },
     { name: "paired timeline-window target", navigation: "pair", exclusion: "window", target: 2 },
