@@ -1,4 +1,8 @@
-import { isCronSessionKey } from "./session-key-utils.js";
+import {
+  isCronSessionKey,
+  parseRawSessionConversationRef,
+  parseSessionDeliveryRoute,
+} from "./session-key-utils.js";
 
 export type SessionKind = "cron" | "direct" | "group" | "global" | "spawn-child" | "unknown";
 
@@ -19,11 +23,13 @@ export function classifySessionKind(
   if (entry?.spawnedBy) {
     return "spawn-child";
   }
+  if (entry?.chatType === "direct") {
+    return "direct";
+  }
   if (entry?.chatType === "group" || entry?.chatType === "channel") {
     return "group";
   }
-  if (key.includes(":group:") || key.includes(":channel:")) {
-    return "group";
-  }
-  return "direct";
+  const peerKind =
+    parseSessionDeliveryRoute(key)?.peerKind ?? parseRawSessionConversationRef(key)?.kind;
+  return peerKind === "group" || peerKind === "channel" ? "group" : "direct";
 }

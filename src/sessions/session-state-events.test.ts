@@ -11,6 +11,7 @@ import {
   peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "../infra/system-events.js";
+import { buildAgentPeerSessionKey } from "../routing/session-key.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -20,6 +21,7 @@ import {
   STATE_PERSISTENT_SCHEMA_COMPATIBILITY,
 } from "../state/openclaw-state-schema-compatibility.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { classifySessionKind } from "./classify-session-kind.js";
 import { recordSessionCreated } from "./session-created.js";
 import {
   acknowledgeSessionStateNotices,
@@ -662,6 +664,162 @@ describe("session state events", () => {
     });
     recordSessionStateEvent(eventInput({ sessionKey: group, watcherSessionKeys: [] }), database);
     expect(peekSystemEventEntries(watcher)).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      name: "direct group account with explicit direct metadata",
+      sessionKey: buildAgentPeerSessionKey({
+        agentId: "main",
+        channel: "telegram",
+        accountId: "group",
+        peerKind: "direct",
+        peerId: "123",
+        dmScope: "per-account-channel-peer",
+      }),
+      expectedKey: "agent:main:telegram:group:direct:123",
+      chatType: "direct" as const,
+      expectedGroup: false,
+    },
+    {
+      name: "direct channel account without chat metadata",
+      sessionKey: buildAgentPeerSessionKey({
+        agentId: "main",
+        channel: "telegram",
+        accountId: "channel",
+        peerKind: "direct",
+        peerId: "123",
+        dmScope: "per-account-channel-peer",
+      }),
+      expectedKey: "agent:main:telegram:channel:direct:123",
+      chatType: undefined,
+      expectedGroup: false,
+    },
+    {
+      name: "direct opaque peer containing a group token",
+      sessionKey: buildAgentPeerSessionKey({
+        agentId: "main",
+        channel: "telegram",
+        peerKind: "direct",
+        peerId: "opaque:group:peer",
+        dmScope: "per-channel-peer",
+      }),
+      expectedKey: "agent:main:telegram:direct:opaque:group:peer",
+      chatType: undefined,
+      expectedGroup: false,
+    },
+    {
+      name: "direct opaque peer containing a channel token",
+      sessionKey: buildAgentPeerSessionKey({
+        agentId: "main",
+        channel: "telegram",
+        peerKind: "direct",
+        peerId: "opaque:channel:peer",
+        dmScope: "per-channel-peer",
+      }),
+      expectedKey: "agent:main:telegram:direct:opaque:channel:peer",
+      chatType: undefined,
+      expectedGroup: false,
+    },
+    {
+      name: "actual channel peer without chat metadata",
+      sessionKey: buildAgentPeerSessionKey({
+        agentId: "main",
+        channel: "telegram",
+        peerKind: "channel",
+        peerId: "room-2",
+      }),
+      expectedKey: "agent:main:telegram:channel:room-2",
+      chatType: undefined,
+      expectedGroup: true,
+    },
+    {
+      name: "legacy raw group peer without chat metadata",
+      sessionKey: "telegram:group:legacy-room",
+      expectedKey: "telegram:group:legacy-room",
+      chatType: undefined,
+      expectedGroup: true,
+    },
+  ])(
+    "L09-F007 classifies $name before ambient registration",
+    async ({ sessionKey, expectedKey, chatType, expectedGroup }) => {
+      const database = createDatabaseOptions();
+      const entry = {
+        sessionId: "session-L09-F007",
+        updatedAt: 100,
+        ...(chatType ? { chatType } : {}),
+      };
+      const kind = classifySessionKind(sessionKey, entry);
+      const registered = registerMainSessionGroupWatch(
+        { sessionKey, agentId: "main", entry },
+        { ...database, now: 100 },
+      );
+      const event = await recordSessionHumanDirectMessage(
+        {
+          sessionKey,
+          entry,
+          agentId: "main",
+          actor: { actorType: "human", actorId: "owned-fixture-human" },
+          channel: "telegram",
+        },
+        { ...database, now: 200 },
+      );
+      const ambientTargets = [...listAmbientGroupWatchTargets(watcher, database)];
+      const cursors = openOpenClawStateDatabase(database)
+        .db.prepare(
+          "SELECT watcher_session_key, target_session_key, provenance FROM session_watch_cursors WHERE watcher_session_key = ?",
+        )
+        .all(watcher);
+      const events = listSessionStateEventsSince(sessionKey, "main", 0, 200, database).events;
+      const queuedNotices = peekSystemEventEntries(watcher);
+      const cursor = readCursor(database, watcher, sessionKey);
+
+      // Observe the actual durable registration and event path before a joint
+      // classifier oracle can stop the case at the first mistaken kind.
+      expect(sessionKey).toBe(expectedKey);
+      expect({
+        kind,
+        registered,
+        ambientTargets,
+        cursors,
+        returnedEventKind: event?.kind,
+        eventKinds: events.map((row) => row.kind),
+      }).toEqual({
+        kind: expectedGroup ? "group" : "direct",
+        registered: expectedGroup,
+        ambientTargets: expectedGroup ? [sessionKey] : [],
+        cursors: expectedGroup
+          ? [
+              {
+                watcher_session_key: watcher,
+                target_session_key: sessionKey,
+                provenance: "ambient-group",
+              },
+            ]
+          : [],
+        returnedEventKind: expectedGroup ? "human_direct_message" : undefined,
+        eventKinds: expectedGroup ? ["human_direct_message"] : [],
+      });
+      if (expectedGroup) {
+        expect(cursor?.material_sequence).toBe(event?.sequence);
+        expect(event?.sequence).toBeGreaterThan(0);
+      } else {
+        expect(cursor).toBeUndefined();
+        expect(queuedNotices).toEqual([]);
+      }
+    },
+  );
+
+  it("L09-F007 preserves cron and spawn precedence over direct metadata", () => {
+    expect(classifySessionKind("agent:main:cron:job:run:owned-run", { chatType: "direct" })).toBe(
+      "cron",
+    );
+    expect(
+      classifySessionKind("agent:main:telegram:group:room", {
+        chatType: "direct",
+        spawnedBy: watcher,
+      }),
+    ).toBe("spawn-child");
   });
 
   it("registers one ambient main watcher for a distinct group session", () => {
