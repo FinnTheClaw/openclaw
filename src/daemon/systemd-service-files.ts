@@ -22,7 +22,7 @@ import type {
   GatewayServiceReadOptions,
 } from "./service-types.js";
 import { createSystemdCommandQuery } from "./systemd-command-query.js";
-import { parseSystemdEnvironmentFileLine } from "./systemd-environment-file-parser.js";
+import { parseSystemdEnvironmentFile } from "./systemd-environment-file-parser.js";
 import { expandSystemdEnvironmentFilePattern } from "./systemd-environment-file-pattern.js";
 import type {
   SystemdCommandSnapshotParams,
@@ -668,11 +668,7 @@ export async function readSystemdEnvironmentFile(pathname: string): Promise<{
   const environment: Record<string, string> = {};
   const literalShellReferenceKeys = new Set<string>();
   const content = await fs.readFile(pathname, "utf8");
-  for (const rawLine of content.split(/\r?\n/)) {
-    const parsed = parseSystemdEnvironmentFileLine(rawLine);
-    if (!parsed) {
-      continue;
-    }
+  for (const parsed of parseSystemdEnvironmentFile(content)) {
     environment[parsed.key] = parsed.value;
     if (parsed.literalShellReference) {
       literalShellReferenceKeys.add(parsed.key);

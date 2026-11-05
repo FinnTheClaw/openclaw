@@ -104,7 +104,7 @@ vi.mock("./exec-file.js", () => {
 });
 
 import * as systemdExec from "./systemd-exec.js";
-import { resolveSystemdUnitPath } from "./systemd-service-files.js";
+import { readSystemdEnvironmentFile, resolveSystemdUnitPath } from "./systemd-service-files.js";
 import { buildSystemdUnit } from "./systemd-unit.js";
 import { hasSudoToRootSystemdUserManagerMismatch } from "./systemd-user-transport.js";
 import {
@@ -3269,6 +3269,64 @@ describe("stageSystemdService", () => {
       expect(unit).toContain("Environment=OPENCLAW_GATEWAY_TOKEN=fresh-gateway-token");
       expect(unit).not.toContain("Environment=OPENROUTER_API_KEY=or-operator-key");
       expect(unit).not.toContain("Environment=LLM_API_KEY=dotenv-key");
+    });
+  });
+
+  it.each([
+    {
+      name: "double-quoted multiline operator value",
+      rawValue: '"alpha\nbeta=tail"',
+      value: "alpha\nbeta=tail",
+      serializedValue: '"alpha\nbeta=tail"',
+    },
+    {
+      name: "single-quoted multiline operator value",
+      rawValue: "'alpha\nbeta=tail'",
+      value: "alpha\nbeta=tail",
+      serializedValue: '"alpha\nbeta=tail"',
+    },
+    {
+      name: "unquoted operator continuation",
+      rawValue: "alpha\\\nbeta",
+      value: "alphabeta",
+      serializedValue: "alphabeta",
+    },
+  ])("L09-F011 preserves $name during staging", async ({ rawValue, value, serializedValue }) => {
+    await withStageFixture(async ({ env, unitPath, envFilePath }) => {
+      await fs.writeFile(envFilePath, "OPERATOR_MULTILINE=" + rawValue + "\nAFTER=kept\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      const before = await readSystemdEnvironmentFile(envFilePath);
+      mockSystemctlStatusOk();
+
+      let staged: Awaited<ReturnType<typeof stageSystemdService>> | undefined;
+      let stageError: unknown;
+      try {
+        staged = await stageSystemdService(gatewayPortSystemdServiceFixture(env, "18789"));
+      } catch (error) {
+        stageError = error;
+      }
+      const rawAfter = await fs.readFile(envFilePath, "utf8");
+      const after = await readSystemdEnvironmentFile(envFilePath);
+
+      expect({
+        before: before.environment,
+        beforeLiteralKeys: [...before.literalShellReferenceKeys],
+        stageError: stageError === undefined ? null : String(stageError),
+        staged,
+        rawAfter,
+        after: after.environment,
+        afterLiteralKeys: [...after.literalShellReferenceKeys],
+      }).toEqual({
+        before: { OPERATOR_MULTILINE: value, AFTER: "kept" },
+        beforeLiteralKeys: [],
+        stageError: null,
+        staged: { unitPath },
+        rawAfter: "OPERATOR_MULTILINE=" + serializedValue + "\nAFTER=kept\n",
+        after: { OPERATOR_MULTILINE: value, AFTER: "kept" },
+        afterLiteralKeys: [],
+      });
     });
   });
 

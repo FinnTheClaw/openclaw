@@ -1,9 +1,13 @@
 /** Native systemd EnvironmentFile value decoding; no filesystem or service access. */
 import { isUnresolvedShellReference } from "../config/state-dir-dotenv.js";
 
-function decodeSystemdEnvironmentFileValue(rawValue: string): {
+function decodeSystemdEnvironmentFileValue(
+  rawValue: string,
+  start: number,
+): {
   value: string;
   literalDollar: boolean;
+  end: number;
 } {
   type ParseState =
     | "pre"
@@ -18,7 +22,14 @@ function decodeSystemdEnvironmentFileValue(rawValue: string): {
   let decoded = "";
   let literalDollar = false;
   let trailingWhitespaceStart: number | undefined;
-  for (const char of rawValue) {
+  let end = start;
+  for (; end < rawValue.length; end++) {
+    const char = rawValue[end];
+    // Only an unquoted, unescaped newline ends the logical assignment.
+    if (char === "\n" && (state === "pre" || state === "unquoted")) {
+      end++;
+      break;
+    }
     const whitespace = char === " " || char === "\t" || char === "\r";
     if (state === "pre") {
       if (whitespace) {
@@ -56,8 +67,10 @@ function decodeSystemdEnvironmentFileValue(rawValue: string): {
     }
     if (state === "unquoted-escape") {
       state = "unquoted";
-      literalDollar ||= char === "$";
-      decoded += char;
+      if (char !== "\n") {
+        literalDollar ||= char === "$";
+        decoded += char;
+      }
       continue;
     }
     if (state === "single-quoted") {
@@ -81,6 +94,9 @@ function decodeSystemdEnvironmentFileValue(rawValue: string): {
       continue;
     }
     state = "double-quoted";
+    if (char === "\n") {
+      continue;
+    }
     if (['"', "\\", "`", "$"].includes(char)) {
       literalDollar ||= char === "$";
       decoded += char;
@@ -91,28 +107,32 @@ function decodeSystemdEnvironmentFileValue(rawValue: string): {
   if (state === "unquoted" && trailingWhitespaceStart !== undefined) {
     decoded = decoded.slice(0, trailingWhitespaceStart);
   }
-  return { value: decoded, literalDollar };
+  return { value: decoded, literalDollar, end };
 }
 
-export function parseSystemdEnvironmentFileLine(
-  rawLine: string,
-): { key: string; value: string; literalShellReference: boolean } | null {
-  const trimmedStart = rawLine.trimStart();
-  if (!trimmedStart || trimmedStart.startsWith("#") || trimmedStart.startsWith(";")) {
-    return null;
+export function parseSystemdEnvironmentFile(
+  content: string,
+): Array<{ key: string; value: string; literalShellReference: boolean }> {
+  const assignments: Array<{ key: string; value: string; literalShellReference: boolean }> = [];
+  let offset = 0;
+  while (offset < content.length) {
+    const newline = content.indexOf("\n", offset);
+    const lineEnd = newline === -1 ? content.length : newline;
+    const rawLine = content.slice(offset, lineEnd);
+    const trimmedStart = rawLine.trimStart();
+    const eq = rawLine.indexOf("=");
+    const key = eq < 0 ? "" : rawLine.slice(0, eq).trim();
+    if (!trimmedStart || trimmedStart.startsWith("#") || trimmedStart.startsWith(";") || !key) {
+      offset = newline === -1 ? content.length : newline + 1;
+      continue;
+    }
+    const decoded = decodeSystemdEnvironmentFileValue(content, offset + eq + 1);
+    offset = decoded.end;
+    assignments.push({
+      key,
+      value: decoded.value,
+      literalShellReference: decoded.literalDollar && isUnresolvedShellReference(decoded.value),
+    });
   }
-  const eq = trimmedStart.indexOf("=");
-  if (eq <= 0) {
-    return null;
-  }
-  const key = trimmedStart.slice(0, eq).trim();
-  if (!key) {
-    return null;
-  }
-  const decoded = decodeSystemdEnvironmentFileValue(trimmedStart.slice(eq + 1));
-  return {
-    key,
-    value: decoded.value,
-    literalShellReference: decoded.literalDollar && isUnresolvedShellReference(decoded.value),
-  };
+  return assignments;
 }
