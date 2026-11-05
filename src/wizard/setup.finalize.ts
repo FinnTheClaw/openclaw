@@ -260,20 +260,6 @@ export async function ensureGatewayServiceForOnboarding(params: {
     );
   }
 
-  // Foreground setup must not enable lingering as a side effect of skipping the service.
-  if (process.platform === "linux" && systemdAvailable && opts.installDaemon !== false) {
-    const { ensureSystemdUserLingerInteractive } = await import("../commands/systemd-linger.js");
-    await ensureSystemdUserLingerInteractive({
-      runtime,
-      prompter: {
-        confirm: prompter.confirm,
-        note: prompter.note,
-      },
-      reason: t("wizard.finalize.systemdLingerReason"),
-      requireConfirm: false,
-    });
-  }
-
   const explicitInstallDaemon =
     typeof opts.installDaemon === "boolean" ? opts.installDaemon : undefined;
   let installDaemon: boolean;
@@ -306,6 +292,20 @@ export async function ensureGatewayServiceForOnboarding(params: {
       },
       containerWithoutUserSystemd,
     };
+  }
+
+  // Foreground setup must not enable lingering as a side effect of skipping the service.
+  if (process.platform === "linux" && systemdAvailable && opts.installDaemon !== false) {
+    const { ensureSystemdUserLingerInteractive } = await import("../commands/systemd-linger.js");
+    await ensureSystemdUserLingerInteractive({
+      runtime,
+      prompter: {
+        confirm: prompter.confirm,
+        note: prompter.note,
+      },
+      reason: t("wizard.finalize.systemdLingerReason"),
+      requireConfirm: false,
+    });
   }
 
   let gateway: GatewayServiceSetupOutcome = { status: "ready", action: "reused" };

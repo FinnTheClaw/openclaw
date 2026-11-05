@@ -110,7 +110,18 @@ const resolveSystemdUserServiceAccount = vi.hoisted(() =>
   vi.fn(() => "test-user" as string | null),
 );
 const readSystemdUserLingerStatus = vi.hoisted(() =>
-  vi.fn(async () => ({ user: "test-user", linger: "yes" as const })),
+  vi.fn<typeof import("../daemon/systemd.js").readSystemdUserLingerStatus>(async () => ({
+    user: "test-user",
+    linger: "yes",
+  })),
+);
+const enableSystemdUserLinger = vi.hoisted(() =>
+  vi.fn<typeof import("../daemon/systemd.js").enableSystemdUserLinger>(async () => ({
+    ok: true,
+    stdout: "",
+    stderr: "",
+    code: 0,
+  })),
 );
 const resolveSetupSecretInputString = vi.hoisted(() =>
   vi.fn<() => Promise<string | undefined>>(async () => undefined),
@@ -241,6 +252,7 @@ vi.mock("../daemon/systemd.js", () => ({
   isSystemdUserServiceAvailable,
   resolveSystemdUserServiceAccount,
   readSystemdUserLingerStatus,
+  enableSystemdUserLinger,
 }));
 
 vi.mock("../infra/container-environment.js", () => ({
@@ -422,6 +434,9 @@ describe("finalizeSetupWizard", () => {
     isSystemdUserServiceAvailable.mockReset().mockResolvedValue(true);
     resolveSystemdUserServiceAccount.mockReset().mockReturnValue("test-user");
     readSystemdUserLingerStatus.mockReset().mockResolvedValue({ user: "test-user", linger: "yes" });
+    enableSystemdUserLinger
+      .mockReset()
+      .mockResolvedValue({ ok: true, stdout: "", stderr: "", code: 0 });
     resolveSetupSecretInputString.mockReset().mockResolvedValue(undefined);
     resolveExistingKey.mockReset().mockReturnValue(undefined);
     hasExistingKey.mockReset().mockReturnValue(false);
@@ -445,6 +460,84 @@ describe("finalizeSetupWizard", () => {
     });
     resolveDefaultModelCatalogFacts.mockReset().mockReturnValue({});
     loadModelCatalog.mockReset().mockResolvedValue([]);
+  });
+
+  it.each([
+    { name: "decline has no lingering side effect", accepted: false },
+    { name: "acceptance precedes lingering and installation", accepted: true },
+  ])("L08-F024 $name", async ({ accepted }) => {
+    await withPlatform("linux", async () => {
+      await withEnvAsync({ OPENCLAW_SUPERVISOR_MODE: undefined }, async () => {
+        readSystemdUserLingerStatus.mockResolvedValue({ user: "test-user", linger: "no" });
+        const prompter = createLaterPrompter();
+        vi.mocked(prompter.confirm).mockResolvedValue(accepted);
+        const result = await ensureGatewayServiceForOnboarding(
+          createServiceSetupArgs({
+            flow: "advanced",
+            opts: { installDaemon: undefined, daemonRuntime: "node" },
+            prompter,
+          }),
+        );
+        const observations = {
+          result,
+          confirmCount: vi.mocked(prompter.confirm).mock.calls.length,
+          readArgs: readSystemdUserLingerStatus.mock.calls.map(([params]) => ({
+            user: params?.user,
+            envIsProcessEnv: params?.env === process.env,
+          })),
+          enableArgs: enableSystemdUserLinger.mock.calls.map(([params]) => ({
+            user: params.user,
+            envIsProcessEnv: params.env === process.env,
+            sudoMode: params.sudoMode,
+          })),
+          installCount: gatewayServiceInstall.mock.calls.length,
+          restartCount: gatewayServiceRestart.mock.calls.length,
+          uninstallCount: gatewayServiceUninstall.mock.calls.length,
+          startCount: startGatewayService.mock.calls.length,
+          serviceReadCount: gatewayServiceIsLoaded.mock.calls.length,
+          planCount: buildGatewayInstallPlan.mock.calls.length,
+          selectCount: vi.mocked(prompter.select).mock.calls.length,
+        };
+        const operationOrder = [
+          { name: "confirm", order: vi.mocked(prompter.confirm).mock.invocationCallOrder[0] },
+          { name: "read", order: readSystemdUserLingerStatus.mock.invocationCallOrder[0] },
+          { name: "enable", order: enableSystemdUserLinger.mock.invocationCallOrder[0] },
+          { name: "install", order: gatewayServiceInstall.mock.invocationCallOrder[0] },
+        ]
+          .filter((entry) => entry.order !== undefined)
+          .toSorted((left, right) => (left.order ?? 0) - (right.order ?? 0))
+          .map((entry) => entry.name);
+
+        // Capture the actual returned decision and every relevant effect before
+        // the joint oracle; the native linger/service exports are fully mocked.
+        expect(observations).toEqual({
+          result: {
+            gateway: accepted
+              ? { status: "ready", action: "installed" }
+              : { status: "skipped", reason: "explicit" },
+            containerWithoutUserSystemd: false,
+          },
+          confirmCount: 1,
+          readArgs: accepted ? [{ user: "test-user", envIsProcessEnv: true }] : [],
+          enableArgs: accepted
+            ? [{ user: "test-user", envIsProcessEnv: true, sudoMode: undefined }]
+            : [],
+          installCount: accepted ? 1 : 0,
+          restartCount: 0,
+          uninstallCount: 0,
+          startCount: 0,
+          serviceReadCount: accepted ? 1 : 0,
+          planCount: accepted ? 1 : 0,
+          selectCount: 0,
+        });
+        expect(operationOrder).toEqual(
+          accepted ? ["confirm", "read", "enable", "install"] : ["confirm"],
+        );
+        expect(prompter.confirm).toHaveBeenCalledWith(
+          expect.objectContaining({ initialValue: true }),
+        );
+      });
+    });
   });
 
   it("resolves gateway password SecretRef for probe but omits auth from TUI hatch", async () => {
