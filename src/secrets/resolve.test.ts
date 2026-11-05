@@ -251,6 +251,108 @@ describe("secret ref resolver", () => {
     expect(isMissingSecretRefResolutionError({ ref, error })).toBe(false);
   });
 
+  it.skipIf(isWindows).each([
+    { name: "HOME JSON", home: "HOME", mode: "json", missing: false, absolute: false },
+    {
+      name: "OPENCLAW_HOME JSON",
+      home: "OPENCLAW_HOME",
+      mode: "json",
+      missing: false,
+      absolute: false,
+    },
+    {
+      name: "HOME singleValue",
+      home: "HOME",
+      mode: "singleValue",
+      missing: false,
+      absolute: false,
+    },
+    {
+      name: "OPENCLAW_HOME singleValue",
+      home: "OPENCLAW_HOME",
+      mode: "singleValue",
+      missing: false,
+      absolute: false,
+    },
+    { name: "selected absence", home: "HOME", mode: "json", missing: true, absolute: false },
+    { name: "absolute control", home: "HOME", mode: "json", missing: false, absolute: true },
+  ] as const)("selected file environment: %j", async ({ home, mode, missing, absolute }) => {
+    const root = await createCaseDir("selected-file-env");
+    const ambientHome = path.join(root, "ambient");
+    const selectedHome = path.join(root, "selected");
+    const decoyHome = path.join(root, "decoy");
+    for (const dir of [ambientHome, selectedHome, decoyHome]) {
+      await fs.mkdir(dir, { mode: 0o700 });
+    }
+    const filename = mode === "json" ? "synthetic-values.json" : "synthetic-value.txt";
+    const ambientPath = path.join(ambientHome, filename);
+    const selectedPath = path.join(selectedHome, filename);
+    const decoyPath = path.join(decoyHome, filename);
+    const ambientText = mode === "json" ? '{"value":"synthetic-ambient"}' : "synthetic-ambient\n";
+    const selectedText =
+      mode === "json" ? '{"value":"synthetic-selected"}' : "synthetic-selected\n";
+    const decoyText = mode === "json" ? '{"value":"synthetic-decoy"}' : "synthetic-decoy\n";
+    await writeSecureFile(ambientPath, ambientText);
+    await writeSecureFile(decoyPath, decoyText);
+    if (!missing) {
+      await writeSecureFile(selectedPath, selectedText);
+    }
+    const env: NodeJS.ProcessEnv = {
+      HOME: home === "HOME" ? selectedHome : decoyHome,
+      OPENCLAW_HOME: home === "OPENCLAW_HOME" ? selectedHome : undefined,
+    };
+    const config: OpenClawConfig = {
+      secrets: {
+        providers: {
+          filemain: createFileProviderConfig(absolute ? ambientPath : "~/" + filename, { mode }),
+        },
+      },
+    };
+    const ref = {
+      source: "file" as const,
+      provider: "filemain",
+      id: mode === "json" ? "/value" : "value",
+    };
+    const before = structuredClone({ config, env, ref });
+    vi.stubEnv("HOME", ambientHome);
+    vi.stubEnv("OPENCLAW_HOME", ambientHome);
+    try {
+      let failure: unknown;
+      const resolved = await resolveSecretRefValues([ref], { config, env }).catch(
+        (error: unknown) => {
+          failure = error;
+          return undefined;
+        },
+      );
+      expect({ config, env, ref }).toEqual(before);
+      expect(await fs.readFile(ambientPath, "utf8")).toBe(ambientText);
+      expect(await fs.readFile(decoyPath, "utf8")).toBe(decoyText);
+      expect(fsSync.existsSync(selectedPath)).toBe(!missing);
+      if (!missing) {
+        expect(await fs.readFile(selectedPath, "utf8")).toBe(selectedText);
+      }
+      if (missing) {
+        expect(isProviderScopedSecretResolutionError(failure)).toBe(true);
+        expect(failure).toMatchObject({
+          code: "SECRET_PROVIDER_UNAVAILABLE",
+          source: "file",
+          provider: "filemain",
+        });
+        expect(describeSecretResolutionError(failure)).toBe("secret provider failed");
+        expect(resolved).toBeUndefined();
+        expect(String(failure)).not.toContain("synthetic-ambient");
+      } else {
+        expect(failure).toBeUndefined();
+        expect(resolved?.size).toBe(1);
+        expect([...resolved!.values()]).toEqual([
+          absolute ? "synthetic-ambient" : "synthetic-selected",
+        ]);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   itPosix(
     "recovers file refs after replacing a hardlinked credential with a private file",
     async () => {

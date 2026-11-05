@@ -168,12 +168,13 @@ function resolveConfiguredProvider(params: {
 async function readFileProviderPayload(params: {
   providerName: string;
   providerConfig: FileSecretProviderConfig;
+  env: NodeJS.ProcessEnv;
   cache?: SecretRefResolveCache;
 }): Promise<unknown> {
   const cacheKey = params.providerName;
   const cache = params.cache;
   const read = async () => {
-    const filePath = resolveUserPath(params.providerConfig.path);
+    const filePath = resolveUserPath(params.providerConfig.path, params.env);
     const timeoutMs = normalizePositiveTimerMs(
       params.providerConfig.timeoutMs,
       DEFAULT_FILE_TIMEOUT_MS,
@@ -261,11 +262,13 @@ async function resolveFileRefs(params: {
   providerName: string;
   onRefError: SecretRefErrorHandler;
   providerConfig: FileSecretProviderConfig;
+  env: NodeJS.ProcessEnv;
   cache?: SecretRefResolveCache;
 }): Promise<ProviderResolutionOutput> {
   const payload = await readFileProviderPayload({
     providerName: params.providerName,
     providerConfig: params.providerConfig,
+    env: params.env,
     cache: params.cache,
   });
   const mode = params.providerConfig.mode ?? "json";
@@ -531,6 +534,7 @@ async function resolveProviderRefs(params: {
         providerName: params.providerName,
         onRefError: params.onRefError,
         providerConfig: params.providerConfig,
+        env: params.options.env ?? process.env,
         cache: params.options.cache,
       });
     }
