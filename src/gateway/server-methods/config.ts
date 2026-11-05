@@ -84,6 +84,7 @@ import {
   resolveOpenPathCommand,
   sanitizePathForLog,
 } from "./open-path.js";
+import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import type { GatewayRequestContext, GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -954,10 +955,13 @@ export const configHandlers: GatewayRequestHandlers = {
     }
     respond(true, result, undefined);
   },
-  "config.set": async ({ params, respond, context }) => {
+  "config.set": async (options) => {
+    const { params, respond, context } = options;
     if (!assertValidParams(params, validateConfigSetParams, "config.set", respond)) {
       return;
     }
+    const assertRequesterCurrent = readGatewayRequestMutationAuthority(options).assertCurrent;
+    assertRequesterCurrent();
     const writeSnapshot = await readConfigWriteSnapshotOrRespond(
       params,
       respond,
@@ -994,7 +998,13 @@ export const configHandlers: GatewayRequestHandlers = {
     }
     const writeResult = await commitGatewayConfigWriteOrRespond({
       snapshot,
-      writeOptions,
+      writeOptions: {
+        ...writeOptions,
+        assertCurrent: () => {
+          assertRequesterCurrent();
+          writeOptions.assertCurrent?.();
+        },
+      },
       nextConfig: parsed.writeConfig,
       context,
       respond,

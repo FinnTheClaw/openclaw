@@ -2,8 +2,12 @@
  * Tests shared gateway auth behavior across config method updates.
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { getRuntimeConfigWriteApplication } from "../../config/runtime-write-application.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
@@ -101,7 +105,11 @@ vi.mock("../../infra/restart-sentinel.js", async () => {
   };
 });
 
+const { bindGatewayRequestHandlerMutationAuthority, readGatewayRequestMutationAuthority } =
+  await import("./session-mutation-guards.js");
+
 const { configHandlers } = await import("./config.js");
+const authorityTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 const GATEWAY_CONFIG_WRITE_OPTIONS = {
   auditOrigin: "config-rpc",
@@ -216,6 +224,134 @@ beforeEach(() => {
 });
 
 describe("config shared auth disconnects", () => {
+  it.each([false, true])(
+    "config.set retained publication authority: invalidate=%s",
+    async (invalidate) => {
+      const previousConfig: OpenClawConfig = { gateway: { port: 19000 } };
+      const submittedConfig: OpenClawConfig = { gateway: { port: 19001 } };
+      const originalBytes = Buffer.from(JSON.stringify(previousConfig) + "\n");
+      const requestedBytes = Buffer.from(JSON.stringify(submittedConfig) + "\n");
+      const filePath = path.join(
+        authorityTempDirs.make("config-authority-publication-"),
+        "owned-publication-mirror.json",
+      );
+      fs.writeFileSync(filePath, originalBytes);
+      const secretEntered = createDeferred();
+      const releaseSecrets = createDeferred();
+      const oldPrepare = prepareSecretsRuntimeSnapshotMock.getMockImplementation();
+      const oldWrite = writeConfigFileMock.getMockImplementation();
+      const oldRead = readConfigFileSnapshotForWriteMock.getMockImplementation();
+      const sourceGuard = vi.fn();
+      const revokedError = new Error("fixture retained config authority invalidated");
+      let authorityCurrent = true;
+      let publications = 0;
+      let publicationBoundaryCalls = 0;
+      let save: Promise<{ error: unknown }> | undefined;
+      const harness = createConfigHandlerHarness({
+        method: "config.set",
+        params: { raw: JSON.stringify(submittedConfig), baseHash: "base-hash" },
+        overrides: {
+          sessionMutationCommitGuard: () => {
+            if (!authorityCurrent) {
+              throw revokedError;
+            }
+          },
+        },
+        contextOverrides: { getRuntimeConfig: () => previousConfig },
+      });
+      const bound = bindGatewayRequestHandlerMutationAuthority(
+        harness.options,
+        harness.options,
+        undefined,
+      );
+      try {
+        readGatewayRequestMutationAuthority(bound).assertCurrent();
+        readConfigFileSnapshotForWriteMock.mockImplementation(async () => ({
+          ...createConfigWriteSnapshot(previousConfig),
+          writeOptions: { assertCurrent: sourceGuard },
+        }));
+        prepareSecretsRuntimeSnapshotMock.mockImplementation(
+          async ({ config }: { config: OpenClawConfig }) => {
+            secretEntered.resolve();
+            await releaseSecrets.promise;
+            return { config };
+          },
+        );
+        writeConfigFileMock.mockImplementation(
+          async (config: OpenClawConfig, options?: { assertCurrent?: () => void }) => {
+            publicationBoundaryCalls++;
+            options?.assertCurrent?.();
+            fs.writeFileSync(filePath, JSON.stringify(config) + "\n");
+            publications++;
+          },
+        );
+        save = Promise.resolve(
+          expectDefined(configHandlers["config.set"], "config.set handler")(bound),
+        ).then(
+          () => ({ error: undefined }),
+          (error: unknown) => ({ error }),
+        );
+        await Promise.race([
+          secretEntered.promise,
+          save.then((result) => {
+            throw result.error ?? new Error("config.set completed before secret preparation");
+          }),
+        ]);
+        authorityCurrent = !invalidate;
+        releaseSecrets.resolve();
+        const outcome = await save;
+        await flushConfigHandlerMicrotasks();
+        const observed = {
+          bytes: fs.readFileSync(filePath),
+          publications,
+          responses: harness.respond.mock.calls.slice(),
+          error: outcome.error,
+          sourceGuardCalls: sourceGuard.mock.calls.length,
+          publicationBoundaryCalls,
+          restarts: scheduleGatewayRestartMock.mock.calls.length,
+          disconnects: harness.disconnectClientsUsingSharedGatewayAuth.mock.calls.length,
+          previousConfig: structuredClone(previousConfig),
+          submittedConfig: structuredClone(submittedConfig),
+        };
+        expect(observed.bytes).toEqual(invalidate ? originalBytes : requestedBytes);
+        expect(observed.publications).toBe(invalidate ? 0 : 1);
+        expect(observed.error).toBe(invalidate ? revokedError : undefined);
+        expect(observed.responses).toEqual(
+          invalidate
+            ? []
+            : [
+                [
+                  true,
+                  {
+                    ok: true,
+                    path: "/tmp/openclaw.json",
+                    hash: "next-hash",
+                    config: submittedConfig,
+                  },
+                  undefined,
+                ],
+              ],
+        );
+        if (!invalidate) {
+          expect(observed.sourceGuardCalls).toBe(1);
+          expect(observed.publicationBoundaryCalls).toBe(1);
+        }
+        expect(observed.restarts).toBe(0);
+        expect(observed.disconnects).toBe(0);
+        expect(observed.previousConfig).toEqual({ gateway: { port: 19000 } });
+        expect(observed.submittedConfig).toEqual({ gateway: { port: 19001 } });
+      } finally {
+        releaseSecrets.resolve();
+        await save;
+        prepareSecretsRuntimeSnapshotMock.mockImplementation(
+          oldPrepare ?? (async ({ config }: { config: OpenClawConfig }) => ({ config })),
+        );
+        writeConfigFileMock.mockImplementation(oldWrite ?? (() => undefined));
+        readConfigFileSnapshotForWriteMock.mockImplementation(oldRead ?? (() => undefined));
+      }
+    },
+  );
+
   it.each([
     { method: "config.patch", claimed: true },
     { method: "config.apply", claimed: true },
@@ -293,7 +429,10 @@ describe("config shared auth disconnects", () => {
     )(options);
     await flushConfigHandlerMicrotasks();
 
-    expect(writeConfigFileMock).toHaveBeenCalledWith(submittedConfig, GATEWAY_CONFIG_WRITE_OPTIONS);
+    expect(writeConfigFileMock).toHaveBeenCalledWith(submittedConfig, {
+      ...GATEWAY_CONFIG_WRITE_OPTIONS,
+      assertCurrent: expect.any(Function),
+    });
     expect(respond).toHaveBeenCalledWith(
       true,
       {
@@ -463,7 +602,10 @@ describe("config shared auth disconnects", () => {
     )(options);
     await flushConfigHandlerMicrotasks();
 
-    expect(writeConfigFileMock).toHaveBeenCalledWith(nextConfig, GATEWAY_CONFIG_WRITE_OPTIONS);
+    expect(writeConfigFileMock).toHaveBeenCalledWith(nextConfig, {
+      ...GATEWAY_CONFIG_WRITE_OPTIONS,
+      assertCurrent: expect.any(Function),
+    });
     expect(disconnectClientsUsingSharedGatewayAuth).not.toHaveBeenCalled();
     expectNoDirectRestart();
   });
