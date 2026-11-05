@@ -837,6 +837,7 @@ export function createTsdownOutputScanner(params: { maxCaptureBytes?: number } =
 
   function scanLines(text: string) {
     const combined = pendingLine + text;
+    hasIneffectiveDynamicImport ||= combined.includes(INEFFECTIVE_DYNAMIC_IMPORT_MARKER);
     const lines = combined.split(/\r?\n/u);
     pendingLine = lines.pop() ?? "";
     for (const line of lines) {
@@ -847,9 +848,6 @@ export function createTsdownOutputScanner(params: { maxCaptureBytes?: number } =
   return {
     append(chunk: unknown) {
       const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-      if (text.includes(INEFFECTIVE_DYNAMIC_IMPORT_MARKER)) {
-        hasIneffectiveDynamicImport = true;
-      }
       scanLines(text);
       captured += text;
       if (captured.length > maxCaptureBytes) {

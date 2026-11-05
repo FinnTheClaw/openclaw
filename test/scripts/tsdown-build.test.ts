@@ -2212,6 +2212,47 @@ describe("resolveTsdownBuildInvocation", () => {
 });
 
 describe("createTsdownOutputScanner", () => {
+  it.each([
+    { name: "newline", ending: "\n" },
+    { name: "EOF", ending: "" },
+  ])("L12-F019 recognizes every marker split before $name", ({ ending }) => {
+    const marker = "[INEFFECTIVE_DYNAMIC_IMPORT]";
+    const output = `${marker} synthetic.ts${ending}`;
+    const observations = Array.from({ length: marker.length - 1 }, (_, offset) => {
+      const split = offset + 1;
+      const scanner = createTsdownOutputScanner({ maxCaptureBytes: 7 });
+      scanner.append(Buffer.from(output.slice(0, split)));
+      scanner.append(Buffer.from(output.slice(split)));
+      return { split, result: scanner.finish() };
+    });
+
+    expect(observations).toEqual(
+      Array.from({ length: marker.length - 1 }, (_, offset) => ({
+        split: offset + 1,
+        result: {
+          captured: output.slice(-7),
+          hasIneffectiveDynamicImport: true,
+          fatalUnresolvedImport: null,
+        },
+      })),
+    );
+  });
+
+  it("L12-F019 does not recognize an incomplete split marker", () => {
+    const marker = "[INEFFECTIVE_DYNAMIC_IMPORT]";
+    const incomplete = marker.slice(0, -1);
+    const scanner = createTsdownOutputScanner({ maxCaptureBytes: 7 });
+    scanner.append(Buffer.from(incomplete.slice(0, 12)));
+    scanner.append(Buffer.from(incomplete.slice(12)));
+    const result = scanner.finish();
+
+    expect(result).toEqual({
+      captured: incomplete.slice(-7),
+      hasIneffectiveDynamicImport: false,
+      fatalUnresolvedImport: null,
+    });
+  });
+
   it("tracks fatal build diagnostics while bounding captured output", () => {
     const scanner = createTsdownOutputScanner({ maxCaptureBytes: 20 });
 
