@@ -121,6 +121,11 @@ class SettingsSaveIndicator extends LitElement {
       modifier = " settings-save-indicator--danger";
       content = html` <span>${t("configView.autoSaveConflict")}</span>
         ${renderAction(t("common.reload"), props.onReload)}`;
+    } else if (props.status === "saved" && props.lastError?.trim()) {
+      title = props.lastError.trim();
+      content = html`<span>${t("configView.autoSaveSaved")}</span>
+        <span>${props.lastError}</span>
+        ${renderAction(t("common.reload"), props.onReload)}`;
     } else if (this.savedVisible) {
       modifier = " settings-save-indicator--saved";
       content = html` ${this.renderClaw("settings-save-indicator__claw--saved")}

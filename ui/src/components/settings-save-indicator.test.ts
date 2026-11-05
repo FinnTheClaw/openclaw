@@ -1,7 +1,12 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { GatewayBrowserClient } from "../api/gateway.ts";
 import { i18n } from "../i18n/index.ts";
+import {
+  createConfigCapabilityHarness,
+  createConfigServerMock,
+} from "../lib/config/config-test-harness.ts";
 import type { SettingsSaveIndicatorProps } from "./settings-save-indicator.ts";
 import "./settings-save-indicator.ts";
 
@@ -67,6 +72,126 @@ describe("settings save indicator", () => {
     expect(
       indicator.querySelector(".settings-save-indicator__claw")?.getAttribute("aria-hidden"),
     ).toBe("true");
+  });
+
+  it("L02-006-F01 keeps a failed post-save refresh visible and recovers with a read only", async () => {
+    vi.useFakeTimers();
+    const server = createConfigServerMock();
+    const refreshError = "Configuration refresh unavailable";
+    let failReads = false;
+    const request = vi.fn(async (method: string, params?: unknown) => {
+      if (method === "config.get" && failReads) {
+        throw new Error(refreshError);
+      }
+      return server.request(method, params);
+    });
+    const { runtimeConfig } = createConfigCapabilityHarness(
+      request as GatewayBrowserClient["request"],
+    );
+    let reloadWork: Promise<void> | undefined;
+    const onReload = vi.fn(() => {
+      reloadWork = runtimeConfig.refresh();
+    });
+    const onRetry = vi.fn();
+    const raw = '{\n  "count": 2\n}\n';
+
+    try {
+      await runtimeConfig.ensureLoaded();
+      failReads = true;
+      runtimeConfig.setRaw(raw);
+      const saved = await runtimeConfig.save();
+      await update(
+        props({
+          status: runtimeConfig.state.configAutoSaveStatus,
+          lastError: runtimeConfig.state.lastError,
+          needsApply: runtimeConfig.state.configNeedsApply,
+          applying: runtimeConfig.state.configApplying,
+          onReload,
+          onRetry,
+        }),
+      );
+      const failedRefresh = {
+        saved,
+        hash: runtimeConfig.state.configSnapshot?.hash,
+        config: structuredClone(runtimeConfig.state.configSnapshot?.config),
+        raw: runtimeConfig.state.configRaw,
+        dirty: runtimeConfig.state.configFormDirty,
+        needsApply: runtimeConfig.state.configNeedsApply,
+        status: runtimeConfig.state.configAutoSaveStatus,
+        error: runtimeConfig.state.lastError,
+        submissions: server.submissions.map((submission) => ({ ...submission })),
+        requestMethods: request.mock.calls.map(([method]) => method),
+        warningVisible:
+          indicator.querySelector('[role="status"]')?.textContent?.includes(refreshError) ?? false,
+        savedVisible: indicator.textContent?.includes("Saved") ?? false,
+        falseSaveFailure: indicator.textContent?.includes("Save failed") ?? false,
+        reloadAvailable: button("Reload") !== undefined,
+        writeRetryAvailable: button("Retry") !== undefined,
+      };
+
+      failReads = false;
+      button("Reload")?.click();
+      await reloadWork;
+      await update(
+        props({
+          status: runtimeConfig.state.configAutoSaveStatus,
+          lastError: runtimeConfig.state.lastError,
+          needsApply: runtimeConfig.state.configNeedsApply,
+          applying: runtimeConfig.state.configApplying,
+          onReload,
+          onRetry,
+        }),
+      );
+      const recovered = {
+        hash: runtimeConfig.state.configSnapshot?.hash,
+        config: structuredClone(runtimeConfig.state.configSnapshot?.config),
+        raw: runtimeConfig.state.configRaw,
+        dirty: runtimeConfig.state.configFormDirty,
+        needsApply: runtimeConfig.state.configNeedsApply,
+        error: runtimeConfig.state.lastError,
+        submissions: server.submissions.map((submission) => ({ ...submission })),
+        requestMethods: request.mock.calls.map(([method]) => method),
+        reloadCalls: onReload.mock.calls.length,
+        retryCalls: onRetry.mock.calls.length,
+        warningVisible: indicator.textContent?.includes(refreshError) ?? false,
+      };
+
+      expect({ failedRefresh, recovered }).toEqual({
+        failedRefresh: {
+          saved: true,
+          hash: "hash-2",
+          config: { count: 2 },
+          raw,
+          dirty: false,
+          needsApply: true,
+          status: "saved",
+          error: refreshError,
+          submissions: [{ method: "config.set", raw, baseHash: "hash-1" }],
+          requestMethods: ["config.get", "config.set", "config.get"],
+          warningVisible: true,
+          savedVisible: true,
+          falseSaveFailure: false,
+          reloadAvailable: true,
+          writeRetryAvailable: false,
+        },
+        recovered: {
+          hash: "hash-2",
+          config: { count: 2 },
+          raw,
+          dirty: false,
+          needsApply: true,
+          error: null,
+          submissions: [{ method: "config.set", raw, baseHash: "hash-1" }],
+          requestMethods: ["config.get", "config.set", "config.get", "config.get"],
+          reloadCalls: 1,
+          retryCalls: 0,
+          warningVisible: false,
+        },
+      });
+    } finally {
+      await Promise.allSettled(reloadWork ? [reloadWork] : []);
+      runtimeConfig.dispose();
+    }
   });
 
   it("shows saved for two seconds after saving, then returns to apply", async () => {
