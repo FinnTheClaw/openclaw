@@ -446,7 +446,7 @@ export function deletePluginSessionSchedulerJob(params: {
   }
 }
 
-function getPluginSessionSchedulerJobGeneration(params: {
+export function getPluginSessionSchedulerJobGeneration(params: {
   pluginId: string;
   jobId: string;
   sessionKey?: string;
