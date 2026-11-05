@@ -24,6 +24,130 @@ function expectTranscriptWaiter(
 }
 
 describe("CallManager closed-loop turns", () => {
+  it.each(["early-final", "wrong-nonce", "setup-failure", "call-ended", "shutdown"] as const)(
+    "pending listening continuation: %s",
+    async (phase) => {
+      const { manager, provider } = await createManagerHarness(
+        { transcriptTimeoutMs: 5000 },
+        new FakeProvider("twilio"),
+      );
+      const started = await manager.initiateCall("+15550000006");
+      expect(started.success).toBe(true);
+      await markCallAnswered(manager, started.callId, `evt-${phase}-answered`);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const startListening = provider.startListening.bind(provider);
+      const listening = vi.spyOn(provider, "startListening").mockImplementation(async (input) => {
+        await startListening(input);
+        entered.resolve();
+        await release.promise;
+        if (phase === "setup-failure") {
+          throw new Error("synthetic listening setup failed");
+        }
+      });
+      const transient = manager as unknown as {
+        transcriptWaiters: Map<string, unknown>;
+        activeTurnCalls: Set<string>;
+      };
+      const turn = manager.continueCall(started.callId, "Pending question");
+      let retirement: Promise<unknown> | undefined;
+      let stopping: Promise<void> | undefined;
+      const endedEvent = {
+        id: `evt-${phase}-ended`,
+        type: "call.ended" as const,
+        callId: started.callId,
+        providerCallId: "request-uuid",
+        timestamp: Date.now(),
+        reason: "hangup-user" as const,
+      };
+      try {
+        await entered.promise;
+        const turnToken = requireTurnToken(provider);
+        if (phase === "early-final" || phase === "wrong-nonce") {
+          if (phase === "wrong-nonce") {
+            await expect(
+              manager.processEvent({
+                id: "evt-pending-wrong-nonce",
+                type: "call.speech",
+                callId: started.callId,
+                providerCallId: "request-uuid",
+                timestamp: Date.now(),
+                transcript: "stale answer",
+                isFinal: true,
+                turnToken: "wrong-token",
+              }),
+            ).resolves.toEqual({ kind: "ignored" });
+          }
+          const speech = {
+            id: `evt-${phase}-speech`,
+            type: "call.speech" as const,
+            callId: started.callId,
+            providerCallId: "request-uuid",
+            timestamp: Date.now(),
+            transcript: "first exact answer",
+            isFinal: true,
+            turnToken,
+          };
+          await expect(manager.processEvent(speech)).resolves.toMatchObject({
+            kind: "final-speech",
+            transcript: "first exact answer",
+            waiterResolved: true,
+          });
+          await expect(manager.processEvent(speech)).resolves.toEqual({ kind: "ignored" });
+          release.resolve();
+          await expect(turn).resolves.toEqual({ success: true, transcript: "first exact answer" });
+          const call = expectDefined(manager.getCall(started.callId), "continued fixture call");
+          expect(call.transcript.map((entry) => entry.text)).toEqual([
+            "Pending question",
+            "first exact answer",
+          ]);
+          expect(provider.stopListeningCalls).toHaveLength(1);
+        } else if (phase === "setup-failure") {
+          release.resolve();
+          await expect(turn).resolves.toEqual({
+            success: false,
+            error: "synthetic listening setup failed",
+          });
+          expect(provider.stopListeningCalls).toHaveLength(0);
+        } else if (phase === "call-ended") {
+          await manager.processEvent(endedEvent);
+          release.resolve();
+          await expect(turn).resolves.toEqual({ success: false, error: "Call has ended" });
+          expect(provider.stopListeningCalls).toHaveLength(0);
+        } else {
+          // Admit fixture retirement before stop closes public event admission.
+          // Its queued work runs after stop synchronously rejects pending waiters.
+          retirement = manager.processEvent(endedEvent);
+          stopping = manager.stop();
+          void stopping.catch(() => {});
+          await retirement;
+          release.resolve();
+          await expect(turn).resolves.toEqual({
+            success: false,
+            error: "Voice Call manager is stopping",
+          });
+          await stopping;
+          expect(provider.stopListeningCalls).toHaveLength(0);
+        }
+        expect(provider.startListeningCalls).toHaveLength(1);
+        expect(transient.transcriptWaiters.has(started.callId)).toBe(false);
+        expect(transient.activeTurnCalls.has(started.callId)).toBe(false);
+      } finally {
+        try {
+          if (!stopping && manager.getCall(started.callId)) {
+            await manager.processEvent(endedEvent);
+          }
+        } finally {
+          release.resolve();
+          await Promise.allSettled(
+            [turn, retirement, stopping].filter((work) => work !== undefined),
+          );
+          listening.mockRestore();
+        }
+      }
+    },
+  );
+
   it("rejects overlapping continueCall requests for the same call", async () => {
     const { manager, provider } = await createManagerHarness({
       transcriptTimeoutMs: 5000,

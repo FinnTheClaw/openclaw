@@ -530,6 +530,7 @@ export async function continueCall(
 
   const turnStartedAt = Date.now();
   const turnToken = provider.name === "twilio" ? crypto.randomUUID() : undefined;
+  let ownedTranscriptWaiter: ReturnType<ConversationContext["transcriptWaiters"]["get"]>;
 
   try {
     const speakResult = await speak(ctx, callId, prompt);
@@ -548,6 +549,14 @@ export async function continueCall(
       throw new Error("Voice Call manager is stopping");
     }
     const listenStartedAt = Date.now();
+    if (ctx.transcriptWaiters.has(callId)) {
+      throw new Error("Already waiting for transcript");
+    }
+    // Register before carrier setup; its duration now counts toward transcript timeout.
+    const transcriptPromise = waitForFinalTranscript(ctx, callId, turnToken);
+    ownedTranscriptWaiter = ctx.transcriptWaiters.get(callId);
+    // End, shutdown, or timeout can reject while the carrier request is still pending.
+    void transcriptPromise.catch(() => {});
     await provider.startListening({
       callId,
       providerCallId: call.providerCallId ?? providerCallId,
@@ -560,7 +569,7 @@ export async function continueCall(
       return { success: false, error: "Call has ended" };
     }
 
-    const transcript = await waitForFinalTranscript(ctx, callId, turnToken);
+    const transcript = await transcriptPromise;
     const transcriptReceivedAt = Date.now();
 
     // Best-effort: stop listening after final transcript.
@@ -598,7 +607,10 @@ export async function continueCall(
     return { success: false, error: formatErrorMessage(err) };
   } finally {
     ctx.activeTurnCalls.delete(callId);
-    clearTranscriptWaiter(ctx, callId);
+    if (ownedTranscriptWaiter && ctx.transcriptWaiters.get(callId) === ownedTranscriptWaiter) {
+      clearTranscriptWaiter(ctx, callId);
+      ownedTranscriptWaiter.reject(new Error("Call continuation ended before final transcript"));
+    }
   }
 }
 
