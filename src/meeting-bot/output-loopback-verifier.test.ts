@@ -258,6 +258,80 @@ describe("meeting output loopback verifier", () => {
     expect(verifier.getHealth().outputLoopbackSignalBytes).toBe(signal.byteLength);
   });
 
+  it.each([
+    { boundary: "odd", tailBytes: 1 },
+    { boundary: "even", tailBytes: 2 },
+  ])("L09-F028 preserves sample alignment at an $boundary history crop", ({ tailBytes }) => {
+    let nowMs = 0;
+    const verifier = createMeetingOutputLoopbackVerifier({
+      audioFormat: "pcm16-24khz",
+      now: () => nowMs,
+    });
+    const signal = pcmEnergyFrames(outputEnvelope.slice(0, 50));
+    verifier.beginOutput();
+    // Eleven seconds of queued silence plus the reference keep observation open beyond the cap.
+    verifier.recordOutput(Buffer.concat([Buffer.alloc(24_000 * 2 * 11), signal]));
+    nowMs = 11_000;
+    verifier.recordInput(Buffer.alloc(24_000 * 2 * 10));
+    const beforeSignal = verifier.getHealth();
+    const prefix = signal.subarray(0, signal.byteLength - tailBytes);
+    verifier.recordInput(prefix);
+    const beforeFinalBytes = verifier.getHealth();
+    verifier.recordInput(signal.subarray(signal.byteLength - tailBytes));
+    const afterFinalBytes = verifier.getHealth();
+
+    expect({ beforeSignal, beforeFinalBytes, afterFinalBytes }).toMatchObject({
+      beforeSignal: {
+        outputGeneration: 1,
+        verifiedOutputGeneration: undefined,
+        outputLoopbackSignalBytes: 0,
+      },
+      beforeFinalBytes: {
+        outputGeneration: 1,
+        verifiedOutputGeneration: 1,
+        outputLoopbackSignalBytes: prefix.byteLength,
+        lastOutputLoopbackAt: "1970-01-01T00:00:11.000Z",
+      },
+      afterFinalBytes: {
+        outputGeneration: 1,
+        verifiedOutputGeneration: 1,
+        outputLoopbackSignalBytes: prefix.byteLength,
+      },
+    });
+    // The complete fingerprint is already present before the trailing partial sample is completed.
+    expect(beforeFinalBytes.lastOutputLoopbackCorrelation).toBeGreaterThanOrEqual(0.9);
+    expect(afterFinalBytes).toEqual(beforeFinalBytes);
+  });
+
+  it("L09-F028 retains a split PCM sample below the history cap", () => {
+    const verifier = createMeetingOutputLoopbackVerifier({
+      audioFormat: "pcm16-24khz",
+      now: () => 0,
+    });
+    const signal = pcmEnergyFrames(outputEnvelope.slice(0, 50));
+    verifier.beginOutput();
+    verifier.recordOutput(signal);
+    verifier.recordInput(signal.subarray(0, 1));
+    const beforeRemainder = verifier.getHealth();
+    verifier.recordInput(signal.subarray(1));
+    const afterRemainder = verifier.getHealth();
+
+    expect({ beforeRemainder, afterRemainder }).toMatchObject({
+      beforeRemainder: {
+        outputGeneration: 1,
+        verifiedOutputGeneration: undefined,
+        outputLoopbackSignalBytes: 0,
+      },
+      afterRemainder: {
+        outputGeneration: 1,
+        verifiedOutputGeneration: 1,
+        outputLoopbackSignalBytes: signal.byteLength - 1,
+        lastOutputLoopbackAt: "1970-01-01T00:00:00.000Z",
+      },
+    });
+    expect(afterRemainder.lastOutputLoopbackCorrelation).toBeGreaterThanOrEqual(0.9);
+  });
+
   it("detects mu-law loopback energy without treating silence as signal", () => {
     const verifier = createMeetingOutputLoopbackVerifier({ audioFormat: "g711-ulaw-8khz" });
     const silence = Buffer.alloc(80 * 80, 0xff);

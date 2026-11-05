@@ -224,13 +224,12 @@ export function createMeetingOutputLoopbackVerifier(options: {
       const decoded = decodeMeetingAudio(audio, options.audioFormat);
       const chunkStats = readPcm16AudioStats(decoded);
       const combinedInput = inputPcm.byteLength > 0 ? Buffer.concat([inputPcm, decoded]) : decoded;
-      const droppedInputBytes = Math.max(0, combinedInput.byteLength - maxInputHistoryBytes);
+      // Drop complete samples; keep any trailing partial sample for the next input chunk.
+      const droppedInputBytes =
+        Math.ceil(Math.max(0, combinedInput.byteLength - maxInputHistoryBytes) * 0.5) * 2;
       inputPcm = droppedInputBytes > 0 ? combinedInput.subarray(droppedInputBytes) : combinedInput;
       if (droppedInputBytes > 0) {
-        nextInputStartSample = Math.max(
-          0,
-          nextInputStartSample - Math.floor(droppedInputBytes * 0.5),
-        );
+        nextInputStartSample = Math.max(0, nextInputStartSample - droppedInputBytes * 0.5);
       }
       const fingerprint = outputFingerprint;
       if (!fingerprint || !hasSignal(chunkStats)) {
