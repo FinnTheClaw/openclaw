@@ -16,6 +16,11 @@ import type { GatewayClient } from "../gateway/client.js";
 import type { GatewaySessionRow } from "../gateway/session-utils.js";
 import type { AcpGatewayAgent } from "./translator.js";
 import {
+  ACP_LIST_SESSIONS_MAX_FETCH_LIMIT,
+  decodeListSessionsCursor,
+  encodeListSessionsCursor,
+} from "./translator.session-list.js";
+import {
   createAcpConnection,
   createAcpGateway,
   createAcpGatewayAgent,
@@ -230,6 +235,73 @@ describe("acp translator stable lifecycle handlers", () => {
       limit: 5,
       includeDerivedTitles: true,
     });
+  });
+
+  it.each([
+    { label: "maximum offset with a full page", offset: 10_000, limit: 100, total: 10_101 },
+    { label: "one below maximum with two rows", offset: 9_999, limit: 2, total: 10_101 },
+    { label: "maximum offset with one row", offset: 10_000, limit: 1, total: 10_101 },
+    { label: "nondefault page crossing maximum", offset: 9_990, limit: 37, total: 10_101 },
+    { label: "ordinary early continuation control", offset: 0, limit: 2, total: 5 },
+    { label: "actual final page control", offset: 10_000, limit: 100, total: 10_100 },
+  ])("does not advertise out-of-range ACP session-list cursors for $label", async (row) => {
+    const allRows = Array.from({ length: row.total }, (_, index) =>
+      createSessionRow({ key: `agent:main:list-${index}`, cwd: "/work/list" }),
+    );
+    const request = vi.fn(async (method: string, params?: { limit?: number }) => {
+      if (method === "sessions.list") {
+        const limit = params?.limit ?? allRows.length;
+        return {
+          ...createGatewaySessions(allRows.slice(0, limit)),
+          totalCount: allRows.length,
+          hasMore: limit < allRows.length,
+        };
+      }
+      return { ok: true };
+    }) as GatewayClient["request"];
+    const agent = createAcpGatewayAgent(createAcpConnection(), createAcpGateway(request), {
+      sessionStore: createInMemorySessionStore(),
+    });
+    const result = await agent.listSessions(
+      createListSessionsRequest({
+        cursor: encodeListSessionsCursor({ offset: row.offset }),
+        limit: row.limit,
+      }),
+    );
+    expect(result.sessions.map((session) => session.sessionId)).toEqual(
+      allRows.slice(row.offset, row.offset + row.limit).map((session) => session.key),
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith("sessions.list", {
+      limit: row.offset + row.limit + 1,
+      includeDerivedTitles: true,
+    });
+    expect(row.offset + row.limit + 1).toBeLessThanOrEqual(ACP_LIST_SESSIONS_MAX_FETCH_LIMIT);
+    if (result.nextCursor) {
+      expect(() => decodeListSessionsCursor(result.nextCursor)).not.toThrow();
+    }
+    if (row.offset === 0) {
+      const cursor = expectDefined(result.nextCursor, "expected ordinary continuation cursor");
+      expect(decodeListSessionsCursor(cursor)).toEqual({ offset: 2 });
+      const next = await agent.listSessions(
+        createListSessionsRequest({ cursor, limit: row.limit }),
+      );
+      expect(next.sessions.map((session) => session.sessionId)).toEqual([
+        "agent:main:list-2",
+        "agent:main:list-3",
+      ]);
+      expect(
+        decodeListSessionsCursor(
+          expectDefined(next.nextCursor, "expected second continuation cursor"),
+        ),
+      ).toEqual({ offset: 4 });
+      expect(request).toHaveBeenNthCalledWith(2, "sessions.list", {
+        limit: 5,
+        includeDerivedTitles: true,
+      });
+    } else {
+      expect(result.nextCursor).toBeNull();
+    }
   });
 
   it("does not include sessions without workspace metadata in cwd-filtered lists", async () => {

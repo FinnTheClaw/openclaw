@@ -29,6 +29,7 @@ import type { AcpEventLedgerReplay } from "./event-ledger.js";
 import { parseSessionMeta, resetSessionIfNeeded, resolveAcpSessionKey } from "./session-mapper.js";
 import { extractReplayChunks, type GatewayTranscriptMessage } from "./translator.replay.js";
 import {
+  ACP_LIST_SESSIONS_MAX_CURSOR_OFFSET,
   ACP_LIST_SESSIONS_MAX_FETCH_LIMIT,
   assertAbsoluteCwd,
   decodeListSessionsCursor,
@@ -203,7 +204,7 @@ export class AcpTranslatorSessionLifecycle {
     }
 
     const page = rows.slice(start, end);
-    const hasMore = rows.length > end;
+    const hasMore = rows.length > end && end <= ACP_LIST_SESSIONS_MAX_CURSOR_OFFSET;
     return {
       sessions: page,
       nextCursor: hasMore
