@@ -37,10 +37,9 @@ export function reduceSessionProjectionRunEvent(
   ) {
     return null;
   }
+  const previousRun = Object.hasOwn(projection.runs, runId) ? projection.runs[runId] : undefined;
   const message =
-    event.state === "delta"
-      ? mergeChatStreamMessage(projection.runs[runId]?.message, event)
-      : event.message;
+    event.state === "delta" ? mergeChatStreamMessage(previousRun?.message, event) : event.message;
   const messageStopReason = isRecord(message) ? readNonemptyString(message.stopReason) : null;
   const stopReason = readNonemptyString(event.stopReason) ?? messageStopReason;
   const errorKind = readNonemptyString(event.errorKind);
@@ -73,5 +72,9 @@ export function reduceSessionProjectionRunEvent(
           ...(typeof event.errorMessage === "string" ? { errorMessage: event.errorMessage } : {}),
         };
   const next = reduceSessionProjection(projection, action);
-  return { projection: next, previousRun: projection.runs[runId], currentRun: next.runs[runId] };
+  return {
+    projection: next,
+    previousRun,
+    currentRun: Object.hasOwn(next.runs, runId) ? next.runs[runId] : undefined,
+  };
 }

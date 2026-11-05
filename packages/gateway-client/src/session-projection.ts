@@ -539,7 +539,9 @@ function updateRun(
   } else {
     delete normalizedIncoming.errorMessage;
   }
-  const current = state.runs[incoming.runId];
+  const current = Object.hasOwn(state.runs, incoming.runId)
+    ? state.runs[incoming.runId]
+    : undefined;
   // Only newer run-event order can distinguish resumed output from buffered stale deltas.
   const resumesErrorProjection =
     current?.status === "error" &&

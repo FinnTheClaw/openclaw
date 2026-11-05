@@ -14,6 +14,108 @@ const scope: SessionProjectionScope = {
 };
 
 describe("session projection Gateway run events", () => {
+  it.each([
+    { runId: "constructor", seq: undefined, existing: false },
+    { runId: "constructor", seq: 3, existing: false },
+    { runId: "__proto__", seq: undefined, existing: false },
+    { runId: "__proto__", seq: 3, existing: false },
+    { runId: "constructor", seq: 3, existing: true },
+    { runId: "__proto__", seq: 3, existing: true },
+  ])("own run contract: %j", ({ runId, seq, existing }) => {
+    const projection = createSessionProjection(scope);
+    const canvas = { type: "canvas", id: "owned-canvas" };
+    const snapshot = {
+      role: "assistant",
+      content: [{ type: "text", text: "first" }, canvas],
+      __openclaw: { media: [{ id: "owned-image" }] },
+    };
+    const previous = {
+      runId,
+      status: "streaming" as const,
+      seq: 1,
+      message: snapshot,
+    };
+    if (existing) {
+      projection.runs = { [runId]: previous };
+    }
+    const originalRuns = projection.runs;
+    const firstEvent = { runId, state: "delta", seq, message: snapshot };
+    const first = reduceSessionProjectionRunEvent(projection, firstEvent, scope);
+    expect(first).not.toBeNull();
+    if (!first) {
+      throw new Error("Expected a run projection");
+    }
+    expect(Object.hasOwn(first.projection.runs, runId)).toBe(true);
+    expect(first.previousRun).toBe(existing ? previous : undefined);
+    expect(first.currentRun).toMatchObject({ runId, status: "streaming", seq });
+    expect(first.currentRun).toBe(first.projection.runs[runId]);
+    expect(first.currentRun?.message).toBe(snapshot);
+    expect(first.projection).not.toBe(projection);
+    expect(projection.runs).toBe(originalRuns);
+    expect(Object.hasOwn(projection.runs, runId)).toBe(existing);
+    expect(existing ? projection.runs[runId] : undefined).toBe(existing ? previous : undefined);
+    expect(previous).toEqual({ runId, status: "streaming", seq: 1, message: snapshot });
+    expect(firstEvent).toEqual({ runId, state: "delta", seq, message: snapshot });
+
+    const appended = reduceSessionProjectionRunEvent(
+      first.projection,
+      {
+        runId,
+        state: "delta",
+        seq: seq === undefined ? undefined : 4,
+        deltaText: " next",
+      },
+      scope,
+    );
+    expect(appended?.previousRun).toBe(first.currentRun);
+    expect(appended?.currentRun).toMatchObject({ runId, status: "streaming" });
+    expect(appended?.currentRun?.message).toEqual({
+      ...snapshot,
+      content: [{ type: "text", text: "first next" }, canvas],
+    });
+    expect(first.currentRun?.message).toBe(snapshot);
+    expect(snapshot.content).toEqual([{ type: "text", text: "first" }, canvas]);
+    if (!appended) {
+      throw new Error("Expected an appended run projection");
+    }
+
+    const final = {
+      runId,
+      state: "final",
+      seq: seq === undefined ? undefined : 5,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "done" }],
+        __openclaw: { id: "owned-final", seq: 1 },
+      },
+    };
+    const completed = reduceSessionProjectionRunEvent(appended.projection, final, scope);
+    expect(completed?.previousRun).toBe(appended.currentRun);
+    expect(completed?.currentRun).toMatchObject({ runId, status: "completed" });
+    expect(completed?.currentRun?.message).toBe(final.message);
+    expect(Object.hasOwn(completed!.projection.runs, runId)).toBe(true);
+    if (!completed) {
+      throw new Error("Expected a completed run projection");
+    }
+    const repeated = reduceSessionProjectionRunEvent(completed.projection, final, scope);
+    expect(repeated?.previousRun).toBe(completed.currentRun);
+    expect(repeated?.currentRun).toBe(completed.currentRun);
+    expect(repeated?.projection).toBe(completed.projection);
+    const late = reduceSessionProjectionRunEvent(
+      completed.projection,
+      {
+        runId,
+        state: "delta",
+        seq: seq === undefined ? undefined : 6,
+        message: { role: "assistant", content: "late" },
+      },
+      scope,
+    );
+    expect(late?.projection).toBe(completed.projection);
+    expect(late?.currentRun).toBe(completed.currentRun);
+    expect(final.message.content).toEqual([{ type: "text", text: "done" }]);
+  });
+
   it("reconstructs append-only output without losing rich content or duplicating snapshot text", () => {
     let projection = createSessionProjection(scope);
     const canvas = { type: "canvas", id: "canvas-1" };
