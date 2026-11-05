@@ -1252,6 +1252,109 @@ fi
     expect(result.stdout).toContain("selected=");
   });
 
+  it.each(["flag", "environment", "divergent-no-update", "enabled"] as const)(
+    "preserves local named-branch commits with %s",
+    (mode) => {
+      const result = runInstallCliShell(
+        `
+          set -euo pipefail
+          source "$OPENCLAW_INSTALLER_SCRIPT"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          remote="$tmp/remote.git"
+          seed="$tmp/seed"
+          repo="$tmp/repo"
+          ref=fixture-topic
+          git init --bare -q "$remote"
+          git init -q --initial-branch=main "$seed"
+          git -C "$seed" config user.email test@example.invalid
+          git -C "$seed" config user.name test
+          printf 'base\\n' > "$seed/state.txt"
+          git -C "$seed" add state.txt
+          git -C "$seed" commit -qm base
+          git -C "$seed" remote add origin "$remote"
+          git -C "$seed" push -q -u origin main
+          git --git-dir="$remote" symbolic-ref HEAD refs/heads/main
+          git -C "$seed" checkout -qb "$ref"
+          printf 'remote branch\\n' > "$seed/state.txt"
+          git -C "$seed" commit -qam branch
+          git -C "$seed" push -q origin "$ref"
+          git clone -q "$remote" "$repo"
+          git -C "$repo" config user.email test@example.invalid
+          git -C "$repo" config user.name test
+          git -C "$repo" checkout -qb "$ref" "origin/$ref"
+          branch_base="$(git -C "$repo" rev-parse HEAD)"
+          printf 'keep local commit\\n' > "$repo/local.txt"
+          git -C "$repo" add local.txt
+          git -C "$repo" commit -qm local
+          before="$(git -C "$repo" rev-parse HEAD)"
+          if [[ "${mode}" == divergent-no-update ]]; then
+            printf 'remote advance\\n' > "$seed/remote.txt"
+            git -C "$seed" add remote.txt
+            git -C "$seed" commit -qm remote-advance
+            git -C "$seed" push -q origin "$ref"
+            git -C "$repo" fetch -q --no-tags origin "$ref"
+          fi
+          remote_before="$(git --git-dir="$remote" rev-parse "refs/heads/$ref")"
+          tracking_before="$(git -C "$repo" rev-parse "refs/remotes/origin/$ref")"
+          [[ "$before" != "$remote_before" ]]
+          [[ -z "$(git -C "$repo" status --porcelain)" ]]
+          [[ "$(git -C "$repo" symbolic-ref --short HEAD)" == "$ref" ]]
+          if [[ "${mode}" == divergent-no-update ]]; then
+            [[ "$(git -C "$repo" merge-base "$remote_before" "$before")" == "$branch_base" ]]
+            [[ "$remote_before" != "$branch_base" && "$before" != "$branch_base" ]]
+          fi
+          args=(--install-method git --version "$ref")
+          if [[ "${mode}" == flag || "${mode}" == divergent-no-update ]]; then
+            args+=(--no-git-update)
+          fi
+          parse_args "\${args[@]}"
+          selected="$(resolve_git_openclaw_ref)"
+          printf 'before=%s\\nremote-before=%s\\ntracking-before=%s\\nupdate=%s\\n' "$before" "$remote_before" "$tracking_before" "$GIT_UPDATE"
+          checkout_git_openclaw_ref "$repo" "$selected"
+          printf 'after=%s\\nbranch=%s\\nremote-after=%s\\ntracking-after=%s\\nkind=%s\\n' \\
+            "$(git -C "$repo" rev-parse HEAD)" \\
+            "$(git -C "$repo" symbolic-ref --short HEAD)" \\
+            "$(git --git-dir="$remote" rev-parse "refs/heads/$ref")" \\
+            "$(git -C "$repo" rev-parse "refs/remotes/origin/$ref")" "$GIT_REF_KIND"
+          if [[ -f "$repo/local.txt" ]]; then
+            printf 'local-bytes=%s\\n' "$(cat "$repo/local.txt")"
+          else
+            printf 'local-bytes=missing\\n'
+          fi
+          printf 'state-bytes=%s\\n' "$(cat "$repo/state.txt")"
+          printf 'status=%s\\n' "$(git -C "$repo" status --porcelain)"
+        `,
+        {
+          OPENCLAW_INSTALLER_SCRIPT: SCRIPT_PATH,
+          OPENCLAW_GIT_UPDATE: mode === "environment" ? "0" : "1",
+        },
+      );
+
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      const fields = Object.fromEntries(
+        result.stdout
+          .split("\n")
+          .filter((line) => /^[a-z-]+=/.test(line))
+          .map((line) => {
+            const separator = line.indexOf("=");
+            return [line.slice(0, separator), line.slice(separator + 1)];
+          }),
+      );
+      expect.soft(fields.before).toMatch(/^[a-f0-9]{40}$/);
+      expect.soft(fields.after).toBe(fields.before);
+      expect.soft(fields.branch).toBe("fixture-topic");
+      expect.soft(fields["local-bytes"]).toBe("keep local commit");
+      expect.soft(fields["state-bytes"]).toBe("remote branch");
+      expect.soft(fields.status).toBe("");
+      expect.soft(fields.kind).toBe("moving");
+      expect.soft(fields["remote-before"]).toMatch(/^[a-f0-9]{40}$/);
+      expect.soft(fields["remote-after"]).toBe(fields["remote-before"]);
+      expect.soft(fields["tracking-after"]).toMatch(/^[a-f0-9]{40}$/);
+      expect.soft(fields.update).toBe(mode === "enabled" ? "1" : "0");
+    },
+  );
+
   it("updates a stale existing main checkout from the remote tracking ref", () => {
     const result = runInstallCliShell(createInstallGitUpdateFixtureScript(SCRIPT_PATH));
 

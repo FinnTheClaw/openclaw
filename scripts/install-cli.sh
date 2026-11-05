@@ -1095,7 +1095,15 @@ checkout_git_openclaw_ref() {
     if git -C "$repo_dir" ls-remote --exit-code origin "refs/${namespace}/${ref}" >/dev/null 2>&1; then
       if [[ "$namespace" == "heads" ]]; then
         git -C "$repo_dir" fetch --no-tags origin "refs/heads/${ref}:refs/remotes/origin/${ref}"
-        git -C "$repo_dir" checkout -B "$ref" "origin/$ref"
+        if git -C "$repo_dir" show-ref --verify --quiet "refs/heads/$ref"; then
+          git -C "$repo_dir" checkout "$ref"
+        else
+          git -C "$repo_dir" checkout -b "$ref" "origin/$ref"
+        fi
+        if [[ "$GIT_UPDATE" == "1" ]]; then
+          git -C "$repo_dir" merge --ff-only "origin/$ref" ||
+            fail "Could not update repository from origin/${ref} without rewriting local history"
+        fi
         GIT_REF_KIND="moving"
       else
         git -C "$repo_dir" fetch --no-tags origin "refs/tags/${ref}:refs/tags/${ref}"
