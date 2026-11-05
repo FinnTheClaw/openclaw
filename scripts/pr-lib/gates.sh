@@ -613,9 +613,9 @@ prepare_gates() {
     remote_gates_run_url=""
     echo "Crabbox AWS proof is deferred until prepare-push verifies the exact remote head."
   else
-    prepare_local_gate_workspace
-    run_quiet_logged "pnpm build" ".local/gates-build.log" pnpm build
-    run_quiet_logged "pnpm check" ".local/gates-check.log" pnpm check --base "$check_base"
+    prepare_local_gate_workspace || return $?
+    run_quiet_logged "pnpm build" ".local/gates-build.log" pnpm build || return $?
+    run_quiet_logged "pnpm check" ".local/gates-check.log" pnpm check --base "$check_base" || return $?
 
     if [ "$docs_only" = "true" ]; then
       gates_mode="docs_only"
@@ -647,10 +647,10 @@ prepare_gates() {
         run_quiet_logged \
           "pnpm test" \
           ".local/gates-test.log" \
-          env OPENCLAW_VITEST_MAX_WORKERS="$OPENCLAW_VITEST_MAX_WORKERS" pnpm test
+          env OPENCLAW_VITEST_MAX_WORKERS="$OPENCLAW_VITEST_MAX_WORKERS" pnpm test || return $?
       else
         echo "Running pnpm test with host-aware scheduling defaults."
-        run_quiet_logged "pnpm test" ".local/gates-test.log" pnpm test
+        run_quiet_logged "pnpm test" ".local/gates-test.log" pnpm test || return $?
       fi
       remote_gates_provider=""
       remote_gates_run_id=""

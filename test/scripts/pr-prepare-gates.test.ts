@@ -274,6 +274,113 @@ describe("remote Crabbox AWS gate contract", () => {
   );
 });
 
+describe("local preparation gate failure propagation", () => {
+  it.each([
+    { phase: "workspace", workers: false, priorStamp: false },
+    { phase: "build", workers: false, priorStamp: false },
+    { phase: "check", workers: false, priorStamp: true },
+    { phase: "test", workers: false, priorStamp: true },
+    { phase: "test", workers: true, priorStamp: false },
+    { phase: "none", workers: false, priorStamp: true },
+  ] as const)(
+    "L12-F018 stops local preparation after $phase failure (workers: $workers)",
+    (scenario) => {
+      const dir = tempDirs.make("openclaw-pr-local-gate-failure-");
+      mkdirSync(join(dir, ".local"));
+      const binDir = join(dir, "bin");
+      mkdirSync(binDir);
+      const pnpm = join(binDir, "pnpm");
+      writeFileSync(
+        pnpm,
+        [
+          "#!/usr/bin/env bash",
+          "set -euo pipefail",
+          'printf "%s\\n" "pnpm $*" >> .local/calls',
+          `if [ "$1" = ${JSON.stringify(scenario.phase)} ]; then`,
+          '  printf "fixture-%s-failed\\n" "$1" >&2',
+          "  exit 17",
+          "fi",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(pnpm, 0o755);
+      writeFileSync(join(dir, ".local/pr-meta.env"), "PR_AUTHOR=fixture\n");
+      const stampPath = join(dir, ".local/gates.env");
+      const priorStamp =
+        "GATES_MODE=prior_fixture\nLAST_VERIFIED_HEAD_SHA=prior-head\nFULL_GATES_HEAD_SHA=prior-head\n";
+      if (scenario.priorStamp) writeFileSync(stampPath, priorStamp);
+      const result = runGatesBash(
+        [
+          'prepare_init() { PR_HEAD_OBSERVATION=fixture-observation; PR_URL=https://example.invalid/pr/42; printf "init:%s\\n" "$1" > .local/init; }',
+          'prepare_push() { [ "$1" = 42 ] && [ "$2" = fixture-observation ] || return 99; printf "push\\n" >> .local/push; }',
+          "enter_worktree() { PR_MAIN_SHA=fixture-main; }",
+          "refresh_prep_branch_for_reviewed_head() { :; }",
+          "checkout_prep_branch() { :; }",
+          "derive_prepare_gate_change_plan() {",
+          "  PREPARE_GATE_BASE_SHA=fixture-base",
+          "  PREPARE_GATE_CHANGED_FILES=src/subject.ts",
+          "  PREPARE_GATE_DOCS_ONLY=false",
+          "  PREPARE_GATE_CHANGELOG_ONLY=false",
+          "  PREPARE_GATE_CHANGELOG_UPDATE=false",
+          "  PREPARE_GATE_CHANGELOG_REQUIRED=false",
+          "}",
+          "pr_git() {",
+          '  case "$*" in',
+          '    "rev-parse HEAD") printf "%s\\n" fixture-head ;;',
+          '    *) printf "unexpected fixture Git query: %s\\n" "$*" >&2; return 99 ;;',
+          "  esac",
+          "}",
+          "prepare_local_gate_workspace() {",
+          '  printf "workspace\\n" >> .local/calls',
+          ...(scenario.phase === "workspace"
+            ? ['  printf "fixture-workspace-failed\\n" >&2; return 17']
+            : ["  :"]),
+          "}",
+          "prepare_run 42",
+        ].join("\n"),
+        {
+          cwd: dir,
+          sourcePrepareCore: true,
+          env: {
+            PATH: `${binDir}:${process.env.PATH}`,
+            ...(scenario.workers ? { OPENCLAW_VITEST_MAX_WORKERS: "2" } : {}),
+          },
+        },
+      );
+      const output = result.stdout + result.stderr;
+      expect(readFileSync(join(dir, ".local/init"), "utf8")).toBe("init:42\n");
+      expect(output).not.toContain("unexpected fixture Git query");
+      const calls = readFileSync(join(dir, ".local/calls"), "utf8").trim().split("\n");
+      expect(calls[0]).toBe("workspace");
+      const allCalls = ["workspace", "pnpm build", "pnpm check --base fixture-base", "pnpm test"];
+      if (scenario.phase === "none") {
+        expect(result.status, output).toBe(0);
+        expect(calls).toEqual(allCalls);
+        expect(readFileSync(join(dir, ".local/push"), "utf8")).toBe("push\n");
+        const stamp = readFileSync(stampPath, "utf8");
+        expect(stamp).toContain("GATES_MODE=full\n");
+        expect(stamp).toContain("LAST_VERIFIED_HEAD_SHA=fixture-head\n");
+        expect(stamp).toContain("FULL_GATES_HEAD_SHA=fixture-head\n");
+      } else {
+        const failureIndex = { workspace: 0, build: 1, check: 2, test: 3 }[scenario.phase];
+        expect(calls).toContain(allCalls[failureIndex]);
+        if (scenario.phase === "workspace") {
+          expect(output).toContain("fixture-workspace-failed");
+        } else {
+          expect(readFileSync(join(dir, `.local/gates-${scenario.phase}.log`), "utf8")).toContain(
+            `fixture-${scenario.phase}-failed`,
+          );
+        }
+        expect(result.status, output).not.toBe(0);
+        expect(calls).toEqual(allCalls.slice(0, failureIndex + 1));
+        expect(existsSync(join(dir, ".local/push"))).toBe(false);
+        expect(existsSync(stampPath)).toBe(scenario.priorStamp);
+        if (scenario.priorStamp) expect(readFileSync(stampPath, "utf8")).toBe(priorStamp);
+      }
+    },
+  );
+});
+
 describe("prepare gate changed-file plan", () => {
   it.each([
     { paths: [] as string[], docsOnly: false, changelogOnly: false },
