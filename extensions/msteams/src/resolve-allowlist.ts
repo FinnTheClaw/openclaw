@@ -36,6 +36,10 @@ type StableMSTeamsTeamIdMode = "bot-framework" | "graph";
 
 const MSTEAMS_GROUP_CONVERSATION_ID = /^19:.+@thread\.(?:tacv2|skype|v2)$/i;
 
+// Keep configured channel restrictions active when no mutable name can become a stable ID.
+// The reserved suffix cannot equal a real Teams conversation ID (tacv2, v2, or skype).
+const MSTEAMS_UNMATCHABLE_THREAD_ID = "19:openclaw-unresolved-allowlist@thread.unresolved";
+
 function normalizeExactMatch(value?: string | null): string {
   return normalizeLowercaseStringOrEmpty(value ?? "");
 }
@@ -241,6 +245,7 @@ function isStableMSTeamsTeamKey(raw: string): boolean {
 
 function projectStableMSTeamsChannels(
   channels: NonNullable<MSTeamsConfig["teams"]>[string]["channels"],
+  options: { keepConfigured?: boolean } = {},
 ) {
   const projected: NonNullable<typeof channels> = {};
   for (const [channelKey, channelConfig] of Object.entries(channels ?? {})) {
@@ -251,6 +256,14 @@ function projectStableMSTeamsChannels(
     if (looksLikeMSTeamsThreadConversationId(channelKey)) {
       projected[normalizeMSTeamsConversationTargetId(channelKey)] = channelConfig;
     }
+  }
+  if (
+    options.keepConfigured &&
+    Object.keys(channels ?? {}).length > 0 &&
+    Object.keys(projected).length === 0
+  ) {
+    // Every configured channel was a mutable name; an empty map would admit every channel.
+    projected[MSTEAMS_UNMATCHABLE_THREAD_ID] = {};
   }
   return projected;
 }
@@ -269,7 +282,7 @@ export function projectStableMSTeamsTeamsConfig(
     const stableKey = teamKey === "*" ? teamKey : normalizeMSTeamsConversationTargetId(teamKey);
     projected[stableKey] = {
       ...teamConfig,
-      channels: projectStableMSTeamsChannels(teamConfig.channels),
+      channels: projectStableMSTeamsChannels(teamConfig.channels, { keepConfigured: true }),
     };
   }
   return projected;
@@ -512,6 +525,8 @@ export async function resolveMSTeamsTeamsConfig(params: {
     if (source.channelKey && entry.channelId) {
       const sourceChannel = sourceTeam.channels?.[source.channelKey];
       if (sourceChannel) {
+        // A real resolved channel now keeps the restriction configured without the placeholder.
+        delete mergedChannels[MSTEAMS_UNMATCHABLE_THREAD_ID];
         teams[resolvedTeamId] = {
           ...mergedTeam,
           channels: {

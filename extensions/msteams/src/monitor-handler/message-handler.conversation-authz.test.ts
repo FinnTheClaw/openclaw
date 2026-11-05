@@ -1,9 +1,10 @@
 // Conversation allowlists authorize group threads without widening sender or DM access.
 import { describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig } from "../../runtime-api.js";
+import type { MSTeamsConfig, OpenClawConfig } from "../../runtime-api.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
 import { getRuntimeApiMockState } from "./message-handler-mock-support.test-support.js";
+import { projectStableMSTeamsTeamsConfig } from "../resolve-allowlist.js";
 import { createMSTeamsMessageHandler } from "./message-handler.js";
 import { createMessageHandlerDeps } from "./message-handler.test-support.js";
 
@@ -175,6 +176,48 @@ describe("msteams group conversation allowlist authorization", () => {
 
     expect(conversationStore.upsert).toHaveBeenCalledTimes(1);
     expect(runtimeApiMockState.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { label: "mutable-only restriction", stable: false },
+    { label: "explicit stable-channel control", stable: true },
+  ])("preserves configured Teams channel restrictions in handler for $label", async (row) => {
+    runtimeApiMockState.dispatchReplyWithBufferedBlockDispatcher.mockClear();
+    const teamId = "19:team@thread.tacv2";
+    const channelId = "19:roadmap@thread.tacv2";
+    const raw: MSTeamsConfig = {
+      groupPolicy: "allowlist",
+      groupAllowFrom: ["approved-aad"],
+      requireMention: false,
+      teams: {
+        [teamId]: {
+          requireMention: false,
+          channels: { [row.stable ? channelId : "Roadmap"]: { requireMention: false } },
+        },
+      },
+    };
+    const original = structuredClone(raw);
+    const { conversationStore, deps } = createDeps({
+      channels: { msteams: { ...raw, teams: projectStableMSTeamsTeamsConfig(raw.teams) } },
+    } as OpenClawConfig);
+    await createMSTeamsMessageHandler(deps)(
+      createMessageActivity({
+        id: `projected-channel-${row.stable ? "stable" : "mutable"}`,
+        text: "synthetic allowed sender channel probe",
+        from: { id: "approved-bot-framework-id", aadObjectId: "approved-aad", name: "Approved" },
+        conversation: {
+          id: row.stable ? channelId : "19:unlisted@thread.tacv2",
+          conversationType: "channel",
+        },
+        channelData: { team: { id: teamId } },
+      }),
+    );
+    expect(raw).toEqual(original);
+    expect(deps.cfg.channels?.msteams?.groupAllowFrom).toEqual(["approved-aad"]);
+    expect(conversationStore.upsert).toHaveBeenCalledTimes(row.stable ? 1 : 0);
+    expect(runtimeApiMockState.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(
+      row.stable ? 1 : 0,
+    );
   });
 
   const rejectedCases: ConversationCase[] = [

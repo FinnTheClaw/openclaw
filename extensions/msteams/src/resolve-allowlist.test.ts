@@ -1,5 +1,7 @@
 // Msteams tests cover resolve allowlist plugin behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { MSTeamsConfig } from "../runtime-api.js";
+import { resolveMSTeamsRouteConfig } from "./policy.js";
 
 const {
   listTeamsByNameWithPageInfo,
@@ -29,6 +31,7 @@ vi.mock("./graph-users.js", () => ({
 import {
   looksLikeMSTeamsTargetId,
   projectStableMSTeamsGroupAllowlist,
+  projectStableMSTeamsTeamsConfig,
   projectStableMSTeamsUserAllowlist,
   resolveMSTeamsChannelAllowlist,
   resolveMSTeamsTeamsConfig,
@@ -488,6 +491,122 @@ describe("resolveMSTeamsTeamsConfig", () => {
       },
     });
     expect(result.unresolved).toEqual(["*/Mutable", "Missing/Roadmap"]);
+  });
+});
+
+describe("configured Teams channel restrictions", () => {
+  it.each<{
+    label: string;
+    mode: "projection" | "unresolved" | "graph";
+    channels?: NonNullable<MSTeamsConfig["teams"]>[string]["channels"];
+    stableAllowed: boolean;
+    otherAllowed: boolean;
+  }>([
+    {
+      label: "startup projection with mutable-only channels",
+      mode: "projection",
+      channels: { Roadmap: { requireMention: false } },
+      stableAllowed: false,
+      otherAllowed: false,
+    },
+    {
+      label: "explicitly unresolved conversation-team channel name",
+      mode: "unresolved",
+      channels: { Roadmap: { requireMention: false } },
+      stableAllowed: false,
+      otherAllowed: false,
+    },
+    {
+      label: "successful Graph channel resolution",
+      mode: "graph",
+      channels: { Roadmap: { requireMention: false } },
+      stableAllowed: true,
+      otherAllowed: false,
+    },
+    {
+      label: "intentionally unrestricted team with an empty projection",
+      mode: "projection",
+      stableAllowed: true,
+      otherAllowed: true,
+    },
+    {
+      label: "intentional channel wildcard",
+      mode: "projection",
+      channels: { "*": { requireMention: false } },
+      stableAllowed: true,
+      otherAllowed: true,
+    },
+    {
+      label: "mixed stable and mutable channels",
+      mode: "projection",
+      channels: {
+        Roadmap: { requireMention: true },
+        "19:roadmap@thread.tacv2": { requireMention: false },
+      },
+      stableAllowed: true,
+      otherAllowed: false,
+    },
+  ])("preserves configured Teams channel restrictions for $label", async (row) => {
+    const teamId =
+      row.mode === "graph" ? "11111111-1111-1111-1111-111111111111" : "19:team@thread.tacv2";
+    const channelId = "19:roadmap@thread.tacv2";
+    const teams: NonNullable<MSTeamsConfig["teams"]> = {
+      [teamId]: {
+        requireMention: true,
+        ...(row.channels ? { channels: row.channels } : {}),
+      },
+    };
+    const original = structuredClone(teams);
+    let projected = projectStableMSTeamsTeamsConfig(teams);
+    if (row.mode !== "projection") {
+      if (row.mode === "graph") {
+        listChannelsForTeamWithPageInfo.mockResolvedValueOnce({
+          items: [{ id: channelId, displayName: "Roadmap" }],
+          truncated: false,
+        });
+      }
+      const result = await resolveMSTeamsTeamsConfig({
+        cfg: {},
+        teamIdMode: row.mode === "graph" ? "graph" : "bot-framework",
+        teams,
+      });
+      projected = result.teams;
+      expect(result.mapping).toEqual(
+        row.mode === "graph" ? [`${teamId}/Roadmap→${teamId}/${channelId}`] : [],
+      );
+      expect(result.unresolved).toEqual(row.mode === "graph" ? [] : [`${teamId}/Roadmap`]);
+    }
+    expect(teams).toEqual(original);
+    expect(Object.keys(projected ?? {})).toEqual([teamId]);
+    expect(projected?.[teamId]?.requireMention).toBe(true);
+    expect(projected?.[teamId]?.channels).not.toHaveProperty("Roadmap");
+    if (row.mode === "graph") {
+      expect(projected?.[teamId]?.channels).toEqual({ [channelId]: { requireMention: false } });
+      expect(resolveGraphToken).toHaveBeenCalledTimes(1);
+      expect(listChannelsForTeamWithPageInfo).toHaveBeenCalledWith("graph-token", teamId);
+    } else {
+      expect(resolveGraphToken).not.toHaveBeenCalled();
+      expect(listChannelsForTeamWithPageInfo).not.toHaveBeenCalled();
+    }
+    expect(listTeamsByNameWithPageInfo).not.toHaveBeenCalled();
+    const cfg = { teams: projected };
+    expect({
+      stableAllowed: resolveMSTeamsRouteConfig({ cfg, teamId, conversationId: channelId }).allowed,
+      otherAllowed: resolveMSTeamsRouteConfig({
+        cfg,
+        teamId,
+        conversationId: "19:unlisted@thread.tacv2",
+      }).allowed,
+      wrongTeamAllowed: resolveMSTeamsRouteConfig({
+        cfg,
+        teamId: "19:other-team@thread.tacv2",
+        conversationId: channelId,
+      }).allowed,
+    }).toEqual({
+      stableAllowed: row.stableAllowed,
+      otherAllowed: row.otherAllowed,
+      wrongTeamAllowed: false,
+    });
   });
 });
 
