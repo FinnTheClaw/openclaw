@@ -147,8 +147,11 @@ describe("malformed tool-call argument repair", () => {
   ])(
     "preserves unsafe integer IDs in %s repaired arguments",
     async (_branch, delta, expectedArgs) => {
-      const result = await runToolCallRepairCase({ delta, includePreamble: false });
-      expectAllToolCallArgs(result, expectedArgs);
+      const { calls, result, finalMessage } = await repair([delta], "lookup");
+      expect(result).toBe(finalMessage);
+      for (const call of calls) {
+        expect(call.arguments).toEqual(expectedArgs);
+      }
     },
   );
 });
