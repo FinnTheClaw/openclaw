@@ -451,22 +451,57 @@ describe("DOCTOR-MANIFEST-R9-L01 missing recorded manifest", () => {
   const original = JSON.stringify({ id: "missing-r9", version: 1 });
   const expectedHash = crypto.createHash("sha256").update(original).digest("hex");
   it.each([
-    ["DOCTOR-MANIFEST-R9-L01-01 matching manifest is quiet", "same", true, false],
-    ["DOCTOR-MANIFEST-R9-L01-02 changed manifest reports drift", "changed", true, true],
-    ["DOCTOR-MANIFEST-R9-L01-03 deleted recorded manifest reports drift", "delete", true, true],
+    ["DOCTOR-MANIFEST-R9-L01-01 matching manifest is quiet", "same", true, undefined],
     [
-      "DOCTOR-MANIFEST-R9-L01-04 directory replacing manifest reports drift",
+      "DOCTOR-MANIFEST-R9-L01-02 changed manifest reports drift",
+      "changed",
+      true,
+      "plugin.manifest_drift",
+    ],
+    [
+      "DOCTOR-MANIFEST-R9-L01-03 deleted recorded manifest reports unavailable",
+      "delete",
+      true,
+      "plugin.manifest_unavailable",
+    ],
+    [
+      "DOCTOR-MANIFEST-R9-L01-04 directory replacing manifest reports unavailable",
       "directory",
       true,
-      true,
+      "plugin.manifest_unavailable",
     ],
-    ["DOCTOR-MANIFEST-R9-L01-05 empty manifest reports drift", "empty", true, true],
-    ["DOCTOR-MANIFEST-R9-L01-06 no recorded hash is quiet", "delete", false, false],
-    ["DOCTOR-MANIFEST-R9-L01-07 restored manifest clears drift", "restore", true, false],
-    ["DOCTOR-MANIFEST-R9-L01-08 malformed manifest bytes report drift", "malformed", true, true],
-    ["DOCTOR-MANIFEST-R9-L01-09 whitespace-only manifest reports drift", "whitespace", true, true],
-    ["DOCTOR-MANIFEST-R9-L01-10 missing recorded manifest names plugin", "delete", true, true],
-  ] as const)("%s", async (_name, mutation, recorded, expectedFinding) => {
+    [
+      "DOCTOR-MANIFEST-R9-L01-05 empty manifest reports drift",
+      "empty",
+      true,
+      "plugin.manifest_drift",
+    ],
+    [
+      "DOCTOR-MANIFEST-R9-L01-06 missing manifest without recorded hash reports unavailable",
+      "delete",
+      false,
+      "plugin.manifest_unavailable",
+    ],
+    ["DOCTOR-MANIFEST-R9-L01-07 restored manifest clears drift", "restore", true, undefined],
+    [
+      "DOCTOR-MANIFEST-R9-L01-08 malformed manifest bytes report drift",
+      "malformed",
+      true,
+      "plugin.manifest_drift",
+    ],
+    [
+      "DOCTOR-MANIFEST-R9-L01-09 whitespace-only manifest reports drift",
+      "whitespace",
+      true,
+      "plugin.manifest_drift",
+    ],
+    [
+      "DOCTOR-MANIFEST-R9-L01-10 missing recorded manifest names plugin",
+      "delete",
+      true,
+      "plugin.manifest_unavailable",
+    ],
+  ] as const)("%s", async (_name, mutation, recorded, expectedCode) => {
     await withFixtureRoot("manifest-r9-" + mutation, async (root) => {
       await writePluginFixture(root, {
         id: "missing-r9",
@@ -497,11 +532,17 @@ describe("DOCTOR-MANIFEST-R9-L01 missing recorded manifest", () => {
         await fs.writeFile(manifestPath, original);
       }
       const report = await runPostUpgradeProbes({ stateDir: root });
-      const finding = report.findings.find((item) => item.code === "plugin.manifest_drift");
-      expect(Boolean(finding)).toBe(expectedFinding);
-      if (finding) {
-        expect(finding.plugin).toBe("missing-r9");
-      }
+      expect(report.findings).toEqual(
+        expectedCode
+          ? [
+              expect.objectContaining({
+                code: expectedCode,
+                level: expectedCode === "plugin.manifest_unavailable" ? "error" : "warn",
+                plugin: "missing-r9",
+              }),
+            ]
+          : [],
+      );
     });
   });
 });
