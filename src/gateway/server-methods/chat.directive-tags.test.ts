@@ -46,6 +46,7 @@ import { waitForSessionTranscriptIndexReconcile } from "../../config/sessions/se
 import { resolveMirroredTranscriptText } from "../../config/sessions/transcript-mirror.js";
 import { resolveSessionTranscriptActiveLeafEntryId } from "../../config/sessions/transcript-tree.js";
 import { withOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
@@ -59,6 +60,8 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { withTempDir } from "../../test-utils/temp-dir.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { consumeCronCreatorAuthorityGrant } from "../cron-creator-authority-grant.js";
+import { createOperatorClient } from "../node-invoke-plugin-policy.test-helpers.js";
+import { authorizeCurrentOperatorRoleScopes } from "../operator-role-policy.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { STALE_WORKER_BUILD_REASON } from "../worker-environments/admission.js";
 import { agentWaitHandler } from "./agent-wait.js";
@@ -85,6 +88,7 @@ import {
   readChatDirectiveConfig,
   seedChatDirectiveFileTranscript,
 } from "./chat.directive-tags.test-support.js";
+import { captureGatewayRequestOperatorGuard } from "./session-mutation-guards.js";
 import { initializeSessionReadContext } from "./sessions-read-cache.test-support.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
@@ -4201,6 +4205,231 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         .soft(persistedContent.filter((block) => block.type === "image"))
         .toEqual(expectedImages);
       expect(JSON.stringify(payload?.message)).not.toContain(`MEDIA:${inlineUrl}`);
+    },
+  );
+
+  it.each([
+    { boundary: "lifecycle admission", revoke: true },
+    { boundary: "owned transcript write", revoke: true },
+    { boundary: "lifecycle admission", revoke: false },
+    { boundary: "owned transcript write", revoke: false },
+  ] as const)(
+    "L01-F13 rechecks chat.inject authority after $boundary revoked=$revoke",
+    async ({ boundary, revoke }) => {
+      await withSqliteTranscriptFixtureState("openclaw-chat-inject-authority-", async () => {
+        await appendSourceReplyMirrorEntry({ text: "warm authority fixture seed" });
+        const seedRows = structuredClone(loadTranscriptEventsSync(transcriptScope()));
+        const seed = seedRows.map(asOptionalRecord).find((row) => row?.type === "message");
+        expect(seed?.id).toEqual(expect.any(String));
+        expect(asOptionalRecord(seed?.message)?.content).toEqual([
+          { type: "text", text: "warm authority fixture seed" },
+        ]);
+        expect(readSqliteMainSessionEntry()?.sessionId).toBe(mockState.sessionId);
+        const sessionId = mockState.sessionId;
+        const storePath = mockState.storePath;
+        const cfg: OpenClawConfig = {
+          ...readChatDirectiveConfig(mockState),
+          gateway: {
+            roles: {
+              definitions: {
+                injector: {
+                  scopes: ["operator.admin"],
+                  sessions: { others: "all" },
+                  agents: ["*"],
+                },
+                viewer: { scopes: [], sessions: { others: "none" }, agents: [] },
+              },
+            },
+          },
+        };
+        const cfgBefore = structuredClone(cfg);
+        const profile = {
+          profileId: "fixture-injector",
+          aliases: new Set(["fixture-injector"]),
+          role: "injector",
+        };
+        const client = createOperatorClient("fixture-inject-connection");
+        client.connect.role = "operator";
+        client.connect.scopes = ["operator.admin"];
+        client.preparedSessionProfile = profile;
+        client.authenticatedUserProfile = {
+          profileId: profile.profileId,
+          displayName: "Fixture injector",
+          avatarRevision: "fixture",
+          hasAvatar: false,
+          updatedAt: 1,
+        };
+        const context = {
+          ...createChatContext(),
+          getRuntimeConfig: () => cfg,
+          getCommittedRuntimeConfig: () => cfg,
+        };
+        const respond = vi.fn<RespondFn>();
+        const params = { sessionKey: "main", message: "authority-gated injected reply" };
+        const paramsBefore = structuredClone(params);
+        const handler = expectDefined(chatHandlers["chat.inject"], "chat.inject handler");
+        const options = {
+          req: { type: "req", id: "fixture-inject-request", method: "chat.inject", params },
+          params,
+          client,
+          respond,
+          context,
+          isWebchatConnect: () => false,
+        } as unknown as Parameters<typeof handler>[0];
+        expect(authorizeCurrentOperatorRoleScopes(client, cfg)).toBeUndefined();
+        const capturedGuard = captureGatewayRequestOperatorGuard(options);
+        expect(capturedGuard).not.toThrow();
+        const entered = createDeferred();
+        const release = createDeferred();
+        let mutation: Promise<unknown> | undefined;
+        let operation: Promise<unknown> | undefined;
+        let writeGateEntries = 0;
+        try {
+          if (boundary === "lifecycle admission") {
+            mutation = runExclusiveSessionLifecycleMutation({
+              scope: storePath,
+              identities: ["agent:main:main", sessionId],
+              run: async () => {
+                entered.resolve();
+                await release.promise;
+              },
+            });
+            await entered.promise;
+            operation = Promise.resolve(handler(options));
+            await waitForAssertion(() => expect(mockState.loadSessionEntryCalls).toHaveLength(1));
+          } else {
+            operation = withOwnedSessionTranscriptWrites(
+              {
+                sessionKey: "agent:main:main",
+                sessionTarget: {
+                  agentId: "main",
+                  sessionId,
+                  sessionKey: "agent:main:main",
+                  storePath,
+                },
+                withTranscriptWrite: async (run) => {
+                  writeGateEntries += 1;
+                  entered.resolve();
+                  await release.promise;
+                  return await run();
+                },
+              },
+              async () => await handler(options),
+            );
+            await Promise.race([
+              entered.promise,
+              operation.then(() => {
+                throw new Error("chat.inject completed before the owned transcript-write gate");
+              }),
+            ]);
+          }
+          const beforeRelease = {
+            rowsUnchanged:
+              JSON.stringify(loadTranscriptEventsSync(transcriptScope())) ===
+              JSON.stringify(seedRows),
+            responses: respond.mock.calls.length,
+            broadcasts: context.broadcast.mock.calls.length,
+            nodeSends: context.nodeSendToSession.mock.calls.length,
+            activeAdmissions: getActiveSessionWorkAdmissionCount(),
+            writeGateEntries,
+          };
+          if (revoke) {
+            // Only this owned role projection changes, never real users, roles or sockets.
+            profile.role = "viewer";
+          }
+          const currentRoleError = authorizeCurrentOperatorRoleScopes(client, cfg);
+          let guardDenied = false;
+          try {
+            capturedGuard();
+          } catch {
+            guardDenied = true;
+          }
+          release.resolve();
+          await mutation;
+          await operation;
+          const persistedRows = loadTranscriptEventsSync(transcriptScope());
+          const addedRows = persistedRows.slice(seedRows.length).map(asOptionalRecord);
+          const injected = addedRows[0];
+          const message = asOptionalRecord(injected?.message);
+          const response = lastRespondCall(respond);
+          const broadcast = mockCallAt(context.broadcast, -1);
+          const payload = asOptionalRecord(broadcast?.[1]);
+          const nodeSend = lastNodeSendCall(context);
+          const observed = {
+            beforeRelease,
+            roleDenied: currentRoleError?.code === "FORBIDDEN",
+            guardDenied,
+            originalRowsUnchanged: persistedRows.slice(0, seedRows.length),
+            added: addedRows.map((row) => ({
+              type: row?.type,
+              parentId: row?.parentId,
+              message: asOptionalRecord(row?.message),
+            })),
+            addedCount: addedRows.length,
+            response: {
+              ok: response?.[0],
+              resultOk: response?.[1]?.ok,
+              errorPresent: response?.[2] !== undefined,
+            },
+            broadcastCount: context.broadcast.mock.calls.length,
+            nodeSendCount: context.nodeSendToSession.mock.calls.length,
+            targetUnchanged: readSqliteMainSessionEntry()?.sessionId === sessionId,
+            paramsUnchanged: params,
+            cfgUnchanged: cfg,
+          };
+          expect(observed).toMatchObject({
+            beforeRelease: {
+              rowsUnchanged: true,
+              responses: 0,
+              broadcasts: 0,
+              nodeSends: 0,
+              activeAdmissions: boundary === "owned transcript write" ? 1 : 0,
+              writeGateEntries: boundary === "owned transcript write" ? 1 : 0,
+            },
+            roleDenied: revoke,
+            guardDenied: revoke,
+            originalRowsUnchanged: seedRows,
+            addedCount: revoke ? 0 : 1,
+            response: { ok: !revoke, resultOk: revoke ? undefined : true, errorPresent: revoke },
+            broadcastCount: revoke ? 0 : 1,
+            nodeSendCount: revoke ? 0 : 1,
+            targetUnchanged: true,
+            paramsUnchanged: paramsBefore,
+            cfgUnchanged: cfgBefore,
+          });
+          if (!revoke) {
+            expect(injected).toMatchObject({ type: "message", parentId: seed?.id });
+            expect(message).toMatchObject({
+              role: "assistant",
+              content: [{ type: "text", text: params.message }],
+              provider: "openclaw",
+              model: "gateway-injected",
+            });
+            expect(response?.[1]?.messageId).toBe(injected?.id);
+            expect(broadcast?.[0]).toBe("chat");
+            expect(payload).toMatchObject({
+              sessionKey: "agent:main:main",
+              agentId: "main",
+              state: "final",
+              message: projectAssistantDisplayContent(
+                expectDefined(message, "persisted injected message"),
+              ),
+            });
+            expect(nodeSend).toEqual([
+              "agent:main:main",
+              "chat",
+              payload,
+              { sessionKeys: ["agent:main:main"] },
+            ]);
+          } else {
+            expect(persistedRows).toEqual(seedRows);
+          }
+        } finally {
+          release.resolve();
+          await mutation?.catch(() => undefined);
+          await operation?.catch(() => undefined);
+        }
+      });
     },
   );
 

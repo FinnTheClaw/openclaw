@@ -7,6 +7,7 @@ import {
   validateChatToolTitlesParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveSessionWorkStartError } from "../../config/sessions.js";
+import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import {
   projectChatDisplayMessage,
@@ -22,6 +23,10 @@ import {
 import { chatHistoryHandlers } from "./chat-history-handler.js";
 import { chatMessageGetHandlers } from "./chat-message-get-handler.js";
 import { appendAssistantTranscriptMessage } from "./chat-transcript-persistence.js";
+import {
+  captureGatewayRequestOperatorGuard,
+  readGatewayRequestMutationAuthority,
+} from "./session-mutation-guards.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -50,7 +55,8 @@ export const chatHandlers: GatewayRequestHandlers = {
     // older clients stop asking, while current clients read the tool call title.
     respond(true, { titles: {}, disabled: true });
   },
-  "chat.inject": async ({ params, respond, context }) => {
+  "chat.inject": async (options) => {
+    const { params, respond, context } = options;
     if (!assertValidParams(params, validateChatInjectParams, "chat.inject", respond)) {
       return;
     }
@@ -81,10 +87,17 @@ export const chatHandlers: GatewayRequestHandlers = {
 
     let appended: Awaited<ReturnType<typeof appendAssistantTranscriptMessage>>;
     try {
+      const requestAuthority = readGatewayRequestMutationAuthority(options);
+      const assertOperatorCurrent = captureGatewayRequestOperatorGuard(options);
+      const assertCurrent = () => {
+        requestAuthority.assertCurrent();
+        assertOperatorCurrent();
+      };
       const admission = await beginSessionWorkAdmission({
         scope: storePath,
         identities: [sessionKey, sessionId],
         assertAllowed: () => {
+          assertCurrent();
           const latestEntry = loadSessionEntry(rawSessionKey, sessionLoadOptions).entry;
           if (!latestEntry) {
             throw new Error(`Session "${sessionKey}" was deleted while starting work. Retry.`);
@@ -99,18 +112,22 @@ export const chatHandlers: GatewayRequestHandlers = {
         },
       });
       try {
-        appended = await admission.run(
-          async () =>
-            await appendAssistantTranscriptMessage({
-              sessionKey,
-              message: p.message,
-              label: p.label,
-              sessionId,
-              storePath,
-              agentId,
-              createIfMissing: true,
-              cfg,
-            }),
+        appended = await admission.run(() =>
+          withSessionTranscriptWriteAssertion(
+            { agentId, sessionId, sessionKey, storePath },
+            assertCurrent,
+            async () =>
+              await appendAssistantTranscriptMessage({
+                sessionKey,
+                message: p.message,
+                label: p.label,
+                sessionId,
+                storePath,
+                agentId,
+                createIfMissing: true,
+                cfg,
+              }),
+          ),
         );
       } finally {
         admission.release();

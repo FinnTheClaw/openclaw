@@ -51,6 +51,7 @@ import {
   sessionMatchesExpectedTranscriptTurn,
 } from "./session-transcript-turn-state.js";
 import { collectSessionEntryLookupKeys } from "./store-entry.js";
+import { captureOwnedTranscriptWriteAssertion } from "./transcript-write-context.js";
 import { mergeSessionEntry, type SessionEntry } from "./types.js";
 
 type SqliteExpectedSessionTranscriptTurnResult = {
@@ -113,6 +114,10 @@ export async function appendExpectedSessionTranscriptTurn(
     return sessionMatchesExpectedTranscriptTurn(selected, options) ? selected.entry : undefined;
   };
   const resolved = resolveSqliteTranscriptScope({
+    ...scope,
+    sessionId: options.expectedSessionId,
+  });
+  const assertOwnedTranscriptWrite = captureOwnedTranscriptWriteAssertion({
     ...scope,
     sessionId: options.expectedSessionId,
   });
@@ -210,6 +215,7 @@ export async function appendExpectedSessionTranscriptTurn(
       );
       const publish = runOpenClawAgentWriteTransaction(
         (transactionDb) => {
+          assertOwnedTranscriptWrite();
           mutation?.assertCurrent?.();
           const fresh = readEntry(transactionDb);
           const replay = mutation
