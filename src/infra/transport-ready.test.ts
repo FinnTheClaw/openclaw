@@ -308,7 +308,7 @@ describe("waitForTransportReady", () => {
       errors: 0,
     },
   ] as const)("$name", async (scenario) => {
-    const runtime = createRuntime();
+    const runtime = createTestRuntime();
     const controller = new AbortController();
     let resolveProbe!: (value: { ok: boolean }) => void;
     let rejectProbe!: (reason: Error) => void;
