@@ -2,7 +2,7 @@ import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { withSessionHistoryWorkerDatabase } from "../config/sessions/session-transcript-worker-runtime.js";
 import { resolveStateDir } from "../config/state-dir.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import { isPidAlive } from "../shared/pid-alive.js";
+import { getFileLockProcessStartTime, isPidAlive } from "../shared/pid-alive.js";
 import { isOpenClawAgentDatabasePathCurrent } from "../state/openclaw-agent-db-identity.js";
 import { retainAgentDatabase } from "../state/openclaw-agent-db-lifecycle.js";
 import { withOpenClawAgentDatabaseWrite } from "../state/openclaw-agent-db-write.js";
@@ -26,6 +26,7 @@ type SessionCostUsageRefreshLock = {
   pid: number;
   startedAt: number;
   ownerNonce: string;
+  processStartTime?: number;
 };
 
 function captureCacheDatabaseOptions(
@@ -132,10 +133,31 @@ function parseRefreshLock(raw: string | null): SessionCostUsageRefreshLock | nul
     ) {
       return null;
     }
-    return { pid: value.pid, startedAt: value.startedAt, ownerNonce: value.ownerNonce };
+    return {
+      pid: value.pid,
+      startedAt: value.startedAt,
+      ownerNonce: value.ownerNonce,
+      ...(typeof value.processStartTime === "number" &&
+      Number.isFinite(value.processStartTime) &&
+      value.processStartTime >= 0
+        ? { processStartTime: value.processStartTime }
+        : {}),
+    };
   } catch {
     return null;
   }
+}
+
+function isRefreshLockOwnerRunning(lock: SessionCostUsageRefreshLock): boolean {
+  if (!isPidAlive(lock.pid)) {
+    return false;
+  }
+  // Legacy locks and unavailable birth reads remain busy, never stale by age.
+  if (lock.processStartTime === undefined) {
+    return true;
+  }
+  const currentStartTime = getFileLockProcessStartTime(lock.pid);
+  return currentStartTime === null || currentStartTime === lock.processStartTime;
 }
 
 export async function isSessionCostUsageRefreshRunning(
@@ -148,7 +170,7 @@ export async function isSessionCostUsageRefreshRunning(
   });
   const lock = parseRefreshLock(await readRefreshLock(options));
   // Status never waits for a writer; acquisition replaces stale locks with its existing CAS.
-  return lock !== null && isPidAlive(lock.pid);
+  return lock !== null && isRefreshLockOwnerRunning(lock);
 }
 
 export function prepareSessionCostUsageRefreshLock(
@@ -164,10 +186,12 @@ export function prepareSessionCostUsageRefreshLock(
     path: databasePath,
     env: owner?.env,
   });
+  const processStartTime = getFileLockProcessStartTime(process.pid);
   const lock: SessionCostUsageRefreshLock = {
     pid: process.pid,
     startedAt: Date.now(),
     ownerNonce: `${process.pid}:${Date.now()}:${process.hrtime.bigint()}`,
+    ...(processStartTime !== null ? { processStartTime } : {}),
   };
   const lockJson = JSON.stringify(lock);
   let database: OpenClawAgentDatabase | undefined;
@@ -213,7 +237,9 @@ export function prepareSessionCostUsageRefreshLock(
         owner?.assertCurrent?.();
         const previousRaw = await readRefreshLock(options);
         const previousLock = parseRefreshLock(previousRaw);
-        const previousOwnerIsRunning = previousLock ? isPidAlive(previousLock.pid) : false;
+        const previousOwnerIsRunning = previousLock
+          ? isRefreshLockOwnerRunning(previousLock)
+          : false;
         acquired = await runCacheWriteTransaction(
           (current) => {
             mayOwnLock = true;

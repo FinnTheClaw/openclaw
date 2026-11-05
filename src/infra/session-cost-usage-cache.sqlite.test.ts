@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import * as pidAlive from "../shared/pid-alive.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   closeOpenClawAgentDatabasesAsync,
@@ -253,6 +254,87 @@ describe("session cost usage SQLite cache", () => {
       }
     });
   });
+
+  it.each([
+    { label: "stale generation", mode: "stale", reclaim: true },
+    { label: "matching generation", mode: "matching", reclaim: false },
+    { label: "unknown observed generation", mode: "unknown", reclaim: false },
+    { label: "legacy identityless owner", mode: "legacy", reclaim: false },
+  ] as const)(
+    "F04-012 compares $label for refresh status and admission without touching another live owner",
+    async ({ mode, reclaim }) => {
+      const stateDir = tempDirs.make("openclaw-usage-cache-process-generation-");
+      await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const agentId = "worker-1";
+        const database = openOpenClawAgentDatabase({ agentId });
+        const actualProcessStartTime = pidAlive.getFileLockProcessStartTime(process.pid);
+        if (actualProcessStartTime === null) {
+          throw new Error("F04-012 fixture requires the live test process native birth identity");
+        }
+        const staleProcessStartTime = actualProcessStartTime === 0 ? 1 : actualProcessStartTime - 1;
+        const previousJson = JSON.stringify({
+          pid: process.pid,
+          startedAt: 1,
+          ownerNonce: "synthetic-crash-left-" + mode,
+          ...(mode === "legacy"
+            ? {}
+            : {
+                processStartTime: mode === "stale" ? staleProcessStartTime : actualProcessStartTime,
+              }),
+        });
+        database.db
+          .prepare(
+            "INSERT INTO cache_entries (scope, key, value_json, blob, expires_at, updated_at) VALUES (?, ?, ?, NULL, NULL, ?)",
+          )
+          .run("session-cost-usage", "refresh-lock", previousJson, 1);
+        const readLock = () =>
+          database.db
+            .prepare("SELECT value_json FROM cache_entries WHERE scope = ? AND key = ?")
+            .get("session-cost-usage", "refresh-lock") as { value_json: string } | undefined;
+
+        // The PID and native birth are real. Liveness is controlled so the test
+        // never sends even a signal-zero probe or actually recycles a host PID.
+        vi.spyOn(pidAlive, "isPidAlive").mockImplementation((pid) => {
+          expect(pid).toBe(process.pid);
+          return true;
+        });
+        if (mode === "unknown") {
+          vi.spyOn(pidAlive, "getFileLockProcessStartTime").mockReturnValue(null);
+        }
+
+        const owner = prepareSessionCostUsageRefreshLock(agentId, database.path);
+        let acquired = false;
+        try {
+          const running = await isSessionCostUsageRefreshRunning(agentId, database.path);
+          const afterStatus = readLock();
+          acquired = await owner.acquire();
+          const afterAcquire = readLock();
+
+          // Capture both exported outcomes before asserting: a stale lock must
+          // not merely change its display while continuing to refuse admission.
+          expect.soft({ running, acquired }).toEqual({
+            running: !reclaim,
+            acquired: reclaim,
+          });
+          expect.soft(afterStatus).toEqual({ value_json: previousJson });
+          if (reclaim) {
+            expect.soft(afterAcquire?.value_json).not.toBe(previousJson);
+            if (acquired && afterAcquire) {
+              expect(JSON.parse(afterAcquire.value_json)).toMatchObject({
+                pid: process.pid,
+                processStartTime: actualProcessStartTime,
+              });
+            }
+          } else {
+            expect.soft(afterAcquire).toEqual({ value_json: previousJson });
+          }
+        } finally {
+          await owner.release();
+        }
+        expect.soft(readLock()).toEqual(reclaim ? undefined : { value_json: previousJson });
+      });
+    },
+  );
 
   it("reclaims a zombie refresh lock on acquisition without writing during status reads", async () => {
     const stateDir = tempDirs.make("openclaw-usage-cache-zombie-lock-");
