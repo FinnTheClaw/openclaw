@@ -1436,7 +1436,7 @@ def command_probe(args):
         sent = sent_messages[0]
     else:
         text, run = apply_template(args.text, sut)
-        sent_messages = [driver.send_text(chat_id, text, args.reply_to)]
+        sent_messages = [driver.send_text(chat_id, text, args.reply_to, args.thread_id)]
         sent = sent_messages[0]
     wait_args = argparse.Namespace(
         expect=args.expect,

@@ -348,6 +348,77 @@ class PhotoContentTest(unittest.TestCase):
             tdlib_code=code, tdlib_message=message, tdlib_method=method,
         )
 
+    def test_probe_preserves_requested_thread_target(self):
+        for mode, thread_id in (("text", 777), ("text", 0), ("photo", 777)):
+            with self.subTest(mode=mode, thread_id=thread_id):
+                sent = native_message({
+                    "@type": "messageText",
+                    "text": {"text": "synthetic sent probe", "entities": []},
+                }, chat_id=-10042)
+                reply = {"messageId": 43 << 20, "text": "synthetic reply"}
+                instance = driver.UserDriver.__new__(driver.UserDriver)
+                instance.config = {}
+                instance.bot_config = {}
+                instance.client = SimpleNamespace(request=Mock(return_value=sent))
+                instance.authorize = Mock()
+                instance.resolve_chat = Mock(return_value=-10042)
+                instance.wait_for_message = Mock(return_value=(reply, [reply]))
+                instance.send_photos = Mock(return_value=[sent])
+                args = SimpleNamespace(
+                    chat="-10042", text="@{sut} synthetic probe", photo=["synthetic.jpg"] if mode == "photo" else [],
+                    caption="synthetic caption", reply_to=None, thread_id=thread_id,
+                    timeout_ms=1000, expect=["synthetic reply"], from_bot="synthetic_sut",
+                    require_reply=True, json=True, output="",
+                )
+                with patch.object(driver, "load_config", return_value=({}, {})), \
+                        patch.object(driver, "UserDriver", return_value=instance), \
+                        patch.object(driver, "resolve_sut", return_value={"username": "synthetic_sut", "id": 42}), \
+                        patch.object(driver, "print_result") as output:
+                    driver.command_probe(args)
+
+                instance.authorize.assert_called_once()
+                self.assertEqual(vars(instance.authorize.call_args.args[0]), {"timeout_ms": 1000})
+                instance.resolve_chat.assert_called_once_with("-10042")
+                instance.wait_for_message.assert_called_once()
+                wait_chat, wait_args, after_message = instance.wait_for_message.call_args.args
+                self.assertEqual(wait_chat, -10042)
+                self.assertEqual(wait_args.thread_id, thread_id)
+                self.assertEqual(wait_args.reply_to, sent["id"])
+                self.assertEqual(wait_args.expect, args.expect)
+                self.assertEqual(wait_args.from_bot, args.from_bot)
+                self.assertEqual(wait_args.timeout_ms, args.timeout_ms)
+                self.assertEqual(after_message, sent["id"])
+                output.assert_called_once()
+                result, as_json, output_path = output.call_args.args
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["chatId"], -10042)
+                self.assertEqual(result["sent"]["messageId"], sent["id"])
+                self.assertEqual(len(result["sentMessages"]), 1)
+                self.assertEqual(result["reply"], reply)
+                self.assertEqual(result["observedCount"], 1)
+                self.assertEqual(result["observed"], [])
+                self.assertTrue(as_json)
+                self.assertEqual(output_path, "")
+                if mode == "photo":
+                    instance.send_photos.assert_called_once_with(
+                        -10042, ["synthetic.jpg"], "synthetic caption", None, thread_id,
+                    )
+                    instance.client.request.assert_not_called()
+                else:
+                    instance.send_photos.assert_not_called()
+                    instance.client.request.assert_called_once()
+                    request = instance.client.request.call_args.args[0]
+                    self.assertEqual(request["@type"], "sendMessage")
+                    self.assertEqual(request["chat_id"], -10042)
+                    self.assertIsNone(request["reply_to"])
+                    self.assertEqual(
+                        request["input_message_content"]["text"]["text"], "@synthetic_sut synthetic probe",
+                    )
+                    self.assertEqual(
+                        request["topic_id"],
+                        {"@type": "messageTopicThread", "message_thread_id": thread_id} if thread_id else None,
+                    )
+
     def test_text_photo_and_album_preserve_forum_topic_and_reply_with_pinned_api(self):
         class Transport:
             def __init__(self):
