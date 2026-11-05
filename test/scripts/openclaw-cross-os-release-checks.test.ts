@@ -14,6 +14,7 @@ import { createConnection as createNetConnection, createServer as createNetServe
 import { tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath, win32 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { isRecoverableWindowsPackagedUpgradeUnsettledExit } from "../../scripts/lib/cross-os-release-checks/config.ts";
 import {
@@ -2088,6 +2089,220 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    { label: "parent-only SIGTERM", mode: "signal", signal: "SIGTERM", expectedStatus: 143 },
+    { label: "parent-only SIGINT", mode: "signal", signal: "SIGINT", expectedStatus: 130 },
+    { label: "ordinary stop", mode: "stop", signal: undefined, expectedStatus: 0 },
+    { label: "already closed child", mode: "closed", signal: "SIGTERM", expectedStatus: 143 },
+  ] as const)(
+    "installed manual signal cleanup: $label",
+    async ({ mode, signal, expectedStatus }) => {
+      if (process.platform !== "linux") {
+        return;
+      }
+
+      const dir = mkdtempSync(join(tmpdir(), "openclaw-installed-manual-cleanup-"));
+      const cliPath = join(dir, "synthetic-cli.cjs");
+      const gatewayReadyPath = join(dir, "gateway.json");
+      const descendantReadyPath = join(dir, "descendant.json");
+      const runnerReadyPath = join(dir, "runner.json");
+      const gatewaySignalPath = join(dir, "gateway-signal.json");
+      const descendantSignalPath = join(dir, "descendant-signal.json");
+      const installedUrl = pathToFileURL(
+        resolvePath("scripts/lib/cross-os-release-checks/installed.ts"),
+      ).href;
+      const processUrl = pathToFileURL(
+        resolvePath("scripts/lib/cross-os-release-checks/process.ts"),
+      ).href;
+      let runner: ReturnType<typeof spawn> | undefined;
+      let runnerExit: ReturnType<typeof waitForExit> | undefined;
+      let gatewayPid: number | undefined;
+      let descendantPid: number | undefined;
+      let stderr = "";
+
+      try {
+        const cliScript =
+          [
+            "#!" + process.execPath,
+            "const fs = require('node:fs');",
+            "const path = require('node:path');",
+            "const { spawn } = require('node:child_process');",
+            "const dir = process.env.OPENCLAW_TEST_MANUAL_DIR;",
+            "const mode = process.env.OPENCLAW_TEST_MANUAL_MODE;",
+            "const descendantRole = process.argv[2] === 'descendant';",
+            "if (descendantRole) {",
+            "  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {",
+            "    fs.writeFileSync(path.join(dir, 'descendant-signal.json'), JSON.stringify({ pid: process.pid, signal, dir }));",
+            "    process.exit(0);",
+            "  });",
+            "  fs.writeFileSync(path.join(dir, 'descendant.json'), JSON.stringify({ pid: process.pid, dir }));",
+            "  setInterval(() => {}, 1000);",
+            "} else {",
+            "  const child = mode === 'signal' ? spawn(process.execPath, [__filename, 'descendant', dir], { stdio: 'ignore' }) : undefined;",
+            "  let stopping = false;",
+            "  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {",
+            "    fs.writeFileSync(path.join(dir, 'gateway-signal.json'), JSON.stringify({ pid: process.pid, signal, dir }));",
+            "    stopping = true;",
+            "    if (!child || child.exitCode !== null || child.signalCode !== null) process.exit(0);",
+            "  });",
+            "  child?.once('close', () => { if (stopping) process.exit(0); });",
+            "  fs.writeFileSync(path.join(dir, 'gateway.json'), JSON.stringify({ pid: process.pid, dir, args: process.argv.slice(2) }));",
+            "  if (mode === 'closed') process.exit(0);",
+            "  setInterval(() => {}, 1000);",
+            "}",
+          ].join("\n") + "\n";
+        writeFileSync(cliPath, cliScript, { mode: 0o700 });
+        const runnerScript = [
+          "import fs from 'node:fs';",
+          "import { startManualGatewayFromInstalledCli } from " +
+            JSON.stringify(installedUrl) +
+            ";",
+          "import { stopGateway } from " + JSON.stringify(processUrl) + ";",
+          "const gateway = await startManualGatewayFromInstalledCli({",
+          "  lane: { homeDir: " + JSON.stringify(dir) + ", gatewayPort: 31337 },",
+          "  cliPath: " + JSON.stringify(cliPath) + ",",
+          "  env: process.env,",
+          "  logPath: " + JSON.stringify(join(dir, "gateway.log")) + ",",
+          "});",
+          ...(mode === "closed"
+            ? ["await gateway.waitForClose();", "await gateway.closeLog();"]
+            : []),
+          "fs.writeFileSync(" +
+            JSON.stringify(runnerReadyPath) +
+            ", JSON.stringify({ pid: process.pid, gatewayPid: gateway.child.pid }));",
+          ...(mode === "stop"
+            ? [
+                "process.stdin.once('data', async () => {",
+                "  await stopGateway(gateway);",
+                "  await gateway.waitForClose();",
+                "  await gateway.closeLog();",
+                "  process.exit(0);",
+                "});",
+                "process.stdin.resume();",
+              ]
+            : []),
+          "setInterval(() => {}, 1000);",
+        ].join("\n");
+        runner = spawn(
+          process.execPath,
+          ["--import", "tsx", "--input-type=module", "-e", runnerScript],
+          {
+            cwd: process.cwd(),
+            env: {
+              ...process.env,
+              HOME: dir,
+              OPENCLAW_TEST_MANUAL_DIR: dir,
+              OPENCLAW_TEST_MANUAL_MODE: mode,
+              OPENCLAW_CROSS_OS_PROCESS_TREE_KILL_AFTER_MS: "3000",
+            },
+            stdio: ["pipe", "ignore", "pipe"],
+          },
+        );
+        runner.stderr?.on("data", (chunk) => {
+          stderr = (stderr + String(chunk)).slice(-8192);
+        });
+        runnerExit = waitForExit(runner, 20_000);
+        await waitForFile(runnerReadyPath, 10_000).catch((error) => {
+          throw new Error(String(error) + "\n" + stderr);
+        });
+        const runnerReceipt = JSON.parse(readFileSync(runnerReadyPath, "utf8"));
+        expect(runnerReceipt.pid).toBe(runner.pid);
+        await waitForFile(gatewayReadyPath, 10_000);
+        const gatewayReceipt = JSON.parse(readFileSync(gatewayReadyPath, "utf8"));
+        gatewayPid = gatewayReceipt.pid;
+        expect(gatewayReceipt.dir).toBe(dir);
+        expect(gatewayPid).toBe(runnerReceipt.gatewayPid);
+        expect(gatewayReceipt.args).toEqual([
+          "gateway",
+          "run",
+          "--bind",
+          "loopback",
+          "--port",
+          "31337",
+          "--force",
+        ]);
+
+        if (mode === "signal") {
+          await waitForFile(descendantReadyPath, 10_000);
+          const descendantReceipt = JSON.parse(readFileSync(descendantReadyPath, "utf8"));
+          descendantPid = descendantReceipt.pid;
+          expect(descendantReceipt.dir).toBe(dir);
+          expect(isProcessAlive(gatewayPid!)).toBe(true);
+          expect(isProcessAlive(descendantPid!)).toBe(true);
+        } else if (mode === "closed") {
+          await waitForDead(gatewayPid!, 2_000);
+        }
+        if (mode === "stop") {
+          runner.stdin?.end("stop");
+        } else {
+          runner.kill(signal);
+        }
+        expect(await runnerExit, stderr).toEqual({ signal: null, status: expectedStatus });
+        if (mode !== "closed") {
+          await waitForFile(gatewaySignalPath, 2_000);
+          expect(JSON.parse(readFileSync(gatewaySignalPath, "utf8"))).toEqual({
+            pid: gatewayPid,
+            signal: mode === "stop" ? "SIGTERM" : signal,
+            dir,
+          });
+        }
+        await waitForDead(gatewayPid!, 2_000);
+        if (mode === "signal") {
+          await waitForFile(descendantSignalPath, 2_000);
+          expect(JSON.parse(readFileSync(descendantSignalPath, "utf8"))).toEqual({
+            pid: descendantPid,
+            signal,
+            dir,
+          });
+          await waitForDead(descendantPid!, 2_000);
+        }
+      } finally {
+        const cleanupErrors: string[] = [];
+        for (const readyPath of [descendantReadyPath, gatewayReadyPath]) {
+          if (!existsSync(readyPath)) {
+            continue;
+          }
+          const receipt = JSON.parse(readFileSync(readyPath, "utf8"));
+          if (!Number.isInteger(receipt.pid) || receipt.pid <= 0 || receipt.dir !== dir) {
+            cleanupErrors.push("invalid owned fixture receipt: " + readyPath);
+            continue;
+          }
+          if (!isProcessAlive(receipt.pid)) {
+            continue;
+          }
+          try {
+            const argv = readFileSync("/proc/" + receipt.pid + "/cmdline", "utf8").split("\0");
+            if (!argv.includes(cliPath)) {
+              throw new Error("owned fixture executable does not match live PID " + receipt.pid);
+            }
+            process.kill(receipt.pid, "SIGTERM");
+            await waitForDead(receipt.pid, 2_000);
+          } catch (error) {
+            if (isProcessAlive(receipt.pid)) {
+              cleanupErrors.push(String(error));
+            }
+          }
+        }
+        if (runner?.pid !== undefined && isProcessAlive(runner.pid)) {
+          const runnerClose = waitForExit(runner, 5_000).catch((error) => {
+            cleanupErrors.push("owned harness close failed: " + String(error));
+          });
+          try {
+            runner.kill("SIGKILL");
+          } catch (error) {
+            cleanupErrors.push("owned harness kill failed: " + String(error));
+          }
+          await runnerClose;
+        }
+        await runnerExit?.catch(() => {});
+        if (cleanupErrors.length > 0) {
+          throw new Error("owned fixture cleanup failed: " + cleanupErrors.join("; "));
+        }
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("derives the installed prefix from resolved CLI paths", () => {
     expect(

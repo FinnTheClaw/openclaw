@@ -31,6 +31,7 @@ import {
   canConnectToLoopbackPort,
   captureGatewayProcess,
   hasChildExited,
+  registerActiveChildProcessTree,
   resolveCommandSpawnInvocation,
   runCommand,
   runCommandInvocation,
@@ -491,10 +492,17 @@ export async function startManualGatewayFromInstalledCli(params: {
     env: params.env,
     shell: invocation.shell,
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
     windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     windowsHide: true,
   });
-  return captureGatewayProcess(child, gatewayLog, { launchLogOffset, logPath: params.logPath });
+  const activeChildTree = registerActiveChildProcessTree(child);
+  return captureGatewayProcess(
+    child,
+    gatewayLog,
+    { launchLogOffset, logPath: params.logPath },
+    activeChildTree.unregister,
+  );
 }
 
 async function resolveInstalledGatewayStatusArgs(params: {
