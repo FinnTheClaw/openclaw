@@ -332,6 +332,86 @@ describe("config write coordinator", () => {
     expect(submissions).toHaveLength(1);
   });
 
+  it("L02-003-F01 preserves a newer raw edit while whole-draft discard drains autosave", async () => {
+    vi.useFakeTimers();
+    const { request, submissions, firstSet } = createDeferredSetServerMock();
+    const { runtimeConfig } = createConfigCapabilityHarness(
+      request as GatewayBrowserClient["request"],
+    );
+    const newerRaw = '{\n  "count": 3\n}\n';
+    let discardSettled = false;
+    let discardWork:
+      | Promise<{ status: "fulfilled" } | { status: "rejected"; reason: unknown }>
+      | undefined;
+
+    try {
+      await runtimeConfig.ensureLoaded();
+      runtimeConfig.patchForm(["count"], 2);
+      await vi.advanceTimersByTimeAsync(CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS);
+
+      discardWork = runtimeConfig.discardDraft().then(
+        () => {
+          discardSettled = true;
+          return { status: "fulfilled" as const };
+        },
+        (reason: unknown) => {
+          discardSettled = true;
+          return { status: "rejected" as const, reason };
+        },
+      );
+      runtimeConfig.setRaw(newerRaw);
+      const pending = {
+        raw: runtimeConfig.state.configRaw,
+        mode: runtimeConfig.state.configFormMode,
+        dirty: runtimeConfig.state.configFormDirty,
+        discardSettled,
+        getCount: request.mock.calls.filter(([method]) => method === "config.get").length,
+        submissions: submissions.map((submission) => ({ ...submission })),
+        requestMethods: request.mock.calls.map(([method]) => method),
+      };
+
+      firstSet.resolve({});
+      await vi.advanceTimersByTimeAsync(0);
+      const settlement = await discardWork;
+      await vi.advanceTimersByTimeAsync(0);
+      const settled = {
+        raw: runtimeConfig.state.configRaw,
+        mode: runtimeConfig.state.configFormMode,
+        dirty: runtimeConfig.state.configFormDirty,
+        discardSettled,
+        getCount: request.mock.calls.filter(([method]) => method === "config.get").length,
+        submissions: submissions.map((submission) => ({ ...submission })),
+        requestMethods: request.mock.calls.map(([method]) => method),
+      };
+
+      expect({ pending, settlement, settled }).toEqual({
+        pending: {
+          raw: newerRaw,
+          mode: "raw",
+          dirty: true,
+          discardSettled: false,
+          getCount: 1,
+          submissions: [{ raw: '{\n  "count": 2\n}\n', baseHash: "hash-1" }],
+          requestMethods: expect.arrayContaining(["config.get", "config.set"]),
+        },
+        settlement: { status: "fulfilled" },
+        settled: {
+          raw: newerRaw,
+          mode: "raw",
+          dirty: true,
+          discardSettled: true,
+          getCount: 1,
+          submissions: [{ raw: '{\n  "count": 2\n}\n', baseHash: "hash-1" }],
+          requestMethods: pending.requestMethods,
+        },
+      });
+    } finally {
+      firstSet.resolve({});
+      await discardWork;
+      runtimeConfig.dispose();
+    }
+  });
+
   it.each([false, true])(
     "drains saves without trailing discarded bytes (reloadOnly: %s)",
     async (reloadOnly) => {
