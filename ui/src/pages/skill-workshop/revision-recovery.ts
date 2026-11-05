@@ -8,6 +8,7 @@ import {
 import { t } from "../../i18n/index.ts";
 import { registerSkillWorkshopEnglish } from "../../i18n/locales/en-skill-workshop.ts";
 import { formatUiError } from "../../lib/format-error.ts";
+import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import type { SkillWorkshopProposal } from "./page-types.ts";
 import { resolveSkillWorkshopAgentId } from "./proposals.ts";
 import { requestSkillWorkshopRevisionAdmission } from "./revision-admission.ts";
@@ -93,8 +94,13 @@ export class SkillWorkshopRevisionRecoveryController {
   }
 
   sync(context: ApplicationContext, state: SkillWorkshopState): void {
+    const selectedAgentId = resolveSkillWorkshopAgentId(context);
     if (this.recoveryId) {
-      const current = skillWorkshopRevisionAdmissionsFor(context).get(this.recoveryId);
+      const retained = skillWorkshopRevisionAdmissionsFor(context).get(this.recoveryId);
+      const current =
+        retained && normalizeAgentId(retained.proposalAgentId) === selectedAgentId
+          ? retained
+          : null;
       if (current?.phase === "retryable-failed") {
         this.restore(state, current);
         return;
@@ -120,9 +126,7 @@ export class SkillWorkshopRevisionRecoveryController {
     if (state.skillWorkshopRevisionKey || state.skillWorkshopRevisionDraft) {
       return;
     }
-    const recovery = skillWorkshopRevisionAdmissionsFor(context).firstFailed(
-      resolveSkillWorkshopAgentId(context),
-    );
+    const recovery = skillWorkshopRevisionAdmissionsFor(context).firstFailed(selectedAgentId);
     if (recovery) {
       this.recoveryId = recovery.id;
       this.restore(state, recovery);

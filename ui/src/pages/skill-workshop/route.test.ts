@@ -24,6 +24,192 @@ afterEach(() => {
 });
 
 describe("Workshop route refresh", () => {
+  it("L02-102-F01 scopes retained recovery while the same page selects A then B then A", async () => {
+    const listeners = new Set<() => void>();
+    const request = vi.fn(async (method: string, params?: unknown) => {
+      const agentId = (params as { agentId?: string } | undefined)?.agentId ?? "research";
+      if (method === "skills.proposals.list") {
+        const result = manifest();
+        return {
+          ...result,
+          proposals: result.proposals.map((proposal) => ({
+            ...proposal,
+            id: "proposal-" + agentId,
+            title: agentId + " suggestion",
+            skillKey: "inbox-" + agentId,
+          })),
+        };
+      }
+      if (method === "skills.proposals.inspect") {
+        const result = inspectResult();
+        return {
+          ...result,
+          record: {
+            ...result.record,
+            id: "proposal-" + agentId,
+            title: agentId + " suggestion",
+            origin: { agentId, sessionKey: "agent:" + agentId + ":workshop" },
+            target: { skillName: agentId + " suggestion", skillKey: "inbox-" + agentId },
+          },
+        };
+      }
+      throw new Error("Unexpected Workshop request: " + method);
+    });
+    const context = createContext(request, {
+      methods: [
+        "skills.proposals.list",
+        "skills.proposals.inspect",
+        "skills.proposals.requestRevision",
+      ],
+      agentSelectionSubscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    let selectedId = "research";
+    const selection = context.agentSelection.state;
+    Object.defineProperty(context.agentSelection, "state", {
+      get: () => ({ ...selection, selectedId, scopeId: selectedId }),
+    });
+    const admissions = skillWorkshopRevisionAdmissionsFor(context);
+    const instructions = "  Preserve A's exact retry instructions.\nKeep this second line.\n";
+    const executor = vi.fn(async () => {
+      throw new Error("A admission failed");
+    });
+    const failed = admissions.start(
+      {
+        instructions,
+        proposalAgentId: "research",
+        proposalId: "proposal-research",
+        proposalSlug: "inbox-research",
+        expectedRevisionHash: inspectResult().revisionHash,
+      },
+      executor,
+    );
+    await failed.completion;
+    const retained = admissions.get(failed.entry.id);
+    const page = document.createElement(
+      "openclaw-skill-workshop-page",
+    ) as SkillWorkshopPageTestElement;
+    page.context = context;
+    document.body.append(page);
+
+    try {
+      await settleLitElement(page);
+      const initial = {
+        connected: page.isConnected,
+        agent: page.state?.skillWorkshopAgentId,
+        proposals: page.state?.skillWorkshopProposals.map((proposal) => proposal.key),
+        key: page.state?.skillWorkshopRevisionKey,
+        draft: page.state?.skillWorkshopRevisionDraft,
+        visibleDraft: page.querySelector<HTMLTextAreaElement>(".sw-revision-dialog__input")?.value,
+        failed: retained?.phase,
+        instructions: retained?.instructions,
+        hasIdempotency: Boolean(retained?.idempotencyKey),
+      };
+
+      selectedId = "ops";
+      for (const listener of listeners) {
+        listener();
+      }
+      await settleLitElement(page);
+      const revise = [...page.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Revise",
+      );
+      const reviseAvailable = Boolean(revise && !revise.disabled);
+      revise?.click();
+      await settleLitElement(page);
+      const input = page.querySelector<HTMLTextAreaElement>(".sw-revision-dialog__input");
+      const editable = Boolean(input && !input.disabled);
+      const bInstructions = "Only B's new revision draft.";
+      if (input) {
+        input.value = bInstructions;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await settleLitElement(page);
+      }
+      const onB = {
+        sameMountedPage: page.isConnected && document.body.contains(page),
+        agent: page.state?.skillWorkshopAgentId,
+        proposals: page.state?.skillWorkshopProposals.map((proposal) => proposal.key),
+        reviseAvailable,
+        key: page.state?.skillWorkshopRevisionKey,
+        draft: page.state?.skillWorkshopRevisionDraft,
+        editable,
+        visibleDraft: page.querySelector<HTMLTextAreaElement>(".sw-revision-dialog__input")?.value,
+        error: page.state?.skillWorkshopError,
+        retainedA: admissions.get(failed.entry.id),
+        failedB: admissions.firstFailed("ops"),
+        executorCalls: executor.mock.calls.length,
+      };
+
+      selectedId = "research";
+      for (const listener of listeners) {
+        listener();
+      }
+      await settleLitElement(page);
+      const returnedA = {
+        sameMountedPage: page.isConnected && document.body.contains(page),
+        agent: page.state?.skillWorkshopAgentId,
+        key: page.state?.skillWorkshopRevisionKey,
+        draft: page.state?.skillWorkshopRevisionDraft,
+        visibleDraft: page.querySelector<HTMLTextAreaElement>(".sw-revision-dialog__input")?.value,
+        failureVisible: page.state?.skillWorkshopError?.includes("A admission failed") ?? false,
+        retained: admissions.get(failed.entry.id),
+        executorCalls: executor.mock.calls.length,
+        revisionRequests: request.mock.calls.filter(
+          ([method]) => method === "skills.proposals.requestRevision",
+        ).length,
+        listAgents: request.mock.calls
+          .filter(([method]) => method === "skills.proposals.list")
+          .map(([, params]) => (params as { agentId: string }).agentId),
+      };
+
+      expect({ initial, onB, returnedA }).toEqual({
+        initial: {
+          connected: true,
+          agent: "research",
+          proposals: ["proposal-research"],
+          key: "proposal-research",
+          draft: instructions,
+          visibleDraft: instructions,
+          failed: "retryable-failed",
+          instructions,
+          hasIdempotency: true,
+        },
+        onB: {
+          sameMountedPage: true,
+          agent: "ops",
+          proposals: ["proposal-ops"],
+          reviseAvailable: true,
+          key: "proposal-ops",
+          draft: bInstructions,
+          editable: true,
+          visibleDraft: bInstructions,
+          error: null,
+          retainedA: retained,
+          failedB: null,
+          executorCalls: 1,
+        },
+        returnedA: {
+          sameMountedPage: true,
+          agent: "research",
+          key: "proposal-research",
+          draft: instructions,
+          visibleDraft: instructions,
+          failureVisible: true,
+          retained,
+          executorCalls: 1,
+          revisionRequests: 0,
+          listAgents: ["research", "ops", "research"],
+        },
+      });
+    } finally {
+      page.remove();
+      await failed.completion;
+      admissions.dispose();
+    }
+  });
+
   it("loads proposals before restoring a retained failed revision on mount", async () => {
     const response = createDeferred<ReturnType<typeof manifest>>();
     const request = vi.fn(async (method: string) =>
