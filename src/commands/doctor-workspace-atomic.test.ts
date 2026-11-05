@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { migrateLegacyRootMemoryFile } from "./doctor-workspace.js";
+import { createDoctorPrompter } from "./doctor-prompter.js";
+import { maybeRepairWorkspaceMemoryHealth } from "./doctor-workspace.js";
+
+const note = vi.hoisted(() => vi.fn());
+vi.mock("../../packages/terminal-core/src/note.js", () => ({ note }));
 
 const fsp = fs.promises;
 
@@ -10,11 +14,23 @@ describe("root memory atomic merge", () => {
   let dir: string;
   let canonical: string;
   let legacy: string;
+  let repairParams: Parameters<typeof maybeRepairWorkspaceMemoryHealth>[0];
 
   beforeEach(async () => {
     dir = await fsp.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-atomic-"));
     canonical = path.join(dir, "MEMORY.md");
     legacy = path.join(dir, "memory.md");
+    const prompter = createDoctorPrompter({
+      runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+      options: { yes: true },
+    });
+    vi.spyOn(prompter, "confirmRuntimeRepair");
+    repairParams = {
+      cfg: {},
+      prompter,
+      scope: { agentId: "main", workspaceDir: dir, labelAgent: false },
+    };
+    note.mockClear();
   });
 
   afterEach(async () => {
@@ -27,47 +43,56 @@ describe("root memory atomic merge", () => {
     await fsp.writeFile(legacy, legacyText);
   }
 
-  async function archivedText(result: Awaited<ReturnType<typeof migrateLegacyRootMemoryFile>>) {
-    if (!result.archivedLegacyPath) {
-      throw new Error("expected an archived legacy path");
-    }
-    return await fsp.readFile(result.archivedLegacyPath, "utf8");
+  async function archivedText() {
+    const repairDir = path.join(dir, ".openclaw-repair", "root-memory");
+    const archives = await fsp.readdir(repairDir);
+    expect(archives).toHaveLength(1);
+    return await fsp.readFile(path.join(repairDir, archives[0]!, "memory.md"), "utf8");
   }
 
   it("CP80-MEM01 merges distinct facts and archives legacy", async () => {
     await seed();
-    const result = await migrateLegacyRootMemoryFile(dir);
-    expect(result.mergedLegacy).toBe(true);
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(note).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("Workspace memory root merged:"),
+      "Doctor changes",
+    );
+    expect(String(note.mock.calls[0]?.[0])).toContain("- merged legacy content from: " + legacy);
     const merged = await fsp.readFile(canonical, "utf8");
     expect(merged).toContain("# Canonical only");
     expect(merged).toContain("# Legacy only");
-    expect(await archivedText(result)).toBe("# Legacy only\n");
+    expect(await archivedText()).toBe("# Legacy only\n");
     await expect(fsp.access(legacy)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("CP80-MEM02 archives identical text without replacing canonical", async () => {
     await seed("# Same\n", "# Same\n");
     const before = await fsp.stat(canonical);
-    const result = await migrateLegacyRootMemoryFile(dir);
-    expect(result.changed).toBe(true);
-    expect(result.mergedLegacy).toBe(false);
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(note).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("Workspace memory root merged:"),
+      "Doctor changes",
+    );
+    expect(String(note.mock.calls[0]?.[0])).not.toContain("- merged legacy content from:");
     expect(await fsp.readFile(canonical, "utf8")).toBe("# Same\n");
     expect((await fsp.stat(canonical)).ino).toBe(before.ino);
-    expect(await archivedText(result)).toBe("# Same\n");
+    expect(await archivedText()).toBe("# Same\n");
   });
 
   it("CP80-MEM03 does nothing when canonical is missing", async () => {
     await fsp.writeFile(legacy, "# Legacy\n");
-    const result = await migrateLegacyRootMemoryFile(dir);
-    expect(result.changed).toBe(false);
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(repairParams.prompter.confirmRuntimeRepair).not.toHaveBeenCalled();
+    expect(note).not.toHaveBeenCalled();
     expect(await fsp.readFile(legacy, "utf8")).toBe("# Legacy\n");
     await expect(fsp.access(canonical)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("CP80-MEM04 does nothing when legacy is missing", async () => {
     await fsp.writeFile(canonical, "# Canonical\n");
-    const result = await migrateLegacyRootMemoryFile(dir);
-    expect(result.changed).toBe(false);
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(repairParams.prompter.confirmRuntimeRepair).not.toHaveBeenCalled();
+    expect(note).not.toHaveBeenCalled();
     expect(await fsp.readFile(canonical, "utf8")).toBe("# Canonical\n");
     await expect(fsp.access(legacy)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -97,7 +122,12 @@ describe("root memory atomic merge", () => {
       }
       return handle;
     });
-    await expect(migrateLegacyRootMemoryFile(dir)).rejects.toThrow("simulated disk full");
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(note).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("Workspace memory repair could not be completed:"),
+      "Doctor",
+    );
+    expect(String(note.mock.calls[0]?.[0])).toContain("simulated disk full");
     expect(injected).toBe(1);
     expect(await fsp.readFile(canonical, "utf8")).toBe("# Canonical only\n");
     expect((await fsp.readdir(dir)).filter((name) => name.startsWith(".MEMORY.md."))).toEqual([]);
@@ -112,7 +142,12 @@ describe("root memory atomic merge", () => {
       }
       return await originalRename(from, to);
     });
-    await expect(migrateLegacyRootMemoryFile(dir)).rejects.toThrow("simulated rename failure");
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(note).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("Workspace memory repair could not be completed:"),
+      "Doctor",
+    );
+    expect(String(note.mock.calls[0]?.[0])).toContain("simulated rename failure");
     expect(await fsp.readFile(canonical, "utf8")).toBe("# Canonical only\n");
     expect((await fsp.readdir(dir)).filter((name) => name.startsWith(".MEMORY.md."))).toEqual([]);
   });
@@ -120,7 +155,11 @@ describe("root memory atomic merge", () => {
   it("CP80-MEM07 preserves canonical file mode on replacement", async () => {
     await seed();
     await fsp.chmod(canonical, 0o640);
-    await migrateLegacyRootMemoryFile(dir);
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(note).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("Workspace memory root merged:"),
+      "Doctor changes",
+    );
     expect((await fsp.stat(canonical)).mode & 0o7777).toBe(0o640);
   });
 
@@ -128,7 +167,11 @@ describe("root memory atomic merge", () => {
     await seed();
     await fsp.chmod(dir, 0o750);
     const before = (await fsp.stat(dir)).mode & 0o7777;
-    await migrateLegacyRootMemoryFile(dir);
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(note).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("Workspace memory root merged:"),
+      "Doctor changes",
+    );
     expect((await fsp.stat(dir)).mode & 0o7777).toBe(before);
   });
 
@@ -141,7 +184,12 @@ describe("root memory atomic merge", () => {
       }
       return await originalOpen(file, flags, mode);
     });
-    await expect(migrateLegacyRootMemoryFile(dir)).rejects.toThrow("simulated stage failure");
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(note).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("Workspace memory repair could not be completed:"),
+      "Doctor",
+    );
+    expect(String(note.mock.calls[0]?.[0])).toContain("simulated stage failure");
     await expect(fsp.access(legacy)).rejects.toMatchObject({ code: "ENOENT" });
     const repairDir = path.join(dir, ".openclaw-repair", "root-memory");
     const matches: string[] = [];
@@ -165,7 +213,11 @@ describe("root memory atomic merge", () => {
     await fsp.writeFile(sibling, "do not touch\n");
     await fsp.chmod(sibling, 0o604);
     const before = await fsp.stat(sibling);
-    await migrateLegacyRootMemoryFile(dir);
+    await maybeRepairWorkspaceMemoryHealth(repairParams);
+    expect(note).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("Workspace memory root merged:"),
+      "Doctor changes",
+    );
     expect(await fsp.readFile(sibling, "utf8")).toBe("do not touch\n");
     const after = await fsp.stat(sibling);
     expect(after.mode & 0o7777).toBe(before.mode & 0o7777);
