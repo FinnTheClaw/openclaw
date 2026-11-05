@@ -206,7 +206,13 @@ export function buildInterSessionPromptContext(inputProvenance: InputProvenance 
 }
 
 export function stripInterSessionPromptPrefixForDisplay(text: string): string {
-  const index = text.indexOf(INTER_SESSION_PROMPT_PREFIX_BASE);
+  let index = text.indexOf(INTER_SESSION_PROMPT_PREFIX_BASE);
+  while (index > 0 && text[index - 1] !== "\n") {
+    index = text.indexOf(
+      INTER_SESSION_PROMPT_PREFIX_BASE,
+      index + INTER_SESSION_PROMPT_PREFIX_BASE.length,
+    );
+  }
   if (index === -1) {
     return text;
   }

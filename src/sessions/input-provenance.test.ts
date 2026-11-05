@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   annotateInterSessionPromptText,
+  buildInterSessionPromptContext,
   INTER_SESSION_PROMPT_PREFIX_BASE,
   isAgentMediatedCompletionSourceTool,
   normalizeInputProvenance,
@@ -92,6 +93,46 @@ describe("annotateInterSessionPromptText", () => {
         sourceChannel: "discord",
       }),
     ).toBe("hello");
+  });
+});
+
+describe("literal inter-session payload markers", () => {
+  it.each([
+    {
+      label: "prose with suffix and newline",
+      payload: `Report literal ${INTER_SESSION_PROMPT_PREFIX_BASE} and retain this suffix.\nSecond line.`,
+    },
+    {
+      label: "inline code example",
+      payload: `Use the string \`${INTER_SESSION_PROMPT_PREFIX_BASE}\` and keep the following instruction.\nNext line.`,
+    },
+    {
+      label: "fenced mid-line code example",
+      payload:
+        "```ts\nconst label = '" + INTER_SESSION_PROMPT_PREFIX_BASE + "'; retainSuffix();\n```\n",
+    },
+    {
+      label: "CRLF whitespace and repeated literals",
+      payload: ` \tReport literal ${INTER_SESSION_PROMPT_PREFIX_BASE} with suffix.\r\nSecond ${INTER_SESSION_PROMPT_PREFIX_BASE} tail.\r\n \t`,
+    },
+  ])("preserves literal mid-line inter-session marker payload bytes: $label", ({ payload }) => {
+    const provenance = {
+      kind: "inter_session" as const,
+      sourceSessionKey: "agent:main:fixture-source",
+      sourceChannel: "fixture",
+      sourceTool: "sessions_send",
+    };
+    const provenanceBefore = structuredClone(provenance);
+
+    expect(stripInterSessionPromptPrefixForDisplay(payload)).toBe(payload);
+    const marked = annotateInterSessionPromptText(payload, provenance);
+    expect(marked).toBe(`${buildInterSessionPromptContext(provenance).text}\n${payload}`);
+    expect(stripInterSessionPromptPrefixForDisplay(marked)).toBe(payload);
+    expect(annotateInterSessionPromptText(marked, provenance)).toBe(marked);
+    expect(annotateInterSessionPromptText(payload, { ...provenance, kind: "external_user" })).toBe(
+      payload,
+    );
+    expect(provenance).toEqual(provenanceBefore);
   });
 });
 
