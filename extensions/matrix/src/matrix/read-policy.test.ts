@@ -101,6 +101,93 @@ describe("Matrix read policy", () => {
 
   it.each([
     {
+      name: "denies an ASCII case-distinct peer",
+      allowedPeer: "@Alice:example.org",
+      remotePeer: "@alice:example.org",
+      allowed: false,
+    },
+    {
+      name: "denies a Unicode-fold-colliding peer",
+      allowedPeer: "@\u212A:example.org",
+      remotePeer: "@k:example.org",
+      allowed: false,
+    },
+    {
+      name: "denies a prefixed Unicode-fold-colliding peer",
+      allowedPeer: "matrix:@\u212A:example.org",
+      remotePeer: "@k:example.org",
+      allowed: false,
+    },
+    {
+      name: "allows the exact qualified peer",
+      allowedPeer: "@\u212A:example.org",
+      remotePeer: "@\u212A:example.org",
+      allowed: true,
+    },
+    {
+      name: "allows the exact prefixed peer",
+      allowedPeer: "matrix:@\u212A:example.org",
+      remotePeer: "@\u212A:example.org",
+      allowed: true,
+    },
+  ])("L06-F022 exact peer identity $name", async (scenario) => {
+    const client = createClient(["@bot:example.org", scenario.remotePeer], true);
+    const roomId = "!peer-dm:example.org";
+    const readResult = { text: "synthetic read marker" };
+    const read = vi.fn(async () => readResult);
+    let result: unknown;
+    let readError: unknown;
+
+    try {
+      result = await withAuthorizedMatrixReadTarget({
+        cfg: {
+          channels: {
+            matrix: {
+              groupPolicy: "allowlist",
+              dm: {
+                enabled: true,
+                policy: "allowlist",
+                allowFrom: [scenario.allowedPeer],
+              },
+            },
+          },
+        } as CoreConfig,
+        accountId: "default",
+        roomId,
+        context: {
+          requesterAccountId: "default",
+          currentChannelProvider: "matrix",
+          currentChannelId: "!current:example.org",
+          currentChatType: "group",
+          conversationReadOrigin: "delegated",
+        },
+        opts: { client },
+        run: read,
+      });
+    } catch (error) {
+      readError = error;
+    }
+
+    if (scenario.allowed) {
+      expect(readError).toBeUndefined();
+      expect(result).toBe(readResult);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read).toHaveBeenCalledWith({ client, roomId });
+    } else {
+      expect({
+        error: readError instanceof Error ? readError.message : null,
+        calls: read.mock.calls,
+        result,
+      }).toEqual({
+        error: "Matrix read target is not allowed.",
+        calls: [],
+        result: undefined,
+      });
+    }
+  });
+
+  it.each([
+    {
       name: "a denied direct peer",
       userId: "@victim:example.org",
       directFlag: true,

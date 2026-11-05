@@ -16,6 +16,7 @@ import {
   isStrictDirectMembership,
   readJoinedMatrixMembers,
 } from "./direct-room.js";
+import { normalizeMatrixUserId } from "./monitor/allowlist.js";
 import { createMatrixRoomInfoResolver } from "./monitor/room-info.js";
 import { resolveMatrixRoomConfig } from "./monitor/rooms.js";
 import type { MatrixClient } from "./sdk.js";
@@ -52,12 +53,9 @@ function isCurrentRoom(params: {
 }
 
 function includesEntry(entries: Array<string | number> | undefined, value: string): boolean {
-  const normalized = value.trim().toLowerCase();
+  const normalized = normalizeMatrixUserId(value);
   return (entries ?? []).some((entry) => {
-    const candidate = String(entry)
-      .replace(/^matrix:/i, "")
-      .trim()
-      .toLowerCase();
+    const candidate = normalizeMatrixUserId(String(entry));
     return candidate === "*" || candidate === normalized;
   });
 }
