@@ -63,3 +63,66 @@ it.runIf(process.platform !== "win32")(
     );
   },
 );
+
+it
+  .runIf(process.platform !== "win32")
+  .each(["relative", "local-absolute", "remote-absolute"] as const)(
+  "L03-F012 preserves significant basename whitespace for %s reads and writes",
+  async (form) => {
+    const fixtureRoot = await fs.realpath(tempDirs.make("remote-basename-whitespace-"));
+    const hostDir = path.join(fixtureRoot, "host");
+    const remoteDir = path.join(fixtureRoot, "remote");
+    await fs.mkdir(hostDir);
+    await fs.mkdir(remoteDir);
+    const filename = "note.txt ";
+    const requestedPath = path.join(remoteDir, filename);
+    const unspacedSiblingPath = path.join(remoteDir, "note.txt");
+    await fs.writeFile(requestedPath, "spaced-original");
+    await fs.writeFile(unspacedSiblingPath, "unspaced-original");
+    const bridge = createRemoteShellSandboxFsBridge({
+      sandbox: {
+        workspaceDir: hostDir,
+        agentWorkspaceDir: hostDir,
+        workspaceAccess: "rw",
+        containerName: "remote-basename-whitespace",
+        containerWorkdir: remoteDir,
+        docker: {},
+      },
+      runtime: {
+        remoteWorkspaceDir: remoteDir,
+        remoteAgentWorkspaceDir: remoteDir,
+        // Exercise unchanged remote shell/Python commands against owned local
+        // files; this substitutes transport, not the exported bridge behavior.
+        runRemoteShellScript: createLocalRemoteShellScriptRunner(),
+      },
+    });
+    const filePath =
+      form === "relative"
+        ? filename
+        : form === "local-absolute"
+          ? path.join(hostDir, filename)
+          : requestedPath;
+
+    const resolved = bridge.resolvePath({ filePath });
+    const read = await bridge.readFile({ filePath });
+    await bridge.writeFile({ filePath, data: "spaced-updated" });
+    const [requestedAfter, siblingAfter] = await Promise.all([
+      fs.readFile(requestedPath, "utf8"),
+      fs.readFile(unspacedSiblingPath, "utf8"),
+    ]);
+
+    // Capture read and mutation outcomes before asserting, so the original
+    // owner demonstrates both wrong-file selection and the actual overwritten sibling.
+    expect({
+      resolvedPath: resolved.containerPath,
+      read: read.toString("utf8"),
+      requestedAfter,
+      siblingAfter,
+    }).toEqual({
+      resolvedPath: requestedPath,
+      read: "spaced-original",
+      requestedAfter: "spaced-updated",
+      siblingAfter: "unspaced-original",
+    });
+  },
+);
