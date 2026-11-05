@@ -96,6 +96,9 @@ export function buildReadPermissions(
       permissions[key] = "read";
     }
   }
+  if (Object.keys(permissions).length === 0) {
+    throw new Error("No requested GitHub read permissions are granted");
+  }
   return permissions;
 }
 

@@ -53,6 +53,59 @@ describe("gh-read helpers", () => {
     expect(normalizeRepo("invalid")).toBeNull();
   });
 
+  it.each([
+    {
+      name: "comma-only override",
+      raw: ", , ,",
+      granted: { contents: "write", metadata: "read" },
+      expected: null,
+    },
+    {
+      name: "misspelled requested key",
+      raw: "contentz",
+      granted: { contents: "write", metadata: "read" },
+      expected: null,
+    },
+    {
+      name: "ungranted requested key",
+      raw: "issues",
+      granted: { contents: "write", metadata: "read" },
+      expected: null,
+    },
+    {
+      name: "absent installation permissions",
+      raw: "contents",
+      granted: undefined,
+      expected: null,
+    },
+    {
+      name: "blank override retains defaults",
+      raw: "  ",
+      granted: { contents: "write", metadata: "read", administration: "write" },
+      expected: { contents: "read", metadata: "read" },
+    },
+    {
+      name: "nonempty requested intersection",
+      raw: "unknown,contents, contents",
+      granted: { contents: "write", metadata: "read" },
+      expected: { contents: "read" },
+    },
+  ] as const)("L11-F012 refuses an empty read-permission subset: $name", (row) => {
+    const grantedBefore = structuredClone(row.granted);
+    const keys = parsePermissionKeys(row.raw);
+    const keysBefore = [...keys];
+    try {
+      if (row.expected === null) {
+        expect(() => buildReadPermissions(row.granted, keys)).toThrow(/read.*permission/i);
+      } else {
+        expect(buildReadPermissions(row.granted, keys)).toEqual(row.expected);
+      }
+    } finally {
+      expect(row.granted).toEqual(grantedBefore);
+      expect(keys).toEqual(keysBefore);
+    }
+  });
+
   it("builds a read-only permission subset from granted permissions", () => {
     expect(
       buildReadPermissions(
