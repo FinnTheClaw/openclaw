@@ -7,7 +7,11 @@ export class MemorySyncOutcomeLedger {
   private latestFailure?: { revision: number; reason: string };
   private active = false;
 
-  async track(operation: () => Promise<string | undefined | void>, active = false): Promise<void> {
+  async track(
+    operation: () => Promise<string | undefined | void>,
+    active = false,
+    canClearFailure: () => boolean = () => true,
+  ): Promise<void> {
     const failureAtStart = this.latestFailure?.revision;
     if (active) {
       this.active = true;
@@ -16,7 +20,11 @@ export class MemorySyncOutcomeLedger {
       const incompleteReason = await operation();
       if (incompleteReason) {
         this.recordFailure(incompleteReason);
-      } else if (failureAtStart !== undefined && this.latestFailure?.revision === failureAtStart) {
+      } else if (
+        failureAtStart !== undefined &&
+        this.latestFailure?.revision === failureAtStart &&
+        canClearFailure()
+      ) {
         this.latestFailure = undefined;
       }
     } catch (error) {
