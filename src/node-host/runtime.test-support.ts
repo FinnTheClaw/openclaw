@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     initializeWorkerSupervisor: vi.fn(async () => undefined),
     disconnectPlugins: vi.fn<() => Promise<void>>(async () => undefined),
     handleInvoke: vi.fn(async () => undefined),
+    progressWriterFactory: vi.fn(),
     progressStartHeartbeats: vi.fn(),
     progressWrite: vi.fn(async (_chunk: string) => undefined),
     progressFlush: vi.fn<() => Promise<void>>(async () => undefined),
@@ -37,7 +38,7 @@ vi.mock("./mcp.js", () => ({
 }));
 
 vi.mock("./node-invoke-progress.js", () => ({
-  createNodeInvokeProgressWriter: vi.fn(() => ({
+  createNodeInvokeProgressWriter: mocks.progressWriterFactory.mockImplementation(() => ({
     startHeartbeats: mocks.progressStartHeartbeats,
     write: mocks.progressWrite,
     stop: vi.fn(),

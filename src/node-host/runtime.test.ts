@@ -163,6 +163,117 @@ describe("node-host skill-bin cache", () => {
   });
 });
 
+describe("node-host superseded invocation progress", () => {
+  it.each(["late text", "queued chunks", "heartbeat", "desktop status"] as const)(
+    "revokes superseded invocation progress: %s",
+    async (mode) => {
+      const factory = mocks.progressWriterFactory;
+      const originalFactory = expectDefined(
+        factory.getMockImplementation(),
+        "mock progress factory",
+      );
+      const actual = await vi.importActual<typeof import("./node-invoke-progress.js")>(
+        "./node-invoke-progress.js",
+      );
+      factory.mockImplementation(actual.createNodeInvokeProgressWriter);
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      const first = holdInvoke();
+      const second = holdInvoke();
+      const firstAck = createDeferred<void>();
+      const firstSend = createDeferred<void>();
+      const oldPrefix = "o".repeat(16 * 1024);
+      const sent: Array<{ invokeId: string; nodeId: string; seq: number; chunk: string }> = [];
+      const writes: Promise<void>[] = [];
+      const invokes: Promise<void>[] = [];
+      let runtime: Awaited<ReturnType<typeof startRuntime>> | undefined;
+      try {
+        runtime = await startRuntime(
+          createNodeHostClient(async (method, params) => {
+            if (method === "node.invoke.progress") {
+              const progress = params as (typeof sent)[number];
+              sent.push({ ...progress });
+              if (mode === "queued chunks" && progress.chunk === oldPrefix) {
+                firstSend.resolve();
+                await firstAck.promise;
+              }
+            }
+            return { bins: [] };
+          }),
+        );
+        const request = {
+          ...frame,
+          ...(mode === "desktop status" ? { command: NODE_DESKTOP_STREAM_COMMAND } : {}),
+        };
+        invokes.push(runtime.invoke(request));
+        await vi.waitFor(() => expect(first.signal).toBeDefined());
+        const oldRuntime = (mocks.handleInvoke.mock.calls.at(-1) as unknown[])[4] as {
+          emitProgress?: (text: string) => Promise<void>;
+        };
+
+        if (mode === "queued chunks") {
+          const io = expectDefined(first.io, "old duplex IO");
+          writes.push(io.emitChunk(oldPrefix + "retired-tail"));
+          writes.push(io.emitChunk("retired-queued"));
+          await firstSend.promise;
+        }
+
+        invokes.push(runtime.invoke(request));
+        await vi.waitFor(() => expect(second.signal).toBeDefined());
+        const currentRuntime = (mocks.handleInvoke.mock.calls.at(-1) as unknown[])[4] as {
+          emitProgress?: (text: string) => Promise<void>;
+        };
+        expect(first.signal?.aborted).toBe(true);
+        expect(second.signal?.aborted).toBe(false);
+
+        if (mode === "queued chunks") {
+          firstAck.resolve();
+          await Promise.all(writes);
+        } else if (mode === "heartbeat") {
+          await vi.advanceTimersByTimeAsync(5_000);
+        } else if (mode === "desktop status") {
+          await expectDefined(oldRuntime.emitProgress, "old desktop progress")("retired");
+        } else {
+          await expectDefined(first.io, "old duplex IO").emitChunk("retired");
+        }
+
+        if (mode === "desktop status") {
+          await expectDefined(currentRuntime.emitProgress, "current desktop progress")("current");
+        } else {
+          await expectDefined(second.io, "current duplex IO").emitChunk("current");
+        }
+        const prefix =
+          mode === "queued chunks"
+            ? [{ invokeId: frame.id, nodeId: frame.nodeId, seq: 0, chunk: oldPrefix }]
+            : mode === "heartbeat"
+              ? [{ invokeId: frame.id, nodeId: frame.nodeId, seq: 0, chunk: "" }]
+              : [];
+        expect(sent).toEqual([
+          ...prefix,
+          {
+            invokeId: frame.id,
+            nodeId: frame.nodeId,
+            seq: mode === "heartbeat" ? 1 : 0,
+            chunk: "current",
+          },
+        ]);
+        expect(second.signal?.aborted).toBe(false);
+      } finally {
+        firstAck.resolve();
+        first.release();
+        second.release();
+        await Promise.allSettled([...writes, ...invokes]);
+        try {
+          await runtime?.close();
+        } finally {
+          factory.mockImplementation(originalFactory);
+          vi.useRealTimers();
+        }
+      }
+    },
+  );
+});
+
 describe("node-host invocation cancellation", () => {
   it("does not admit a queued invocation after its connection is retired", async () => {
     const runtime = await startRuntime();
