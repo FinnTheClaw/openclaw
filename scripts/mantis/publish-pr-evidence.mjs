@@ -706,7 +706,9 @@ function upsertPrComment({ body, createMissing, marker, prNumber, repo }) {
       console.log("No existing Mantis QA evidence comment found and create-missing is false.");
       return;
     }
-    run("gh", ["pr", "comment", prNumber, "--body-file", bodyFile], { stdio: "inherit" });
+    run("gh", ["pr", "comment", prNumber, "--repo", repo, "--body-file", bodyFile], {
+      stdio: "inherit",
+    });
     console.log(`Created Mantis QA evidence comment on PR #${prNumber}.`);
   } finally {
     rmSync(path.dirname(bodyFile), { force: true, recursive: true });

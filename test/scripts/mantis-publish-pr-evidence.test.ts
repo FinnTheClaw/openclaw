@@ -2,16 +2,34 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   loadEvidenceManifest,
   publishArtifactFiles,
+  publishEvidence,
   renderEvidenceComment,
 } from "../../scripts/mantis/publish-pr-evidence.mjs";
+
+const commandMocks = vi.hoisted(() => ({
+  execFileSync: vi.fn<(...args: unknown[]) => string>(() => {
+    throw new Error("Unexpected Mantis command");
+  }),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
+  execFileSync: commandMocks.execFileSync,
+}));
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
+  commandMocks.execFileSync.mockReset().mockImplementation(() => {
+    throw new Error("Unexpected Mantis command");
+  });
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -80,6 +98,211 @@ function writeFixtureManifest() {
 }
 
 describe("scripts/mantis/publish-pr-evidence", () => {
+  it.each([
+    {
+      name: "explicit repository creation",
+      repositorySource: "argument",
+      commentId: "",
+      patchFails: false,
+      createMissing: true,
+      expectedCreate: true,
+    },
+    {
+      name: "environment repository creation",
+      repositorySource: "environment",
+      commentId: "",
+      patchFails: false,
+      createMissing: true,
+      expectedCreate: true,
+    },
+    {
+      name: "creation after a selected-repository PATCH failure",
+      repositorySource: "argument",
+      commentId: "731",
+      patchFails: true,
+      createMissing: true,
+      expectedCreate: true,
+    },
+    {
+      name: "selected-repository PATCH success without creation",
+      repositorySource: "argument",
+      commentId: "731",
+      patchFails: false,
+      createMissing: true,
+      expectedCreate: false,
+    },
+    {
+      name: "creation disabled with no existing comment",
+      repositorySource: "argument",
+      commentId: "",
+      patchFails: false,
+      createMissing: false,
+      expectedCreate: false,
+    },
+  ])(
+    "L07-F30 keeps the selected repository for $name",
+    async ({ repositorySource, commentId, patchFails, createMissing, expectedCreate }) => {
+      const selectedRepo = "selected/evidence-repository";
+      const ambientRepo = "ambient/checkout-repository";
+      const prNumber = "42";
+      const marker = "<!-- L07-F30 synthetic evidence -->";
+      const artifactRoot = "mantis/l07-f30/pr-42/run-1";
+      const endpoint = "https://storage.example.invalid";
+      vi.stubEnv("GH_TOKEN", "synthetic-gh-token");
+      vi.stubEnv("GITHUB_TOKEN", "");
+      vi.stubEnv("GH_REPO", ambientRepo);
+      vi.stubEnv(
+        "GITHUB_REPOSITORY",
+        repositorySource === "environment" ? selectedRepo : ambientRepo,
+      );
+      vi.stubEnv("MANTIS_ARTIFACT_R2_ACCESS_KEY_ID", "synthetic-access");
+      vi.stubEnv("MANTIS_ARTIFACT_R2_SECRET_ACCESS_KEY", "synthetic-secret");
+      vi.stubEnv("MANTIS_ARTIFACT_R2_BUCKET", "qa-artifacts");
+      vi.stubEnv("MANTIS_ARTIFACT_R2_ENDPOINT", endpoint);
+      vi.stubEnv("MANTIS_ARTIFACT_R2_PUBLIC_BASE_URL", "https://evidence.example.invalid");
+      vi.stubEnv("MANTIS_ARTIFACT_R2_REGION", "auto");
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const uploads: Array<{ method: string | undefined; url: string }> = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: URL, init: RequestInit) => {
+          uploads.push({ method: init.method, url: url.toString() });
+          return new Response(null, { status: 200 });
+        }),
+      );
+      const apiPaths: string[] = [];
+      const patches: Array<{ bodyHasMarker: boolean; path: string }> = [];
+      const creations: Array<{
+        args: string[];
+        bodyHasMarker: boolean;
+        effectiveRepo: string | undefined;
+      }> = [];
+      commandMocks.execFileSync.mockImplementation((command, rawArgs) => {
+        if (
+          command !== "gh" ||
+          !Array.isArray(rawArgs) ||
+          !rawArgs.every((arg) => typeof arg === "string")
+        ) {
+          throw new Error("Unexpected Mantis command");
+        }
+        const args = rawArgs as string[];
+        if (
+          args.length === 4 &&
+          args[0] === "api" &&
+          args[1] === `repos/${selectedRepo}/pulls/${prNumber}` &&
+          args[2] === "--jq" &&
+          args[3] === ".number"
+        ) {
+          apiPaths.push(args[1]);
+          return prNumber;
+        }
+        if (
+          args.length === 5 &&
+          args[0] === "api" &&
+          args[1] === "--paginate" &&
+          args[2] === `repos/${selectedRepo}/issues/${prNumber}/comments` &&
+          args[3] === "--jq" &&
+          args[4] ===
+            `.[] | select(.user.login == "openclaw-mantis[bot]" and (.body | contains("${marker}"))) | .id`
+        ) {
+          apiPaths.push(args[2]);
+          return commentId;
+        }
+        if (
+          args.length === 6 &&
+          args[0] === "api" &&
+          args[1] === "--method" &&
+          args[2] === "PATCH" &&
+          args[3] === `repos/${selectedRepo}/issues/comments/${commentId}` &&
+          args[4] === "--input"
+        ) {
+          const payload = JSON.parse(readFileSync(args[5], "utf8")) as { body: string };
+          patches.push({ path: args[3], bodyHasMarker: payload.body.includes(marker) });
+          if (patchFails) {
+            throw new Error("synthetic PATCH failure");
+          }
+          return "";
+        }
+        const bodyFileIndex = args.indexOf("--body-file");
+        if (
+          args[0] === "pr" &&
+          args[1] === "comment" &&
+          args[2] === prNumber &&
+          bodyFileIndex >= 3 &&
+          bodyFileIndex === args.length - 2
+        ) {
+          const repoIndex = args.indexOf("--repo");
+          creations.push({
+            args: [...args],
+            bodyHasMarker: readFileSync(args[bodyFileIndex + 1], "utf8").includes(marker),
+            effectiveRepo: repoIndex === -1 ? process.env.GH_REPO : args[repoIndex + 1],
+          });
+          return "";
+        }
+        throw new Error(`Unexpected Mantis gh arguments: ${JSON.stringify(args)}`);
+      });
+      const args = [
+        "--manifest",
+        writeFixtureManifest(),
+        "--target-pr",
+        prNumber,
+        "--artifact-root",
+        artifactRoot,
+        "--marker",
+        marker,
+        "--create-missing",
+        String(createMissing),
+        ...(repositorySource === "argument" ? ["--repo", selectedRepo] : []),
+      ];
+      let observedError: string | undefined;
+      try {
+        await publishEvidence(args);
+      } catch (error) {
+        observedError = String(error);
+      }
+
+      expect({ observedError, apiPaths, patches, creations, uploads }).toEqual({
+        observedError: undefined,
+        apiPaths: [
+          `repos/${selectedRepo}/pulls/${prNumber}`,
+          `repos/${selectedRepo}/issues/${prNumber}/comments`,
+        ],
+        patches: commentId
+          ? [{ path: `repos/${selectedRepo}/issues/comments/${commentId}`, bodyHasMarker: true }]
+          : [],
+        creations: expectedCreate
+          ? [
+              {
+                args: [
+                  "pr",
+                  "comment",
+                  prNumber,
+                  "--repo",
+                  selectedRepo,
+                  "--body-file",
+                  expect.any(String),
+                ],
+                bodyHasMarker: true,
+                effectiveRepo: selectedRepo,
+              },
+            ]
+          : [],
+        uploads: [
+          "baseline.png",
+          "candidate.png",
+          "baseline-change.mp4",
+          "mantis-evidence.json",
+          "index.json",
+        ].map((name) => ({
+          method: "PUT",
+          url: `${endpoint}/qa-artifacts/${artifactRoot}/${name}`,
+        })),
+      });
+    },
+  );
+
   it("selects only Mantis-owned status comments", () => {
     const source = readFileSync("scripts/mantis/publish-pr-evidence.mjs", "utf8");
 
