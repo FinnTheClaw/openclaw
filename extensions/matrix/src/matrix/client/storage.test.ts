@@ -6,7 +6,10 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import { closeOpenClawStateDatabaseAsync, openOpenClawStateDatabase } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import {
+  closeOpenClawStateDatabaseAsync,
+  openOpenClawStateDatabase,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMatrixRuntime } from "../../runtime.js";
 import { resolveMatrixAccountStorageRoot } from "../../storage-paths.js";
@@ -573,7 +576,7 @@ describe("matrix client storage paths", () => {
       for (const source of Object.values(fixture.sources)) {
         expectSource(source, "original");
       }
-      const syncStore = (await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir));
+      const syncStore = await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir);
       await expect(syncStore.getSavedSyncToken()).resolves.toBe("retry-token");
       expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toMatchObject(
         recoveryPayload,
@@ -599,7 +602,9 @@ describe("matrix client storage paths", () => {
       expectSource(fixture.sources.sync, "original");
       expectSource(fixture.sources.recovery, "original");
       await expect(
-        (await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir)).getSavedSyncToken(),
+        (
+          await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir)
+        ).getSavedSyncToken(),
       ).resolves.toBe("retry-token");
       await maybeMigrateLegacyStorage(fixture);
       expectSource(fixture.sources.sync, "archived");
@@ -612,7 +617,11 @@ describe("matrix client storage paths", () => {
       for (const source of Object.values(fixture.sources)) {
         expectSource(source, "original");
       }
-      expect(await (await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir)).hasSavedSync()).toBe(false);
+      expect(
+        await (
+          await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir)
+        ).hasSavedSync(),
+      ).toBe(false);
       expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toBeUndefined();
       expect(readMigrationRow(fixture.storagePaths.rootDir, "crypto")).toBeUndefined();
       await maybeMigrateLegacyStorage(fixture);
@@ -648,7 +657,9 @@ describe("matrix client storage paths", () => {
         expectSource(source, "archived");
       }
       await expect(
-        (await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir)).getSavedSyncToken(),
+        (
+          await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir)
+        ).getSavedSyncToken(),
       ).resolves.toBe("retry-token");
       expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toMatchObject(
         recoveryPayload,
@@ -708,7 +719,9 @@ describe("matrix client storage paths", () => {
       expect(readMigrationRow(fixture.storagePaths.rootDir, "recovery")).toEqual(recovery);
       expect(readMigrationRow(fixture.storagePaths.rootDir, "crypto")).toEqual(crypto);
       await expect(
-        (await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir)).getSavedSyncToken(),
+        (
+          await SqliteBackedMatrixSyncStore.create(fixture.storagePaths.rootDir)
+        ).getSavedSyncToken(),
       ).resolves.toBe("retry-token");
     });
   });
@@ -791,7 +804,8 @@ describe("matrix client storage paths", () => {
           });
       };
       expectPreservedState();
-      expect(fs.existsSync(storagePaths.storagePath)).toBe(true);
+      expect(fs.existsSync(storagePaths.storagePath)).toBe(false);
+      expect(fs.existsSync(`${storagePaths.storagePath}.migrated`)).toBe(true);
       expect(fs.existsSync(migrationPath)).toBe(true);
       expect(fs.existsSync(`${migrationPath}.migrated`)).toBe(false);
       await expect(
