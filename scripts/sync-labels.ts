@@ -97,11 +97,15 @@ function resolveLabelMetadata(label: string): { color: string; description?: str
 }
 
 function fetchExistingLabels(repoLocal: string): Map<string, RepoLabel> {
-  const raw = execFileSync("gh", ["api", `repos/${repoLocal}/labels?per_page=100`, "--paginate"], {
-    encoding: "utf8",
-    timeout: SYNC_LABELS_TIMEOUT_MS,
-    killSignal: "SIGKILL",
-  });
-  const labels = JSON.parse(raw) as RepoLabel[];
+  const raw = execFileSync(
+    "gh",
+    ["api", `repos/${repoLocal}/labels?per_page=100`, "--paginate", "--slurp"],
+    {
+      encoding: "utf8",
+      timeout: SYNC_LABELS_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+    },
+  );
+  const labels = (JSON.parse(raw) as RepoLabel[][]).flat();
   return new Map(labels.map((label) => [label.name, label]));
 }
