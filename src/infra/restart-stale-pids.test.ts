@@ -79,6 +79,12 @@ vi.mock("../logging/subsystem.js", () => ({
 }));
 
 vi.mock("./gateway-processes.js", () => ({}));
+
+vi.mock("../shared/pid-alive.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../shared/pid-alive.js")>()),
+  getFileLockProcessStartTime: (pid: number) => (observedArgv.has(pid) ? 1000 : null),
+}));
+
 vi.mock("../process/supervisor/darwin-process-command.js", () => ({
   readDarwinProcessCommand: (pid: number) => {
     const argv = observedArgv.get(pid);

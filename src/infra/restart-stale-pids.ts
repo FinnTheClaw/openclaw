@@ -466,13 +466,22 @@ function pollPortOnceWindows(port: number): PollResult {
  * On Unix: sends SIGTERM, waits briefly, then SIGKILL for survivors.
  * On Windows: uses taskkill (graceful first, then /F for force-kill).
  */
-function terminateStaleProcessesSync(pids: number[], canSignal: () => boolean): number[] {
+function terminateStaleProcessesSync(
+  pids: number[],
+  canSignal: () => boolean,
+  env?: NodeJS.ProcessEnv,
+): number[] {
   if (process.platform === "win32") {
     return terminateStaleProcessesWindows(pids, canSignal);
   }
+  const starts = new Map(pids.map((pid) => [pid, getFileLockProcessStartTime(pid, env)]));
+  const hasCurrentIdentity = (pid: number): boolean => {
+    const startedAt = starts.get(pid);
+    return startedAt != null && getFileLockProcessStartTime(pid, env) === startedAt;
+  };
   const killed: number[] = [];
   for (const pid of pids) {
-    if (!canSignal()) {
+    if (!hasCurrentIdentity(pid) || !canSignal()) {
       break;
     }
     if (trySignalStaleProcess(pid, "SIGTERM")) {
@@ -485,7 +494,7 @@ function terminateStaleProcessesSync(pids: number[], canSignal: () => boolean): 
   sleepSync(STALE_SIGTERM_WAIT_MS);
   for (const pid of killed) {
     if (isPidAlive(pid)) {
-      if (!canSignal()) {
+      if (!hasCurrentIdentity(pid) || !canSignal()) {
         break;
       }
       trySignalStaleProcess(pid, "SIGKILL");
@@ -621,10 +630,14 @@ export function cleanStaleGatewayProcessesSync(
     restartLog.warn(
       `killing ${stalePids.length} stale gateway process(es) before restart: ${stalePids.join(", ")}`,
     );
-    const killed = terminateStaleProcessesSync(stalePids, () => {
-      options?.assertCurrent?.();
-      return readGatewayOwnerLease(ownerContext) === undefined;
-    });
+    const killed = terminateStaleProcessesSync(
+      stalePids,
+      () => {
+        options?.assertCurrent?.();
+        return readGatewayOwnerLease(ownerContext) === undefined;
+      },
+      options?.env,
+    );
     // Even an already-exited PID can leave its socket bound briefly; always join port release.
     waitForPortFreeSync(port);
     return killed;
