@@ -50,6 +50,14 @@ function clearPendingHistoryAfterTurn(params?: ChannelTurnHistoryFinalizeOptions
   if (!params?.isGroup || !params.historyKey || !params.historyMap || params.limit === undefined) {
     return;
   }
+  if (params.limit > 0 && params.consumedEntries !== undefined) {
+    const consumed = new Set(params.consumedEntries);
+    params.historyMap.set(
+      params.historyKey,
+      (params.historyMap.get(params.historyKey) ?? []).filter((entry) => !consumed.has(entry)),
+    );
+    return;
+  }
   clearChannelHistoryIfEnabled({
     historyMap: params.historyMap,
     historyKey: params.historyKey,

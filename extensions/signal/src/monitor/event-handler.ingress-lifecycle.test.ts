@@ -119,6 +119,91 @@ describe("signal drain claim ownership", () => {
     dispatchInboundMessageMock.mockClear();
   });
 
+  it.each([false, true])(
+    "preserves post-snapshot group history for the next prompt (late arrival: %s)",
+    async (lateArrival) => {
+      const trackedFlushes: Promise<void>[] = [];
+      const deps = createBaseSignalEventHandlerDeps({
+        cfg: {
+          messages: { inbound: { debounceMs: 0 }, groupChat: { mentionPatterns: ["@bot"] } },
+          channels: { signal: { groups: { "*": { requireMention: true } } } },
+        },
+        historyLimit: 5,
+        runTrackedTask: (task) => {
+          trackedFlushes.push(task());
+        },
+      });
+      const handler = createSignalEventHandler(deps);
+      const groupId = lateArrival ? "history-late-group" : "history-normal-group";
+      const groupEvent = (message: string, timestamp: number) =>
+        createSignalReceiveEvent({
+          timestamp,
+          dataMessage: {
+            timestamp,
+            message,
+            groupInfo: { groupId, groupName: "History fixture" },
+          },
+        });
+      const oldBody = "consumed history before the first prompt";
+      const lateBody = "unmentioned history after the first prompt snapshot";
+      await handler(groupEvent(oldBody, 1700000100000));
+      expect(deps.groupHistories.get(groupId)?.map((entry) => entry.body)).toEqual([oldBody]);
+
+      let enterDispatch!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enterDispatch = resolve;
+      });
+      let releaseDispatch!: () => void;
+      const release = new Promise<void>((resolve) => {
+        releaseDispatch = resolve;
+      });
+      dispatchInboundMessageMock.mockImplementationOnce(async (params: DispatchParams) => {
+        dispatchCapture.push(params);
+        await params.replyOptions?.turnAdoptionLifecycle?.onAdopted();
+        enterDispatch();
+        await release;
+        return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+      });
+      const firstLifecycle = createTrackedLifecycle();
+      try {
+        await handler(groupEvent("@bot first prompt", 1700000101000), firstLifecycle);
+        await entered;
+        expect(firstLifecycle.adoptedCount()).toBe(1);
+        expect(dispatchCapture[0]?.ctx.Body).toContain(oldBody);
+        expect(dispatchCapture[0]?.ctx.InboundHistory?.map((entry) => entry.body)).toEqual([
+          oldBody,
+        ]);
+        if (lateArrival) {
+          await handler(groupEvent(lateBody, 1700000102000));
+          expect(deps.groupHistories.get(groupId)?.map((entry) => entry.body)).toEqual([
+            oldBody,
+            lateBody,
+          ]);
+          expect(dispatchCapture[0]?.ctx.Body).not.toContain(lateBody);
+        }
+      } finally {
+        releaseDispatch();
+        await Promise.all(trackedFlushes);
+      }
+      const historyAfterFirstTurn = deps.groupHistories.get(groupId)?.map((entry) => entry.body);
+      await handler(groupEvent("@bot next prompt", 1700000103000), createTrackedLifecycle());
+      await vi.waitFor(() => expect(dispatchCapture).toHaveLength(2), { timeout: 5_000 });
+      await Promise.all(trackedFlushes);
+      const nextCtx = dispatchCapture[1]?.ctx;
+      expect({
+        historyAfterFirstTurn,
+        nextBodyContainsLateArrival: nextCtx?.Body?.includes(lateBody) ?? false,
+        nextInboundHistory: nextCtx?.InboundHistory?.map((entry) => entry.body) ?? [],
+        nextBodyContainsConsumedEntry: nextCtx?.Body?.includes(oldBody) ?? false,
+      }).toEqual({
+        historyAfterFirstTurn: lateArrival ? [lateBody] : [],
+        nextBodyContainsLateArrival: lateArrival,
+        nextInboundHistory: lateArrival ? [lateBody] : [],
+        nextBodyContainsConsumedEntry: false,
+      });
+    },
+  );
+
   it("defers a drain-claimed event and completes the claim at reply adoption", async () => {
     const handler = createSignalEventHandler(createBaseSignalEventHandlerDeps());
     const lifecycle = createTrackedLifecycle();

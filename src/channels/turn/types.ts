@@ -271,6 +271,8 @@ export type ChannelTurnHistoryFinalizeOptions = {
   historyKey?: string;
   historyMap?: Map<string, HistoryEntry[]>;
   limit?: number;
+  /** Exact entries included in this turn's history snapshot, when supplied by the adapter. */
+  consumedEntries?: readonly HistoryEntry[];
 };
 
 /** Options for recording history when an inbound event is dropped before dispatch. */

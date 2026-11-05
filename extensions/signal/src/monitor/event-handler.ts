@@ -218,8 +218,14 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     });
     let combinedBody = body;
     const historyKey = entry.isGroup ? (entry.groupId ?? "unknown") : undefined;
+    const historyEntries =
+      historyKey && deps.historyLimit > 0
+        ? (deps.groupHistories.get(historyKey) ?? []).slice(-deps.historyLimit)
+        : undefined;
+    const promptHistoryMap =
+      historyKey && historyEntries ? new Map([[historyKey, historyEntries]]) : deps.groupHistories;
     if (entry.isGroup && historyKey) {
-      const channelHistory = createChannelHistoryWindow({ historyMap: deps.groupHistories });
+      const channelHistory = createChannelHistoryWindow({ historyMap: promptHistoryMap });
       combinedBody = channelHistory.buildPendingContext({
         historyKey,
         limit: deps.historyLimit,
@@ -244,7 +250,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     const signalTo = normalizeSignalMessagingTarget(signalToRaw) ?? signalToRaw;
     const inboundHistory =
       entry.isGroup && historyKey && deps.historyLimit > 0
-        ? createChannelHistoryWindow({ historyMap: deps.groupHistories }).buildInboundHistory({
+        ? createChannelHistoryWindow({ historyMap: promptHistoryMap }).buildInboundHistory({
             historyKey,
             limit: deps.historyLimit,
           })
@@ -558,6 +564,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
             historyKey,
             historyMap: deps.groupHistories,
             limit: deps.historyLimit,
+            consumedEntries: historyEntries,
           },
           afterRecord: () => {
             if (statusReactionController) {
