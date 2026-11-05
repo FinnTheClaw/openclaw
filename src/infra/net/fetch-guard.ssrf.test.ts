@@ -4,6 +4,7 @@ import { toErrorObject as toLintErrorObject } from "@openclaw/normalization-core
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import type { Dispatcher } from "undici";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildProviderRequestDispatcherPolicy } from "../../agents/provider-request-config.js";
 // Load before cases own mocks; a timed-out import would resume inside the next case.
 import { waitForControlUiDocument } from "../../commands/control-ui-handoff.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -744,6 +745,96 @@ describe("fetchWithSsrFGuard hardening", () => {
       (globalThis as Record<string, unknown>).fetch = originalGlobalFetch;
     }
   });
+
+  it.each(["target-only", "proxy-hop-only", "both", "canonical-over-legacy"])(
+    "preserves canonical provider TLS legs without DNS pinning (%s)",
+    async (variant) => {
+      const targetTls = {
+        configured: true,
+        ca: "synthetic-target-ca",
+        cert: "synthetic-target-cert",
+        key: "synthetic-target-key",
+        passphrase: "synthetic-target-passphrase",
+        serverName: "target-tls.example",
+        rejectUnauthorized: true,
+      };
+      const proxyTls = {
+        configured: true,
+        ca: "synthetic-proxy-ca",
+        cert: "synthetic-proxy-cert",
+        key: "synthetic-proxy-key",
+        passphrase: "synthetic-proxy-passphrase",
+        serverName: "proxy-tls.example",
+        rejectUnauthorized: true,
+      };
+      const hasTarget = variant !== "proxy-hop-only";
+      const hasProxyHop = variant !== "target-only";
+      const policy = buildProviderRequestDispatcherPolicy({
+        tls: hasTarget ? targetTls : { configured: false },
+        proxy: {
+          configured: true,
+          mode: "explicit-proxy",
+          proxyUrl: "https://proxy.example:8443",
+          tls: hasProxyHop ? proxyTls : { configured: false },
+        },
+      });
+      if (!policy || policy.mode !== "explicit-proxy") {
+        throw new Error("Expected canonical explicit proxy policy");
+      }
+      (globalThis as Record<string, unknown>)[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+        Agent: agentCtor,
+        EnvHttpProxyAgent: envHttpProxyAgentCtor,
+        ProxyAgent: proxyAgentCtor,
+        fetch: vi.fn(async () => okResponse()),
+      };
+      const fetchImpl = vi.fn(async () => okResponse());
+
+      const result = await fetchWithSsrFGuard({
+        url: "https://public.example/resource",
+        fetchImpl,
+        lookupFn: createPublicLookup(),
+        pinDns: false,
+        dispatcherPolicy: {
+          ...policy,
+          ...(variant === "canonical-over-legacy"
+            ? { proxyTls: { ca: "legacy-must-not-win" } }
+            : {}),
+        },
+      });
+
+      expect(proxyAgentCtor).toHaveBeenCalledWith(
+        expect.objectContaining({
+          uri: "https://proxy.example:8443",
+          ...(hasTarget
+            ? {
+                requestTls: expect.objectContaining({
+                  ca: targetTls.ca,
+                  cert: targetTls.cert,
+                  key: targetTls.key,
+                  passphrase: targetTls.passphrase,
+                  servername: targetTls.serverName,
+                  rejectUnauthorized: true,
+                }),
+              }
+            : {}),
+          ...(hasProxyHop
+            ? {
+                proxyTls: expect.objectContaining({
+                  ca: proxyTls.ca,
+                  cert: proxyTls.cert,
+                  key: proxyTls.key,
+                  passphrase: proxyTls.passphrase,
+                  servername: proxyTls.serverName,
+                  rejectUnauthorized: true,
+                }),
+              }
+            : {}),
+        }),
+      );
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      await result.release();
+    },
+  );
 
   it("keeps explicit proxy transport policy when DNS pinning is disabled", async () => {
     const lookupFn = createPublicLookup();

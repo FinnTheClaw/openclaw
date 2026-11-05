@@ -226,9 +226,14 @@ function createPolicyDispatcherWithoutPinnedDns(
   }
 
   const proxyUrl = dispatcherPolicy.proxyUrl.trim();
-  const requestTls = dispatcherPolicy.proxyTls;
+  // Match pinned dispatchers: legacy proxyTls is target TLS, not proxy-hop TLS.
+  const requestTls = dispatcherPolicy.requestTls ?? dispatcherPolicy.proxyTls;
   return createHttp1ProxyAgent(
-    { uri: proxyUrl, ...(requestTls ? { requestTls: { ...requestTls } } : {}) },
+    {
+      uri: proxyUrl,
+      ...(requestTls ? { requestTls: { ...requestTls } } : {}),
+      ...(dispatcherPolicy.proxyHopTls ? { proxyTls: { ...dispatcherPolicy.proxyHopTls } } : {}),
+    },
     timeoutMs,
   );
 }
