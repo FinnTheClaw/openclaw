@@ -71,6 +71,84 @@ describe("export html sidebar trigger affordance", () => {
 });
 
 describe("export html security hardening", () => {
+  it.each([
+    {
+      name: "nested inert element offset",
+      range: { offset: '<em data-range-marker="owned">range</em>' },
+      text: ':<em data-range-marker="owned">range</em>',
+      html: ':&lt;em data-range-marker="owned"&gt;range&lt;/em&gt;',
+    },
+    {
+      name: "closing span inert offset",
+      range: { offset: '</span><b data-range-marker="owned">range</b><span>' },
+      text: ':</span><b data-range-marker="owned">range</b><span>',
+      html: ':&lt;/span&gt;&lt;b data-range-marker="owned"&gt;range&lt;/b&gt;&lt;span&gt;',
+    },
+    {
+      name: "literal entity and metacharacter offset",
+      range: { offset: '&lt;owned&gt; & "quoted"' },
+      text: ':&lt;owned&gt; & "quoted"',
+      html: ':&amp;lt;owned&amp;gt; &amp; "quoted"',
+    },
+    { name: "numeric offset and limit", range: { offset: 3, limit: 4 }, text: ":3-6", html: ":3-6" },
+    { name: "numeric limit only", range: { limit: 2 }, text: ":1-2", html: ":1-2" },
+    { name: "absent range", range: {}, text: null, html: null },
+  ])("L10-F007 escapes read range metadata: $name", async (row) => {
+    const session: SessionData = {
+      header: { id: "session-read-range", timestamp: now() },
+      entries: [
+        {
+          id: "read-call",
+          parentId: null,
+          timestamp: now(),
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "read-1",
+                name: "read",
+                arguments: { file_path: "synthetic/read.txt", ...row.range },
+              },
+            ],
+          },
+        },
+      ],
+      leafId: "read-call",
+      systemPrompt: "Synthetic export context",
+      tools: [],
+    };
+    const snapshot = structuredClone(session);
+    const { document, downloadJson } = await renderTemplate(session);
+    const assistant = requireElement(
+      document.querySelector("#entry-read-call.assistant-message"),
+      "retained assistant call missing",
+    );
+    const tool = requireElement(assistant.querySelector(".tool-execution"), "read tool missing");
+    expect(tool.querySelector(".tool-name")?.textContent).toBe("read");
+    expect(tool.querySelector(".tool-path")?.textContent).toContain("synthetic/read.txt");
+    expect(tool.querySelector("[data-range-marker]")).toBeNull();
+    const range = tool.querySelector(".line-numbers");
+    if (row.text === null) {
+      expect(range).toBeNull();
+    } else {
+      const renderedRange = requireElement(range, "range label missing");
+      expect(renderedRange.textContent).toBe(row.text);
+      expect(renderedRange.innerHTML).toBe(row.html);
+      expect(renderedRange.children).toHaveLength(0);
+    }
+    const encoded = requireElement(document.getElementById("session-data"), "encoded data missing");
+    expect(JSON.parse(Buffer.from(encoded.textContent ?? "", "base64").toString("utf8"))).toEqual(
+      snapshot,
+    );
+    expect((await downloadJson()).split("\n").map((line) => JSON.parse(line))).toEqual([
+      { type: "header", ...snapshot.header },
+      ...snapshot.entries,
+    ]);
+    expect(session).toEqual(snapshot);
+  });
+
   it.each(["consult", "answer"])("honors hidden input with %s selected while preserving raw export", async (leafId) => {
     function message(id: string, parentId: string | null, content: string, role = "assistant") {
       return {
