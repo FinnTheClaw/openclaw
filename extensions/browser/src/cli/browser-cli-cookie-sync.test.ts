@@ -3,6 +3,7 @@ import { Command } from "commander";
 import * as cliRuntime from "openclaw/plugin-sdk/cli-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import * as gatewayRuntime from "openclaw/plugin-sdk/gateway-runtime";
+import * as runtimeConfigSnapshot from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { defaultRuntime } from "openclaw/plugin-sdk/runtime-env";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCliRuntimeCapture } from "../../test-support.js";
@@ -13,16 +14,25 @@ const gatewayMocks = vi.hoisted(() => ({
   callGatewayFromCli: vi.fn(async () => ({ ok: true, targetId: "tab-1", added: 1 })),
 }));
 
-const watchMocks = vi.hoisted(() => ({ watch: vi.fn(), readSecret: vi.fn() }));
+const watchMocks = vi.hoisted(() => ({
+  watch: vi.fn(),
+  readSecret: vi.fn(),
+  cacheKeychainSecret: vi.fn(),
+}));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, default: { ...actual, watch: watchMocks.watch } };
 });
 vi.mock("../browser/system-chrome-cookies.js", () => ({
-  cacheKeychainSecret: vi.fn(async () => watchMocks.readSecret),
+  cacheKeychainSecret: watchMocks.cacheKeychainSecret,
 }));
 
 const systemProfileMocks = vi.hoisted(() => ({
+  assertSystemCookiePlatform: vi.fn(),
+  resolveSystemCookieSource: vi.fn(() => ({
+    browser: "chrome",
+    cookiesFile: "/synthetic/Cookies",
+  })),
   readSystemProfileCookies: vi.fn(async () => ({
     browser: "chrome" as const,
     systemProfile: "Default",
@@ -44,12 +54,9 @@ const systemProfileMocks = vi.hoisted(() => ({
 vi.spyOn(gatewayRuntime, "callGatewayFromCli").mockImplementation(gatewayMocks.callGatewayFromCli);
 
 vi.mock("../system-profile-api.js", () => ({
-  assertSystemCookiePlatform: vi.fn(),
+  assertSystemCookiePlatform: systemProfileMocks.assertSystemCookiePlatform,
   readSystemProfileCookies: systemProfileMocks.readSystemProfileCookies,
-  resolveSystemCookieSource: vi.fn(() => ({
-    browser: "chrome",
-    cookiesFile: "/synthetic/Cookies",
-  })),
+  resolveSystemCookieSource: systemProfileMocks.resolveSystemCookieSource,
 }));
 
 vi.spyOn(cliRuntime, "runCommandWithRuntime").mockImplementation(
@@ -64,6 +71,8 @@ vi.spyOn(cliRuntime, "runCommandWithRuntime").mockImplementation(
 vi.spyOn(defaultRuntime, "log").mockImplementation(runtime.log);
 vi.spyOn(defaultRuntime, "error").mockImplementation(runtime.error);
 vi.spyOn(defaultRuntime, "exit").mockImplementation(runtime.exit);
+
+const getRuntimeConfigMock = vi.spyOn(runtimeConfigSnapshot, "getRuntimeConfig");
 
 let registerBrowserCookieSyncCommand: typeof import("./browser-cli-cookie-sync.js").registerBrowserCookieSyncCommand;
 
@@ -85,6 +94,12 @@ describe("browser cookie-sync CLI", () => {
 
   beforeEach(() => {
     resetRuntimeCapture();
+    runtime.error.mockClear();
+    getRuntimeConfigMock.mockReturnValue({});
+    watchMocks.watch.mockReset();
+    watchMocks.cacheKeychainSecret.mockReset().mockResolvedValue(watchMocks.readSecret);
+    systemProfileMocks.assertSystemCookiePlatform.mockClear();
+    systemProfileMocks.resolveSystemCookieSource.mockClear();
     gatewayMocks.callGatewayFromCli.mockClear();
     systemProfileMocks.readSystemProfileCookies.mockClear();
   });
@@ -94,6 +109,8 @@ describe("browser cookie-sync CLI", () => {
   });
 
   it("resyncs changes received during a pending push and settles on stop", async () => {
+    const config = { browser: { allowSystemProfileImport: true } };
+    getRuntimeConfigMock.mockReturnValue(config);
     vi.useFakeTimers();
     const firstPush = createDeferred<{ ok: boolean; targetId: string; added: number }>();
     const secondPush = createDeferred<{ ok: boolean; targetId: string; added: number }>();
@@ -111,6 +128,7 @@ describe("browser cookie-sync CLI", () => {
     );
     try {
       await vi.waitFor(() => expect(gatewayMocks.callGatewayFromCli).toHaveBeenCalledTimes(1));
+      config.browser.allowSystemProfileImport = false;
       changed("change", "Cookies-wal");
       await vi.advanceTimersByTimeAsync(1_500);
       expect(gatewayMocks.callGatewayFromCli).toHaveBeenCalledTimes(1);
@@ -129,6 +147,49 @@ describe("browser cookie-sync CLI", () => {
       secondPush.resolve({ ok: true, targetId: "tab-1", added: 1 });
       await running;
     }
+  });
+
+  it.each([
+    { mode: "one-shot", watch: false },
+    { mode: "watch", watch: true },
+  ])("system profile import admission: disabled $mode", async ({ watch }) => {
+    getRuntimeConfigMock.mockReturnValue({ browser: { allowSystemProfileImport: false } });
+    if (watch) {
+      // A reached cache boundary must terminate the unguarded original without a watcher.
+      watchMocks.cacheKeychainSecret.mockRejectedValueOnce(
+        new Error("fixture: disabled watch reached Keychain cache"),
+      );
+    }
+    const exitError = await createProgram()
+      .parseAsync(
+        ["browser", "cookie-sync", "--domains", "example.com", ...(watch ? ["--watch"] : [])],
+        { from: "user" },
+      )
+      .then(
+        () => null,
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+    expect({
+      exitError,
+      errors: runtime.error.mock.calls.map(([message]) =>
+        String(message).replace(/\u001b\[[0-9;]*m/g, ""),
+      ),
+      sourceReads: systemProfileMocks.readSystemProfileCookies.mock.calls.length,
+      platformChecks: systemProfileMocks.assertSystemCookiePlatform.mock.calls.length,
+      sourceResolutions: systemProfileMocks.resolveSystemCookieSource.mock.calls.length,
+      keychainCaches: watchMocks.cacheKeychainSecret.mock.calls.length,
+      watchers: watchMocks.watch.mock.calls.length,
+      gatewayCalls: gatewayMocks.callGatewayFromCli.mock.calls.length,
+    }).toEqual({
+      exitError: "__exit__:1",
+      errors: ["Error: system profile import is disabled (browser.allowSystemProfileImport=false)"],
+      sourceReads: 0,
+      platformChecks: 0,
+      sourceResolutions: 0,
+      keychainCaches: 0,
+      watchers: 0,
+      gatewayCalls: 0,
+    });
   });
 
   it("requires a non-empty domain allowlist before any read or gateway call", async () => {

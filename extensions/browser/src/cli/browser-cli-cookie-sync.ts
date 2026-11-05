@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { defaultRuntime } from "openclaw/plugin-sdk/runtime-env";
 import {
   cacheKeychainSecret,
@@ -216,6 +217,11 @@ export function registerBrowserCookieSyncCommand(
     .action((options: CookieSyncOptions, command: Command) =>
       runBrowserCliCommand(async () => {
         const domains = parseCookieSyncDomains(options.domains);
+        if (getRuntimeConfig().browser?.allowSystemProfileImport === false) {
+          throw new Error(
+            "system profile import is disabled (browser.allowSystemProfileImport=false)",
+          );
+        }
         const parent = parentOpts(command);
         if (options.watch) {
           await watchSystemProfileCookies({ options, parent, domains });
