@@ -28,6 +28,7 @@ import {
 import { createConfiguredGuard } from "./guard.js";
 import { setReefRuntime } from "./runtime.js";
 import { ReefInboxEntryParkedError, type ReefTransportClient } from "./transport.js";
+import { openReefTrustStore } from "./trust-store.js";
 import type { InboxEntry } from "./types.js";
 
 const oauthGuardModel = "gpt-5.6-terra";
@@ -470,6 +471,145 @@ describe("ReefMessageFlow inbound", () => {
     ).rejects.toThrow("unapproved Reef sender");
     expect(classifier.classify).not.toHaveBeenCalled();
     expect(relay.acknowledge).not.toHaveBeenCalled();
+  });
+});
+
+describe("ReefMessageFlow current inbound autonomy", () => {
+  it.each([
+    {
+      name: "bounded downgrade during guard",
+      autonomy: "bounded",
+      phase: "guard",
+      downgrade: true,
+    },
+    {
+      name: "extended downgrade during guard",
+      autonomy: "extended",
+      phase: "guard",
+      downgrade: true,
+    },
+    {
+      name: "bounded downgrade during delivered status",
+      autonomy: "bounded",
+      phase: "status",
+      downgrade: true,
+    },
+    {
+      name: "extended downgrade during delivered status",
+      autonomy: "extended",
+      phase: "status",
+      downgrade: true,
+    },
+    { name: "unchanged bounded ingress", autonomy: "bounded", phase: "guard", downgrade: false },
+    {
+      name: "preexisting notify-only notice",
+      autonomy: "notify-only",
+      phase: "guard",
+      downgrade: false,
+    },
+  ] as const)("L10-F010 rechecks autonomy before inbound selection: $name", async (row) => {
+    const keys = reefKeys();
+    const peerKeys = generateIdentity();
+    const cfg = config();
+    const stores = flowStores();
+    const trusted = openReefTrustStore(stores.runtime, cfg);
+    trusted.set("alice", peerTrust(peerKeys, { autonomy: row.autonomy }));
+    const detached = trusted.get("alice");
+    const relay = transport();
+    const classifier = guard(allow);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let gateEntered = false;
+    if (row.phase === "guard") {
+      classifier.classify.mockImplementationOnce(async () => {
+        gateEntered = true;
+        entered.resolve();
+        await release.promise;
+        return allow;
+      });
+    } else {
+      const status = stores.delivered.status.bind(stores.delivered);
+      vi.spyOn(stores.delivered, "status").mockImplementationOnce(async (id) => {
+        const result = await status(id);
+        gateEntered = true;
+        entered.resolve();
+        await release.promise;
+        return result;
+      });
+    }
+    const onIngress = vi.fn<ConstructorParameters<typeof ReefMessageFlow>[0]["onIngress"]>(
+      async () => {},
+    );
+    const onOwnerNotice = vi.fn(async (_text: string) => {});
+    const flow = new ReefMessageFlow({
+      config: cfg,
+      trust: trusted,
+      keys,
+      transport: relay as unknown as ReefTransportClient,
+      guard: classifier,
+      audit: new MemoryAuditStore(new Uint8Array(32).fill(10)),
+      replay: new MemoryReplayStore(),
+      ...stores,
+      onIngress,
+      onOwnerNotice,
+    });
+    const id = "01JZ0000000000000000000401";
+    const text = "Synthetic autonomy-bound input";
+    const entry: InboxEntry = {
+      seq: 1,
+      peer: "alice",
+      id,
+      kind: "message",
+      envelope: await envelope(peerKeys, keys, id, text),
+      ts: Math.floor(Date.now() / 1_000),
+    };
+    const entrySnapshot = structuredClone(entry);
+    const processing = flow.processEntries([entry]);
+    try {
+      // Early processing rejection also settles this wait; no synthetic timeout.
+      await Promise.race([entered.promise, processing]);
+      expect(gateEntered).toBe(true);
+      expect(classifier.classify).toHaveBeenCalledOnce();
+      expect(onIngress).not.toHaveBeenCalled();
+      expect(onOwnerNotice).not.toHaveBeenCalled();
+      if (row.downgrade) {
+        trusted.setAutonomy("alice", "notify-only");
+      }
+      const currentAutonomy = row.downgrade ? "notify-only" : row.autonomy;
+      expect(trusted.get("alice")?.autonomy).toBe(currentAutonomy);
+      expect(detached?.autonomy).toBe(row.autonomy);
+      release.resolve();
+      await expect(processing).resolves.toEqual([]);
+      if (currentAutonomy === "notify-only") {
+        expect(onIngress).not.toHaveBeenCalled();
+        expect(onOwnerNotice).toHaveBeenCalledExactlyOnceWith(
+          `Reef message from @alice's agent: ${text}`,
+        );
+      } else {
+        expect(onOwnerNotice).not.toHaveBeenCalled();
+        expect(onIngress).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            id,
+            peer: "alice",
+            text,
+            autonomy: currentAutonomy,
+            provenance: expect.stringContaining(`Autonomy=${currentAutonomy};`),
+          }),
+        );
+      }
+      await expect(stores.delivered.status(id)).resolves.toBe("delivered");
+      expect(relay.acknowledge).toHaveBeenCalledOnce();
+      const receipt = relay.acknowledge.mock.calls[0]?.[2];
+      if (!receipt) {
+        throw new Error("Expected actual signed inbound acknowledgement");
+      }
+      expect(receipt).toMatchObject({ id, status: "accepted" });
+      expect(verifyReceipt(receipt, keys.signing.publicKey)).toBe(true);
+      expect(entry).toEqual(entrySnapshot);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([processing]);
+    }
   });
 });
 
