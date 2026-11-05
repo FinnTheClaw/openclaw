@@ -51,6 +51,60 @@ describe("edit tool", () => {
     }
   }
 
+  it.each([
+    {
+      name: "exact overlapping target",
+      original: "a();\na();\na();\n",
+      oldText: "a();\na();",
+      newText: "b();",
+      expected: "a();\na();\na();\n",
+      rejects: true,
+    },
+    {
+      name: "fuzzy overlapping target",
+      original: "a();\na(); \na();\n",
+      oldText: "a();\na();\n",
+      newText: "b();\n",
+      expected: "a();\na(); \na();\n",
+      rejects: true,
+    },
+    {
+      name: "unique target control",
+      original: "a();\nb();\n",
+      oldText: "a();",
+      newText: "c();",
+      expected: "c();\nb();\n",
+      rejects: false,
+    },
+  ])("rejects overlapping occurrences before editing a file ($name)", async (row) => {
+    const filePath = await createTempFile(row.original);
+    const tool = createEditTool(tmpDir);
+    let result: Awaited<ReturnType<typeof tool.execute>> | undefined;
+    let error: unknown;
+    try {
+      result = await tool.execute(
+        "call-overlapping-target",
+        { path: filePath, edits: [{ oldText: row.oldText, newText: row.newText }] },
+        undefined,
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    const persisted = await fs.readFile(filePath);
+
+    if (row.rejects) {
+      expect.soft(error).toBeInstanceOf(Error);
+      expect
+        .soft(error instanceof Error ? error.message : String(error))
+        .toContain("Found 2 occurrences");
+      expect.soft(result).toBeUndefined();
+    } else {
+      expect.soft(error).toBeUndefined();
+      expect.soft(result?.details).toMatchObject({ changed: true });
+    }
+    expect.soft(persisted).toEqual(Buffer.from(row.expected, "utf-8"));
+  });
+
   it("preserves a valid UTF-8 BOM when editing a real file", async () => {
     const filePath = await createTempFile(Buffer.from("\uFEFFheading\nprice: 5\n", "utf-8"));
     const tool = createEditTool(tmpDir);

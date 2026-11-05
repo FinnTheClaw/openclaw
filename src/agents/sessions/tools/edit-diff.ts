@@ -270,11 +270,26 @@ function countOccurrences(fuzzyContent: string, oldText: string): number {
   if (!fuzzyOldText) {
     return 0;
   }
-  return fuzzyContent.split(fuzzyOldText).length - 1;
+  let occurrences = 0;
+  for (
+    let at = fuzzyContent.indexOf(fuzzyOldText);
+    at !== -1;
+    at = fuzzyContent.indexOf(fuzzyOldText, at + 1)
+  ) {
+    occurrences++;
+  }
+  return occurrences;
 }
 
 function countExactOccurrences(content: string, oldText: string): number {
-  return content.split(oldText).length - 1;
+  if (!oldText) {
+    return 0;
+  }
+  let occurrences = 0;
+  for (let at = content.indexOf(oldText); at !== -1; at = content.indexOf(oldText, at + 1)) {
+    occurrences++;
+  }
+  return occurrences;
 }
 
 const EDIT_CANDIDATE_LIMIT = 3;
