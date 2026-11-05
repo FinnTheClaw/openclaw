@@ -482,6 +482,15 @@ describe("GitHub OAuth authorization lifecycle", () => {
   it.each(["cancellation", "expiry"] as const)(
     "fences profile installation when %s wins before commit",
     async (race) => {
+      if (race === "expiry") {
+        mocks.requestDeviceCode.mockResolvedValueOnce({
+          deviceCode: DEVICE_CODE,
+          userCode: "ABCD-EFGH",
+          verificationUri: "https://github.com/login/device",
+          expiresInSeconds: 300,
+          intervalSeconds: 5,
+        });
+      }
       const lifecycle = createLifecycle();
       const started = await startAuthorization(lifecycle, "system");
       const installStarted = deferred();
@@ -498,14 +507,26 @@ describe("GitHub OAuth authorization lifecycle", () => {
 
       const result = lifecycle.pollAuthorization(started.requestId);
       await installStarted.promise;
+      let expiryObservation:
+        | { record: ReturnType<typeof readGitHubDeviceAuthorizationRecord>; deadline: number }
+        | undefined;
       if (race === "cancellation") {
         expect(lifecycle.cancelAuthorization(started.requestId)).toBe(true);
       } else {
         time.setTime(readGitHubDeviceAuthorizationRecord(started.requestId)!.expiresAtMs);
+        expiryObservation = {
+          record: readGitHubDeviceAuthorizationRecord(started.requestId),
+          deadline: time.clock.now(),
+        };
       }
       continueInstall.resolve();
+      const outcome = await result;
 
-      await expect(result).resolves.toEqual({ status: "failed", reason: "setup_failed" });
+      if (race === "expiry") {
+        expect(expiryObservation?.record).toBeDefined();
+        expect(expiryObservation?.record?.expiresAtMs).toBe(expiryObservation?.deadline);
+      }
+      expect(outcome).toEqual({ status: "failed", reason: "setup_failed" });
       expect(selectedIdentity("system")).toBeUndefined();
       expect(inspectGitHubOAuthRecord(NEW_PROFILE)).toEqual({ state: "missing" });
       expect(mocks.removeProfile).toHaveBeenCalledOnce();

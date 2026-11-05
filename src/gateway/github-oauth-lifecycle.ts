@@ -169,6 +169,7 @@ export function createGitHubOAuthLifecycle(params: {
           const pending = readGitHubDeviceAuthorizationRecord(record.requestId);
           if (
             !pending ||
+            pending.expiresAtMs <= Date.now() ||
             pending.createdAtMs !== record.createdAtMs ||
             pending.deviceCode !== record.deviceCode ||
             !isDeepStrictEqual(pending.expectedIdentity, record.expectedIdentity) ||
