@@ -207,8 +207,12 @@ async function runGenerateVoiceResponse(
   const voiceConfig = VoiceCallConfigSchema.parse({
     responseTimeoutMs: 5000,
   });
-  const coreConfig = {} as OpenClawConfig;
   const runtime = overrides?.runtime ?? createAgentRuntime(payloads).runtime;
+  const coreConfig = {
+    agents: {
+      defaults: { model: { primary: `${runtime.defaults.provider}/${runtime.defaults.model}` } },
+    },
+  } as OpenClawConfig;
   const userMessage = overrides?.userMessage ?? "hello there";
 
   const result = await generateVoiceResponse({
@@ -227,6 +231,209 @@ async function runGenerateVoiceResponse(
 }
 
 describe("generateVoiceResponse", () => {
+  it.each<{
+    name: string;
+    coreConfig: OpenClawConfig;
+    voiceAgentId?: string;
+    callAgentId?: string;
+    responseModel?: string;
+    sessionKey?: string;
+    locked?: boolean;
+    native?: boolean;
+    expectedAgentId: string;
+    expectedProvider: string;
+    expectedModel: string;
+  }>([
+    {
+      name: "main global default",
+      coreConfig: {
+        agents: { defaults: { model: { primary: "fixture-global/global-model" } } },
+      },
+      expectedAgentId: "main",
+      expectedProvider: "fixture-global",
+      expectedModel: "global-model",
+    },
+    {
+      name: "main primary over global default",
+      coreConfig: {
+        agents: {
+          defaults: { model: { primary: "fixture-global/global-model" } },
+          entries: { main: { model: "fixture-main/main-model" } },
+        },
+      },
+      expectedAgentId: "main",
+      expectedProvider: "fixture-main",
+      expectedModel: "main-model",
+    },
+    {
+      name: "voice agent inherited global default",
+      coreConfig: {
+        agents: {
+          defaults: { model: { primary: "fixture-global/global-model" } },
+          entries: { voice: {} },
+        },
+      },
+      voiceAgentId: "voice",
+      expectedAgentId: "voice",
+      expectedProvider: "fixture-global",
+      expectedModel: "global-model",
+    },
+    {
+      name: "frozen call agent primary",
+      coreConfig: {
+        agents: {
+          defaults: { model: { primary: "fixture-global/global-model" } },
+          entries: {
+            voice: { model: "fixture-voice/voice-model" },
+            support: { model: "fixture-support/support-model" },
+          },
+        },
+      },
+      voiceAgentId: "voice",
+      callAgentId: "support",
+      expectedAgentId: "support",
+      expectedProvider: "fixture-support",
+      expectedModel: "support-model",
+    },
+    {
+      name: "qualified override control",
+      coreConfig: {
+        agents: { defaults: { model: { primary: "fixture-global/global-model" } } },
+      },
+      responseModel: "fixture-override/override-model",
+      expectedAgentId: "main",
+      expectedProvider: "fixture-override",
+      expectedModel: "override-model",
+    },
+    {
+      name: "single-segment override control",
+      coreConfig: {
+        agents: { defaults: { model: { primary: "fixture-global/global-model" } } },
+      },
+      responseModel: "single-model",
+      expectedAgentId: "main",
+      expectedProvider: "fixture-runtime",
+      expectedModel: "single-model",
+    },
+    {
+      name: "locked explicit override control",
+      coreConfig: {
+        agents: { defaults: { model: { primary: "fixture-global/global-model" } } },
+      },
+      responseModel: "fixture-override/override-model",
+      locked: true,
+      expectedAgentId: "main",
+      expectedProvider: "fixture-override",
+      expectedModel: "override-model",
+    },
+    {
+      name: "native pinned lock propagation control",
+      coreConfig: {
+        agents: { defaults: { model: { primary: "fixture-runtime/runtime-model" } } },
+      },
+      sessionKey: "agent:main:harness:codex:supervision:019f-fixture-thread",
+      native: true,
+      expectedAgentId: "main",
+      expectedProvider: "fixture-runtime",
+      expectedModel: "runtime-model",
+    },
+  ])("preserves the configured voice response model for $name", async (scenario) => {
+    const { runtime, runEmbeddedAgent, patchSessionEntry, sessionStore, resolveStorePath } =
+      createAgentRuntime([{ text: '{"spoken":"Configured fixture response."}' }]);
+    Object.assign(runtime.defaults, { provider: "fixture-runtime", model: "runtime-model" });
+    const resolveThinkingDefault = vi.fn(() => "off" as const);
+    runtime.resolveThinkingDefault = resolveThinkingDefault;
+    const sessionKey = scenario.sessionKey ?? `agent:${scenario.expectedAgentId}:voice:15550001111`;
+    if (scenario.locked || scenario.native) {
+      sessionStore[sessionKey] = {
+        sessionId: "fixture-existing-session",
+        updatedAt: 100,
+        modelSelectionLocked: true,
+        ...(scenario.native
+          ? {
+              agentHarnessId: "codex",
+              agentRuntimeOverride: "openclaw",
+              pluginExtensions: {
+                codex: {
+                  supervision: {
+                    sourceThreadId: "019f-fixture-thread",
+                    modelLocked: true,
+                  },
+                },
+              },
+            }
+          : { model: "locked-model", modelProvider: "fixture-locked" }),
+      };
+    }
+    const originalEntry = structuredClone(sessionStore[sessionKey]);
+    const originalConfig = structuredClone(scenario.coreConfig);
+    const voiceConfig = VoiceCallConfigSchema.parse({
+      agentId: scenario.voiceAgentId,
+      responseModel: scenario.responseModel,
+      responseTimeoutMs: 5000,
+    });
+    const originalVoiceConfig = structuredClone(voiceConfig);
+
+    const result = await generateVoiceResponse({
+      voiceConfig,
+      coreConfig: scenario.coreConfig,
+      agentRuntime: runtime,
+      callId: "fixture-call",
+      agentId: scenario.callAgentId,
+      sessionKey: scenario.sessionKey,
+      from: "+15550001111",
+      senderIsOwner: false,
+      transcript: [],
+      userMessage: "Select the configured fixture.",
+    });
+
+    expect(scenario.coreConfig).toEqual(originalConfig);
+    expect(voiceConfig).toEqual(originalVoiceConfig);
+    expect(resolveStorePath).toHaveBeenCalledWith(undefined, {
+      agentId: scenario.expectedAgentId,
+    });
+    if (scenario.locked) {
+      expect(result).toEqual({
+        text: null,
+        deliveredEarly: false,
+        error: "Model selection is locked for this session.",
+      });
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+      expect(resolveThinkingDefault).not.toHaveBeenCalled();
+      expect(patchSessionEntry).not.toHaveBeenCalled();
+      expect(sessionStore[sessionKey]).toEqual(originalEntry);
+      return;
+    }
+
+    expect(result).toEqual({ text: "Configured fixture response.", deliveredEarly: false });
+    expect(runEmbeddedAgent).toHaveBeenCalledTimes(1);
+    const args = requireEmbeddedAgentArgs(runEmbeddedAgent);
+    expect(args).toMatchObject({
+      agentId: scenario.expectedAgentId,
+      provider: scenario.expectedProvider,
+      model: scenario.expectedModel,
+      sessionKey,
+      modelSelectionLocked: scenario.native === true,
+      agentHarnessId: scenario.native ? "codex" : undefined,
+      agentHarnessRuntimeOverride: scenario.native ? "codex" : undefined,
+    });
+    expect(args.sessionTarget).toMatchObject({
+      agentId: scenario.expectedAgentId,
+      sessionKey,
+      storePath: `/tmp/openclaw/${scenario.expectedAgentId}/sessions.json`,
+    });
+    expect(resolveThinkingDefault).toHaveBeenCalledTimes(1);
+    expect(resolveThinkingDefault).toHaveBeenCalledWith({
+      cfg: scenario.coreConfig,
+      provider: scenario.expectedProvider,
+      model: scenario.expectedModel,
+    });
+    if (scenario.native) {
+      expect(sessionStore[sessionKey]).toEqual(originalEntry);
+      expect(patchSessionEntry).not.toHaveBeenCalled();
+    }
+  });
+
   it("marks classic inbound callers as non-owners", async () => {
     const { runtime, runEmbeddedAgent } = createAgentRuntime([]);
 
@@ -735,7 +942,13 @@ describe("generateVoiceResponse", () => {
 
     const result = await generateVoiceResponse({
       voiceConfig,
-      coreConfig: {} as OpenClawConfig,
+      coreConfig: {
+        agents: {
+          defaults: {
+            model: { primary: `${runtime.defaults.provider}/${runtime.defaults.model}` },
+          },
+        },
+      },
       agentRuntime: runtime,
       callId: "call-123",
       sessionKey,

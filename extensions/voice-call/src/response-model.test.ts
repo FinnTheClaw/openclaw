@@ -15,6 +15,8 @@ describe("resolveVoiceResponseModel", () => {
   it("keeps legacy single-segment overrides on the runtime default provider", () => {
     expect(
       resolveVoiceResponseModel({
+        cfg: {},
+        agentId: "main",
         voiceConfig: VoiceCallConfigSchema.parse({
           responseModel: "gpt-5.4-mini",
         }),

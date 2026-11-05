@@ -601,7 +601,13 @@ describe("createVoiceCallRuntime lifecycle", () => {
 
     await createVoiceCallRuntime({
       config,
-      coreConfig: {} as OpenClawConfig,
+      coreConfig: {
+        agents: {
+          defaults: {
+            model: { primary: `${agentRuntime.defaults.provider}/${agentRuntime.defaults.model}` },
+          },
+        },
+      },
       agentRuntime: agentRuntime as never,
     });
 

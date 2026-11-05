@@ -358,7 +358,12 @@ export async function generateVoiceResponse(
         });
 
         // Resolve model from config
-        const { provider, model } = resolveVoiceResponseModel({ voiceConfig, agentRuntime });
+        const { provider, model } = resolveVoiceResponseModel({
+          cfg,
+          agentId,
+          voiceConfig,
+          agentRuntime,
+        });
         const configuredModel = resolveDefaultModelForAgent({ cfg, agentId });
 
         let sessionEntry = existingSessionEntry;
