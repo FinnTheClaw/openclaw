@@ -455,6 +455,43 @@ describe("iMessage approval reactions", () => {
     ]);
   });
 
+  it.each([false, undefined, null])(
+    "rejects a received local-account sender fallback when is_from_me=%s",
+    async (isFromMe) => {
+      const conversation = { chatGuid: "iMessage;+;fallback-group" };
+      await registerIMessageApprovalReactionTarget({
+        conversation,
+        approvalId: "exec-local-fallback",
+      });
+
+      await expect(
+        resolveReaction(
+          buildTapbackReactionPayload({
+            sender: "+15551230000",
+            destination_caller_id: " imessage:+1 (555) 123-0000 ",
+            is_from_me: isFromMe,
+            is_group: true,
+            chat_guid: conversation.chatGuid,
+            reacted_to_guid: "approval-message",
+          }),
+        ),
+      ).resolves.toBe(false);
+      expect(resolverMocks.resolveApprovalOverGateway).not.toHaveBeenCalled();
+      await expect(
+        resolveIMessageApprovalReactionTargetWithPersistence({
+          accountId: "default",
+          conversation,
+          messageId: "approval-message",
+          reactionKey: "👍",
+        }),
+      ).resolves.toEqual({
+        approvalId: "exec-local-fallback",
+        approvalKind: "exec",
+        decision: "allow-once",
+      });
+    },
+  );
+
   it("resolves is_from_me tapbacks when the actor is an explicit approver", async () => {
     await registerIMessageApprovalReactionTarget({ approvalId: "exec-self" });
 
@@ -463,6 +500,7 @@ describe("iMessage approval reactions", () => {
       buildTapbackReactionPayload({
         sender: "+15551230000",
         is_from_me: true,
+        destination_caller_id: "+15551230000",
         reaction_emoji: "👍",
         reacted_to_guid: "approval-message",
       }),
@@ -566,7 +604,13 @@ describe("iMessage approval reactions", () => {
       senderId: "+15551239999",
       emoji: "👎",
       decision: "deny",
-      message: { chat_guid: "iMessage;+;chat42", chat_id: 42, is_group: true },
+      message: {
+        chat_guid: "iMessage;+;chat42",
+        chat_id: 42,
+        is_group: true,
+        is_from_me: false,
+        destination_caller_id: "+15551230000",
+      },
     },
   ])("$name", async (testCase) => {
     await registerIMessageApprovalReactionTarget({

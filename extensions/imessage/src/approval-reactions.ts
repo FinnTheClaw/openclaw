@@ -433,6 +433,12 @@ function readApprovalReactionEvent(
   const primary = reaction.targetGuid?.trim() || candidates[0] || "";
   const messageIdCandidates = candidates.length > 0 ? candidates : primary ? [primary] : [];
   const actorHandle = normalizeIMessageHandle((message.sender ?? "").trim());
+  const destinationCallerId = normalizeIMessageHandle((message.destination_caller_id ?? "").trim());
+  // Like poll votes, received sender/destination equality can be imsg's local-account
+  // fallback rather than an authenticated remote actor.
+  if (message.is_from_me !== true && actorHandle && actorHandle === destinationCallerId) {
+    return null;
+  }
   if (!reactionKey || !primary || !actorHandle) {
     return null;
   }
