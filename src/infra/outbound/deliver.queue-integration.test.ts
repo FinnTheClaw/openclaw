@@ -380,6 +380,80 @@ describe("durable outbound queue delivery", () => {
     expect(sendMatrix).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { unknownFirst: false, reusePendingDeliveryIntent: true },
+    { unknownFirst: true, reusePendingDeliveryIntent: true },
+    { unknownFirst: false, reusePendingDeliveryIntent: false },
+    { unknownFirst: true, reusePendingDeliveryIntent: false },
+  ])(
+    "F04-002 keeps one chunked logical payload pending when a physical sibling is identityless (unknown first: $unknownFirst, reuse intent: $reusePendingDeliveryIntent)",
+    async ({ unknownFirst, reusePendingDeliveryIntent }) => {
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "matrix",
+            source: "test",
+            plugin: createOutboundTestPlugin({
+              id: "matrix",
+              outbound: {
+                ...matrixOutboundForQueueTest,
+                chunker: (text) => [text.slice(0, 2), text.slice(2)],
+                chunkerMode: "text",
+                textChunkLimit: 2,
+              },
+            }),
+          },
+        ]),
+      );
+      const identified = { messageId: "mx-F04-002-confirmed" };
+      const unknown = { messageId: "" };
+      const sendMatrix = vi
+        .fn()
+        .mockResolvedValueOnce(unknownFirst ? unknown : identified)
+        .mockResolvedValueOnce(unknownFirst ? identified : unknown);
+      const deliveryIntentId =
+        "cron-direct-delivery:v1:F04-002-" +
+        String(unknownFirst) +
+        (reusePendingDeliveryIntent ? "" : "-nonreuse");
+      const onDeliveryResult = vi.fn();
+      const onPayloadDeliveryOutcome = vi.fn();
+
+      // Both resolution and rejection are acceptable API surfaces for partial
+      // delivery; neither may publish whole-payload success or retire custody.
+      await deliverMatrix({
+        payloads: [{ text: "abcd" }],
+        deps: { matrix: sendMatrix },
+        queuePolicy: "required",
+        deliveryIntentId,
+        completionRetention: boundedCronCompletionRetention,
+        reusePendingDeliveryIntent,
+        onDeliveryResult,
+        onPayloadDeliveryOutcome,
+      }).catch(() => undefined);
+
+      expect(sendMatrix).toHaveBeenCalledTimes(2);
+      expect(sendMatrix.mock.calls.map((call) => call[1])).toEqual(["ab", "cd"]);
+      expect(onDeliveryResult).toHaveBeenCalledWith(expect.objectContaining(identified));
+      expect
+        .soft(
+          onPayloadDeliveryOutcome.mock.calls.flatMap(([outcome]) =>
+            outcome.status === "sent" && !outcome.incompleteReason ? [outcome] : [],
+          ),
+        )
+        .toEqual([]);
+      expect
+        .soft(getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, deliveryIntentId, tmpDir))
+        .toBe("pending");
+      const pending = (await loadPendingDeliveries(tmpDir)).find(
+        (entry) => entry.id === deliveryIntentId,
+      );
+      expect.soft(pending).toMatchObject({
+        id: deliveryIntentId,
+        recoveryState: "unknown_after_send",
+      });
+    },
+  );
+
   it("never acknowledges route-only metadata as a platform message identity", async () => {
     const sendMatrix = vi.fn().mockResolvedValue({ messageId: "", toJid: "!route-only:example" });
     const deliveryIntentId = "cron-direct-delivery:v1:no-platform-identity";

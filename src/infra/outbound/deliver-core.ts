@@ -443,13 +443,24 @@ export async function deliverOutboundPayloadsCore(
       }
 
       const deliveredResults = results.slice(beforeCount);
+      // Retained identities prove progress, not that every physical send succeeded.
+      // A final explicit no-send may intentionally reconcile identified progress
+      // from the same invocation; only identityless sends leave unknown custody.
+      const incompleteReason =
+        getSuppressionReason() === "adapter_returned_no_identity"
+          ? "adapter_returned_no_identity"
+          : undefined;
       if (deliveredResults.length > 0) {
         recordPayloadOutcome({
           index: payloadIndex,
           status: "sent",
           results: deliveredResults,
+          ...(incompleteReason ? { incompleteReason } : {}),
         });
-        recordDeliveredPayload(mirroredPayload);
+        // A partially delivered payload cannot prove what the destination showed.
+        if (!incompleteReason) {
+          recordDeliveredPayload(mirroredPayload);
+        }
       } else {
         recordPayloadOutcome(
           suppressedPayloadOutcome({

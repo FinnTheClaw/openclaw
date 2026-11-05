@@ -391,11 +391,14 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
     platformResultsReturned = true;
     if (
       queueOwner &&
-      reusableProducerClaimId &&
       results.length > 0 &&
       payloadOutcomes.some(
         (outcome) =>
-          outcome.status === "suppressed" && outcome.reason === "adapter_returned_no_identity",
+          (outcome.status === "sent" &&
+            outcome.incompleteReason === "adapter_returned_no_identity") ||
+          (Boolean(reusableProducerClaimId) &&
+            outcome.status === "suppressed" &&
+            outcome.reason === "adapter_returned_no_identity"),
       )
     ) {
       const error = "platform send returned no delivery identity for part of the delivery batch";

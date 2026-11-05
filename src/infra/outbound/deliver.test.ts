@@ -3360,6 +3360,43 @@ describe("deliverOutboundPayloads", () => {
     });
   });
 
+  it.each([false, true])(
+    "F04-002 does not claim complete text or mirror for an identityless physical sibling (unknown first: %s)",
+    async (unknownFirst) => {
+      const identified = { channel: "matrix" as const, messageId: "mx-F04-002-confirmed" };
+      const unknown = { channel: "matrix" as const, messageId: "" };
+      const sendText = vi
+        .fn()
+        .mockResolvedValueOnce(unknownFirst ? unknown : identified)
+        .mockResolvedValueOnce(unknownFirst ? identified : unknown);
+      const onDeliveryResult = vi.fn();
+      const onPayloadDeliveryOutcome = vi.fn();
+      setTestOutbound({ sendText, chunker: chunkText, chunkerMode: "text", textChunkLimit: 2 });
+
+      const results = await deliverMatrix({
+        payloads: [{ text: "abcd" }],
+        skipQueue: true,
+        bestEffort: true,
+        onDeliveryResult,
+        onPayloadDeliveryOutcome,
+        mirror: { sessionKey: "agent:main:main", agentId: "main", text: "abcd" },
+      });
+
+      expect(sendText).toHaveBeenCalledTimes(2);
+      expect(sendText.mock.calls.map(([ctx]) => ctx.text)).toEqual(["ab", "cd"]);
+      expect(results).toContainEqual(identified);
+      expect(onDeliveryResult).toHaveBeenCalledWith(expect.objectContaining(identified));
+      expect
+        .soft(
+          onPayloadDeliveryOutcome.mock.calls.flatMap(([outcome]) =>
+            outcome.status === "sent" && !outcome.incompleteReason ? [outcome] : [],
+          ),
+        )
+        .toEqual([]);
+      expect.soft(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+    },
+  );
+
   it("resets no-send disposition between chunked logical payloads", async () => {
     const onPayloadDeliveryOutcome = vi.fn();
     const noSend = { channel: "matrix" as const, messageId: "", outcome: "not_sent" as const };
