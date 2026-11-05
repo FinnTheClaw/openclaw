@@ -15,6 +15,51 @@ describe("private realtime live model selection", () => {
     mocks.getRuntimeConfig.mockReset();
   });
 
+  it.each([
+    {
+      name: "direct public model",
+      config: { talk: { realtime: { model: "gpt-live-1" } } },
+    },
+    {
+      name: "normalized direct public model without private fallback",
+      config: {
+        talk: {
+          realtime: {
+            provider: " OPENAI ",
+            model: " GPT-LIVE-1 ",
+            providers: { OpenAI: { model: "gpt-live-provider-fixture" } },
+          },
+        },
+      },
+    },
+    {
+      name: "explicit public provider model",
+      config: {
+        talk: {
+          realtime: {
+            provider: " OPENAI ",
+            providers: {
+              OpenAI: { model: " gpt-live-1 " },
+              custom: { model: "custom-live-fixture" },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "sole public provider model",
+      config: { talk: { realtime: { providers: { OpenAI: { model: "gpt-live-1" } } } } },
+    },
+  ])("L12-F014 keeps private live fixtures off the public protocol: $name", ({ config }) => {
+    const original = structuredClone(config);
+    mocks.getRuntimeConfig.mockReturnValue(config);
+    try {
+      expect(resolveConfiguredLiveQuicksilverModel()).toBeUndefined();
+    } finally {
+      expect(config).toEqual(original);
+    }
+  });
+
   it("prefers a valid Talk-level model over provider configuration", () => {
     mocks.getRuntimeConfig.mockReturnValue({
       talk: {

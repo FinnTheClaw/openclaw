@@ -1,5 +1,5 @@
 import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
-import { isOpenAIGptLiveModel } from "./realtime-quicksilver.js";
+import { isOpenAIGptLiveApiModel, isOpenAIGptLiveModel } from "./realtime-quicksilver.js";
 
 export function resolveConfiguredLiveQuicksilverModel(): string | undefined {
   const realtime = getRuntimeConfig().talk?.realtime;
@@ -13,7 +13,9 @@ export function resolveConfiguredLiveQuicksilverModel(): string | undefined {
     return undefined;
   }
   if (directModel) {
-    return isOpenAIGptLiveModel(directModel) ? directModel : undefined;
+    return isOpenAIGptLiveModel(directModel) && !isOpenAIGptLiveApiModel(directModel)
+      ? directModel
+      : undefined;
   }
   const providerConfig = selectedProviderId
     ? providerEntries.find(([id]) => id.trim().toLowerCase() === selectedProviderId)?.[1]
@@ -21,5 +23,8 @@ export function resolveConfiguredLiveQuicksilverModel(): string | undefined {
   const providerModel = providerConfig?.model;
   const normalizedProviderModel =
     typeof providerModel === "string" ? providerModel.trim() : undefined;
-  return isOpenAIGptLiveModel(normalizedProviderModel) ? normalizedProviderModel : undefined;
+  return isOpenAIGptLiveModel(normalizedProviderModel) &&
+    !isOpenAIGptLiveApiModel(normalizedProviderModel)
+    ? normalizedProviderModel
+    : undefined;
 }
