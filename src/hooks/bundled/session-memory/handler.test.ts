@@ -10,6 +10,7 @@ import {
   readSessionTranscriptBoundedMessageTailPage,
   replaceTranscriptEvents,
 } from "../../../config/sessions/session-accessor.js";
+import * as fsSafe from "../../../infra/fs-safe.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
 import {
@@ -630,6 +631,144 @@ describe("session-memory hook", () => {
         fs.readFile(path.join(memoryDir, "2026-01-01-0430-2.md"), "utf-8"),
       ).resolves.toContain("- **Session ID**: second-session");
     });
+  });
+
+  it.each([
+    { label: "manual new/new", actions: ["new", "new"] },
+    { label: "manual reset/reset", actions: ["reset", "reset"] },
+    { label: "automatic idle/idle", actions: ["auto-reset", "auto-reset"] },
+    { label: "mixed reset/idle", actions: ["reset", "auto-reset"] },
+  ] as const)("preserves concurrent same-minute session-memory captures: $label", async (row) => {
+    const workspaceDir = await createCaseWorkspace("concurrent-captures");
+    const memoryDir = path.join(workspaceDir, "memory");
+    const cfg = {
+      agents: { defaults: { workspace: workspaceDir, userTimezone: "UTC" } },
+      plugins: { slots: { memory: "none" } },
+    } satisfies OpenClawConfig;
+    const captures = [
+      { sessionId: "concurrent-first", content: "CONCURRENT_CAPTURE_FIRST", originClass: "agent" },
+      {
+        sessionId: "concurrent-second",
+        content: "CONCURRENT_CAPTURE_SECOND",
+        originClass: "untrusted",
+      },
+    ] as const;
+    const events = captures.map((capture, index) => {
+      const action = row.actions[index]!;
+      const event = createHookEvent(
+        action === "auto-reset" ? "session" : "command",
+        action,
+        `agent:main:${capture.sessionId}`,
+        {
+          agentId: "main",
+          cfg,
+          workspaceDir,
+          ...(action === "auto-reset"
+            ? { sessionEntry: { sessionId: capture.sessionId }, reason: "idle" }
+            : { previousSessionEntry: { sessionId: capture.sessionId } }),
+          previousSessionMemory: {
+            status: "available",
+            content: capture.content,
+            originClass: capture.originClass,
+          },
+        },
+      );
+      event.timestamp = new Date("2026-01-01T04:30:15.000Z");
+      return event;
+    });
+    const eventsBefore = structuredClone(events);
+    let releaseRoots!: () => void;
+    const rootsReady = new Promise<void>((resolve) => {
+      releaseRoots = resolve;
+    });
+    let rootReceipts = 0;
+    const nativeRoot = fsSafe.root;
+    const rootSpy = vi.spyOn(fsSafe, "root").mockImplementation(async (rootDir, defaults) => {
+      const actualRoot = await nativeRoot(rootDir, defaults);
+      if (path.resolve(rootDir) === memoryDir) {
+        rootReceipts += 1;
+        if (rootReceipts === 2) {
+          releaseRoots();
+        }
+        await rootsReady;
+      }
+      return actualRoot;
+    });
+    const provenance = memoryProvenanceMocks.recordMemoryArtifactWriteProvenance;
+    const previousProvenance = provenance.getMockImplementation();
+    const writes: Array<{
+      relativePath: string;
+      contentAfter: string;
+      originClass: string;
+      sessionId?: string;
+      existedBeforeCommit: boolean;
+    }> = [];
+    provenance.mockClear();
+    provenance.mockImplementation(async (write) => {
+      const existedBeforeCommit = await fs
+        .access(path.join(write.workspaceDir, write.relativePath))
+        .then(
+          () => true,
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") {
+              return false;
+            }
+            throw error;
+          },
+        );
+      writes.push({ ...write, existedBeforeCommit });
+      return undefined;
+    });
+    loggerMocks.info.mockClear();
+    loggerMocks.error.mockClear();
+    const work: Array<ReturnType<typeof handler>> = [];
+    try {
+      for (const event of events) {
+        work.push(handler(event));
+      }
+      await Promise.all(work);
+      await flushSessionMemoryWritesForTest();
+
+      expect(rootReceipts).toBe(2);
+      const files = (await fs.readdir(memoryDir)).sort();
+      expect(files).toEqual(["2026-01-01-0430-2.md", "2026-01-01-0430.md"]);
+      const artifacts = await Promise.all(
+        files.map(async (filename) => ({
+          filename,
+          content: await fs.readFile(path.join(memoryDir, filename), "utf-8"),
+        })),
+      );
+      expect(writes).toHaveLength(2);
+      expect(new Set(writes.map((write) => write.relativePath)).size).toBe(2);
+      for (const capture of captures) {
+        const matched = artifacts.filter((artifact) => artifact.content.includes(capture.content));
+        expect(matched).toHaveLength(1);
+        const artifact = expectDefined(matched[0], "distinct capture artifact");
+        expect(artifact.content).toContain(`- **Session ID**: ${capture.sessionId}`);
+        expect(captures.filter((other) => artifact.content.includes(other.content))).toHaveLength(
+          1,
+        );
+        expect(writes.find((write) => write.sessionId === capture.sessionId)).toMatchObject({
+          relativePath: `memory/${artifact.filename}`,
+          contentAfter: artifact.content,
+          originClass: capture.originClass,
+          existedBeforeCommit: false,
+        });
+      }
+      expect(
+        loggerMocks.info.mock.calls.filter(([message]) =>
+          String(message).startsWith("Session context saved to "),
+        ),
+      ).toHaveLength(2);
+      expect(loggerMocks.error).not.toHaveBeenCalled();
+      expect(events).toEqual(eventsBefore);
+    } finally {
+      releaseRoots();
+      await Promise.allSettled(work);
+      await flushSessionMemoryWritesForTest();
+      rootSpy.mockRestore();
+      provenance.mockImplementation(previousProvenance ?? (async () => undefined));
+    }
   });
 
   it("prefers workspaceDir from hook context when sessionKey points at main", async () => {
