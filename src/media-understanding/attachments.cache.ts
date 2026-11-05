@@ -167,6 +167,7 @@ export class MediaAttachmentCache {
     attachmentIndex: number;
     maxBytes: number;
     timeoutMs: number;
+    allowUrl?: boolean;
   }): Promise<MediaBufferResult> {
     const entry = await this.ensureEntry(params.attachmentIndex);
     const url = remoteFetchUrl(entry.attachment.url);
@@ -182,7 +183,7 @@ export class MediaAttachmentCache {
       return local;
     }
 
-    if (!url) {
+    if (!url || params.allowUrl === false) {
       throw (
         entry.lastLocalError ??
         new MediaUnderstandingSkipError(

@@ -102,6 +102,7 @@ async function classifyFileAttachment(params: {
       attachmentIndex: attachment.index,
       maxBytes: limits.maxBytes,
       timeoutMs: limits.timeoutMs,
+      allowUrl: limits.allowUrl,
     });
   } catch (err) {
     if (shouldLogVerbose()) {
