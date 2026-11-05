@@ -5638,8 +5638,8 @@ describe("auto-migration retries after incomplete checks", () => {
     const cfg = createConfig();
     const dbPath = path.join(stateDir, "state", "openclaw.sqlite");
     await fs.mkdir(path.dirname(dbPath), { recursive: true });
-    const setVersion = (version: number) => {
-      closeMigrationDatabases();
+    const setVersion = async (version: number) => {
+      await closeDatabaseTestCohorts(migrationDatabaseClosers);
       const db = new DatabaseSync(dbPath);
       try {
         db.exec(`PRAGMA user_version = ${version};`);
@@ -5647,7 +5647,7 @@ describe("auto-migration retries after incomplete checks", () => {
         db.close();
       }
     };
-    setVersion(OPENCLAW_STATE_SCHEMA_VERSION + 1);
+    await setVersion(OPENCLAW_STATE_SCHEMA_VERSION + 1);
     const run = (doctorOnlyStateMigrations = false, runEnv = env) =>
       autoMigrateLegacyState({
         cfg,
@@ -5661,7 +5661,7 @@ describe("auto-migration retries after incomplete checks", () => {
   it("M01 Automatic schema failure can retry after repair", async () => {
     const fixture = await futureSchemaFixture();
     await expect(fixture.run()).rejects.toThrow("Failed migrating shared state database schema");
-    fixture.repair();
+    await fixture.repair();
     await expect(fixture.run()).resolves.toMatchObject({ skipped: false, warnings: [] });
   });
 
@@ -5674,7 +5674,7 @@ describe("auto-migration retries after incomplete checks", () => {
   it("M03 Successful automatic retry is then skipped", async () => {
     const fixture = await futureSchemaFixture();
     await expect(fixture.run()).rejects.toThrow();
-    fixture.repair();
+    await fixture.repair();
     expect((await fixture.run()).skipped).toBe(false);
     expect((await fixture.run()).skipped).toBe(true);
   });
@@ -5684,7 +5684,7 @@ describe("auto-migration retries after incomplete checks", () => {
     const failed = await fixture.run(true);
     expect(failed.skipped).toBe(false);
     expect(failed.warnings.length).toBeGreaterThan(0);
-    fixture.repair();
+    await fixture.repair();
     const repaired = await fixture.run(true);
     expect(repaired.skipped).toBe(false);
     expect(repaired.warnings).toEqual([]);
@@ -5716,7 +5716,7 @@ describe("auto-migration retries after incomplete checks", () => {
   it("M08 Normalized state-path alias retries after failure", async () => {
     const fixture = await futureSchemaFixture();
     await expect(fixture.run()).rejects.toThrow();
-    fixture.repair();
+    await fixture.repair();
     const aliasEnv = {
       ...fixture.env,
       OPENCLAW_STATE_DIR: `${fixture.root}/alias/../.openclaw`,
@@ -5730,14 +5730,14 @@ describe("auto-migration retries after incomplete checks", () => {
     const failed = await futureSchemaFixture();
     await expect(failed.run()).rejects.toThrow();
     const healthy = await futureSchemaFixture();
-    healthy.repair();
+    await healthy.repair();
     expect((await healthy.run()).skipped).toBe(false);
     expect((await healthy.run()).skipped).toBe(true);
   });
 
   it("M10 Clean initial migration still skips completed repeat", async () => {
     const fixture = await futureSchemaFixture();
-    fixture.repair();
+    await fixture.repair();
     const first = await fixture.run();
     const second = await fixture.run();
     expect(first.skipped).toBe(false);
