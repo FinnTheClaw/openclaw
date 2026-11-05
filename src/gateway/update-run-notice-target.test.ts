@@ -112,3 +112,110 @@ it("authorizes linked admins through Discord's direct-recipient grammar and curr
     }
   });
 });
+
+it.each([
+  {
+    name: "retarget with a stored context thread",
+    contextThread: "1234567890.123456",
+    explicit: { to: "C0456DEF" },
+    requestedThread: undefined,
+    expectedTo: "C0456DEF",
+    expectedReply: undefined,
+  },
+  {
+    name: "retarget with only a routing-key thread",
+    contextThread: undefined,
+    explicit: { to: "C0456DEF" },
+    requestedThread: undefined,
+    expectedTo: "C0456DEF",
+    expectedReply: undefined,
+  },
+  {
+    name: "same normalized destination",
+    contextThread: "1234567890.123456",
+    explicit: { channel: " SLACK ", to: " C0123ABC ", accountId: " WORKSPACE-1 " },
+    requestedThread: undefined,
+    expectedTo: "C0123ABC",
+    expectedReply: "1234567890.123456",
+  },
+  {
+    name: "retarget with an explicit new thread",
+    contextThread: "1234567890.123456",
+    explicit: { to: "C0456DEF" },
+    requestedThread: "2234567890.123456",
+    expectedTo: "C0456DEF",
+    expectedReply: "2234567890.123456",
+  },
+])(
+  "keeps update notice threads bound to their destination in the resolver ($name)",
+  async ({ contextThread, explicit, requestedThread, expectedTo, expectedReply }) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const { slackPlugin } = await loadBundledPluginFacade<{ slackPlugin: ChannelPlugin }>({
+        pluginId: "slack",
+        artifactBasename: "api.js",
+      });
+      const previous = captureActivePluginRegistrySnapshot();
+      stageActivePluginRegistry(
+        createTestRegistry([{ pluginId: "slack", plugin: slackPlugin, source: "test" }]),
+        null,
+        "default",
+      );
+      try {
+        const cfg: OpenClawConfig = {
+          commands: { ownerAllowFrom: ["slack:C0123ABC", "slack:C0456DEF"] },
+        };
+        const sessionKey = "agent:main:slack:channel:c0123abc:thread:1234567890.123456";
+        const context = {
+          channel: "slack",
+          accountId: "workspace-1",
+          to: "C0123ABC",
+          ...(contextThread ? { threadId: contextThread } : {}),
+        };
+        const params = {
+          cfg,
+          sessionKey,
+          explicitDeliveryContext: explicit,
+          threadId: requestedThread,
+          session: {
+            cfg,
+            agentId: "main",
+            storePath: state.statePath("agents", "main", "sessions", "sessions.json"),
+            store: {},
+            canonicalKey: sessionKey,
+            storeKeys: [sessionKey],
+            legacyKey: undefined,
+            entry: {
+              sessionId: "thread-retarget-probe",
+              updatedAt: 1,
+              delivery: {
+                kind: "external" as const,
+                route: {
+                  channel: "slack",
+                  accountId: "workspace-1",
+                  target: { to: "C0123ABC", chatType: "channel" as const },
+                  ...(contextThread ? { thread: { id: contextThread } } : {}),
+                },
+                context,
+                origin: { provider: "slack", chatType: "channel" as const },
+              },
+            },
+          },
+        };
+        const original = structuredClone(params);
+        const target = await resolveUpdateRunNoticeTarget(params);
+        expect(params).toEqual(original);
+        expect(target.kind).toBe("route");
+        expect(target.kind === "route" ? target.route : undefined).toEqual({
+          channel: "slack",
+          accountId: "workspace-1",
+          to: expectedTo,
+          chatType: "channel",
+          threadId: undefined,
+          replyToId: expectedReply,
+        });
+      } finally {
+        rollbackStagedPluginRegistry(previous);
+      }
+    });
+  },
+);

@@ -12,6 +12,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SessionDeliveryRoute } from "../infra/session-delivery-queue.records.js";
 import { getUpdateRun, recordUpdateRunVerification } from "../infra/update-run-ledger.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { channelRouteTargetsMatchExact } from "../plugin-sdk/channel-route.js";
 import { resolveChannelAccountEntry } from "../routing/account-lookup.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import {
@@ -22,6 +23,7 @@ import {
   type DeliveryContext,
   hasDeliveryTargetFields,
   mergeDeliveryContext,
+  normalizeDeliveryContext,
 } from "../utils/delivery-context.shared.js";
 import { isInternalMessageChannel } from "../utils/message-channel.js";
 import { resolveGatewayLifecycleNoticeRoute } from "./server-restart-sentinel-notice.js";
@@ -156,6 +158,33 @@ export function recordUpdateRunNoticeSkipped(
   }
 }
 
+/** Session thread hints belong only to the same normalized notice destination. */
+export function hasUpdateRunNoticeDestinationChanged(
+  context?: DeliveryContext,
+  previousContext?: DeliveryContext,
+): boolean {
+  const next = normalizeDeliveryContext(context);
+  const previous = normalizeDeliveryContext(previousContext);
+  if (!next || !previous) {
+    return Boolean(next || previous);
+  }
+  const normalizeTarget = next.channel
+    ? getChannelPlugin(next.channel)?.messaging?.normalizeTarget
+    : undefined;
+  return !channelRouteTargetsMatchExact({
+    left: {
+      ...next,
+      to: normalizeTarget?.(next.to ?? "") ?? next.to,
+      threadId: undefined,
+    },
+    right: {
+      ...previous,
+      to: normalizeTarget?.(previous.to ?? "") ?? previous.to,
+      threadId: undefined,
+    },
+  });
+}
+
 /** Resolve the origin once; internal sessions intentionally have no external delivery context. */
 export async function resolveUpdateRunNoticeTarget(params: {
   cfg: OpenClawConfig;
@@ -180,7 +209,16 @@ export async function resolveUpdateRunNoticeTarget(params: {
       "direct";
     context = mergeDeliveryContext(context, deliveryContextFromSession(entry));
   }
-  const origin = mergeDeliveryContext(params.explicitDeliveryContext, context);
+  let origin = mergeDeliveryContext(params.explicitDeliveryContext, context);
+  const destinationChanged =
+    params.explicitDeliveryContext !== undefined &&
+    hasUpdateRunNoticeDestinationChanged(origin, context);
+  if (destinationChanged && origin) {
+    origin = {
+      ...origin,
+      threadId: normalizeDeliveryContext(params.explicitDeliveryContext)?.threadId,
+    };
+  }
   if (
     isInternalMessageChannel(origin?.channel) ||
     (!origin?.channel && session?.entry?.delivery?.kind !== "external")
@@ -192,8 +230,8 @@ export async function resolveUpdateRunNoticeTarget(params: {
   const route = resolveGatewayLifecycleNoticeRoute({
     cfg: params.cfg,
     deliveryContext: origin,
-    // Ambient recovery keeps the persisted system route thread; origin keys can supply hints.
-    threadId: params.threadId ?? (params.sessionKey ? threadId : undefined),
+    // Ambient recovery keeps thread hints only while the notice destination is unchanged.
+    threadId: params.threadId ?? (!destinationChanged && params.sessionKey ? threadId : undefined),
   });
   return await prepareUpdateRunNoticeTarget(
     params.cfg,

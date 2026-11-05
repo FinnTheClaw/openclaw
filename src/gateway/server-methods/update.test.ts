@@ -241,6 +241,114 @@ describe("update.run acknowledgement", () => {
     expect(sentinelState.capturedPayload).toBeUndefined();
   });
 
+  it.each([
+    {
+      name: "retarget without an explicit thread",
+      deliveryContext: { to: "slack:C0456DEF" },
+      expectedTo: "C0456DEF",
+      expectedThread: undefined,
+    },
+    {
+      name: "same normalized destination",
+      deliveryContext: {
+        channel: " SLACK ",
+        to: " slack:C0123ABC ",
+        accountId: " WORKSPACE-1 ",
+      },
+      expectedTo: "C0123ABC",
+      expectedThread: "1234567890.123456",
+    },
+    {
+      name: "retarget with an explicit new thread",
+      deliveryContext: { to: "slack:C0456DEF", threadId: "2234567890.123456" },
+      expectedTo: "C0456DEF",
+      expectedThread: "2234567890.123456",
+    },
+    {
+      name: "ambient session destination",
+      deliveryContext: undefined,
+      expectedTo: "C0123ABC",
+      expectedThread: "1234567890.123456",
+    },
+  ])(
+    "keeps update notice threads bound to their destination in update.run ($name)",
+    async ({ deliveryContext, expectedTo, expectedThread }) => {
+      const parser = await import("./restart-request.js");
+      const actualParser =
+        await vi.importActual<typeof import("./restart-request.js")>("./restart-request.js");
+      const parse = vi
+        .spyOn(parser, "parseRestartRequestParams")
+        .mockImplementationOnce(actualParser.parseRestartRequestParams);
+      const params = { sessionKey, ...(deliveryContext ? { deliveryContext } : {}) };
+      const original = structuredClone(params);
+      try {
+        const response = await captureUpdateRunPayload(params);
+        expect(response).toMatchObject({ ok: true, ackDelivered: true });
+        expect(parse).toHaveBeenCalledOnce();
+        expect(startManagedServiceUpdateHandoffMock).toHaveBeenCalledOnce();
+        expect(sendGatewayLifecycleNoticeMock).toHaveBeenCalledOnce();
+        const { sendGatewayLifecycleNotice } = await import("../server-restart-sentinel-notice.js");
+        const notice = vi.mocked(sendGatewayLifecycleNotice).mock.calls[0]?.[0];
+        const run = getUpdateRun(expectDefined(response, "update response").runId);
+        const meta = startManagedServiceUpdateHandoffMock.mock.calls[0]?.[0].meta;
+        const sentinel = readCapturedPayload();
+        expect(params).toEqual(original);
+        expect(run?.origin.sessionKey).toBe(canonicalSessionKey);
+        expect(sentinel.sessionKey).toBe(canonicalSessionKey);
+        expect({
+          notice: notice && {
+            channel: notice.channel,
+            to: notice.to,
+            accountId: notice.accountId,
+            threadId: notice.threadId,
+            replyToId: notice.replyToId,
+          },
+          origin: run?.origin.deliveryContext,
+          handoff: {
+            deliveryContext: meta?.deliveryContext,
+            threadId: meta?.threadId,
+          },
+          sentinel: {
+            deliveryContext: sentinel.deliveryContext,
+            threadId: sentinel.threadId,
+          },
+        }).toEqual({
+          notice: {
+            channel: "slack",
+            to: expectedTo,
+            accountId: "workspace-1",
+            threadId: expectedThread,
+            replyToId: undefined,
+          },
+          origin: {
+            channel: "slack",
+            to: `slack:${expectedTo}`,
+            accountId: "workspace-1",
+            threadId: expectedThread,
+          },
+          handoff: {
+            deliveryContext: {
+              channel: "slack",
+              to: `slack:${expectedTo}`,
+              accountId: "workspace-1",
+            },
+            threadId: expectedThread,
+          },
+          sentinel: {
+            deliveryContext: {
+              channel: "slack",
+              to: `slack:${expectedTo}`,
+              accountId: "workspace-1",
+            },
+            threadId: expectedThread,
+          },
+        });
+      } finally {
+        parse.mockRestore();
+      }
+    },
+  );
+
   it("awaits one parking notice without advancing the updater phases", async () => {
     mockGlobalInstallSurface();
     detectRespawnSupervisorMock.mockReturnValue("launchd");

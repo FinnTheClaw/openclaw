@@ -72,7 +72,10 @@ import { VERSION } from "../../version.js";
 import { formatControlPlaneActor, resolveControlPlaneActor } from "../control-plane-audit.js";
 import { recordLatestUpdateRestartSentinel } from "../server-restart-sentinel.js";
 import { resolveSessionStoreIdentity } from "../session-store-key.js";
-import { resolveUpdateRunNoticeTarget } from "../update-run-notice-target.js";
+import {
+  hasUpdateRunNoticeDestinationChanged,
+  resolveUpdateRunNoticeTarget,
+} from "../update-run-notice-target.js";
 import { wakeUpdateRunWatcher } from "../update-run-watcher.js";
 import { parseRestartRequestParams } from "./restart-request.js";
 import type { GatewayRequestHandlers } from "./types.js";
@@ -128,7 +131,14 @@ export const updateHandlers: GatewayRequestHandlers = {
     const { deliveryContext: sessionDeliveryContext, threadId: sessionThreadId } =
       extractDeliveryInfo(sessionKey, { cfg: config });
     let deliveryContext = mergeDeliveryContext(requestedDeliveryContext, sessionDeliveryContext);
-    const threadId = requestedThreadId ?? sessionThreadId;
+    const destinationChanged =
+      requestedDeliveryContext !== undefined &&
+      hasUpdateRunNoticeDestinationChanged(deliveryContext, sessionDeliveryContext);
+    if (destinationChanged && deliveryContext) {
+      const { threadId: _sessionThreadId, ...retargetedContext } = deliveryContext;
+      deliveryContext = retargetedContext;
+    }
+    const threadId = requestedThreadId ?? (destinationChanged ? undefined : sessionThreadId);
     const timeoutMs = params.timeoutMs === undefined ? undefined : Math.max(1000, params.timeoutMs);
 
     const requesterChannel = params.requester?.channel;
