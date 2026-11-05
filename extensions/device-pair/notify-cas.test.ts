@@ -188,7 +188,7 @@ describe("device-pair notify CAS", () => {
       expect(harness.observe).toHaveBeenCalledTimes(1);
       expect(harness.compareAndApply).toHaveBeenCalledTimes(operation === "observe" ? 0 : 1);
       expect(harness.warn).toHaveBeenCalledWith(expect.stringContaining("outcome unavailable"));
-      expect(harness.recordSeen).not.toHaveBeenCalled();
+      expect(harness.recordSeen).toHaveBeenCalledTimes(1);
       expect(harness.snapshot().value).toEqual(delivered);
     },
   );
