@@ -1,11 +1,13 @@
 // WhatsApp monitor inbox behavior split by ownership.
 import { observeChannelIngressQueueWrite } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { questionGatewayRuntime } from "openclaw/plugin-sdk/question-gateway-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearWhatsAppApprovalReactionTargetsForTest,
   registerWhatsAppApprovalReactionTarget,
 } from "./approval-reactions.js";
+import { serializeWhatsAppDurableInboundMessage } from "./inbound/durable-payload.js";
 import {
   createWhatsAppDurableInboundQueue,
   createWhatsAppDurableInboundMessageId,
@@ -24,10 +26,25 @@ import {
   resetWebInboundDedupeForTests,
   settleInboundWork,
   startInboxMonitor,
+  upsertPairingRequestMock,
   waitForMessageCalls,
   waitForInboundWorkDrained,
   type InboxOnMessage,
 } from "./monitor-inbox.test-harness.js";
+import { registerWhatsAppQuestionReactionTargetForDeliveredPayload } from "./question-reactions.js";
+
+const questionResolver = vi.hoisted(() => vi.fn());
+vi.mock("openclaw/plugin-sdk/question-gateway-runtime", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("openclaw/plugin-sdk/question-gateway-runtime")>();
+  return {
+    ...original,
+    questionGatewayRuntime: {
+      ...original.questionGatewayRuntime,
+      resolveReaction: questionResolver,
+    },
+  };
+});
 
 const approvalResolver = vi.hoisted(() => vi.fn());
 vi.mock("openclaw/plugin-sdk/approval-gateway-runtime", () => ({
@@ -90,6 +107,100 @@ describe("web monitor inbox delivery and dedupe", () => {
   beforeEach(() => {
     clearWhatsAppApprovalReactionTargetsForTest();
     approvalResolver.mockReset();
+    questionResolver.mockReset();
+  });
+
+  it.each([
+    { name: "live prepared-null cache", replay: false, knownTarget: true, text: "2️⃣", calls: 1 },
+    {
+      name: "replay without preparation cache",
+      replay: true,
+      knownTarget: true,
+      text: "2️⃣",
+      calls: 1,
+    },
+    { name: "unknown-target digit", replay: false, knownTarget: false, text: "2️⃣", calls: 0 },
+    { name: "known-target non-numbered", replay: false, knownTarget: true, text: "🙂", calls: 0 },
+  ])("routes question reactions before content normalization: $name", async (row) => {
+    const remoteJid = "999@s.whatsapp.net";
+    const targetMessageId = nextMessageId("question-target");
+    const questionId = "ask_" + nextMessageId("question").split("-").at(-1)!.padStart(32, "0");
+    const presentation = {
+      blocks: [
+        { type: "text" as const, text: "Pick one" },
+        {
+          type: "buttons" as const,
+          buttons: ["One", "Two"].map((label) => ({
+            label,
+            action: { type: "question" as const, questionId, optionValue: label },
+          })),
+        },
+      ],
+    };
+    const payload = questionGatewayRuntime.prepareReactionPayloadForDelivery({
+      payload: { presentation, channelData: { askUser: { questionId } } },
+      presentation,
+    });
+    expect(payload).not.toBeNull();
+    expect(
+      registerWhatsAppQuestionReactionTargetForDeliveredPayload({
+        cfg: {},
+        target: { channel: "whatsapp", accountId: DEFAULT_ACCOUNT_ID },
+        payload: payload!,
+        results: [{ channel: "whatsapp", messageId: targetMessageId, toJid: remoteJid }],
+      }),
+    ).toBe(true);
+    questionResolver.mockResolvedValue({ status: "answered", questionId, optionValue: "Two" });
+    const msg = {
+      key: { id: nextMessageId("question-reaction"), remoteJid, fromMe: false },
+      message: {
+        reactionMessage: {
+          text: row.text,
+          key: {
+            id: row.knownTarget ? targetMessageId : nextMessageId("unknown-question-target"),
+            remoteJid,
+          },
+        },
+      },
+      messageTimestamp: 1_700_000_000,
+    };
+    const durableId = createWhatsAppDurableInboundMessageId({ remoteJid, id: msg.key.id });
+    const durablePayload = {
+      message: serializeWhatsAppDurableInboundMessage(msg),
+      upsertType: "notify",
+      receivedAt: Date.now(),
+    };
+    const queue = createWhatsAppDurableInboundQueue(DEFAULT_ACCOUNT_ID);
+    const completed = observeChannelIngressQueueWrite(queue, "complete", durableId);
+    if (row.replay) {
+      await queue.enqueue(durableId, durablePayload, { laneKey: remoteJid });
+    }
+    const onMessage = vi.fn();
+    const { listener, sock } = await startInboxMonitor(onMessage as InboxOnMessage, {
+      durableInboundQueue: queue,
+    });
+    try {
+      if (!row.replay) {
+        sock.ev.emit("messages.upsert", { type: "notify", messages: [msg] });
+      }
+      expect(await completed).toBe(true);
+      await waitForInboundWorkDrained();
+      expect(onMessage).not.toHaveBeenCalled();
+      expect(upsertPairingRequestMock).not.toHaveBeenCalled();
+      expect(await queue.listClaims()).toEqual([]);
+      expect(await queue.listPending({ limit: "all" })).toEqual([]);
+      await expect(
+        queue.enqueue(durableId, durablePayload, { laneKey: remoteJid }),
+      ).resolves.toMatchObject({ kind: "completed" });
+      expect(questionResolver).toHaveBeenCalledTimes(row.calls);
+      if (row.calls === 1) {
+        expect(questionResolver).toHaveBeenCalledWith(
+          expect.objectContaining({ questionId, optionValue: "Two", senderId: "+999" }),
+        );
+      }
+    } finally {
+      await listener.close();
+    }
   });
 
   it("replays approval reactions after Gateway loss without losing batch siblings", () =>

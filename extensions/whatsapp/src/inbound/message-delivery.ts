@@ -410,10 +410,31 @@ export function createWhatsAppMessageDeliveryCoordinator(options: WhatsAppMessag
     if (context.skipRecentOutboundEcho === true) {
       return "completed";
     }
-    // Reactions do not normalize into chat messages. Resolve them while the drain
+    // Approval reactions do not normalize into chat messages. Resolve them while the drain
     // owns the claim so transient failures remain replayable.
     if (await resolveApprovalReaction(msg)) {
       return "completed";
+    }
+    if (msg.message?.reactionMessage) {
+      const actorJid =
+        msg.key?.participant?.trim() ||
+        (msg.key?.fromMe
+          ? (self.lid?.trim() ?? self.jid?.trim() ?? "")
+          : (msg.key?.remoteJid?.trim() ?? ""));
+      const senderId = actorJid ? await resolveInboundJid(actorJid) : undefined;
+      if (
+        senderId &&
+        (await maybeResolveWhatsAppQuestionReaction({
+          cfg: options.loadConfig?.() ?? options.cfg,
+          accountId: options.accountId,
+          msg,
+          senderId,
+          resolveReactionTargetJids,
+          logDebug: (message) => logWhatsAppVerbose(options.verbose, message),
+        }))
+      ) {
+        return "completed";
+      }
     }
     const prepared = await preparation;
     if (prepared === null) {
@@ -421,18 +442,6 @@ export function createWhatsAppMessageDeliveryCoordinator(options: WhatsAppMessag
     }
     const inbound = prepared ?? (await normalizeInboundMessage(msg));
     if (!inbound) {
-      return "completed";
-    }
-    if (
-      await maybeResolveWhatsAppQuestionReaction({
-        cfg: options.loadConfig?.() ?? options.cfg,
-        accountId: options.accountId,
-        msg,
-        senderId: inbound.senderE164 ?? inbound.from,
-        resolveReactionTargetJids,
-        logDebug: (message) => logWhatsAppVerbose(options.verbose, message),
-      })
-    ) {
       return "completed";
     }
     const readReceipt = buildReadReceiptTarget(inbound);
