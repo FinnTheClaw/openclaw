@@ -362,11 +362,11 @@ describe("install.ps1 source contracts", () => {
     expect(gitInstallBody).not.toContain("& $pnpmCommand -C $RepoDir install");
   });
 
-  it("cleans legacy git submodules only from the selected git checkout", () => {
+  it("retires legacy cleanup so source installs preserve user-owned Peekaboo paths", () => {
     const gitInstallBody = extractFunctionBody(source, "Install-OpenClawFromGit");
-    const mainBody = extractFunctionBody(source, "Main");
-    expect(gitInstallBody).toContain("Remove-LegacySubmodule -RepoDir $RepoDir");
-    expect(mainBody).not.toContain("Remove-LegacySubmodule");
+    expect(gitInstallBody).not.toContain("Remove-LegacySubmodule");
+    expect(source).not.toContain("function Remove-LegacySubmodule");
+    expect(source).not.toContain("function Get-LegacyRepoDir");
   });
 
   it("launches interactive onboarding outside Main's captured output", () => {
