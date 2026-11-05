@@ -78,6 +78,7 @@ export function resolveRuntimeScriptPosition(
       arg === "-e" ||
       arg === "--eval" ||
       arg === "-p" ||
+      arg === "-pe" ||
       arg === "--print" ||
       arg === "--run" ||
       /^(?:--eval|--print|--run)=/.test(arg)

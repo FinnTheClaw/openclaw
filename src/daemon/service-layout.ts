@@ -126,7 +126,7 @@ export function resolveServiceEntrypointIndex(
 ): number | undefined {
   const args = [...programArguments];
   const script = resolveRuntimeScriptPosition(args);
-  if (typeof script !== "number" && script.kind === "other") {
+  if (typeof script !== "number" && (script.kind === "other" || script.kind === "unclassified")) {
     return undefined;
   }
   // Runtime flags belong before the script; CLI root options belong after it.

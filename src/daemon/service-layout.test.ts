@@ -6,6 +6,33 @@ import { gatewayServiceCommandUsesRoot } from "../cli/update-cli/update-command-
 import { summarizeGatewayServiceLayout } from "./service-layout.js";
 
 describe("summarizeGatewayServiceLayout", () => {
+  it.each([
+    { mode: "print-eval", options: ["-pe", "1"] },
+    { mode: "unclassified", options: ["--synthetic-unsupported-mode"] },
+    { mode: "eval", options: ["--eval", "1"] },
+  ])("rejects non-script runtime ownership evidence ($mode)", async ({ options }) => {
+    const root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-runtime-layout-")),
+    );
+    try {
+      const entrypoint = path.join(root, "dist", "index.js");
+      await fs.mkdir(path.dirname(entrypoint), { recursive: true });
+      await fs.writeFile(path.join(root, "package.json"), '{"name":"openclaw"}');
+      await fs.writeFile(entrypoint, "// Synthetic layout fixture: never executed.\n");
+      const command = {
+        programArguments: [process.execPath, ...options, entrypoint, "gateway"],
+        workingDirectory: root,
+      };
+
+      const layout = await summarizeGatewayServiceLayout(command);
+      expect.soft(layout?.entrypoint).toBeUndefined();
+      expect.soft(layout?.packageRoot).toBeUndefined();
+      await expect.soft(gatewayServiceCommandUsesRoot({ root, command })).resolves.toBeNull();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(
     [
       ["node", "dist/index.js", "gateway", "run"],
