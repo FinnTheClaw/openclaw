@@ -133,7 +133,9 @@ const finalizeSubagentCleanup = async (
     completionReason?: ReturnType<typeof resolveCleanupCompletionReason>,
   ) => {
     if (cleanup === "delete" || !entry.retainAttachmentsOnKeep) {
-      await safeRemoveAttachmentsDir(entry);
+      if (!(await safeRemoveAttachmentsDir(entry))) {
+        throw new Error("subagent attachment cleanup did not complete");
+      }
     }
     if (!context.isCleanupAttemptCurrent(runId, entry, cleanupGeneration)) {
       await retireSupersededCleanupIfNeeded(context, runId, entry, cleanupGeneration);

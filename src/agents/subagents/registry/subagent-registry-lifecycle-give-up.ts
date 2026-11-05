@@ -55,7 +55,9 @@ export const finalizeResumedAnnounceGiveUp = async (
   completion.fallbackResultText = undefined;
   completion.fallbackCapturedAt = undefined;
   if ((cleanup ?? entry.cleanup) === "delete" || !entry.retainAttachmentsOnKeep) {
-    await safeRemoveAttachmentsDir(entry);
+    if (!(await safeRemoveAttachmentsDir(entry))) {
+      throw new Error("subagent attachment cleanup did not complete");
+    }
   }
   if (
     cleanupGeneration !== undefined &&
