@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -1845,6 +1846,145 @@ console.log(JSON.stringify({ data }));
         const verified = run(false);
         expect(verified.stderr).toBe("");
         expect(verified.status, verified.stdout).toBe(0);
+      }
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { mode: "null-first-page", pages: [null], rejected: true, pullRequests: [] },
+    { mode: "missing-first-alias", pages: [null], rejected: true, pullRequests: [] },
+    { mode: "null-later-page", pages: [null, "page-2"], rejected: true, pullRequests: [] },
+    { mode: "complete-empty", pages: [null], rejected: false, pullRequests: [] },
+    { mode: "complete-associated", pages: [null], rejected: false, pullRequests: [21] },
+  ])("L11-F017 requires complete commit association pages: $mode", (scenario) => {
+    const cwd = mkdtempSync(join(tmpdir(), "openclaw-release-notes-associations-"));
+    try {
+      git(cwd, ["init", "-q", "-b", "main"]);
+      writeFileSync(join(cwd, "CHANGELOG.md"), createReleaseNotesFixtureLines().join("\n"));
+      git(cwd, ["add", "CHANGELOG.md"]);
+      git(cwd, ["commit", "-qm", "chore: baseline"]);
+      const base = git(cwd, ["rev-parse", "HEAD"]);
+      // No independent PR reference or seed can recover a missing association.
+      git(cwd, ["commit", "--allow-empty", "-qm", "chore: source contribution"]);
+      const target = git(cwd, ["rev-parse", "HEAD"]);
+      const gh = join(cwd, "gh");
+      writeFileSync(
+        gh,
+        `#!${process.execPath}\n
+const fs = require("node:fs");
+const mode = ${JSON.stringify(scenario.mode)};
+const target = ${JSON.stringify(target)};
+const statePath = "request-state.json";
+const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : { associations: [], lookups: [], authors: [], unexpected: [] };
+const save = () => fs.writeFileSync(statePath, JSON.stringify(state));
+const unexpected = () => {
+  state.unexpected.push(process.argv.slice(2));
+  save();
+  process.stderr.write("Unexpected synthetic gh request\\n");
+  process.exit(99);
+};
+if (process.argv[2] !== "api" || process.argv[3] !== "graphql") unexpected();
+const query = process.argv.find((arg) => arg.startsWith("query="))?.slice(6) ?? "";
+const commits = [...query.matchAll(/(c\\d+): repository[\\s\\S]*?object\\(expression: "([0-9a-f]+)"\\)/g)];
+const data = {};
+if (query.includes("associatedPullRequests(")) {
+  if (commits.length !== 1 || commits[0][2] !== target) unexpected();
+  const alias = commits[0][1];
+  const after = query.includes('after: "page-2"') ? "page-2" : null;
+  state.associations.push({ hash: target, after });
+  save();
+  const failed = mode === "null-first-page" || mode === "missing-first-alias" || (mode === "null-later-page" && after === "page-2");
+  if (failed) {
+    if (mode !== "missing-first-alias") data[alias] = { object: { associatedPullRequests: null } };
+    console.log(JSON.stringify({ data, errors: [{ type: "FORBIDDEN", path: [alias, "object", "associatedPullRequests"], message: "Required association unavailable" }] }));
+    process.exit(1);
+  }
+  if (after !== null || state.associations.length !== 1) unexpected();
+  const paginated = mode === "null-later-page";
+  data[alias] = { object: { associatedPullRequests: {
+    nodes: mode === "complete-associated" ? [{ number: 21, mergedAt: "2026-01-01T00:00:00Z", mergeCommit: { oid: target } }] : [],
+    pageInfo: { hasNextPage: paginated, endCursor: paginated ? "page-2" : null },
+  } } };
+} else if (query.includes("issueOrPullRequest(number: 21)")) {
+  const aliases = [...query.matchAll(/(n\\d+): repository/g)];
+  if (mode !== "complete-associated" || aliases.length !== 1 || aliases[0][1] !== "n21") unexpected();
+  state.lookups.push(21);
+  data.n21 = { issueOrPullRequest: {
+    __typename: "PullRequest", number: 21, title: "fix: association-only contribution", baseRefName: "main", mergedAt: "2026-01-01T00:00:00Z", mergeCommit: { oid: target },
+    author: { __typename: "User", login: "contributor" }, closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+  } };
+} else if (commits.length === 1 && commits[0][2] === target && query.includes("author {")) {
+  state.authors.push(target);
+  data[commits[0][1]] = { object: { author: { user: { login: "steipete" } } } };
+} else {
+  unexpected();
+}
+save();
+console.log(JSON.stringify({ data }));
+`,
+      );
+      chmodSync(gh, 0o755);
+      splitChangelog({ rootDir: cwd });
+      const artifactPaths = [
+        "CHANGELOG.md",
+        "CHANGELOG/2026.7.1.md",
+        "CHANGELOG/records/2026.7.1.md",
+      ];
+      const before = artifactPaths.map((path) =>
+        existsSync(join(cwd, path)) ? readFileSync(join(cwd, path), "utf8") : null,
+      );
+      const manifestPath = join(cwd, "manifest.json");
+      const result = spawnSync(
+        process.execPath,
+        [
+          verifier,
+          "--base",
+          base,
+          "--target",
+          target,
+          "--main-ref",
+          target,
+          "--version",
+          "2026.7.1",
+          "--manifest",
+          manifestPath,
+          "--write-ledger",
+          "--json",
+        ],
+        { cwd, encoding: "utf8", env: { ...process.env, PATH: `${cwd}:${process.env.PATH}` } },
+      );
+      const requests = JSON.parse(readFileSync(join(cwd, "request-state.json"), "utf8"));
+      expect(requests.unexpected, result.stderr).toEqual([]);
+      expect(requests.associations, result.stderr).toEqual(
+        scenario.pages.map((after) => ({ hash: target, after })),
+      );
+      if (scenario.rejected) {
+        expect(result.status, result.stdout).not.toBe(0);
+        expect(result.stderr).toContain("Required association unavailable");
+        expect(result.stdout).not.toContain("verified");
+        expect(existsSync(manifestPath)).toBe(false);
+        expect(
+          artifactPaths.map((path) =>
+            existsSync(join(cwd, path)) ? readFileSync(join(cwd, path), "utf8") : null,
+          ),
+        ).toEqual(before);
+      } else {
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stderr).toBe("");
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        expect(manifest.pullRequests.map((entry: { number: number }) => entry.number)).toEqual(
+          scenario.pullRequests,
+        );
+        expect(manifest.source.inRangePullRequests).toBe(scenario.pullRequests.length);
+        expect(manifest.directCommits).toHaveLength(scenario.pullRequests.length === 0 ? 1 : 0);
+        expect(requests.lookups).toEqual(scenario.pullRequests);
+        expect(requests.authors).toEqual(scenario.pullRequests.length === 0 ? [target] : []);
+        const section = readFileSync(join(cwd, "CHANGELOG/2026.7.1.md"), "utf8");
+        expect(section).toContain("### Complete contribution record");
+        const record = readFileSync(join(cwd, "CHANGELOG/records/2026.7.1.md"), "utf8");
+        expect(record.includes("**PR #21**")).toBe(scenario.pullRequests.length === 1);
       }
     } finally {
       rmSync(cwd, { recursive: true, force: true });

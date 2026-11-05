@@ -1491,12 +1491,16 @@ function sourceCommits(base, target, mainRef, releaseProvenance = []) {
   };
 }
 
-function graphql(query) {
+function graphql(query, { requireErrorFreeData = false } = {}) {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       const response = githubApi(["graphql", "-f", `query=${query}`]);
-      if (response?.data && typeof response.data === "object") {
+      if (
+        response?.data &&
+        typeof response.data === "object" &&
+        !(requireErrorFreeData && Array.isArray(response.errors) && response.errors.length > 0)
+      ) {
         return response;
       }
       const errors = Array.isArray(response?.errors)
@@ -1573,7 +1577,7 @@ function resolveAssociatedPullRequests(commitHashes, targetTimestamp, history) {
           }`,
       )
       .join("\n");
-    const { data } = graphql(`query { ${fields} }`);
+    const { data } = graphql(`query { ${fields} }`, { requireErrorFreeData: true });
     for (let offset = 0; offset < chunk.length; offset += 1) {
       appendPullRequests(chunk[offset], data[`c${index + offset}`]?.object?.associatedPullRequests);
     }
@@ -1599,7 +1603,7 @@ function resolveAssociatedPullRequests(commitHashes, targetTimestamp, history) {
           }`,
       )
       .join("\n");
-    const { data } = graphql(`query { ${fields} }`);
+    const { data } = graphql(`query { ${fields} }`, { requireErrorFreeData: true });
     for (let offset = 0; offset < chunk.length; offset += 1) {
       appendPullRequests(
         chunk[offset].commitHash,
