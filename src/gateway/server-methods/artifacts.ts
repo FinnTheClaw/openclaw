@@ -277,21 +277,24 @@ async function respondManagedArtifactDownload(
   matched?: ArtifactRecord,
 ): Promise<void> {
   await runArtifactSessionOperation(respond, async () => {
-    const resolveSession = await prepareArtifactSessionResolution(query, projection);
+    const selected = await prepareArtifactSessionRead(query, getRuntimeConfig, client, projection);
+    const scope = selected?.scope;
     const cfg = getRuntimeConfig();
-    const resolved = resolveSession(cfg, client);
-    const defaultAgentId = resolved
-      ? tryResolveSessionCompatibilityOwnerAgentId(cfg ?? {}, resolved.sessionKey)
+    const defaultAgentId = selected
+      ? tryResolveSessionCompatibilityOwnerAgentId(cfg ?? {}, selected.sessionKey)
       : undefined;
     const managed =
-      resolved && (!matched || matched.sessionKey === resolved.sessionKey)
+      selected && scope && (!matched || matched.sessionKey === selected.sessionKey)
         ? await resolveManagedOutgoingMediaArtifactDownload({
-            sessionKey: resolved.sessionKey,
-            ...(resolved.agentId ? { agentId: resolved.agentId } : {}),
+            sessionKey: selected.sessionKey,
+            ...(scope.agentId ? { agentId: scope.agentId } : {}),
             ...(defaultAgentId ? { defaultAgentId } : {}),
             artifactId: query.artifactId,
           })
         : null;
+    if (selected?.scope) {
+      selected.assertCurrent();
+    }
     if (!managed) {
       respondArtifactNotFound(respond, query.artifactId);
       return;

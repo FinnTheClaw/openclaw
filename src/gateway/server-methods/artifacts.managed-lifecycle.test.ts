@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import {
+  loadSessionEntryReadOnly,
+  upsertSessionEntryCore,
+} from "../../config/sessions/session-accessor.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
@@ -191,6 +195,103 @@ describe("managed artifact lifecycle", () => {
         expect(hoisted.visitSessionMessagesAsync).not.toHaveBeenCalled();
         expect(hoisted.resolveManagedArtifactDownload).not.toHaveBeenCalled();
         expect(hoisted.resolveManagedUrlDownload).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it.each(["draft", "shared"] as const)(
+    "rechecks managed download visibility after preparation (%s)",
+    async (visibility) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const owner = ensureProfileForEmail("artifact-delay-owner@example.test");
+        const viewer = ensureProfileForEmail("artifact-delay-viewer@example.test");
+        const sessionKey = `agent:main:artifact-preparation-${visibility}`;
+        const scope = { agentId: "main", sessionKey };
+        const entry = {
+          sessionId: `session-artifact-preparation-${visibility}`,
+          updatedAt: 1,
+          createdActor: { type: "human" as const, source: "profile" as const, id: owner.id },
+        };
+        await upsertSessionEntryCore(scope, { ...entry, visibility: "shared" });
+        expect(loadSessionEntryReadOnly(scope)?.visibility).toBe("shared");
+        const client = sharingPolicyClient({ user: viewer.id, scopes: ["operator.read"] });
+        const artifactId = "artifact_managed_image_11111111-1111-4111-8111-111111111111";
+        const url = "https://example.invalid/SYNTHETIC_MANAGED_DOWNLOAD_URL";
+        const expiresAt = "2030-01-01T00:00:00.000Z";
+        const entered = createDeferred();
+        const release = createDeferred();
+        hoisted.resolveManagedArtifactDownload.mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          return { artifactId, sessionKey, type: "image", title: "synthetic.png", url, expiresAt };
+        });
+        const calls: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
+        const pending = artifactsHandlers["artifacts.download"]!({
+          req: { type: "req", id: "download", method: "artifacts.download", params: {} },
+          params: { sessionKey, artifactId },
+          client,
+          isWebchatConnect: () => false,
+          respond: (ok, payload, error) => calls.push({ ok, payload, error }),
+          context: runtimeContext({}) as never,
+        });
+        const outcome = Promise.allSettled([pending]);
+        try {
+          await entered.promise;
+          const heldCalls = [...calls];
+          await upsertSessionEntryCore(scope, { ...entry, updatedAt: 2, visibility });
+          const committedVisibility = loadSessionEntryReadOnly(scope)?.visibility;
+          expect(committedVisibility).toBe(visibility);
+          release.resolve();
+          const settled = await outcome;
+          const facts = {
+            heldCalls,
+            committedVisibility,
+            settled,
+            calls: [...calls],
+            managedCalls: [...hoisted.resolveManagedArtifactDownload.mock.calls],
+          };
+
+          expect.soft(facts.heldCalls).toEqual([]);
+          expect.soft(facts.settled).toEqual([{ status: "fulfilled", value: undefined }]);
+          expect
+            .soft(facts.managedCalls)
+            .toEqual([[{ sessionKey, agentId: "main", defaultAgentId: "main", artifactId }]]);
+          expect.soft(facts.calls).toEqual(
+            visibility === "draft"
+              ? [
+                  {
+                    ok: false,
+                    payload: undefined,
+                    error: {
+                      code: "INVALID_REQUEST",
+                      message: "no session found for artifact query",
+                      details: { type: "artifact_scope_not_found" },
+                    },
+                  },
+                ]
+              : [
+                  {
+                    ok: true,
+                    error: undefined,
+                    payload: {
+                      artifact: {
+                        id: artifactId,
+                        type: "image",
+                        title: "synthetic.png",
+                        sessionKey,
+                        source: "session-transcript",
+                        download: { mode: "url" },
+                      },
+                      url,
+                      expiresAt,
+                    },
+                  },
+                ],
+          );
+        } finally {
+          release.resolve();
+          await outcome;
+        }
       });
     },
   );
