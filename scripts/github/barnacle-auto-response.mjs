@@ -947,6 +947,13 @@ export async function runBarnacleAutoResponse({ github, context, core = console 
       .filter((name) => typeof name === "string"),
   );
 
+  if (labelSet.has(badBarnacleLabel)) {
+    core.info(
+      `Skipping Barnacle auto-response checks for #${target.number} because ${badBarnacleLabel} is present.`,
+    );
+    return;
+  }
+
   const issue = context.payload.issue;
   const pullRequest = context.payload.pull_request;
   const comment = context.payload.comment;
@@ -1082,13 +1089,6 @@ export async function runBarnacleAutoResponse({ github, context, core = console 
   await syncManagedLabels(github, context);
 
   if (pullRequest) {
-    if (labelSet.has(badBarnacleLabel)) {
-      core.info(
-        `Skipping PR auto-response checks for #${pullRequest.number} because ${badBarnacleLabel} is present.`,
-      );
-      return;
-    }
-
     if (isClawSweeperProofSufficientLabelEvent(context)) {
       core.info(
         `Skipping PR auto-response checks for #${pullRequest.number} because ClawSweeper owns ${PROOF_SUFFICIENT_LABEL}.`,

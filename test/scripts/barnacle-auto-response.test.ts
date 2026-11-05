@@ -526,6 +526,110 @@ describe("barnacle-auto-response", () => {
     expect(calls.update).toStrictEqual([]);
   });
 
+  it.each([
+    {
+      name: "support issue",
+      responseLabel: "r: support",
+      commentBody: undefined,
+      pullRequest: false,
+      responseText: "support server",
+      close: true,
+      lock: false,
+    },
+    {
+      name: "Moltbook issue",
+      responseLabel: "r: moltbook",
+      commentBody: undefined,
+      pullRequest: false,
+      responseText: "not affiliated with Moltbook",
+      close: true,
+      lock: true,
+    },
+    {
+      name: "BlueBubbles issue comment",
+      responseLabel: undefined,
+      commentBody: "Please help with BlueBubbles",
+      pullRequest: false,
+      responseText: "/channels/imessage",
+      close: false,
+      lock: false,
+    },
+    {
+      name: "TestFlight PR comment",
+      responseLabel: undefined,
+      commentBody: "Please enable TestFlight",
+      pullRequest: true,
+      responseText: "Not available",
+      close: false,
+      lock: false,
+    },
+  ])("L12-F015 honors suppression for $name", async (scenario) => {
+    const outcomes = [];
+    for (const suppressed of [true, false]) {
+      const labels = [
+        ...(scenario.responseLabel ? [scenario.responseLabel] : []),
+        ...(suppressed ? ["bad-barnacle"] : []),
+      ];
+      outcomes.push(
+        await runBarnacle(
+          barnacleIssueContext(
+            scenario.pullRequest
+              ? { pull_request: { url: "https://api.github.example/repos/fixture/repo/pulls/456" } }
+              : {},
+            labels,
+            scenario.commentBody
+              ? {
+                  action: "created",
+                  comment: {
+                    body: scenario.commentBody,
+                    user: { login: "reader", type: "User" },
+                  },
+                }
+              : {
+                  action: "labeled",
+                  label: { name: scenario.responseLabel },
+                  sender: { login: "maintainer", type: "User" },
+                },
+          ),
+          [],
+        ),
+      );
+    }
+
+    expect({ suppressed: outcomes[0], ordinary: outcomes[1] }).toEqual({
+      suppressed: {
+        addLabels: [],
+        createComment: [],
+        lock: [],
+        removeLabel: [],
+        update: [],
+      },
+      ordinary: {
+        addLabels: [],
+        createComment: [
+          {
+            owner: "openclaw",
+            repo: "openclaw",
+            issue_number: 456,
+            body: expect.stringContaining(scenario.responseText),
+          },
+        ],
+        lock: scenario.lock
+          ? [
+              {
+                owner: "openclaw",
+                repo: "openclaw",
+                issue_number: 456,
+                lock_reason: "off-topic",
+              },
+            ]
+          : [],
+        removeLabel: [],
+        update: scenario.close ? [expectedIssueUpdate(456, "closed")] : [],
+      },
+    });
+  });
+
   it("closes issues tagged as false positives", async () => {
     const calls = await runBarnacle(
       barnacleIssueContext({}, ["r: false-positive"], {
