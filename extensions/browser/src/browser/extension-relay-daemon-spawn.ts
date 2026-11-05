@@ -33,7 +33,7 @@ export async function ensureExtensionRelayDaemonProcess(params: {
   execPath?: string;
   readToken?: () => string | null;
   probe?: (port: number) => Promise<boolean>;
-  spawnProcess?: (command: string, args: string[]) => void;
+  spawnProcess?: (command: string, args: string[]) => void | Promise<void>;
 }): Promise<BrowserNativeRelayEnsureStatus> {
   // Resolve current config only after native caller validation. A pairing may
   // outlive its profile; never wake a removed target or substitute another port.
@@ -57,11 +57,16 @@ export async function ensureExtensionRelayDaemonProcess(params: {
   }
   const spawnProcess =
     params.spawnProcess ??
-    ((command: string, args: string[]): void => {
-      const child = spawn(command, args, { detached: true, stdio: "ignore" });
-      child.unref();
-    });
-  spawnProcess(params.execPath ?? process.execPath, [
+    ((command: string, args: string[]): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawn(command, args, { detached: true, stdio: "ignore" });
+        child.on("error", reject);
+        child.once("spawn", () => {
+          child.unref();
+          resolve();
+        });
+      }));
+  await spawnProcess(params.execPath ?? process.execPath, [
     params.entryPath,
     "--port",
     String(params.port),
