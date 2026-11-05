@@ -29,6 +29,7 @@ import {
   type OpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../state/openclaw-agent-db.js";
+import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -332,6 +333,20 @@ function updateSessionKeyColumns(database: DatabaseSync, rename: ReservedKeyRena
     executeSqliteQuerySync(
       database,
       db.updateTable(table).set(column, rename.to).where(column, "=", rename.from),
+    );
+  }
+  for (const table of [
+    "session_progress_cards",
+    "session_suggestions",
+    "session_pending_inputs",
+    "session_input_completions",
+  ] as const) {
+    if (!tableExists(database, table)) {
+      continue;
+    }
+    executeSqliteQuerySync(
+      database,
+      db.updateTable(table).set("session_key", rename.to).where("session_key", "=", rename.from),
     );
   }
 }

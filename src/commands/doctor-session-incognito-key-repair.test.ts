@@ -26,6 +26,133 @@ afterEach(() => {
 });
 
 describe("doctor reserved incognito session key repair", () => {
+  it.each([
+    { name: "retained progress card", table: "session_progress_cards" },
+    { name: "cleared progress revision tombstone", table: "session_progress_cards" },
+    { name: "suggestion", table: "session_suggestions" },
+    { name: "pending input", table: "session_pending_inputs" },
+    { name: "input completion", table: "session_input_completions" },
+    { name: "absent lazy completion table", table: "session_input_completions" },
+  ] as const)("reserved child rows: $name", async ({ name, table }) => {
+    const stateDir = fs.realpathSync(tempDirs.make("openclaw-doctor-incognito-child-"));
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const database = openOpenClawAgentDatabase({ agentId: "main", env });
+    const stateDatabase = openOpenClawStateDatabase({ env });
+    const oldKey = "agent:main:dashboard:incognito-child";
+    const newKey = "agent:main:dashboard:legacy-incognito-child";
+    const absent = name === "absent lazy completion table";
+    const entryJson = JSON.stringify({ sessionId: "child-generation", updatedAt: 1 });
+    database.db
+      .prepare(
+        "INSERT INTO session_nodes (session_key, current_session_id, entry_json, entry_valid, updated_at) VALUES (?, 'child-generation', ?, 1, 1)",
+      )
+      .run(oldKey, entryJson);
+    database.db
+      .prepare(
+        "INSERT INTO session_windows (session_id, session_key, session_scope, created_at, updated_at) VALUES ('child-generation', ?, 'conversation', 1, 1)",
+      )
+      .run(oldKey);
+    stateDatabase.db
+      .prepare(
+        "INSERT INTO session_state_heads (session_key, agent_id, last_sequence, updated_at) VALUES (?, 'main', 1, 1)",
+      )
+      .run(oldKey);
+    if (absent) {
+      database.db.exec("DROP TABLE session_input_completions");
+    } else if (table === "session_progress_cards") {
+      const tombstone = name === "cleared progress revision tombstone";
+      database.db
+        .prepare(
+          "INSERT INTO session_progress_cards (session_key, markdown, steps_json, revision, created_at, updated_at) VALUES (?, ?, ?, 9, 11, 13)",
+        )
+        .run(
+          oldKey,
+          tombstone ? null : "Retained progress bytes.\n",
+          tombstone ? null : '[{"label":"step","done":false}]',
+        );
+    } else if (table === "session_suggestions") {
+      database.db
+        .prepare(
+          "INSERT INTO session_suggestions (id, session_key, author_id, author_label, text, created_at, state) VALUES ('suggestion-1', ?, 'author-1', 'Author', 'Retained suggestion bytes.', 17, 'pending')",
+        )
+        .run(oldKey);
+    } else if (table === "session_pending_inputs") {
+      database.db
+        .prepare(
+          "INSERT INTO session_pending_inputs (input_id, session_key, session_id, idempotency_key, run_id, request_hash, message_json, lifecycle_generation, state, accepted_at) VALUES ('input-1', ?, 'child-generation', 'input-key', 'input-run', 'request-hash', ?, 'generation-1', 'queued', 19)",
+        )
+        .run(oldKey, JSON.stringify({ role: "user", content: "Retained private input bytes." }));
+    } else {
+      database.db
+        .prepare(
+          "INSERT INTO session_input_completions (session_key, session_id, idempotency_key, run_id, request_hash, outcome_json, succeeded, completed_at) VALUES (?, 'child-generation', 'completion-key', 'completion-run', 'completion-hash', ?, 1, 23)",
+        )
+        .run(oldKey, JSON.stringify({ status: "ok", text: "Retained completion bytes." }));
+    }
+    expect(database.db.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+    expect(database.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    const nodeBefore = database.db.prepare("SELECT * FROM session_nodes").all();
+    const windowsBefore = database.db.prepare("SELECT * FROM session_windows").all();
+    const childrenBefore = absent ? [] : database.db.prepare(`SELECT * FROM ${table}`).all();
+    expect(await repairReservedIncognitoSessionKeys({ apply: false, cfg: {}, env })).toEqual({
+      found: 1,
+      repaired: 0,
+    });
+    let repairError: unknown;
+    let report: Awaited<ReturnType<typeof repairReservedIncognitoSessionKeys>> | undefined;
+    try {
+      report = await repairReservedIncognitoSessionKeys({ apply: true, cfg: {}, env });
+    } catch (error) {
+      repairError = error;
+    }
+    if (repairError) {
+      // A rejected transaction preserves agent data; it is not a data-loss proof.
+      expect(database.db.prepare("SELECT * FROM session_nodes").all()).toEqual(nodeBefore);
+      expect(database.db.prepare("SELECT * FROM session_windows").all()).toEqual(windowsBefore);
+      if (!absent) {
+        expect(database.db.prepare(`SELECT * FROM ${table}`).all()).toEqual(childrenBefore);
+      }
+      expect(database.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(
+        stateDatabase.db
+          .prepare("SELECT scope FROM state_leases WHERE owner = 'openclaw-doctor'")
+          .get(),
+      ).toEqual({ scope: "doctor-session-key-migration" });
+    }
+    expect(repairError).toBeUndefined();
+    expect(report).toEqual({ found: 1, repaired: 1 });
+    expect(database.db.prepare("SELECT session_key FROM session_nodes").all()).toEqual([
+      { session_key: newKey },
+    ]);
+    expect(database.db.prepare("SELECT session_key FROM session_windows").all()).toEqual([
+      { session_key: newKey },
+    ]);
+    if (absent) {
+      expect(
+        database.db
+          .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'session_input_completions'")
+          .get(),
+      ).toBeUndefined();
+    } else {
+      expect(database.db.prepare(`SELECT * FROM ${table}`).all()).toEqual(
+        childrenBefore.map((row) => ({ ...row, session_key: newKey })),
+      );
+      expect(
+        database.db.prepare(`SELECT * FROM ${table} WHERE session_key = ?`).all(oldKey),
+      ).toEqual([]);
+    }
+    expect(database.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      stateDatabase.db
+        .prepare("SELECT scope FROM state_leases WHERE owner = 'openclaw-doctor'")
+        .get(),
+    ).toBeUndefined();
+    expect(await repairReservedIncognitoSessionKeys({ apply: true, cfg: {}, env })).toEqual({
+      found: 0,
+      repaired: 0,
+    });
+  });
+
   it("renames durable collisions and every key-bearing linkage idempotently", async () => {
     const stateDir = fs.realpathSync(tempDirs.make("openclaw-doctor-incognito-key-"));
     const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
