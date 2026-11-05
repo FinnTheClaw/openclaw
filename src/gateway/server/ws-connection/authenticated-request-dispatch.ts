@@ -368,6 +368,9 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
         const cancelRequest = () => requestController?.abort();
         if (requestController) {
           client.socket.once("close", cancelRequest);
+          if (client.connectionSignal?.aborted) {
+            cancelRequest();
+          }
         }
         let dispatchOutcome: "returned" | "threw" = "returned";
         try {

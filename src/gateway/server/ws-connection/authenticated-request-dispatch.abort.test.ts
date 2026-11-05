@@ -7,6 +7,7 @@ import {
   GATEWAY_CLIENT_MODES,
 } from "../../../../packages/gateway-protocol/src/client-info.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import * as expectedProfile from "../../expected-profile.js";
 import { NodeRegistry } from "../../node-registry.js";
 import type { GatewayRequestOptions } from "../../server-methods/types.js";
 import type { GatewayWsClient } from "../ws-types.js";
@@ -98,6 +99,91 @@ function createDispatcher(
 }
 
 describe("authenticated WebSocket request cancellation", () => {
+  it.each([
+    {
+      label: "disconnect-bound wait closed during preparation",
+      method: "plugins.reload",
+      params: { plugins: [{ pluginId: "demo" }], waitForDrain: true },
+      disconnect: true,
+      handlerCalls: 0,
+    },
+    {
+      label: "disconnect-bound wait with a live connection",
+      method: "plugins.reload",
+      params: { plugins: [{ pluginId: "demo" }], waitForDrain: true },
+      disconnect: false,
+      handlerCalls: 1,
+    },
+    {
+      label: "ordinary work closed during preparation",
+      method: "test.trace",
+      params: {},
+      disconnect: true,
+      handlerCalls: 1,
+    },
+  ])(
+    "reconciles preflight disconnect lifetime for $label",
+    async ({ method, params, disconnect, handlerCalls }) => {
+      const socket = new EventEmitter();
+      const { client, dispatcher } = createDispatcher(socket);
+      const connection = new AbortController();
+      client.connectionSignal = connection.signal;
+      client.authenticatedUserProfile = {
+        profileId: "preflight-profile",
+        displayName: null,
+        avatarRevision: "1",
+        hasAvatar: false,
+        updatedAt: 1,
+      };
+      const observeConnectionClose = () => connection.abort();
+      socket.once("close", observeConnectionClose);
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const binding: Awaited<ReturnType<typeof expectedProfile.createExpectedProfileBinding>> = {
+        assertCurrent: vi.fn(),
+        assertMatchesResolvedProfile: vi.fn(),
+        markInvoked: vi.fn(),
+        guardResponse: (respond) => respond,
+      };
+      const prepare = vi
+        .spyOn(expectedProfile, "createExpectedProfileBinding")
+        .mockImplementation(async () => {
+          entered.resolve();
+          await release.promise;
+          return binding;
+        });
+      handleGatewayRequest.mockImplementation(async (options: GatewayRequestOptions) => {
+        options.respond(true, { ok: true });
+      });
+      const dispatch = dispatcher.dispatch(
+        {
+          type: "req",
+          id: "held-profile-lifetime",
+          method,
+          params,
+          expectedProfileId: "preflight-profile",
+        },
+        client,
+      );
+      try {
+        await entered.promise;
+        expect(handleGatewayRequest).not.toHaveBeenCalled();
+        if (disconnect) {
+          socket.emit("close", 1000, Buffer.alloc(0));
+        }
+        release.resolve();
+        await dispatch;
+        expect(connection.signal.aborted).toBe(disconnect);
+        expect(handleGatewayRequest).toHaveBeenCalledTimes(handlerCalls);
+      } finally {
+        release.resolve();
+        await dispatch;
+        prepare.mockRestore();
+        socket.removeListener("close", observeConnectionClose);
+      }
+    },
+  );
+
   it.each([undefined, false, true])(
     "binds only explicit reload waits to disconnect (%s)",
     async (waitForDrain) => {
