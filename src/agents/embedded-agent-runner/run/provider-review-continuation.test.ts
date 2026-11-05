@@ -320,6 +320,41 @@ describe("explicit direct Responses continuation", () => {
     },
   );
 
+  it.each([
+    { transport: "sse", strategy: "native", ordering: "omitted" },
+    { transport: "websocket", strategy: "native", ordering: "omitted" },
+    { transport: "sse", strategy: "managed", ordering: "omitted" },
+    { transport: "sse", strategy: "native", ordering: "late" },
+    { transport: "websocket", strategy: "native", ordering: "late" },
+    { transport: "sse", strategy: "managed", ordering: "late" },
+  ] as const)(
+    "requires acceptance before successful continuation output ($strategy $transport $ordering)",
+    async ({ transport, strategy, ordering }) => {
+      const f = await fixture(
+        transport,
+        ordering === "omitted" ? [completed] : [completed, created],
+        strategy,
+      );
+      const stream = await f.stream(model, context, f.options);
+      const delivered: string[] = [];
+      const drain = (async () => {
+        for await (const event of stream) {
+          delivered.push(event.type);
+        }
+      })();
+      const [terminal] = await Promise.all([stream.result(), drain]);
+      expect.soft(terminal.stopReason).toBe("error");
+      expect.soft(terminal.content.filter((block) => block.type === "toolCall")).toEqual([]);
+      expect.soft(delivered).not.toContain("done");
+      expect.soft(delivered).not.toContain("toolcall_start");
+      expect.soft(delivered).not.toContain("toolcall_end");
+      expect.soft(store.entry?.providerReview?.id).toBe("review-1");
+      expect.soft(f.requests).toHaveLength(1);
+      await expect.soft(f.stream(model, context, f.options)).rejects.toThrow("cannot be retried");
+      expect.soft(f.requests).toHaveLength(1);
+    },
+  );
+
   it.each(["sse", "websocket"] as const)(
     "does not clear on a failed first %s event",
     async (transport) => {

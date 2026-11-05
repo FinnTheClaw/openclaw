@@ -35,6 +35,7 @@ export function withResponsesRequestAcceptance<T>(
   }
   return {
     async *[Symbol.asyncIterator]() {
+      let accepted = false;
       for await (const event of events) {
         if (isRecord(event) && event.type === "response.created") {
           const response = isRecord(event.response) ? event.response : undefined;
@@ -46,6 +47,21 @@ export function withResponsesRequestAcceptance<T>(
           await lifecycle.accepted(response.id, signal);
           signal?.throwIfAborted();
           lifecycle.assertCurrent();
+          accepted = true;
+        } else if (
+          !accepted &&
+          isRecord(event) &&
+          typeof event.type === "string" &&
+          (event.type === "response.completed" ||
+            event.type === "response.done" ||
+            event.type === "response.incomplete" ||
+            event.type.startsWith("response.output_") ||
+            event.type.startsWith("response.content_part.") ||
+            event.type.startsWith("response.function_call_arguments.") ||
+            event.type.startsWith("response.reasoning_") ||
+            event.type === "response.refusal.delta")
+        ) {
+          throw new Error("Provider continuation output arrived before request acceptance");
         }
         yield event;
       }
