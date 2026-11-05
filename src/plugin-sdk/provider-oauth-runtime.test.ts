@@ -1,5 +1,5 @@
 // Provider OAuth runtime tests cover PKCE redirects, callback parsing, and token exchange helpers.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   generateOAuthState,
   generatePKCE,
@@ -8,6 +8,7 @@ import {
   parseOAuthAuthorizationInput,
   resolveOAuthTokenExpiresAt,
   resolveOAuthTokenLifetimeMs,
+  withOAuthLoginAbort,
 } from "./provider-oauth-runtime.js";
 
 describe("provider OAuth runtime", () => {
@@ -68,5 +69,85 @@ describe("provider OAuth runtime", () => {
         nowMs: 8_640_000_000_000_001,
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("OAuth supplied operation observation", () => {
+  it.each(["already rejected", "rejected after cancellation"] as const)(
+    "observes the native supplied operation when already aborted: %s",
+    async (timing) => {
+      const controller = new AbortController();
+      controller.abort();
+      const operationError = new Error("owned OAuth operation rejected");
+      let rejectOperation!: (reason: unknown) => void;
+      const operation = new Promise<string>((_resolve, reject) => {
+        rejectOperation = reject;
+      });
+      if (timing === "already rejected") {
+        rejectOperation(operationError);
+      }
+      const thenSpy = vi.spyOn(operation, "then");
+      const onAbort = vi.fn();
+      try {
+        await expect(withOAuthLoginAbort(operation, controller.signal, onAbort)).rejects.toThrow(
+          "Login cancelled",
+        );
+        if (timing === "rejected after cancellation") {
+          rejectOperation(operationError);
+        }
+        expect(onAbort).toHaveBeenCalledOnce();
+        expect(thenSpy).toHaveBeenCalledWith(expect.any(Function), expect.any(Function));
+      } finally {
+        // Drain only after grading helper ownership; never leak a deliberate
+        // global unhandled rejection from the original failing implementation.
+        rejectOperation(operationError);
+        await operation.catch(() => {});
+        thenSpy.mockRestore();
+      }
+    },
+  );
+
+  it("observes a live supplied operation that fulfills and removes its listener", async () => {
+    const controller = new AbortController();
+    const operation = Promise.resolve("owned OAuth result");
+    const thenSpy = vi.spyOn(operation, "then");
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+    const onAbort = vi.fn();
+    try {
+      await expect(withOAuthLoginAbort(operation, controller.signal, onAbort)).resolves.toBe(
+        "owned OAuth result",
+      );
+      expect(thenSpy).toHaveBeenCalledWith(expect.any(Function), expect.any(Function));
+      expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+      controller.abort();
+      expect(onAbort).not.toHaveBeenCalled();
+    } finally {
+      await operation;
+      thenSpy.mockRestore();
+      removeSpy.mockRestore();
+    }
+  });
+
+  it("observes a live supplied operation that rejects after a later abort", async () => {
+    const controller = new AbortController();
+    const operationError = new Error("owned OAuth operation rejected after live abort");
+    let rejectOperation!: (reason: unknown) => void;
+    const operation = new Promise<string>((_resolve, reject) => {
+      rejectOperation = reject;
+    });
+    const thenSpy = vi.spyOn(operation, "then");
+    const onAbort = vi.fn();
+    const wrapped = withOAuthLoginAbort(operation, controller.signal, onAbort);
+    try {
+      controller.abort();
+      await expect(wrapped).rejects.toThrow("Login cancelled");
+      rejectOperation(operationError);
+      expect(onAbort).toHaveBeenCalledOnce();
+      expect(thenSpy).toHaveBeenCalledWith(expect.any(Function), expect.any(Function));
+    } finally {
+      rejectOperation(operationError);
+      await operation.catch(() => {});
+      thenSpy.mockRestore();
+    }
   });
 });

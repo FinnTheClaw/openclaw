@@ -243,12 +243,6 @@ export function withOAuthLoginAbort<T>(
       reject(createOAuthLoginCancelledError());
     };
 
-    if (signal.aborted) {
-      abort();
-      return;
-    }
-
-    signal.addEventListener("abort", abort, { once: true });
     promise.then(
       (value) => {
         // The login step won the race; remove abort listeners so long-lived prompts do not leak.
@@ -261,6 +255,12 @@ export function withOAuthLoginAbort<T>(
         reject(toErrorObject(error, "Non-Error rejection"));
       },
     );
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+
+    signal.addEventListener("abort", abort, { once: true });
   });
 }
 
