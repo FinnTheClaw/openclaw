@@ -455,6 +455,86 @@ describe("prepareAcpxCodexAuthConfig", () => {
     expect(launched.codexHome).toBeNull();
   });
 
+  it.each([
+    { name: "bare provider", provider: "custom", header: "[model_providers.custom] # routing" },
+    {
+      name: "quoted provider with a literal hash",
+      provider: "custom#route",
+      header: '[model_providers."custom#route"] # routing',
+    },
+  ])("L07-F13 inherits a commented $name header", async (scenario) => {
+    const { root, generated, prepare } = createWrapperFixture();
+    const sourceCodexHome = path.join(root, "synthetic-source-codex");
+    const agentDir = path.join(root, "synthetic-agent");
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(sourceCodexHome, "auth.json"),
+      JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "f13-source-only-key" }),
+      "utf8",
+    );
+    const sourceConfig = [
+      'model = "synthetic-model"',
+      `model_provider = ${JSON.stringify(scenario.provider)}`,
+      'notify = ["unexecuted-synthetic-notifier"]',
+      "",
+      scenario.header,
+      'name = "Synthetic # provider"',
+      'base_url = "https://provider.invalid/v1#literal"',
+      'wire_api = "responses"',
+      'env_key = "F13_SYNTHETIC_KEY"',
+      'http_headers = { "api-key" = "f13-inline-secret" }',
+      'query_params = { "secret" = "f13-query-secret" }',
+      'experimental_bearer_token = "f13-bearer-secret"',
+      "",
+      `[model_providers.${JSON.stringify(scenario.provider)}.auth] # excluded`,
+      'command = "unexecuted-synthetic-auth-command"',
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), sourceConfig, "utf8");
+    process.env.CODEX_HOME = sourceCodexHome;
+    process.env.OPENCLAW_AGENT_DIR = agentDir;
+
+    const resolved = await prepare({
+      resolveInstalledCodexAcpBinPath: async () => undefined,
+      resolveInstalledClaudeAcpBinPath: async () => undefined,
+    });
+
+    expectWrapperCommand(resolved.agents.codex, generated.wrapperPath);
+    const isolatedConfig = await fs.readFile(generated.configPath, "utf8");
+    expect({
+      selectedProvider: isolatedConfig.includes(
+        `model_provider = ${JSON.stringify(scenario.provider)}`,
+      ),
+      originalHeader: isolatedConfig.includes(scenario.header),
+      literalName: isolatedConfig.includes('name = "Synthetic # provider"'),
+      literalEndpoint: isolatedConfig.includes('base_url = "https://provider.invalid/v1#literal"'),
+      wireApi: isolatedConfig.includes('wire_api = "responses"'),
+      envKey: isolatedConfig.includes('env_key = "F13_SYNTHETIC_KEY"'),
+      excludedConfig:
+        /http_headers|query_params|experimental_bearer_token|f13-inline-secret|f13-query-secret|f13-bearer-secret|unexecuted-synthetic-auth-command|unexecuted-synthetic-notifier/.test(
+          isolatedConfig,
+        ),
+      trustedProject: isolatedConfig.includes(`[projects.${JSON.stringify(path.resolve(root))}]`),
+      trusted: isolatedConfig.includes('trust_level = "trusted"'),
+    }).toEqual({
+      selectedProvider: true,
+      originalHeader: true,
+      literalName: true,
+      literalEndpoint: true,
+      wireApi: true,
+      envKey: true,
+      excludedConfig: false,
+      trustedProject: true,
+      trusted: true,
+    });
+    expect(isolatedConfig).not.toContain(
+      `[model_providers.${JSON.stringify(scenario.provider)}.auth]`,
+    );
+    expect(await fs.readFile(path.join(sourceCodexHome, "config.toml"), "utf8")).toBe(sourceConfig);
+    await expectPathMissing(path.join(agentDir, "acp-auth", "codex-source", "auth.json"));
+    await expectPathMissing(path.join(agentDir, "acp-auth", "codex", "auth.json"));
+  });
+
   it("does not copy source Codex auth", async () => {
     const { root, generated, prepare } = createWrapperFixture();
     const sourceCodexHome = path.join(root, "source-codex");

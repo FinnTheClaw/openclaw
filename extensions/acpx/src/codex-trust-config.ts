@@ -215,7 +215,7 @@ function extractInheritedCodexRuntimeConfig(configToml: string): string {
     const semanticLine = stripTomlComment(rawLine).trim();
 
     if (trimmedLine.startsWith("[")) {
-      const tableParts = parseTableHeader(trimmedLine);
+      const tableParts = parseTableHeader(semanticLine);
       inAnyTable = true;
       inInheritedTable = isInheritedModelProviderTable(tableParts);
       if (inInheritedTable) {
