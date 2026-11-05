@@ -1,6 +1,7 @@
 /** Verifies plugin HTTP route registration, collision detection, and metadata capture. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { findRegisteredPluginHttpRoute } from "../gateway/server/plugins-http/route-match.js";
 import {
   adoptPluginHttpRouteHandoffs,
   createPluginHttpRouteHandoff,
@@ -725,6 +726,84 @@ describe("registerPluginHttpRoute", () => {
 
     expect(registry.httpRoutes).toHaveLength(1);
     expect(registry.httpRoutes[0]?.source).toBe("new-anonymous");
+  });
+
+  it.each([
+    { label: "root prefix selects root", path: "/", match: "prefix", request: "/", matches: true },
+    {
+      label: "root prefix selects descendant",
+      path: "/",
+      match: "prefix",
+      request: "/assets/logo.svg",
+      matches: true,
+    },
+    {
+      label: "exact root excludes descendant",
+      path: "/",
+      match: "exact",
+      request: "/assets/logo.svg",
+      matches: false,
+    },
+    {
+      label: "nonroot prefix keeps segment boundary",
+      path: "/api",
+      match: "prefix",
+      request: "/apiary",
+      matches: false,
+    },
+  ] as const)("root prefix contract: $label", ({ path, match, request, matches }) => {
+    const { registry, logs, register } = createLoggedRouteHarness();
+    const handler = vi.fn();
+    const unregister = register({ path, match, auth: "plugin", pluginId: "root-demo", handler });
+    try {
+      expect(registry.httpRoutes).toHaveLength(1);
+      const entry = registry.httpRoutes[0];
+      expect(entry).toMatchObject({ path, match, auth: "plugin", pluginId: "root-demo" });
+      expect(findRegisteredPluginHttpRoute(registry, request)).toBe(matches ? entry : undefined);
+      expect(logs).toEqual([]);
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+    expect(registry.httpRoutes).toHaveLength(0);
+  });
+
+  it.each([
+    { label: "root first, exact descendant", rootFirst: true, descendantMatch: "exact" },
+    { label: "root first, prefix descendant", rootFirst: true, descendantMatch: "prefix" },
+    { label: "exact descendant first", rootFirst: false, descendantMatch: "exact" },
+    { label: "prefix descendant first", rootFirst: false, descendantMatch: "prefix" },
+  ] as const)("root prefix contract: overlap $label", ({ rootFirst, descendantMatch }) => {
+    const { registry, logs, register } = createLoggedRouteHarness();
+    const firstHandler = vi.fn();
+    const secondHandler = vi.fn();
+    const root = { path: "/", match: "prefix", auth: "gateway", pluginId: "root-demo" } as const;
+    const descendant = {
+      path: "/assets",
+      match: descendantMatch,
+      auth: "plugin",
+      pluginId: "asset-demo",
+    } as const;
+    const first = rootFirst ? root : descendant;
+    const second = rootFirst ? descendant : root;
+    const unregisterFirst = register({ ...first, handler: firstHandler });
+    expect(registry.httpRoutes).toHaveLength(1);
+    const firstEntry = registry.httpRoutes[0];
+    const unregisterSecond = register({ ...second, handler: secondHandler });
+    try {
+      expect(registry.httpRoutes).toEqual([firstEntry]);
+      expect(registry.httpRoutes[0]?.handler).toBe(firstHandler);
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toContain("route overlap denied");
+      unregisterSecond();
+      expect(registry.httpRoutes).toEqual([firstEntry]);
+      expect(firstHandler).not.toHaveBeenCalled();
+      expect(secondHandler).not.toHaveBeenCalled();
+    } finally {
+      unregisterSecond();
+      unregisterFirst();
+    }
+    expect(registry.httpRoutes).toHaveLength(0);
   });
 
   it("rejects mixed-auth overlapping routes", () => {
