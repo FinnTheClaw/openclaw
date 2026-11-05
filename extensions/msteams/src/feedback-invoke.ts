@@ -90,6 +90,7 @@ export async function runMSTeamsFeedbackInvokeHandler(
   const route = core.channel.routing.resolveAgentRoute({
     cfg: deps.cfg,
     channel: "msteams",
+    teamId: isDirectMessage ? undefined : activity.channelData?.team?.id,
     peer: {
       kind: isDirectMessage ? "direct" : isChannel ? "channel" : "group",
       id: isDirectMessage ? senderId : conversationId,
