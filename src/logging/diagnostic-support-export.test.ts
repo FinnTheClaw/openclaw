@@ -6,6 +6,7 @@ import JSZip from "jszip";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emitDiagnosticEvent, resetDiagnosticEventsForTest } from "../infra/diagnostic-events.js";
 import {
+  readDiagnosticStabilityBundleFileSync,
   uninstallDiagnosticStabilityFatalHook,
   writeDiagnosticStabilityBundleSync,
 } from "./diagnostic-stability-bundle.js";
@@ -567,6 +568,119 @@ describe("diagnostic support export", () => {
       expect(JSON.parse(entries["diagnostics.json"] ?? "{}").config.agents).toEqual(expected);
     },
   );
+
+  it.each([
+    ["latest", "POSIX HOME"],
+    ["explicit", "POSIX HOME"],
+    ["latest", "Windows USERPROFILE"],
+    ["explicit", "Windows USERPROFILE"],
+  ] as const)("retained stability paths: %s %s", async (selection, profile) => {
+    const stateDir = path.join(tempDir, "state");
+    const home =
+      profile === "POSIX HOME"
+        ? path.join(tempDir, "synthetic-export-user")
+        : String.raw`C:\Users\synthetic-export-user`;
+    const separator = profile === "POSIX HOME" ? "/" : "\\";
+    const homeFile = home + separator + "project" + separator + "main.js";
+    const stateFile = path.join(stateDir, "cache", "run.js");
+    const message = "cannot load " + homeFile;
+    const stack = "Error: " + message + "\n    at initialize (" + stateFile + ":12:3)";
+    const nestedMessage = "cannot close " + stateFile;
+    const nestedStack =
+      "TypeError: " + nestedMessage + "\n    at closeOwner (" + homeFile + ":27:9)";
+    const rootMetadata = { name: "Error", code: "ERR_STARTUP", message, stack };
+    const nestedMetadata = {
+      name: "TypeError",
+      code: "ERR_CLOSE",
+      message: nestedMessage,
+      stack: nestedStack,
+    };
+    const error = { ...rootMetadata, cause: nestedMetadata };
+    const errorBefore = structuredClone(error);
+    const env = {
+      ...(profile === "POSIX HOME" ? { HOME: home } : { USERPROFILE: home }),
+      OPENCLAW_STATE_DIR: stateDir,
+      OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
+    };
+    const written = writeDiagnosticStabilityBundleSync({
+      reason: "gateway.restart_startup_failed",
+      includeEmpty: true,
+      error,
+      shutdownStep: "gateway-server-close",
+      env,
+      stateDir,
+      now: new Date("2026-04-22T12:00:00.000Z"),
+    });
+    expect(written.status).toBe("written");
+    if (written.status !== "written") {
+      throw new Error("owned retained bundle was not written");
+    }
+    const localBytes = fs.readFileSync(written.path, "utf8");
+    const local = readDiagnosticStabilityBundleFileSync(written.path);
+    expect(local.status).toBe("found");
+    if (local.status !== "found") {
+      throw new Error("owned retained bundle was not readable");
+    }
+    expect(local.bundle.error).toEqual(rootMetadata);
+    expect(local.bundle.evidence?.shutdown).toEqual({
+      step: "gateway-server-close",
+      errors: [rootMetadata, nestedMetadata],
+    });
+
+    const outputPath = path.join(tempDir, "support-retained-paths.zip");
+    await writeDiagnosticSupportExport({
+      env,
+      stateDir,
+      outputPath,
+      stabilityBundle: selection === "latest" ? "latest" : written.path,
+      now: new Date("2026-04-22T12:00:01.000Z"),
+      readLogTail: async () => ({
+        file: path.join(stateDir, "logs", "openclaw.log"),
+        cursor: 0,
+        size: 0,
+        truncated: false,
+        reset: false,
+        lines: [],
+      }),
+    });
+    expect(fs.readFileSync(written.path, "utf8")).toBe(localBytes);
+    expect(error).toEqual(errorBefore);
+    const entries = await readZipTextEntries(outputPath);
+    const stability = JSON.parse(entries["stability/latest.json"] ?? "{}");
+    expect(stability.version).toBe(1);
+    expect(stability.reason).toBe("gateway.restart_startup_failed");
+    expect(stability.process).toEqual(written.bundle.process);
+    expect(stability.snapshot).toEqual(written.bundle.snapshot);
+    const safeHomeFile = "~" + separator + "project" + separator + "main.js";
+    const safeStateFile = "$OPENCLAW_STATE_DIR/cache/run.js";
+    const safeRoot = {
+      name: "Error",
+      code: "ERR_STARTUP",
+      message: "cannot load " + safeHomeFile,
+      stack:
+        "Error: cannot load " + safeHomeFile + "\n    at initialize (" + safeStateFile + ":12:3)",
+    };
+    const safeNested = {
+      name: "TypeError",
+      code: "ERR_CLOSE",
+      message: "cannot close " + safeStateFile,
+      stack:
+        "TypeError: cannot close " +
+        safeStateFile +
+        "\n    at closeOwner (" +
+        safeHomeFile +
+        ":27:9)",
+    };
+    expect(stability.error).toEqual(safeRoot);
+    expect(stability.evidence?.shutdown).toEqual({
+      step: "gateway-server-close",
+      errors: [safeRoot, safeNested],
+    });
+    const combined = Object.values(entries).join("\n");
+    expect(combined).not.toContain("synthetic-export-user");
+    expect(combined).not.toContain(home);
+    expect(combined).not.toContain(stateDir);
+  });
 
   it("sanitizes imported stability bundles before adding them to support exports", async () => {
     const bundlePath = path.join(tempDir, "imported-stability.json");

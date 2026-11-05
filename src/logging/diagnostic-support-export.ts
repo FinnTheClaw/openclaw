@@ -736,7 +736,20 @@ async function buildDiagnosticSupportExport(
   }
 
   if (stability.status === "found") {
-    files.push(jsonSupportBundleFile("stability/latest.json", stability.bundle));
+    const bundle = structuredClone(stability.bundle);
+    for (const error of [bundle.error, ...(bundle.evidence?.shutdown?.errors ?? [])]) {
+      if (!error) {
+        continue;
+      }
+      for (const field of ["message", "stack"] as const) {
+        if (error[field] !== undefined) {
+          error[field] = redactSupportString(error[field], redaction, {
+            maxLength: Number.MAX_SAFE_INTEGER,
+          });
+        }
+      }
+    }
+    files.push(jsonSupportBundleFile("stability/latest.json", bundle));
   }
 
   files.push(
