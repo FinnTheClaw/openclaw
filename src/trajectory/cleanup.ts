@@ -159,9 +159,6 @@ function mayRemoveRuntimeTarget(params: {
   if (canonicalizePathForComparison(params.defaultRuntimePath) === resolved) {
     return !params.restrictToStoreDir || withinStoreDir;
   }
-  if (params.restrictToStoreDir && withinStoreDir) {
-    return true;
-  }
   const expectedName = `${safeTrajectorySessionFileName(params.sessionId)}.jsonl`;
   if (path.basename(resolved) !== expectedName) {
     return false;

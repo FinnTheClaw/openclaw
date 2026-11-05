@@ -39,6 +39,56 @@ async function expectPathMissing(targetPath: string): Promise<void> {
 }
 
 describe("trajectory cleanup", () => {
+  it.each(["neighbor", "index", "mismatched header", "matching"] as const)(
+    "requires trajectory identity for in-store pointer targets (%s)",
+    async (kind) => {
+      await withTestDir({ prefix: "openclaw-trajectory-cleanup-" }, async (dir) => {
+        const sessionId = "removed-session";
+        const otherSessionId = "surviving-session";
+        const storePath = path.join(dir, "sessions.json");
+        const sessionFile = path.join(dir, `${sessionId}.jsonl`);
+        const runtimeFile = resolveTrajectoryFilePath({ env: {}, sessionFile, sessionId });
+        const pointerPath = resolveTrajectoryPointerFilePath(sessionFile);
+        const target =
+          kind === "neighbor"
+            ? path.join(dir, `${otherSessionId}.jsonl`)
+            : kind === "index"
+              ? storePath
+              : path.join(dir, "legacy-runtime", `${sessionId}.jsonl`);
+        const targetBytes =
+          kind === "index"
+            ? '{"synthetic":"unrelated session index"}\n'
+            : runtimeEvent(kind === "matching" ? sessionId : otherSessionId);
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.writeFile(target, targetBytes, "utf8");
+        await fs.writeFile(runtimeFile, runtimeEvent(sessionId), "utf8");
+        await fs.writeFile(pointerPath, pointerFile(sessionId, target), "utf8");
+
+        const removed = await removeRemovedSessionTrajectoryArtifacts({
+          removedSessionFiles: [[sessionId, sessionFile]],
+          referencedSessionIds: new Set([otherSessionId]),
+          storePath,
+          restrictToStoreDir: true,
+        });
+
+        expect
+          .soft(removed)
+          .toEqual([
+            { kind: "runtime", path: runtimeFile },
+            ...(kind === "matching" ? [{ kind: "runtime", path: target }] : []),
+            { kind: "pointer", path: pointerPath },
+          ]);
+        if (kind === "matching") {
+          await expectPathMissing(target);
+        } else {
+          expect.soft(await fs.readFile(target, "utf8").catch(() => undefined)).toBe(targetBytes);
+        }
+        await expectPathMissing(runtimeFile);
+        await expectPathMissing(pointerPath);
+      });
+    },
+  );
+
   it("removes adjacent trajectory sidecars for a deleted session", async () => {
     await withTestDir({ prefix: "openclaw-trajectory-cleanup-" }, async (dir) => {
       const sessionId = "session-1";
