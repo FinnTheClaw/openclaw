@@ -148,7 +148,10 @@ export function sanitizeConfiguredProviderRequest(
         "request.auth.headerName",
       );
       const value = sanitizeConfiguredRequestString(rawAuth.value, "request.auth.value");
-      const prefix = sanitizeConfiguredRequestString(rawAuth.prefix, "request.auth.prefix");
+      const prefix =
+        typeof rawAuth.prefix === "string"
+          ? rawAuth.prefix
+          : sanitizeConfiguredRequestString(rawAuth.prefix, "request.auth.prefix");
       if (headerName && value) {
         auth = {
           mode: "header",
@@ -357,7 +360,7 @@ function resolveAuthOverride(params: {
   if (auth?.mode === "header") {
     const headerName = auth.headerName.trim();
     const value = auth.value.trim();
-    const prefix = auth.prefix?.trim();
+    const prefix = auth.prefix;
     if (headerName && value) {
       return {
         configured: true,

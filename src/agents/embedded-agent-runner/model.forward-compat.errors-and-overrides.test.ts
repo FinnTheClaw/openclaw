@@ -199,6 +199,66 @@ const resolveSpark = (cfg?: OpenClawConfig, provider = "openai") =>
   resolveModelForTest(provider, spark, "/tmp/agent", cfg);
 
 describe("resolveModel forward-compat errors and overrides", () => {
+  it.each([
+    {
+      name: "trailing space",
+      auth: {
+        mode: "header" as const,
+        headerName: " Authorization ",
+        value: " abc ",
+        prefix: "Token ",
+      },
+      expected: "Token abc",
+    },
+    {
+      name: "trailing tab",
+      auth: {
+        mode: "header" as const,
+        headerName: " Authorization ",
+        value: " abc ",
+        prefix: "Token\t",
+      },
+      expected: "Token\tabc",
+    },
+    {
+      name: "ordinary prefix",
+      auth: {
+        mode: "header" as const,
+        headerName: " Authorization ",
+        value: " abc ",
+        prefix: "Token-",
+      },
+      expected: "Token-abc",
+    },
+    {
+      name: "dedicated bearer",
+      auth: { mode: "authorization-bearer" as const, token: " abc " },
+      expected: "Bearer abc",
+    },
+  ])(
+    "preserves custom auth prefix content for $name in configured fallback models",
+    ({ auth, expected }) => {
+      const provider = "custom-auth-prefix";
+      const modelId = "auth-model";
+      const cfg = configWithProvider(provider, {
+        baseUrl: "https://models.example/v1",
+        api: "openai-responses",
+        models: [{ ...makeModel(modelId), api: "openai-responses" }],
+        request: { auth },
+      });
+
+      const fallback = buildConfiguredFallbackModel({
+        provider,
+        modelId,
+        cfg,
+        manifestAlias: { provider },
+        runtimeHooks: createRuntimeHooks(),
+      });
+
+      expect(fallback?.headers).toEqual({ Authorization: expected });
+    },
+  );
+
   it.each(configuredPricingCases)(
     "resolves authored $name cost over the complete discovered schedule",
     async ({

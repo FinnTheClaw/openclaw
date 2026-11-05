@@ -41,6 +41,68 @@ function buildProviderMetadataOwners(
 }
 
 describe("provider request config", () => {
+  it.each([
+    {
+      name: "trailing space",
+      auth: {
+        mode: "header" as const,
+        headerName: " Authorization ",
+        value: " abc ",
+        prefix: "Token ",
+      },
+      expected: "Token abc",
+    },
+    {
+      name: "trailing tab",
+      auth: {
+        mode: "header" as const,
+        headerName: " Authorization ",
+        value: " abc ",
+        prefix: "Token\t",
+      },
+      expected: "Token\tabc",
+    },
+    {
+      name: "ordinary prefix",
+      auth: {
+        mode: "header" as const,
+        headerName: " Authorization ",
+        value: " abc ",
+        prefix: "Token-",
+      },
+      expected: "Token-abc",
+    },
+    {
+      name: "dedicated bearer",
+      auth: { mode: "authorization-bearer" as const, token: " abc " },
+      expected: "Bearer abc",
+    },
+  ])(
+    "preserves custom auth prefix content for $name through direct and sanitized requests",
+    ({ auth, expected }) => {
+      const request = { auth };
+      const sanitized = sanitizeConfiguredModelProviderRequest(request);
+      expect
+        .soft(sanitized?.auth)
+        .toEqual(
+          auth.mode === "header"
+            ? { ...auth, headerName: "Authorization", value: "abc" }
+            : { ...auth, token: "abc" },
+        );
+      for (const candidate of [request, sanitized]) {
+        const resolved = resolveProviderRequestConfig({
+          provider: "custom-auth-prefix",
+          api: "openai-responses",
+          baseUrl: "https://models.example/v1",
+          request: candidate,
+          capability: "llm",
+          transport: "stream",
+        });
+        expect.soft(resolved.headers).toEqual({ Authorization: expected });
+      }
+    },
+  );
+
   it("carries lifecycle plugin metadata ownership through model projections", () => {
     const owners = {
       channels: new Map(),
