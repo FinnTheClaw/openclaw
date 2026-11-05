@@ -548,7 +548,7 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
               throw err;
             }
             log.warn(`memory search: vector query failed: ${formatErrorMessage(err)}`);
-            return [];
+            throw err;
           })
         : [];
 

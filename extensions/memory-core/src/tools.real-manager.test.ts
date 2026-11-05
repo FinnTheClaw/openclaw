@@ -18,6 +18,7 @@ import {
   createManagerIndexFixture,
   type ManagerIndexFixture,
 } from "./memory/manager-index.test-support.js";
+import * as vectorKnn from "./memory/manager-search-knn-subprocess.js";
 import { createMemoryGetTool, createMemorySearchTool, testing } from "./tools.js";
 
 const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./memory/index.js");
@@ -726,6 +727,106 @@ describe("memory_search real manager", () => {
       searchWindow: 4,
     });
   });
+
+  it.each([
+    { mode: "hybrid", hybrid: true, failure: true },
+    { mode: "hybrid", hybrid: true, failure: false },
+  ])(
+    "discloses KNN retrieval failure without conflating empty recall ($mode, failure=$failure)",
+    async ({ hybrid, failure }) => {
+      const base = fixture.createConfig({
+        provider: "openai",
+        sources: ["memory"],
+        vectorEnabled: true,
+        minScore: 0,
+      });
+      const cfg = {
+        ...base,
+        memory: {
+          ...base.memory,
+          citations: "off",
+        },
+      } satisfies OpenClawConfig;
+      const manager = await fixture.getFreshManager(cfg);
+      await manager.sync({ reason: "baseline", force: true });
+      const admitted = manager.status();
+      expect(
+        admitted.sourceCounts?.reduce((sum, source) => sum + source.chunks, 0),
+      ).toBeGreaterThan(0);
+      expect(admitted.custom?.indexIdentity).toMatchObject({ status: "valid" });
+      if (hybrid) {
+        expect(admitted.fts).toMatchObject({ enabled: true, available: true });
+      }
+      const sourcePath = path.join(fixture.paths.memory, "2026-01-12.md");
+      const sourceBefore = await fs.readFile(sourcePath, "utf8");
+      const originalConfig = structuredClone(cfg);
+      const batchCalls = fixture.provider.embedBatchCalls;
+      const queryCalls = fixture.provider.embedQueryCalls;
+      const knn = vi.spyOn(vectorKnn, "runVectorKnnInSubprocess");
+      if (failure) {
+        knn.mockRejectedValueOnce(
+          Object.assign(new Error("fixture KNN child failed before returning a result"), {
+            name: "VectorKnnSubprocessError",
+            code: "failed",
+          }),
+        );
+      } else {
+        knn.mockResolvedValueOnce({ rows: [], fallbackScanRequired: false });
+      }
+      const args = { query: "alpha", corpus: "memory" };
+      const originalArgs = structuredClone(args);
+      try {
+        const tool = createMemorySearchTool({ config: cfg, agentId: "main" });
+        if (!tool) {
+          throw new Error("memory_search tool missing");
+        }
+        const result = await tool.execute("knn-failure-disclosure", args);
+        expect(knn).toHaveBeenCalledOnce();
+        expect(knn.mock.calls[0]?.[0].request.queryVec.some((value) => value !== 0)).toBe(true);
+        expect(fixture.provider.embedQueryCalls).toBe(queryCalls + 1);
+        expect(fixture.provider.embedBatchCalls).toBe(batchCalls);
+        expect({ config: cfg, args }).toEqual({ config: originalConfig, args: originalArgs });
+        expect(await fs.readFile(sourcePath, "utf8")).toBe(sourceBefore);
+        expect(manager.status().sourceCounts).toEqual(admitted.sourceCounts);
+        expect(manager.status().custom?.indexIdentity).toEqual(admitted.custom?.indexIdentity);
+        const content = result.content[0];
+        if (!content || content.type !== "text") {
+          throw new Error("memory_search returned no model-visible JSON");
+        }
+        const visible = JSON.parse(content.text) as unknown;
+        if (failure) {
+          expect({ details: result.details, visible }).toMatchObject({
+            details: {
+              results: [],
+              unavailable: true,
+              error: expect.stringContaining("fixture KNN child failed"),
+            },
+            visible: {
+              results: [],
+              unavailable: true,
+              error: expect.stringContaining("fixture KNN child failed"),
+            },
+          });
+        } else {
+          const expected = hybrid
+            ? [expect.objectContaining({ path: "memory/2026-01-12.md", source: "memory" })]
+            : [];
+          expect({ details: result.details, visible }).toMatchObject({
+            details: { results: expected },
+            visible: { results: expected },
+          });
+          expect(result.details).not.toHaveProperty("unavailable");
+          expect(result.details).not.toHaveProperty("error");
+          expect(result.details).not.toHaveProperty("partial");
+          expect(visible).not.toHaveProperty("unavailable");
+          expect(visible).not.toHaveProperty("error");
+          expect(visible).not.toHaveProperty("partial");
+        }
+      } finally {
+        knn.mockRestore();
+      }
+    },
+  );
 
   it("returns memory-file keyword matches at the deadline without cooling down healthy recall", async () => {
     const cfg = fixture.createConfig({ minScore: 0, vectorEnabled: false });
