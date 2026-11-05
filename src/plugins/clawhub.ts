@@ -187,18 +187,6 @@ function normalizeClawHubClawPackInstallFields(
   };
 }
 
-function isTrustedSourceLinkedOfficialPackage(pkg: NonNullable<ClawHubPackageDetail["package"]>) {
-  const sourceRepo = normalizeOptionalString(pkg.verification?.sourceRepo);
-  return (
-    pkg.channel === "official" &&
-    pkg.isOfficial &&
-    pkg.verification?.tier === "source-linked" &&
-    (sourceRepo === "openclaw/openclaw" ||
-      sourceRepo === "github.com/openclaw/openclaw" ||
-      sourceRepo === "https://github.com/openclaw/openclaw")
-  );
-}
-
 function isDefaultOfficialClawHubPackage(params: {
   baseUrl?: string;
   pkg: NonNullable<ClawHubPackageDetail["package"]>;
@@ -1148,8 +1136,7 @@ export async function installPluginFromClawHub(
         archivePath: archive.archivePath,
         verification,
         onInstallPolicyWarning: params.onInstallPolicyWarning,
-        trustedSourceLinkedOfficialInstall:
-          officialClawHubPackage || isTrustedSourceLinkedOfficialPackage(detail.package!),
+        trustedSourceLinkedOfficialInstall: officialClawHubPackage,
         config: params.config,
         logger: params.logger,
         mode: params.mode,

@@ -41,6 +41,20 @@ const resolveLatestVersionFromPackageMock = vi.fn();
 const resolveCompatibilityHostVersionMock = vi.fn();
 const installPluginFromArchiveMock = vi.fn();
 const installExtractedArchiveMock = vi.fn();
+const runInstallPolicyMock = vi.fn();
+const getGlobalHookRunnerMock = vi.fn();
+
+vi.mock("../security/install-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../security/install-policy.js")>();
+  return {
+    ...actual,
+    runInstallPolicy: (...args: unknown[]) => runInstallPolicyMock(...args),
+  };
+});
+
+vi.mock("./hook-runner-global.js", () => ({
+  getGlobalHookRunner: () => getGlobalHookRunnerMock(),
+}));
 
 vi.mock("../infra/clawhub-spec.js", () => ({
   parseClawHubPluginSpec: (...args: unknown[]) => parseClawHubPluginSpecMock(...args),
@@ -98,6 +112,7 @@ vi.mock("../infra/archive.js", async () => {
 const { ClawHubRequestError } = await import("../infra/clawhub-client.js");
 type ClawHubResolvedArtifact = import("../infra/clawhub-packages.js").ClawHubResolvedArtifact;
 const { CLAWHUB_INSTALL_ERROR_CODE, installPluginFromClawHub } = await import("./clawhub.js");
+const { scanPackageInstallSourceRuntime } = await import("./install-security-scan.runtime.js");
 
 const tempDirs: string[] = [];
 const createClawHubArchive = createClawHubArchiveFactory(afterEach);
@@ -250,6 +265,8 @@ describe("installPluginFromClawHub", () => {
     resolveCompatibilityHostVersionMock.mockReset();
     installPluginFromArchiveMock.mockReset();
     installExtractedArchiveMock.mockReset();
+    runInstallPolicyMock.mockReset();
+    getGlobalHookRunnerMock.mockReset();
 
     parseClawHubPluginSpecMock.mockReturnValue({ name: "demo" });
     fetchClawHubPackageDetailMock.mockResolvedValue(clawHubPackageDetail());
@@ -538,6 +555,103 @@ describe("installPluginFromClawHub", () => {
       kind: "plugin-archive",
       requestedSpecifier: "clawhub:demo",
       source: { kind: "clawhub", authority: "third-party", mutable: false, network: true },
+    });
+  });
+
+  it.each([
+    {
+      label: "custom registry with repository slug",
+      baseUrl: "https://plugins.example.test",
+      sourceRepo: "openclaw/openclaw",
+      trusted: false,
+    },
+    {
+      label: "custom registry with repository host",
+      baseUrl: "https://plugins.example.test",
+      sourceRepo: "github.com/openclaw/openclaw",
+      trusted: false,
+    },
+    {
+      label: "custom registry with repository URL",
+      baseUrl: "https://plugins.example.test",
+      sourceRepo: "https://github.com/openclaw/openclaw",
+      trusted: false,
+    },
+    {
+      label: "default official registry control",
+      baseUrl: "https://clawhub.ai",
+      sourceRepo: "openclaw/openclaw",
+      trusted: true,
+    },
+    {
+      label: "custom registry without source-linked metadata control",
+      baseUrl: "https://plugins.example.test",
+      sourceRepo: undefined,
+      trusted: false,
+    },
+  ])("binds official ClawHub hook bypass to registry authority for $label", async (row) => {
+    mockOfficialClawHubPackageDetail(
+      row.sourceRepo ? { verification: { tier: "source-linked", sourceRepo: row.sourceRepo } } : {},
+    );
+    const packageDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawhub-origin-hook-"));
+    tempDirs.push(packageDir);
+    const hasHooks = vi.fn().mockReturnValue(true);
+    const runBeforeInstall = vi.fn().mockResolvedValue({
+      block: true,
+      blockReason: "synthetic fixture veto",
+    });
+    getGlobalHookRunnerMock.mockReturnValue({ hasHooks, runBeforeInstall });
+    runInstallPolicyMock.mockResolvedValue(undefined);
+    installPluginFromArchiveMock.mockImplementationOnce(
+      async (
+        params: Parameters<typeof import("./install-package.js").installPluginFromArchive>[0],
+      ) => {
+        // Archive installation is the mock boundary; only the actual scanner decision runs.
+        const scan = await scanPackageInstallSourceRuntime({
+          extensions: ["index.js"],
+          logger: {},
+          packageDir,
+          pluginId: "demo",
+          source: params.installPolicyRequest?.source,
+          trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
+          requestKind: "plugin-archive",
+          requestedSpecifier: "clawhub:demo",
+        });
+        return scan?.blocked
+          ? { ok: false, error: scan.blocked.reason, code: scan.blocked.code }
+          : { ok: true, pluginId: "demo", targetDir: packageDir, version: "2026.3.22" };
+      },
+    );
+    const result = await installPluginFromClawHub({ spec: "clawhub:demo", baseUrl: row.baseUrl });
+    const source = {
+      kind: "clawhub",
+      authority: row.trusted ? "official" : "third-party",
+      mutable: false,
+      network: true,
+    };
+    expect(fetchClawHubPackageSecurityMock).toHaveBeenCalledTimes(row.trusted ? 0 : 1);
+    expect(downloadClawHubPackageArchiveMock).toHaveBeenCalledTimes(1);
+    expect(installPluginFromArchiveMock).toHaveBeenCalledTimes(1);
+    expect(installExtractedArchiveMock).not.toHaveBeenCalled();
+    expect(archiveCleanupMock).toHaveBeenCalledTimes(1);
+    expect(runInstallPolicyMock).toHaveBeenCalledTimes(1);
+    expect(runInstallPolicyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ request: expect.objectContaining({ source }) }),
+    );
+    expect({
+      trusted: archiveInstallCall().trustedSourceLinkedOfficialInstall,
+      source: archiveInstallCall().installPolicyRequest?.source,
+      hookChecks: hasHooks.mock.calls.length,
+      hookCalls: runBeforeInstall.mock.calls.length,
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+    }).toEqual({
+      trusted: row.trusted,
+      source,
+      hookChecks: row.trusted ? 0 : 1,
+      hookCalls: row.trusted ? 0 : 1,
+      ok: row.trusted,
+      error: row.trusted ? undefined : "synthetic fixture veto",
     });
   });
 
