@@ -7,9 +7,11 @@ import {
   resolveConfigForRead,
   resolveConfigIncludesForRead,
 } from "./io.read-helpers.js";
+import { createConfigFileWriteGuard } from "./io.write-safety.js";
 import { resolveIsConfigReadOnly } from "./paths.js";
 import type { ConfigFileSnapshot } from "./types.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
+import { captureConfigWriteLockGuard, withConfigWriteLock } from "./write-lock.js";
 
 function findJsonRootSuffix(
   raw: string,
@@ -35,29 +37,45 @@ function findJsonRootSuffix(
 
 async function persistPrefixedConfigRecovery(params: {
   context: ConfigIoContext;
+  snapshot: ConfigFileSnapshot;
   originalRaw: string;
   recoveredRaw: string;
 }): Promise<void> {
   const { context } = params;
-  const observedAt = new Date().toISOString();
-  const clobberedPath = await persistBoundedClobberedConfigSnapshot({
-    deps: context.deps,
-    configPath: context.configPath,
-    raw: params.originalRaw,
-    observedAt,
-  });
-  // Recovery must publish by rename; a copy fallback can truncate the live config.
-  await replaceFileAtomic({
-    filePath: context.configPath,
-    content: params.recoveredRaw,
-    dirMode: 0o700,
-    mode: 0o600,
-    tempPrefix: path.basename(context.configPath),
-    fileSystem: context.deps.fs,
-  });
-  context.deps.logger.warn(
-    `Config auto-stripped non-JSON prefix: ${context.configPath}` +
-      (clobberedPath ? ` (original saved as ${clobberedPath})` : ""),
+  return withConfigWriteLock(
+    context.configPath,
+    async () => {
+      const writeGuard = createConfigFileWriteGuard(
+        context.configPath,
+        context.deps.fs,
+        captureConfigWriteLockGuard(context.configPath),
+        { snapshot: params.snapshot, includeGraph: { hashes: {}, targets: {} } },
+      );
+      writeGuard.assertBeforeMutation();
+      const observedAt = new Date().toISOString();
+      const clobberedPath = await persistBoundedClobberedConfigSnapshot({
+        deps: context.deps,
+        configPath: context.configPath,
+        raw: params.originalRaw,
+        observedAt,
+      });
+      // Recovery must publish by rename; a copy fallback can truncate the live config.
+      await replaceFileAtomic({
+        filePath: context.configPath,
+        content: params.recoveredRaw,
+        dirMode: 0o700,
+        mode: 0o600,
+        tempPrefix: path.basename(context.configPath),
+        fileSystem: writeGuard.fileSystem,
+        assertBeforeMutation: writeGuard.assertBeforeMutation,
+        onDestinationState: writeGuard.onDestinationState,
+      });
+      context.deps.logger.warn(
+        `Config auto-stripped non-JSON prefix: ${context.configPath}` +
+          (clobberedPath ? ` (original saved as ${clobberedPath})` : ""),
+      );
+    },
+    context.deps.env,
   );
 }
 
@@ -99,6 +117,7 @@ export async function recoverConfigFromJsonRootSuffixWithContext(
   }
   await persistPrefixedConfigRecovery({
     context,
+    snapshot,
     originalRaw: snapshot.raw,
     recoveredRaw: suffixRecovery.raw,
   });

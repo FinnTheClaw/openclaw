@@ -813,6 +813,111 @@ describe("config io write", () => {
     });
   }
 
+  for (const phase of [
+    "before-recovery",
+    "forensic-save",
+    "atomic-staging",
+    "unchanged",
+  ] as const) {
+    itWithHome(`L11-F002 preserves a newer prefix-recovery root: ${phase}`, async (home) => {
+      const configPath = configPathForHome(home);
+      const configBasename = path.basename(configPath);
+      const cleanRaw = formatConfig({ gateway: { mode: "local", port: 18789 } });
+      const originalRaw = `Synthetic diagnostic prefix\n${cleanRaw}`;
+      const newerRaw = formatConfig({
+        gateway: { mode: "local", port: 18791 },
+        tools: { profile: "minimal" },
+      });
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await fs.writeFile(configPath, originalRaw, { encoding: "utf-8", mode: 0o644 });
+      const originalMode = (await fs.stat(configPath)).mode & 0o777;
+      let newerReceipt: string | undefined;
+      const observedFs: typeof fsNode = {
+        ...fsNode,
+        promises: {
+          ...fsNode.promises,
+          writeFile: async (target, data, options) => {
+            const result = await fsNode.promises.writeFile(target, data, options);
+            if (
+              phase === "forensic-save" &&
+              newerReceipt === undefined &&
+              typeof target === "string" &&
+              target.startsWith(`${configPath}.clobbered.`)
+            ) {
+              await fsNode.promises.writeFile(configPath, newerRaw, "utf-8");
+              newerReceipt = await fsNode.promises.readFile(configPath, "utf-8");
+            }
+            return result;
+          },
+          open: async (target, ...rest) => {
+            const handle = await fsNode.promises.open(target, ...rest);
+            const name = path.basename(String(target));
+            if (
+              phase === "atomic-staging" &&
+              newerReceipt === undefined &&
+              name.startsWith(`${configBasename}.`) &&
+              name.endsWith(".tmp")
+            ) {
+              await fsNode.promises.writeFile(configPath, newerRaw, "utf-8");
+              newerReceipt = await fsNode.promises.readFile(configPath, "utf-8");
+            }
+            return handle;
+          },
+        },
+      };
+      const warn = vi.fn();
+      const io = createHomeConfigIO(home, {
+        fs: observedFs,
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        logger: { warn, error: vi.fn() },
+      });
+      const snapshot = await io.readConfigFileSnapshot();
+      const snapshotBefore = structuredClone(snapshot);
+      expect(snapshot.valid).toBe(false);
+      expect(snapshot.raw).toBe(originalRaw);
+      if (phase === "before-recovery") {
+        await fs.writeFile(configPath, newerRaw, "utf-8");
+        newerReceipt = await fs.readFile(configPath, "utf-8");
+      }
+      let recovered: boolean | undefined;
+      let recoveryError: unknown;
+      try {
+        recovered = await io.recoverConfigFromJsonRootSuffix(snapshot);
+      } catch (error) {
+        recoveryError = error;
+      }
+      if (phase === "unchanged") {
+        expect(newerReceipt).toBeUndefined();
+        expect(recoveryError).toBeUndefined();
+        expect(recovered).toBe(true);
+        await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(cleanRaw);
+        if (process.platform !== "win32") {
+          expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+        }
+        expectWarnContaining(warn, `Config auto-stripped non-JSON prefix: ${configPath}`);
+      } else {
+        // This proves the owned external edit actually completed at the selected boundary.
+        expect(newerReceipt).toBe(newerRaw);
+        await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(newerRaw);
+        expect(recoveryError).toBeInstanceOf(ConfigMutationConflictError);
+        expect(recovered).toBeUndefined();
+        expect((await fs.stat(configPath)).mode & 0o777).toBe(originalMode);
+        expect(warnMessages(warn).join("\n")).not.toContain("Config auto-stripped");
+      }
+      const files = await fs.readdir(path.dirname(configPath));
+      const forensic = files.filter((name) => name.startsWith(`${configBasename}.clobbered.`));
+      expect(forensic).toHaveLength(phase === "before-recovery" ? 0 : 1);
+      for (const name of forensic) {
+        await expect(fs.readFile(path.join(path.dirname(configPath), name), "utf-8")).resolves.toBe(
+          originalRaw,
+        );
+      }
+      expect(files.filter((name) => name.endsWith(".tmp"))).toEqual([]);
+      expect(files).not.toContain(`${configBasename}.clobber.lock`);
+      expect(snapshot).toEqual(snapshotBefore);
+    });
+  }
+
   itWithHome("prefix recovery publishes private config without pathname chmod", async (home) => {
     const configPath = configPathForHome(home);
     const cleanConfig = {
