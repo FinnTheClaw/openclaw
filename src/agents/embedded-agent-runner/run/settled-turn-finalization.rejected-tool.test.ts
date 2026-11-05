@@ -1,24 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { finalizeOpenAICompletionsToolCalls } from "../../../../packages/ai/src/providers/openai-completions-tool-calls.js";
 import { prepareSystemAgentRunAdmission } from "../../admitted-run-context.js";
-import { buildEmbeddedRunnerAssistant } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
+import {
+  buildEmbeddedRunnerAssistant,
+  createResolvedEmbeddedRunnerModel,
+} from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { prepareTerminalWithSettledTurnFinalization } from "./settled-turn-finalization.js";
 import {
   createSettledFinalizationTestInput,
   createSettledProviderFailureAttempt,
 } from "./settled-turn-finalization.test-support.js";
 
-const backendMocks = vi.hoisted(() => ({ runSettledFinalization: vi.fn() }));
-vi.mock("./backend.js", () => ({
-  resolveRuntimeModelAttempt: () => undefined,
-  runEmbeddedSettledTurnFinalizationWithBackend: backendMocks.runSettledFinalization,
-}));
-
 describe("settled finalization after a rejected tool terminal", () => {
   let admission: ReturnType<typeof prepareSystemAgentRunAdmission>;
   let admittedRunContext: Awaited<ReturnType<typeof admission.admit>>;
   beforeEach(async () => {
-    backendMocks.runSettledFinalization.mockReset();
     admission = prepareSystemAgentRunAdmission({}, "run-settled", "main", "rejected-tool-test");
     admittedRunContext = await admission.admit("embedded");
   });
@@ -71,25 +67,29 @@ describe("settled finalization after a rejected tool terminal", () => {
       if (reported) {
         attempt.terminal = { kind: "ok" };
       }
-      backendMocks.runSettledFinalization.mockResolvedValueOnce({
-        outcome: "answered",
-        result: {
+      const input = createSettledFinalizationTestInput(attempt, admittedRunContext);
+      Object.assign(
+        input.finalization.preparedAttempt,
+        createResolvedEmbeddedRunnerModel("openai", "gpt-5.6-luna"),
+      );
+      const finalize = vi.fn<NonNullable<typeof input.finalization.harness.finalizeSettledTurn>>(
+        async () => ({
           assistant: buildEmbeddedRunnerAssistant({
             content: [{ type: "text", text: "status.txt now says shipped." }],
           }),
-        },
-      });
-      const input = createSettledFinalizationTestInput(attempt, admittedRunContext);
+        }),
+      );
+      input.finalization.harness.finalizeSettledTurn = finalize;
       input.terminalBase.runParams.trigger = "user";
       input.finalization.modelApi = "openai-completions";
       const result = await prepareTerminalWithSettledTurnFinalization(input);
       expect(result.finalizationOutcome).toBe("answered");
-      expect(backendMocks.runSettledFinalization).toHaveBeenCalledOnce();
-      const call = backendMocks.runSettledFinalization.mock.calls[0];
+      expect(finalize).toHaveBeenCalledOnce();
+      const call = finalize.mock.calls[0];
       if (!call) {
-        throw new Error("Expected the settled finalization backend call");
+        throw new Error("Expected the selected harness finalization call");
       }
-      const [prepared, settled] = call;
+      const [{ attempt: prepared, settledAttempt: settled }] = call;
       expect(prepared).toMatchObject({
         operation: "settled-tool-finalization",
         disableTools: true,
