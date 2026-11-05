@@ -167,7 +167,7 @@ export function buildCaptureViewModel(state: UiState) {
     0,
   );
   const selectedEvent =
-    filteredEvents.find((event) => {
+    events.find((event) => {
       const key = captureEventKey(event);
       return key === state.selectedCaptureEventKey;
     }) ??

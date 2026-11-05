@@ -6,6 +6,7 @@ import {
   mountRunner,
   setupAppBrowserTests,
 } from "./app.browser.test-support.js";
+import { captureEventKey } from "./ui-render-capture-events.js";
 import type { EvidenceEnvelope, OutcomesEnvelope, RunnerSelection } from "./ui-types.js";
 
 function createRunnerSelection(): RunnerSelection {
@@ -72,6 +73,139 @@ function selectValue(root: HTMLElement, selector: string, value: string) {
 setupAppBrowserTests();
 
 describe("QA Lab runner browser interactions", () => {
+  it.each([
+    { name: "previous kind-filter target", navigation: "previous", exclusion: "kind", target: 0 },
+    { name: "next kind-filter target", navigation: "next", exclusion: "kind", target: 2 },
+    { name: "paired timeline-window target", navigation: "pair", exclusion: "window", target: 2 },
+    { name: "already-visible next target", navigation: "next", exclusion: "none", target: 2 },
+  ] as const)(
+    "selects capture flow targets outside the current view ($name)",
+    async ({ navigation, exclusion, target }) => {
+      const events = [
+        { id: 1, ts: 0, kind: "ws-open", path: "/synthetic-previous" },
+        { id: 2, ts: 600, kind: "request", path: "/synthetic-selected" },
+        { id: 3, ts: 1200, kind: "response", path: "/synthetic-next" },
+        { id: 4, ts: 1800, kind: "request", path: "/synthetic-other" },
+      ].map((event) => ({
+        ...event,
+        flowId: event.id === 4 ? "other-flow" : "navigation-flow",
+        host: "example.test",
+        method: "GET",
+        direction: "outbound",
+        protocol: "https",
+      }));
+      const root = await mountRunner(createRunnerSelection());
+      const getJson = httpMock.getJson.getMockImplementation()!;
+      httpMock.getJson.mockImplementation(async (url: string) => {
+        if (url === "/api/capture/sessions") {
+          return {
+            sessions: [{ id: "capture-navigation", startedAt: 0, mode: "proxy", eventCount: 4 }],
+          };
+        }
+        if (url.startsWith("/api/capture/events?")) return { events };
+        if (url.startsWith("/api/capture/coverage?")) return { coverage: null };
+        return getJson(url);
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      root.querySelector<HTMLButtonElement>('[data-tab="capture"]')!.click();
+      root.querySelector<HTMLButtonElement>("#capture-controls-toggle")!.click();
+      if (exclusion === "kind") {
+        selectValue(root, "#capture-kind-filter", "request");
+      }
+      if (exclusion === "window") {
+        selectValue(root, "#capture-view-mode", "timeline");
+        const bins = root.querySelectorAll<HTMLButtonElement>("[data-capture-sparkline-window]");
+        expect(bins.length).toBeGreaterThan(10);
+        bins[6]!.dispatchEvent(new MouseEvent("mousedown", { button: 0 }));
+        bins[10]!.dispatchEvent(new MouseEvent("mouseenter"));
+        window.dispatchEvent(new MouseEvent("mouseup"));
+      } else {
+        root
+          .querySelector<HTMLButtonElement>(
+            `.capture-event-card[data-capture-event="${captureEventKey(events[1]!)}"]`,
+          )!
+          .click();
+      }
+      const flow = root.querySelector<HTMLInputElement>(
+        'input[name="capture-detail-view"][value="flow"]',
+      );
+      expect(flow).not.toBeNull();
+      flow!.checked = true;
+      flow!.dispatchEvent(new Event("change", { bubbles: true }));
+      const expectedTarget = events[target]!;
+      const targetKey = captureEventKey(expectedTarget);
+      const targetButton = root.querySelector<HTMLButtonElement>(
+        `${navigation === "pair" ? ".capture-pair-card" : ".capture-nav-button"}[data-capture-event="${targetKey}"]`,
+      );
+      const visibleSelector =
+        exclusion === "window" ? ".capture-timeline-marker" : ".capture-event-card";
+      const expectedVisibleKeys = (
+        exclusion === "kind"
+          ? [events[1]!, events[3]!]
+          : exclusion === "window"
+            ? [events[1]!]
+            : events
+      )
+        .map(captureEventKey)
+        .toReversed();
+      const prerequisites = {
+        selectedKind: root.querySelector(".capture-detail-meta .capture-chip")?.textContent,
+        flowPosition: root
+          .querySelector(".capture-nav-row")
+          ?.closest(".capture-detail-section")
+          ?.querySelector(".capture-detail-mini-meta .capture-chip")?.textContent,
+        targetKey: targetButton?.dataset.captureEvent,
+        enabled: targetButton != null && !targetButton.disabled,
+        advertisesExclusion:
+          targetButton
+            ?.closest(".capture-detail-section")
+            ?.textContent?.includes(
+              exclusion === "window" ? "outside current window/filter" : "outside current view",
+            ) ?? false,
+        visibleKeys: [...root.querySelectorAll<HTMLElement>(visibleSelector)].map(
+          (node) => node.dataset.captureEvent,
+        ),
+        kindFilter: [
+          ...root.querySelector<HTMLSelectElement>("#capture-kind-filter")!.selectedOptions,
+        ].map((option) => option.value),
+      };
+      // A missing button, wrong selection or window is setup failure, not product navigation evidence.
+      expect(prerequisites).toEqual({
+        selectedKind: "request",
+        flowPosition: "2 / 3",
+        targetKey,
+        enabled: true,
+        advertisesExclusion: exclusion !== "none",
+        visibleKeys: expectedVisibleKeys,
+        kindFilter: exclusion === "kind" ? ["request"] : [],
+      });
+      targetButton!.click();
+      const selectedKind = root.querySelector(".capture-detail-meta .capture-chip")?.textContent;
+      const flowPosition = root
+        .querySelector(".capture-nav-row")
+        ?.closest(".capture-detail-section")
+        ?.querySelector(".capture-detail-mini-meta .capture-chip")?.textContent;
+      const visibleKeys = [...root.querySelectorAll<HTMLElement>(visibleSelector)].map(
+        (node) => node.dataset.captureEvent,
+      );
+      const kindFilter = [
+        ...root.querySelector<HTMLSelectElement>("#capture-kind-filter")!.selectedOptions,
+      ].map((option) => option.value);
+      const overview = root.querySelector<HTMLInputElement>(
+        'input[name="capture-detail-view"][value="overview"]',
+      );
+      expect(overview).not.toBeNull();
+      overview!.checked = true;
+      overview!.dispatchEvent(new Event("change", { bubbles: true }));
+      const detailText = root.querySelector(".capture-detail-view-body")?.textContent ?? "";
+      expect.soft(selectedKind).toBe(expectedTarget.kind);
+      expect.soft(flowPosition).toBe(`${target + 1} / 3`);
+      expect.soft(detailText).toContain(expectedTarget.path);
+      expect.soft(visibleKeys).toEqual(expectedVisibleKeys);
+      expect.soft(kindFilter).toEqual(prerequisites.kindFilter);
+    },
+  );
+
   it.each([
     { shiftKey: false, expectedIds: [1, 2] },
     { shiftKey: true, expectedIds: [1, 2, 3] },
