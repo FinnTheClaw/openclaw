@@ -42,6 +42,19 @@ vi.mock("../../infra/file-lock.js", () => ({
 let originalAgentDir: string | undefined;
 let tempAgentDir: string | undefined;
 
+function mockHealthyCachedTools(...binaryPaths: string[]) {
+  const allowedPaths = new Set(binaryPaths);
+  spawnSyncMock.mockImplementation((command: string) => {
+    const healthy = allowedPaths.has(command) && existsSync(command);
+    return {
+      error: healthy ? undefined : new Error("ENOENT"),
+      status: healthy ? 0 : null,
+      stderr: Buffer.alloc(0),
+      stdout: Buffer.alloc(0),
+    };
+  });
+}
+
 beforeEach(() => {
   originalAgentDir = process.env.OPENCLAW_AGENT_DIR;
   tempAgentDir = mkdtempSync(join(tmpdir(), "openclaw-tools-manager-"));
@@ -214,6 +227,9 @@ describe("ensureTool", () => {
       const selectedDir = testCase.selected === "legacy" ? legacyDir : canonicalDir;
       const selectedContents =
         testCase.selected === "legacy" ? testCase.legacy : testCase.canonical;
+      if (selectedContents === "payload") {
+        mockHealthyCachedTools(join(selectedDir, "bin", binaryName));
+      }
 
       await expect(ensureTool("fd", true)).resolves.toBe(
         selectedContents === "payload" ? join(selectedDir, "bin", binaryName) : undefined,
@@ -253,6 +269,9 @@ describe("ensureTool", () => {
         mkdirSync(join(agentDir, "bin"), { recursive: true });
         writeFileSync(join(agentDir, "bin", binary), "managed binary");
       }
+      mockHealthyCachedTools(
+        ...[defaultDir, firstDir, secondDir].map((agentDir) => join(agentDir, "bin", binary)),
+      );
       const { ensureTool } = await import("./tools-manager.js");
       const { getAgentDir } = await import("../config.js");
       const read = vi.spyOn(fs, "readFileSync");
@@ -344,6 +363,7 @@ describe("ensureTool", () => {
 
   it("reuses an installation published while waiting for the file lock", async () => {
     const binaryPath = join(tempAgentDir!, "bin", "fd");
+    mockHealthyCachedTools(binaryPath);
     withFileLockMock.mockImplementationOnce(
       async (_path: string, _options: FileLockOptions, fn: () => Promise<unknown>) => {
         mkdirSync(join(tempAgentDir!, "bin"), { recursive: true });
@@ -679,12 +699,12 @@ describe("ensureTool exit-status handling", () => {
 
   it("reports a binary present when it spawns and exits 0", async () => {
     const { ensureTool } = await import("./tools-manager.js");
-    spawnSyncMock.mockReturnValue({
-      error: undefined,
-      status: 0,
+    spawnSyncMock.mockImplementation((command: string) => ({
+      error: command === "fd" ? undefined : new Error("ENOENT"),
+      status: command === "fd" ? 0 : null,
       stderr: Buffer.alloc(0),
       stdout: Buffer.alloc(0),
-    });
+    }));
     await expect(ensureTool("fd", true)).resolves.toBe("fd");
     expect(spawnSyncMock).toHaveBeenCalledWith("fd", ["--version"], {
       killSignal: "SIGKILL",
