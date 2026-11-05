@@ -395,7 +395,6 @@ export async function startWebLoginWithQr(
     });
   } catch (err) {
     clearTimeout(qrTimer);
-    await resetActiveLogin(account.accountId);
     return {
       message: `Failed to start WhatsApp login: ${String(err)}`,
     };

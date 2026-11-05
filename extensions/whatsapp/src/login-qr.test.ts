@@ -318,6 +318,96 @@ describe("login-qr", () => {
     );
   });
 
+  it.each([false, true])(
+    "keeps a newer login after older bootstrap failure (older failure first: %s)",
+    async (olderFailureFirst) => {
+      const accountId = olderFailureFirst
+        ? "bootstrap-failed-before-newer"
+        : "bootstrap-failed-after-newer";
+      const olderFailure = new Error("synthetic older socket bootstrap failure");
+      let rejectOlder!: (error: Error) => void;
+      const olderSocket = new Promise<never>((_resolve, reject) => {
+        rejectOlder = reject;
+      });
+      let markOlderStarted!: () => void;
+      const olderStarted = new Promise<void>((resolve) => {
+        markOlderStarted = resolve;
+      });
+      let markNewerStarted!: () => void;
+      const newerStarted = new Promise<void>((resolve) => {
+        markNewerStarted = resolve;
+      });
+      let releaseNewer!: () => void;
+      const publishNewer = new Promise<void>((resolve) => {
+        releaseNewer = resolve;
+      });
+      const newerSocket = { ws: { close: vi.fn() } };
+      createWaSocketMock
+        .mockImplementationOnce(async () => {
+          markOlderStarted();
+          return await olderSocket;
+        })
+        .mockImplementationOnce(async (_printQr, _verbose, options) => {
+          markNewerStarted();
+          await publishNewer;
+          setImmediate(() => options?.onQr?.("newer-bootstrap-qr"));
+          return newerSocket as never;
+        });
+      waitForWaConnectionMock.mockImplementation(waitForever);
+      const older = startWebLoginWithQr({ timeoutMs: 5000, accountId });
+      await olderStarted;
+      const newer = startWebLoginWithQr({ timeoutMs: 5000, accountId });
+      try {
+        await newerStarted;
+        if (olderFailureFirst) {
+          rejectOlder(olderFailure);
+          await older;
+        }
+        releaseNewer();
+        expectScanQrResult(await newer, "newer-bootstrap-qr");
+        if (!olderFailureFirst) {
+          rejectOlder(olderFailure);
+        }
+        await expect(older).resolves.toEqual({
+          message:
+            "Failed to start WhatsApp login: Error: synthetic older socket bootstrap failure",
+        });
+        const newerGuard = createWaSocketMock.mock.calls[1]?.[2]?.beforeCredentialPersistence;
+        expect(newerGuard).toEqual(expect.any(Function));
+        const guardResult = await newerGuard?.().then(
+          () => "current",
+          (error: unknown) => String(error),
+        );
+        const reused = await startWebLoginWithQr({ timeoutMs: 5000, accountId });
+        expect({
+          newerSocketCloseCount: newerSocket.ws.close.mock.calls.length,
+          guardResult,
+          reused,
+          socketStarts: createWaSocketMock.mock.calls.length,
+        }).toEqual({
+          newerSocketCloseCount: 0,
+          guardResult: "current",
+          reused: {
+            qrDataUrl: encodedQr("newer-bootstrap-qr"),
+            message: "QR already active. Scan it in WhatsApp → Linked Devices.",
+          },
+          socketStarts: 2,
+        });
+      } finally {
+        rejectOlder(olderFailure);
+        releaseNewer();
+        await Promise.all([older, newer]);
+        const expiredNow = Date.now() + 3 * 60_000 + 1;
+        const dateNow = vi.spyOn(Date, "now").mockReturnValue(expiredNow);
+        try {
+          await waitForWebLogin({ timeoutMs: 1000, accountId });
+        } finally {
+          dateNow.mockRestore();
+        }
+      }
+    },
+  );
+
   it("transfers credential writes to the exact active login instance", async () => {
     let hostActive = true;
     const beforeCredentialPersistence = vi.fn(async () => {
