@@ -968,6 +968,263 @@ describe("EmbeddedTuiBackend", () => {
     });
   });
 
+  it("preserves submitted embedded session incarnation before immediate admission", async () => {
+    loadSessionEntryMock.mockImplementation((key, opts) =>
+      localSessionEntry(key, opts, { entry: { sessionId: "replacement-B" } }),
+    );
+    agentCommandFromIngressMock.mockResolvedValue({ payloads: [], meta: {} });
+    const backend = new EmbeddedTuiBackend();
+    const opts = {
+      sessionKey: "agent:main:main",
+      sessionId: "submitted-A",
+      message: "belongs to A",
+      runId: "stale-immediate",
+    };
+    const original = structuredClone(opts);
+    backend.start();
+    try {
+      const outcome = await backend.sendChat(opts).then(
+        () => "accepted",
+        (error: unknown) => (error instanceof Error ? "rejected" : "non-error rejection"),
+      );
+      expect({
+        outcome,
+        ingress: agentCommandFromIngressMock.mock.calls,
+        claim: claimPendingEmbeddedAgentQuestionAnswerMock.mock.calls,
+        steer: queueEmbeddedAgentMessageWithOutcomeAsyncMock.mock.calls,
+        input: opts,
+      }).toEqual({ outcome: "rejected", ingress: [], claim: [], steer: [], input: original });
+    } finally {
+      await backend.stop();
+    }
+  });
+
+  it("preserves submitted embedded session incarnation across runtime readiness", async () => {
+    let sessionId = "submitted-A";
+    loadSessionEntryMock.mockImplementation((key, opts) =>
+      localSessionEntry(key, opts, { entry: { sessionId } }),
+    );
+    agentCommandFromIngressMock.mockResolvedValue({ payloads: [], meta: {} });
+    const publication = deferred<void>();
+    refreshPreparedModelRuntimeSnapshotsMock.mockReturnValueOnce(publication.promise);
+    const backend = new EmbeddedTuiBackend();
+    const opts = {
+      sessionKey: "agent:main:main",
+      sessionId: "submitted-A",
+      message: "captured before readiness",
+      runId: "stale-readiness",
+    };
+    const original = structuredClone(opts);
+    backend.start();
+    const send = backend.sendChat(opts).then(
+      () => "accepted",
+      (error: unknown) => (error instanceof Error ? "rejected" : "non-error rejection"),
+    );
+    try {
+      await flushMicrotasks();
+      expect(agentCommandFromIngressMock).not.toHaveBeenCalled();
+      sessionId = "replacement-B";
+      publication.resolve();
+      const outcome = await send;
+      expect({
+        outcome,
+        ingress: agentCommandFromIngressMock.mock.calls,
+        claim: claimPendingEmbeddedAgentQuestionAnswerMock.mock.calls,
+        steer: queueEmbeddedAgentMessageWithOutcomeAsyncMock.mock.calls,
+        input: opts,
+      }).toEqual({ outcome: "rejected", ingress: [], claim: [], steer: [], input: original });
+    } finally {
+      publication.resolve();
+      await send;
+      await backend.stop();
+    }
+  });
+
+  it("preserves submitted embedded session incarnation after a queued predecessor", async () => {
+    let sessionId = "submitted-A";
+    loadSessionEntryMock.mockImplementation((key, opts) =>
+      localSessionEntry(key, opts, {
+        cfg: { messages: { queue: { mode: "followup" } } },
+        entry: { sessionId, queueDebounceMs: 0 },
+      }),
+    );
+    const first = deferred<EmbeddedAgentResult>();
+    agentCommandFromIngressMock
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue({ payloads: [], meta: {} });
+    const backend = new EmbeddedTuiBackend();
+    const events = captureBackendEvents(backend);
+    const opts = {
+      sessionKey: "agent:main:main",
+      sessionId: "submitted-A",
+      message: "queued for A",
+      runId: "stale-queued",
+    };
+    const original = structuredClone(opts);
+    backend.start();
+    try {
+      await backend.sendChat({ ...opts, message: "first A", runId: "first-A" });
+      await expect(backend.sendChat(opts)).resolves.toEqual({ runId: "stale-queued" });
+      expect(agentCommandFromIngressMock).toHaveBeenCalledOnce();
+      sessionId = "replacement-B";
+      first.resolve({ payloads: [], meta: {} });
+      await vi.waitFor(() =>
+        expect(
+          events.some(({ event, payload }) => {
+            const chat = payload as { runId?: string; state?: string };
+            return (
+              event === "chat" &&
+              chat.runId === "stale-queued" &&
+              ["final", "error", "aborted"].includes(chat.state ?? "")
+            );
+          }),
+        ).toBe(true),
+      );
+      expect({
+        ingress: agentCommandFromIngressMock.mock.calls.map(([input]) => ({
+          runId: input.runId,
+          sessionId: input.sessionId,
+          message: input.message,
+        })),
+        terminal: events
+          .filter(({ event, payload }) => {
+            const chat = payload as { runId?: string; state?: string };
+            return (
+              event === "chat" &&
+              chat.runId === "stale-queued" &&
+              ["final", "error", "aborted"].includes(chat.state ?? "")
+            );
+          })
+          .map(({ payload }) => (payload as { state: string }).state),
+        claim: claimPendingEmbeddedAgentQuestionAnswerMock.mock.calls,
+        steer: queueEmbeddedAgentMessageWithOutcomeAsyncMock.mock.calls,
+        input: opts,
+      }).toEqual({
+        ingress: [{ runId: "first-A", sessionId: "submitted-A", message: "first A" }],
+        terminal: ["error"],
+        claim: [],
+        steer: [],
+        input: original,
+      });
+    } finally {
+      first.resolve({ payloads: [], meta: {} });
+      await flushMicrotasks();
+      await backend.stop();
+    }
+  });
+
+  it.each(["claim", "steer"] as const)(
+    "preserves submitted embedded session incarnation before active %s input",
+    async (mode) => {
+      let sessionId = "submitted-A";
+      loadSessionEntryMock.mockImplementation((key, opts) =>
+        localSessionEntry(key, opts, {
+          cfg: { messages: { queue: { mode: "steer" } } },
+          entry: { sessionId, queueDebounceMs: 0 },
+        }),
+      );
+      const first = deferred<EmbeddedAgentResult>();
+      agentCommandFromIngressMock.mockReturnValueOnce(first.promise);
+      const backend = new EmbeddedTuiBackend();
+      const opts = {
+        sessionKey: "agent:main:main",
+        sessionId: "submitted-A",
+        message: "stale input",
+        runId: `stale-${mode}`,
+      };
+      const original = structuredClone(opts);
+      backend.start();
+      try {
+        await backend.sendChat({ ...opts, message: "first A", runId: "first-A" });
+        sessionId = "replacement-B";
+        resolveActiveEmbeddedRunSessionIdMock.mockReturnValue("replacement-B");
+        if (mode === "claim") {
+          claimPendingEmbeddedAgentQuestionAnswerMock.mockResolvedValue({
+            runId: "replacement-owner",
+          });
+        } else {
+          queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockResolvedValue({ queued: true });
+        }
+        const outcome = await backend.sendChat(opts).then(
+          () => "accepted",
+          (error: unknown) => (error instanceof Error ? "rejected" : "non-error rejection"),
+        );
+        expect({
+          outcome,
+          ingress: agentCommandFromIngressMock.mock.calls.map(([input]) => ({
+            runId: input.runId,
+            sessionId: input.sessionId,
+            message: input.message,
+          })),
+          claim: claimPendingEmbeddedAgentQuestionAnswerMock.mock.calls,
+          steer: queueEmbeddedAgentMessageWithOutcomeAsyncMock.mock.calls,
+          activeAborted: agentCommandFromIngressMock.mock.calls[0]?.[0].abortSignal.aborted,
+          input: opts,
+        }).toEqual({
+          outcome: "rejected",
+          ingress: [{ runId: "first-A", sessionId: "submitted-A", message: "first A" }],
+          claim: [],
+          steer: [],
+          activeAborted: false,
+          input: original,
+        });
+      } finally {
+        first.resolve({ payloads: [], meta: {} });
+        await flushMicrotasks();
+        await backend.stop();
+      }
+    },
+  );
+
+  it.each([
+    { name: "matching ID", submitted: "submitted-A", current: "submitted-A" },
+    { name: "null ID", submitted: null, current: "replacement-B" },
+    { name: "new session without ID", submitted: undefined, current: undefined },
+  ])(
+    "preserves submitted embedded session incarnation control ($name)",
+    async ({ submitted, current }) => {
+      loadSessionEntryMock.mockImplementation((key, opts) =>
+        localSessionEntry(key, opts, { entry: current ? { sessionId: current } : undefined }),
+      );
+      agentCommandFromIngressMock.mockResolvedValue({ payloads: [], meta: {} });
+      const backend = new EmbeddedTuiBackend();
+      const opts = {
+        sessionKey: "agent:main:main",
+        ...(submitted === undefined ? {} : { sessionId: submitted }),
+        message: "control input",
+        runId: "incarnation-control",
+      };
+      const original = structuredClone(opts);
+      backend.start();
+      try {
+        await expect(backend.sendChat(opts)).resolves.toEqual({ runId: "incarnation-control" });
+        await vi.waitFor(() => expect(agentCommandFromIngressMock).toHaveBeenCalledOnce());
+        const input = agentCommandFromIngressMock.mock.calls[0]?.[0];
+        expect({
+          runId: input.runId,
+          sessionKey: input.sessionKey,
+          sessionId: input.sessionId,
+          hasSessionId: Object.hasOwn(input, "sessionId"),
+          message: input.message,
+          claim: claimPendingEmbeddedAgentQuestionAnswerMock.mock.calls,
+          steer: queueEmbeddedAgentMessageWithOutcomeAsyncMock.mock.calls,
+          source: opts,
+        }).toEqual({
+          runId: "incarnation-control",
+          sessionKey: "agent:main:main",
+          sessionId: current,
+          hasSessionId: current !== undefined,
+          message: "control input",
+          claim: [],
+          steer: [],
+          source: original,
+        });
+      } finally {
+        await backend.stop();
+      }
+    },
+  );
+
   it("publishes the configured runtime before admitting the first local turn", async () => {
     const initialConfig = { agents: { list: [{ id: "main" }] } };
     getRuntimeConfigMock.mockReturnValue(initialConfig);

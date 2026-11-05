@@ -349,6 +349,16 @@ export class EmbeddedTuiBackend implements TuiBackend {
       this.abortSessionRuns(runScope);
       return { runId };
     }
+    const submittedSessionId = question || isQueueCommand ? undefined : opts.sessionId;
+    if (submittedSessionId != null) {
+      const loadOptions = opts.agentId ? { agentId: opts.agentId } : undefined;
+      const { entry } = loadSessionEntry(opts.sessionKey, loadOptions);
+      if (entry?.sessionId !== submittedSessionId) {
+        throw new Error(
+          "The session changed since this message was submitted. Reload it and try again.",
+        );
+      }
+    }
     let pendingQueue: LocalRunState["pendingQueue"];
     if (queuedAfter) {
       const loadOptions = opts.agentId ? { agentId: opts.agentId } : undefined;
@@ -369,6 +379,14 @@ export class EmbeddedTuiBackend implements TuiBackend {
         sessionEntry: entry,
       });
       if (queueSettings.mode === "steer") {
+        if (submittedSessionId != null) {
+          const { entry: currentEntry } = loadSessionEntry(opts.sessionKey, loadOptions);
+          if (currentEntry?.sessionId !== submittedSessionId) {
+            throw new Error(
+              "The session changed since this message was submitted. Reload it and try again.",
+            );
+          }
+        }
         if (activeSessionId) {
           const outcome = await queueEmbeddedAgentMessageWithOutcomeAsync(
             activeSessionId,
@@ -426,6 +444,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
     const runPromise = this.runTurn({
       runId,
       sessionKey: opts.sessionKey,
+      sessionId: submittedSessionId,
       agentId: opts.agentId,
       message: opts.message,
       thinking: opts.thinking,
@@ -1274,6 +1293,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
   private async runTurn(params: {
     runId: string;
     sessionKey: string;
+    sessionId?: string | null;
     agentId?: string;
     message: string;
     thinking?: string;
@@ -1365,6 +1385,11 @@ export class EmbeddedTuiBackend implements TuiBackend {
       }
       const loadOptions = params.agentId ? { agentId: params.agentId } : undefined;
       const { agentId, canonicalKey, entry } = loadSessionEntry(params.sessionKey, loadOptions);
+      if (params.sessionId != null && entry?.sessionId !== params.sessionId) {
+        throw new Error(
+          "The session changed since this message was submitted. Reload it and try again.",
+        );
+      }
       const result = await agentCommandFromIngress(
         {
           // The per-message timestamp prefix is applied at the single LLM
