@@ -320,6 +320,7 @@ export function createAcpDispatchDeliveryCoordinator(params: AcpDispatchDelivery
       deliveredBlock: AcpBlockText | undefined,
       skipTts = meta?.skipTts,
       sendKind = kind,
+      allowFinalNoSendRecovery = true,
     ): Promise<boolean> => {
       const recoveringBlock = sendKind === "final" && kind === "block";
       const finalBlocks = recoveringBlock && deliveredBlock ? [deliveredBlock] : coveredBlocks;
@@ -599,7 +600,37 @@ export function createAcpDispatchDeliveryCoordinator(params: AcpDispatchDelivery
         );
       }
       if (delivered && transcriptOutcome?.isTracked()) {
-        const settlement = transcriptOutcome.promise.then((outcome) => {
+        const settlement = transcriptOutcome.promise.then(async (outcome) => {
+          if (
+            allowFinalNoSendRecovery &&
+            kind === "final" &&
+            sendKind === "final" &&
+            rawFinalText &&
+            tracksVisibleText &&
+            !transcriptSource &&
+            !deliveredBlock &&
+            !isStatusNotice &&
+            !ttsPayload.isCommentary &&
+            !ttsPayload.isReasoning &&
+            !hasFinalTtsMedia &&
+            !ttsPayload.mediaUrl &&
+            !ttsPayload.mediaUrls?.length &&
+            !ttsPayload.presentation &&
+            !ttsPayload.interactive &&
+            !ttsPayload.channelData &&
+            outcome === "failed-before-deliver" &&
+            !transcriptOutcome.hasPendingDelivery() &&
+            !params.abortSignal?.aborted
+          ) {
+            // The same owner keeps this proven-unsent final for one text-only recovery.
+            return await sendPrepared(
+              copyReplyPayloadMetadata(ttsPayload, { ...ttsPayload }),
+              deliveredBlock,
+              true,
+              sendKind,
+              false,
+            );
+          }
           if (transcriptOutcome.hasPendingDelivery() || outcome === "failed-deliver") {
             // A transport failure after send is ambiguous: retain answer custody,
             // but never manufacture confirmed delivery or a competing retry.

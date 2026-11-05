@@ -38,6 +38,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { ReplyDispatchRun } from "../get-reply-options.types.js";
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
+import { resolveAcpProjectionSettings } from "./acp-stream-settings.js";
 import { resolveAgentTurnAttachments } from "./agent-turn-attachments.js";
 import { tryDispatchAcpReplyCore } from "./dispatch-acp.js";
 import { expectAcpSessionParticipantInput } from "./dispatch-acp.participant.test-support.js";
@@ -1072,6 +1073,121 @@ describe("tryDispatchAcpReplyCore", () => {
     expect(dispatcher.sendBlockReply).not.toHaveBeenCalled();
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
   });
+
+  it.each(["confirmed", "proven-unsent", "queue-held", "ambiguous"] as const)(
+    "L10-F003 settles default final-only answer after %s",
+    async (outcome) => {
+      setReadyAcpResolution();
+      const text = "A final-only answer.";
+      mockVisibleTextTurn(text);
+      const attempted: Array<{ kind: string; text?: string }> = [];
+      const confirmed: Array<{ kind: string; text?: string }> = [];
+      const noSend = new PlatformMessageNotDispatchedError("offline before send", {
+        cause: new Error("controlled no-send"),
+      });
+      const dispatcher = createReplyDispatcher({
+        deliver: async (payload, { kind }) => {
+          const message = { kind, text: payload.text };
+          attempted.push(message);
+          if (outcome === "queue-held") {
+            throw Object.assign(
+              new OutboundDeliveryError("recovery owns answer", { cause: noSend }),
+              {
+                queueCustody: "held" as const,
+              },
+            );
+          }
+          if (outcome === "proven-unsent" && attempted.length === 1) {
+            throw noSend;
+          }
+          if (outcome === "ambiguous") {
+            return { visibleReplySent: true, ambiguous: true };
+          }
+          confirmed.push(message);
+          return { visibleReplySent: true };
+        },
+      });
+      const cfg = createAcpTestConfig({ tts: { auto: "off" } });
+      const recordProcessed = vi.fn();
+      const markIdle = vi.fn();
+      let result: Awaited<ReturnType<typeof runDispatch>> | undefined;
+      let dispatchError: unknown;
+      try {
+        result = await runDispatch({
+          bodyForAgent: "reply once without rerunning model work",
+          cfg,
+          dispatcher,
+          recordProcessed,
+          markIdle,
+        });
+      } catch (error) {
+        dispatchError = error;
+      } finally {
+        dispatcher.markComplete();
+      }
+      const receipt = await dispatcher.waitForIdle();
+      const observed = {
+        configuredMode: cfg.acp?.stream?.deliveryMode,
+        effectiveMode: resolveAcpProjectionSettings(cfg).deliveryMode,
+        attempted,
+        confirmed,
+        dispatchError: dispatchError === undefined ? null : String(dispatchError),
+        result,
+        receipt: receipt && {
+          counts: receipt.counts,
+          anyVisibleDelivered: receipt.anyVisibleDelivered,
+          hasPendingDelivery: receipt.hasPendingDelivery === true,
+        },
+        transcripts: transcriptMocks.persistAcpDispatchTranscript.mock.calls.map(
+          ([entry]) => entry,
+        ),
+        runTurnCalls: managerMocks.runTurn.mock.calls.length,
+        processed: recordProcessed.mock.calls,
+        idle: markIdle.mock.calls,
+      };
+      const recovered = outcome === "proven-unsent";
+      const delivered = outcome === "confirmed" || recovered;
+      const zeroCounts = {
+        delivered: 0,
+        deliveredNotVisible: 0,
+        cancelled: 0,
+        failedBeforeSend: 0,
+        failedAfterSend: 0,
+      };
+
+      expect(observed).toEqual({
+        configuredMode: undefined,
+        effectiveMode: "final_only",
+        attempted: Array.from({ length: recovered ? 2 : 1 }, () => ({ kind: "final", text })),
+        confirmed: delivered ? [{ kind: "final", text }] : [],
+        dispatchError: null,
+        result: { queuedFinal: true, counts: { tool: 0, block: 0, final: recovered ? 2 : 1 } },
+        receipt: {
+          counts: {
+            tool: zeroCounts,
+            block: zeroCounts,
+            final: {
+              ...zeroCounts,
+              delivered: delivered ? 1 : 0,
+              failedBeforeSend: recovered || outcome === "queue-held" ? 1 : 0,
+              failedAfterSend: outcome === "ambiguous" ? 1 : 0,
+            },
+          },
+          anyVisibleDelivered: delivered || outcome === "ambiguous",
+          hasPendingDelivery: outcome === "queue-held",
+        },
+        transcripts: [
+          expect.objectContaining({
+            finalText: text,
+            terminalOutcome: expect.objectContaining({ reason: "completed", status: "ok" }),
+          }),
+        ],
+        runTurnCalls: 1,
+        processed: [["completed", { reason: "acp_dispatch" }]],
+        idle: [["message_completed"]],
+      });
+    },
+  );
 
   it("records channel transform suppression without an ACP delivery claim", async () => {
     setReadyAcpResolution();
