@@ -1,5 +1,9 @@
 // Matrix tests cover onboarding plugin behavior.
 import { describe, expect, it, vi } from "vitest";
+import {
+  normalizeMatrixAllowList,
+  resolveMatrixAllowListMatch,
+} from "./matrix/monitor/allowlist.js";
 import { matrixOnboardingAdapter } from "./onboarding.js";
 import {
   createConfiguredMatrixDefaultAccountConfig,
@@ -365,6 +369,159 @@ describe("matrix onboarding", () => {
     expect(result.cfg.channels?.["matrix"]?.dm).toBeUndefined();
     expect(result.cfg.channels?.["matrix"]?.groups).toBeUndefined();
     expect(notes.join("\n")).toContain("WARNING: Matrix invite auto-join defaults to off.");
+  });
+
+  it.each([
+    {
+      label: "top-level open wildcard",
+      scope: "top-level",
+      force: true,
+      policy: "open",
+      allowFrom: ["*", "@retained:example.org"],
+      expected: ["@retained:example.org", "@owner:example.org"],
+    },
+    {
+      label: "selected named account wildcard",
+      scope: "named",
+      force: true,
+      policy: "open",
+      allowFrom: ["*", "  @retained:example.org  "],
+      expected: ["@retained:example.org", "@owner:example.org"],
+    },
+    {
+      label: "selected account inherits root wildcard",
+      scope: "inherited",
+      force: true,
+      policy: "open",
+      allowFrom: [" * ", "@retained:example.org"],
+      expected: ["@retained:example.org", "@owner:example.org"],
+    },
+    {
+      label: "implicit named default wildcard",
+      scope: "implicit",
+      force: true,
+      policy: "open",
+      allowFrom: ["*"],
+      expected: ["@owner:example.org"],
+    },
+    {
+      label: "clean forced top-level allowlist",
+      scope: "top-level",
+      force: true,
+      policy: "allowlist",
+      allowFrom: [],
+      expected: ["@owner:example.org"],
+    },
+    {
+      label: "forced named allowlist keeps and deduplicates IDs",
+      scope: "named",
+      force: true,
+      policy: "allowlist",
+      allowFrom: ["  @retained:example.org  ", "@owner:example.org", "@owner:example.org"],
+      expected: ["@retained:example.org", "@owner:example.org"],
+    },
+    {
+      label: "non-forced top-level open policy",
+      scope: "top-level",
+      force: false,
+      policy: "open",
+      allowFrom: ["*", "@retained:example.org"],
+      expected: ["*", "@retained:example.org"],
+    },
+    {
+      label: "non-forced selected named open policy",
+      scope: "named",
+      force: false,
+      policy: "open",
+      allowFrom: ["*", "@retained:example.org"],
+      expected: ["*", "@retained:example.org"],
+    },
+  ])("narrows only forced Matrix DM allowlists for $label", async (row) => {
+    installMatrixTestRuntime();
+    const dm = { policy: row.policy, allowFrom: [...row.allowFrom] };
+    const selected = {
+      homeserver: "https://matrix.example.org",
+      userId: "@bot:example.org",
+      accessToken: "fixture-token",
+      ...(row.scope === "inherited" ? {} : { dm }),
+    };
+    const sibling = {
+      homeserver: "https://matrix.sibling.example.org",
+      accessToken: "sibling-fixture-token",
+      dm: { policy: "open", allowFrom: ["*", "@sibling:example.org"] },
+    };
+    const cfg = {
+      channels: {
+        matrix:
+          row.scope === "top-level"
+            ? selected
+            : {
+                ...(row.scope === "inherited" ? { dm } : {}),
+                ...(row.scope === "implicit" ? { defaultAccount: "ops" } : {}),
+                accounts: { default: sibling, ops: selected },
+              },
+      },
+    } as CoreConfig;
+    const original = structuredClone(cfg);
+    const prompter = createMatrixUpdateKeepCredentialsPrompter({
+      onText: (message) => {
+        if (message === "Matrix allowFrom (full @user:server; display name only if unique)") {
+          return "@owner:example.org";
+        }
+        throw new Error(`unexpected text prompt: ${message}`);
+      },
+    });
+    const result = await runMatrixInteractiveConfigure({
+      cfg,
+      prompter,
+      configured: true,
+      forceAllowFrom: row.force,
+      accountOverrides: row.scope === "named" || row.scope === "inherited" ? { matrix: "ops" } : {},
+    });
+    expect(result).not.toBe("skip");
+    if (result === "skip") {
+      throw new Error("expected Matrix configuration result");
+    }
+    const matrix = result.cfg.channels?.matrix;
+    const selectedAccount = row.scope === "top-level" ? matrix : matrix?.accounts?.ops;
+    expect(cfg).toEqual(original);
+    expect(selectedAccount).toMatchObject({
+      homeserver: selected.homeserver,
+      userId: selected.userId,
+      accessToken: selected.accessToken,
+    });
+    if (row.scope !== "top-level") {
+      expect(matrix?.accounts?.default).toEqual(original.channels?.matrix?.accounts?.default);
+      expect(matrix?.dm).toEqual(original.channels?.matrix?.dm);
+      expect(matrix?.defaultAccount).toEqual(original.channels?.matrix?.defaultAccount);
+    } else {
+      expect(matrix?.accounts).toBeUndefined();
+    }
+    expect(
+      vi
+        .mocked(prompter.text)
+        .mock.calls.filter(
+          ([options]) =>
+            options.message === "Matrix allowFrom (full @user:server; display name only if unique)",
+        ),
+    ).toHaveLength(row.force ? 1 : 0);
+    const allowList = normalizeMatrixAllowList(selectedAccount?.dm?.allowFrom);
+    expect({
+      accountId: result.accountId,
+      dm: selectedAccount?.dm,
+      ownerAllowed: resolveMatrixAllowListMatch({ allowList, userId: "@owner:example.org" })
+        .allowed,
+      retainedAllowed: resolveMatrixAllowListMatch({ allowList, userId: "@retained:example.org" })
+        .allowed,
+      strangerAllowed: resolveMatrixAllowListMatch({ allowList, userId: "@stranger:example.org" })
+        .allowed,
+    }).toEqual({
+      accountId: row.scope === "top-level" ? "default" : "ops",
+      dm: { policy: row.force ? "allowlist" : row.policy, allowFrom: row.expected },
+      ownerAllowed: true,
+      retainedAllowed: row.expected.includes("@retained:example.org"),
+      strangerAllowed: !row.force,
+    });
   });
 
   it("clears Matrix invite auto-join allowlists when switching auto-join off", async () => {

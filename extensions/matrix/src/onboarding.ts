@@ -36,7 +36,7 @@ import { updateMatrixAccountConfig } from "./matrix/config-update.js";
 import { ensureMatrixSdkInstalled, isMatrixSdkAvailable } from "./matrix/deps.js";
 import { isMatrixRoomId } from "./matrix/target-ids.js";
 import { moveSingleMatrixAccountConfigToNamedAccount } from "./setup-config.js";
-import { createMatrixSetupDmPolicy } from "./setup-dm-policy.js";
+import { createMatrixSetupDmPolicy, resolveMatrixSetupDmAllowFrom } from "./setup-dm-policy.js";
 import type { CoreConfig, MatrixConfig } from "./types.js";
 
 const channel = "matrix" as const;
@@ -158,7 +158,10 @@ async function promptMatrixAllowFrom(params: {
       continue;
     }
 
-    const unique = mergeAllowFromEntries(existingAllowFrom, resolvedIds);
+    const unique = mergeAllowFromEntries(
+      resolveMatrixSetupDmAllowFrom("allowlist", existingAllowFrom),
+      resolvedIds,
+    );
     return updateMatrixAccountConfig(cfg, accountId, {
       dm: {
         ...existingConfig.dm,

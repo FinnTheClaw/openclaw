@@ -13,7 +13,10 @@ import type { CoreConfig, MatrixConfig } from "./types.js";
 
 type MatrixDmAllowFrom = NonNullable<MatrixConfig["dm"]>["allowFrom"];
 
-function resolveMatrixSetupDmAllowFrom(policy: DmPolicy, allowFrom: MatrixDmAllowFrom): string[] {
+export function resolveMatrixSetupDmAllowFrom(
+  policy: DmPolicy,
+  allowFrom: MatrixDmAllowFrom,
+): string[] {
   if (policy === "open") {
     return addWildcardAllowFrom(allowFrom);
   }
