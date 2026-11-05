@@ -839,6 +839,8 @@ interface CachedWebSocketContinuationState {
 
 interface CachedWebSocketConnection {
   socket: WebSocketLike;
+  url: string;
+  normalizedHeaders: ReadonlyArray<readonly [string, string]>;
   busy: boolean;
   createdAt: number;
   idleTimer?: ReturnType<typeof setTimeout>;
@@ -1094,7 +1096,10 @@ async function acquireWebSocket(
     };
   }
 
-  const cached = websocketSessionCache.get(sessionId);
+  const normalizedHeaders = Array.from(headers.entries()).filter(
+    ([name]) => name !== "traceparent",
+  );
+  let cached = websocketSessionCache.get(sessionId);
   // Update the expected lease after our own cleanup before awaiting a new connection.
   let expectedCacheValue: CachedWebSocketConnection | undefined = cached;
   if (cached) {
@@ -1102,6 +1107,21 @@ async function acquireWebSocket(
       clearTimeout(cached.idleTimer);
       cached.idleTimer = undefined;
     }
+    const sameAuthority =
+      cached.url === url &&
+      cached.normalizedHeaders.length === normalizedHeaders.length &&
+      cached.normalizedHeaders.every(
+        ([name, value], index) =>
+          name === normalizedHeaders[index]?.[0] && value === normalizedHeaders[index]?.[1],
+      );
+    if (!cached.busy && !sameAuthority) {
+      closeWebSocketSilently(cached.socket, 1000, "authority_changed");
+      deleteOwnedWebSocketSession(sessionId, cached);
+      expectedCacheValue = undefined;
+      cached = undefined;
+    }
+  }
+  if (cached) {
     if (!cached.busy && isWebSocketSessionExpired(cached)) {
       closeWebSocketSilently(cached.socket, 1000, "connection_age_limit");
       deleteOwnedWebSocketSession(sessionId, cached);
@@ -1139,7 +1159,13 @@ async function acquireWebSocket(
   }
 
   const socket = await connectWebSocket(url, headers, signal);
-  const entry: CachedWebSocketConnection = { socket, busy: true, createdAt: Date.now() };
+  const entry: CachedWebSocketConnection = {
+    socket,
+    url,
+    normalizedHeaders,
+    busy: true,
+    createdAt: Date.now(),
+  };
   // A concurrent winner keeps the cache; this socket then remains transient.
   const ownsCache = setOwnedWebSocketSession(sessionId, entry, expectedCacheValue);
   return {

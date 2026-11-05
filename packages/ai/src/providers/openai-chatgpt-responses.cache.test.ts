@@ -32,11 +32,11 @@ const context = {
   messages: [{ role: "user", content: "hi", timestamp: 1 }],
 } satisfies Context;
 
-function createJwt(): string {
+function createJwt(accountId = "acct-1", signature = "signature"): string {
   const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
   return `${encode({ alg: "none", typ: "JWT" })}.${encode({
-    "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" },
-  })}.signature`;
+    "https://api.openai.com/auth": { chatgpt_account_id: accountId },
+  })}.${signature}`;
 }
 
 function completion(responseId: string) {
@@ -59,6 +59,126 @@ describe("ChatGPT Responses cached transport", () => {
     resetOpenAICodexWebSocketStateForTest();
     configureAiTransportHost({});
   });
+
+  it.each(["credential", "account", "endpoint", "header", "unchanged", "traceparent"] as const)(
+    "binds cached sockets to current connection identity (%s)",
+    async (change) => {
+      const handshakes: Array<{ url: string; headers: Record<string, string> }> = [];
+      const sent: Array<{ connectionId: number; body: Record<string, unknown> }> = [];
+      const closed: number[] = [];
+
+      class IdentityWebSocket extends EventTarget {
+        readonly connectionId = handshakes.length + 1;
+        readyState = 1;
+        sendCount = 0;
+
+        constructor(url: string, options?: { headers?: Record<string, string> }) {
+          super();
+          handshakes.push({ url, headers: { ...options?.headers } });
+          queueMicrotask(() => this.dispatchEvent(new Event("open")));
+        }
+
+        send(payload: string): void {
+          this.sendCount += 1;
+          sent.push({ connectionId: this.connectionId, body: JSON.parse(payload) });
+          const responseId = `resp_${this.connectionId}_${this.sendCount}`;
+          queueMicrotask(() => {
+            this.dispatchEvent(
+              Object.assign(new Event("message"), {
+                data: JSON.stringify(completion(responseId)),
+              }),
+            );
+          });
+        }
+
+        close(): void {
+          this.readyState = 3;
+          closed.push(this.connectionId);
+        }
+      }
+
+      vi.stubGlobal("WebSocket", IdentityWebSocket);
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const apiKey = createJwt();
+      const traceparent = "00-11111111111111111111111111111111-1111111111111111-01";
+      const options = {
+        apiKey,
+        sessionId: `connection-identity-${change}`,
+        transport: "websocket-cached" as const,
+        headers: { "x-synthetic-route": "first", traceparent },
+      };
+      const nextApiKey =
+        change === "credential"
+          ? createJwt("acct-1", "rotated-fake-signature")
+          : change === "account"
+            ? createJwt("acct-2")
+            : apiKey;
+      const nextModel =
+        change === "endpoint"
+          ? { ...model, baseUrl: "https://changed.chatgpt.test/backend-api" }
+          : model;
+      const nextOptions = {
+        ...options,
+        apiKey: nextApiKey,
+        headers: {
+          "x-synthetic-route": change === "header" ? "second" : "first",
+          traceparent:
+            change === "traceparent"
+              ? "00-22222222222222222222222222222222-2222222222222222-01"
+              : traceparent,
+        },
+      };
+      const followUp: Context = {
+        messages: [...context.messages, { role: "user", content: "follow-up", timestamp: 2 }],
+      };
+      const thirdContext: Context = {
+        messages: [...followUp.messages, { role: "user", content: "third request", timestamp: 3 }],
+      };
+      expect
+        .soft((await streamOpenAICodexResponses(model, context, options).result()).stopReason)
+        .toBe("stop");
+      expect
+        .soft(
+          (await streamOpenAICodexResponses(nextModel, followUp, nextOptions).result()).stopReason,
+        )
+        .toBe("stop");
+      expect
+        .soft(
+          (await streamOpenAICodexResponses(nextModel, thirdContext, nextOptions).result())
+            .stopReason,
+        )
+        .toBe("stop");
+
+      const changed = change !== "unchanged" && change !== "traceparent";
+      const currentConnection = changed ? 2 : 1;
+      expect.soft(handshakes).toHaveLength(changed ? 2 : 1);
+      expect
+        .soft(sent.map((entry) => entry.connectionId))
+        .toEqual([1, currentConnection, currentConnection]);
+      expect.soft(closed).toEqual(changed ? [1] : []);
+      const currentHandshake = handshakes[currentConnection - 1];
+      expect
+        .soft(currentHandshake?.url)
+        .toBe(
+          change === "endpoint"
+            ? "wss://changed.chatgpt.test/backend-api/codex/responses"
+            : "wss://chatgpt.test/backend-api/codex/responses",
+        );
+      expect.soft(currentHandshake?.headers).toMatchObject({
+        authorization: `Bearer ${nextApiKey}`,
+        "chatgpt-account-id": change === "account" ? "acct-2" : "acct-1",
+        "x-synthetic-route": change === "header" ? "second" : "first",
+        traceparent,
+        session_id: options.sessionId,
+        "x-client-request-id": options.sessionId,
+        "openai-beta": "responses_websockets=2026-02-06",
+      });
+      expect.soft(sent[1]?.body.previous_response_id).toBe(changed ? undefined : "resp_1_1");
+      expect.soft(sent[2]?.body.previous_response_id).toBe(changed ? "resp_2_1" : "resp_1_2");
+      expect.soft(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["close", "abort"] as const)(
     "keeps an authenticated replacement socket when a reused lease ends by %s",
