@@ -841,6 +841,161 @@ describe("session computer transport", () => {
     });
   });
 
+  it.each([
+    { boundary: "turn closure", closeFails: true },
+    { boundary: "worker disconnect", closeFails: true },
+    { boundary: "turn closure", closeFails: false },
+    { boundary: "worker disconnect", closeFails: false },
+  ] as const)(
+    "L15-F002 retains settled asynchronous cleanup custody: $boundary failure=$closeFails",
+    async ({ boundary, closeFails }) => {
+      const h = createHarness();
+      const service = createWorkerComputerService(h.options);
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const warned = createDeferredCore();
+      const nativeFailure = new Error("synthetic settled native close failure");
+      const warning =
+        boundary === "turn closure"
+          ? "Session computer cleanup failed after turn closure."
+          : "Session computer cleanup failed after worker disconnect.";
+      h.options.warn.mockImplementation((message) => {
+        if (message === warning) {
+          warned.resolve();
+        }
+      });
+      const claimBefore = structuredClone(h.claim);
+      const configBefore = structuredClone(h.state.config);
+      const connection = new AbortController();
+      let joinedClose: Promise<unknown> | undefined;
+      try {
+        const prepared = await service.prepare(h.claim);
+        if (!prepared) {
+          throw new Error("Expected a prepared session desktop");
+        }
+        const retained = prepared.bind(h.run, h.workerSource);
+        const rpc = createWorkerComputerRpc({
+          execute: service.execute,
+          validate: () => ({ ok: true }),
+        });
+        const input = request("snapshot");
+        const frame = { command: input.command, paramsJson: JSON.stringify(input.commandParams) };
+        const frameBefore = structuredClone(frame);
+        await expect(rpc(connectionIdentity(h), frame, connection.signal)).resolves.toMatchObject({
+          ok: true,
+        });
+        expect(h.nativeExecutionIds).toHaveLength(1);
+        const physicalId = h.nativeExecutionIds[0];
+        h.state.afterDispatch = async () => {
+          entered.resolve();
+          await release.promise;
+          if (closeFails) {
+            throw nativeFailure;
+          }
+        };
+        if (boundary === "turn closure") {
+          h.releaseClaim();
+        } else {
+          connection.abort(new Error("synthetic worker disconnected"));
+        }
+        await entered.promise;
+        const closeBeforeSettlement = h.privateInvoke.mock.calls.filter(
+          ([invocation]) => invocation.params.operation === "close",
+        );
+        expect(closeBeforeSettlement).toHaveLength(1);
+        expect(closeBeforeSettlement[0]![0].params).toEqual({
+          operation: "close",
+          executionId: physicalId,
+          reason: boundary === "turn closure" ? "turn-closed" : "worker-disconnect",
+        });
+        joinedClose = prepared.close("join-owned-close").then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        release.resolve();
+        const settledCloseError = await joinedClose;
+        if (closeFails) {
+          await warned.promise;
+          expect(settledCloseError).toBeInstanceOf(AggregateError);
+          expect(
+            settledCloseError instanceof AggregateError ? settledCloseError.errors : [],
+          ).toContain(nativeFailure);
+        } else {
+          expect(settledCloseError).toBeUndefined();
+        }
+        h.state.afterDispatch = undefined;
+        let preparedAgain: Awaited<ReturnType<typeof service.prepare>> = undefined;
+        let prepareError: unknown;
+        let bindError: unknown;
+        try {
+          preparedAgain = await service.prepare(h.claim);
+          preparedAgain?.bind(h.run, h.workerSource);
+        } catch (error) {
+          if (preparedAgain) {
+            bindError = error;
+          } else {
+            prepareError = error;
+          }
+        }
+        let shutdownError: unknown;
+        await service.close().catch((error: unknown) => {
+          shutdownError = error;
+        });
+        const retainedError = await retained.invoke(request("type")).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        // All settled outcomes are captured before the custody assertion.
+        const observed = {
+          shutdownRejected: shutdownError instanceof AggregateError,
+          retainedCloseErrors: shutdownError instanceof AggregateError ? shutdownError.errors : [],
+          preparation:
+            boundary === "turn closure"
+              ? { rejected: prepareError instanceof Error, prepared: preparedAgain !== undefined }
+              : {
+                  samePrepared: preparedAgain === prepared,
+                  bindRejected: bindError instanceof Error,
+                },
+          retainedInputRejected: retainedError instanceof Error,
+          closeCalls: h.privateInvoke.mock.calls
+            .filter(([invocation]) => invocation.params.operation === "close")
+            .map(([invocation]) => invocation.params),
+          physicalIds: [...h.nativeExecutionIds],
+          warnings: h.options.warn.mock.calls.map(([message]) => message),
+          frame,
+          claim: h.claim,
+          config: h.state.config,
+        };
+        expect(observed).toEqual({
+          shutdownRejected: closeFails,
+          retainedCloseErrors: closeFails ? [settledCloseError] : [],
+          preparation:
+            boundary === "turn closure"
+              ? { rejected: true, prepared: false }
+              : { samePrepared: closeFails, bindRejected: closeFails },
+          retainedInputRejected: true,
+          closeCalls: [
+            {
+              operation: "close",
+              executionId: physicalId,
+              reason: boundary === "turn closure" ? "turn-closed" : "worker-disconnect",
+            },
+          ],
+          physicalIds: [physicalId, physicalId],
+          warnings: closeFails ? [warning] : [],
+          frame: frameBefore,
+          claim: claimBefore,
+          config: configBefore,
+        });
+      } finally {
+        release.resolve();
+        await joinedClose;
+        h.state.afterDispatch = undefined;
+        await service.close().catch(() => undefined);
+      }
+    },
+  );
+
   it.each(["claim", "shutdown"] as const)(
     "service waits for native cleanup started by %s and rejects retained handles",
     async (boundary) => {

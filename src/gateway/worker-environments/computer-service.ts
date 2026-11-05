@@ -43,13 +43,10 @@ export function createWorkerComputerService(
     // Fence this exact owner immediately, but retain cleanup custody until the
     // native ACK so concurrent claim closure or Gateway stop joins the same close.
     owner.closing = (async () => {
-      try {
-        await owner.prepared;
-        await owner.closeComputer?.(reason);
-      } finally {
-        if (owners.get(owner.claimId) === owner) {
-          owners.delete(owner.claimId);
-        }
+      await owner.prepared;
+      await owner.closeComputer?.(reason);
+      if (owners.get(owner.claimId) === owner) {
+        owners.delete(owner.claimId);
       }
     })();
     return owner.closing;
