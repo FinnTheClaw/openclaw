@@ -325,13 +325,7 @@ export function redactConfigSnapshot(
     redactedRaw &&
     shouldFallbackToStructuredRawRedaction({
       redactedRaw,
-      originalConfig: snapshot.parsed ?? snapshot.config,
-      // Missing originals only reject this raw-text view; actual writes still warn.
-      restoreParsed: (parsed) =>
-        restoreRedactedValuesWithContext(parsed, snapshot.config, {
-          ...context,
-          warnOnMissingOriginal: false,
-        }),
+      redactedConfig: redactedParsed ?? redactedConfig,
     })
   ) {
     redactedRaw = null;

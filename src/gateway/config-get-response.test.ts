@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import JSON5 from "json5";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REDACTED_SENTINEL, restoreRedactedValues } from "../config/redact-snapshot.js";
 import { makeSnapshot } from "../config/redact-snapshot.test-helpers.js";
@@ -65,6 +66,88 @@ afterEach(() => {
 });
 
 describe("config.get response cache", () => {
+  it.each([
+    {
+      name: "Unicode escape",
+      raw: String.raw`{"gateway":{"mode":"local","auth":{"mode":"password","password":"synth\u0065tic"}}}`,
+      credential: "synthetic",
+      redactRaw: true,
+    },
+    {
+      name: "escaped quote",
+      raw: String.raw`{"gateway":{"mode":"local","auth":{"mode":"password","password":"synthetic\"quote"}}}`,
+      credential: 'synthetic"quote',
+      redactRaw: true,
+    },
+    {
+      name: "escaped backslash",
+      raw: String.raw`{"gateway":{"mode":"local","auth":{"mode":"password","password":"synthetic\\path"}}}`,
+      credential: String.raw`synthetic\path`,
+      redactRaw: true,
+    },
+    {
+      name: "escaped newline",
+      raw: String.raw`{"gateway":{"mode":"local","auth":{"mode":"password","password":"synthetic\nline"}}}`,
+      credential: "synthetic\nline",
+      redactRaw: true,
+    },
+    {
+      name: "literal password retains safe JSON5 formatting",
+      raw: '{ /* synthetic comment */ gateway: { mode: "local", auth: { mode: "password", password: "synthetic-literal" } } }',
+      credential: "synthetic-literal",
+      redactRaw: false,
+      expectedRaw:
+        '{ /* synthetic comment */ gateway: { mode: "local", auth: { mode: "password", password: "' +
+        REDACTED_SENTINEL +
+        '" } } }',
+    },
+    {
+      name: "nonsecret config retains raw text",
+      raw: '{ /* no credential */ gateway: { mode: "local", port: 19001 } }',
+      credential: undefined,
+      redactRaw: false,
+      expectedRaw: '{ /* no credential */ gateway: { mode: "local", port: 19001 } }',
+    },
+  ])("escaped inline raw credential: $name", async (scenario) => {
+    const config = JSON5.parse(scenario.raw) as {
+      gateway: { mode: "local"; auth?: { mode: "password"; password: string }; port?: number };
+    };
+    expect(config.gateway.auth?.password).toBe(scenario.credential);
+    const snapshot = makeSnapshot(config, scenario.raw);
+    const before = structuredClone(snapshot);
+    mocks.readConfigFileSnapshot.mockResolvedValue(snapshot);
+
+    const response = await readConfigGetResponse({ loadUiHints: () => undefined });
+    const expected = scenario.credential
+      ? {
+          gateway: {
+            mode: "local",
+            auth: { mode: "password", password: REDACTED_SENTINEL },
+          },
+        }
+      : { gateway: { mode: "local", port: 19001 } };
+    for (const projection of [
+      response.config,
+      response.parsed,
+      response.resolved,
+      response.sourceConfig,
+      response.runtimeConfig,
+    ]) {
+      expect(projection).toEqual(expected);
+    }
+    expect(response.raw).toBe(scenario.redactRaw ? null : scenario.expectedRaw);
+    expect(response.hash).toBe("raw-token:abc123");
+    expect(response.configRevisionHash).toBe(
+      revisionProjector.projectResolvedHash(hashRuntimeConfigValue(snapshot.sourceConfig)),
+    );
+    expect(response.appliedConfigHash).toBe("resolved-token:applied-1");
+    expect(response.valid).toBe(true);
+    expect(response.issues).toEqual([]);
+    expect(response.warnings).toEqual([]);
+    expect(mocks.readConfigFileSnapshot).toHaveBeenCalledOnce();
+    expect(snapshot).toEqual(before);
+  });
+
   it("keeps applied revision equality for valid fresh-install defaults", async () => {
     const snapshot = { ...makeSnapshot({ gateway: { port: 19_001 } }), exists: false, raw: null };
     mocks.readConfigFileSnapshot.mockResolvedValue(snapshot);
