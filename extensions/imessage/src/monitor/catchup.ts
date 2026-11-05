@@ -241,6 +241,8 @@ export type CatchupFetchFn = (params: {
    * history fetch failed, or the global cap left rows for a later startup).
    */
   fullyCaughtUp?: boolean;
+  /** A history fetch hole makes shared cursor advancement unsafe for this pass. */
+  historyFetchFailed?: boolean;
 }>;
 
 export type CatchupDispatchFn = (row: IMessageCatchupRow) => Promise<{ ok: boolean }>;
@@ -451,7 +453,11 @@ export async function performIMessageCatchup(
 
   let lastSeenMs: number;
   let lastSeenRowid: number;
-  if (earliestHeldFailureRow !== null) {
+  if (fetchResult.historyFetchFailed) {
+    // Successfully admitted rows can replay, but an unfetched chat must remain reachable.
+    lastSeenMs = cursorBeforeMs;
+    lastSeenRowid = cursorBeforeRowid;
+  } else if (earliestHeldFailureRow !== null) {
     lastSeenMs = Math.max(cursorBeforeMs, earliestHeldFailureRow.date - 1);
     lastSeenRowid = Math.max(cursorBeforeRowid, earliestHeldFailureRow.rowid - 1);
   } else {

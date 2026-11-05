@@ -227,50 +227,121 @@ describe("runIMessageCatchup", () => {
     expect(summary.replayed).toBe(0);
   });
 
-  it("continues across chats when a single messages.history call throws", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-08T12:00:00Z"));
-    const dispatched: string[] = [];
-    const { client } = makeFakeClient(({ method, params }) => {
-      if (method === "chats.list") {
-        return {
-          chats: [
-            { id: 1, last_message_at: "2026-05-08T11:55:00.000Z" },
-            { id: 2, last_message_at: "2026-05-08T11:50:00.000Z" },
-          ],
-        };
-      }
-      if (method === "messages.history") {
-        const p = params as { chat_id: number };
-        if (p.chat_id === 1) {
-          throw new Error("permission denied");
+  it.each([true, false])(
+    "preserves catchup coverage across history retries: first history fails=%s",
+    async (firstHistoryFails) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-08T12:00:00Z"));
+      const initialCursor = {
+        lastSeenRowid: 100,
+        lastSeenMs: Date.parse("2026-05-08T11:40:00Z"),
+      };
+      const completedCursor = {
+        lastSeenRowid: 200,
+        lastSeenMs: Date.parse("2026-05-08T11:50:00Z"),
+      };
+      seedCatchupCursor("default", initialCursor);
+      const store = getIMessageRuntime().state.openKeyedStore<IMessageCatchupCursor>({
+        namespace: IMESSAGE_CATCHUP_CURSOR_NAMESPACE,
+        maxEntries: IMESSAGE_CATCHUP_CURSOR_MAX_ENTRIES,
+      });
+      const dispatched: string[] = [];
+      const log = vi.fn();
+      let pass = 1;
+      const { client, calls } = makeFakeClient(({ method, params }) => {
+        if (method === "chats.list") {
+          return {
+            chats: [
+              { id: 1, last_message_at: "2026-05-08T11:45:00.000Z" },
+              { id: 2, last_message_at: "2026-05-08T11:50:00.000Z" },
+            ],
+          };
         }
-        return {
-          messages: [
-            makeRow({ id: 300, guid: "g-300", chat_id: 2, created_at: "2026-05-08T11:51:00Z" }),
-          ],
-        };
-      }
-      throw new Error(`unexpected method ${method}`);
-    });
-
-    const summary = await runIMessageCatchup({
-      client: client as never,
-      accountId: "default",
-      config: resolveCatchupConfig({ enabled: true, perRunLimit: 50, maxAgeMinutes: 60 }),
-      includeAttachments: false,
-      dispatchPayload: async (msg) => {
-        if (msg.guid) {
-          dispatched.push(msg.guid);
+        if (method === "messages.history") {
+          const p = params as { chat_id: number; start: string };
+          if (p.chat_id === 1 && pass === 1 && firstHistoryFails) {
+            throw new Error("synthetic transient history failure");
+          }
+          const message =
+            p.chat_id === 1
+              ? makeRow({
+                  id: 150,
+                  guid: "g-150",
+                  chat_id: 1,
+                  created_at: "2026-05-08T11:45:00Z",
+                })
+              : makeRow({
+                  id: 200,
+                  guid: "g-200",
+                  chat_id: 2,
+                  created_at: "2026-05-08T11:50:00Z",
+                });
+          return {
+            messages:
+              Date.parse(message.created_at as string) >= Date.parse(p.start) ? [message] : [],
+          };
         }
-      },
-    });
+        throw new Error(`unexpected method ${method}`);
+      });
+      const params = {
+        client: client as never,
+        accountId: "default",
+        config: resolveCatchupConfig({ enabled: true, perRunLimit: 50, maxAgeMinutes: 60 }),
+        includeAttachments: false,
+        dispatchPayload: async (msg: IMessagePayload) => {
+          if (msg.guid) {
+            dispatched.push(msg.guid);
+          }
+        },
+        runtime: { log },
+      };
 
-    expect(summary.querySucceeded).toBe(true);
-    expect(summary.fullyCaughtUp).toBe(false);
-    expect(summary.replayed).toBe(1);
-    expect(dispatched).toEqual(["g-300"]);
-  });
+      const first = await runIMessageCatchup(params);
+      const expectedFirstCursor = firstHistoryFails ? initialCursor : completedCursor;
+      expect.soft(first.querySucceeded).toBe(true);
+      expect.soft(first.fullyCaughtUp).toBe(!firstHistoryFails);
+      expect.soft(first.replayed).toBe(firstHistoryFails ? 1 : 2);
+      expect.soft(first.failed).toBe(0);
+      expect.soft(dispatched).toEqual(firstHistoryFails ? ["g-200"] : ["g-150", "g-200"]);
+      expect.soft(first.cursorAfter).toEqual(expectedFirstCursor);
+      expect
+        .soft(await store.lookup(resolveIMessageCatchupCursorKey("default")))
+        .toMatchObject(expectedFirstCursor);
+      if (firstHistoryFails) {
+        expect
+          .soft(log)
+          .toHaveBeenCalledWith(
+            expect.stringContaining(
+              "messages.history failed for chat_id=1: Error: synthetic transient history failure",
+            ),
+          );
+      }
+
+      const firstPassCallCount = calls.length;
+      pass = 2;
+      const second = await runIMessageCatchup(params);
+      const secondHistoryCalls = calls
+        .slice(firstPassCallCount)
+        .filter((call) => call.method === "messages.history");
+      expect.soft(secondHistoryCalls).toHaveLength(firstHistoryFails ? 2 : 1);
+      for (const call of secondHistoryCalls) {
+        expect.soft(call.params).toMatchObject({
+          start: new Date(expectedFirstCursor.lastSeenMs).toISOString(),
+        });
+      }
+      expect.soft(second.querySucceeded).toBe(true);
+      expect.soft(second.fullyCaughtUp).toBe(true);
+      expect.soft(second.cursorBefore).toEqual(expectedFirstCursor);
+      expect.soft(second.replayed).toBe(firstHistoryFails ? 2 : 0);
+      expect
+        .soft(dispatched)
+        .toEqual(firstHistoryFails ? ["g-200", "g-150", "g-200"] : ["g-150", "g-200"]);
+      expect.soft(second.cursorAfter).toEqual(completedCursor);
+      expect
+        .soft(await store.lookup(resolveIMessageCatchupCursorKey("default")))
+        .toMatchObject(completedCursor);
+    },
+  );
 
   it("caps cross-chat results at perRunLimit, oldest first", async () => {
     vi.useFakeTimers();

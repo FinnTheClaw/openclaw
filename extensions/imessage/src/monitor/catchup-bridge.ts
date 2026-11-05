@@ -250,6 +250,7 @@ export async function runIMessageCatchup(
       resolved: true,
       rows: capped,
       fullyCaughtUp: !historyFetchFailed && !isCapTruncated,
+      historyFetchFailed,
       ...(Number.isFinite(effectiveWatermarkRowid)
         ? { highWatermarkRowid: effectiveWatermarkRowid }
         : {}),
