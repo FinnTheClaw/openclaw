@@ -12,7 +12,11 @@ import type {
 } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createWorkerInferenceStreamAdapter } from "./inference-stream.runtime.js";
-import { WorkerConnectionStoppedError, WorkerFencedError } from "./worker-connection-contract.js";
+import {
+  WorkerConnectionInterruptedError,
+  WorkerConnectionStoppedError,
+  WorkerFencedError,
+} from "./worker-connection-contract.js";
 import type { WorkerConnection, WorkerConnectionState } from "./worker-connection.js";
 import { WorkerInferenceProxyClient } from "./worker-rpc-inference-client.js";
 import { WorkerLiveEventClient } from "./worker-rpc-live-event-client.js";
