@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { CronService } from "./service.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import { createCronServiceState, type CronServiceDeps } from "./service/state.js";
@@ -51,8 +54,9 @@ async function fixture(jobs: CronJob[], overrides: Partial<CronServiceDeps> = {}
 async function withRestartedCron(
   jobs: CronJob[],
   run: (cron: CronService, deps: Awaited<ReturnType<typeof fixture>>["deps"]) => Promise<void>,
+  overrides: Partial<CronServiceDeps> = {},
 ) {
-  const { store, deps } = await fixture(jobs);
+  const { store, deps } = await fixture(jobs, overrides);
   const cron = new CronService(deps);
   try {
     await cron.start();
@@ -375,6 +379,7 @@ describe("CronService restart catch-up", () => {
     },
   ])("replays a missed slot across $label only once", async ({ restart, last, next, expr, tz }) => {
     vi.setSystemTime(time(restart));
+    const clock = createGatewaySchedulerClock(Date.now());
     await withRestartedCron(
       [
         job({
@@ -386,6 +391,7 @@ describe("CronService restart catch-up", () => {
         }),
       ],
       async (cron, deps) => {
+        await clock.wake();
         expect(deps.runCommandJob).toHaveBeenCalledOnce();
         expect(cron.getJob("restart-job")?.state).toMatchObject({
           lastRunAtMs: time(restart),
@@ -393,8 +399,10 @@ describe("CronService restart catch-up", () => {
         });
         cron.stop();
         await cron.start();
+        await clock.wake();
         expect(deps.runCommandJob).toHaveBeenCalledOnce();
       },
+      { scheduler: createTestGatewayScheduler(clock.clock) },
     );
   });
 });

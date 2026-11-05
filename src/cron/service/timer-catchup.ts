@@ -345,7 +345,13 @@ async function planStartupCatchup(
           job.wakeMode === "now");
       (opts?.deferAgentWork && waitsForAgent ? deferredAgentJobs : startupEligible).push(job);
     }
-    const startupCandidates = startupEligible.slice(0, maxImmediate);
+    const selectedStartupCandidates = startupEligible.slice(0, maxImmediate);
+    const deferredStartupCommands = opts?.deferAgentWork
+      ? selectedStartupCandidates.filter((job) => job.payload.kind === "command")
+      : [];
+    const startupCandidates = opts?.deferAgentWork
+      ? selectedStartupCandidates.filter((job) => job.payload.kind !== "command")
+      : selectedStartupCandidates;
     const deferredOverflow = startupEligible.slice(maxImmediate);
     const deferredAgentDelayMs = Math.max(
       0,
@@ -367,6 +373,9 @@ async function planStartupCatchup(
       lastRunStatus: job.state.lastRunStatus,
     });
     const deferred: StartupDeferredJob[] = [
+      // Commands can run without a deadline; admit them after startup through
+      // the normal timer without adding the agent bootstrap delay.
+      ...deferredStartupCommands.map((job) => deferredJob(job, 0)),
       ...deferredOverflow.map((job) => deferredJob(job)),
       ...deferredAgentJobs.map((job) => deferredJob(job, deferredAgentDelayMs)),
     ];
