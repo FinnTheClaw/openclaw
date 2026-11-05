@@ -117,6 +117,70 @@ describe("project clone target ownership", () => {
     expect(await stages()).toEqual([]);
   });
 
+  it.each([
+    { kind: "relative file", linkPath: "readme-link", linkText: "README.md" },
+    { kind: "relative directory", linkPath: "docs-link", linkText: "docs" },
+    { kind: "nested parent-relative", linkPath: "nested/readme-link", linkText: "../README.md" },
+    { kind: "absolute control", linkPath: "absolute-link", linkText: "" },
+  ])("preserves staged repository symlink text and resolution: $kind", async (row) => {
+    const external = path.join(root, "outside.txt");
+    await fs.writeFile(external, "owned absolute control");
+    const linkText = row.kind === "absolute control" ? external : row.linkText;
+    let stage = "";
+    runner.run.mockImplementation(async (argv: string[]) => {
+      stage = stageFrom(argv);
+      await fs.mkdir(path.join(stage, ".git"));
+      await fs.mkdir(path.join(stage, "docs"));
+      await fs.mkdir(path.join(stage, "nested"));
+      await fs.writeFile(path.join(stage, "README.md"), "checkout");
+      await fs.writeFile(path.join(stage, "docs", "entry.txt"), "published docs");
+      await fs.symlink(
+        linkText,
+        path.join(stage, row.linkPath),
+        row.kind === "relative directory" ? "dir" : "file",
+      );
+      return ok;
+    });
+    const input = { url: "fixture", target };
+    const inputBefore = structuredClone(input);
+
+    await cloneProjectCheckout(input);
+
+    expect(runner.run).toHaveBeenCalledTimes(1);
+    expect(runner.run.mock.calls[0]?.[0]).toEqual([
+      "git",
+      "clone",
+      "--no-recurse-submodules",
+      "--",
+      "fixture",
+      stage,
+    ]);
+    expect(stage.startsWith(path.join(path.dirname(target), ".checkout.clone-"))).toBe(true);
+    expect(await stages()).toEqual([]);
+    await expect(fs.lstat(stage)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await fs.stat(path.join(target, ".git"))).isDirectory()).toBe(true);
+    expect(await fs.readFile(path.join(target, "README.md"), "utf8")).toBe("checkout");
+    expect(input).toEqual(inputBefore);
+    const publishedLink = path.join(target, row.linkPath);
+    expect((await fs.lstat(publishedLink)).isSymbolicLink()).toBe(true);
+    expect(await fs.readlink(publishedLink)).toBe(linkText);
+    const expectedTarget =
+      row.kind === "absolute control"
+        ? external
+        : path.join(target, row.kind === "relative directory" ? "docs" : "README.md");
+    expect(await fs.realpath(publishedLink)).toBe(await fs.realpath(expectedTarget));
+    const readPath =
+      row.kind === "relative directory" ? path.join(publishedLink, "entry.txt") : publishedLink;
+    expect(await fs.readFile(readPath, "utf8")).toBe(
+      row.kind === "absolute control"
+        ? "owned absolute control"
+        : row.kind === "relative directory"
+          ? "published docs"
+          : "checkout",
+    );
+    expect(await fs.readFile(external, "utf8")).toBe("owned absolute control");
+  });
+
   it("CLONE-06 rejects an entry-time existing target without invoking Git", async () => {
     await fs.mkdir(target, { recursive: true });
     await fs.writeFile(path.join(target, "foreign"), "sentinel");

@@ -178,6 +178,7 @@ export async function cloneProjectCheckout(
         recursive: true,
         force: false,
         errorOnExist: true,
+        verbatimSymlinks: true,
       });
     }
   } finally {
