@@ -914,8 +914,9 @@ export class ModelRegistry {
    */
   registerProvider(providerName: string, config: ProviderConfigInput): void {
     this.validateProviderConfig(providerName, config);
-    this.applyProviderConfig(providerName, config);
-    this.upsertRegisteredProvider(providerName, config);
+    const effectiveConfig = this.mergeRegisteredProviderConfig(providerName, config);
+    this.applyProviderConfig(providerName, config, effectiveConfig);
+    this.registeredProviders.set(providerName, effectiveConfig);
   }
 
   /**
@@ -935,22 +936,25 @@ export class ModelRegistry {
   }
 
   /**
-   * Upsert a provider config into registeredProviders.
-   * If the provider is already registered, defined values in the incoming config
-   * override existing ones; undefined values are preserved from the stored config.
-   * If the provider is not registered, the incoming config is stored as-is.
+   * Merge a provider config without mutating the retained registration.
+   * Defined incoming values override existing ones; undefined values preserve
+   * the stored config. A first registration is returned as-is.
    */
-  private upsertRegisteredProvider(providerName: string, config: ProviderConfigInput): void {
+  private mergeRegisteredProviderConfig(
+    providerName: string,
+    config: ProviderConfigInput,
+  ): ProviderConfigInput {
     const existing = this.registeredProviders.get(providerName);
     if (!existing) {
-      this.registeredProviders.set(providerName, config);
-      return;
+      return config;
     }
+    const merged = { ...existing };
     for (const k of Object.keys(config) as (keyof ProviderConfigInput)[]) {
       if (config[k] !== undefined) {
-        (existing as Record<string, unknown>)[k] = config[k];
+        (merged as Record<string, unknown>)[k] = config[k];
       }
     }
+    return merged;
   }
 
   private validateProviderConfig(providerName: string, config: ProviderConfigInput): void {
@@ -973,7 +977,11 @@ export class ModelRegistry {
     }
   }
 
-  private applyProviderConfig(providerName: string, config: ProviderConfigInput): void {
+  private applyProviderConfig(
+    providerName: string,
+    config: ProviderConfigInput,
+    requestConfig: ProviderConfigInput = config,
+  ): void {
     if (config.oauth) {
       // Ensure the OAuth provider ID matches the provider name
       const oauthProvider: OAuthProviderInterface = {
@@ -996,7 +1004,7 @@ export class ModelRegistry {
       );
     }
 
-    this.storeProviderRequestConfig(providerName, config);
+    this.storeProviderRequestConfig(providerName, requestConfig);
 
     if (config.models && config.models.length > 0) {
       // Full replacement: remove existing models for this provider

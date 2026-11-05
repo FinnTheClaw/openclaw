@@ -304,6 +304,116 @@ describe("ModelRegistry models.json auth", () => {
     expect(registry.find("custom", "example-model")?.contextTokens).toBeUndefined();
   });
 
+  it.each([
+    { label: "headers-only retains key and bearer", update: "headers", awsSdk: false },
+    { label: "key-only retains headers and bearer", update: "key", awsSdk: false },
+    { label: "headers-only retains declared AWS SDK mode", update: "headers", awsSdk: true },
+    { label: "complete request update", update: "complete", awsSdk: false },
+    { label: "explicit false disables bearer", update: "false", awsSdk: false },
+  ] as const)("partial provider request update: $label", async ({ update, awsSdk }) => {
+    const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+    const provider = "fixture-partial-provider";
+    const neighbor = "fixture-unrelated-provider";
+    const baseUrl = "https://fixture-provider.invalid/v1";
+    const models: NonNullable<ProviderConfigInput["models"]> = [
+      {
+        id: "fixture-model",
+        name: "Fixture model",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 16_384,
+      },
+    ];
+    registry.registerProvider(provider, {
+      baseUrl,
+      api: "openai-responses",
+      ...(awsSdk ? { auth: "aws-sdk" } : { apiKey: "fixture-initial-key", authHeader: true }),
+      headers: { "X-Fixture": "initial" },
+      models,
+    });
+    registry.registerProvider(neighbor, {
+      baseUrl: "https://fixture-unrelated.invalid/v1",
+      api: "openai-responses",
+      apiKey: "fixture-neighbor-key",
+      authHeader: true,
+      headers: { "X-Neighbor": "unchanged" },
+      models,
+    });
+    const initialModel = registry.find(provider, "fixture-model");
+    expect(initialModel).toMatchObject({
+      provider,
+      id: "fixture-model",
+      baseUrl,
+      api: "openai-responses",
+      contextWindow: 128_000,
+      maxTokens: 16_384,
+    });
+    expect(registry.hasConfiguredAuth(initialModel!)).toBe(true);
+    const preservedModel = structuredClone(initialModel!);
+    const expectedNeighborAuth = {
+      ok: true,
+      apiKey: "fixture-neighbor-key",
+      headers: { "X-Neighbor": "unchanged", Authorization: "Bearer fixture-neighbor-key" },
+    };
+    const changedKey = update === "key" || update === "complete";
+    const expectedKey = changedKey ? "fixture-rotated-key" : "fixture-initial-key";
+    const expectedHeaders = {
+      "X-Fixture": update === "key" ? "initial" : "updated",
+      ...(update === "false" ? {} : { Authorization: "Bearer " + expectedKey }),
+    };
+    const requestUpdate: ProviderConfigInput =
+      update === "headers"
+        ? { headers: { "X-Fixture": "updated" } }
+        : update === "key"
+          ? { apiKey: "fixture-rotated-key" }
+          : {
+              baseUrl,
+              apiKey: expectedKey,
+              authHeader: update !== "false",
+              headers: { "X-Fixture": "updated" },
+            };
+    registry.registerProvider(provider, requestUpdate);
+    const immediateModel = registry.find(provider, "fixture-model")!;
+    const immediate = {
+      configured: registry.hasConfiguredAuth(immediateModel),
+      auth: awsSdk
+        ? registry.getProviderAuthStatus(provider)
+        : await registry.getApiKeyAndHeaders(immediateModel),
+      model: structuredClone(immediateModel),
+      modelIds: registry
+        .getAll()
+        .filter((model) => model.provider === provider)
+        .map((model) => model.id),
+      neighborAuth: await registry.getApiKeyAndHeaders(registry.find(neighbor, "fixture-model")!),
+    };
+    registry.refresh();
+    const refreshedModel = registry.find(provider, "fixture-model")!;
+    const afterRefresh = {
+      configured: registry.hasConfiguredAuth(refreshedModel),
+      auth: awsSdk
+        ? registry.getProviderAuthStatus(provider)
+        : await registry.getApiKeyAndHeaders(refreshedModel),
+      model: structuredClone(refreshedModel),
+      modelIds: registry
+        .getAll()
+        .filter((model) => model.provider === provider)
+        .map((model) => model.id),
+      neighborAuth: await registry.getApiKeyAndHeaders(registry.find(neighbor, "fixture-model")!),
+    };
+    const expected = {
+      configured: true,
+      auth: awsSdk
+        ? { configured: true, source: "models_json_key", label: "aws-sdk" }
+        : { ok: true, apiKey: expectedKey, headers: expectedHeaders },
+      model: preservedModel,
+      modelIds: ["fixture-model"],
+      neighborAuth: expectedNeighborAuth,
+    };
+    expect({ immediate, afterRefresh }).toEqual({ immediate: expected, afterRefresh: expected });
+  });
+
   it("can parse authored models without opening generated plugin catalogs", () => {
     const modelsPath = writeGeneratedPluginCatalog(
       "zai",
