@@ -2,22 +2,29 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SandboxRegistryEntry } from "./registry.js";
 import type { SandboxConfig } from "./types.js";
 
 const state = vi.hoisted(() => ({
   calls: [] as string[][],
   exists: false,
   running: false,
+  containerId: "",
   hash: "",
   failures: [] as string[],
-  registry: null as null | { configHash?: string; lastUsedAtMs?: number },
+  registry: null as SandboxRegistryEntry | null,
 }));
 const registry = vi.hoisted(() => ({
   readRegistryEntry: vi.fn(async () => state.registry),
   removeRegistryEntry: vi.fn(async () => {
     state.registry = null;
   }),
-  updateRegistry: vi.fn(async (entry: { configHash?: string }) => {
+  updateRegistry: vi.fn(async (entry: SandboxRegistryEntry) => {
+    state.registry = entry;
+  }),
+  completeSandboxRegistryReservation: vi.fn(async (entry: SandboxRegistryEntry) => {
+    expect(state.registry?.runtimeState).toBe("pending");
+    expect(state.registry?.configHash).toBe(entry.configHash);
     state.registry = entry;
   }),
 }));
@@ -26,6 +33,9 @@ async function spawnEngine([command, ...args]: string[]) {
   let code = 0;
   let stdout = "";
   let stderr = "";
+  if (args[0] === "start" || args[0] === "exec" || args[0] === "rm") {
+    expect(args[args[0] === "start" ? 1 : 2]).toBe(state.containerId);
+  }
   const fail = state.failures.indexOf(args[0] ?? "");
   if (fail >= 0) {
     state.failures.splice(fail, 1);
@@ -36,10 +46,22 @@ async function spawnEngine([command, ...args]: string[]) {
     stderr = "unexpected engine";
   } else if (args[0] === "inspect" && args[2] === "{{.State.Running}}") {
     if (state.exists) stdout = state.running ? "true\n" : "false\n";
-    else code = 1;
+    else {
+      code = 1;
+      stderr = "No such object";
+    }
   } else if (args[0] === "inspect" && args[2]?.includes("openclaw.configHash")) {
     if (state.exists) stdout = `${state.hash}\n`;
-    else code = 1;
+    else {
+      code = 1;
+      stderr = "No such object";
+    }
+  } else if (args[0] === "inspect" && args[2] === "{{.Id}}") {
+    if (state.exists) stdout = `${state.containerId}\n`;
+    else {
+      code = 1;
+      stderr = "No such object";
+    }
   } else if (args[0] === "image" && args[1] === "inspect") {
     // Present test image.
   } else if (args[0] === "create") {
@@ -50,14 +72,17 @@ async function spawnEngine([command, ...args]: string[]) {
       state.exists = true;
       state.running = false;
       state.hash = args.find((arg) => arg.startsWith("openclaw.configHash="))?.slice(20) ?? "";
+      state.containerId = count("create").toString(16).padStart(64, "0");
+      stdout = `${state.containerId}\n`;
     }
   } else if (args[0] === "start") state.running = true;
   else if (args[0] === "exec") {
-    /* Setup result is injected above. */
+    expect(state.registry?.runtimeState).toBe("pending");
   } else if (args[0] === "rm" && args[1] === "-f") {
     state.exists = false;
     state.running = false;
     state.hash = "";
+    state.containerId = "";
   } else {
     code = 1;
     stderr = `unexpected action ${args[0]}`;
@@ -71,6 +96,14 @@ async function spawnEngine([command, ...args]: string[]) {
   };
 }
 vi.mock("./registry.js", () => registry);
+vi.mock("./docker-mount-source.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./docker-mount-source.js")>();
+  return {
+    parseInspectedSandboxMounts: actual.parseInspectedSandboxMounts,
+    translateSandboxMountSources: actual.translateSandboxMountSources,
+    resolveDockerSourceNamespace: vi.fn(async () => undefined),
+  };
+});
 vi.mock("../../process/exec.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../process/exec.js")>()),
   spawnCommand: spawnEngine,
@@ -83,12 +116,19 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "oc-r7-setup-"));
-  Object.assign(state, { exists: false, running: false, hash: "", registry: null });
+  Object.assign(state, {
+    exists: false,
+    running: false,
+    containerId: "",
+    hash: "",
+    registry: null,
+  });
   state.calls.length = 0;
   state.failures.length = 0;
   registry.readRegistryEntry.mockClear();
   registry.removeRegistryEntry.mockClear();
   registry.updateRegistry.mockClear();
+  registry.completeSandboxRegistryReservation.mockClear();
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 function config(setupCommand = "printf ready") {
@@ -125,10 +165,18 @@ function count(action: string) {
 }
 
 describe("round-seven sandbox setup lifecycle (ten cases)", () => {
-  it("R7-D01 registers only after successful setup", async () => {
-    await expect(ensure(config())).resolves.toBe("oc-r7-shared");
+  it("R7-D01 completes registration only after successful setup", async () => {
+    await expect(ensure(config())).resolves.toEqual({
+      containerName: "oc-r7-shared",
+      containerId: "1".padStart(64, "0"),
+    });
     expect([count("create"), count("start"), count("exec")]).toEqual([1, 1, 1]);
     expect(state.running && Boolean(state.registry)).toBe(true);
+    expect(registry.updateRegistry).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeState: "pending" }),
+    );
+    expect(registry.completeSandboxRegistryReservation).toHaveBeenCalledOnce();
+    expect(state.registry?.runtimeState).toBeUndefined();
   });
   it("R7-D02 removes newly created container after failed setup", async () => {
     state.failures.push("exec");
@@ -136,22 +184,30 @@ describe("round-seven sandbox setup lifecycle (ten cases)", () => {
     expect([state.exists, count("rm"), registry.updateRegistry.mock.calls.length]).toEqual([
       false,
       1,
-      0,
+      1,
     ]);
+    expect(registry.updateRegistry).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeState: "pending" }),
+    );
+    expect(registry.completeSandboxRegistryReservation).not.toHaveBeenCalled();
   });
   it("R7-D03 retries on a fresh container after failed setup", async () => {
     state.failures.push("exec");
     await expect(ensure(config())).rejects.toThrow();
-    await expect(ensure(config())).resolves.toBe("oc-r7-shared");
+    await expect(ensure(config())).resolves.toEqual({
+      containerName: "oc-r7-shared",
+      containerId: "2".padStart(64, "0"),
+    });
     expect([count("create"), count("exec")]).toEqual([2, 2]);
   });
   it("R7-D04 refuses reuse after both setup and owned cleanup fail", async () => {
     state.failures.push("exec", "rm");
-    await expect(ensure(config())).rejects.toThrow("could not be removed");
+    await expect(ensure(config())).rejects.toThrow("creation and cleanup both failed");
     expect(state.exists).toBe(true);
-    await expect(ensure(config())).rejects.toThrow("no completed setup record");
+    await expect(ensure(config())).rejects.toThrow("setup did not complete");
     expect(count("exec")).toBe(1);
-    expect(state.registry).toBeNull();
+    expect(state.registry).toMatchObject({ runtimeState: "pending" });
+    expect(registry.completeSandboxRegistryReservation).not.toHaveBeenCalled();
   });
   it("R7-D05 removes newly created container after start failure", async () => {
     state.failures.push("start");
@@ -164,20 +220,30 @@ describe("round-seven sandbox setup lifecycle (ten cases)", () => {
     expect(count("rm")).toBe(0);
   });
   it("R7-D07 accepts empty setup without an exec", async () => {
-    await expect(ensure(config("  "))).resolves.toBe("oc-r7-shared");
+    await expect(ensure(config("  "))).resolves.toEqual({
+      containerName: "oc-r7-shared",
+      containerId: "1".padStart(64, "0"),
+    });
     expect(count("exec")).toBe(0);
     expect(state.registry).not.toBeNull();
+    expect(registry.completeSandboxRegistryReservation).not.toHaveBeenCalled();
   });
   it("R7-D08 reuses registered same-hash runtime without repeating setup", async () => {
     const cfg = config();
     await ensure(cfg);
-    await expect(ensure(cfg)).resolves.toBe("oc-r7-shared");
+    await expect(ensure(cfg)).resolves.toEqual({
+      containerName: "oc-r7-shared",
+      containerId: "1".padStart(64, "0"),
+    });
     expect([count("create"), count("exec")]).toEqual([1, 1]);
   });
   it("R7-D09 recreates cold changed-config runtime and reruns setup", async () => {
     await ensure(config("printf old"));
     state.running = false;
-    await expect(ensure(config("printf new"))).resolves.toBe("oc-r7-shared");
+    await expect(ensure(config("printf new"))).resolves.toEqual({
+      containerName: "oc-r7-shared",
+      containerId: "2".padStart(64, "0"),
+    });
     expect([count("rm"), count("create"), count("exec")]).toEqual([1, 2, 2]);
   });
   it("R7-D10 serializes failed and successful concurrent ensures", async () => {
