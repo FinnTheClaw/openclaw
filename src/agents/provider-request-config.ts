@@ -173,7 +173,11 @@ export function sanitizeConfiguredProviderRequest(
     const rawTls = tls as Record<string, unknown>;
     const next: ProviderRequestTlsOverride = {};
     for (const key of ["ca", "cert", "key", "passphrase", "serverName"] as const) {
-      const value = sanitizeConfiguredRequestString(rawTls[key], `${pathPrefix}.${key}`);
+      const rawValue = rawTls[key];
+      const value =
+        key === "passphrase" && typeof rawValue === "string"
+          ? rawValue
+          : sanitizeConfiguredRequestString(rawValue, `${pathPrefix}.${key}`);
       if (value) {
         next[key] = value;
       }
@@ -321,7 +325,7 @@ function resolveTlsOverride(tls: ProviderRequestTlsOverride | undefined) {
   const ca = tls.ca?.trim();
   const cert = tls.cert?.trim();
   const key = tls.key?.trim();
-  const passphrase = tls.passphrase?.trim();
+  const passphrase = tls.passphrase;
   const serverName = tls.serverName?.trim();
   const rejectUnauthorized = tls.insecureSkipVerify === false ? true : undefined;
   if (!ca && !cert && !key && !passphrase && !serverName && rejectUnauthorized === undefined) {

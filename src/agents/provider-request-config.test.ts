@@ -1,4 +1,5 @@
 // Verifies provider request transport config normalization and sanitization.
+import { createPrivateKey, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { ConfiguredProviderRequest } from "../config/types.provider-request.js";
 import type { SecretRef } from "../config/types.secrets.js";
@@ -41,6 +42,93 @@ function buildProviderMetadataOwners(
 }
 
 describe("provider request config", () => {
+  it.each([
+    { name: "leading whitespace", passphrase: " secret" },
+    { name: "trailing whitespace", passphrase: "secret " },
+    { name: "whitespace only", passphrase: " \t " },
+    { name: "ordinary control", passphrase: "secret" },
+  ])(
+    "preserves TLS private-key passphrase for $name through policy and decryption",
+    ({ passphrase }) => {
+      const { privateKey } = generateKeyPairSync("ed25519");
+      const encryptedKey = privateKey
+        .export({
+          type: "pkcs8",
+          format: "pem",
+          cipher: "aes-256-cbc",
+          passphrase,
+        })
+        .toString();
+      for (const proxied of [false, true]) {
+        const tls = { key: encryptedKey, passphrase };
+        const request = {
+          tls,
+          ...(proxied
+            ? { proxy: { mode: "explicit-proxy" as const, url: "https://proxy.example", tls } }
+            : {}),
+        };
+        const sanitized = sanitizeConfiguredProviderRequest(request);
+        expect.soft(sanitized?.tls?.passphrase).toBe(passphrase);
+        if (proxied) {
+          expect.soft(sanitized?.proxy?.tls?.passphrase).toBe(passphrase);
+        }
+        for (const candidate of [request, sanitized]) {
+          const resolved = resolveProviderRequestConfig({
+            provider: "custom-passphrase",
+            baseUrl: "https://models.example/v1",
+            request: candidate,
+          });
+          const policy = buildProviderRequestDispatcherPolicy(resolved);
+          expect.soft(policy?.mode).toBe(proxied ? "explicit-proxy" : "direct");
+          const tlsOptions =
+            policy?.mode === "explicit-proxy"
+              ? [policy.requestTls, policy.proxyHopTls]
+              : policy?.mode === "direct"
+                ? [policy.connect]
+                : [];
+          expect.soft(tlsOptions).toHaveLength(proxied ? 2 : 1);
+          for (const options of tlsOptions) {
+            expect.soft(options?.passphrase).toBe(passphrase);
+            expect
+              .soft(() =>
+                createPrivateKey({
+                  key: options?.key as string,
+                  passphrase: options?.passphrase as string,
+                }),
+              )
+              .not.toThrow();
+          }
+        }
+      }
+    },
+  );
+
+  it.each(["target", "proxy"] as const)(
+    "rejects unresolved TLS private-key passphrase SecretRef for %s",
+    (scope) => {
+      const passphrase: SecretRef = {
+        source: "env",
+        provider: "default",
+        id: "SYNTHETIC_TLS_PASSPHRASE",
+      };
+      const request =
+        scope === "target"
+          ? { tls: { passphrase } }
+          : {
+              proxy: {
+                mode: "explicit-proxy" as const,
+                url: "https://proxy.example",
+                tls: { passphrase },
+              },
+            };
+      expect(() => sanitizeConfiguredProviderRequest(request)).toThrow(
+        scope === "target"
+          ? /request\.tls\.passphrase: unresolved SecretRef/i
+          : /request\.proxy\.tls\.passphrase: unresolved SecretRef/i,
+      );
+    },
+  );
+
   it.each([
     {
       name: "trailing space",
