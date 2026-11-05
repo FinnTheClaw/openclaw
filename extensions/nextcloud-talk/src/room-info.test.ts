@@ -61,6 +61,78 @@ function jsonResponse(payload: unknown, init?: ResponseInit): Response {
 }
 
 describe("nextcloud talk room info", () => {
+  it.each([
+    {
+      name: "different hosts from direct to group",
+      accountId: "l07-f19-host-direct-group",
+      firstBaseUrl: "https://nc-a.example.com",
+      secondBaseUrl: "https://nc-b.example.com",
+      firstType: 1,
+      secondType: 2,
+      expectedKinds: ["direct", "group", "direct", "group"],
+    },
+    {
+      name: "different hosts from group to direct",
+      accountId: "l07-f19-host-group-direct",
+      firstBaseUrl: "https://nc-a.example.com",
+      secondBaseUrl: "https://nc-b.example.com",
+      firstType: 2,
+      secondType: 1,
+      expectedKinds: ["group", "direct", "group", "direct"],
+    },
+    {
+      name: "different installation paths on the same origin",
+      accountId: "l07-f19-path-direct-group",
+      firstBaseUrl: "https://nc.example.com/nextcloud-a",
+      secondBaseUrl: "https://nc.example.com/nextcloud-b",
+      firstType: 1,
+      secondType: 2,
+      expectedKinds: ["direct", "group", "direct", "group"],
+    },
+  ])(
+    "L07-F19 scopes cached room kinds across $name",
+    async ({ accountId, firstBaseUrl, secondBaseUrl, firstType, secondType, expectedKinds }) => {
+      vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+      const roomToken = "shared-room";
+      const first = { ...lookupAccount(accountId), baseUrl: firstBaseUrl };
+      const second = { ...first, baseUrl: secondBaseUrl };
+      const firstUrl = `${firstBaseUrl}/ocs/v2.php/apps/spreed/api/v4/room/${roomToken}`;
+      const secondUrl = `${secondBaseUrl}/ocs/v2.php/apps/spreed/api/v4/room/${roomToken}`;
+      const release = vi.fn(async () => {});
+      fetchWithSsrFGuard.mockImplementation(async ({ url }: RoomInfoFetchParams) => {
+        if (url !== firstUrl && url !== secondUrl) {
+          throw new Error(`unexpected room info URL: ${url}`);
+        }
+        return {
+          response: jsonResponse({
+            ocs: { data: { type: url === firstUrl ? firstType : secondType } },
+          }),
+          release,
+        };
+      });
+
+      const kinds = [
+        await resolveNextcloudTalkRoomKind({ account: first, roomToken }),
+        await resolveNextcloudTalkRoomKind({ account: second, roomToken }),
+        await resolveNextcloudTalkRoomKind({ account: first, roomToken }),
+        await resolveNextcloudTalkRoomKind({ account: second, roomToken }),
+      ];
+      const observed = {
+        kinds,
+        urls: fetchWithSsrFGuard.mock.calls.map(([params]) => (params as RoomInfoFetchParams).url),
+        fetchCount: fetchWithSsrFGuard.mock.calls.length,
+        releaseCount: release.mock.calls.length,
+      };
+
+      expect(observed).toEqual({
+        kinds: expectedKinds,
+        urls: [firstUrl, secondUrl],
+        fetchCount: 2,
+        releaseCount: 2,
+      });
+    },
+  );
+
   it("resolves direct rooms from the room info endpoint", async () => {
     const release = vi.fn(async () => {});
     fetchWithSsrFGuard.mockResolvedValue({
