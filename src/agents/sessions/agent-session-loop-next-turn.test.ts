@@ -195,6 +195,144 @@ describe("AgentSession queue and next-turn lifecycle correctness", () => {
     expect(lifecycleEvents).toEqual(["agent_end", "agent_end", "agent_settled"]);
   });
 
+  it("L13-F002 isolates a losing hook override from the accepted next tool turn", async () => {
+    const firstEntered = createDeferredCore();
+    const secondEntered = createDeferredCore();
+    const firstRelease = createDeferredCore();
+    const secondRelease = createDeferredCore();
+    const toolEntered = createDeferredCore();
+    const toolRelease = createDeferredCore();
+    let hookCalls = 0;
+    let toolCalls = 0;
+    const handlers = new Map<string, Array<(...args: unknown[]) => Promise<unknown>>>([
+      [
+        "before_agent_start",
+        [
+          async () => {
+            if (hookCalls++ === 0) {
+              firstEntered.resolve();
+              await firstRelease.promise;
+              return { systemPrompt: "L13-F002 accepted system prompt" };
+            }
+            secondEntered.resolve();
+            await secondRelease.promise;
+            return { systemPrompt: "L13-F002 rejected system prompt" };
+          },
+        ],
+      ],
+    ]);
+    const holdTool: ToolDefinition = {
+      name: "hold_winner",
+      label: "Hold winner",
+      description: "holds the accepted turn at an owned in-memory tool",
+      parameters: Type.Object({}),
+      execute: async () => {
+        toolCalls += 1;
+        toolEntered.resolve();
+        await toolRelease.promise;
+        return { content: [{ type: "text", text: "accepted tool finished" }], details: {} };
+      },
+    };
+    const requests: Array<{ prompt: string; messages: string }> = [];
+    streamMocks.streamSimple.mockImplementation((activeModel: Model, context: Context) => {
+      requests.push({
+        prompt: context.systemPrompt ?? "",
+        messages: JSON.stringify(context.messages),
+      });
+      const first = requests.length === 1;
+      const content: AssistantMessage["content"] = first
+        ? [{ type: "toolCall", id: "hold-winner-call", name: holdTool.name, arguments: {} }]
+        : [{ type: "text", text: "accepted run finished" }];
+      return createAssistantResultStream(
+        createAssistant(activeModel, content, first ? "toolUse" : "stop"),
+      );
+    });
+    const { session } = await createTestSession({
+      resourceLoader: createResourceLoader(handlers),
+      customTools: [holdTool],
+    });
+    session.setActiveToolsByName([holdTool.name]);
+    const lifecycleEvents: string[] = [];
+    session.subscribe((event) => lifecycleEvents.push(event.type));
+    const winnerPreflight: boolean[] = [];
+    const loserPreflight: boolean[] = [];
+    let firstPrompt: Promise<PromiseSettledResult<void>> | undefined;
+    let secondPrompt: Promise<PromiseSettledResult<void>> | undefined;
+    try {
+      firstPrompt = session
+        .prompt("L13-F002 accepted user prompt", {
+          preflightResult: (accepted) => winnerPreflight.push(accepted),
+        })
+        .then(
+          () => ({ status: "fulfilled", value: undefined }) as const,
+          (reason: unknown) => ({ status: "rejected", reason }) as const,
+        );
+      await firstEntered.promise;
+      secondPrompt = session
+        .prompt("L13-F002 rejected user prompt", {
+          preflightResult: (accepted) => loserPreflight.push(accepted),
+        })
+        .then(
+          () => ({ status: "fulfilled", value: undefined }) as const,
+          (reason: unknown) => ({ status: "rejected", reason }) as const,
+        );
+      await secondEntered.promise;
+      firstRelease.resolve();
+      await toolEntered.promise;
+      secondRelease.resolve();
+      const loserOutcome = await secondPrompt;
+      const activePromptAfterRejection = session.agent.state.systemPrompt;
+      const settledWhileBlocked = lifecycleEvents.filter((type) => type === "agent_settled").length;
+      toolRelease.resolve();
+      const winnerOutcome = await firstPrompt;
+      const userMessages = session.agent.state.messages
+        .filter((message) => message.role === "user")
+        .map((message) => JSON.stringify(message.content));
+      const transcript = JSON.stringify(session.agent.state.messages);
+      const observations = {
+        loserOutcome,
+        winnerOutcome,
+        activePromptAfterRejection,
+        requestPrompts: requests.map((request) => request.prompt),
+        winnerPreflight,
+        loserPreflight,
+        hookCalls,
+        toolCalls,
+        settledWhileBlocked,
+        finalSettlements: lifecycleEvents.filter((type) => type === "agent_settled").length,
+        userMessages,
+        loserInAcceptedMessages:
+          transcript.includes("L13-F002 rejected user prompt") ||
+          requests.some((request) => request.messages.includes("L13-F002 rejected user prompt")),
+      };
+
+      expect(observations).toEqual({
+        loserOutcome: {
+          status: "rejected",
+          reason: expect.objectContaining({
+            message: expect.stringContaining("Agent is already processing a prompt"),
+          }),
+        },
+        winnerOutcome: { status: "fulfilled", value: undefined },
+        activePromptAfterRejection: "L13-F002 accepted system prompt",
+        requestPrompts: ["L13-F002 accepted system prompt", "L13-F002 accepted system prompt"],
+        winnerPreflight: [true],
+        loserPreflight: [false],
+        hookCalls: 2,
+        toolCalls: 1,
+        settledWhileBlocked: 0,
+        finalSettlements: 1,
+        userMessages: [expect.stringContaining("L13-F002 accepted user prompt")],
+        loserInAcceptedMessages: false,
+      });
+    } finally {
+      firstRelease.resolve();
+      secondRelease.resolve();
+      toolRelease.resolve();
+      await Promise.all([firstPrompt, secondPrompt]);
+    }
+  });
+
   it("does not settle an active run when a concurrent prompt loses admission", async () => {
     let releaseFirst!: () => void;
     let releaseSecond!: () => void;

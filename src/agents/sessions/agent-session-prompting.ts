@@ -317,6 +317,11 @@ export abstract class AgentSessionPrompting extends AgentSessionBase {
         this.baseSystemPrompt,
         this.baseSystemPromptOptions,
       );
+      if (this.logicalPromptActive) {
+        throw new Error(
+          "Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.",
+        );
+      }
       if (result?.messages) {
         for (const msg of result.messages) {
           messages.push({
