@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   authenticated: vi.fn(async () => true),
 }));
 vi.mock("./channel.runtime.js", () => ({ sendMessageZalouser: mocks.send }));
-vi.mock("./accounts.runtime.js", () => ({ checkZaloAuthenticated: mocks.authenticated }));
+vi.mock("./zalo-js.js", () => ({ checkZaloAuthenticated: mocks.authenticated }));
 const { zalouserPlugin } = await import("./channel.js");
 
 describe("Zalouser pairing account routing", () => {
