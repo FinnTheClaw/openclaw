@@ -73,8 +73,8 @@ function applyLegacyInboundLabelRewrites(text: string): string {
 
   // 1. Fixed "(untrusted metadata)" labels with a ```json body.
   normalized = normalized.replace(
-    /^(Conversation info|Sender|Forwarded message context|Location|Structured object) \(untrusted metadata\):[ \t]*\n```json/gm,
-    `$1: ${INBOUND_CONTEXT_MARKER}\n\`\`\`json`,
+    /^(Conversation info|Sender|Forwarded message context|Location|Structured object) \(untrusted metadata\):[ \t]*(\r?\n)```json/gm,
+    `$1: ${INBOUND_CONTEXT_MARKER}$2\`\`\`json`,
   );
 
   // 2. Active-memory and channel context historically shared one header. Preserve active-memory's
@@ -98,28 +98,28 @@ function applyLegacyInboundLabelRewrites(text: string): string {
 
   // 4. "Thread starter" block.
   normalized = normalized.replace(
-    /^Thread starter \(untrusted, for context\):[ \t]*\n```json/gm,
-    `Thread starter: ${INBOUND_CONTEXT_MARKER}\n\`\`\`json`,
+    /^Thread starter \(untrusted, for context\):[ \t]*(\r?\n)```json/gm,
+    `Thread starter: ${INBOUND_CONTEXT_MARKER}$1\`\`\`json`,
   );
 
   // 5. "Reply target of current user message" block.
   normalized = normalized.replace(
-    /^Reply target of current user message \(untrusted, for context\):[ \t]*\n```json/gm,
-    `Reply target of current user message: ${INBOUND_CONTEXT_MARKER}\n\`\`\`json`,
+    /^Reply target of current user message \(untrusted, for context\):[ \t]*(\r?\n)```json/gm,
+    `Reply target of current user message: ${INBOUND_CONTEXT_MARKER}$1\`\`\`json`,
   );
 
   // 6. "Reply chain of current user message" block.
   normalized = normalized.replace(
-    /^Reply chain of current user message \(untrusted, nearest first\):[ \t]*\n```json/gm,
-    `Reply chain of current user message (nearest first): ${INBOUND_CONTEXT_MARKER}\n\`\`\`json`,
+    /^Reply chain of current user message \(untrusted, nearest first\):[ \t]*(\r?\n)```json/gm,
+    `Reply chain of current user message (nearest first): ${INBOUND_CONTEXT_MARKER}$1\`\`\`json`,
   );
 
   // 7. Oldest reply-target label. 64e28a6ac94 renamed this same block to "Reply target of current user
   // message", so it migrates to that canonical label — not to a plain `Replied message:`, which no
   // recognizer keys on.
   normalized = normalized.replace(
-    /^Replied message \(untrusted, for context\):[ \t]*\n```json/gm,
-    `Reply target of current user message: ${INBOUND_CONTEXT_MARKER}\n\`\`\`json`,
+    /^Replied message \(untrusted, for context\):[ \t]*(\r?\n)```json/gm,
+    `Reply target of current user message: ${INBOUND_CONTEXT_MARKER}$1\`\`\`json`,
   );
 
   // 8. Chat windows carry dynamic labels, so this is the one pattern-based rule. Narrow by construction:

@@ -222,6 +222,154 @@ describe("doctor SQLite session transcript label migration", () => {
     await state.cleanup();
   });
 
+  it.each<{
+    name: string;
+    role: "user" | "assistant";
+    textBlock: boolean;
+    newline: string;
+    literal?: "unfenced" | "unknown";
+  }>([
+    { name: "CRLF user string", role: "user", textBlock: false, newline: "\r\n" },
+    { name: "CRLF assistant string", role: "assistant", textBlock: false, newline: "\r\n" },
+    { name: "CRLF user text block", role: "user", textBlock: true, newline: "\r\n" },
+    { name: "CRLF assistant text block", role: "assistant", textBlock: true, newline: "\r\n" },
+    { name: "LF user string", role: "user", textBlock: false, newline: "\n" },
+    { name: "LF assistant text block", role: "assistant", textBlock: true, newline: "\n" },
+    {
+      name: "CRLF unfenced literal labels",
+      role: "user",
+      textBlock: false,
+      newline: "\r\n",
+      literal: "unfenced",
+    },
+    {
+      name: "CRLF unknown fenced literal labels",
+      role: "assistant",
+      textBlock: true,
+      newline: "\r\n",
+      literal: "unknown",
+    },
+  ])("preserves fenced legacy label newline bytes for $name", async (scenario) => {
+    const headers = [
+      ["Conversation info (untrusted metadata)", "Conversation info"],
+      ["Sender (untrusted metadata)", "Sender"],
+      ["Forwarded message context (untrusted metadata)", "Forwarded message context"],
+      ["Location (untrusted metadata)", "Location"],
+      ["Structured object (untrusted metadata)", "Structured object"],
+      ["Thread starter (untrusted, for context)", "Thread starter"],
+      [
+        "Reply target of current user message (untrusted, for context)",
+        "Reply target of current user message",
+      ],
+      [
+        "Reply chain of current user message (untrusted, nearest first)",
+        "Reply chain of current user message (nearest first)",
+      ],
+      ["Replied message (untrusted, for context)", "Reply target of current user message"],
+    ] as const;
+    const visibleLines = ["Visible first line.", "Visible second line."];
+    const legacyContent = [
+      ...headers.flatMap(([legacy], index) => [
+        `${scenario.literal === "unknown" ? "Notes " : ""}${legacy}: \t`,
+        ...(scenario.literal === "unfenced" ? [] : ["```json"]),
+        JSON.stringify({ fixture: index }),
+        ...(scenario.literal === "unfenced" ? [] : ["```"]),
+        "",
+      ]),
+      ...visibleLines,
+    ].join(scenario.newline);
+    const canonicalContent = [
+      ...headers.flatMap(([, canonical], index) => [
+        `${canonical}: ${INBOUND_CONTEXT_MARKER}`,
+        "```json",
+        JSON.stringify({ fixture: index }),
+        "```",
+        "",
+      ]),
+      ...visibleLines,
+    ].join(scenario.newline);
+    const expected = scenario.literal ? legacyContent : canonicalContent;
+    const databaseOptions = { agentId: AGENT_ID, env: state.env };
+    const database = appendTranscriptFixture(databaseOptions, [
+      createSessionEvent(),
+      {
+        type: "message",
+        id: "newline-labels",
+        message: {
+          role: scenario.role,
+          content: scenario.textBlock ? [{ type: "text", text: legacyContent }] : legacyContent,
+        },
+      },
+      createMessageEvent({
+        id: "literal-sibling",
+        role: "assistant",
+        content: "Literal sibling.\r\nUnchanged line.",
+      }),
+    ]);
+    const before = readTranscriptSnapshot(database, SESSION_ID);
+    const beforeMetadata = database.db
+      .prepare(
+        "SELECT seq, created_at FROM transcript_events WHERE session_id = ? ORDER BY seq ASC",
+      )
+      .all(SESSION_ID);
+
+    await runTranscriptLabelHealth(state, false);
+    expect(readTranscriptSnapshot(database, SESSION_ID).rows).toEqual(before.rows);
+    if (scenario.literal) {
+      expect(note).not.toHaveBeenCalled();
+    } else {
+      expect
+        .soft(note)
+        .toHaveBeenCalledWith(
+          '- Found 1 session with legacy inbound-context labels.\n- Run "openclaw doctor --fix" to rewrite them.',
+          "Session transcript labels",
+        );
+    }
+
+    note.mockClear();
+    await runTranscriptLabelHealth(state, true);
+    const repaired = readTranscriptSnapshot(database, SESSION_ID);
+    const content = findMessageContent(repaired.events, "newline-labels");
+    expect
+      .soft(content)
+      .toEqual(scenario.textBlock ? [{ type: "text", text: expected }] : expected);
+    const text =
+      typeof content === "string"
+        ? content
+        : (content as Array<{ text?: string }> | undefined)?.[0]?.text;
+    expect(typeof text).toBe("string");
+    expect.soft(hasInboundMetadataSentinel(text as string)).toBe(!scenario.literal);
+    expect
+      .soft(stripInboundMetadata(text as string))
+      .toBe(scenario.literal ? legacyContent : visibleLines.join(scenario.newline));
+    expect(
+      database.db
+        .prepare(
+          "SELECT seq, created_at FROM transcript_events WHERE session_id = ? ORDER BY seq ASC",
+        )
+        .all(SESSION_ID),
+    ).toEqual(beforeMetadata);
+    expect(findEventJson(repaired.events, repaired.rows, "literal-sibling")).toBe(
+      findEventJson(before.events, before.rows, "literal-sibling"),
+    );
+    if (scenario.literal) {
+      expect(repaired.rows).toEqual(before.rows);
+      expect(note).not.toHaveBeenCalled();
+    } else {
+      expect
+        .soft(note)
+        .toHaveBeenCalledWith(
+          "- Rewrote legacy inbound-context labels in 1 session (1 event).",
+          "Session transcript labels",
+        );
+    }
+
+    note.mockClear();
+    await runTranscriptLabelHealth(state, true);
+    expect(readTranscriptSnapshot(database, SESSION_ID).rows).toEqual(repaired.rows);
+    expect(note).not.toHaveBeenCalled();
+  });
+
   it("checks healthy large transcripts under a 256 MiB heap without changing bytes", async () => {
     expect(await probeTranscriptHealthMemory(state.stateDir, "labels")).toMatchObject({
       scenario: "labels",

@@ -165,8 +165,8 @@ export function stripInboundMetadata(text: string): string {
     }
   }
   return removeLineSpans(source, spans)
-    .replace(/^\n+/, "")
-    .replace(/\n+$/, "")
+    .replace(/^(?:\r?\n)+/u, "")
+    .replace(/(?:\r?\n)+$/u, "")
     .replace(LEADING_TIMESTAMP_PREFIX_RE, "");
 }
 
