@@ -574,8 +574,13 @@ export class FeishuStreamingSession {
     }
 
     // Update note with final model/provider info
+    let noteError: unknown;
     if (options?.note) {
-      await this.updateNoteContent(options.note);
+      try {
+        await this.updateNoteContent(options.note);
+      } catch (error: unknown) {
+        noteError = error;
+      }
     }
 
     // Close streaming mode
@@ -615,14 +620,12 @@ export class FeishuStreamingSession {
       ...(visibleContentSent ? { content: finalState.sentText } : {}),
       ...(finalState.messageId ? { messageId: finalState.messageId } : {}),
     };
-    if (finalWriteError !== undefined || closeError !== undefined) {
+    const errors = [finalWriteError, noteError, closeError].filter((error) => error !== undefined);
+    if (errors.length > 0) {
       const cause =
-        finalWriteError !== undefined && closeError !== undefined
-          ? new AggregateError(
-              [finalWriteError, closeError],
-              "Feishu streaming card finalization failed",
-            )
-          : (finalWriteError ?? closeError);
+        errors.length > 1
+          ? new AggregateError(errors, "Feishu streaming card finalization failed")
+          : errors[0];
       throw new FeishuStreamingFinalizationError(cause, result);
     }
     return result;

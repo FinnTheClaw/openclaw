@@ -839,6 +839,86 @@ describe("FeishuStreamingSession", () => {
     );
   });
 
+  it.each([
+    { label: "accepted text", text: "visible answer", settingsTokenFails: false },
+    { label: "no accepted text", text: "", settingsTokenFails: false },
+    {
+      label: "accepted text and failed settings token",
+      text: "visible answer",
+      settingsTokenFails: true,
+    },
+  ])(
+    "preserves finalization accounting after note-token failure with $label",
+    async ({ label, text, settingsTokenFails }) => {
+      let authRequests = 0;
+      const cardRequests: Array<{ path: string; body: string }> = [];
+      const deps = createMemoryFetch((url, body) => {
+        if (url.pathname.includes("/auth/")) {
+          authRequests += 1;
+          if (authRequests === 1 || settingsTokenFails) {
+            return jsonResponse({
+              code: 99_991,
+              msg: authRequests === 1 ? "note token rejected" : "settings token rejected",
+            });
+          }
+          return jsonResponse({
+            code: 0,
+            msg: "ok",
+            tenant_access_token: "token",
+            expire: 7200,
+          });
+        }
+        cardRequests.push({ path: url.pathname, body });
+        return jsonResponse({ code: 0, msg: "ok" });
+      });
+      const messageId = "om_note_token_failure";
+      const session = createActiveSession(deps, {
+        cardId: `card_note_token_failure_${label}`,
+        messageId,
+        text,
+        hasNote: true,
+      });
+
+      const error = await session
+        .closeWithResult(text, { note: "model note" })
+        .catch((caught: unknown) => caught);
+
+      expect.soft(error).toBeInstanceOf(FeishuStreamingFinalizationError);
+      expect.soft(error).toMatchObject({
+        result: {
+          visibleReplySent: Boolean(text),
+          ...(text ? { content: text } : {}),
+          messageId,
+        },
+      });
+      if (!text) {
+        expect.soft(error).not.toHaveProperty("result.content");
+      }
+      if (settingsTokenFails) {
+        expect.soft(error).toHaveProperty("cause", expect.any(AggregateError));
+        expect.soft((error as Error).cause).toMatchObject({
+          errors: [
+            { message: "Token error: note token rejected" },
+            { message: "Token error: settings token rejected" },
+          ],
+        });
+      } else {
+        expect.soft(error).toHaveProperty("cause.message", "Token error: note token rejected");
+      }
+      expect.soft(authRequests).toBe(2);
+      expect
+        .soft(cardRequests.map(({ path }) => path))
+        .toEqual(settingsTokenFails ? [] : [expect.stringMatching(/\/settings$/)]);
+      if (!settingsTokenFails && cardRequests[0]) {
+        const settingsBody = JSON.parse(cardRequests[0].body) as { settings: string };
+        expect.soft(JSON.parse(settingsBody.settings)).toMatchObject({
+          config: { streaming_mode: false, summary: { content: text } },
+        });
+      }
+      expect.soft(session).toMatchObject({ state: null, pendingText: null });
+    },
+  );
+
   it("logs CardKit body errors for note updates and streaming close settings", async () => {
     const noteBodies: string[] = [];
     const settingsBodies: string[] = [];
