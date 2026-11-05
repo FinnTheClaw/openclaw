@@ -3469,7 +3469,7 @@ describe("dispatchCronDelivery — double-announce guard", () => {
   });
 
   it("commits a descendant final reply instead of the current-target parent interim text", async () => {
-    vi.mocked(countActiveDescendantRuns).mockReturnValue(0);
+    vi.mocked(hasUnsettledCronDescendants).mockResolvedValue(false);
     vi.mocked(isLikelyInterimCronMessage).mockReturnValue(true);
     vi.mocked(readDescendantSubagentFallbackReply).mockResolvedValue("Final child result.");
 
@@ -3498,7 +3498,7 @@ describe("dispatchCronDelivery — double-announce guard", () => {
   });
 
   it("uses the descendant final reply for both current-session commit and external delivery", async () => {
-    vi.mocked(countActiveDescendantRuns).mockReturnValue(0);
+    vi.mocked(hasUnsettledCronDescendants).mockResolvedValue(false);
     vi.mocked(isLikelyInterimCronMessage).mockReturnValue(true);
     vi.mocked(readDescendantSubagentFallbackReply).mockResolvedValue("Final child result.");
 
