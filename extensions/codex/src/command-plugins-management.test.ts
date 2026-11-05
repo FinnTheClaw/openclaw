@@ -1,6 +1,7 @@
 // Codex tests cover command plugins management plugin behavior.
 import { describe, expect, it, vi } from "vitest";
 import type { v2 } from "./app-server/protocol.js";
+import { splitArgs } from "./command-handler-args.js";
 import { handleCodexPluginsSubcommand } from "./command-plugins-management.js";
 import {
   buttonCommands,
@@ -60,6 +61,70 @@ describe("Codex /codex plugins subcommand", () => {
       "/codex plugins help",
       "/codex",
     ]);
+  });
+
+  it.each(
+    [
+      { family: "whitespace", key: "team notes" },
+      { family: "apostrophe", key: "team'notes" },
+      { family: "double quote", key: 'team"notes' },
+      { family: "backslash", key: "team\\notes" },
+    ].flatMap(({ family, key }) =>
+      (["enable", "disable"] as const).map((verb) => ({ family, key, verb })),
+    ),
+  )("L09-F021 round-trips $family alias through $verb picker commands", async ({ key, verb }) => {
+    const initial = {
+      [key]: {
+        enabled: verb === "disable",
+        marketplaceName: "company-tools",
+        pluginName: "target-plugin",
+      },
+      sentinel: {
+        enabled: verb === "enable",
+        marketplaceName: "company-tools",
+        pluginName: "sentinel-plugin",
+      },
+    };
+    const pickerIO = inMemoryIO(initial);
+    const picker = await handleCodexPluginsSubcommand(fakeCtx, [verb], pickerIO);
+    const prefix = "/codex plugins " + verb + " ";
+    const buttonCommand =
+      buttonCommands(picker).find((command) => command.startsWith(prefix)) ?? "";
+    const copyableCommand =
+      picker.text
+        ?.split("\n")
+        .map((line) => line.trimStart())
+        .find((line) => line.startsWith("1. " + prefix))
+        ?.slice(3) ?? "";
+    const outcomes = [];
+    for (const [source, command] of [
+      ["button", buttonCommand],
+      ["copyable", copyableCommand],
+    ]) {
+      const io = inMemoryIO(initial);
+      const parsed = splitArgs(command);
+      const result = await handleCodexPluginsSubcommand(fakeCtx, parsed.slice(2), io);
+      outcomes.push({ source, parsed, resultText: result.text, config: io.currentConfig() });
+    }
+
+    expect({
+      pickerConfig: pickerIO.currentConfig(),
+      outcomes,
+    }).toEqual({
+      pickerConfig: { enabled: true, plugins: initial },
+      outcomes: ["button", "copyable"].map((source) => ({
+        source,
+        parsed: ["/codex", "plugins", verb, key],
+        resultText: expect.stringContaining(": " + verb + "d in openclaw.json."),
+        config: {
+          enabled: true,
+          plugins: {
+            ...initial,
+            [key]: { ...initial[key], enabled: verb === "enable" },
+          },
+        },
+      })),
+    });
   });
 
   it("renders enable and disable target pickers from effective plugin state", async () => {

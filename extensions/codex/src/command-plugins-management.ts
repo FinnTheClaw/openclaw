@@ -320,17 +320,21 @@ function buildPluginNamePickerReply(
     };
   }
 
-  const buttons: CodexCommandPickerButton[] = [
-    ...eligible.map(([key]) => ({
+  const commands = eligible.map(([key]) => {
+    const target = /[\s'"\\]/u.test(key) ? `'${key.replaceAll("'", "'\\''")}'` : key;
+    return {
       label: formatCodexDisplayText(key),
-      command: `/codex plugins ${verb} ${key}`,
-    })),
+      command: `/codex plugins ${verb} ${target}`,
+    };
+  });
+  const buttons: CodexCommandPickerButton[] = [
+    ...commands,
     { label: "back", command: "/codex plugins menu" },
   ];
   const text = [
     `Codex sub-plugins to ${verb}. Pick one or type:`,
     "",
-    ...eligible.map(([key], index) => `  ${index + 1}. /codex plugins ${verb} ${key}`),
+    ...commands.map(({ command }, index) => `  ${index + 1}. ${command}`),
     "",
     ...(verb === "enable" && !globalEnabled
       ? ["Global codexPlugins.enabled is off; enabling one configured sub-plugin turns it on.", ""]
