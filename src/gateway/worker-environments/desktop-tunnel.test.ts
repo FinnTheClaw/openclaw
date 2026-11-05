@@ -604,6 +604,114 @@ describe("worker desktop tunnels", () => {
     expect(fake.starts).toEqual([]);
   });
 
+  it.each([
+    { name: "environment stop after timeout", timeout: true, stopAll: false },
+    { name: "stopAll after timeout", timeout: true, stopAll: true },
+    { name: "ordinary completion control", timeout: false, stopAll: false },
+  ])("retains timed-out launcher cleanup custody ($name)", async (row) => {
+    vi.useFakeTimers();
+    const runResult = deferred<SpawnResult>();
+    const runStarted = deferred<void>();
+    const fake = fakeRunner(() => {
+      runStarted.resolve();
+      return runResult.promise;
+    });
+    const manager = createWorkerDesktopTunnels({ runner: fake.runner });
+    const launching = launchApp(manager);
+    let launchError: unknown;
+    const response = launching.catch((error: unknown) => {
+      launchError = error;
+    });
+    let stopping: Promise<void> | undefined;
+    let stopResponse: Promise<void> | undefined;
+    let stopError: unknown;
+    let stopSettled = false;
+    let preparedDirectory: string | undefined;
+    try {
+      await runStarted.promise;
+      const run = fake.runs[0]!;
+      const knownHosts = run.argv.find((arg) => arg.startsWith("UserKnownHostsFile="));
+      if (!knownHosts) {
+        throw new Error("Synthetic launcher did not expose its prepared known-hosts path");
+      }
+      preparedDirectory = path.dirname(knownHosts.slice("UserKnownHostsFile=".length));
+      const preparedBefore = await access(preparedDirectory).then(
+        () => true,
+        () => false,
+      );
+      if (row.timeout) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      } else {
+        runResult.resolve(success());
+      }
+      await response;
+      stopping = row.stopAll ? manager.stopAll() : manager.stop("worker:one", 1);
+      stopResponse = stopping.then(
+        () => {
+          stopSettled = true;
+        },
+        (error: unknown) => {
+          stopError = error;
+          stopSettled = true;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const held = {
+        launchError,
+        abortReason: run.options.signal?.reason,
+        aborted: run.options.signal?.aborted,
+        stopSettled,
+        stopError,
+        runCount: fake.runs.length,
+        preparedBefore,
+        preparedStillPresent: await access(preparedDirectory).then(
+          () => true,
+          () => false,
+        ),
+      };
+
+      runResult.resolve(success());
+      await Promise.all([response, stopResponse]);
+      // The original loses its execution handle; observe actual owned disposal, not a false join.
+      await vi.waitFor(async () => {
+        await expect(access(preparedDirectory!)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+      const completed = {
+        stopSettled,
+        stopError,
+        runCount: fake.runs.length,
+      };
+
+      expect.soft(held.preparedBefore).toBe(true);
+      expect.soft(held.runCount).toBe(1);
+      expect.soft(held.stopError).toBeUndefined();
+      expect.soft(held.stopSettled).toBe(!row.timeout);
+      expect.soft(held.preparedStillPresent).toBe(row.timeout);
+      expect.soft(held.aborted).toBe(row.timeout);
+      if (row.timeout) {
+        expect.soft(held.launchError).toBeInstanceOf(Error);
+        expect
+          .soft(
+            held.launchError instanceof Error ? held.launchError.message : String(held.launchError),
+          )
+          .toBe("Worker desktop app launcher timed out after 30 seconds");
+        expect.soft(held.launchError).toBe(held.abortReason);
+      } else {
+        expect.soft(held.launchError).toBeUndefined();
+      }
+      expect.soft(completed).toEqual({ stopSettled: true, stopError: undefined, runCount: 1 });
+    } finally {
+      runResult.resolve(success());
+      await Promise.allSettled([response, ...(stopping ? [stopping] : [])]);
+      await manager.stopAll();
+      if (preparedDirectory) {
+        await vi.waitFor(async () => {
+          await expect(access(preparedDirectory!)).rejects.toMatchObject({ code: "ENOENT" });
+        });
+      }
+    }
+  });
+
   it.each([{ args: undefined }, { args: ["arg with spaces", "literal;$(text)"] }])(
     "deduplicates one exact launcher with args $args per app and epoch",
     async ({ args }) => {

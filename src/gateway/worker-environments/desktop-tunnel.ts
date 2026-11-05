@@ -49,6 +49,7 @@ type DesktopAppLaunchEntry = {
   ownerEpoch: number;
   abortController: AbortController;
   operation: Promise<void>;
+  execution: Promise<void>;
 };
 
 class WorkerDesktopUnsupportedError extends Error {
@@ -83,7 +84,7 @@ export function createWorkerDesktopTunnels(deps: {
     for (const entry of matching) {
       entry.abortController.abort(new Error(`Worker desktop app launch owner ${reason}`));
     }
-    await Promise.allSettled(matching.map((entry) => entry.operation));
+    await Promise.allSettled(matching.map((entry) => entry.execution));
   };
 
   const stopReplacedAppLaunches = (environmentId: string, ownerEpoch: number) =>
@@ -285,7 +286,7 @@ export function createWorkerDesktopTunnels(deps: {
       assertCurrent();
       if (current) {
         current.abortController.abort(new Error("Worker desktop app launch owner replaced"));
-        await current.operation.catch(() => undefined);
+        await current.execution.catch(() => undefined);
       }
       if (ownerAdvanced) {
         await joinWorkerTunnelStops([
@@ -345,11 +346,12 @@ export function createWorkerDesktopTunnels(deps: {
       ownerEpoch: request.ownerEpoch,
       abortController,
       operation,
+      execution,
     };
     appLaunches.set(key, completeEntry);
     // The pending owner is now visible to teardown; only then may identity resolution or SSH run.
     startExecution();
-    void operation
+    void execution
       .finally(() => {
         if (appLaunches.get(key) === completeEntry) {
           appLaunches.delete(key);
@@ -377,7 +379,7 @@ export function createWorkerDesktopTunnels(deps: {
     }
     await joinWorkerTunnelStops([
       sessions.stopAll(),
-      ...[...appLaunches.values()].map((entry) => entry.operation.catch(() => undefined)),
+      ...[...appLaunches.values()].map((entry) => entry.execution.catch(() => undefined)),
     ]);
   }
 
