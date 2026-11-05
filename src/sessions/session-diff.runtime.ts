@@ -10,7 +10,7 @@ import type {
 } from "../../packages/gateway-protocol/src/index.js";
 import { runGit, runGitBuffered } from "../agents/worktrees/git.js";
 import type { SessionDiffBaseline } from "../config/sessions/types.js";
-import { GIT_TIMEOUT_MS } from "../infra/git-exec.js";
+import { createGitCommandError, GIT_TIMEOUT_MS } from "../infra/git-exec.js";
 import type { GitCheckoutDiffInput, GitReadOperations } from "../infra/git-read-operations.js";
 import {
   parseDiffInventoryZ,
@@ -50,14 +50,20 @@ async function gitOut(
   args: string[],
   okCodes: readonly number[] = [0],
 ): Promise<string | null> {
-  try {
-    // quotePath=false keeps non-ASCII paths raw instead of octal-escaped, so
-    // -z output tokens match the byte-for-byte paths git reports elsewhere.
-    const result = await runGit(cwd, ["-c", "core.quotePath=false", ...args]);
-    return okCodes.includes(result.code ?? -1) ? result.stdout : null;
-  } catch {
+  // quotePath=false keeps non-ASCII paths raw instead of octal-escaped, so
+  // -z output tokens match the byte-for-byte paths git reports elsewhere.
+  const result = await runGit(cwd, ["-c", "core.quotePath=false", ...args]).catch(() => null);
+  if (!result || !okCodes.includes(result.code ?? -1)) {
     return null;
   }
+  if (result.stdoutTruncatedBytes) {
+    throw createGitCommandError("git session diff", {
+      ...result,
+      code: null,
+      outputLimitExceeded: true,
+    });
+  }
+  return result.stdout;
 }
 
 async function loadCheckoutRevision(
