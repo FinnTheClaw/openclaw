@@ -363,6 +363,143 @@ describe("google-meet CLI", () => {
     }
   });
 
+  it.each([
+    {
+      label: "skipped entries with linked bodies",
+      skipEntries: true,
+      includeBodies: true,
+      smartNotesOnly: false,
+    },
+    {
+      label: "smart-note-only with linked body",
+      skipEntries: true,
+      includeBodies: true,
+      smartNotesOnly: true,
+    },
+    {
+      label: "skipped entries without requested bodies",
+      skipEntries: true,
+      includeBodies: false,
+      smartNotesOnly: false,
+    },
+    {
+      label: "ordinary structured entries with bodies",
+      skipEntries: false,
+      includeBodies: true,
+      smartNotesOnly: false,
+    },
+  ])("linked document export: $label", async ({ skipEntries, includeBodies, smartNotesOnly }) => {
+    stubMeetArtifactsApi();
+    const fetchMock = vi.mocked(fetch);
+    if (smartNotesOnly) {
+      const fetchImpl = fetchMock.getMockImplementation();
+      if (!fetchImpl) {
+        throw new Error("expected the existing controlled Meet fetch implementation");
+      }
+      fetchMock.mockImplementation(async (input, init) => {
+        if (requestUrl(input).pathname === "/v2/conferenceRecords/rec-1/transcripts") {
+          return jsonResponse({ transcripts: [] });
+        }
+        return fetchImpl(input, init);
+      });
+    }
+    const tempDir = mkdtempSync(path.join(tmpdir(), "openclaw-google-meet-linked-documents-"));
+
+    try {
+      const stdout = await runApiCommand("export", [
+        "--conference-record",
+        "rec-1",
+        "--zip",
+        "--output",
+        tempDir,
+        ...(skipEntries ? ["--no-transcript-entries"] : []),
+        ...(includeBodies ? ["--include-doc-bodies"] : []),
+      ]);
+      expect(stdout.output()).toContain("export: " + tempDir);
+      const manifest = JSON.parse(readFileSync(path.join(tempDir, "manifest.json"), "utf8"));
+      expectFields(manifest.request, {
+        conferenceRecord: "rec-1",
+        includeTranscriptEntries: !skipEntries,
+        includeDocumentBodies: includeBodies,
+      });
+      expectFields(manifest.counts, {
+        attendanceRows: 1,
+        transcriptEntries: skipEntries ? 0 : 1,
+        warnings: 0,
+      });
+      const artifacts = JSON.parse(readFileSync(path.join(tempDir, "artifacts.json"), "utf8"));
+      const artifact = firstRecord(artifacts.artifacts);
+      if (skipEntries) {
+        expect(artifact.transcriptEntries).toEqual([]);
+      } else {
+        expectFields(firstRecord(firstRecord(artifact.transcriptEntries).entries), {
+          text: "Hello from the transcript.",
+        });
+      }
+      if (smartNotesOnly) {
+        expect(artifact.transcripts).toEqual([]);
+      } else if (includeBodies) {
+        expectFields(firstRecord(artifact.transcripts), {
+          documentText: "Transcript document body.",
+        });
+      } else {
+        expect(firstRecord(artifact.transcripts)).not.toHaveProperty("documentText");
+      }
+      if (includeBodies) {
+        expectFields(firstRecord(artifact.smartNotes), {
+          documentText: "Smart note document body.",
+        });
+      } else {
+        expect(firstRecord(artifact.smartNotes)).not.toHaveProperty("documentText");
+      }
+      const requestedPaths = fetchMock.mock.calls.map(([input]) => requestUrl(input).pathname);
+      expect(
+        requestedPaths.filter((value) => value.endsWith("/transcripts/t1/entries")),
+      ).toHaveLength(skipEntries ? 0 : 1);
+      expect(
+        requestedPaths.filter((value) => value === "/drive/v3/files/doc-1/export"),
+      ).toHaveLength(includeBodies && !smartNotesOnly ? 1 : 0);
+      expect(
+        requestedPaths.filter((value) => value === "/drive/v3/files/notes-1/export"),
+      ).toHaveLength(includeBodies ? 1 : 0);
+      const zip = await JSZip.loadAsync(readFileSync(tempDir + ".zip"));
+      expect(zip.file("artifacts.json")).not.toBeNull();
+      expect(JSON.parse(await zip.file("artifacts.json")!.async("string"))).toEqual(artifacts);
+      expect(zip.file("manifest.json")).not.toBeNull();
+      expect(JSON.parse(await zip.file("manifest.json")!.async("string"))).toEqual(manifest);
+
+      const transcript = readFileSync(path.join(tempDir, "transcript.md"), "utf8");
+      expect(transcript).toContain("# Google Meet Transcript");
+      if (skipEntries) {
+        expect(transcript).toContain("_No transcript entries._");
+        expect(transcript).not.toContain("Hello from the transcript.");
+      } else {
+        expect(transcript).toContain("Hello from the transcript.");
+        expect(transcript).not.toContain("_No transcript entries._");
+      }
+      for (const [heading, body, expected] of [
+        [
+          "Transcript Document Bodies",
+          "Transcript document body.",
+          includeBodies && !smartNotesOnly,
+        ],
+        ["Smart Note Document Bodies", "Smart note document body.", includeBodies],
+      ] as const) {
+        if (expected) {
+          expect(transcript).toContain("### " + heading);
+          expect(transcript).toContain(body);
+        } else {
+          expect(transcript).not.toContain("### " + heading);
+          expect(transcript).not.toContain(body);
+        }
+      }
+      expect(await zip.file("transcript.md")?.async("string")).toBe(transcript);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+      rmSync(tempDir + ".zip", { force: true });
+    }
+  });
+
   it("neutralizes spreadsheet formulas in exported attendance CSV files", async () => {
     stubMeetArtifactsApi({ participantDisplayName: "\uFF1D1+1" });
 
