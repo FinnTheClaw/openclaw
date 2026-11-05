@@ -177,13 +177,9 @@ export class ZaloCredentialPersistence {
     const previous = this.credentialRevocationsByProfile.get(profile);
     const pending = (async () => {
       await previous;
-      try {
-        const cleared = await clearStoredZaloCredentials(profile, env, assertCurrent);
-        this.credentialSignaturesByProfile.delete(profile);
-        return cleared;
-      } catch {
-        return false;
-      }
+      const cleared = await clearStoredZaloCredentials(profile, env, assertCurrent);
+      this.credentialSignaturesByProfile.delete(profile);
+      return cleared;
     })();
     this.credentialRevocationsByProfile.set(profile, pending);
     try {

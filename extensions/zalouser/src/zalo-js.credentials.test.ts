@@ -207,6 +207,57 @@ describe("zalouser credential persistence", () => {
     },
   );
 
+  it("reports failed durable revocation and permits local logout retry", async () => {
+    const stateDir = tempDirs.make("openclaw-zalouser-f26-fake-");
+    const profile = "f26-fake-revocation-retry";
+    await seedStoredCredentials(stateDir, profile, {
+      imei: "F26_FAKE_IMEI_NOT_A_DEVICE",
+      cookie: [
+        {
+          key: "F26_FAKE_COOKIE_KEY",
+          value: "F26_UNMISTAKABLY_FAKE_COOKIE_NO_ACCOUNT",
+          domain: "example.invalid",
+        },
+      ],
+      userAgent: "F26_FAKE_USER_AGENT",
+      createdAt: "2026-04-01T00:00:00.000Z",
+    });
+    const before = await readStoredCredentials(stateDir, profile);
+    const failure = new Error("synthetic F26 durable revocation write failed");
+    beforeCredentialRevocation = async () => {
+      throw failure;
+    };
+    try {
+      await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        await expect.soft(logoutZaloProfile(profile)).rejects.toBe(failure);
+        expect(await loadStoredZaloCredentials(profile)).toEqual(before);
+
+        beforeCredentialRevocation = undefined;
+        await expect(logoutZaloProfile(profile)).resolves.toEqual({
+          cleared: true,
+          loggedOut: true,
+          message: "Logged out and cleared local session.",
+        });
+        expect(await loadStoredZaloCredentials(profile)).toBeNull();
+      });
+    } finally {
+      beforeCredentialRevocation = undefined;
+    }
+  });
+
+  it("reports an empty local session only after durable logout", async () => {
+    const stateDir = tempDirs.make("openclaw-zalouser-f26-empty-");
+    const profile = "f26-fake-empty-profile";
+    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+      await expect(logoutZaloProfile(profile)).resolves.toEqual({
+        cleared: false,
+        loggedOut: true,
+        message: "No local session to clear.",
+      });
+      expect(await loadStoredZaloCredentials(profile)).toBeNull();
+    });
+  });
+
   it("awaits durable revocation before logout completes without opening a synchronous store", async () => {
     const stateDir = tempDirs.make("openclaw-zalouser-credentials-");
     const profile = "logout-settlement";
