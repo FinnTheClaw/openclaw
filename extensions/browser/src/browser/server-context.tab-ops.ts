@@ -18,6 +18,7 @@ import {
 } from "./cdp.helpers.js";
 import {
   appendCdpPath,
+  CdpTargetCreationUncertainError,
   createTargetViaCdp,
   normalizeCdpWsUrl,
   waitForCdpCommittedNavigationUrl,
@@ -398,7 +399,12 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
         waitForNavigationResult: true,
         ...(cdpActionTimeouts ? { timeouts: cdpActionTimeouts } : {}),
         ...(opts?.signal ? { signal: opts.signal } : {}),
-      }).catch(() => null);
+      }).catch((error: unknown) => {
+        if (error instanceof CdpTargetCreationUncertainError) {
+          throw error;
+        }
+        return null;
+      });
       createdTargetId = createdViaCdp?.targetId;
       opts?.signal?.throwIfAborted();
 

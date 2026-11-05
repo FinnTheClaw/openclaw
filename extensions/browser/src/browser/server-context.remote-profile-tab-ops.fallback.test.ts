@@ -1,5 +1,7 @@
-// Browser tests cover server context.remote profile tab ops.fallback plugin behavior.
 import { expectDefined } from "@openclaw/normalization-core";
+// Browser tests cover server context.remote profile tab ops.fallback plugin behavior.
+import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
+import { WebSocketServer } from "openclaw/plugin-sdk/websocket-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { withBrowserFetchPreconnect } from "../../test-fetch.js";
 import {
@@ -357,6 +359,100 @@ describe("browser remote profile fallback and attachOnly behavior", () => {
       },
     });
   });
+
+  it.each(["timeout", "close"] as const)(
+    "does not replay uncertain target creation through json/new after %s",
+    async (fault) => {
+      const createReceipts: unknown[] = [];
+      const closeReceipts: unknown[] = [];
+      const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+      await new Promise<void>((resolve) => wss.once("listening", resolve));
+      const { port } = wss.address() as { port: number };
+      wss.on("connection", (socket) => {
+        socket.on("message", (data) => {
+          const msg = JSON.parse(rawDataToString(data)) as {
+            id: number;
+            method: string;
+            params?: Record<string, unknown>;
+          };
+          if (msg.method === "Target.createTarget") {
+            createReceipts.push(msg.params);
+            if (fault === "close") {
+              socket.close();
+            }
+          } else {
+            if (msg.method === "Target.closeTarget") {
+              closeReceipts.push(msg.params);
+            }
+            socket.send(
+              JSON.stringify({ id: msg.id, error: { message: "unexpected fixture command" } }),
+            );
+          }
+        });
+      });
+      const jsonNewReceipts: Array<{ url: string; method: unknown }> = [];
+      const replayTrap = new Error("fixture caught json/new replay");
+      const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+        const url = String(input);
+        if (new URL(url).pathname === "/json/version") {
+          return {
+            ok: true,
+            json: async () => ({
+              webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/UNCERTAIN`,
+            }),
+          } as unknown as Response;
+        }
+        if (new URL(url).pathname === "/json/new") {
+          jsonNewReceipts.push({ url, method: init?.method });
+          throw replayTrap;
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      const state = deps.makeState("openclaw");
+      state.resolved.profiles.openclaw = {
+        cdpUrl: `http://127.0.0.1:${port}`,
+        cdpPort: port,
+        attachOnly: true,
+        color: "#FF4500",
+      };
+      state.resolved.remoteCdpTimeoutMs = 25;
+      const resolvedBefore = structuredClone(state.resolved);
+      globalThis.fetch = withBrowserFetchPreconnect(fetchMock);
+      const profile = deps
+        .createTestBrowserRouteContext({ getState: () => state })
+        .forProfile("openclaw");
+      const runtime = state.profiles.get("openclaw");
+      const adoptionBefore = structuredClone({
+        lastTargetId: runtime?.lastTargetId,
+        tabAliases: runtime?.tabAliases,
+      });
+      try {
+        let failure: unknown;
+        const opened = await profile
+          .openTab("about:blank", { label: "uncertain" })
+          .catch((error: unknown) => {
+            failure = error;
+          });
+
+        expect(createReceipts[0]).toEqual({ url: "about:blank", background: true });
+        expect(createReceipts).toHaveLength(1);
+        expect(failure).toBeInstanceOf(Error);
+        expect(jsonNewReceipts).toEqual([]);
+        expect(failure).not.toBe(replayTrap);
+        expect(opened).toBeUndefined();
+        expect(closeReceipts).toEqual([]);
+        expect({ lastTargetId: runtime?.lastTargetId, tabAliases: runtime?.tabAliases }).toEqual(
+          adoptionBefore,
+        );
+        expect(state.resolved).toEqual(resolvedBefore);
+      } finally {
+        for (const socket of wss.clients) {
+          socket.terminate();
+        }
+        await new Promise<void>((resolve) => wss.close(() => resolve()));
+      }
+    },
+  );
 
   it("uses the remote HTTP timeout for /json/new fallback tab opens", async () => {
     vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue(null);

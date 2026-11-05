@@ -15,6 +15,7 @@ import {
   type CdpActionTimeouts,
   type CdpDocumentIdentities,
 } from "./cdp-page-session.js";
+import { CdpSocketError } from "./cdp-websocket.js";
 import {
   appendCdpPath,
   assertCdpEndpointAllowed,
@@ -87,6 +88,14 @@ export async function captureScreenshot(opts: {
     },
     { commandTimeoutMs: opts.timeoutMs, lookup: opts.lookup },
   );
+}
+
+/** A create command failed without establishing that the browser rejected its write. */
+export class CdpTargetCreationUncertainError extends Error {
+  constructor(cause: unknown) {
+    super("CDP Target.createTarget outcome is uncertain; refusing to replay creation", { cause });
+    this.name = "CdpTargetCreationUncertainError";
+  }
 }
 
 /** Create a new browser target after applying navigation and CDP SSRF policy. */
@@ -166,7 +175,12 @@ export async function createTargetViaCdp(opts: {
         async (send) => {
           opts.signal?.throwIfAborted();
           const params = { url: opts.url, background: true }; // Target-id selection must not activate browser UI.
-          const created = (await send("Target.createTarget", params)) as { targetId?: string };
+          const created = (await send("Target.createTarget", params).catch((error: unknown) => {
+            if (error instanceof CdpSocketError && error.kind === "protocol") {
+              throw error;
+            }
+            throw new CdpTargetCreationUncertainError(error);
+          })) as { targetId?: string };
           const targetId = created?.targetId?.trim() ?? "";
           if (!targetId) {
             throw new Error("CDP Target.createTarget returned no targetId");
@@ -196,6 +210,9 @@ export async function createTargetViaCdp(opts: {
       );
     } catch (err) {
       opts.signal?.throwIfAborted();
+      if (err instanceof CdpTargetCreationUncertainError) {
+        throw err;
+      }
       lastError = err;
     }
   }

@@ -804,6 +804,85 @@ describe("cdp", () => {
     }
   });
 
+  it.each(["timeout", "close"] as const)(
+    "does not replay uncertain target creation across websocket candidates after %s",
+    async (fault) => {
+      const createReceipts: Array<{ path: string; params: unknown }> = [];
+      const closeReceipts: unknown[] = [];
+      const server = createServer((req, res) => {
+        if (req.url === "/json/version") {
+          const { port } = server.address() as AddressInfo;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ webSocketDebuggerUrl: `ws://127.0.0.1:${port}/e/uncertain` }));
+          return;
+        }
+        res.statusCode = 404;
+        res.end("not found");
+      });
+      const wss = new WebSocketServer({
+        noServer: true,
+        maxPayload: CDP_TEST_WS_MAX_PAYLOAD_BYTES,
+      });
+      server.on("upgrade", (req, socket, head) => {
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+      });
+      wss.on("connection", (socket, req) => {
+        socket.on("message", (data) => {
+          const msg = JSON.parse(rawDataToString(data)) as {
+            id: number;
+            method: string;
+            params?: Record<string, unknown>;
+          };
+          if (msg.method === "Target.closeTarget") {
+            closeReceipts.push(msg.params);
+          }
+          if (msg.method !== "Target.createTarget") {
+            socket.send(
+              JSON.stringify({ id: msg.id, error: { message: "unexpected fixture command" } }),
+            );
+            return;
+          }
+          createReceipts.push({ path: req.url ?? "", params: msg.params });
+          if (req.url === "/e/uncertain") {
+            // Receipt is authoritative for the fixture's accepted first write;
+            // withhold its target id, or lose the socket before replying.
+            if (fault === "close") {
+              socket.close();
+            }
+            return;
+          }
+          socket.send(JSON.stringify({ id: msg.id, error: { message: "fixture caught replay" } }));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const { port } = server.address() as AddressInfo;
+        let failure: unknown;
+        await createTargetViaCdp({
+          cdpUrl: `ws://127.0.0.1:${port}`,
+          url: "about:blank",
+          timeouts: { httpTimeoutMs: 25 },
+        }).catch((error: unknown) => {
+          failure = error;
+        });
+
+        expect(createReceipts[0]).toEqual({
+          path: "/e/uncertain",
+          params: { url: "about:blank", background: true },
+        });
+        expect(failure).toBeInstanceOf(Error);
+        expect(createReceipts).toHaveLength(1);
+        expect(closeReceipts).toEqual([]);
+      } finally {
+        for (const socket of wss.clients) {
+          socket.terminate();
+        }
+        await new Promise<void>((resolve) => wss.close(() => resolve()));
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
   it("captures an aria snapshot via CDP", async () => {
     const wsPort = await startWsServerWithMessages((msg, socket) => {
       if (msg.method === "Accessibility.enable") {
