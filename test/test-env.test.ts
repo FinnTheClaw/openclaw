@@ -5,6 +5,10 @@ import path from "node:path";
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  resolveAgentWorkspaceDir,
+  resolveEffectiveAgentDir,
+} from "../src/agents/agent-scope-config.js";
+import {
   inspectPersistedAuthProfileStateRaw,
   inspectPersistedAuthProfileStoreRaw,
   resolveAuthProfileDatabasePath,
@@ -189,6 +193,8 @@ describe("installTestEnv", () => {
     const realHome = createTempHome();
     const openClawHome = createTempHome();
     const priorIsolatedHome = createTempHome();
+    const canonicalWorkspace = path.join(realHome, "source-dev-workspace");
+    const canonicalAgentDir = path.join(realHome, "source-dev-agent");
     writeFile(path.join(realHome, ".profile"), "export TEST_PROFILE_ONLY=from-profile\n");
     writeFile(
       path.join(openClawHome, "custom-openclaw.json5"),
@@ -206,6 +212,20 @@ describe("installTestEnv", () => {
               agentDir: "/Users/peter/.openclaw/agents/dev/agent",
             },
           ],
+          entries: {
+            dev: {
+              name: "Fixture dev",
+              model: "custom/fixture",
+              workspace: ${JSON.stringify(canonicalWorkspace)},
+              agentDir: ${JSON.stringify(canonicalAgentDir)},
+            },
+            ops: {
+              name: "Fixture ops",
+              workspace: ${JSON.stringify(path.join(realHome, "source-ops-workspace"))},
+              agentDir: ${JSON.stringify(path.join(realHome, "source-ops-agent"))},
+            },
+            untouched: { name: "No host paths", model: "custom/control" },
+          },
         },
         models: {
           providers: {
@@ -315,6 +335,8 @@ describe("installTestEnv", () => {
     setTestEnvValue("USERPROFILE", realHome);
     setTestEnvValue("OPENCLAW_HOME", openClawHome);
     setTestEnvValue("OPENCLAW_LIVE_TEST", "1");
+    setTestEnvValue("OPENCLAW_LIVE_USE_REAL_HOME", "0");
+    setTestEnvValue("OPENCLAW_LIVE_TEST_NORMALIZE_CONFIG", "0");
     setTestEnvValue("OPENCLAW_LIVE_TEST_QUIET", "1");
     setTestEnvValue("OPENCLAW_CONFIG_PATH", "~/custom-openclaw.json5");
     setTestEnvValue("OPENCLAW_TEST_HOME", priorIsolatedHome);
@@ -333,6 +355,7 @@ describe("installTestEnv", () => {
     const copiedConfig = JSON.parse(fs.readFileSync(copiedConfigPath, "utf8")) as {
       agents?: {
         defaults?: Record<string, unknown>;
+        entries?: Record<string, Record<string, unknown>>;
         list?: Array<Record<string, unknown>>;
       };
       models?: { providers?: Record<string, unknown> };
@@ -356,6 +379,20 @@ describe("installTestEnv", () => {
     expect(agentDefaults.agentDir).toBeUndefined();
     expect(agentConfig.workspace).toBeUndefined();
     expect(agentConfig.agentDir).toBeUndefined();
+
+    expect(copiedConfig.agents?.entries).toEqual({
+      dev: { name: "Fixture dev", model: "custom/fixture" },
+      ops: { name: "Fixture ops" },
+      untouched: { name: "No host paths", model: "custom/control" },
+    });
+    const staged = copiedConfig as Parameters<typeof resolveAgentWorkspaceDir>[0];
+    const workspace = resolveAgentWorkspaceDir(staged, "dev", process.env);
+    const agentDir = resolveEffectiveAgentDir(staged, "dev", { env: process.env });
+    const temporaryStateDir = path.join(testEnv.tempHome, ".openclaw");
+    expect(workspace.startsWith(`${temporaryStateDir}${path.sep}`)).toBe(true);
+    expect(workspace).not.toBe(canonicalWorkspace);
+    expect(agentDir).toBe(path.join(temporaryStateDir, "agents", "dev", "agent"));
+    expect(agentDir).not.toBe(canonicalAgentDir);
 
     const telegramStreaming = requireTelegramStreaming(copiedConfig.channels?.telegram?.streaming);
     expect(telegramStreaming).toEqual({
