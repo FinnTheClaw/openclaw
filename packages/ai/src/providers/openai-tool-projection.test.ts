@@ -6,6 +6,80 @@ import {
 } from "./openai-tool-projection.js";
 
 describe("OpenAI tool projection", () => {
+  it.each([
+    ["default", "literal"],
+    ["const", "literal"],
+    ["enum", "literal"],
+    ["examples", "literal"],
+    ["$dynamicRef", "schema"],
+    ["$dynamicAnchor", "schema"],
+    ["default", "nonfinite"],
+  ] as const)("literal schema data: %s %s", (keyword, kind) => {
+    const literal = {
+      $dynamicRef: "ordinary-data",
+      $dynamicAnchor: "ordinary-anchor",
+      nested: { properties: { named: { $dynamicRef: "still-literal" } } },
+    };
+    const payload =
+      kind === "literal"
+        ? {
+            type: "object",
+            [keyword]: keyword === "enum" || keyword === "examples" ? [literal] : literal,
+          }
+        : kind === "schema"
+          ? { [keyword]: "#actual" }
+          : { type: "object", default: { value: Number.POSITIVE_INFINITY } };
+    const parameters = { type: "object", properties: { payload } };
+    const siblingParameters = { type: "object", properties: {} };
+    const input = [
+      { name: "custom", parameters },
+      { name: "healthy", parameters: siblingParameters },
+    ];
+    const before = structuredClone(input);
+
+    const projection = projectOpenAITools(input);
+
+    expect(projection.inputToolCount).toBe(2);
+    expect(projection.tools).toEqual([
+      ...(kind === "literal" ? [{ toolIndex: 0, name: "custom", parameters }] : []),
+      { toolIndex: 1, name: "healthy", parameters: siblingParameters },
+    ]);
+    expect(projection.diagnostics).toEqual(
+      kind === "literal"
+        ? []
+        : [
+            {
+              toolIndex: 0,
+              toolName: "custom",
+              violations: [
+                kind === "schema"
+                  ? "custom.parameters.properties.payload." + keyword
+                  : "custom.parameters.properties.payload.default.value is not JSON-serializable",
+              ],
+            },
+          ],
+    );
+    const responsesChoice = { type: "function" as const, name: "custom" };
+    const completionsChoice = { type: "function" as const, function: { name: "custom" } };
+    if (kind === "literal") {
+      expect(reconcileOpenAIResponsesToolChoice(responsesChoice, projection)).toEqual(
+        responsesChoice,
+      );
+      expect(reconcileOpenAICompletionsToolChoice(completionsChoice, projection)).toEqual(
+        completionsChoice,
+      );
+      expect(projection.tools[0]?.parameters).not.toBe(parameters);
+    } else {
+      expect(() => reconcileOpenAIResponsesToolChoice(responsesChoice, projection)).toThrow(
+        'requested unavailable tool "custom"',
+      );
+      expect(() => reconcileOpenAICompletionsToolChoice(completionsChoice, projection)).toThrow(
+        'requested unavailable tool "custom"',
+      );
+    }
+    expect(input).toEqual(before);
+  });
+
   it("keeps healthy tools when sibling descriptors or schemas are unreadable", () => {
     const projection = projectOpenAITools([
       {
