@@ -114,6 +114,90 @@ describe("IMessageRpcClient LF framing", () => {
   });
 
   it.each([
+    { name: "null", line: "null" },
+    { name: "array", line: "[]" },
+    { name: "boolean", line: "false" },
+    { name: "number", line: "7" },
+    { name: "string", line: '"bridge text"' },
+  ])("L09-F003 ignores a $name envelope and continues LF response delivery", async ({ line }) => {
+    const pending = client.request("shape-check", {}, { timeoutMs: 0 }).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    const terminal = client.waitForClose().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let escaped: unknown;
+    let cleanupError: unknown;
+    try {
+      child.stdout.write(
+        line +
+          '\n{"id":1,"result":null}\n{"method":"messages.changed","params":{"source":"owned-shape-fixture"}}\n',
+      );
+    } catch (error) {
+      escaped = error;
+    } finally {
+      try {
+        child.emit("close", 0, null);
+      } catch (error) {
+        cleanupError = error;
+        // The old null callback may interrupt close settlement. This second
+        // mock-only close drains its already-cleared framer and joins cleanup.
+        child.emit("close", 0, null);
+      }
+    }
+    const result = await pending;
+    const closeError = await terminal;
+    const notifications = [...onNotification.mock.calls];
+
+    // Scalars/arrays were formerly silent no-ops; missing logging is not an
+    // extra bug. Every shape must preserve the following legitimate result:null.
+    expect({ escaped, cleanupError, result, notifications }).toEqual({
+      escaped: undefined,
+      cleanupError: undefined,
+      result: { status: "fulfilled", value: null },
+      notifications: [[{ method: "messages.changed", params: { source: "owned-shape-fixture" } }]],
+    });
+    expect(closeError).toBeInstanceOf(Error);
+    expect((closeError as Error).message).toBe("imsg rpc closed");
+  });
+
+  it("L09-F003 ignores unterminated null on close and settles the mock transport", async () => {
+    const pending = client.request("shape-at-close", {}, { timeoutMs: 0 }).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    const terminal = client.waitForClose().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    child.stdout.write("null");
+    let escaped: unknown;
+    try {
+      child.emit("close", 1, null);
+    } catch (error) {
+      escaped = error;
+    } finally {
+      // Always settle the old interrupted callback as well as the corrected
+      // path. No process is spawned or signalled by this mock child event.
+      child.emit("close", 1, null);
+    }
+    const result = await pending;
+    const closeError = await terminal;
+    const notifications = [...onNotification.mock.calls];
+
+    expect(escaped).toBeUndefined();
+    expect(notifications).toEqual([]);
+    expect(result).toMatchObject({
+      status: "rejected",
+      error: expect.objectContaining({ message: "imsg rpc exited (code 1)" }),
+    });
+    expect(closeError).toBeInstanceOf(Error);
+    expect((closeError as Error).message).toBe("imsg rpc exited (code 1)");
+  });
+
+  it.each([
     ["U+2028", "\u2028"],
     ["four-byte UTF-8", "\u{1f680}"],
   ])("preserves split %s inside an LF-delimited response", async (_, separator) => {

@@ -396,7 +396,11 @@ export class IMessageRpcClient {
   private handleLine(line: string) {
     let parsed: IMessageRpcResponse<unknown>;
     try {
-      parsed = JSON.parse(line) as IMessageRpcResponse<unknown>;
+      const value: unknown = JSON.parse(line);
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("expected a JSON object");
+      }
+      parsed = value as IMessageRpcResponse<unknown>;
     } catch (err) {
       this.recordProcessDiagnostic(line);
       const detail = formatErrorMessage(err);
