@@ -215,6 +215,7 @@ describe("googlechat setup", () => {
         googlechat: {
           enabled: true,
           name: "Default",
+          serviceAccount: "",
           serviceAccountFile: "/tmp/googlechat.json",
           audienceType: "app-url",
           audience: "https://example.com/googlechat",
@@ -244,6 +245,7 @@ describe("googlechat setup", () => {
           enabled: true,
           name: "Default",
           serviceAccount: { client_email: "bot@example.com" },
+          serviceAccountFile: "",
         },
       },
     });
