@@ -380,27 +380,27 @@ async function handleUpdateProfile(
     }
   }
 
-  // Merge with existing profile to preserve unknown fields
-  const existingProfile = ctx.getConfigProfile(accountId) ?? {};
-  const mergedProfile: NostrProfile = {
-    ...existingProfile,
-    ...profile,
-  };
-
   try {
     const result = await publishLocks.enqueue(accountId, async () => {
       await getPluginRuntimeGatewayRequestScope()?.revalidate?.();
-      return await publishNostrProfile(accountId, mergedProfile);
-    });
+      // Merge with the latest profile inside the account mutation queue.
+      const existingProfile = ctx.getConfigProfile(accountId) ?? {};
+      const mergedProfile: NostrProfile = {
+        ...existingProfile,
+        ...profile,
+      };
+      const result = await publishNostrProfile(accountId, mergedProfile);
 
-    // Only persist if at least one relay succeeded
-    if (result.successes.length > 0) {
-      await getPluginRuntimeGatewayRequestScope()?.revalidate?.();
-      await ctx.updateConfigProfile(accountId, mergedProfile);
-      ctx.log?.info(`[${accountId}] Profile published to ${result.successes.length} relay(s)`);
-    } else {
-      ctx.log?.warn(`[${accountId}] Profile publish failed on all relays`);
-    }
+      // Only persist if at least one relay succeeded.
+      if (result.successes.length > 0) {
+        await getPluginRuntimeGatewayRequestScope()?.revalidate?.();
+        await ctx.updateConfigProfile(accountId, mergedProfile);
+        ctx.log?.info(`[${accountId}] Profile published to ${result.successes.length} relay(s)`);
+      } else {
+        ctx.log?.warn(`[${accountId}] Profile publish failed on all relays`);
+      }
+      return result;
+    });
 
     sendJson(res, 200, {
       ok: true,
@@ -470,11 +470,15 @@ async function handleImportProfile(
 
   let merged: NostrProfile | undefined;
   if (autoMerge && result.profile) {
-    await getPluginRuntimeGatewayRequestScope()?.revalidate?.();
-    const localProfile = ctx.getConfigProfile(accountId);
-    merged = mergeProfiles(localProfile, result.profile);
-    await ctx.updateConfigProfile(accountId, merged);
-    ctx.log?.info(`[${accountId}] Profile imported and merged`);
+    const importedProfile = result.profile;
+    merged = await publishLocks.enqueue(accountId, async () => {
+      await getPluginRuntimeGatewayRequestScope()?.revalidate?.();
+      const localProfile = ctx.getConfigProfile(accountId);
+      const mergedProfile = mergeProfiles(localProfile, importedProfile);
+      await ctx.updateConfigProfile(accountId, mergedProfile);
+      ctx.log?.info(`[${accountId}] Profile imported and merged`);
+      return mergedProfile;
+    });
   }
 
   sendJson(res, 200, {

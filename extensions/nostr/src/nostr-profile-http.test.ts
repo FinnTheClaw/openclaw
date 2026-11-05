@@ -5,7 +5,9 @@
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { expectDefined } from "@openclaw/normalization-core";
+import { KeyedAsyncQueue, type KeyedAsyncQueueHooks } from "openclaw/plugin-sdk/keyed-async-queue";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { NostrProfile } from "./config-schema.js";
 import { createNostrProfileHttpHandler } from "./nostr-profile-http.js";
 
 type NostrProfileHttpContext = Parameters<typeof createNostrProfileHttpHandler>[0];
@@ -330,6 +332,149 @@ describe("nostr-profile-http", () => {
       const data = expectBadRequestResponse(res);
       expect(data.error).toContain("private");
     }
+
+    it.each(["publish", "persistence", "import", "sequential", "different-account"] as const)(
+      "profile mutation serialization: %s",
+      async (phase) => {
+        const profiles = new Map<string, NostrProfile>([
+          ["default", { name: "old-name", about: "old-about" }],
+          ["other", { name: "other-name", about: "other-about" }],
+        ]);
+        const published: Array<{ accountId: string; profile: NostrProfile }> = [];
+        const persisted: Array<{ accountId: string; profile: NostrProfile }> = [];
+        const firstHeld = Promise.withResolvers<void>();
+        const competingReady = Promise.withResolvers<void>();
+        const releaseFirst = Promise.withResolvers<void>();
+        const getConfigProfile = vi.fn((accountId: string) => profiles.get(accountId));
+        const updateConfigProfile = vi.fn(async (accountId: string, profile: NostrProfile) => {
+          if (phase === "persistence" && accountId === "default" && persisted.length === 0) {
+            firstHeld.resolve();
+            await releaseFirst.promise;
+          }
+          profiles.set(accountId, structuredClone(profile));
+          persisted.push({ accountId, profile: structuredClone(profile) });
+          if (phase === "import") {
+            competingReady.resolve();
+          }
+        });
+        let defaultEnqueues = 0;
+        const enqueue = KeyedAsyncQueue.prototype.enqueue;
+        const enqueueObservation = vi
+          .spyOn(KeyedAsyncQueue.prototype, "enqueue")
+          .mockImplementation(function <T>(
+            this: KeyedAsyncQueue,
+            key: string,
+            task: () => Promise<T>,
+            hooks?: KeyedAsyncQueueHooks,
+          ): Promise<T> {
+            const result = enqueue.call(this, key, task, hooks) as Promise<T>;
+            if (key === "default" && ++defaultEnqueues === 2) {
+              competingReady.resolve();
+            }
+            return result;
+          });
+        vi.mocked(publishNostrProfile).mockImplementation(async (accountId, profile) => {
+          published.push({ accountId, profile: structuredClone(profile) });
+          const position = published.length;
+          if (
+            accountId === "default" &&
+            position === 1 &&
+            phase !== "persistence" &&
+            phase !== "sequential"
+          ) {
+            firstHeld.resolve();
+            await releaseFirst.promise;
+          }
+          return {
+            eventId: `event-${position}`,
+            createdAt: 1234567890 + position,
+            successes: [TEST_PROFILE_RELAY_URL],
+            failures: [],
+          };
+        });
+        if (phase === "import") {
+          mockSuccessfulProfileImport();
+        }
+        const ctx = { getConfigProfile, updateConfigProfile };
+        const first = createProfileHttpHarness("PUT", "/api/channels/nostr/default/profile", {
+          body: { name: "new-name" },
+          ctx,
+        });
+        const secondAccount = phase === "different-account" ? "other" : "default";
+        let second: ReturnType<typeof createProfileHttpHarness> | undefined;
+        const requests: Promise<boolean>[] = [];
+        let whileHeld: { published: number; persisted: number; reads: number } | undefined;
+        try {
+          requests.push(first.run());
+          if (phase === "sequential") {
+            await requests[0];
+          } else {
+            await firstHeld.promise;
+          }
+          // Attach body listeners immediately: the existing request emits on nextTick.
+          second = createProfileHttpHarness(
+            phase === "import" ? "POST" : "PUT",
+            `/api/channels/nostr/${secondAccount}/profile${phase === "import" ? "/import" : ""}`,
+            { body: phase === "import" ? { autoMerge: true } : { about: "new-about" }, ctx },
+          );
+          requests.push(second.run());
+          if (phase === "sequential" || phase === "different-account") {
+            await requests[1];
+          } else {
+            await competingReady.promise;
+          }
+          if (phase !== "sequential") {
+            whileHeld = {
+              published: published.length,
+              persisted: persisted.length,
+              reads: getConfigProfile.mock.calls.length,
+            };
+          }
+        } finally {
+          releaseFirst.resolve();
+          await Promise.allSettled(requests);
+          enqueueObservation.mockRestore();
+        }
+
+        expect(await Promise.all(requests)).toEqual([true, true]);
+        const firstResponse = expectOkResponse(first.res);
+        const secondResponse = expectOkResponse(
+          expectDefined(second, "Second profile request").res,
+        );
+        expect(firstResponse.persisted).toBe(true);
+        expect(phase === "import" ? secondResponse.saved : secondResponse.persisted).toBe(true);
+        const firstProfile = { name: "new-name", about: "old-about" };
+        const secondProfile =
+          phase === "import"
+            ? { ...firstProfile, displayName: "Imported User" }
+            : phase === "different-account"
+              ? { name: "other-name", about: "new-about" }
+              : { name: "new-name", about: "new-about" };
+        expect(profiles.get(secondAccount)).toEqual(secondProfile);
+        expect(published).toEqual([
+          { accountId: "default", profile: firstProfile },
+          ...(phase === "import" ? [] : [{ accountId: secondAccount, profile: secondProfile }]),
+        ]);
+        expect(persisted).toEqual(
+          phase === "different-account"
+            ? [
+                { accountId: "other", profile: secondProfile },
+                { accountId: "default", profile: firstProfile },
+              ]
+            : [
+                { accountId: "default", profile: firstProfile },
+                { accountId: "default", profile: secondProfile },
+              ],
+        );
+        if (phase !== "sequential") {
+          expect(whileHeld).toEqual(
+            phase === "different-account"
+              ? { published: 2, persisted: 1, reads: 2 }
+              : { published: 1, persisted: 0, reads: 1 },
+          );
+        }
+      },
+    );
 
     it("validates profile and publishes", async () => {
       const { ctx, res, run } = createProfileHttpHarness(
