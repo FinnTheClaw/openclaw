@@ -35,6 +35,181 @@ function contentOf(message: AgentMessage | undefined) {
 }
 
 describe("normalizeMessagesForLlmBoundary", () => {
+  const richA: UserMessage["content"] = [
+    { type: "text", text: "same ask" },
+    { ...image, data: "a" },
+  ];
+  const richB: UserMessage["content"] = [
+    { type: "text", text: "same ask" },
+    { ...image, data: "b" },
+  ];
+  const laterA: UserMessage["content"] = [
+    { type: "text", text: "same ask" },
+    { type: "text", text: "later A" },
+  ];
+  const laterB: UserMessage["content"] = [
+    { type: "text", text: "same ask" },
+    { type: "text", text: "later B" },
+  ];
+  it.each([
+    {
+      name: "copied image B after earlier history removal",
+      runtimeA: richA,
+      runtimeB: richB,
+      outgoing: [richB],
+      expected: [1],
+      exact: false,
+      override: false,
+    },
+    {
+      name: "reordered copied image turns",
+      runtimeA: richA,
+      runtimeB: richB,
+      outgoing: [richB, richA],
+      expected: [1, 0],
+      exact: false,
+      override: false,
+    },
+    {
+      name: "different later text blocks",
+      runtimeA: laterA,
+      runtimeB: laterB,
+      outgoing: [laterB],
+      expected: [1],
+      exact: false,
+      override: false,
+    },
+    {
+      name: "ambiguous identical rich payload",
+      runtimeA: richA,
+      runtimeB: richA,
+      outgoing: [richA],
+      expected: [undefined],
+      exact: false,
+      override: false,
+    },
+    {
+      name: "nonmatching image despite allowed text override",
+      runtimeA: richA,
+      runtimeB: richB,
+      outgoing: [
+        [
+          { type: "text" as const, text: "private ask" },
+          { ...image, data: "c" },
+        ],
+      ],
+      expected: [undefined],
+      exact: false,
+      override: true,
+    },
+    {
+      name: "exact runtime object control",
+      runtimeA: richA,
+      runtimeB: richB,
+      outgoing: [richB],
+      expected: [1],
+      exact: true,
+      override: false,
+    },
+    {
+      name: "unique string and single-text representation control",
+      runtimeA: "different ask",
+      runtimeB: "same ask",
+      outgoing: [[{ type: "text" as const, text: "same ask" }]],
+      expected: [1],
+      exact: false,
+      override: false,
+    },
+    {
+      name: "unique matching rich override control",
+      runtimeA: [
+        { type: "text" as const, text: "different ask" },
+        { ...image, data: "a" },
+      ],
+      runtimeB: richB,
+      outgoing: [
+        [
+          { type: "text" as const, text: "private ask" },
+          { ...image, data: "b" },
+        ],
+      ],
+      expected: [1],
+      exact: false,
+      override: true,
+    },
+  ])("disambiguates retained sender context for $name", (scenario) => {
+    const runtimeA = user(scenario.runtimeA, 1);
+    const runtimeB = user(scenario.runtimeB, 1);
+    const transcripts = [
+      { ...runtimeA, __openclaw: { senderId: "alice-id", senderName: "Alice" } },
+      { ...runtimeB, __openclaw: { senderId: "bob-id", senderName: "Bob" } },
+    ];
+    const contexts = [
+      {
+        runtimeMessage: runtimeA,
+        transcriptMessage: expectDefined(transcripts[0], "Alice transcript"),
+      },
+      {
+        runtimeMessage: runtimeB,
+        transcriptMessage: expectDefined(transcripts[1], "Bob transcript"),
+      },
+    ];
+    const messages = scenario.outgoing.map((content) =>
+      scenario.exact ? runtimeB : user(structuredClone(content), 1),
+    );
+    const originalMessages = structuredClone(messages);
+    const override = scenario.override
+      ? { timestamp: 1, runtimeTimestamp: 1, text: "same ask", alternateText: "private ask" }
+      : undefined;
+    const resolved = resolveUserTranscriptMessages(messages, contexts, override);
+    const projected = normalizeMessagesForLlmBoundary(messages, {
+      includeTimestamp: false,
+      userTranscriptContexts: contexts,
+      currentUserTimestampOverride: override,
+    });
+
+    for (const [index, expectedIndex] of scenario.expected.entries()) {
+      const expectedTranscript =
+        expectedIndex === undefined ? undefined : transcripts[expectedIndex];
+      expect.soft(resolved?.[index]).toBe(expectedTranscript);
+      const content = contentOf(projected[index]);
+      const projectedText =
+        typeof content === "string"
+          ? content
+          : content
+              .filter((block) => block.type === "text")
+              .map((block) => block.text)
+              .join("\n");
+      for (const [senderIndex, name] of ["Alice", "Bob"].entries()) {
+        if (senderIndex === expectedIndex) {
+          expect.soft(projectedText).toContain(`"name":"${name}"`);
+          expect
+            .soft(projectedText)
+            .toContain(senderIndex === 0 ? '"id":"alice-id"' : '"id":"bob-id"');
+        } else {
+          expect.soft(projectedText).not.toContain(`"name":"${name}"`);
+        }
+      }
+      const original = contentOf(messages[index]);
+      if (typeof original === "string") {
+        expect.soft(projectedText).toContain(original);
+      } else {
+        for (const block of original) {
+          if (block.type === "text") {
+            expect.soft(projectedText).toContain(block.text);
+          }
+        }
+        if (original.length > 1) {
+          expect.soft(Array.isArray(content)).toBe(true);
+          if (Array.isArray(content)) {
+            expect.soft(content.slice(1)).toEqual(original.slice(1));
+          }
+        }
+      }
+    }
+    expect(messages).toEqual(originalMessages);
+  });
+
   it("strips historical metadata while preserving the active envelope through a tool continuation", () => {
     const current = `${conversation}Reply target of current user message: ⟦openclaw:ctx⟧\n\`\`\`json\n{"body":"quoted status body"}\n\`\`\`\n\nCurrent ask`;
     const input: AgentMessage[] = [

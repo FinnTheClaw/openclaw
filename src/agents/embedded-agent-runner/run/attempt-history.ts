@@ -129,7 +129,7 @@ export function resolveUserTranscriptMessages(
     }
     const timestamp = message.timestamp;
     const candidates = typeof timestamp === "number" ? byTimestamp.get(timestamp) : undefined;
-    const context = candidates?.find(
+    const matchingContexts = candidates?.filter(
       (candidate) =>
         unusedContexts.has(candidate) &&
         userMessageMatchesTranscriptContext(
@@ -142,6 +142,7 @@ export function resolveUserTranscriptMessages(
             : undefined,
         ),
     );
+    const context = matchingContexts?.length === 1 ? matchingContexts[0] : undefined;
     if (!context) {
       continue;
     }
@@ -149,6 +150,19 @@ export function resolveUserTranscriptMessages(
     unusedContexts.delete(context);
   }
   return resolved;
+}
+
+function normalizeTranscriptMatchContent(content: unknown, firstTextOverride?: string): unknown {
+  const blocks = typeof content === "string" ? [{ type: "text", text: content }] : content;
+  if (!Array.isArray(blocks) || firstTextOverride === undefined) {
+    return blocks;
+  }
+  const firstTextIndex = blocks.findIndex(isUserTextBlock);
+  return blocks.map((block, index) =>
+    index === firstTextIndex && isUserTextBlock(block)
+      ? { ...block, text: firstTextOverride }
+      : block,
+  );
 }
 
 function userMessageMatchesTranscriptContext(
@@ -173,7 +187,10 @@ function userMessageMatchesTranscriptContext(
   const messageText = readFirstUserText(messageContent);
   const runtimeText = readFirstUserText(runtimeContent);
   if (messageText !== undefined && messageText === runtimeText) {
-    return true;
+    return (
+      stableStringify(normalizeTranscriptMatchContent(messageContent)) ===
+      stableStringify(normalizeTranscriptMatchContent(runtimeContent))
+    );
   }
   if (
     messageText === undefined &&
@@ -187,7 +204,9 @@ function userMessageMatchesTranscriptContext(
   return Boolean(
     override &&
     contentMatchesTimestampOverride(messageContent, override) &&
-    contentMatchesTimestampOverride(runtimeContent, override),
+    contentMatchesTimestampOverride(runtimeContent, override) &&
+    stableStringify(normalizeTranscriptMatchContent(messageContent, override.text)) ===
+      stableStringify(normalizeTranscriptMatchContent(runtimeContent, override.text)),
   );
 }
 
