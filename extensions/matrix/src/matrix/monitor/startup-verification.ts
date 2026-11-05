@@ -308,7 +308,9 @@ export async function ensureMatrixStartupVerification(params: {
       error: "Unable to inspect pending Matrix verifications; startup request was not sent",
     };
   }
-  if (verifications.some((entry) => entry.isSelfVerification && !entry.completed && entry.pending)) {
+  if (
+    verifications.some((entry) => entry.isSelfVerification && !entry.completed && entry.pending)
+  ) {
     return {
       kind: "pending",
       verification,
@@ -341,10 +343,7 @@ export async function ensureMatrixStartupVerification(params: {
   // the fact that this account may already have an outstanding verification request.
   try {
     await writeStartupVerificationState({
-      auth: params.auth,
-      env: params.env,
-      stateDir,
-      legacyFilePath: statePath,
+      ...stateLocation,
       state: {
         userId: verification.userId,
         deviceId: verification.deviceId,
