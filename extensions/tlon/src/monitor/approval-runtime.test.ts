@@ -143,7 +143,9 @@ vi.mock("../urbit/send.js", async (importOriginal) => {
       notificationMode.capture ? notificationMock(params) : actual.sendDm(params),
   };
 });
-afterEach(() => { notificationMode.capture = false; });
+afterEach(() => {
+  notificationMode.capture = false;
+});
 
 type AccessType = "dm" | "channel";
 type Scenario = {
@@ -400,5 +402,83 @@ describe("Tlon approval grant persistence", () => {
         );
       }
     }
+  });
+});
+
+describe("L07-F24 native block acknowledgement", () => {
+  it.each([
+    { command: "block", rejected: true },
+    { command: "block dm-1", rejected: true },
+    { command: "block", rejected: false },
+    { command: "block dm-1", rejected: false },
+  ])("retains pending only on rejected $command ($rejected)", async ({ command, rejected }) => {
+    notificationMode.capture = true;
+    notificationMock.mockClear();
+    const approval = createApproval(1);
+    let pending = [approval];
+    let durable = structuredClone(pending);
+    const events: string[] = [];
+    const poke = vi.fn(
+      async (request: {
+        mark: string;
+        json: { ship?: string; "put-entry"?: { "entry-key": string; value: string } };
+      }) => {
+        if (request.mark === "chat-block-ship") {
+          expect(request.json.ship).toBe(approval.requestingShip);
+          events.push("native-block");
+          if (rejected) {
+            throw new Error("synthetic native block rejected");
+          }
+          return;
+        }
+        const entry = request.json["put-entry"];
+        if (entry?.["entry-key"] !== "pendingApprovals") {
+          throw new Error("unexpected settings mutation");
+        }
+        events.push("persist-pending");
+        durable = JSON.parse(entry.value) as PendingApproval[];
+      },
+    );
+    const processor = vi.fn(async () => {});
+    const runtime = createTlonApprovalRuntime({
+      api: { poke, scry: vi.fn(async () => []) } as unknown as Parameters<
+        typeof createTlonApprovalRuntime
+      >[0]["api"],
+      runtime: { log: vi.fn(), error: vi.fn() } as unknown as RuntimeEnv,
+      botShipName: "~bot",
+      getPendingApprovals: () => pending,
+      setPendingApprovals: (value) => {
+        pending = value;
+      },
+      getCurrentSettings: () => ({}),
+      setCurrentSettings: vi.fn(),
+      getEffectiveDmAllowlist: () => [],
+      setEffectiveDmAllowlist: vi.fn(),
+      getEffectiveOwnerShip: () => "~owner",
+      processApprovedMessage: processor,
+      refreshWatchedChannels: vi.fn(async () => 0),
+    });
+    const handled = await runtime.handleApprovalResponse(command);
+    const notices = notificationMock.mock.calls.map(([message]) => message.text);
+    const observed = {
+      handled,
+      pending,
+      durable,
+      events,
+      noticeCount: notices.length,
+      failureReported: notices.some((text) => /failed to block/i.test(text)),
+      successReported: notices.some((text) => /^Blocked /i.test(text)),
+      processorCalls: processor.mock.calls.length,
+    };
+    expect(observed).toEqual({
+      handled: true,
+      pending: rejected ? [approval] : [],
+      durable: rejected ? [approval] : [],
+      events: rejected ? ["native-block"] : ["native-block", "persist-pending"],
+      noticeCount: 1,
+      failureReported: rejected,
+      successReported: !rejected,
+      processorCalls: 0,
+    });
   });
 });

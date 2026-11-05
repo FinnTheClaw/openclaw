@@ -148,7 +148,7 @@ export function createTlonApprovalRuntime(params: {
     }
   };
 
-  const blockShip = async (ship: string): Promise<void> => {
+  const blockShip = async (ship: string): Promise<boolean> => {
     const normalizedShip = normalizeShip(ship);
     try {
       await api.poke({
@@ -157,8 +157,10 @@ export function createTlonApprovalRuntime(params: {
         json: { ship: normalizedShip },
       });
       runtime.log?.(`[tlon] Blocked ship ${normalizedShip}`);
+      return true;
     } catch (err) {
       runtime.error?.(`[tlon] Failed to block ship ${normalizedShip}: ${String(err)}`);
+      return false;
     }
   };
 
@@ -376,7 +378,12 @@ export function createTlonApprovalRuntime(params: {
       );
       return true;
     } else if (parsed.action === "block") {
-      await blockShip(approval.requestingShip);
+      if (!(await blockShip(approval.requestingShip))) {
+        await sendOwnerNotification(
+          `Failed to block ${approval.requestingShip}. The request remains pending; retry blocking.`,
+        );
+        return true;
+      }
       await sendOwnerNotification(formatApprovalConfirmation(approval, "block"));
     } else {
       await sendOwnerNotification(formatApprovalConfirmation(approval, "deny"));
