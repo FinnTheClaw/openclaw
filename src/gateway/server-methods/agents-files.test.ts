@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { GatewayRequestError } from "../../../ui/src/api/gateway.ts";
 import {
@@ -17,6 +17,11 @@ import { createRemoteShellSandboxFsBridge } from "../../agents/sandbox/remote-fs
 import { createLocalRemoteShellScriptRunner } from "../../agents/sandbox/remote-fs-bridge.test-helpers.js";
 import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { agentsHandlers } from "./agents.js";
+import {
+  bindGatewayRequestHandlerMutationAuthority,
+  readGatewayRequestMutationAuthority,
+} from "./session-mutation-guards.js";
+import * as workspaceFs from "./workspace-fs.js";
 
 type HandlerCall = {
   ok: boolean;
@@ -121,6 +126,154 @@ for (const storage of ["local", "remote"] as const) {
           agentFileWriteRevisions: new Map(),
         };
       }
+
+      it.runIf(storage === "local").each([
+        { create: true, invalidate: true },
+        { create: false, invalidate: true },
+        { create: true, invalidate: false },
+        { create: false, invalidate: false },
+      ])(
+        "queued agent document authority: create=$create invalidate=$invalidate",
+        async ({ create, invalidate }) => {
+          const filePath = path.join(storageDir, "MEMORY.md");
+          const originalContent = "# Memory\n- original owned bytes\n";
+          const requestedContent = "# Memory\n- requested owned bytes\n";
+          if (!create) {
+            fs.writeFileSync(filePath, originalContent);
+          }
+          let releaseBlock!: () => void;
+          let enteredBlock!: () => void;
+          let observedAdmission!: () => void;
+          const blockGate = new Promise<void>((resolve) => {
+            releaseBlock = resolve;
+          });
+          const blockEntered = new Promise<void>((resolve) => {
+            enteredBlock = resolve;
+          });
+          const subjectQueued = new Promise<void>((resolve) => {
+            observedAdmission = resolve;
+          });
+          const actualEnqueue = workspaceFs.enqueueWorkspaceFileUpdate;
+          const blocker = actualEnqueue(async () => {
+            enteredBlock();
+            await blockGate;
+          });
+          let save: Promise<{ error: unknown }> | undefined;
+          let restoreEnqueue: (() => void) | undefined;
+          try {
+            let authorityCurrent = true;
+            const revokedError = new Error("fixture retained Agent document authority invalidated");
+            const calls: HandlerCall[] = [];
+            const handlerOptions: Parameters<
+              NonNullable<(typeof agentsHandlers)["agents.files.set"]>
+            >[0] = {
+              req: {
+                type: "req",
+                id: "owned-authority-save",
+                method: "agents.files.set",
+                params: {},
+              },
+              params: {
+                agentId: "main",
+                name: "MEMORY.md",
+                content: requestedContent,
+                ...(create
+                  ? { expectedMissing: true }
+                  : { expectedHash: hashContent(originalContent) }),
+              },
+              client: null,
+              isWebchatConnect: () => false,
+              respond: (ok, payload, error) => {
+                calls.push({ ok, payload, error });
+              },
+              context: {
+                getRuntimeConfig: () => ({ agents: { defaults: { workspace } } }),
+              } as never,
+              sessionMutationCommitGuard: () => {
+                if (!authorityCurrent) {
+                  throw revokedError;
+                }
+              },
+            };
+            const bound = bindGatewayRequestHandlerMutationAuthority(
+              handlerOptions,
+              handlerOptions,
+              undefined,
+            );
+            readGatewayRequestMutationAuthority(bound).assertCurrent();
+            const observeEnqueue: typeof actualEnqueue = (operation) => {
+              const pending = actualEnqueue(operation);
+              observedAdmission();
+              return pending;
+            };
+            const enqueueSpy = vi
+              .spyOn(workspaceFs, "enqueueWorkspaceFileUpdate")
+              .mockImplementation(observeEnqueue);
+            restoreEnqueue = () => enqueueSpy.mockRestore();
+            await blockEntered;
+            save = Promise.resolve(agentsHandlers["agents.files.set"]!(bound)).then(
+              () => ({ error: undefined }),
+              (error: unknown) => ({ error }),
+            );
+            await Promise.race([
+              subjectQueued,
+              save.then((outcome) => {
+                throw outcome.error ?? new Error("save completed before real queue admission");
+              }),
+            ]);
+            authorityCurrent = !invalidate;
+            releaseBlock();
+            const outcome = await save;
+            const exists = fs.existsSync(filePath);
+            const observed = {
+              exists,
+              bytes: exists ? fs.readFileSync(filePath) : undefined,
+              calls: calls.slice(),
+              error: outcome.error,
+            };
+
+            expect(observed.exists).toBe(!invalidate || !create);
+            expect(observed.bytes).toEqual(
+              invalidate
+                ? create
+                  ? undefined
+                  : Buffer.from(originalContent)
+                : Buffer.from(requestedContent),
+            );
+            expect(observed.error).toBe(invalidate ? revokedError : undefined);
+            if (invalidate) {
+              expect(observed.calls).toEqual([]);
+            } else {
+              expect(observed.calls).toHaveLength(1);
+              expect(observed.calls[0]).toMatchObject({
+                ok: true,
+                payload: {
+                  ok: true,
+                  agentId: "main",
+                  workspace,
+                  file: {
+                    name: "MEMORY.md",
+                    path: filePath,
+                    missing: false,
+                    size: Buffer.byteLength(requestedContent),
+                    hash: hashContent(requestedContent),
+                    content: requestedContent,
+                  },
+                },
+                error: undefined,
+              });
+            }
+          } finally {
+            releaseBlock();
+            try {
+              await blocker;
+              await save;
+            } finally {
+              restoreEnqueue?.();
+            }
+          }
+        },
+      );
 
       it("preserves the first creation when two editors loaded a missing document", async () => {
         const first = createFileEditor();

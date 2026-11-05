@@ -25,6 +25,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isMissingPathError } from "../../infra/errors.js";
 import { root, FsSafeError, type ReadResult } from "../../infra/fs-safe.js";
 import { normalizeAgentIdStrict } from "../../routing/session-key.js";
+import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 import { enqueueWorkspaceFileUpdate } from "./workspace-fs.js";
@@ -412,7 +413,8 @@ export const agentFileHandlers: Pick<
       undefined,
     );
   },
-  "agents.files.set": async ({ params, respond, context }) => {
+  "agents.files.set": async (options) => {
+    const { params, respond, context } = options;
     if (!assertValidParams(params, validateAgentsFilesSetParams, "agents.files.set", respond)) {
       return;
     }
@@ -428,6 +430,8 @@ export const agentFileHandlers: Pick<
     const access = getAgentWorkspaceAccess(workspaceDir);
     const filePath = path.join(workspaceDir, name);
     const content = params.content;
+    const assertRequesterCurrent = readGatewayRequestMutationAuthority(options).assertCurrent;
+    assertRequesterCurrent();
     let workspaceRoot: WorkspaceRoot | null = null;
     let conflict: { currentHash: string | undefined } | undefined;
     if (access) {
@@ -452,6 +456,7 @@ export const agentFileHandlers: Pick<
         return;
       }
       conflict = await enqueueWorkspaceFileUpdate(async () => {
+        assertRequesterCurrent();
         assertCurrent();
         if (params.expectedMissing && createFileExclusive) {
           const result = await createFileExclusive({
@@ -484,6 +489,7 @@ export const agentFileHandlers: Pick<
         }
         // Preserve the native editor's best-effort conflict contract. Shell
         // writers remain independent of this Gateway-owned save queue.
+        assertRequesterCurrent();
         await access.bridge.writeFile({ filePath: name, data: params.content, mkdir: true });
         assertCurrent();
         return undefined;
@@ -495,9 +501,14 @@ export const agentFileHandlers: Pick<
         const writeRoot = workspaceRoot;
         const expectedHash = params.expectedHash?.toLowerCase();
         conflict = await enqueueWorkspaceFileUpdate(async () => {
+          assertRequesterCurrent();
           if (params.expectedMissing) {
             try {
-              await writeRoot.create(name, content, { encoding: "utf8", atomic: true });
+              await writeRoot.create(name, content, {
+                encoding: "utf8",
+                atomic: true,
+                assertBeforeMutation: assertRequesterCurrent,
+              });
             } catch (err) {
               if (err instanceof FsSafeError && err.code === "already-exists") {
                 return { currentHash: undefined };
@@ -512,7 +523,10 @@ export const agentFileHandlers: Pick<
               return { currentHash };
             }
           }
-          await writeRoot.write(name, content, { encoding: "utf8" });
+          await writeRoot.write(name, content, {
+            encoding: "utf8",
+            assertBeforeMutation: assertRequesterCurrent,
+          });
           return undefined;
         });
       } catch (err) {
