@@ -1427,18 +1427,27 @@ setInterval(() => {}, 1000);
       title: "clamps oversized shell command kill grace before scheduling",
       run: runShellCommand,
       grace: Number.MAX_SAFE_INTEGER,
+      noOutput: false,
     },
     {
       title: "lets timed-out shell command descendants exit during kill grace",
       run: runShellCommand,
       grace: 500,
+      noOutput: false,
     },
     {
       title: "lets timed-out shell capture descendants exit during kill grace",
       run: runShellCaptureCommand,
       grace: 500,
+      noOutput: false,
     },
-  ])("$title", async ({ run, grace }) => {
+    {
+      title: "keeps a no-output deadline failed after cooperative zero exit",
+      run: runShellCommand,
+      grace: 500,
+      noOutput: true,
+    },
+  ])("deadline verdict: $title", async ({ run, grace, noOutput }) => {
     const root = createTempDir("openclaw-docker-all-grace-");
     const scriptPath = path.join(root, "leader-exits.mjs");
     const donePath = path.join(root, "done");
@@ -1471,13 +1480,16 @@ setInterval(() => {}, 1000);
           env: process.env,
           label: "timeout-grace",
           timeoutKillGraceMs: grace,
-          timeoutMs: 500,
+          ...(noOutput ? { noOutputTimeoutMs: 500 } : { timeoutMs: 500 }),
         }),
       () => existsSync(readyPath),
       500,
     );
-    expect(result).toMatchObject({ timedOut: true });
     expect(readFileSync(donePath, "utf8")).toBe("done");
+    expect(result).toMatchObject({ status: 124, timedOut: true });
+    if (run === runShellCommand) {
+      expect(result).toMatchObject({ noOutputTimedOut: noOutput });
+    }
   });
 
   posixIt("cleans active shell command groups before parent signal exit", async () => {

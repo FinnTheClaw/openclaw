@@ -1073,7 +1073,7 @@ export function runShellCommand({
         if (error === undefined) {
           activeChildren.delete(child);
         }
-        const exitCode = typeof status === "number" ? status : signal ? 128 : 1;
+        const exitCode = timedOut ? 124 : typeof status === "number" ? status : signal ? 128 : 1;
         if (stream) {
           writeLog(
             `\n==> [${label}] finished: ${utcStamp()} status=${exitCode}${
@@ -1211,7 +1211,7 @@ export function runShellCaptureCommand({
           return;
         }
         activeChildren.delete(child);
-        const exitCode = typeof status === "number" ? status : signal ? 128 : 1;
+        const exitCode = timedOut ? 124 : typeof status === "number" ? status : signal ? 128 : 1;
         resolve({
           label,
           signal,
