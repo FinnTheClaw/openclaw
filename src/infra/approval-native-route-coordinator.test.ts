@@ -278,6 +278,65 @@ describe("createApprovalNativeRouteReporter", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each([
+    { label: "short expiry", requestTtlMs: 1000, advanceMs: 1000, noticeCalls: 0 },
+    {
+      label: "long-request notice TTL",
+      requestTtlMs: 24 * 60 * 60_000,
+      advanceMs: 5 * 60_000,
+      noticeCalls: 1,
+    },
+  ])(
+    "retires pending notice state at $label with a missing runtime report",
+    async ({ requestTtlMs, advanceMs, noticeCalls }) => {
+      vi.useFakeTimers();
+      const coordinator = createApprovalNativeRouteCoordinator();
+      const requestGateway = createGatewayRequestMock();
+      const first = coordinator.createReporter(
+        reporterOptions({ channel: "slack", channelLabel: "Slack", requestGateway }),
+      );
+      const missing = coordinator.createReporter(
+        reporterOptions({ channel: "matrix", channelLabel: "Matrix" }),
+      );
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+      try {
+        first.start();
+        missing.start();
+        const request = {
+          ...createRequest("approval-missing-runtime-expiry", {
+            turnSourceChannel: "slack",
+            turnSourceTo: "channel:C123",
+          }),
+          expiresAtMs: Date.now() + requestTtlMs,
+        };
+        first.selectRequest({ approvalKind: "exec", request });
+        await first.reportSkipped({
+          approvalKind: "exec",
+          request,
+          reason: "owner-unavailable",
+        });
+        expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
+        const noticeTimer = setTimeoutSpy.mock.results[1]?.value;
+        expect(noticeTimer).toBeDefined();
+        expect(requestGateway).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(advanceMs);
+
+        expect(clearTimeoutSpy).toHaveBeenCalledWith(noticeTimer);
+        expect(requestGateway).toHaveBeenCalledTimes(noticeCalls);
+        const clearsAtDeadline = clearTimeoutSpy.mock.calls.length;
+        first.completeRequest(request.id);
+        // A long request still has its selection timer; neither path should retain a notice.
+        expect(clearTimeoutSpy.mock.calls.length).toBe(clearsAtDeadline + (noticeCalls ? 1 : 0));
+      } finally {
+        coordinator.close();
+        setTimeoutSpy.mockRestore();
+        clearTimeoutSpy.mockRestore();
+      }
+    },
+  );
+
   it("caps route-notice cleanup timers to five minutes", () => {
     vi.useFakeTimers();
     try {
