@@ -1,6 +1,7 @@
 // Gateway probe auth resolver.
 // Adapts gateway credential precedence for local/remote reachability checks.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { copyConfigResolutionFactsThroughRewrite } from "../config/resolution-facts.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   describeSecretResolutionOperatorDiagnostic,
@@ -76,7 +77,7 @@ export function resolveGatewayProbeCredentialConfig(params: {
   const credentialsWithoutAuth = { ...credentials };
   delete credentialsWithoutAuth.token;
   delete credentialsWithoutAuth.password;
-  return {
+  const config: OpenClawConfig = {
     ...params.cfg,
     gateway: {
       ...gateway,
@@ -85,6 +86,8 @@ export function resolveGatewayProbeCredentialConfig(params: {
         : { auth: credentialsWithoutAuth }),
     },
   };
+  copyConfigResolutionFactsThroughRewrite(params.cfg, config);
+  return config;
 }
 
 function hasExplicitProbeAuth(auth: { token?: string; password?: string }): boolean {

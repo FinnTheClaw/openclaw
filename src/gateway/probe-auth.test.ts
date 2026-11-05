@@ -277,6 +277,72 @@ describe("resolveGatewayProbeAuthSafeWithSecretInputs", () => {
     });
   });
 
+  it.each([
+    {
+      mode: "local",
+      field: "token",
+      authored: "${SOURCE}",
+      loadEnv: { SOURCE: "${OTHER}" },
+      probeEnv: { OTHER: "synthetic-decoy" },
+    },
+    {
+      mode: "local",
+      field: "password",
+      authored: "$${OTHER}",
+      loadEnv: {},
+      probeEnv: {},
+    },
+    {
+      mode: "remote",
+      field: "token",
+      authored: "$${OTHER}",
+      loadEnv: {},
+      probeEnv: { OTHER: "synthetic-decoy" },
+    },
+    {
+      mode: "remote",
+      field: "password",
+      authored: "${SOURCE}",
+      loadEnv: { SOURCE: "${OTHER}" },
+      probeEnv: {},
+    },
+  ] as const)(
+    "loaded provenance with peer auth: $mode $field ($authored)",
+    async ({ mode, field, authored, loadEnv, probeEnv }) => {
+      const targetAuth = { [field]: authored };
+      const peerAuth = { [field]: "synthetic-peer-credential" };
+      const read = resolveConfigForRead(
+        {
+          gateway: {
+            mode,
+            auth: { mode: field, ...(mode === "local" ? targetAuth : peerAuth) },
+            remote: {
+              url: "wss://gateway.example",
+              ...(mode === "remote" ? targetAuth : peerAuth),
+            },
+          },
+        },
+        loadEnv,
+      );
+      const cfg = read.resolvedConfigRaw as OpenClawConfig;
+      setConfigResolutionFacts(cfg, read.resolutionFacts);
+      const original = structuredClone(cfg);
+
+      const result = await resolveGatewayProbeAuthSafeWithSecretInputs({
+        cfg,
+        mode,
+        env: probeEnv,
+      });
+
+      expect(cfg).toEqual(original);
+      expect(result.warning).toBeUndefined();
+      expect(result.auth).toEqual({
+        token: field === "token" ? "${OTHER}" : undefined,
+        password: field === "password" ? "${OTHER}" : undefined,
+      });
+    },
+  );
+
   it.each(["$MISSING", "${MISSING}"])(
     "keeps unresolved authored shorthand unavailable: %s",
     async (authored) => {
