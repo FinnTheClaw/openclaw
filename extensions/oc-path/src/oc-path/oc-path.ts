@@ -667,7 +667,7 @@ export function quoteSeg(value: string): string {
       "OC_PATH_UNQUOTABLE",
     );
   }
-  return /[/.[\]{}?&%\s]/.test(value) ? `"${value}"` : value;
+  return value === "*" || value === "**" || /[/.[\]{}?&%\s]/.test(value) ? `"${value}"` : value;
 }
 
 function validateSubSegment(sub: string, input: string): void {

@@ -86,6 +86,45 @@ describe("findOcPaths — non-wildcard fast-path", () => {
   });
 });
 
+describe("L09-F026 literal wildcard result paths", () => {
+  it.each(["*", "**"].flatMap((key) => [false, true].map((nested) => ({ key, nested }))))(
+    "returns concrete paths for $key keys (nested=$nested)",
+    ({ key, nested }) => {
+      const values = { [key]: 1, ordinary: 2, "foo*bar": 3 };
+      const ast = parseJsonc(JSON.stringify(nested ? { items: values } : values)).ast;
+      const original = JSON.stringify(ast);
+      const prefix = nested ? "oc://config/items" : "oc://config";
+      const out = findOcPaths(ast, parseOcPath(prefix + "/*"));
+
+      expect(out.map((result) => formatOcPath(result.path))).toEqual([
+        prefix + '/"' + key + '"',
+        prefix + "/ordinary",
+        prefix + "/foo*bar",
+      ]);
+      expect(out.map((result) => result.match.kind === "leaf" && result.match.valueText)).toEqual([
+        "1",
+        "2",
+        "3",
+      ]);
+      for (const result of out) {
+        expect(isPattern(result.path)).toBe(false);
+        expect(resolveOcPath(ast, result.path)).toEqual(result.match);
+      }
+      expect(JSON.stringify(ast)).toBe(original);
+    },
+  );
+
+  it.each(["*", "**"])("keeps manually quoted $key resolution working", (key) => {
+    const ast = parseJsonc(JSON.stringify({ [key]: 7 })).ast;
+    const concrete = parseOcPath('oc://config/"' + key + '"');
+    expect(isPattern(concrete)).toBe(false);
+    const out = findOcPaths(ast, concrete);
+    expect(out).toHaveLength(1);
+    expect(requireFirstResult(out).match).toMatchObject({ kind: "leaf", valueText: "7" });
+    expect(resolveOcPath(ast, concrete)).toEqual(requireFirstResult(out).match);
+  });
+});
+
 describe("findOcPaths — JSONC kind", () => {
   const jsonc = parseJsonc(
     "{\n" +
