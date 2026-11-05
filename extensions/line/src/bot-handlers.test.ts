@@ -1,4 +1,4 @@
-import type { webhook } from "@line/bot-sdk";
+import { HTTPFetchError, type webhook } from "@line/bot-sdk";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import { MediaFetchError } from "openclaw/plugin-sdk/media-runtime";
 import type { HistoryEntry } from "openclaw/plugin-sdk/reply-history";
@@ -543,6 +543,111 @@ describe("handleLineWebhookEvents", () => {
       },
     });
     expect(readAllowFromStoreMock).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    (["pairing", "notice"] as const).flatMap((kind) => [
+      {
+        kind,
+        name: "wrapped reset after dispatch",
+        error: new Error("reply failed", {
+          cause: Object.assign(new Error("socket reset"), { code: "ECONNRESET" }),
+        }),
+        pushed: false,
+      },
+      {
+        kind,
+        name: "wrapped unknown fetch outcome",
+        error: new Error("reply failed", { cause: new TypeError("fetch failed") }),
+        pushed: false,
+      },
+      {
+        kind,
+        name: "connection refused before dispatch",
+        error: Object.assign(new Error("connect refused"), { code: "ECONNREFUSED" }),
+        pushed: true,
+      },
+      {
+        kind,
+        name: "definitive provider rejection",
+        error: new HTTPFetchError("400 - Bad Request", {
+          status: 400,
+          statusText: "Bad Request",
+          headers: new Headers(),
+          body: "invalid reply token",
+        }),
+        pushed: true,
+      },
+    ]),
+  )("handler reply outcome: $kind / $name", async ({ kind, error, pushed }) => {
+    const userId = "U0123456789abcdef0123456789abcdef";
+    const processMessage = vi.fn();
+    const context = createLineWebhookTestContext({ processMessage, dmPolicy: "pairing" });
+    const text =
+      kind === "pairing"
+        ? "Pairing challenge"
+        : "That question is no longer waiting for an answer.";
+    if (kind === "pairing") {
+      pairingDeliveryMocks.invokePairingReply = true;
+    } else {
+      readAllowFromStoreMock.mockResolvedValue([userId]);
+      resolveLineQuestionPostbackMock.mockResolvedValueOnce({ status: "already-terminal" });
+    }
+    pairingDeliveryMocks.replyMessageLine.mockRejectedValueOnce(error);
+    pairingDeliveryMocks.pushMessageLine.mockResolvedValue(undefined);
+    const event: webhook.Event =
+      kind === "pairing"
+        ? createTestMessageEvent({
+            replyToken: "reply-token",
+            message: { id: "handler-pairing", type: "text", text: "hello" },
+            source: { type: "user", userId },
+            webhookEventId: "handler-pairing-event",
+          })
+        : {
+            type: "postback",
+            replyToken: "reply-token",
+            timestamp: 1,
+            source: { type: "user", userId },
+            mode: "active",
+            webhookEventId: "handler-notice-event",
+            deliveryContext: { isRedelivery: false },
+            postback: {
+              data: "line.question=ask_0123456789abcdef0123456789abcdef&line.option=1",
+            },
+          };
+
+    await handleLineWebhookEvents([event], context);
+
+    const sendOptions = {
+      cfg: context.cfg,
+      accountId: "default",
+      channelAccessToken: "token",
+      ...(kind === "notice" ? { authorize: expect.any(Function) } : {}),
+    };
+    expect(pairingDeliveryMocks.replyMessageLine).toHaveBeenCalledExactlyOnceWith(
+      "reply-token",
+      [{ type: "text", text }],
+      sendOptions,
+    );
+    expect(pairingDeliveryMocks.pushMessageLine).toHaveBeenCalledTimes(pushed ? 1 : 0);
+    if (pushed) {
+      expect(pairingDeliveryMocks.pushMessageLine).toHaveBeenCalledExactlyOnceWith(
+        `line:${userId}`,
+        text,
+        sendOptions,
+      );
+    }
+    expect(processMessage).not.toHaveBeenCalled();
+    if (kind === "notice") {
+      expect(upsertPairingRequestMock).not.toHaveBeenCalled();
+    } else {
+      expect(upsertPairingRequestMock).toHaveBeenCalledExactlyOnceWith({
+        channel: "line",
+        id: userId,
+        accountId: "default",
+        meta: {},
+      });
+    }
   });
 
   it.each([
