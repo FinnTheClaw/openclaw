@@ -1,5 +1,7 @@
 // Whatsapp tests cover resolve target plugin behavior.
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import {
   isWhatsAppGroupJid,
   isWhatsAppNewsletterJid,
@@ -10,6 +12,7 @@ import {
   normalizeWhatsAppTarget,
 } from "./normalize-target.js";
 import { resolveWhatsAppOutboundTarget } from "./resolve-outbound-target.js";
+import { toWhatsappJidWithLid } from "./targets-runtime.js";
 
 describe("normalizeWhatsAppTarget", () => {
   it("preserves group JIDs", () => {
@@ -48,9 +51,9 @@ describe("normalizeWhatsAppTarget", () => {
     expect(normalizeWhatsAppTarget("41796666864@s.whatsapp.net")).toBe("+41796666864");
   });
 
-  it("normalizes LID JIDs to E.164", () => {
-    expect(normalizeWhatsAppTarget("123456789@lid")).toBe("+123456789");
-    expect(normalizeWhatsAppTarget("123456789@LID")).toBe("+123456789");
+  it("LID target identity: preserves canonical LID JIDs", () => {
+    expect(normalizeWhatsAppTarget("123456789@lid")).toBe("123456789@lid");
+    expect(normalizeWhatsAppTarget("123456789@LID")).toBe("123456789@lid");
   });
 
   it("rejects invalid targets", () => {
@@ -162,4 +165,74 @@ describe("resolveWhatsAppOutboundTarget", () => {
       }),
     ).toEqual({ ok: true, to: "120363401234567890@g.us" });
   });
+});
+
+describe("explicit LID transport identity", () => {
+  it.each([
+    ["raw LID", "987654@lid", ["*"], "987654@lid", "987654@lid"],
+    ["prefixed uppercase LID", " WhatsApp:987654@LID ", ["987654@lid"], "987654@lid", "987654@lid"],
+    ["LID is not equal-digit PN", "987654@lid", ["+987654"], null, null],
+    ["PN is not equal-digit LID", "+987654", ["987654@lid"], null, null],
+    ["genuine PN forward mapping", "+15555550000", ["+15555550000"], "+15555550000", "987654@lid"],
+    [
+      "device PN forward mapping",
+      "15555550000:2@s.whatsapp.net",
+      ["+15555550000"],
+      "+15555550000",
+      "987654@lid",
+    ],
+  ] as const)(
+    "LID target identity: %s",
+    (_scenario, input, allowFrom, expectedTarget, expectedJid) => {
+      const readFileSync = fs.readFileSync;
+      const mappingReads = vi.spyOn(fs, "readFileSync").mockImplementation((file, options) => {
+        const filename = path.basename(String(file));
+        if (!filename.startsWith("lid-mapping-")) {
+          return readFileSync(file, options);
+        }
+        // Synthetic PN/LID namespaces deliberately differ; no account file is read.
+        if (filename === "lid-mapping-15555550000.json") {
+          return JSON.stringify("987654");
+        }
+        if (filename === "lid-mapping-987654.json") {
+          return JSON.stringify("777777");
+        }
+        throw Object.assign(new Error("No synthetic LID mapping"), { code: "ENOENT" });
+      });
+      const originalInput = input;
+      const policy = [...allowFrom];
+      const originalPolicy = [...policy];
+      try {
+        const normalized = normalizeWhatsAppMessagingTarget(input);
+        const resolved = resolveWhatsAppOutboundTarget({
+          to: normalized,
+          allowFrom: policy,
+          mode: "explicit",
+        });
+        expect(input).toBe(originalInput);
+        expect(policy).toEqual(originalPolicy);
+        if (expectedTarget === null) {
+          expect(resolved.ok).toBe(false);
+          if (!resolved.ok) {
+            expect(resolved.error.message).toContain(
+              "not listed in the configured WhatsApp allowFrom policy",
+            );
+          }
+          return;
+        }
+        expect(resolved.ok).toBe(true);
+        if (!resolved.ok) {
+          throw resolved.error;
+        }
+        const jid = toWhatsappJidWithLid(resolved.to, {
+          authDir: "/synthetic/whatsapp-lid-fixture",
+        });
+        expect(jid).toBe(expectedJid);
+        expect(resolved.to).toBe(expectedTarget);
+        expect(normalized).toBe(expectedTarget);
+      } finally {
+        mappingReads.mockRestore();
+      }
+    },
+  );
 });

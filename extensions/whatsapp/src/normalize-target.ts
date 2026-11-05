@@ -71,6 +71,10 @@ export function normalizeWhatsAppTarget(value: string): string | null {
   if (newsletterMatch) {
     return `${newsletterMatch[1]}@newsletter`;
   }
+  const lidMatch = candidate.match(WHATSAPP_LID_RE);
+  if (lidMatch) {
+    return `${lidMatch[1]}@lid`;
+  }
   const phone = extractUserJidPhone(candidate);
   if (phone) {
     const normalized = normalizeE164(phone);
