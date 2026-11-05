@@ -825,6 +825,25 @@ export async function processGatewayAllowlist(
         });
       return {
         execCommandOverride: enforcedCommand,
+        // Final synchronous launch checks validate without recording another use.
+        assertCurrent: () => {
+          let currentGrant: ReturnType<typeof validateCronStandingGrant> | undefined;
+          try {
+            currentGrant = validateCronStandingGrant(grantLookup);
+          } catch {
+            currentGrant = undefined;
+          }
+          if (currentGrant?.outcome === "consumed") {
+            return;
+          }
+          const invalidReason = currentGrant?.outcome ?? "grant-store-unavailable";
+          emitGrantEvent(false, "standing-grant-invalidated " + invalidReason);
+          throw new Error(
+            "standing grant no longer valid (" +
+              invalidReason +
+              "); the next occurrence will prompt for approval again",
+          );
+        },
         // Durable authority is recorded only at the final effect: awaited
         // pre-spawn work (script preflight) can outlive a revocation or job
         // edit, so the grant is re-verified and consumed right before the

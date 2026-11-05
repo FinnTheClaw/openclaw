@@ -17,7 +17,10 @@ import {
   upsertCronJobRow,
 } from "../cron/store/row-codec.js";
 import type { CronStoredJob } from "../cron/types.js";
-import { buildCronExecOperationBinding } from "../gateway/operator-approval-standing-grants.js";
+import {
+  buildCronExecOperationBinding,
+  revokeCronStandingGrant,
+} from "../gateway/operator-approval-standing-grants.js";
 import {
   insertOperatorApproval,
   resolveOperatorApproval,
@@ -64,6 +67,7 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
+import { runtimeManagedRun } from "./bash-tools.exec-runtime.test-support.js";
 import type {
   ExecApprovalFollowupFactory,
   ExecApprovalFollowupOutcome,
@@ -1950,6 +1954,117 @@ EOF`,
         ask: "on-miss",
       });
     }
+
+    it.each(["unchanged", "grant-revoked", "approval-denied"] as const)(
+      "L03-F014 rechecks a %s standing grant after the controlled final-launch wait",
+      async (state) => {
+        await prepareCronRun(true);
+        const approval = await runCron();
+        expect(approval.pendingResult).toBeUndefined();
+        expect(approval.deniedResult).toBeUndefined();
+        expect(approval.revalidateBeforeExecution).toBeDefined();
+        expect(readGrantUseCounts()).toEqual([0]);
+        const runtime = await vi.importActual<typeof import("./bash-tools.exec-runtime.js")>(
+          "./bash-tools.exec-runtime.js",
+        );
+        const entered = createDeferredCore();
+        const release = createDeferredCore();
+        const launchMarker = vi.fn();
+        const controller = new AbortController();
+        // This supervisor stub is the final synchronous policy boundary only.
+        // It never delegates to a native adapter or starts the command.
+        startupCancellationMocks.spawn.mockImplementationOnce(async (input) => {
+          entered.resolve();
+          await release.promise;
+          input.assertCurrent?.();
+          input.beforeSpawn?.();
+          input.beforeSpawn?.();
+          launchMarker();
+          return runtimeManagedRun(input);
+        });
+        const settled = runtime
+          .runExecProcess({
+            command: grantCommand,
+            execCommand: approval.execCommandOverride,
+            workdir,
+            env: { PATH: "/usr/bin:/bin" },
+            usePty: false,
+            warnings: [],
+            maxOutput: 1000,
+            pendingMaxOutput: 1000,
+            notifyOnExit: false,
+            timeoutSec: null,
+            startupSignal: controller.signal,
+            beforeSpawn: approval.revalidateBeforeExecution,
+            assertCurrent: approval.assertCurrent,
+          })
+          .then(async (run) => ({ kind: "completed" as const, outcome: await run.promise }))
+          .catch((error: unknown) => ({ kind: "rejected" as const, error }));
+        try {
+          await Promise.race([
+            entered.promise,
+            settled.then(() => {
+              throw new Error("runtime settled before the controlled final-launch boundary");
+            }),
+          ]);
+          // The async preflight has consumed exactly once before the deferred boundary.
+          expect(readGrantUseCounts()).toEqual([1]);
+          expect(launchMarker).not.toHaveBeenCalled();
+          if (state === "grant-revoked") {
+            const database = openOpenClawStateDatabase(databaseOptions());
+            const stateDb = getNodeSqliteKysely<
+              Pick<OpenClawStateKyselyDatabase, "operator_approval_standing_grants">
+            >(database.db);
+            const row = executeSqliteQuerySync(
+              database.db,
+              stateDb.selectFrom("operator_approval_standing_grants").select(["grant_id"]),
+            ).rows[0];
+            if (!row) {
+              throw new Error("expected the test-owned standing grant");
+            }
+            expect(
+              revokeCronStandingGrant({
+                grantId: row.grant_id,
+                revokedBy: "test-final-boundary",
+                databaseOptions: databaseOptions(),
+              }).outcome,
+            ).toBe("revoked");
+          } else if (state === "approval-denied") {
+            const database = openOpenClawStateDatabase(databaseOptions());
+            // sqlite-allow-raw -- test-owned reversal after consumption and before final launch.
+            database.db
+              .prepare(
+                "update operator_approvals set status = 'denied', decision = 'deny' where approval_id = ?",
+              )
+              .run("cron-approval-1");
+          }
+          expect(readGrantUseCounts()).toEqual([1]);
+          release.resolve();
+          const result = await settled;
+          expect({
+            status: result.kind === "completed" ? result.outcome.status : "rejected",
+            launches: launchMarker.mock.calls.length,
+            useCounts: readGrantUseCounts(),
+            aborted: controller.signal.aborted,
+          }).toEqual({
+            status: state === "unchanged" ? "completed" : "rejected",
+            launches: state === "unchanged" ? 1 : 0,
+            useCounts: [1],
+            aborted: false,
+          });
+          if (state !== "unchanged") {
+            expect(result.kind === "rejected" ? String(result.error) : "").toContain(
+              "standing grant",
+            );
+          }
+          expect(startupCancellationMocks.spawn).toHaveBeenCalledOnce();
+          expect(createExecApprovalRequestRouteMock).not.toHaveBeenCalled();
+        } finally {
+          release.resolve();
+          await settled;
+        }
+      },
+    );
 
     it("executes a cron occurrence via a standing grant without prompting", async () => {
       await prepareCronRun(true);
