@@ -34,7 +34,7 @@ describe("fetchRemoteEmbeddingVectors", () => {
   it("maps remote embedding response data to vectors", async () => {
     postJsonMock.mockImplementationOnce(async (params) => {
       return await params.parse({
-        data: [{ embedding: [0.1, 0.2] }, { embedding: [0.4] }, { embedding: [0.3] }],
+        data: [{ embedding: [0.1, 0.2] }, { embedding: [0.4, 0.5] }, { embedding: [0.3, 0.6] }],
       });
     });
 
@@ -45,12 +45,33 @@ describe("fetchRemoteEmbeddingVectors", () => {
       errorPrefix: "embedding fetch failed",
     });
 
-    expect(vectors).toEqual([[0.1, 0.2], [0.4], [0.3]]);
+    expect(vectors).toEqual([
+      [0.1, 0.2],
+      [0.4, 0.5],
+      [0.3, 0.6],
+    ]);
     const postJsonParams = requirePostJsonParams();
     expect(postJsonParams.url).toBe("https://memory.example/v1/embeddings");
     expect(postJsonParams.headers).toEqual({ Authorization: "Bearer test" });
     expect(postJsonParams.body).toEqual({ input: ["one", "two", "three"] });
     expect(postJsonParams.errorPrefix).toBe("embedding fetch failed");
+  });
+
+  it("rejects mixed-dimension vectors in a document batch", async () => {
+    postJsonMock.mockImplementationOnce(async (params) =>
+      params.parse({
+        data: [{ embedding: [0.1, 0.2] }, { embedding: [0.4] }, { embedding: [0.3] }],
+      }),
+    );
+
+    await expect(
+      fetchRemoteEmbeddingVectors({
+        url: "https://memory.example/v1/embeddings",
+        headers: { Authorization: "Bearer test" },
+        body: { input: ["one", "two", "three"] },
+        errorPrefix: "embedding fetch failed",
+      }),
+    ).rejects.toThrow("embedding fetch failed: malformed JSON response");
   });
 
   it("passes abort signals to the JSON request", async () => {
