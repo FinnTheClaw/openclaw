@@ -601,7 +601,12 @@ export function reduceReasoningText(
     const tagEnd = tag.index + tag.text.length;
 
     if (tag.isSelfClosing) {
-      if (state.depth === 0 && options.scope === "leading" && state.visibleEver) {
+      if (
+        state.depth === 0 &&
+        options.scope === "leading" &&
+        state.visibleEver &&
+        !mustParseRemainder[tagIndex]
+      ) {
         emit("text", text.slice(tag.index));
         cursor = text.length;
         break;

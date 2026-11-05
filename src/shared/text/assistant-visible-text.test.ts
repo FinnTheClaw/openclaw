@@ -736,6 +736,51 @@ describe("sanitizeAssistantVisibleText", () => {
     expect(sanitizeAssistantVisibleText(text)).toBe("Visible prefix  visible suffix");
   });
 
+  it.each([
+    {
+      name: "closed internal block",
+      input: "Visible <think/><internal>hidden internal sentinel</internal> tail",
+      expected: "Visible  tail",
+    },
+    {
+      name: "closed reasoning block",
+      input: "Visible <think/><think>hidden reasoning sentinel</think> tail",
+      expected: "Visible  tail",
+    },
+    {
+      name: "nested unclosed internal block",
+      input: "Visible <thinking/><think><internal>hidden nested sentinel",
+      expected: "Visible",
+    },
+    {
+      name: "plain prose",
+      input: "Visible ordinary answer tail",
+      expected: "Visible ordinary answer tail",
+    },
+    {
+      name: "unmatched self-closing literal",
+      input: "Use <think/> literally here",
+      expected: "Use <think/> literally here",
+    },
+    {
+      name: "inline-code literal tags",
+      input: "Example `<think/><internal>literal sentinel</internal>` tail",
+      expected: "Example `<think/><internal>literal sentinel</internal>` tail",
+    },
+  ])(
+    "L12-F010 keeps filtering after a self-closing reasoning tag: $name",
+    ({ input, expected }) => {
+      const originalInput = input;
+      const finalAnswer = sanitizeAssistantFinalAnswerText(input);
+      expect(finalAnswer).toBe(expected);
+      expect(sanitizeAssistantVisibleTextWithProfile(input, "final-answer-delivery")).toBe(
+        expected,
+      );
+      expect(sanitizeAssistantFinalAnswerText(finalAnswer)).toBe(expected);
+      expect(input).toBe(originalInput);
+    },
+  );
+
   it("keeps unclosed literal reasoning-looking tags in final-answer prose", () => {
     expect(
       sanitizeAssistantFinalAnswerText("<think>hidden</think>Use <think> literally here"),
