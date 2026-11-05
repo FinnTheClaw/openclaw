@@ -295,7 +295,7 @@ export async function resolveAgentDeliveryPlanWithSessionRoute(
         resolvedThreadId: requestedThreadId,
       };
     }
-    return resolvedPlan;
+    return { ...resolvedPlan, resolvedThreadId: requestedThreadId };
   }
   return {
     ...resolvedPlan,

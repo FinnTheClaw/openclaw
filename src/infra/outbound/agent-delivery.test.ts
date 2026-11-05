@@ -1,6 +1,10 @@
 // Covers agent delivery planning from explicit inputs, session history,
 // turn-source overrides, and route-aware target normalization.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  resolveSessionDeliveryTarget as resolveActualSessionDeliveryTarget,
+  type SessionDeliveryTarget,
+} from "./targets-session.js";
 
 const mocks = vi.hoisted(() => ({
   resolveOutboundChannelPlugin: vi.fn<() => unknown>(() => null),
@@ -37,7 +41,7 @@ const mocks = vi.hoisted(() => ({
       turnSourceTo?: string;
       turnSourceAccountId?: string;
       turnSourceThreadId?: string | number;
-    }) => {
+    }): SessionDeliveryTarget => {
       const sessionContext =
         params.entry?.delivery?.kind === "external" ? (params.entry.delivery.context ?? {}) : {};
       const lastChannel = params.turnSourceChannel ?? sessionContext.channel;
@@ -878,6 +882,94 @@ describe("agent delivery helpers", () => {
     expect(mocks.resolveOutboundTarget).not.toHaveBeenCalled();
     expect(resolved.resolvedTarget).toEqual({ ok: false, error: targetResolutionError });
     expect(resolved.resolvedTo).toBeUndefined();
+  });
+
+  it.each([
+    { name: "null route clears an inherited thread on explicit retarget", route: "null" },
+    { name: "throwing route clears an inherited thread on explicit retarget", route: "throw" },
+    {
+      name: "null route preserves an explicitly requested retarget thread",
+      route: "null",
+      explicitThreadId: "1700000000.000200",
+      expectedThreadId: "1700000000.000200",
+    },
+    {
+      name: "throwing route preserves an explicitly requested retarget thread",
+      route: "throw",
+      explicitThreadId: "1700000000.000200",
+      expectedThreadId: "1700000000.000200",
+    },
+    {
+      name: "null route preserves the implicit same-conversation thread",
+      route: "null",
+      implicit: true,
+      expectedThreadId: "1700000000.000100",
+    },
+    {
+      name: "throwing route preserves the implicit same-conversation thread",
+      route: "throw",
+      implicit: true,
+      expectedThreadId: "1700000000.000100",
+    },
+    { name: "successful retarget route clears the inherited thread", route: "success" },
+    {
+      name: "directory fallback clears the inherited retarget thread",
+      route: "null",
+      directory: true,
+    },
+  ])("retarget fallback: $name", async (testCase) => {
+    const history = sessionEntry({
+      channel: "workspace",
+      to: "channel:C999",
+      threadId: "1700000000.000100",
+    });
+    const to = testCase.implicit ? "channel:C999" : "channel:C123";
+    mocks.resolveSessionDeliveryTarget.mockImplementationOnce((params) =>
+      resolveActualSessionDeliveryTarget({ ...params, entry: history }),
+    );
+    mocks.resolveOutboundChannelPlugin.mockReturnValue({
+      messaging: { resolveOutboundSessionRoute: vi.fn() },
+    });
+    mocks.resolveOutboundTarget.mockReturnValueOnce({ ok: true, to });
+    if (testCase.directory) {
+      mocks.resolveChannelTarget.mockResolvedValueOnce({
+        ok: true,
+        target: { to, kind: "group", source: "directory", resolutionSource: "directory" },
+      });
+    }
+    if (testCase.route === "throw") {
+      mocks.resolveOutboundSessionRoute.mockRejectedValueOnce(new Error("controlled route miss"));
+    } else {
+      mocks.resolveOutboundSessionRoute.mockResolvedValueOnce(
+        testCase.route === "success"
+          ? {
+              sessionKey: "agent:workspace:channel:C123",
+              baseSessionKey: "agent:workspace:channel:C123",
+              peer: { kind: "channel", id: "C123" },
+              chatType: "channel",
+              from: "workspace:channel:C123",
+              to,
+            }
+          : null,
+      );
+    }
+
+    const plan = await resolveAgentDeliveryPlanWithSessionRoute({
+      cfg: {} as OpenClawConfig,
+      agentId: "agent",
+      sessionEntry: history,
+      requestedChannel: "workspace",
+      explicitTo: testCase.implicit ? undefined : to,
+      explicitThreadId: testCase.explicitThreadId,
+      wantsDelivery: true,
+    });
+
+    expect(mocks.resolveOutboundSessionRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ target: to, threadId: testCase.expectedThreadId }),
+    );
+    expect(plan.resolvedTo).toBe(to);
+    expect(plan.resolvedThreadId).toBe(testCase.expectedThreadId);
+    expect(plan.targetResolutionError).toBeUndefined();
   });
 
   it("falls back to the original plan when session-route canonicalization fails", async () => {
