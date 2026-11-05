@@ -52,7 +52,7 @@ describe("sticker-cache", () => {
       fallback: null,
     },
     {
-      operation: "register",
+      operation: "compareAndApply",
       run: () =>
         stickerCache.cacheSticker({
           fileId: "file-failure",
@@ -95,10 +95,10 @@ describe("sticker-cache", () => {
       const release = createDeferred<void>();
       installStore({
         ...backingStore,
-        async register(key, value, options) {
+        async compareAndApply(key, comparison, intent) {
           entered.resolve();
           await release.promise;
-          await backingStore.register(key, value, options);
+          return await backingStore.compareAndApply!(key, comparison, intent);
         },
       });
       const sticker = {

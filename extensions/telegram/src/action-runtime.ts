@@ -76,6 +76,7 @@ import {
 import { TELEGRAM_SUPPORTED_REACTION_EMOJI_LIST } from "./status-reaction-variants.js";
 import { getCacheStats, searchStickers } from "./sticker-cache.js";
 import { normalizeTelegramOutboundTarget, parseTelegramTarget } from "./targets.js";
+import { resolveTelegramBotUserIdFromToken } from "./token-fingerprint.js";
 import { resolveTelegramToken } from "./token.js";
 import { updateTopicName } from "./topic-name-cache.js";
 
@@ -851,7 +852,8 @@ export async function handleTelegramAction(
       readPositiveIntegerParam(params, "limit", {
         message: "limit must be a positive integer.",
       }) ?? 5;
-    const results = await searchStickers(query, limit);
+    const botUserId = resolveTelegramBotUserIdFromToken(requireToken());
+    const results = botUserId === undefined ? [] : await searchStickers(query, limit, botUserId);
     return jsonResult({
       ok: true,
       count: results.length,

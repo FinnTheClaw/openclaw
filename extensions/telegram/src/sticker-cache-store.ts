@@ -9,6 +9,7 @@ const TELEGRAM_STICKER_CACHE_MAX_ENTRIES = 10_000;
 export interface CachedSticker {
   fileId: string;
   fileUniqueId: string;
+  fileIdsByBot?: Record<string, string>;
   emoji?: string;
   setName?: string;
   description: string;
@@ -58,15 +59,42 @@ export async function getCachedSticker(fileUniqueId: string): Promise<CachedStic
   );
 }
 
-export async function cacheSticker(sticker: CachedSticker): Promise<void> {
+export async function cacheSticker(sticker: CachedSticker, botUserId?: number): Promise<void> {
   await readStickerCacheStore(
     "register",
-    (store) => store.register(sticker.fileUniqueId, normalizeCachedStickerForStore(sticker)),
+    async (store) => {
+      if (!store.observe || !store.compareAndApply) {
+        throw new Error("Telegram sticker cache requires plugin-state comparison support");
+      }
+      let observation = await store.observe(sticker.fileUniqueId);
+      for (;;) {
+        const fileIdsByBot = { ...observation.value?.fileIdsByBot };
+        if (botUserId !== undefined) {
+          fileIdsByBot[String(botUserId)] = sticker.fileId;
+        }
+        const result = await store.compareAndApply(sticker.fileUniqueId, observation.comparison, {
+          operation: "update",
+          action: "set",
+          value: {
+            ...normalizeCachedStickerForStore(sticker),
+            ...(Object.keys(fileIdsByBot).length > 0 ? { fileIdsByBot } : {}),
+          },
+        });
+        if (result.status !== "conflict") {
+          return;
+        }
+        observation = result.current;
+      }
+    },
     undefined,
   );
 }
 
-export async function searchStickers(query: string, limit = 10): Promise<CachedSticker[]> {
+export async function searchStickers(
+  query: string,
+  limit = 10,
+  botUserId?: number,
+): Promise<CachedSticker[]> {
   const queryLower = normalizeLowercaseStringOrEmpty(query);
   const queryWords = queryLower.split(/\s+/).filter(Boolean);
   const results: Array<{ sticker: CachedSticker; score: number }> = [];
@@ -76,6 +104,11 @@ export async function searchStickers(query: string, limit = 10): Promise<CachedS
     (store) => store.entries(),
     [],
   )) {
+    const fileId =
+      botUserId === undefined ? sticker.fileId : sticker.fileIdsByBot?.[String(botUserId)];
+    if (!fileId) {
+      continue;
+    }
     let score = 0;
     const descLower = normalizeLowercaseStringOrEmpty(sticker.description);
 
@@ -99,7 +132,10 @@ export async function searchStickers(query: string, limit = 10): Promise<CachedS
     }
 
     if (score > 0) {
-      results.push({ sticker, score });
+      results.push({
+        sticker: normalizeCachedStickerForStore({ ...sticker, fileId }),
+        score,
+      });
     }
   }
 

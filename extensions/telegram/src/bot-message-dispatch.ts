@@ -44,6 +44,7 @@ import {
 } from "./bot/native-quote.js";
 import { resolveTelegramRichMessages, resolveTelegramTableMode } from "./rich-messages-config.js";
 import { cacheSticker, describeStickerImage } from "./sticker-cache.js";
+import { resolveTelegramBotUserIdFromToken } from "./token-fingerprint.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
 const silentReplyDispatchLogger = createSubsystemLogger("telegram/silent-reply-dispatch");
@@ -161,6 +162,7 @@ function resolveTelegramQuoteContext(params: {
 async function prepareTelegramSticker(params: {
   cfg: DispatchTelegramMessageParams["cfg"];
   context: TelegramMessageContext;
+  token: DispatchTelegramMessageParams["opts"]["token"];
 }) {
   const { context } = params;
   const sticker = context.ctxPayload.Sticker;
@@ -207,15 +209,18 @@ async function prepareTelegramSticker(params: {
     context.ctxPayload.BodyForAgent = context.ctxPayload.agentText;
     context.ctxPayload.SkipStickerMediaUnderstanding = true;
   }
-  await cacheSticker({
-    fileId: sticker.fileId,
-    fileUniqueId: sticker.fileUniqueId,
-    emoji: sticker.emoji,
-    setName: sticker.setName,
-    description,
-    cachedAt: new Date().toISOString(),
-    receivedFrom: context.ctxPayload.From,
-  });
+  await cacheSticker(
+    {
+      fileId: sticker.fileId,
+      fileUniqueId: sticker.fileUniqueId,
+      emoji: sticker.emoji,
+      setName: sticker.setName,
+      description,
+      cachedAt: new Date().toISOString(),
+      receivedFrom: context.ctxPayload.From,
+    },
+    resolveTelegramBotUserIdFromToken(params.token),
+  );
   logVerbose(`telegram: cached sticker description for ${sticker.fileUniqueId}`);
 }
 
@@ -363,7 +368,11 @@ export const dispatchTelegramMessage = async (
     dispatchContext.threadSpec.scope === "dm" &&
     dispatchContext.threadSpec.id != null;
   try {
-    await prepareTelegramSticker({ cfg, context: dispatchContext });
+    await prepareTelegramSticker({
+      cfg,
+      context: dispatchContext,
+      token: dispatchParams.opts.token,
+    });
     if (isDmTopic) {
       try {
         const sessionKey = dispatchContext.ctxPayload.SessionKey;

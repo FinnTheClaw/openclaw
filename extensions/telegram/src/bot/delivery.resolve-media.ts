@@ -6,6 +6,7 @@ import type { TelegramTransport } from "../fetch.js";
 import type { TelegramResolvedMedia } from "../message-cache-persistence.js";
 import { isRetryableTelegramApiError, readTelegramRetryAfterMs } from "../network-errors.js";
 import { cacheSticker, getCachedSticker } from "../sticker-cache.js";
+import { resolveTelegramBotUserIdFromToken } from "../token-fingerprint.js";
 import {
   formatErrorMessage,
   logVerbose,
@@ -397,13 +398,19 @@ export async function resolveMedia(params: {
   if (sticker) {
     const cached = sticker.file_unique_id ? await getCachedSticker(sticker.file_unique_id) : null;
     const fileId = sticker.file_id ?? cached?.fileId;
+    const botUserId = resolveTelegramBotUserIdFromToken(params.token);
     const emoji = sticker.emoji ?? cached?.emoji;
     const setName = sticker.set_name ?? cached?.setName;
     if (cached) {
       logVerbose(`telegram: sticker cache hit for ${sticker.file_unique_id}`);
-      if (fileId !== cached.fileId || emoji !== cached.emoji || setName !== cached.setName) {
-        // Refresh cached sticker metadata on hits so sends/searches use latest file_id.
-        await cacheSticker({ ...cached, fileId, emoji, setName });
+      if (
+        fileId !== cached.fileId ||
+        emoji !== cached.emoji ||
+        setName !== cached.setName ||
+        (botUserId !== undefined && cached.fileIdsByBot?.[String(botUserId)] !== fileId)
+      ) {
+        // Refresh shared metadata and this bot's sendable file identity.
+        await cacheSticker({ ...cached, fileId, emoji, setName }, botUserId);
       }
     }
     stickerMetadata = {
