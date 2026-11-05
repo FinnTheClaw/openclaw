@@ -260,11 +260,15 @@ async function runCommand(params: {
   });
 }
 
-async function withPreservedPackageOutputs<T>(repoRoot: string, run: () => Promise<T>): Promise<T> {
+export async function withPreservedPackageOutputs<T>(
+  repoRoot: string,
+  run: () => Promise<T>,
+): Promise<T> {
   const packageRoot = path.join(repoRoot, "packages", "gateway-protocol");
   const targets = [path.join(packageRoot, "dist"), path.join(packageRoot, "protocol.schema.json")];
   const backupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gateway-protocol-pack-"));
   const backups: Array<{ backup: string; target: string }> = [];
+  let prepared = false;
   try {
     for (const [index, target] of targets.entries()) {
       try {
@@ -276,10 +280,13 @@ async function withPreservedPackageOutputs<T>(repoRoot: string, run: () => Promi
       await fs.rename(target, backup);
       backups.push({ backup, target });
     }
+    prepared = true;
     return await run();
   } finally {
-    for (const target of targets) {
-      await fs.rm(target, { force: true, recursive: true });
+    if (prepared) {
+      for (const target of targets) {
+        await fs.rm(target, { force: true, recursive: true });
+      }
     }
     for (const { backup, target } of backups) {
       await fs.rename(backup, target);
