@@ -324,6 +324,155 @@ it.each(["shared", "other-agent"] as const)(
   },
 );
 
+it.each([
+  { reason: "auth", replacement: "key", timing: "queued" },
+  { reason: "auth_permanent", replacement: "key", timing: "queued" },
+  { reason: "billing", replacement: "key", timing: "queued" },
+  { reason: "auth_permanent", replacement: "provider", timing: "queued" },
+  { reason: "auth_permanent", replacement: "key", timing: "published" },
+  { reason: "auth", replacement: "identical", timing: "queued" },
+] as const)(
+  "L13-F005 binds delayed $reason bookkeeping to its credential ($replacement, $timing)",
+  async (scenario) => {
+    await withOpenClawTestState(
+      { label: "auth-health-credential-replacement", scenario: "minimal" },
+      async (state) => {
+        const cfg = { agents: { list: [{ id: "main", default: true }, { id: "voice" }] } };
+        setRuntimeConfigSnapshot(cfg, cfg);
+        const agentDir = state.agentDir("voice");
+        const siblingId = "fixture-provider:sibling";
+        const store = createStore();
+        store.profiles[siblingId] = {
+          type: "api_key",
+          provider: "fixture-provider",
+          key: "synthetic-sibling-key",
+        };
+        store.usageStats = {
+          [profileId]: {
+            errorCount: 3,
+            cooldownReason: "auth",
+            cooldownUntil: Date.now() + 60_000,
+            lastUsed: 123,
+          },
+          [siblingId]: { errorCount: 2, lastUsed: 456 },
+        };
+        const callerBefore = structuredClone(store);
+        saveAuthProfileStore(store, agentDir, saveOptions);
+        setRuntimeAuthProfileStoreSnapshot(store, agentDir);
+        const database = openOpenClawAgentDatabase({ agentId: "voice" });
+        const replacementStore = structuredClone(store);
+        replacementStore.profiles[profileId] = {
+          type: "api_key",
+          provider:
+            scenario.replacement === "provider" ? "fixture-provider-other" : "fixture-provider",
+          key:
+            scenario.replacement === "identical"
+              ? "synthetic-auth-admission-key"
+              : "synthetic-replacement-key",
+        };
+        replacementStore.usageStats![profileId] = { errorCount: 0, lastUsed: 123 };
+        const replacementBefore = structuredClone(replacementStore);
+        const entered = createDeferredCore();
+        const release = createDeferredCore();
+        let publication:
+          | { durable: AuthProfileStore | null | undefined; runtime: AuthProfileStore | undefined }
+          | undefined;
+        const replacement = runOpenClawAgentWriteAdmission(
+          { agentId: "voice", path: database.path },
+          async () => {
+            entered.resolve();
+            await release.promise;
+            saveAuthProfileStore(replacementStore, agentDir, saveOptions);
+            // Capture real publication/reset while this earlier writer still owns admission.
+            publication = {
+              durable: structuredClone(loadPersistedAuthProfileStore(agentDir)),
+              runtime: structuredClone(getRuntimeAuthProfileStoreSnapshotCore(agentDir)),
+            };
+          },
+        );
+        let update: Promise<void> | undefined;
+        let settled = false;
+        try {
+          await entered.promise;
+          if (scenario.timing === "queued") {
+            update = markAuthProfileFailure({
+              store,
+              profileId,
+              reason: scenario.reason,
+              agentDir,
+            }).finally(() => {
+              settled = true;
+            });
+            void update.catch(() => {});
+            await nextTurn();
+            expect({
+              settled,
+              credential: loadPersistedAuthProfileStore(agentDir)?.profiles[profileId],
+            }).toEqual({
+              settled: false,
+              credential: callerBefore.profiles[profileId],
+            });
+          }
+          release.resolve();
+          await replacement;
+          expect(publication?.durable?.profiles[profileId]).toEqual(
+            replacementBefore.profiles[profileId],
+          );
+          expect(publication?.runtime?.profiles[profileId]).toEqual(
+            replacementBefore.profiles[profileId],
+          );
+          expect(publication?.durable?.usageStats).toEqual(replacementBefore.usageStats);
+          expect(publication?.runtime?.usageStats).toEqual(replacementBefore.usageStats);
+          if (scenario.timing === "published") {
+            update = markAuthProfileFailure({
+              store,
+              profileId,
+              reason: scenario.reason,
+              agentDir,
+            }).finally(() => {
+              settled = true;
+            });
+            void update.catch(() => {});
+          }
+          await update;
+          expect(settled).toBe(true);
+          const durable = loadPersistedAuthProfileStore(agentDir);
+          const runtime = getRuntimeAuthProfileStoreSnapshotCore(agentDir);
+          expect(durable?.profiles).toEqual(replacementBefore.profiles);
+          expect(runtime?.profiles).toEqual(replacementBefore.profiles);
+          expect(store.profiles).toEqual(callerBefore.profiles);
+          expect(replacementStore).toEqual(replacementBefore);
+          for (const current of [durable, runtime, store]) {
+            expect(current?.usageStats?.[siblingId]).toEqual(callerBefore.usageStats?.[siblingId]);
+          }
+          if (scenario.replacement === "identical") {
+            for (const current of [durable, runtime, store]) {
+              expect(current?.usageStats?.[profileId]).toMatchObject({
+                errorCount: 1,
+                cooldownReason: "auth",
+                lastUsed: 123,
+              });
+            }
+          } else {
+            expect({
+              durable: durable?.usageStats,
+              runtime: runtime?.usageStats,
+              caller: store.usageStats,
+            }).toEqual({
+              durable: replacementBefore.usageStats,
+              runtime: replacementBefore.usageStats,
+              caller: callerBefore.usageStats,
+            });
+          }
+        } finally {
+          release.resolve();
+          await Promise.allSettled([replacement, ...(update ? [update] : [])]);
+        }
+      },
+    );
+  },
+);
+
 it("does not recreate health after an earlier admitted writer removes the profile", async () => {
   await withOpenClawTestState(
     { label: "auth-health-removal", scenario: "minimal" },

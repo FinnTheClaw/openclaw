@@ -3,6 +3,7 @@
  * Records failures under the store lock, applies WHAM usage probes for Codex
  * subscription OAuth profiles, and exposes display helpers for unavailable profiles.
  */
+import { isDeepStrictEqual } from "node:util";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import {
   asDateTimestampMs,
@@ -735,6 +736,7 @@ export async function markAuthProfileFailure(params: {
       const profileValue = freshStore.profiles[profileId];
       if (
         !profileValue ||
+        !isDeepStrictEqual(profileValue, profile) ||
         profileValue.setup?.replacement ||
         isAuthCooldownBypassedForProvider(profileValue.provider)
       ) {
