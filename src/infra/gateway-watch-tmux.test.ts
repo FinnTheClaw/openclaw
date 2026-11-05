@@ -775,6 +775,58 @@ describe("gateway-watch tmux wrapper", () => {
     expect(String(relaunchedArgs[6])).toContain("scripts/watch-node.mjs");
   });
 
+  it.each([
+    { name: "tmux=0", env: { OPENCLAW_GATEWAY_WATCH_TMUX: "0" } },
+    { name: "tmux=false", env: { OPENCLAW_GATEWAY_WATCH_TMUX: "false" } },
+    { name: "tmux=no", env: { OPENCLAW_GATEWAY_WATCH_TMUX: "no" } },
+    { name: "tmux=off", env: { OPENCLAW_GATEWAY_WATCH_TMUX: "off" } },
+    { name: "tmux child", env: { OPENCLAW_GATEWAY_WATCH_TMUX_CHILD: "1" } },
+  ])("reports a foreground watcher launch error for $name", ({ env }) => {
+    const stderr = createOutput();
+    const spawnSync = vi.fn().mockReturnValue({
+      error: Object.assign(new Error("spawn /node EAGAIN"), { code: "EAGAIN" }),
+      status: null,
+      signal: null,
+    });
+
+    const code = runGatewayWatchTmuxMain({
+      args: ["gateway", "--force"],
+      cwd: "/repo",
+      env,
+      nodePath: "/node",
+      spawnSync,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(1);
+    expect(stderr.chunks.join("")).toBe(
+      "[openclaw] failed to start foreground Gateway watcher: spawn /node EAGAIN\n",
+    );
+    expect(spawnSync).toHaveBeenCalledTimes(1);
+    expectSpawn(spawnSync, 0, "/node", ["scripts/watch-node.mjs", "gateway", "--force"]);
+  });
+
+  it.each([
+    { name: "nonzero child exit", status: 23, signal: null, expectedCode: 23 },
+    { name: "signaled child", status: null, signal: "SIGTERM", expectedCode: 1 },
+  ])("preserves foreground watcher $name", ({ status, signal, expectedCode }) => {
+    const stderr = createOutput();
+    const spawnSync = vi.fn().mockReturnValue({ status, signal });
+
+    const code = runGatewayWatchTmuxMain({
+      args: ["gateway", "--force"],
+      cwd: "/repo",
+      env: { OPENCLAW_GATEWAY_WATCH_TMUX: "0" },
+      nodePath: "/node",
+      spawnSync,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(expectedCode);
+    expect(stderr.chunks).toEqual([]);
+    expect(spawnSync).toHaveBeenCalledTimes(1);
+  });
+
   it("runs the raw foreground watcher when tmux mode is disabled", () => {
     const spawnSync = vi.fn().mockReturnValue({ status: 0, stdout: "", stderr: "" });
 

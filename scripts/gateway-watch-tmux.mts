@@ -401,13 +401,17 @@ export const runGatewayWatchServiceHandoff = (params: GatewayWatchParams = {}): 
 };
 
 const runForegroundWatcher = (
-  deps: Pick<GatewayWatchDeps, "args" | "cwd" | "env" | "nodePath" | "spawnSync">,
+  deps: Pick<GatewayWatchDeps, "args" | "cwd" | "env" | "nodePath" | "spawnSync" | "stderr">,
 ) => {
   const result = deps.spawnSync(deps.nodePath, [RAW_WATCH_SCRIPT, ...deps.args], {
     cwd: deps.cwd,
     env: deps.env,
     stdio: "inherit",
   });
+  if (result.error) {
+    log(deps.stderr, `failed to start foreground Gateway watcher: ${result.error.message}`);
+    return 1;
+  }
   return result.status ?? (result.signal ? 1 : 0);
 };
 
