@@ -1,3 +1,4 @@
+import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { handlePreviewFinalizedResult } from "./bot-message-dispatch-delivery.js";
@@ -28,7 +29,9 @@ function setup(streamed = true) {
       retainedPromptContextPages: [],
     },
   };
-  const sendPayload = vi.fn<(payload: ReplyPayload) => Promise<boolean>>().mockResolvedValue(true);
+  const sendPayload = vi
+    .fn<Parameters<typeof createLaneTextDeliverer>[0]["sendPayload"]>()
+    .mockResolvedValue({ visibleReplySent: true });
   const deliver = createLaneTextDeliverer({
     lanes,
     applyTextToPayload: (payload, text) => ({ ...payload, text }),
@@ -83,7 +86,7 @@ describe("TELEGRAM-LANE-DELIVERY-01 ten-case production-component pack", () => {
   });
   it("TELEGRAM-LANE-DELIVERY-01-C02 false late media is partial", async () => {
     const h = setup();
-    h.sendPayload.mockResolvedValueOnce(false);
+    h.sendPayload.mockResolvedValueOnce({ visibleReplySent: false });
     expectPartial(await finalMedia(h));
   });
   it("TELEGRAM-LANE-DELIVERY-01-C03 thrown late media is partial", async () => {
@@ -104,7 +107,7 @@ describe("TELEGRAM-LANE-DELIVERY-01 ten-case production-component pack", () => {
   });
   it("TELEGRAM-LANE-DELIVERY-01-C05 false preserves concrete preview receipt", async () => {
     const h = setup();
-    h.sendPayload.mockResolvedValueOnce(false);
+    h.sendPayload.mockResolvedValueOnce({ visibleReplySent: false });
     const result = expectPartial(
       await finalMedia(h, {
         text: "spoken caption",
@@ -121,7 +124,7 @@ describe("TELEGRAM-LANE-DELIVERY-01 ten-case production-component pack", () => {
   });
   it("TELEGRAM-LANE-DELIVERY-01-C06 false carries an actual failure", async () => {
     const h = setup();
-    h.sendPayload.mockResolvedValueOnce(false);
+    h.sendPayload.mockResolvedValueOnce({ visibleReplySent: false });
     const result = expectPartial(
       await finalMedia(h, {
         text: "attached report",
@@ -136,7 +139,7 @@ describe("TELEGRAM-LANE-DELIVERY-01 ten-case production-component pack", () => {
   });
   it("TELEGRAM-LANE-DELIVERY-01-C07 false never duplicates fallback", async () => {
     const h = setup();
-    h.sendPayload.mockResolvedValueOnce(false);
+    h.sendPayload.mockResolvedValueOnce({ visibleReplySent: false });
     expectPartial(
       await h.deliver({
         laneName: "answer",
@@ -154,7 +157,7 @@ describe("TELEGRAM-LANE-DELIVERY-01 ten-case production-component pack", () => {
   });
   it("TELEGRAM-LANE-DELIVERY-01-C08 mediaUrls false also reports partial", async () => {
     const h = setup();
-    h.sendPayload.mockResolvedValueOnce(false);
+    h.sendPayload.mockResolvedValueOnce({ visibleReplySent: false });
     expectPartial(
       await finalMedia(h, {
         text: "photo",
@@ -165,24 +168,37 @@ describe("TELEGRAM-LANE-DELIVERY-01 ten-case production-component pack", () => {
   });
   it("TELEGRAM-LANE-DELIVERY-01-C09 non-durable finalized preview stays truthful", async () => {
     const h = setup();
-    h.sendPayload.mockResolvedValueOnce(false);
+    h.sendPayload.mockResolvedValueOnce({ visibleReplySent: false });
     expectPartial(await finalMedia(h, undefined, { durable: false }));
   });
   it("TELEGRAM-LANE-DELIVERY-01-C10 caller surfaces partial without fallback", async () => {
     const h = setup();
-    h.sendPayload.mockResolvedValueOnce(false);
+    h.sendPayload.mockResolvedValueOnce({ visibleReplySent: false });
     const result = expectPartial(await finalMedia(h));
     const emit = vi.fn();
-    const mark = vi.fn();
     const turn = {
       isSuperseded: () => false,
       telegramDeps: { emitTelegramMessageSentHooks: emit },
       context: { chatId: 42, route: { accountId: "default" }, ctxPayload: {}, isGroup: false },
-      progressCompositor: { markFinalReplyDelivered: mark },
     } as unknown as Parameters<typeof handlePreviewFinalizedResult>[0];
-    await expect(handlePreviewFinalizedResult(turn, result)).rejects.toThrow();
+    let partialError: unknown;
+    const handled = handlePreviewFinalizedResult(turn, result).catch((error: unknown) => {
+      partialError = error;
+      throw error;
+    });
+    await expect(handled).rejects.toThrow();
+    expect(isChannelPartialDeliveryError(partialError)).toBe(true);
+    if (!isChannelPartialDeliveryError(partialError)) {
+      throw new Error("expected the current structured partial-delivery error");
+    }
+    expect(partialError.deliveryResult).toMatchObject({
+      visibleReplySent: true,
+      messageIds: ["999"],
+      receipt: { primaryPlatformMessageId: "999" },
+    });
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ success: false, messageId: 999 }));
-    expect(mark).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledTimes(1);
     expect(h.sendPayload).toHaveBeenCalledTimes(1);
+    expect(h.answerStream.clear).not.toHaveBeenCalled();
   });
 });
