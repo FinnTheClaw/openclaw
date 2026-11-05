@@ -292,6 +292,62 @@ describe("secrets audit", () => {
     expectFindingCode(report, "PLAINTEXT_FOUND");
   });
 
+  it.each([
+    {
+      name: "malformed JSON",
+      malformed: true,
+      diagnostic: 'File provider "fixturefile" returned invalid JSON.',
+    },
+    {
+      name: "non-object JSON control",
+      malformed: false,
+      diagnostic: 'File provider "fixturefile" payload is not a JSON object.',
+    },
+  ])("keeps file-provider payload excerpts out of audit diagnostics ($name)", async (row) => {
+    const fakeMarker = "FAKEtoyzebra";
+    const providerPath = path.join(fixture.rootDir, "fake-file-provider.json");
+    await fs.writeFile(providerPath, row.malformed ? fakeMarker : JSON.stringify([fakeMarker]), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await writeJsonFile(fixture.configPath, {
+      secrets: {
+        providers: {
+          fixturefile: { source: "file", path: providerPath, mode: "json" },
+        },
+      },
+      models: {
+        providers: {
+          fixture: {
+            baseUrl: "https://fixture.invalid/v1",
+            api: "openai-completions",
+            apiKey: { source: "file", provider: "fixturefile", id: "/apiKey" },
+            models: [{ id: "fixture-model", name: "Fixture model" }],
+          },
+        },
+      },
+    });
+
+    const report = await runSecretsAudit({ env: fixture.env });
+    const finding = report.findings.find(
+      (entry) =>
+        entry.code === "REF_UNRESOLVED" &&
+        entry.file === fixture.configPath &&
+        entry.jsonPath === "models.providers.fixture.apiKey",
+    );
+    expect(finding).toMatchObject({
+      code: "REF_UNRESOLVED",
+      severity: "error",
+      file: fixture.configPath,
+      jsonPath: "models.providers.fixture.apiKey",
+    });
+    expect.soft(finding?.message).toContain("file:fixturefile:/apiKey");
+    expect.soft(finding?.message).toContain(row.diagnostic);
+    expect.soft(JSON.stringify(report)).not.toContain(fakeMarker);
+    // The human CLI prints this exact finding message field.
+    expect.soft(finding?.message).not.toContain(fakeMarker);
+  });
+
   it("audits inactive Talk speech and realtime provider references independently", async () => {
     const activeKey = { source: "env", provider: "default", id: OPENAI_API_KEY_MARKER };
     const providerSelection = (missingKey: string) => ({

@@ -191,7 +191,13 @@ async function readFileProviderPayload(params: {
       if (params.providerConfig.mode === "singleValue") {
         return text.replace(/\r?\n$/, "");
       }
-      const parsed = JSON.parse(text) as unknown;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text) as unknown;
+      } catch {
+        // Parser errors may quote provider contents; do not retain their cause.
+        throw new Error(`File provider "${params.providerName}" returned invalid JSON.`);
+      }
       if (!isRecord(parsed)) {
         throw new Error(`File provider "${params.providerName}" payload is not a JSON object.`);
       }
