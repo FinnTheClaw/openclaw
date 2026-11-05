@@ -5,6 +5,7 @@ import {
   hasConfiguredSecretInput,
   promptSingleChannelSecretInput,
   runSingleChannelSecretStep,
+  patchScopedAccountConfig,
   patchTopLevelChannelConfigSection,
   type ChannelSetupWizard,
   type OpenClawConfig,
@@ -29,6 +30,22 @@ function setZaloUpdateMode(
   webhookSecret?: SecretInput,
   webhookPath?: string,
 ): OpenClawConfig {
+  if (
+    mode === "polling" &&
+    accountId === DEFAULT_ACCOUNT_ID &&
+    cfg.channels?.zalo?.accounts?.[accountId]
+  ) {
+    return patchScopedAccountConfig({
+      cfg,
+      channelKey: channel,
+      accountId,
+      scopeDefaultToAccounts: true,
+      ensureChannelEnabled: false,
+      ensureAccountEnabled: false,
+      clearFields: ["webhookUrl", "webhookSecret", "webhookPath"],
+      patch: {},
+    });
+  }
   const isDefault = accountId === DEFAULT_ACCOUNT_ID;
   const current = isDefault ? cfg.channels?.zalo : cfg.channels?.zalo?.accounts?.[accountId];
   const next = { ...current };

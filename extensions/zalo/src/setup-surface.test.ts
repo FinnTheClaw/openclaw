@@ -8,6 +8,7 @@ import {
   runSetupWizardConfigure,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { WizardPrompter } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { moveSingleAccountChannelSectionToDefaultAccount } from "openclaw/plugin-sdk/setup";
 import { describe, expect, it, vi } from "vitest";
 import { listZaloAccountIds, resolveDefaultZaloAccountId, resolveZaloAccount } from "./accounts.js";
 import { zaloDmPolicy } from "./setup-core.js";
@@ -37,6 +38,155 @@ const zaloSetupPlugin = {
 const zaloConfigure = createPluginSetupWizardConfigure(zaloSetupPlugin);
 
 describe("zalo setup wizard", () => {
+  it.each([
+    {
+      name: "named account inherits root webhook",
+      expectedInitialWebhook: false,
+      accountId: "work",
+      nested: true,
+      rootWebhook: true,
+      accountWebhook: false,
+      preserveRoot: true,
+    },
+    {
+      name: "literal default has nested webhook override",
+      expectedInitialWebhook: true,
+      accountId: "default",
+      nested: true,
+      rootWebhook: true,
+      accountWebhook: true,
+      preserveRoot: true,
+    },
+    {
+      name: "named local webhook without root defaults",
+      expectedInitialWebhook: true,
+      accountId: "work",
+      nested: true,
+      rootWebhook: false,
+      accountWebhook: true,
+      preserveRoot: true,
+    },
+    {
+      name: "legacy default root webhook without accounts",
+      expectedInitialWebhook: true,
+      accountId: "default",
+      nested: false,
+      rootWebhook: true,
+      accountWebhook: false,
+      preserveRoot: false,
+    },
+  ])("effective polling mode: $name", async (row) => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        zalo: {
+          enabled: true,
+          botToken: "123:fixture-root",
+          dmPolicy: "allowlist",
+          allowFrom: ["111"],
+          groupPolicy: "allowlist",
+          ...(row.rootWebhook
+            ? {
+                webhookUrl: "https://root.example.test/zalo",
+                webhookSecret: "fixture-root-secret",
+                webhookPath: "/root-zalo",
+              }
+            : {}),
+          ...(row.nested
+            ? {
+                accounts: {
+                  [row.accountId]: {
+                    enabled: true,
+                    botToken: "234:fixture-selected",
+                    dmPolicy: "pairing" as const,
+                    ...(row.accountWebhook
+                      ? {
+                          webhookUrl: "https://selected.example.test/zalo",
+                          webhookSecret: "fixture-selected-secret",
+                          webhookPath: "/selected-zalo",
+                        }
+                      : {}),
+                  },
+                  sibling: {
+                    enabled: false,
+                    botToken: "345:fixture-sibling",
+                    webhookUrl: "https://sibling.example.test/zalo",
+                    webhookSecret: "fixture-sibling-secret",
+                    webhookPath: "/sibling-zalo",
+                    dmPolicy: "allowlist" as const,
+                    allowFrom: ["999"],
+                  },
+                },
+              }
+            : {}),
+        },
+      },
+    };
+    const before = structuredClone(cfg);
+    const normalizedBefore = row.nested
+      ? moveSingleAccountChannelSectionToDefaultAccount({
+          cfg: before,
+          channelKey: "zalo",
+          setupSurface: zaloSetupAdapter,
+        })
+      : before;
+    const confirm = vi.fn(async ({ message }: { message: string }) =>
+      message === "Use webhook mode for Zalo?" ? false : true,
+    );
+    const text = vi.fn(async ({ message }: { message: string }) => {
+      throw new Error(`Unexpected prompt: ${message}`);
+    }) as WizardPrompter["text"];
+    const result = await runSetupWizardConfigure({
+      configure: zaloConfigure,
+      cfg,
+      prompter: createTestWizardPrompter({ confirm, text }),
+      accountOverrides: { zalo: row.accountId },
+      options: { secretInputMode: "plaintext" as const },
+    });
+    const account = resolveZaloAccount({ cfg: result.cfg, accountId: row.accountId });
+    const { accounts: actualAccounts, ...actualRoot } = result.cfg.channels!.zalo!;
+    const { accounts: originalAccounts, ...expectedRoot } = normalizedBefore.channels!.zalo!;
+    if (!row.preserveRoot) {
+      delete expectedRoot.webhookUrl;
+      delete expectedRoot.webhookSecret;
+      delete expectedRoot.webhookPath;
+    }
+    expect(cfg).toEqual(before);
+    expect({
+      accountId: result.accountId,
+      effectiveWebhook: Boolean(account.config.webhookUrl),
+      token: account.token,
+      dmPolicy: account.config.dmPolicy,
+      root: actualRoot,
+      sibling: actualAccounts?.sibling,
+      siblingResolved: row.nested
+        ? resolveZaloAccount({ cfg: result.cfg, accountId: "sibling" }).config
+        : undefined,
+      unselectedDefault:
+        row.nested && row.accountId !== "default"
+          ? resolveZaloAccount({ cfg: result.cfg, accountId: "default" }).config
+          : undefined,
+    }).toEqual({
+      accountId: row.accountId,
+      effectiveWebhook: false,
+      token: row.nested ? "234:fixture-selected" : "123:fixture-root",
+      dmPolicy: row.nested ? "pairing" : "allowlist",
+      root: expectedRoot,
+      sibling: originalAccounts?.sibling,
+      siblingResolved: row.nested
+        ? resolveZaloAccount({ cfg: normalizedBefore, accountId: "sibling" }).config
+        : undefined,
+      unselectedDefault:
+        row.nested && row.accountId !== "default"
+          ? resolveZaloAccount({ cfg: normalizedBefore, accountId: "default" }).config
+          : undefined,
+    });
+    expect(confirm).toHaveBeenCalledWith({
+      message: "Use webhook mode for Zalo?",
+      initialValue: row.expectedInitialWebhook,
+    });
+    expect(text).not.toHaveBeenCalled();
+  });
+
   it("configures a polling token flow", async () => {
     const prompter = createTestWizardPrompter({
       select: vi.fn(async () => "plaintext") as WizardPrompter["select"],
