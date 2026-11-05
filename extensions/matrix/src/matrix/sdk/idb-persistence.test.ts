@@ -35,8 +35,8 @@ const OTHER_DATABASE_PREFIX = "openclaw-matrix-persistence-other-test";
 const cryptoDatabaseName = `${DATABASE_PREFIX}::matrix-sdk-crypto`;
 const otherCryptoDatabaseName = `${OTHER_DATABASE_PREFIX}::matrix-sdk-crypto`;
 
-function writeTestSnapshot(snapshotPath: string, snapshots: unknown[]): void {
-  writeMatrixIdbSnapshotJson({
+function writeTestSnapshot(snapshotPath: string, snapshots: unknown[]): Promise<void> {
+  return writeMatrixIdbSnapshotJson({
     storageRootDir: path.dirname(snapshotPath),
     snapshotJson: JSON.stringify(snapshots),
     databaseCount: snapshots.length,
@@ -403,7 +403,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
 
   it("IDB-A01 settles false on a duplicate unique-index value", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -420,7 +420,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
 
   it("IDB-A02 settles false on a multi-entry unique-index collision", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -443,7 +443,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
 
   it("IDB-A03 preserves an existing record when a later restore conflicts", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -451,7 +451,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
       },
     ]);
     await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(true);
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -466,7 +466,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
 
   it("IDB-A04 closes the database after a synchronous invalid-key failure", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -492,7 +492,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
 
   it("IDB-A05 settles false when a later store aborts after the first commits", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -516,7 +516,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
 
   it("IDB-A06 releases the lock for a corrected retry at the same path", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -529,7 +529,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
       },
     ]);
     await expect(restoreIdbFromDisk(snapshotPath)).resolves.toBe(false);
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -549,7 +549,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
 
   it("IDB-A07 permits persistence after an aborted restore", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -569,7 +569,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
 
   it("IDB-A08 restores an empty store without waiting for a transaction", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -588,7 +588,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
       { key: "one", value: { email: "one@example.org" } },
       { key: "two", value: { email: "two@example.org" } },
     ];
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
@@ -603,7 +603,7 @@ describe("Matrix IndexedDB restore transaction outcomes", () => {
 
   it("IDB-A10 restores both databases in a valid multi-database snapshot", async () => {
     const snapshotPath = path.join(tmpDir, "crypto-idb-snapshot.json");
-    writeTestSnapshot(snapshotPath, [
+    await writeTestSnapshot(snapshotPath, [
       {
         name: cryptoDatabaseName,
         version: 1,
