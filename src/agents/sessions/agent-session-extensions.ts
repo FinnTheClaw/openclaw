@@ -382,8 +382,10 @@ export abstract class AgentSessionExtensions extends AgentSessionCompaction {
   }
 
   async reload(): Promise<void> {
-    const previousFlagValues = this.currentExtensionRunner.getFlagValues();
-    await emitSessionShutdownEvent(this.currentExtensionRunner, {
+    const previousRunner = this.currentExtensionRunner;
+    const previousRuntime = this.sessionResourceLoader.getExtensions().runtime;
+    const previousFlagValues = previousRunner.getFlagValues();
+    await emitSessionShutdownEvent(previousRunner, {
       type: "session_shutdown",
       reason: "reload",
     });
@@ -391,6 +393,9 @@ export abstract class AgentSessionExtensions extends AgentSessionCompaction {
     this.agent.steeringMode = this.settingsManager.getSteeringMode();
     this.agent.followUpMode = this.settingsManager.getFollowUpMode();
     await this.sessionResourceLoader.reload();
+    if (this.sessionResourceLoader.getExtensions().runtime !== previousRuntime) {
+      previousRunner.invalidate();
+    }
     this.sessionModelRegistry.refresh();
     this.buildRuntime({
       activeToolNames: this.getActiveToolNames(),
