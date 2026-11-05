@@ -10,9 +10,75 @@ import {
   buildStatusOverviewSurfaceRows,
   buildStatusUpdateSurface,
   buildGatewayStatusJsonPayload,
+  redactStatusSecrets,
 } from "./format.js";
 
 describe("status-all format", () => {
+  it.each([
+    {
+      name: "s-leading fake value",
+      input: "password=synthetic-fake next",
+      expected: "password=*** next",
+    },
+    {
+      name: "internal-s fake value",
+      input: "password=pre-synthetic-fake next",
+      expected: "password=*** next",
+    },
+    {
+      name: "uppercase S-leading fake value",
+      input: "PASSWORD=SYNTHETIC_FAKE next",
+      expected: "PASSWORD=*** next",
+    },
+    {
+      name: "whitespace-separated fake credentials",
+      input: "token=FAKE_ALPHA\tpassword=FAKE_BRAVO safe=untouched",
+      expected: "token=***\tpassword=*** safe=untouched",
+    },
+    {
+      name: "ordinary key-value control",
+      input: "token=FAKE123",
+      expected: "token=***",
+    },
+    {
+      name: "ordinary Bearer control",
+      input: "Bearer FAKE_BEARER_123",
+      expected: "Bearer ***",
+    },
+    {
+      name: "ordinary sk-token control",
+      input: "sk-FAKE1234567890",
+      expected: "sk-***",
+    },
+    {
+      name: "ordinary non-credential text control",
+      input: "ordinary status message",
+      expected: "ordinary status message",
+    },
+    {
+      name: "quoted synthetic value",
+      input: 'password="SYNTHETIC quoted value" next',
+      expected: "password=*** next",
+    },
+    {
+      name: "escaped quoted synthetic value",
+      input: 'password="SYNTHETIC \\"quoted\\" value" next',
+      expected: "password=*** next",
+    },
+    {
+      name: "single-quoted synthetic value",
+      input: "secret='SYNTHETIC single quote value' next",
+      expected: "secret=*** next",
+    },
+    {
+      name: "Bearer key-value synthetic boundary",
+      input: "token=Bearer SYNTHETIC+FAKE/== next",
+      expected: "token=*** next",
+    },
+  ])("redacts synthetic status credential shapes: $name", ({ input, expected }) => {
+    expect(redactStatusSecrets(input)).toBe(expected);
+  });
+
   it("formats gateway self summary consistently", () => {
     expect(
       getStatusOverviewRowValue("Gateway self", {
