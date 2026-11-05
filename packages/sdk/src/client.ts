@@ -160,6 +160,7 @@ export class OpenClaw {
   private closed = false;
   private eventPumpPromise: Promise<void> | null = null;
   private eventPumpReady: Promise<void> | null = null;
+  private stopEventPump: (() => void) | null = null;
   private closePromise: Promise<void> | null = null;
 
   constructor(options: OpenClawOptions = {}) {
@@ -209,6 +210,7 @@ export class OpenClaw {
     }
     this.closed = true;
     this.stopReconnectObserver();
+    this.stopEventPump?.();
     this.replay.endStream();
     this.closePromise = (async () => {
       try {
@@ -218,6 +220,7 @@ export class OpenClaw {
         this.replay.close();
         this.eventPumpPromise = null;
         this.eventPumpReady = null;
+        this.stopEventPump = null;
         this.connected = false;
       }
     })();
@@ -322,12 +325,15 @@ export class OpenClaw {
       let hasPumpError = false;
       try {
         iterator = this.transport.events()[Symbol.asyncIterator]();
-        while (true) {
+        while (!this.closed) {
+          const stopped = new Promise<undefined>((resolve) => {
+            this.stopEventPump = () => resolve(undefined);
+          });
           const next = iterator.next();
           await Promise.resolve();
           markReady();
-          const result = await next;
-          if (result.done) {
+          const result = await Promise.race([next, stopped]);
+          if (!result || result.done || this.closed) {
             break;
           }
           this.replay.publish(result.value);
@@ -338,7 +344,13 @@ export class OpenClaw {
       } finally {
         markReady();
         try {
-          await iterator?.return?.();
+          const retirement = iterator?.return?.();
+          if (this.closed) {
+            // An async generator can queue return behind its pending read.
+            void Promise.resolve(retirement).catch(() => {});
+          } else {
+            await retirement;
+          }
         } catch (error) {
           if (!hasPumpError) {
             pumpError = error;

@@ -6,6 +6,7 @@ import {
   observeGatewaySequence,
   type RequestCall,
 } from "./client.test-support.js";
+import { EventHub } from "./event-hub.js";
 import { OpenClaw, normalizeGatewayEvent } from "./index.js";
 import type { GatewayEvent, OpenClawEvent, OpenClawTransport, RunResult } from "./types.js";
 
@@ -91,6 +92,193 @@ function waitForSnapshot(runId: string, fields: Record<string, unknown> = {}) {
 }
 
 describe("OpenClaw SDK", () => {
+  it.each(["connect", "request"] as const)(
+    "retires the SDK event pump without a transport close for %s",
+    async (start) => {
+      const hub = new EventHub<GatewayEvent>();
+      const source = hub.stream()[Symbol.asyncIterator]();
+      let returnCalls = 0;
+      const transport = new EventsOnlyTransport({
+        [Symbol.asyncIterator]: () => ({
+          next: () => source.next(),
+          return: async () => {
+            returnCalls += 1;
+            return (await source.return?.()) ?? { done: true, value: undefined };
+          },
+        }),
+      });
+      const oc = new OpenClaw({ transport });
+      const normalized = oc.events()[Symbol.asyncIterator]();
+      const run = oc.runEvents("run_sdk_close")[Symbol.asyncIterator]();
+      let independent: AsyncIterator<GatewayEvent> | undefined;
+      let close: Promise<void> | undefined;
+      let closeAgain: Promise<void> | undefined;
+      let normalizedRead: Promise<IteratorResult<OpenClawEvent>> | undefined;
+      let runRead: Promise<IteratorResult<OpenClawEvent>> | undefined;
+      let normalizedResult: IteratorResult<OpenClawEvent> | undefined;
+      let runResult: IteratorResult<OpenClawEvent> | undefined;
+      let closed = false;
+      let closedAgain = false;
+
+      try {
+        if (start === "connect") {
+          await oc.connect();
+        } else {
+          await expect(oc.request("fixture.start")).resolves.toEqual({});
+        }
+        const firstNormalized = normalized.next();
+        const firstRun = run.next();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        hub.publish(createAgentEvent("run_sdk_close", 1, 1, "lifecycle", { phase: "start" }));
+        await expect(firstNormalized).resolves.toMatchObject({
+          done: false,
+          value: { type: "run.started", runId: "run_sdk_close" },
+        });
+        await expect(firstRun).resolves.toMatchObject({
+          done: false,
+          value: { type: "run.started", runId: "run_sdk_close" },
+        });
+        normalizedRead = normalized.next().then((result) => {
+          normalizedResult = result;
+          return result;
+        });
+        runRead = run.next().then((result) => {
+          runResult = result;
+          return result;
+        });
+        independent = hub.stream()[Symbol.asyncIterator]();
+        close = oc.close().then(() => {
+          closed = true;
+        });
+        closeAgain = oc.close().then(() => {
+          closedAgain = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect.soft(closed).toBe(true);
+        expect.soft(closedAgain).toBe(true);
+        expect.soft(normalizedResult).toEqual({ done: true, value: undefined });
+        expect.soft(runResult).toEqual({ done: true, value: undefined });
+        expect.soft(returnCalls).toBeGreaterThan(0);
+        const independentRead = independent.next();
+        const afterClose = createAgentEvent("independent", 2, 2, "lifecycle", { phase: "start" });
+        hub.publish(afterClose);
+        await expect(independentRead).resolves.toEqual({ done: false, value: afterClose });
+      } finally {
+        hub.close();
+        await close;
+        await closeAgain;
+        await oc.close();
+        await normalizedRead;
+        await runRead;
+        await normalized.return?.();
+        await run.return?.();
+        await independent?.return?.();
+        await source.return?.();
+      }
+    },
+  );
+
+  it("retires the SDK event pump while an async generator read is pending", async () => {
+    let releaseFirst = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let releasePending = () => {};
+    const pendingGate = new Promise<void>((resolve) => {
+      releasePending = resolve;
+    });
+    let markPending = () => {};
+    const pending = new Promise<void>((resolve) => {
+      markPending = resolve;
+    });
+    let producerFinished = false;
+    const source = (async function* () {
+      try {
+        await firstGate;
+        yield createAgentEvent("run_sdk_close", 1, 1, "lifecycle", { phase: "start" });
+        markPending();
+        await pendingGate;
+        yield createAgentEvent("run_sdk_close", 2, 2, "assistant", { delta: "late" });
+      } finally {
+        producerFinished = true;
+      }
+    })();
+    let returnCalls = 0;
+    const transport = new EventsOnlyTransport({
+      [Symbol.asyncIterator]: () => ({
+        next: () => source.next(),
+        return: async () => {
+          returnCalls += 1;
+          return await source.return(undefined);
+        },
+      }),
+    });
+    const oc = new OpenClaw({ transport });
+    const normalized = oc.events()[Symbol.asyncIterator]();
+    const run = oc.runEvents("run_sdk_close")[Symbol.asyncIterator]();
+    let close: Promise<void> | undefined;
+    let closeAgain: Promise<void> | undefined;
+    let normalizedRead: Promise<IteratorResult<OpenClawEvent>> | undefined;
+    let runRead: Promise<IteratorResult<OpenClawEvent>> | undefined;
+    let normalizedResult: IteratorResult<OpenClawEvent> | undefined;
+    let runResult: IteratorResult<OpenClawEvent> | undefined;
+    let closed = false;
+    let closedAgain = false;
+
+    try {
+      await oc.connect();
+      const firstNormalized = normalized.next();
+      const firstRun = run.next();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      releaseFirst();
+      await expect(firstNormalized).resolves.toMatchObject({
+        done: false,
+        value: { type: "run.started", runId: "run_sdk_close" },
+      });
+      await expect(firstRun).resolves.toMatchObject({
+        done: false,
+        value: { type: "run.started", runId: "run_sdk_close" },
+      });
+      await pending;
+      normalizedRead = normalized.next().then((result) => {
+        normalizedResult = result;
+        return result;
+      });
+      runRead = run.next().then((result) => {
+        runResult = result;
+        return result;
+      });
+      close = oc.close().then(() => {
+        closed = true;
+      });
+      closeAgain = oc.close().then(() => {
+        closedAgain = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect.soft(closed).toBe(true);
+      expect.soft(closedAgain).toBe(true);
+      expect.soft(normalizedResult).toEqual({ done: true, value: undefined });
+      expect.soft(runResult).toEqual({ done: true, value: undefined });
+      expect.soft(returnCalls).toBeGreaterThan(0);
+      // SDK shutdown cannot force an arbitrary producer's awaited body to finish.
+      expect(producerFinished).toBe(false);
+    } finally {
+      releaseFirst();
+      releasePending();
+      await close;
+      await closeAgain;
+      await oc.close();
+      await normalizedRead;
+      await runRead;
+      await normalized.return?.();
+      await run.return?.();
+      await source.return(undefined);
+    }
+    expect(producerFinished).toBe(true);
+  });
+
   it("runs an agent through the Gateway agent method", async () => {
     const { transport, oc } = createClientFixture({
       agent: { status: "accepted", runId: "run_123" },
