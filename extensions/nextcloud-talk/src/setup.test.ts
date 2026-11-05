@@ -216,6 +216,65 @@ describe("nextcloud talk setup", () => {
     expect(passwordPrepared).toMatchObject({ secret: "legacy-secret" });
   });
 
+  it.each(["inline", "file"] as const)(
+    "L07-F20 replaces the selected account bot credential with %s",
+    (source) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nextcloud-setup-replace-"));
+      try {
+        const oldFile = path.join(dir, "old-secret");
+        const newFile = path.join(dir, "new-secret");
+        fs.writeFileSync(oldFile, "old-file-secret");
+        fs.writeFileSync(newFile, "new-file-secret");
+        const cfg: CoreConfig = talkConfig({
+          botSecret: "root-secret",
+          accounts: {
+            work: {
+              baseUrl: "https://old.example.com",
+              botSecret:
+                source === "file"
+                  ? { source: "env", provider: "default", id: "UNSET_NEXTCLOUD_REPAIR_SECRET" }
+                  : "old-inline-secret",
+              botSecretFile: oldFile,
+              dmPolicy: "allowlist",
+              allowFrom: ["alice"],
+            },
+            other: { baseUrl: "https://other.example.com", botSecret: "other-secret" },
+          },
+        });
+        const snapshot = structuredClone(cfg);
+        const next = nextcloudTalkSetupContract.applyAccountConfig({
+          cfg,
+          accountId: "work",
+          input: {
+            baseUrl: "https://new.example.com",
+            ...(source === "file" ? { secretFile: newFile } : { secret: "new-inline-secret" }),
+          },
+        });
+        const actual = resolveNextcloudTalkAccount({ cfg: next, accountId: "work" });
+        expect
+          .soft(actual.secret)
+          .toBe(source === "file" ? "new-file-secret" : "new-inline-secret");
+        expect.soft(actual.secretSource).toBe(source === "file" ? "secretFile" : "config");
+        expect.soft(actual.tokenStatus).toBe("available");
+        const work = next.channels?.["nextcloud-talk"]?.accounts?.work;
+        expect(work).not.toHaveProperty(source === "file" ? "botSecret" : "botSecretFile");
+        expect(work).toMatchObject({
+          enabled: true,
+          baseUrl: "https://new.example.com",
+          dmPolicy: "allowlist",
+          allowFrom: ["alice"],
+        });
+        expect(next.channels?.["nextcloud-talk"]?.botSecret).toBe("root-secret");
+        expect(next.channels?.["nextcloud-talk"]?.accounts?.other).toEqual(
+          cfg.channels?.["nextcloud-talk"]?.accounts?.other,
+        );
+        expect(cfg).toEqual(snapshot);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("clears stored bot secret fields when switching the default account to env", () => {
     const next = nextcloudTalkSetupContract.applyAccountConfig({
       cfg: talkConfig({

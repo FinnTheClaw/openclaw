@@ -176,7 +176,9 @@ const nextcloudTalkSetupAdapter: ChannelSetupAdapter = {
       namedConfig as CoreConfig,
       accountId,
       patch,
-      setupInput.useEnv ? ["botSecret", "botSecretFile"] : undefined,
+      setupInput.useEnv || setupInput.secretFile || setupInput.secret
+        ? ["botSecret", "botSecretFile"]
+        : undefined,
     );
   },
 };
