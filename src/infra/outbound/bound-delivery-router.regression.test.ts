@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createBoundDeliveryRouter } from "./bound-delivery-router.js";
-import type {
-  ConversationRef,
-  SessionBindingRecord,
-  SessionBindingService,
-} from "./session-binding-service.js";
+import type { ConversationRef, SessionBindingRecord } from "./session-binding-service.js";
 
 const sessionKey = "agent:main:subagent:bound-regression";
 const binding = (
@@ -29,9 +25,7 @@ const resolve = (
   requestedConversation: ConversationRef | undefined,
   failClosed: boolean,
 ) =>
-  createBoundDeliveryRouter({
-    listBySession: () => bindings,
-  } as SessionBindingService).resolveDestination({
+  createBoundDeliveryRouter(async () => bindings).resolveDestination({
     eventKind: "task_completion",
     targetSessionKey: sessionKey,
     requester: requestedConversation,
@@ -121,18 +115,21 @@ const cases: Case[] = [
 ];
 
 describe("bound delivery conversation isolation regression", () => {
-  it.each(cases)("$name", ({ bindings, requestedConversation, failClosed, reason, bindingId }) => {
-    const result = resolve(bindings, requestedConversation, failClosed);
-    expect(result.reason).toBe(reason);
-    expect(result.mode).toBe(bindingId ? "bound" : "fallback");
-    expect(result.binding?.bindingId ?? null).toBe(bindingId);
-  });
+  it.each(cases)(
+    "$name",
+    async ({ bindings, requestedConversation, failClosed, reason, bindingId }) => {
+      const result = await resolve(bindings, requestedConversation, failClosed);
+      expect(result.reason).toBe(reason);
+      expect(result.mode).toBe(bindingId ? "bound" : "fallback");
+      expect(result.binding?.bindingId ?? null).toBe(bindingId);
+    },
+  );
 
-  it("keeps no-requester singleton fallback but rejects ambiguous multiples", () => {
-    const sole = resolve([binding("thread-1")], undefined, false);
+  it("keeps no-requester singleton fallback but rejects ambiguous multiples", async () => {
+    const sole = await resolve([binding("thread-1")], undefined, false);
     expect(sole.reason).toBe("single-active-binding");
     expect(sole.binding?.bindingId).toBe("runtime:thread-1");
-    const ambiguous = resolve([binding("thread-1"), binding("thread-2")], undefined, false);
+    const ambiguous = await resolve([binding("thread-1"), binding("thread-2")], undefined, false);
     expect(ambiguous.reason).toBe("ambiguous-without-requester");
     expect(ambiguous.binding).toBeNull();
   });
