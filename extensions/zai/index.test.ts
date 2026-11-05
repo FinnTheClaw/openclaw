@@ -8,7 +8,7 @@ import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-ru
 import { buildManifestModelProviderConfig } from "openclaw/plugin-sdk/provider-catalog-shared";
 import { buildOpenAICompletionsParams } from "openclaw/plugin-sdk/provider-transport-runtime";
 import { createZeroUsageFixture } from "openclaw/plugin-sdk/test-fixtures";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 
@@ -400,6 +400,67 @@ describe("zai provider plugin", () => {
         extraParams: explicit,
       } as never),
     ).toBe(explicit);
+  });
+
+  it.each([
+    ["zai", "https://proxy.example.test/zai"],
+    ["z-ai", "https://proxy.example.test/zai"],
+    ["z.ai", "https://proxy.example.test/zai"],
+    ["ZAI", "https://proxy.example.test/zai"],
+    ["zai", "http://api.z.ai/api/paas/v4"],
+    ["zai", "https://api.z.ai.proxy.example.test/zai"],
+    ["zai", "not-a-url"],
+  ])(
+    "does not send %s custom-endpoint credentials to public usage (%s)",
+    async (providerId, baseUrl) => {
+      const provider = await registerSingleProviderPlugin(plugin);
+      const fetchFn = vi.fn<typeof fetch>();
+      const snapshot = await provider.fetchUsageSnapshot?.({
+        config: {
+          models: {
+            providers: { [providerId]: { baseUrl, apiKey: "FAKE_PROXY_KEY", models: [] } },
+          },
+        },
+        env: { ZAI_API_KEY: "FAKE_ENV_KEY" },
+        provider: "zai",
+        token: "FAKE_ENV_KEY",
+        timeoutMs: 1000,
+        fetchFn,
+      });
+
+      expect(fetchFn).not.toHaveBeenCalled();
+      expect(snapshot?.error).toBe("Usage reporting is unavailable for custom Z.AI endpoints");
+    },
+  );
+
+  it.each([
+    "https://api.z.ai/api/paas/v4",
+    "https://api.z.ai/api/coding/paas/v4",
+    "https://open.bigmodel.cn/api/paas/v4",
+    "https://open.bigmodel.cn/api/coding/paas/v4",
+    undefined,
+  ])("preserves public usage for official or default endpoints (%s)", async (baseUrl) => {
+    const provider = await registerSingleProviderPlugin(plugin);
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      Response.json({ success: true, code: 200, data: { limits: [] } }),
+    );
+    const snapshot = await provider.fetchUsageSnapshot?.({
+      config: baseUrl ? { models: { providers: { zai: { baseUrl, models: [] } } } } : {},
+      env: {},
+      provider: "zai",
+      token: "FAKE_OFFICIAL_KEY",
+      timeoutMs: 1000,
+      fetchFn,
+    });
+
+    expect(snapshot?.error).toBeUndefined();
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(fetchFn).toHaveBeenCalledWith(
+      "https://api.z.ai/api/monitor/usage/quota/limit",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer FAKE_OFFICIAL_KEY" }),
+      }),
+    );
   });
 
   it("uses deprecated pi agent auth.json for usage auth when modern sources are empty", async () => {

@@ -19,6 +19,7 @@ import {
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
 import {
   buildProviderReplayFamilyHooks,
+  normalizeProviderId,
   resolveFamilyForwardCompatModel,
 } from "openclaw/plugin-sdk/provider-model-shared";
 import {
@@ -26,7 +27,7 @@ import {
   createToolStreamWrapper,
   defaultToolStreamExtraParams,
 } from "openclaw/plugin-sdk/provider-stream-shared";
-import { fetchZaiUsage } from "openclaw/plugin-sdk/provider-usage";
+import { buildUsageErrorSnapshot, fetchZaiUsage } from "openclaw/plugin-sdk/provider-usage";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { detectZaiEndpoint, type ZaiEndpointId } from "./detect.js";
 import { zaiMediaUnderstandingProvider } from "./media-understanding-provider.js";
@@ -340,7 +341,33 @@ export default defineSingleProviderPluginEntry({
       const legacyToken = resolveDeprecatedPiAgentAccessToken(ctx.env, ["z-ai", PROVIDER_ID]);
       return legacyToken ? { token: legacyToken } : null;
     },
-    fetchUsageSnapshot: async (ctx) => await fetchZaiUsage(ctx.token, ctx.timeoutMs, ctx.fetchFn),
+    fetchUsageSnapshot: async (ctx) => {
+      // A selected credential (including an env key) has no billing-origin authority.
+      // Never reuse custom-endpoint credentials at the fixed public quota endpoint.
+      const hasCustomEndpoint = Object.entries(ctx.config.models?.providers ?? {}).some(
+        ([providerId, providerConfig]) => {
+          if (
+            ![PROVIDER_ID, "z-ai", "z.ai"].includes(normalizeProviderId(providerId)) ||
+            !providerConfig.baseUrl
+          ) {
+            return false;
+          }
+          try {
+            const { origin } = new URL(providerConfig.baseUrl);
+            return origin !== "https://api.z.ai" && origin !== "https://open.bigmodel.cn";
+          } catch {
+            return true;
+          }
+        },
+      );
+      if (hasCustomEndpoint) {
+        return buildUsageErrorSnapshot(
+          "zai",
+          "Usage reporting is unavailable for custom Z.AI endpoints",
+        );
+      }
+      return await fetchZaiUsage(ctx.token, ctx.timeoutMs, ctx.fetchFn);
+    },
     isCacheTtlEligible: () => true,
   },
   register(api) {
