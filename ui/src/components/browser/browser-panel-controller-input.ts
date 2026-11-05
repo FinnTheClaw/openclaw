@@ -344,7 +344,8 @@ export class BrowserPanelInputController {
       return;
     }
     event.preventDefault();
-    this.runAfterClick((client, targetId) => pressBrowserKey(client, { targetId, key }));
+    const pressKey = event.shiftKey && key.length > 1 ? `Shift+${key}` : key;
+    this.runAfterClick((client, targetId) => pressBrowserKey(client, { targetId, key: pressKey }));
   }
 
   handleViewportPaste(event: ClipboardEvent): void {

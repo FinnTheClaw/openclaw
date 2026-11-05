@@ -61,6 +61,108 @@ describe("Browser panel text and touch input", () => {
     return { panel, controller, request };
   }
 
+  it.each<{
+    name: string;
+    key: string;
+    shiftKey: boolean;
+    expectedKey: string | null;
+    target: string;
+    localChord?: boolean;
+  }>([
+    {
+      name: "Shift+Tab",
+      key: "Tab",
+      shiftKey: true,
+      expectedKey: "Shift+Tab",
+      target: ".bp-input",
+    },
+    {
+      name: "Shift+ArrowLeft",
+      key: "ArrowLeft",
+      shiftKey: true,
+      expectedKey: "Shift+ArrowLeft",
+      target: ".bp-input",
+    },
+    {
+      name: "Shift+ArrowRight",
+      key: "ArrowRight",
+      shiftKey: true,
+      expectedKey: "Shift+ArrowRight",
+      target: ".bp-input",
+    },
+    {
+      name: "Shift+Home",
+      key: "Home",
+      shiftKey: true,
+      expectedKey: "Shift+Home",
+      target: ".bp-viewport",
+    },
+    {
+      name: "Shift+End",
+      key: "End",
+      shiftKey: true,
+      expectedKey: "Shift+End",
+      target: ".bp-input",
+    },
+    {
+      name: "plain Tab control",
+      key: "Tab",
+      shiftKey: false,
+      expectedKey: "Tab",
+      target: ".bp-input",
+    },
+    {
+      name: "printable A control",
+      key: "A",
+      shiftKey: true,
+      expectedKey: "A",
+      target: ".bp-input",
+    },
+    {
+      name: "local close chord control",
+      key: "b",
+      shiftKey: true,
+      expectedKey: null,
+      target: ".bp-input",
+      localChord: true,
+    },
+  ])("preserves shifted browser navigation keys ($name)", async (row) => {
+    const { panel, request } = await mount();
+    const event = new KeyboardEvent("keydown", {
+      key: row.key,
+      shiftKey: row.shiftKey,
+      ctrlKey: row.localChord === true,
+      altKey: row.localChord === true,
+      bubbles: true,
+      cancelable: true,
+    });
+    panel.renderRoot.querySelector(row.target)!.dispatchEvent(event);
+    await flushBrowserResponses();
+    const facts = {
+      calls: [...request.mock.calls],
+      defaultPrevented: event.defaultPrevented,
+    };
+
+    expect.soft(facts.defaultPrevented).toBe(row.expectedKey !== null);
+    expect.soft(facts.calls).toEqual(
+      row.expectedKey === null
+        ? []
+        : [
+            [
+              "browser.request",
+              {
+                method: "POST",
+                path: "/act",
+                target: "node",
+                node: "browser-node",
+                query: { profile: "work" },
+                body: { kind: "press", targetId: "form-tab", key: row.expectedKey },
+              },
+            ],
+          ],
+    );
+  });
+
   it("forwards plain text once to the selected browser and consumes the local paste", async () => {
     const { panel, controller, request } = await mount();
     controller.evaluateUnavailable = true;
