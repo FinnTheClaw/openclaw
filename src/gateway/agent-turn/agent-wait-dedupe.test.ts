@@ -1,6 +1,7 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { normalizeSpawnedRunMetadata } from "../../agents/spawned-context.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { emitAgentEvent, getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
@@ -12,9 +13,10 @@ import { agentHandlers } from "../server-methods/agent.js";
 import { createGatewayRequestContext } from "../server-request-context.js";
 import { makeContextParams } from "../server-request-context.test-support.js";
 import type { DedupeEntry } from "../server-shared.js";
+import { authorizeResolvedSessionMutation } from "../session-sharing.js";
 import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
 import { replayAgentTurnIfCached } from "./agent-dedupe.js";
-import { setGatewayDedupeEntry, waitForAgentJob } from "./agent-job.js";
+import { getAgentJobSession, setGatewayDedupeEntry, waitForAgentJob } from "./agent-job.js";
 import { createAgentTurnService } from "./agent-turn-service.js";
 
 function waitThroughGateway(
@@ -76,6 +78,206 @@ afterEach(() => {
 });
 
 describe("agent.wait gateway dedupe observations", () => {
+  it.each(
+    (["accepted", "terminal"] as const).flatMap((phase) =>
+      (["omitted", "other-own", "same-own"] as const).map((requestedTarget) => ({
+        phase,
+        requestedTarget,
+      })),
+    ),
+  )(
+    "cached agent target authority: $phase requested=$requestedTarget",
+    async ({ phase, requestedTarget }) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const cfg = rolePolicyConfig();
+        const label = "cached-target-" + phase + "-" + requestedTarget;
+        const caller = roleClient("none", label + "-caller");
+        const other = roleClient("none", label + "-other");
+        const deniedKey = "agent:main:" + label + "-denied";
+        const ownKey = "agent:main:" + label + "-own";
+        for (const [sessionKey, creator] of [
+          [deniedKey, other],
+          [ownKey, caller],
+        ] as const) {
+          await upsertSessionEntryCore(
+            { agentId: "main", sessionKey },
+            {
+              sessionId: label + (sessionKey === ownKey ? "-own-id" : "-denied-id"),
+              updatedAt: Date.now(),
+              visibility: "draft",
+              createdActor: {
+                type: "human",
+                source: "profile",
+                id: expectDefined(creator.authenticatedUserProfile, "creator profile").profileId,
+              },
+            },
+          );
+        }
+        const deniedError = authorizeResolvedSessionMutation({
+          cfg,
+          client: caller,
+          agentId: "main",
+          sessionKey: deniedKey,
+        });
+        const ownError = authorizeResolvedSessionMutation({
+          cfg,
+          client: caller,
+          agentId: "main",
+          sessionKey: ownKey,
+        });
+        expect(deniedError).not.toBeNull();
+        expect(ownError).toBeNull();
+        const allowed = requestedTarget === "same-own";
+        const cachedSessionKey = allowed ? ownKey : deniedKey;
+        const runId = label + "-run";
+        const key = "agent:" + runId;
+        const retainedSession = {
+          sessionKey: cachedSessionKey,
+          sessionId: label + (allowed ? "-own-id" : "-denied-id"),
+          agentId: "main",
+          lifecycleGeneration: getAgentEventLifecycleGeneration(),
+        };
+        const payload =
+          phase === "accepted"
+            ? {
+                runId,
+                status: "accepted",
+                sessionKey: cachedSessionKey,
+                agentId: "main",
+                runtime: { provider: "synthetic", model: "cached-only" },
+              }
+            : {
+                runId,
+                status: "ok",
+                startedAt: 100,
+                endedAt: 200,
+                result: { payloads: [{ text: "synthetic cached private result" }] },
+              };
+        const context = createGatewayRequestContext(makeContextParams());
+        context.getRuntimeConfig = () => cfg;
+        const loadModels = vi.fn(() => {
+          throw new Error("unexpected model preparation");
+        });
+        context.loadGatewayModelCatalog = loadModels;
+        setGatewayDedupeEntry({
+          dedupe: context.dedupe,
+          key,
+          session: retainedSession,
+          entry: { ts: Date.now(), ok: true, payload, requestIdentity: label + "-identity" },
+        });
+        const cachedBefore = expectDefined(context.dedupe.get(key), "seeded replay entry");
+        const cachedSnapshot = structuredClone(cachedBefore);
+        const retainedBefore = getAgentJobSession(runId);
+        if (phase === "terminal") {
+          expect(retainedBefore).toEqual(retainedSession);
+        } else {
+          expect(cachedBefore.payload).toMatchObject({
+            sessionKey: cachedSessionKey,
+            agentId: "main",
+          });
+        }
+        const request = {
+          message: "ordinary synthetic replay",
+          idempotencyKey: runId,
+          ...(requestedTarget === "omitted" ? {} : { sessionKey: ownKey }),
+        };
+        const requestBefore = structuredClone(request);
+        const preflight = {
+          request,
+          cfg,
+          runId,
+          agentDedupeKeys: [key],
+          allowModelOverride: false,
+          canUseInternalRuntimeHandoff: false,
+          canUseCronRunContinuation: false,
+          normalizedSpawned: normalizeSpawnedRunMetadata(),
+          inputProvenance: undefined,
+          isRestartRecoveryResumeRun: false,
+          preserveUserFacingSessionModelState: false,
+          suppressVisibleSessionEffects: false,
+          requestedPromptPersistenceSuppression: false,
+          isOneShotModelRun: false,
+          isRawModelRun: false,
+        } satisfies Parameters<
+          ReturnType<typeof createAgentTurnService>["startTurn"]
+        >[0]["preflight"];
+        const emitAcceptance = vi.fn();
+        const emitFinal = vi.fn();
+        const emitStartOwner = vi.fn();
+        const emitExecutionStarted = vi.fn();
+        const onRunObserved = vi.fn();
+        const assertAdmissionCurrent = vi.fn();
+        const assertInputCommitAllowed = vi.fn(() => {
+          throw new Error("unexpected new input admission");
+        });
+        const service = createAgentTurnService({ context, isWebchatConnect: () => true });
+        let settledError: unknown;
+        try {
+          await service.startTurn({
+            preflight,
+            principal: caller,
+            assertAdmissionCurrent,
+            assertInputCommitAllowed,
+            onRunObserved,
+            io: { emitAcceptance, emitFinal, emitStartOwner, emitExecutionStarted },
+          });
+        } catch (error) {
+          settledError = error;
+        }
+        const observed = {
+          acceptance: emitAcceptance.mock.calls,
+          final: emitFinal.mock.calls,
+          settledError,
+          admissionChecks: assertAdmissionCurrent.mock.calls.length,
+          inputCommits: assertInputCommitAllowed.mock.calls.length,
+          runObserved: onRunObserved.mock.calls.length,
+          startOwners: emitStartOwner.mock.calls.length,
+          executionStarts: emitExecutionStarted.mock.calls.length,
+          modelLoads: loadModels.mock.calls.length,
+          cacheSameObject: context.dedupe.get(key) === cachedBefore,
+          cache: structuredClone(context.dedupe.get(key)),
+          retained: getAgentJobSession(runId),
+          request: structuredClone(request),
+        };
+        const expectedAcceptance = allowed
+          ? [
+              [
+                [
+                  true,
+                  phase === "accepted"
+                    ? {
+                        runId,
+                        status: "in_flight",
+                        sessionKey: cachedSessionKey,
+                        agentId: "main",
+                        runtime: { provider: "synthetic", model: "cached-only" },
+                      }
+                    : payload,
+                  undefined,
+                ],
+                phase === "accepted" ? { cached: true, runId } : { cached: true },
+              ],
+            ]
+          : [[[false, undefined, deniedError]]];
+        expect(observed).toEqual({
+          acceptance: expectedAcceptance,
+          final: [],
+          settledError: undefined,
+          admissionChecks: 1,
+          inputCommits: 0,
+          runObserved: 0,
+          startOwners: 0,
+          executionStarts: 0,
+          modelLoads: 0,
+          cacheSameObject: true,
+          cache: cachedSnapshot,
+          retained: retainedBefore,
+          request: requestBefore,
+        });
+      });
+    },
+  );
+
   it.each(
     (["ok", "error", "timeout"] as const).flatMap((status) =>
       (["active", "retired", "sessionless"] as const).map((registration) => ({

@@ -66,7 +66,28 @@ export function createAgentTurnService(
   }: AgentTurnStartRequest): Promise<void> => {
     const promptedAt = Date.now();
     assertAdmissionCurrent?.();
-    if (replayAgentTurnIfCached({ preflight, context, io, acceptedOnly: privateCompletion })) {
+    if (
+      replayAgentTurnIfCached({
+        preflight,
+        context,
+        io,
+        acceptedOnly: privateCompletion,
+        authorizeReplayTarget: ({ sessionKey, agentId }) => {
+          const currentCfg = context.getRuntimeConfig();
+          return (
+            (agentId
+              ? authorizeGatewaySessionCreation({ cfg: currentCfg, client: principal, agentId })
+              : undefined) ??
+            authorizeResolvedSessionMutation({
+              cfg: currentCfg,
+              client: principal,
+              sessionKey,
+              agentId,
+            })
+          );
+        },
+      })
+    ) {
       return;
     }
     assertInputCommitAllowed?.();

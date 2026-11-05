@@ -2,7 +2,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import type { GatewayRequestContext } from "../server-methods/types.js";
-import { setGatewayDedupeEntry } from "./agent-job.js";
+import { getAgentJobSession, setGatewayDedupeEntry } from "./agent-job.js";
 import type { AgentTurnIo } from "./types.js";
 
 export class AgentRequestReservationEndedError extends Error {
@@ -183,6 +183,10 @@ export function setAbortedAgentDedupeEntries(params: {
 
 export function replayAgentTurnIfCached(params: {
   acceptedOnly?: boolean;
+  authorizeReplayTarget?: (target: {
+    sessionKey: string;
+    agentId?: string;
+  }) => Parameters<AgentTurnIo["emitAcceptance"]>[0][2] | null;
   preflight: { agentDedupeKeys: readonly string[]; runId: string };
   context: Pick<GatewayRequestContext, "dedupe" | "chatAbortControllers">;
   io: AgentTurnIo;
@@ -206,6 +210,26 @@ export function replayAgentTurnIfCached(params: {
   ) {
     // Durable private input owns recovery after the accepted controller is gone.
     return false;
+  }
+  if (params.authorizeReplayTarget) {
+    const cachedPayload = asOptionalRecord(cached.payload);
+    const cachedRunId = normalizeOptionalString(cachedPayload?.runId) ?? runId;
+    const retainedSession = getAgentJobSession(cachedRunId);
+    const acceptedPayload =
+      cached.ok && isAcceptedAgentDedupePayload(cached.payload) ? cached.payload : undefined;
+    const sessionKey =
+      normalizeOptionalString(retainedSession?.sessionKey) ??
+      normalizeOptionalString(acceptedPayload?.sessionKey);
+    const agentId =
+      normalizeOptionalString(retainedSession?.agentId) ??
+      normalizeOptionalString(acceptedPayload?.agentId);
+    if (sessionKey) {
+      const error = params.authorizeReplayTarget({ sessionKey, agentId });
+      if (error) {
+        params.io.emitAcceptance([false, undefined, error]);
+        return true;
+      }
+    }
   }
   if (cached.ok && isAcceptedAgentDedupePayload(cached.payload)) {
     const cachedRunId = normalizeOptionalString(cached.payload.runId) ?? runId;
