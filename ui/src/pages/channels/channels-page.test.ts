@@ -4,6 +4,7 @@ import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gatewa
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
 import { createChannelCapability } from "../../lib/channels/index.ts";
 import { createRuntimeConfigCapability } from "../../lib/config/runtime-config-capability.ts";
+import { ChannelWizardHost } from "./wizard-host.ts";
 import "./channels-page.ts";
 
 const NOSTR_PROFILE_REQUEST_TIMEOUT_MS = 30_000;
@@ -189,6 +190,149 @@ afterEach(() => {
 });
 
 describe("ChannelsPage lifecycle", () => {
+  it.each([
+    ["closed during config resync", "resync", true],
+    ["closed during channel refresh", "refresh", true],
+    ["current completion", "resync", false],
+  ] as const)(
+    "L02-088-F01 keeps WhatsApp completion owned when %s",
+    async (_label, boundary, close) => {
+      vi.useFakeTimers();
+      const operationStarted = createDeferred();
+      const operation = createDeferred();
+      const gateway = createGateway();
+      const request = vi.mocked(gateway.snapshot.client!.request);
+      const baseRequest = request.getMockImplementation();
+      const qrDataUrl = "data:image/png;base64,c3ludGhldGlj";
+      request.mockImplementation(async (method: string, params?: unknown) => {
+        if (method === "wizard.start") {
+          return {
+            done: true,
+            status: "done",
+            channels: ["whatsapp"],
+            accounts: [{ channel: "whatsapp", accountId: "completed-account" }],
+          };
+        }
+        if (method === "web.login.start") {
+          return {
+            message: "Synthetic pairing",
+            qrDataUrl,
+            sessionKey: "synthetic-session",
+            connected: false,
+          };
+        }
+        return await baseRequest?.(method, params);
+      });
+      const source = createContext(gateway);
+      const discard = vi.spyOn(source.runtimeConfig, "discardDraft").mockImplementation(() => {
+        if (boundary === "resync") {
+          operationStarted.resolve();
+          return operation.promise;
+        }
+        return Promise.resolve();
+      });
+      const refresh = vi.spyOn(source.channels, "refresh").mockImplementation(() => {
+        if (boundary === "refresh" && refresh.mock.calls.length === 1) {
+          operationStarted.resolve();
+          return operation.promise;
+        }
+        return Promise.resolve();
+      });
+      const getContext = vi.fn(() => source.context);
+      const host = new ChannelWizardHost({
+        getContext,
+        requestUpdate: vi.fn(),
+        clearSelection: vi.fn(),
+      });
+
+      try {
+        host.startSetup("whatsapp");
+        await operationStarted.promise;
+        const doneState = host.state;
+        if (close) {
+          host.close();
+        }
+        const pending = {
+          completed: structuredClone(doneState),
+          phase: host.state.phase,
+          sameDoneOwner: host.state === doneState,
+          sameContext: getContext() === source.context,
+          connected: source.channels.state.connected,
+          currentClient: source.channels.state.client === gateway.snapshot.client,
+          account: host.whatsappAccountId,
+          loginCalls: request.mock.calls.filter(([method]) => method === "web.login.start"),
+        };
+
+        operation.resolve();
+        await operation.promise;
+        await vi.runAllTimersAsync();
+        const settled = {
+          phase: host.state.phase,
+          sameDoneOwner: host.state === doneState,
+          sameContext: getContext() === source.context,
+          account: host.whatsappAccountId,
+          qr: source.channels.state.whatsappLoginQrDataUrl,
+          session: source.channels.state.whatsappLoginSessionKey,
+          busy: source.channels.state.whatsappBusy,
+          discardCalls: discard.mock.calls.map(([options]) => options),
+          refreshCalls: refresh.mock.calls.map(([probe]) => probe),
+          loginCalls: request.mock.calls
+            .filter(([method]) => method === "web.login.start")
+            .map(([method, params]) => ({ method, params })),
+        };
+
+        expect({ pending, settled }).toEqual({
+          pending: {
+            completed: {
+              phase: "done",
+              channel: "whatsapp",
+              channels: ["whatsapp"],
+              accounts: [{ channel: "whatsapp", accountId: "completed-account" }],
+            },
+            phase: close ? "idle" : "done",
+            sameDoneOwner: !close,
+            sameContext: true,
+            connected: true,
+            currentClient: true,
+            account: undefined,
+            loginCalls: [],
+          },
+          settled: {
+            phase: close ? "idle" : "done",
+            sameDoneOwner: !close,
+            sameContext: true,
+            account: close ? undefined : "completed-account",
+            qr: close ? null : qrDataUrl,
+            session: close ? null : "synthetic-session",
+            busy: false,
+            discardCalls: [{ reloadOnly: true }],
+            refreshCalls: boundary === "refresh" ? [true, true] : [true],
+            loginCalls: close
+              ? []
+              : [
+                  {
+                    method: "web.login.start",
+                    params: {
+                      channel: "whatsapp",
+                      force: false,
+                      timeoutMs: 30000,
+                      accountId: "completed-account",
+                    },
+                  },
+                ],
+          },
+        });
+      } finally {
+        operation.resolve();
+        await operation.promise;
+        host.cancelOnDisconnect();
+        await vi.runAllTimersAsync();
+        source.channels.dispose();
+        source.runtimeConfig.dispose();
+      }
+    },
+  );
+
   it.each(["Imported name", null])(
     "openclaw-channels-page Import from Relays preserves profile name %s with extra fields",
     async (name) => {
