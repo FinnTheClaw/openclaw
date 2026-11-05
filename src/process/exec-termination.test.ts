@@ -54,6 +54,63 @@ async function withOwnedTree(
 
 describe.skipIf(process.platform === "win32")("command process-group settlement", () => {
   it.each([
+    { name: "changed generation", currentStart: 124, signaled: false, cleanup: "uncertain" },
+    { name: "same generation", currentStart: 123, signaled: true, cleanup: "cooperative" },
+    {
+      name: "orphan group without root identity",
+      currentStart: null,
+      signaled: true,
+      cleanup: "cooperative",
+    },
+  ] as const)(
+    "revalidates retired group identity before graceful signal: $name",
+    async ({ currentStart, signaled, cleanup }) => {
+      vi.useFakeTimers();
+      let observedStart: number | null = 123;
+      vi.spyOn(processIdentity, "getFileLockProcessStartTime").mockImplementation(
+        () => observedStart,
+      );
+      let groupAlive = true;
+      const signals = vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
+        if (signal === 0 && !groupAlive) {
+          throw Object.assign(new Error("group gone"), { code: "ESRCH" });
+        }
+        if (signal === "SIGTERM") {
+          groupAlive = false;
+        }
+        return true;
+      });
+      const { child, kill: killChild } = mockTerminatingChild(0);
+      const cancelController = new AbortController();
+      const owner = createCommandTerminationController({
+        child,
+        cancelController,
+        processTree: { mode: "graceful" },
+        killGraceMs: 300,
+        isChildExited: () => true,
+        isCommandSettled: () => false,
+      });
+      observedStart = currentStart;
+      try {
+        const terminated = owner.terminate();
+        const completion = owner.settle();
+        await vi.advanceTimersByTimeAsync(0);
+        const result = await completion;
+        expect.soft(terminated).toBe(signaled);
+        expect.soft(result).toBe(cleanup);
+        expect(signals.mock.calls.filter(([, signal]) => signal !== 0)).toEqual(
+          signaled ? [[-4242, "SIGTERM"]] : [],
+        );
+        expect(killChild).not.toHaveBeenCalled();
+        expect(cancelController.signal.aborted).toBe(false);
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
     { name: "an absent group", probeError: "ESRCH", needsGrace: false },
     { name: "surviving descendants", probeError: undefined, needsGrace: true },
     { name: "a permission-denied group", probeError: "EPERM", needsGrace: true },

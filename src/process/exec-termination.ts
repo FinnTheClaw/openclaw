@@ -149,6 +149,13 @@ export function createCommandTerminationController(params: {
         processTreeSettlement = forceAndObserve();
         return false;
       }
+      if (!directChildAlive) {
+        const start = getFileLockProcessStartTime(childPid);
+        if (start !== null && start !== originalStart) {
+          cleanup = "uncertain";
+          return false;
+        }
+      }
       cleanup = "cooperative";
       try {
         process.kill(-childPid, params.killSignal ?? "SIGTERM");
