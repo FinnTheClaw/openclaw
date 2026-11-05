@@ -60,6 +60,46 @@ afterEach(() => {
 });
 
 describe("check-assertion-safety-ratchet", () => {
+  it.each([
+    {
+      name: "double-quoted marker",
+      source: 'const parsed = read("// SAFETY: example") as Shape;',
+      count: 1,
+    },
+    {
+      name: "single-quoted marker",
+      source: "const parsed = read('// SAFETY: example') as Shape;",
+      count: 1,
+    },
+    {
+      name: "template marker",
+      source: "const parsed = read(`// SAFETY: example`) as Shape;",
+      count: 1,
+    },
+    {
+      name: "template substitution marker",
+      source: "const parsed = read(`// SAFETY: ${total}`) as Shape;",
+      count: 1,
+    },
+    {
+      name: "angle assertion marker",
+      source: 'const parsed = <Shape>read("// SAFETY: example");',
+      count: 1,
+    },
+    {
+      name: "actual trailing comment",
+      source: "const parsed = value as Shape; // SAFETY: owned fixture checked Shape.",
+      count: 0,
+    },
+    {
+      name: "actual standalone comment",
+      source: "// SAFETY: owned fixture checked Shape.\nconst parsed = value as Shape;",
+      count: 0,
+    },
+  ])("L09-F027 recognizes only real comments: $name", ({ source, count }) => {
+    expect(countUnsafeAssertions(...parseFixture(source, "src/fixture.ts"))).toBe(count);
+  });
+
   it("counts only governed assertions without a SAFETY invariant", () => {
     const source = [
       "const frozen = value as const;",

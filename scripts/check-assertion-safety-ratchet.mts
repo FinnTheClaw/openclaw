@@ -57,22 +57,32 @@ export function isGovernedAssertionSourcePath(filePath: string) {
 }
 
 function collectSafetyCommentLines(sourceFile: ts.SourceFile, source: string) {
-  // Line text, not token scanning: a raw scanner desyncs on the `}` that ends a
-  // template substitution and then misses every later comment in the file.
+  // Parsed node boundaries keep literal markers out without a raw scanner that
+  // can desync at template substitutions and miss later comments.
   const sameLine = new Set<number>();
   const standalone = new Set<number>();
-  sourceFile.getLineStarts().forEach((lineStart, line) => {
-    const lineEnd = source.indexOf("\n", lineStart);
-    const text = source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd);
-    const commentStart = text.indexOf("//");
-    if (commentStart === -1 || !/^\/\/\s*SAFETY:\s*\S/u.test(text.slice(commentStart).trim())) {
-      return;
+  const visit = (node: ts.Node): void => {
+    const comments = [
+      ...(ts.getLeadingCommentRanges(source, node.pos) ?? []),
+      ...(ts.getTrailingCommentRanges(source, node.end) ?? []),
+    ];
+    for (const comment of comments) {
+      if (
+        comment.kind !== ts.SyntaxKind.SingleLineCommentTrivia ||
+        !/^\/\/\s*SAFETY:\s*\S/u.test(source.slice(comment.pos, comment.end).trim())
+      ) {
+        continue;
+      }
+      const line = sourceFile.getLineAndCharacterOfPosition(comment.pos).line;
+      const lineStart = sourceFile.getLineStarts()[line];
+      sameLine.add(line);
+      if (source.slice(lineStart, comment.pos).trim() === "") {
+        standalone.add(line);
+      }
     }
-    sameLine.add(line);
-    if (text.slice(0, commentStart).trim() === "") {
-      standalone.add(line);
-    }
-  });
+    node.forEachChild(visit);
+  };
+  visit(sourceFile);
   return { sameLine, standalone };
 }
 
