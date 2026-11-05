@@ -646,6 +646,38 @@ describe("redactSensitiveText", () => {
     expect(bitmap.slice(secretStart + 5).some(Boolean)).toBe(false);
   });
 
+  it.each([
+    { label: "default text split", kind: "text", offset: 16_382, suffixLength: 32_768 },
+    { label: "tool payload split", kind: "tool", offset: 16_382, suffixLength: 32_768 },
+    { label: "structured app password split", kind: "app", offset: 16_382, suffixLength: 32_768 },
+    { label: "default text below threshold", kind: "text", offset: 16_382, suffixLength: 8 },
+    { label: "default text inside chunk", kind: "text", offset: 16_320, suffixLength: 32_768 },
+    {
+      label: "structured app password inside chunk",
+      kind: "app",
+      offset: 16_320,
+      suffixLength: 32_768,
+    },
+  ] as const)(
+    "redacts fixed synthetic credentials across disjoint chunk boundaries ($label)",
+    ({ kind, offset, suffixLength }) => {
+      const token = kind === "app" ? "abcd-efgh-ijkl-mnop" : `ghp_${"A".repeat(36)}`;
+      const masked = kind === "app" ? "abcd-e…mnop" : "ghp_AA…AAAA";
+      const prefix = `${"x".repeat(offset - 1)} `;
+      const suffix = ` ${"y".repeat(suffixLength)}`;
+      const input = `${prefix}${token}${suffix}`;
+      const expected = `${prefix}${masked}${suffix}`;
+      const output =
+        kind === "tool"
+          ? redactToolPayloadTextWithConfig(input, undefined)
+          : kind === "app"
+            ? redactSecrets({ text: input }).text
+            : redactSensitiveText(input, { mode: "tools" });
+      expect.soft(output).toBe(expected);
+      expect.soft(output.includes(token)).toBe(false);
+    },
+  );
+
   it("masks token prefixes embedded after adjacent text", () => {
     const token = `ghp_${"a".repeat(5_000)}`;
     const output = redactSensitiveText(`prefix-${token} suffix`, { mode: "tools" });

@@ -76,6 +76,11 @@ const DEFAULT_REDACT_MIN_LENGTH = 18;
 const DEFAULT_REDACT_KEEP_START = 6;
 const DEFAULT_REDACT_KEEP_END = 4;
 const shellReferencePreservingPatterns = new WeakSet<ResolvedRedactPattern>();
+// Built-in patterns scan whole text; only configured regexes use bounded chunks.
+const builtInResolvedPatterns = new WeakSet<ResolvedRedactPattern>();
+const canonicalBuiltInSources = new Set<string>(
+  DEFAULT_REDACT_PATTERNS.filter((entry): entry is string => typeof entry === "string"),
+);
 // Patterns whose left-context assertions or complete token can cross a chunk boundary must run
 // against the full string; chunking can invent a `^` boundary or split the secret itself.
 const chunkUnsafePatterns = new WeakSet<ResolvedRedactPattern>();
@@ -190,6 +195,9 @@ function parsePattern(raw: RedactPattern): ResolvedRedactPattern | null {
       CHUNK_UNSAFE_PATTERN_SOURCES.has(raw))
   ) {
     chunkUnsafePatterns.add(pattern);
+  }
+  if (pattern && typeof raw === "string" && canonicalBuiltInSources.has(raw)) {
+    builtInResolvedPatterns.add(pattern);
   }
   return pattern;
 }
@@ -681,7 +689,10 @@ export function redactText(
     // Each replacement finishes synchronously before this invocation advances its pattern.
     for (pattern of patterns) {
       next =
-        pattern instanceof RegExp && !options?.fullContext && !chunkUnsafePatterns.has(pattern)
+        pattern instanceof RegExp &&
+        !options?.fullContext &&
+        !builtInResolvedPatterns.has(pattern) &&
+        !chunkUnsafePatterns.has(pattern)
           ? replacePatternBounded(next, pattern, replaceRegex)
           : replaceRedactPattern(next, pattern, replace, replaceRegex);
     }
@@ -749,7 +760,10 @@ function looksLikeAppSpecificPassword(candidate: string): boolean {
 }
 
 function redactAppSpecificPasswords(text: string): string {
-  return replacePatternBounded(text, APP_SPECIFIC_PASSWORD_RE, (match: string, token: string) =>
+  if (!text.includes("-")) {
+    return text;
+  }
+  return text.replace(APP_SPECIFIC_PASSWORD_RE, (match: string, token: string) =>
     looksLikeAppSpecificPassword(token) ? maskToken(token) : match,
   );
 }
