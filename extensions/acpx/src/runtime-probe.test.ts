@@ -191,8 +191,8 @@ describe("AcpxRuntime diagnostic probes", () => {
       {
         openclawProcessCleanup: {
           listProcesses: vi.fn(async () => [
-            { pid: 710, ppid: 1, command: launchedCommand },
-            { pid: 711, ppid: 710, command: "node adapter-child.js" },
+            { pid: 710, ppid: 1, command: launchedCommand, startIdentity: "start-710" },
+            { pid: 711, ppid: 710, command: "node adapter-child.js", startIdentity: "start-711" },
           ]),
           killProcess: vi.fn((pid, signal) => {
             killed.push({ pid, signal });

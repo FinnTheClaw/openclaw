@@ -44,7 +44,14 @@ it.each(["inspection", "grace"])(
             entered.resolve();
             await release.promise;
           }
-          return [{ pid: 101, ppid: 1, command: CODEX_WRAPPER_COMMAND_WITH_LEASE }];
+          return [
+            {
+              pid: 101,
+              ppid: 1,
+              command: CODEX_WRAPPER_COMMAND_WITH_LEASE,
+              startIdentity: "start-101",
+            },
+          ];
         },
         sleep: async () => {
           entered.resolve();

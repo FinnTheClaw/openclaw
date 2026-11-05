@@ -1895,14 +1895,16 @@ describe("AcpxRuntime fresh reset wrapper", () => {
             {
               pid: 930,
               ppid: 1,
+              startIdentity: "start-930",
               command: `${CODEX_ACP_WRAPPER_COMMAND} ${OPENCLAW_ACPX_LEASE_ID_ARG} lease-old ${OPENCLAW_GATEWAY_INSTANCE_ID_ARG} gateway-test`,
             },
             {
               pid: 940,
               ppid: 1,
+              startIdentity: "start-940",
               command: `${CODEX_ACP_WRAPPER_COMMAND} ${OPENCLAW_ACPX_LEASE_ID_ARG} lease-current ${OPENCLAW_GATEWAY_INSTANCE_ID_ARG} gateway-test`,
             },
-            { pid: 941, ppid: 940, command: "node child.js" },
+            { pid: 941, ppid: 940, command: "node child.js", startIdentity: "start-941" },
           ]),
           killProcess: vi.fn((pid, signal) => {
             killed.push({ pid, signal });
@@ -1999,9 +2001,10 @@ describe("AcpxRuntime fresh reset wrapper", () => {
             {
               pid: 920,
               ppid: 1,
+              startIdentity: "start-920",
               command: CODEX_ACP_WRAPPER_COMMAND,
             },
-            { pid: 921, ppid: 920, command: "node child.js" },
+            { pid: 921, ppid: 920, command: "node child.js", startIdentity: "start-921" },
           ]),
           killProcess: vi.fn((pid, signal) => {
             killed.push({ pid, signal });

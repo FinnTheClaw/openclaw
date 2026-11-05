@@ -131,7 +131,14 @@ export function makeManagedRuntime() {
     {
       openclawProcessCleanup: {
         platform: "linux",
-        listProcesses: async () => [{ pid, ppid: 1, command: CODEX_ACP_WRAPPER_COMMAND }],
+        listProcesses: async () => [
+          {
+            pid,
+            ppid: 1,
+            command: CODEX_ACP_WRAPPER_COMMAND,
+            startIdentity: "managed-fixture-start",
+          },
+        ],
         killProcess: vi.fn(),
         sleep,
       },
