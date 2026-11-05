@@ -234,13 +234,13 @@ export async function respondToDiscordVoiceTranscript(
       ? voiceReplyAudio.release
       : () => unlinkIfExists(voiceReplyAudio.audioPath);
   // Synthesis can settle after leave; release before the playback queue gets ownership.
-  if (entry.sessionLifecycle.status === "stopped") {
+  if (!conversationCurrent()) {
     await releaseAudio?.();
     return;
   }
   params.enqueuePlayback(entry, async () => {
     try {
-      if (entry.sessionLifecycle.status === "stopped") {
+      if (!conversationCurrent()) {
         return;
       }
       const input =

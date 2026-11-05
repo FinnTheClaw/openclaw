@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createDiscordLivePolicyReader } from "../monitor/live-policy.js";
@@ -64,6 +68,156 @@ defineDiscordVoiceTests(
         },
       };
     }
+
+    it.each([
+      { mode: "stream", transition: "none" },
+      { mode: "stream", transition: "during-synthesis" },
+      { mode: "stream", transition: "queued-before-play" },
+      { mode: "file", transition: "none" },
+      { mode: "file", transition: "during-synthesis" },
+      { mode: "file", transition: "queued-before-play" },
+    ] as const)(
+      "L10-F009 admits $mode playback only under current policy ($transition)",
+      async ({ mode, transition }) => {
+        const fixture = await createBatchFixture();
+        const voiceIngress = await import("./ingress.js");
+        const turn = vi.spyOn(voiceIngress, "runDiscordVoiceAgentTurn");
+        const audioPlay = vi.spyOn(fixture.entry.audio, "play");
+        const synthesisEntered = createDeferred<void>();
+        const synthesisResume = createDeferred<void>();
+        const queueResume = createDeferred<void>();
+        const release = vi.fn(async () => {});
+        const directory = mode === "file" ? await mkdtemp(join(tmpdir(), "l10-f009-")) : undefined;
+        const audioPath = directory ? join(directory, "reply.mp3") : undefined;
+        if (audioPath) {
+          await writeFile(audioPath, Buffer.from([1, 2, 3]));
+        }
+        const queueHead = queueResume.promise;
+        fixture.entry.playbackQueue = queueHead;
+        if (transition === "queued-before-play") {
+          synthesisResume.resolve();
+        }
+        if (mode === "stream") {
+          textToSpeechStreamMock.mockImplementationOnce(async () => {
+            synthesisEntered.resolve();
+            await synthesisResume.promise;
+            return {
+              success: true,
+              audioStream: new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new Uint8Array([1, 2, 3]));
+                  controller.close();
+                },
+              }),
+              release,
+            };
+          });
+        } else {
+          textToSpeechStreamMock.mockResolvedValueOnce({
+            success: false,
+            error: "Controlled file fallback",
+          });
+          textToSpeechMock.mockImplementationOnce(async () => {
+            synthesisEntered.resolve();
+            await synthesisResume.promise;
+            return { success: true, audioPath: audioPath! };
+          });
+        }
+        agentCommandMock.mockResolvedValueOnce({ payloads: [{ text: "Current voice answer" }] });
+        const processing = receiveRecordedSpeech(
+          fixture.manager,
+          "Read the agenda",
+          fixture.entry,
+          "333",
+        ).then(
+          () => ({ ok: true }),
+          (error: unknown) => ({ error }),
+        );
+        try {
+          await synthesisEntered.promise;
+          if (transition === "queued-before-play") {
+            await processing;
+          }
+          const context = turn.mock.calls[0]?.[0].context;
+          const beforeTransition = {
+            policyCurrent: context?.isCurrent?.(),
+            lifecycle: fixture.entry.sessionLifecycle.status,
+            queued: fixture.entry.playbackQueue !== queueHead,
+            audioPlay: audioPlay.mock.calls.length,
+            playerPlay: fixture.player.play.mock.calls.length,
+            release: release.mock.calls.length,
+            fileExists: audioPath ? existsSync(audioPath) : null,
+          };
+          if (transition !== "none") {
+            fixture.revokePolicy();
+          }
+          const afterTransition = {
+            policyCurrent: context?.isCurrent?.(),
+            lifecycle: fixture.entry.sessionLifecycle.status,
+          };
+          synthesisResume.resolve();
+          queueResume.resolve();
+          const response = await processing;
+          const queue = await fixture.entry.playbackQueue.then(
+            () => ({ ok: true }),
+            (error: unknown) => ({ error }),
+          );
+          const afterPlayback = {
+            response,
+            queue,
+            policyCurrent: context?.isCurrent?.(),
+            lifecycle: fixture.entry.sessionLifecycle.status,
+            queued: fixture.entry.playbackQueue !== queueHead,
+            agent: agentCommandMock.mock.calls.length,
+            streamSynthesis: textToSpeechStreamMock.mock.calls.length,
+            fileSynthesis: textToSpeechMock.mock.calls.length,
+            audioPlay: audioPlay.mock.calls.length,
+            playerPlay: fixture.player.play.mock.calls.length,
+            release: release.mock.calls.length,
+            fileExists: audioPath ? existsSync(audioPath) : null,
+          };
+          const admitted = transition === "none";
+          expect(beforeTransition).toEqual({
+            policyCurrent: true,
+            lifecycle: "active",
+            queued: transition === "queued-before-play",
+            audioPlay: 0,
+            playerPlay: 0,
+            release: 0,
+            fileExists: mode === "file" ? true : null,
+          });
+          expect(afterTransition).toEqual({
+            policyCurrent: admitted,
+            lifecycle: "active",
+          });
+          expect(afterPlayback).toEqual({
+            response: { ok: true },
+            queue: { ok: true },
+            policyCurrent: admitted,
+            lifecycle: "active",
+            queued: transition !== "during-synthesis",
+            agent: 1,
+            streamSynthesis: 1,
+            fileSynthesis: mode === "file" ? 1 : 0,
+            audioPlay: admitted ? 1 : 0,
+            playerPlay: admitted ? 1 : 0,
+            release: mode === "stream" ? 1 : 0,
+            fileExists: mode === "file" ? false : null,
+          });
+        } finally {
+          synthesisResume.resolve();
+          queueResume.resolve();
+          await processing;
+          await fixture.entry.playbackQueue;
+          audioPlay.mockRestore();
+          turn.mockRestore();
+          await fixture.manager.destroy();
+          if (directory) {
+            await rm(directory, { recursive: true, force: true });
+          }
+        }
+      },
+    );
 
     it.each([
       { transition: "none", result: "miss", fallback: true },
