@@ -465,6 +465,106 @@ describe("agent file requests", () => {
     expect(state.agentFileVersions["AGENTS.md"]).toEqual({ hash: loadedHash });
   });
 
+  it.each(
+    [false, true].flatMap((missing) => [false, true].map((cleared) => ({ missing, cleared }))),
+  )(
+    "conflict reload preserves newer draft: missing=$missing cleared=$cleared",
+    async ({ missing, cleared }) => {
+      const loadedHash = "a".repeat(64);
+      const currentHash = "b".repeat(64);
+      const original = fileResult("original", loadedHash);
+      const refreshed = fileResult(
+        missing ? "" : "original\nagent appended",
+        missing ? undefined : currentHash,
+        missing,
+      );
+      const conflict = new GatewayRequestError({
+        code: "INVALID_REQUEST",
+        message: 'agent file "AGENTS.md" changed since it was read',
+        details: { type: "agent_file_conflict", name: "AGENTS.md", currentHash },
+      });
+      const read = createDeferred<AgentsFilesGetResult>();
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce(original)
+        .mockRejectedValueOnce(conflict)
+        .mockReturnValueOnce(read.promise)
+        .mockRejectedValueOnce(conflict);
+      const state = createState(createTestGatewayClient(request));
+      let reload: Promise<boolean> | undefined;
+      try {
+        expect(await loadAgentFileContent(state, "main", "AGENTS.md")).toBe(true);
+        state.agentFileDrafts = { "AGENTS.md": "original\noperator note" };
+        expect(
+          await saveAgentFile(state, "main", "AGENTS.md", state.agentFileDrafts["AGENTS.md"]),
+        ).toBe(false);
+        expect(state.agentFileConflict).toBe("AGENTS.md");
+        expect(state.agentFileVersions["AGENTS.md"]).toEqual({ hash: loadedHash });
+        reload = reloadAgentFile(state, "main", "AGENTS.md");
+        expect(state.agentFilesLoading).toBe(true);
+        expect(request.mock.calls[2]).toEqual([
+          "agents.files.get",
+          { agentId: "main", name: "AGENTS.md" },
+        ]);
+        const newerDraft = cleared ? "" : "original\noperator note\ntyped after Reload";
+        state.agentFileDrafts = { ...state.agentFileDrafts, "AGENTS.md": newerDraft };
+        read.resolve(refreshed);
+        const result = await reload;
+        const observed = {
+          result,
+          draft: state.agentFileDrafts["AGENTS.md"],
+          content: state.agentFileContents["AGENTS.md"],
+          baseVersion: state.agentFileBaseVersions["AGENTS.md"],
+          editorVersion: state.agentFileVersions["AGENTS.md"],
+          conflict: state.agentFileConflict,
+          loading: state.agentFilesLoading,
+          saving: state.agentFileSaving,
+          error: state.agentFilesError,
+          records: vi.mocked(state.agents.recordFile).mock.calls.map(([record]) => record),
+          requests: request.mock.calls.slice(),
+        };
+        expect(observed).toEqual({
+          result: true,
+          draft: newerDraft,
+          content: refreshed.file.content,
+          baseVersion: missing ? { missing: true } : { hash: currentHash },
+          editorVersion: { hash: loadedHash },
+          conflict: "AGENTS.md",
+          loading: false,
+          saving: false,
+          error: null,
+          records: [original, refreshed],
+          requests: [
+            ["agents.files.get", { agentId: "main", name: "AGENTS.md" }],
+            [
+              "agents.files.set",
+              {
+                agentId: "main",
+                name: "AGENTS.md",
+                content: "original\noperator note",
+                expectedHash: loadedHash,
+              },
+            ],
+            ["agents.files.get", { agentId: "main", name: "AGENTS.md" }],
+          ],
+        });
+        expect(await saveAgentFile(state, "main", "AGENTS.md", newerDraft)).toBe(false);
+        expect(request).toHaveBeenLastCalledWith("agents.files.set", {
+          agentId: "main",
+          name: "AGENTS.md",
+          content: newerDraft,
+          expectedHash: loadedHash,
+        });
+        expect(state.agentFileDrafts["AGENTS.md"]).toBe(newerDraft);
+        expect(state.agentFileVersions["AGENTS.md"]).toEqual({ hash: loadedHash });
+        expect(state.agentFileConflict).toBe("AGENTS.md");
+      } finally {
+        read.resolve(refreshed);
+        await reload;
+      }
+    },
+  );
+
   it.each([false, true])(
     "takes the workspace version when reloading a conflict (now missing: %s)",
     async (missing) => {

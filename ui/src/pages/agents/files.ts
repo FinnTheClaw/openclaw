@@ -144,6 +144,7 @@ async function requestAgentFile(
     isConnected() && (saving || state.agentFileWriteRevisions.get(name) === revision);
   const version = state.agentFileVersions[name];
   const resolution = operation.kind === "read" ? operation.resolution : undefined;
+  const draftAtDispatch = state.agentFileDrafts[name];
   state[busy] = true;
   state.agentFilesError = null;
   try {
@@ -174,15 +175,17 @@ async function requestAgentFile(
       // Refresh may advance the workspace base while a dirty draft keeps its ancestry.
       state.agentFileBaseVersions = withFileVersion(state.agentFileBaseVersions, name, nextVersion);
       // Reads rebase clean drafts; writes preserve edits made after submission.
+      const preserveNewerReloadDraft = resolution === "draft" && currentDraft !== draftAtDispatch;
       const rebasesDraft =
-        resolution === "draft" ||
-        !Object.hasOwn(state.agentFileDrafts, name) ||
-        currentDraft === content ||
-        (!saving && currentDraft === previousBase);
+        !preserveNewerReloadDraft &&
+        (resolution === "draft" ||
+          !Object.hasOwn(state.agentFileDrafts, name) ||
+          currentDraft === content ||
+          (!saving && currentDraft === previousBase));
       if (rebasesDraft) {
         state.agentFileDrafts = { ...state.agentFileDrafts, [name]: content };
       }
-      if (saving || resolution !== undefined || rebasesDraft) {
+      if (saving || (resolution !== undefined && !preserveNewerReloadDraft) || rebasesDraft) {
         state.agentFileVersions = withFileVersion(state.agentFileVersions, name, nextVersion);
         if (state.agentFileConflict === name) {
           state.agentFileConflict = null;
