@@ -1,5 +1,10 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createDeferredCore } from "../../shared/deferred.js";
+import { createOperatorClient } from "../node-invoke-plugin-policy.test-helpers.js";
+import { authorizeCurrentOperatorRoleScopes } from "../operator-role-policy.js";
+import { captureGatewayRequestOperatorGuard } from "./session-mutation-guards.js";
 
 const mocks = vi.hoisted(() => ({
   approve: vi.fn(),
@@ -91,6 +96,203 @@ beforeEach(() => {
 });
 
 describe("channel DM pairing gateway handlers", () => {
+  it.each([
+    { boundary: "account resolution", revoke: true },
+    { boundary: "configured lookup", revoke: true },
+    { boundary: "account resolution", revoke: false },
+    { boundary: "configured lookup", revoke: false },
+  ] as const)(
+    "L01-F10 rechecks current pairing approver: $boundary revoked=$revoke",
+    async ({ boundary, revoke }) => {
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const cfg: OpenClawConfig = {
+        gateway: {
+          roles: {
+            definitions: {
+              pairer: { scopes: ["operator.pairing"], sessions: { others: "none" }, agents: [] },
+              viewer: { scopes: [], sessions: { others: "none" }, agents: [] },
+            },
+          },
+        },
+      };
+      const cfgBefore = structuredClone(cfg);
+      const profile = {
+        profileId: "fixture-pairer",
+        aliases: new Set(["fixture-pairer"]),
+        role: "pairer",
+      };
+      const client = createOperatorClient("fixture-pairing-connection");
+      client.connect.role = "operator";
+      client.connect.scopes = ["operator.pairing"];
+      client.preparedSessionProfile = profile;
+      client.authenticatedUserProfile = {
+        profileId: profile.profileId,
+        displayName: "Fixture pairer",
+        avatarRevision: "fixture",
+        hasAvatar: false,
+        updatedAt: 1,
+      };
+      const lookups: string[] = [];
+      mocks.listPlugins.mockReturnValue([
+        {
+          ...pairingPlugin,
+          config: {
+            ...pairingPlugin.config,
+            resolveAccountAsync: async (config: unknown, accountId: string) => {
+              lookups.push(`resolve:${accountId}`);
+              if (boundary === "account resolution") {
+                entered.resolve();
+                await release.promise;
+              }
+              return pairingPlugin.config.resolveAccount(config, accountId);
+            },
+            isConfigured: async (account: { configured: boolean }) => {
+              lookups.push("configured:personal");
+              if (boundary === "configured lookup") {
+                entered.resolve();
+                await release.promise;
+              }
+              return account.configured;
+            },
+          },
+        },
+      ]);
+      const approved = {
+        id: "fixture-sender",
+        entry: {
+          id: "fixture-sender",
+          code: "FIXTURE12",
+          createdAt: "2026-07-20T10:00:00.000Z",
+          lastSeenAt: "2026-07-20T10:00:00.000Z",
+          meta: { accountId: "personal", senderId: "fixture-sender" },
+        },
+      };
+      mocks.approve.mockResolvedValue(approved);
+      const params = {
+        channel: "whatsapp",
+        accountId: "personal",
+        requestId: "opaque-request-id",
+        notify: false,
+        bootstrapCommandOwner: false,
+      };
+      const paramsBefore = structuredClone(params);
+      const respond = vi.fn();
+      const handler = expectDefined(
+        channelPairingHandlers["channels.pairing.approve"],
+        "pairing approve handler",
+      );
+      const options = {
+        req: {
+          type: "req",
+          id: "fixture-pairing-request",
+          method: "channels.pairing.approve",
+          params,
+        },
+        params,
+        client,
+        respond,
+        context: {
+          ...createContext(),
+          getRuntimeConfig: () => cfg,
+          getCommittedRuntimeConfig: () => cfg,
+        },
+      } as unknown as Parameters<typeof handler>[0];
+      expect(authorizeCurrentOperatorRoleScopes(client, cfg)).toBeUndefined();
+      const capturedGuard = captureGatewayRequestOperatorGuard(options);
+      expect(capturedGuard).not.toThrow();
+      let operation: Promise<unknown> | undefined;
+      try {
+        operation = Promise.resolve(handler(options));
+        await Promise.race([
+          entered.promise,
+          operation.then(() => {
+            throw new Error("Pairing handler completed before the owned account gate");
+          }),
+        ]);
+        const pendingCalls = {
+          approve: mocks.approve.mock.calls.length,
+          response: respond.mock.calls.length,
+        };
+        if (revoke) {
+          // Only this owned current-role projection changes, never a profile database or socket.
+          profile.role = "viewer";
+        }
+        const currentRoleError = authorizeCurrentOperatorRoleScopes(client, cfg);
+        let capturedGuardError: unknown;
+        try {
+          capturedGuard();
+        } catch (error) {
+          capturedGuardError = error;
+        }
+        release.resolve();
+        await operation;
+        const observed = {
+          pendingCalls,
+          roleDenied: currentRoleError?.code === "FORBIDDEN",
+          guardDenied: capturedGuardError instanceof Error,
+          lookups,
+          targets: mocks.approve.mock.calls.map(([target]) => ({
+            channel: target.channel,
+            accountId: target.accountId,
+            requestId: target.requestId,
+            pairingAdapter: target.pairingAdapter,
+          })),
+          responses: respond.mock.calls.map(([ok, result, error]) => ({
+            ok,
+            result,
+            errorPresent: error !== undefined,
+          })),
+          notifyCalls: mocks.notify.mock.calls.length,
+          bootstrapCalls: mocks.bootstrapOwner.mock.calls.length,
+          params,
+          cfg,
+          profileRole: profile.role,
+          connectionScopes: client.connect.scopes,
+        };
+        expect(observed).toEqual({
+          pendingCalls: { approve: 0, response: 0 },
+          roleDenied: revoke,
+          guardDenied: revoke,
+          lookups: ["resolve:personal", "configured:personal"],
+          targets: revoke
+            ? []
+            : [
+                {
+                  channel: "whatsapp",
+                  accountId: "personal",
+                  requestId: "opaque-request-id",
+                  pairingAdapter: pairingPlugin.pairing,
+                },
+              ],
+          responses: revoke
+            ? [{ ok: false, result: undefined, errorPresent: true }]
+            : [
+                {
+                  ok: true,
+                  result: {
+                    requestId: "opaque-request-id",
+                    senderId: "fixture-sender",
+                    notification: "not-requested",
+                    commandOwnerBootstrap: "not-requested",
+                  },
+                  errorPresent: false,
+                },
+              ],
+          notifyCalls: 0,
+          bootstrapCalls: 0,
+          params: paramsBefore,
+          cfg: cfgBefore,
+          profileRole: revoke ? "viewer" : "pairer",
+          connectionScopes: ["operator.pairing"],
+        });
+      } finally {
+        release.resolve();
+        await operation?.catch(() => undefined);
+      }
+    },
+  );
+
   it.each(["sync", "async"] as const)(
     "lists only pairing-policy accounts with %s hooks without exposing the human code",
     async (hooks) => {

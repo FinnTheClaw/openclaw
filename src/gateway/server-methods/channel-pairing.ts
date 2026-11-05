@@ -27,6 +27,10 @@ import {
 } from "../../pairing/pairing-store.js";
 import { formatForLog } from "../ws-log.js";
 import { respondUnavailable, respondUnavailableOnThrow } from "./response.js";
+import {
+  captureGatewayRequestOperatorGuard,
+  readGatewayRequestMutationAuthority,
+} from "./session-mutation-guards.js";
 import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import { defineValidatedGatewayHandler } from "./validation.js";
 
@@ -236,10 +240,15 @@ export const channelPairingHandlers: GatewayRequestHandlers = {
   "channels.pairing.approve": defineValidatedGatewayHandler(
     "channels.pairing.approve",
     validateChannelsPairingApproveParams,
-    async ({ params, respond, context }) => {
+    async (options) => {
+      const { params, respond, context } = options;
       let cfg: OpenClawConfig;
       let account: PairingAccount | null;
+      let requestAuthority: ReturnType<typeof readGatewayRequestMutationAuthority>;
+      let assertOperatorCurrent: () => void;
       try {
+        requestAuthority = readGatewayRequestMutationAuthority(options);
+        assertOperatorCurrent = captureGatewayRequestOperatorGuard(options);
         cfg = context.getRuntimeConfig();
         account = await resolvePairingAccount({
           cfg,
@@ -255,6 +264,8 @@ export const channelPairingHandlers: GatewayRequestHandlers = {
         return;
       }
       try {
+        requestAuthority.assertCurrent();
+        assertOperatorCurrent();
         const approved = await approveChannelPairingRequest({
           channel: account.plugin.id,
           accountId: account.accountId,
