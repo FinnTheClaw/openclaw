@@ -982,6 +982,109 @@ describe("secrets apply", () => {
     },
   );
 
+  it.each(["addition", "rotation", "none"] as const)(
+    "preserves auth-store writes committed during apply preflight (%s)",
+    async (concurrentMutation) => {
+      fixture.env.OPENAI_API_KEY = "FAKE-resolved-target";
+      const initialStore: AuthProfileStore = {
+        version: 1,
+        profiles: {
+          "openai:target": {
+            type: "api_key",
+            provider: "openai",
+            key: "FAKE-target-before",
+          },
+          "fixture:retained": {
+            type: "api_key",
+            provider: "fixture",
+            key: "FAKE-retained-before",
+          },
+        },
+      };
+      await writeJsonFile(fixture.authStorePath, initialStore);
+      const configBefore = await fs.readFile(fixture.configPath, "utf8");
+      const plan = createPlan({
+        targets: [
+          {
+            type: "auth-profiles.api_key.key",
+            path: "profiles.openai:target.key",
+            pathSegments: ["profiles", "openai:target", "key"],
+            agentId: "main",
+            ref: OPENAI_API_KEY_ENV_REF,
+          },
+        ],
+        options: {
+          scrubEnv: false,
+          scrubAuthProfilesForProviderTargets: false,
+          scrubLegacyAuthJson: false,
+        },
+      });
+      let winnerCredentials: unknown;
+      let winnerState: unknown;
+      prepareSecretsRuntimeSnapshotMock.mockImplementationOnce(async () => {
+        const current = await readAuthStore(fixture);
+        if (concurrentMutation === "addition") {
+          current.profiles["fixture:concurrent"] = {
+            type: "api_key",
+            provider: "fixture",
+            key: "FAKE-concurrent-added",
+          };
+        } else if (concurrentMutation === "rotation") {
+          current.profiles["fixture:retained"] = {
+            type: "api_key",
+            provider: "fixture",
+            key: "FAKE-retained-rotated",
+          };
+        }
+        if (concurrentMutation !== "none") {
+          await writeJsonFile(fixture.authStorePath, current);
+        }
+        winnerCredentials = readPersistedAuthProfileStoreRaw(fixture.agentDir);
+        winnerState = readPersistedAuthProfileStateRaw(fixture.agentDir);
+        expect(winnerCredentials).toMatchObject({ profiles: current.profiles });
+      });
+
+      try {
+        let result: Awaited<ReturnType<typeof runSecretsApply>> | undefined;
+        let error: unknown;
+        try {
+          result = await runSecretsApply({ plan, env: fixture.env, write: true });
+        } catch (caught) {
+          error = caught;
+        }
+        expect(prepareSecretsRuntimeSnapshotMock).toHaveBeenCalledTimes(1);
+        expect(winnerCredentials).toBeDefined();
+        if (concurrentMutation === "none") {
+          expect(error).toBeUndefined();
+          expect(result?.changed).toBe(true);
+          const persisted = await readAuthStore(fixture);
+          expect(persisted.profiles["openai:target"]).toMatchObject({
+            type: "api_key",
+            provider: "openai",
+            keyRef: OPENAI_API_KEY_ENV_REF,
+          });
+          expect(persisted.profiles["openai:target"]).not.toHaveProperty("key");
+          expect(persisted.profiles["fixture:retained"]).toEqual(
+            initialStore.profiles["fixture:retained"],
+          );
+        } else {
+          expect.soft(error).toBeInstanceOf(Error);
+          expect
+            .soft((error as Error | undefined)?.message)
+            .toContain("auth profile store changed after secrets apply captured it");
+          expect
+            .soft(readPersistedAuthProfileStoreRaw(fixture.agentDir))
+            .toEqual(winnerCredentials);
+          expect.soft(readPersistedAuthProfileStateRaw(fixture.agentDir)).toEqual(winnerState);
+          expect.soft(await fs.readFile(fixture.configPath, "utf8")).toBe(configBefore);
+        }
+      } finally {
+        prepareSecretsRuntimeSnapshotMock.mockReset();
+        prepareSecretsRuntimeSnapshotMock.mockResolvedValue(undefined);
+      }
+    },
+  );
+
   it("preserves unrelated oauth profiles while applying auth-profile key ref targets", async () => {
     const codexOAuthRef = {
       id: "codex-sidecar-ref",
