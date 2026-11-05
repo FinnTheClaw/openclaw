@@ -91,6 +91,119 @@ async function streamAnthropicSseFrames(
 }
 
 describe("Anthropic malformed SSE frames", () => {
+  it.each([
+    { label: "valid Windows path with newline", text: "C:\\notes\nnext", wire: "json" },
+    { label: "valid Windows path with tab", text: "C:\\notes\tnext", wire: "json" },
+    { label: "intentional literal backslash n", text: "C:\\notes\\nnext", wire: "json" },
+    { label: "ordinary newline", text: "ordinary\nnext", wire: "json" },
+    { label: "repairable invalid escape", text: "C:\\q", wire: "invalid-escape" },
+    { label: "sanitized truncated frame", text: SENTINEL, wire: "truncated" },
+  ] as const)("L11-F009 preserves authoritative SSE text: $label", async ({ text, wire }) => {
+    const validData = JSON.stringify({
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text },
+    });
+    const data =
+      wire === "truncated"
+        ? MALFORMED_FRAME
+        : wire === "invalid-escape"
+          ? validData.replace("\\\\q", "\\q")
+          : validData;
+    const authoritativeText = wire === "json" ? JSON.parse(data).delta.text : null;
+    const frames: readonly (readonly [string, string])[] = [
+      ...WELL_FORMED_FRAMES.slice(0, 2),
+      ["content_block_delta", data],
+      ...WELL_FORMED_FRAMES.slice(3),
+    ];
+    const requestUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      requestUrls.push(input instanceof Request ? input.url : String(input));
+      return new Response(
+        frames
+          .map(([event, frameData]) => "event: " + event + "\ndata: " + frameData + "\n\n")
+          .join(""),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    });
+    const baseUrl = "https://api.anthropic.com";
+    const client = new Anthropic({
+      apiKey: "test-api-key",
+      baseURL: baseUrl,
+      maxRetries: 0,
+      fetch: fetchMock,
+    });
+    const stream = streamAnthropic(makeModel(baseUrl), context, {
+      apiKey: "test-api-key",
+      client,
+    });
+    const eventTypes: string[] = [];
+    const deltas: string[] = [];
+    const errorMessages: Array<string | undefined> = [];
+    for await (const event of stream) {
+      eventTypes.push(event.type);
+      if (event.type === "text_delta") {
+        deltas.push(event.delta);
+      } else if (event.type === "error") {
+        errorMessages.push(event.error.errorMessage);
+      }
+    }
+    const result = await stream.result();
+    const observed = {
+      authoritativeText,
+      requestUrls,
+      requests: fetchMock.mock.calls.length,
+      eventTypes,
+      deltas,
+      errorMessages,
+      stopReason: result.stopReason,
+      errorMessage: result.errorMessage,
+      textBlocks: result.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text),
+    };
+    expect({ requests: observed.requests, urls: observed.requestUrls }).toEqual({
+      requests: 1,
+      urls: ["https://api.anthropic.com/v1/messages"],
+    });
+    if (wire === "json") {
+      expect(observed.authoritativeText).toBe(text);
+    }
+    if (wire === "truncated") {
+      expect({
+        terminal: observed.eventTypes.at(-1),
+        deltas: observed.deltas,
+        stopReason: observed.stopReason,
+        errorMessage: observed.errorMessage,
+        errorMessages: observed.errorMessages,
+      }).toEqual({
+        terminal: "error",
+        deltas: [],
+        stopReason: "error",
+        errorMessage: MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE,
+        errorMessages: [MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE],
+      });
+      expect(observed.errorMessage).not.toContain(SENTINEL);
+      expect(observed.errorMessages.join(" ")).not.toContain(SENTINEL);
+    } else {
+      expect({
+        terminal: observed.eventTypes.at(-1),
+        deltas: observed.deltas,
+        textBlocks: observed.textBlocks,
+        stopReason: observed.stopReason,
+        errorMessage: observed.errorMessage,
+        errorMessages: observed.errorMessages,
+      }).toEqual({
+        terminal: "done",
+        deltas: [text],
+        textBlocks: [text],
+        stopReason: "stop",
+        errorMessage: undefined,
+        errorMessages: [],
+      });
+    }
+  });
+
   it("reports the shared malformed-fragment error without echoing the frame payload", async () => {
     const result = await streamAnthropicSseFrames([["content_block_delta", MALFORMED_FRAME]]);
 

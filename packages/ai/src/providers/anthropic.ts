@@ -45,7 +45,7 @@ import type {
 } from "../types.js";
 import { createDeferredEventBuffer } from "../utils/deferred-event-buffer.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
-import { parseJsonWithRepair } from "../utils/json-parse.js";
+import { repairJson } from "../utils/json-parse.js";
 import { notifyLlmRequestActivity } from "../utils/llm-request-activity.js";
 import {
   isAnthropicOAuthApiKey,
@@ -140,7 +140,17 @@ async function* iterateAnthropicEvents(
     }
 
     try {
-      const event = parseJsonWithRepair(sse.data) as RawMessageStreamEvent;
+      let event: RawMessageStreamEvent;
+      try {
+        event = JSON.parse(sse.data) as RawMessageStreamEvent;
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) {
+          throw error;
+        }
+        event = JSON.parse(
+          repairJson(sse.data, { preserveValidControlEscapes: true }),
+        ) as RawMessageStreamEvent;
+      }
       yield event;
     } catch (error) {
       // Frame payloads carry model output, so surface the shared malformed-fragment
