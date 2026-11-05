@@ -4,11 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeWindowsLauncherScript } from "../infra/windows-launcher-encoding.js";
+import { parseCmdScriptCommandLine, quoteCmdScriptArg } from "./cmd-argv.js";
 import {
   buildHiddenLauncherScript,
   buildStartupLauncherScript,
   resolveStartupEntryPaths,
 } from "./schtasks-layout.js";
+import { findInstalledGatewayChildPid } from "./schtasks-process.js";
 import { isScheduledTaskEnabled, readScheduledTaskRuntime } from "./schtasks-runtime.js";
 import { probeScheduledTaskState } from "./schtasks-state-probe.js";
 import { readScheduledTaskCommand, resolveTaskScriptPath } from "./schtasks.js";
@@ -36,6 +38,68 @@ beforeEach(() => {
   spawnSync.mockReset();
   resolveWindowsOemEncodingMock.mockReset();
   resolveWindowsOemEncodingMock.mockReturnValue(null);
+});
+
+describe("legacy scheduled task process matching", () => {
+  it.each([
+    {
+      name: "token case",
+      option: "--token",
+      actualValue: "SYNTHETIC-aBc/Def-ONLY",
+      pathVariant: false,
+      expected: null,
+    },
+    {
+      name: "password case",
+      option: "--password",
+      actualValue: "SYNTHETIC-aBc/Def-ONLY",
+      pathVariant: false,
+      expected: null,
+    },
+    {
+      name: "token slash",
+      option: "--token",
+      actualValue: "SYNTHETIC-AbC\\Def-ONLY",
+      pathVariant: false,
+      expected: null,
+    },
+    {
+      name: "executable and script path spelling",
+      option: "--token",
+      actualValue: "SYNTHETIC-AbC/Def-ONLY",
+      pathVariant: true,
+      expected: 424242,
+    },
+  ])("preserves nonpath argv identity in legacy process matching ($name)", (row) => {
+    const installedArguments = [
+      "C:\\Program Files\\nodejs\\node.exe",
+      "C:\\OpenClaw\\dist\\entry.js",
+      "gateway",
+      "--port",
+      "18789",
+      row.option,
+      "SYNTHETIC-AbC/Def-ONLY",
+    ];
+    const actualArguments = [...installedArguments];
+    if (row.pathVariant) {
+      actualArguments[0] = "c:/program files/NODEJS/NODE.EXE";
+      actualArguments[1] = "c:/openclaw/DIST/ENTRY.JS";
+    }
+    actualArguments[actualArguments.length - 1] = row.actualValue;
+    const commandLine = actualArguments.map((arg) => quoteCmdScriptArg(arg)).join(" ");
+
+    expect(parseCmdScriptCommandLine(commandLine)).toEqual(actualArguments);
+    expect
+      .soft(
+        findInstalledGatewayChildPid(
+          [{ ProcessId: 424242, CommandLine: commandLine }],
+          18789,
+          installedArguments,
+        ),
+      )
+      .toBe(row.expected);
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
 });
 
 describe("readScheduledTaskCommand", () => {

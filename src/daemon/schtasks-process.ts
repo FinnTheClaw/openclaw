@@ -22,6 +22,7 @@ import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../utils/absolut
 import { parseCmdScriptCommandLine } from "./cmd-argv.js";
 import { NODE_SERVICE_KIND } from "./constants.js";
 import { resolveGatewayServiceProbeHosts } from "./gateway-service-probe-hosts.js";
+import { resolveRuntimeScriptPosition } from "./runtime-binary.js";
 import { readScheduledTaskCommand, resolveTaskName } from "./schtasks-layout.js";
 import {
   getSnapshotProcessId,
@@ -75,10 +76,21 @@ function matchesInstalledProgramArguments(
   actualArguments: string[],
   installedArguments: string[],
 ): boolean {
-  const actual = normalizeProgramArguments(actualArguments);
-  const installed = normalizeProgramArguments(installedArguments);
+  const actualScript = resolveRuntimeScriptPosition(actualArguments);
+  const installedScript = resolveRuntimeScriptPosition(installedArguments);
   return (
-    actual.length === installed.length && actual.every((arg, index) => arg === installed[index])
+    actualArguments.length === installedArguments.length &&
+    actualArguments.every((arg, index) => {
+      const installed = installedArguments[index]!;
+      // Only executable and parser-proven script positions are Windows paths.
+      if (index === 0 || (index === actualScript && index === installedScript)) {
+        return (
+          normalizeLowercaseStringOrEmpty(arg.replaceAll("\\", "/")) ===
+          normalizeLowercaseStringOrEmpty(installed.replaceAll("\\", "/"))
+        );
+      }
+      return arg === installed;
+    })
   );
 }
 
