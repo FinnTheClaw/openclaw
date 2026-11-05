@@ -22,6 +22,7 @@ import {
   runDreamingSweepPhases,
   seedHistoricalDailyMemorySignals,
 } from "./dreaming-phases.js";
+import { repairDreamingArtifacts } from "./dreaming-repair.js";
 import {
   memoryCoreWorkspaceStateKey,
   openMemoryCoreStateStore,
@@ -1347,6 +1348,200 @@ describe("memory-core dreaming phases", () => {
     expect(entries.length).toBeGreaterThan(0);
     expect(entries.every((entry) => entry.provenance?.originClass === "untrusted")).toBe(true);
     expect(candidates).toHaveLength(0);
+  });
+
+  it.each([
+    { name: "orders repair behind same-workspace ingestion", sameWorkspace: true },
+    { name: "keeps foreign-workspace repair independent", sameWorkspace: false },
+  ])("L08-F017 $name", async ({ sameWorkspace }) => {
+    const workspaceDir = await createDreamingWorkspace();
+    const repairWorkspaceDir = sameWorkspace ? workspaceDir : await createDreamingWorkspace();
+    setDreamingTestEnv(path.join(workspaceDir, ".state"));
+    const sessionId = "repair-overlap";
+    const stateKey = "main:sessions/main/" + sessionId;
+    const corpusRelativePath = path.join("memory", ".dreams", "session-corpus", "2026-04-05.txt");
+    const corpusPath = path.join(workspaceDir, corpusRelativePath);
+    const foreignCorpus = "Owned foreign workspace corpus.\n";
+    await seedDreamingSessionTranscript({
+      sessionId,
+      messages: [
+        {
+          role: "user",
+          timestamp: "2026-04-05T18:01:00.000Z",
+          content: [{ type: "text", text: "Retain this glacier migration decision." }],
+        },
+      ],
+    });
+    if (!sameWorkspace) {
+      await fs.mkdir(path.dirname(path.join(repairWorkspaceDir, corpusRelativePath)), {
+        recursive: true,
+      });
+      await fs.writeFile(path.join(repairWorkspaceDir, corpusRelativePath), foreignCorpus);
+      await writeSessionIngestionState(repairWorkspaceDir, {
+        version: 3,
+        files: {
+          foreign: {
+            mtimeMs: 1,
+            size: 1,
+            contentHash: "owned-foreign-checkpoint",
+            lineCount: 1,
+            lastContentLine: 1,
+          },
+        },
+        seenMessages: { foreign: ["owned-foreign-message"] },
+      });
+    }
+    const { beforeAgentReply } = createDefaultStorageLightDreamingHarness(workspaceDir, {
+      includeMainAgent: true,
+    });
+    const promotion = await import("./short-term-promotion.js");
+    const workspaceLock = await import("./memory-workspace-lock.js");
+    const actualRecord = promotion.recordShortTermRecalls;
+    const actualLock = workspaceLock.withMemoryWorkspaceLock;
+    const signalEntered = createDeferred<void>();
+    const releaseSignal = createDeferred<void>();
+    const repairLockAttempted = createDeferred<void>();
+    let paused = false;
+    const record = vi
+      .spyOn(promotion, "recordShortTermRecalls")
+      .mockImplementation(async (params) => {
+        if (
+          !paused &&
+          params.workspaceDir === workspaceDir &&
+          params.query.startsWith("__dreaming_sessions__:")
+        ) {
+          paused = true;
+          signalEntered.resolve();
+          await releaseSignal.promise;
+        }
+        return await actualRecord(params);
+      });
+    let lockObserver: ReturnType<typeof vi.spyOn> | undefined;
+    let ingestion: Promise<void> | undefined;
+    let repair: ReturnType<typeof repairDreamingArtifacts> | undefined;
+    try {
+      await withDreamingTestClock(async () => {
+        ingestion = triggerLightDreaming(beforeAgentReply, workspaceDir, 5);
+        await Promise.race([
+          signalEntered.promise,
+          ingestion.then(() => {
+            throw new Error("Expected session ingestion to reach the held signal boundary");
+          }),
+        ]);
+        const corpusAtPause = await fs.readFile(corpusPath, "utf-8");
+        const stateAtPause = await dreamingTestState.readSessionIngestionState(workspaceDir);
+
+        // Observe the real lock call without replacing its queue or lease. The
+        // race settles for either an unlocked original repair or a queued repair;
+        // no timeout/sleep is needed to decide when the writer may continue.
+        lockObserver = vi
+          .spyOn(workspaceLock, "withMemoryWorkspaceLock")
+          .mockImplementation(
+            async <T>(targetWorkspace: string, task: () => Promise<T>): Promise<T> => {
+              if (targetWorkspace === repairWorkspaceDir) {
+                repairLockAttempted.resolve();
+              }
+              return await actualLock(targetWorkspace, task);
+            },
+          );
+        repair = repairDreamingArtifacts({
+          workspaceDir: repairWorkspaceDir,
+          now: new Date("2026-04-05T10:05:00.000Z"),
+        });
+        const repairBoundary = sameWorkspace
+          ? await Promise.race([
+              repairLockAttempted.promise.then(() => "lock-requested" as const),
+              repair.then(() => "completed" as const),
+            ])
+          : await repair.then(() => "completed" as const);
+        const corpusBeforeRelease = await fs
+          .readFile(corpusPath, "utf-8")
+          .catch((error: unknown) => {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw error;
+            }
+            return null;
+          });
+        releaseSignal.resolve();
+        await ingestion;
+        const repaired = await repair;
+        const stateAfterRepair =
+          await dreamingTestState.readSessionIngestionState(repairWorkspaceDir);
+        const ingestionStateAfterRepair =
+          await dreamingTestState.readSessionIngestionState(workspaceDir);
+        const activeCorpusAfterRepair = await fs
+          .readFile(corpusPath, "utf-8")
+          .catch((error: unknown) => {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw error;
+            }
+            return null;
+          });
+        const archivedCorpusDir = expectDefined(
+          repaired.archivedPaths.find((entry) =>
+            path.basename(entry).startsWith("session-corpus."),
+          ),
+          "archived session corpus directory",
+        );
+        const archivedCorpus = await fs.readFile(
+          path.join(archivedCorpusDir, "2026-04-05.txt"),
+          "utf-8",
+        );
+        await triggerLightDreaming(beforeAgentReply, workspaceDir, 6);
+        const replayedState = await dreamingTestState.readSessionIngestionState(workspaceDir);
+        const replayedCorpus = await fs.readFile(corpusPath, "utf-8").catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw error;
+          }
+          return null;
+        });
+
+        // Capture filesystem, checkpoint and actual unchanged-input replay before
+        // a joint oracle can stop the case at the first ordering difference.
+        expect(paused).toBe(true);
+        expect(corpusAtPause).toContain("Retain this glacier migration decision.");
+        expect(stateAtPause.files).not.toHaveProperty(stateKey);
+        expect(repaired).toMatchObject({
+          changed: true,
+          archivedSessionCorpus: true,
+          warnings: [],
+        });
+        expect(archivedCorpus).toBe(sameWorkspace ? corpusAtPause : foreignCorpus);
+        if (sameWorkspace) {
+          expect({
+            repairBoundary,
+            corpusBeforeRelease,
+            stateAfterRepair,
+            activeCorpusAfterRepair,
+            replayedCorpus,
+            replayedFileKeys: Object.keys(replayedState.files),
+            replayedSeenKeys: Object.keys(replayedState.seenMessages),
+          }).toEqual({
+            repairBoundary: "lock-requested",
+            corpusBeforeRelease: corpusAtPause,
+            stateAfterRepair: { version: 3, files: {}, seenMessages: {} },
+            activeCorpusAfterRepair: null,
+            replayedCorpus: corpusAtPause,
+            replayedFileKeys: [stateKey],
+            replayedSeenKeys: [stateKey],
+          });
+        } else {
+          expect(repairBoundary).toBe("completed");
+          expect(corpusBeforeRelease).toBe(corpusAtPause);
+          expect(stateAfterRepair).toEqual({ version: 3, files: {}, seenMessages: {} });
+          expect(ingestionStateAfterRepair.files[stateKey]?.lastContentLine).toBeGreaterThan(0);
+          expect(activeCorpusAfterRepair).toBe(corpusAtPause);
+          expect(replayedCorpus).toBe(corpusAtPause);
+          expect(replayedState).toEqual(ingestionStateAfterRepair);
+        }
+      });
+    } finally {
+      releaseSignal.resolve();
+      await Promise.allSettled([ingestion, repair]);
+      lockObserver?.mockRestore();
+      record.mockRestore();
+      restoreDreamingTestEnv();
+    }
   });
 
   it("checkpoints session transcript ingestion and skips unchanged transcripts", async () => {

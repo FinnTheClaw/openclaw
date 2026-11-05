@@ -20,6 +20,7 @@ import {
   readWorkspaceText,
   renameWorkspacePath,
 } from "./memory-workspace-files.js";
+import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
 
 export type { DreamingArtifactsAuditSummary, RepairDreamingArtifactsResult };
 
@@ -247,72 +248,74 @@ export async function repairDreamingArtifacts(params: {
   now?: Date;
 }): Promise<RepairDreamingArtifactsResult> {
   const workspaceDir = requireAbsoluteWorkspaceDir(params.workspaceDir);
-  const warnings: string[] = [];
-  const archivedPaths: string[] = [];
-  let archiveDir: string | undefined;
-  let archivedDreamsDiary = false;
+  return await withMemoryWorkspaceLock(workspaceDir, async () => {
+    const warnings: string[] = [];
+    const archivedPaths: string[] = [];
+    let archiveDir: string | undefined;
+    let archivedDreamsDiary = false;
 
-  const ensureArchiveDir = () => {
-    archiveDir ??= path.join(
-      workspaceDir,
-      REPAIR_ARCHIVE_RELATIVE_DIR,
-      buildArchiveTimestamp(params.now ?? new Date()),
-    );
-    return archiveDir;
-  };
-
-  const archivePathIfPresent = async (targetPath: string): Promise<boolean> => {
-    try {
-      const destination = await moveToArchive({
+    const ensureArchiveDir = () => {
+      archiveDir ??= path.join(
         workspaceDir,
-        targetPath,
-        archiveDir: ensureArchiveDir(),
-      });
-      if (destination) {
-        archivedPaths.push(destination);
-      }
-      return destination !== null;
-    } catch (err) {
-      warnings.push(err instanceof Error ? err.message : String(err));
-      return false;
-    }
-  };
-
-  const archivedSessionCorpus = await archivePathIfPresent(
-    path.join(workspaceDir, SESSION_CORPUS_RELATIVE_DIR),
-  );
-
-  const archivedSessionIngestion = await archivePathIfPresent(
-    path.join(workspaceDir, SESSION_INGESTION_RELATIVE_PATH),
-  );
-
-  if (archivedSessionCorpus || archivedSessionIngestion) {
-    try {
-      await clearSessionIngestionState(workspaceDir);
-    } catch (err) {
-      warnings.push(
-        `Failed clearing dreaming session-ingestion SQLite state: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        REPAIR_ARCHIVE_RELATIVE_DIR,
+        buildArchiveTimestamp(params.now ?? new Date()),
       );
-    }
-  }
+      return archiveDir;
+    };
 
-  if (params.archiveDiary) {
-    const dreamsPath = await resolveExistingDreamsPath(workspaceDir);
-    if (dreamsPath) {
-      archivedDreamsDiary = await archivePathIfPresent(dreamsPath);
-    }
-  }
+    const archivePathIfPresent = async (targetPath: string): Promise<boolean> => {
+      try {
+        const destination = await moveToArchive({
+          workspaceDir,
+          targetPath,
+          archiveDir: ensureArchiveDir(),
+        });
+        if (destination) {
+          archivedPaths.push(destination);
+        }
+        return destination !== null;
+      } catch (err) {
+        warnings.push(err instanceof Error ? err.message : String(err));
+        return false;
+      }
+    };
 
-  const changed = archivedDreamsDiary || archivedSessionCorpus || archivedSessionIngestion;
-  return {
-    changed,
-    ...(archiveDir ? { archiveDir } : {}),
-    archivedDreamsDiary,
-    archivedSessionCorpus,
-    archivedSessionIngestion,
-    archivedPaths,
-    warnings,
-  };
+    const archivedSessionCorpus = await archivePathIfPresent(
+      path.join(workspaceDir, SESSION_CORPUS_RELATIVE_DIR),
+    );
+
+    const archivedSessionIngestion = await archivePathIfPresent(
+      path.join(workspaceDir, SESSION_INGESTION_RELATIVE_PATH),
+    );
+
+    if (archivedSessionCorpus || archivedSessionIngestion) {
+      try {
+        await clearSessionIngestionState(workspaceDir);
+      } catch (err) {
+        warnings.push(
+          `Failed clearing dreaming session-ingestion SQLite state: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    if (params.archiveDiary) {
+      const dreamsPath = await resolveExistingDreamsPath(workspaceDir);
+      if (dreamsPath) {
+        archivedDreamsDiary = await archivePathIfPresent(dreamsPath);
+      }
+    }
+
+    const changed = archivedDreamsDiary || archivedSessionCorpus || archivedSessionIngestion;
+    return {
+      changed,
+      ...(archiveDir ? { archiveDir } : {}),
+      archivedDreamsDiary,
+      archivedSessionCorpus,
+      archivedSessionIngestion,
+      archivedPaths,
+      warnings,
+    };
+  });
 }
