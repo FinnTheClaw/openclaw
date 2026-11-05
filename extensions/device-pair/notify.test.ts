@@ -20,7 +20,7 @@ import {
   DEVICE_PAIR_NOTIFY_SEEN_REQUEST_NAMESPACE,
   DEVICE_PAIR_NOTIFY_SUBSCRIBER_MAX_ENTRIES,
   DEVICE_PAIR_NOTIFY_SUBSCRIBER_NAMESPACE,
-  notifyRequestStoreKey,
+  notifyRequestSubscriberStoreKey,
   notifySubscriberStoreKey,
   type NotifySubscription,
 } from "./notify-state.js";
@@ -153,21 +153,38 @@ describe("device-pair notify persistence", () => {
       openKeyedStore,
       takeStoreReads: () => reads.splice(0),
       waitFor,
-      requestStored: (requestId: string) =>
-        waitFor(storedReceipt(notifyRequestStoreKey(requestId)).promise),
+      requestStored: (
+        requestId: string,
+        subscriber: Parameters<typeof notifySubscriberStoreKey>[0],
+      ) =>
+        waitFor(
+          storedReceipt(
+            notifyRequestSubscriberStoreKey(requestId, notifySubscriberStoreKey(subscriber)),
+          ).promise,
+        ),
       pollFailed: (message: string) => failed.resolve(new Error(message)),
-      async settlePoll(requestId: string) {
+      async settlePoll(
+        requestId: string,
+        subscriber: Parameters<typeof notifySubscriberStoreKey>[0],
+      ) {
         const terminal =
           listDevicePairingMock.mock.calls.length > 0
-            ? waitFor(storedReceipt(notifyRequestStoreKey(requestId)).promise)
+            ? waitFor(
+                storedReceipt(
+                  notifyRequestSubscriberStoreKey(requestId, notifySubscriberStoreKey(subscriber)),
+                ).promise,
+              )
             : Promise.resolve();
-        const results = await Promise.allSettled([terminal, ...active]);
-        await vi.advanceTimersByTimeAsync(0);
-        for (const result of results) {
-          if (result.status === "rejected") {
-            throw result.reason;
+        await terminal;
+        do {
+          const results = await Promise.allSettled([...active]);
+          await vi.advanceTimersByTimeAsync(0);
+          for (const result of results) {
+            if (result.status === "rejected") {
+              throw result.reason;
+            }
           }
-        }
+        } while (active.size > 0);
       },
     };
   }
@@ -363,7 +380,7 @@ describe("device-pair notify persistence", () => {
     expect(sendText).toHaveBeenCalledTimes(1);
 
     firstSend.resolve({ channel: "telegram", to: "chat-123" });
-    await storage.requestStored("request-1");
+    await storage.requestStored("request-1", { to: "chat-123" });
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(sendText).toHaveBeenCalledTimes(1);
@@ -374,7 +391,7 @@ describe("device-pair notify persistence", () => {
       paired: [],
     });
     await vi.advanceTimersByTimeAsync(10_000);
-    await storage.requestStored("request-2");
+    await storage.requestStored("request-2", { to: "chat-123" });
     expect(sendText).toHaveBeenCalledTimes(2);
     expect(sendText.mock.calls[1]?.[0]).toMatchObject({
       to: "chat-123",
@@ -429,7 +446,7 @@ describe("device-pair notify persistence", () => {
       action: "on",
     });
     firstSend.resolve({ channel: "telegram", to: "old-chat" });
-    await storage.requestStored("request-1");
+    await storage.requestStored("request-1", { to: "old-chat" });
     await vi.advanceTimersByTimeAsync(0);
 
     await expect(openSubscriberStore().entries()).resolves.toMatchObject([
@@ -483,7 +500,7 @@ describe("device-pair notify persistence", () => {
         action: "once",
       });
       firstSend.resolve({ channel: "telegram", to: "chat-123" });
-      await storage.requestStored("request-1");
+      await storage.requestStored("request-1", { to: "chat-123" });
       await vi.advanceTimersByTimeAsync(0);
 
       await expect(
@@ -496,7 +513,7 @@ describe("device-pair notify persistence", () => {
     } finally {
       await service.stop?.({} as never);
       firstSend.resolve({ channel: "telegram", to: "chat-123" });
-      await storage.settlePoll("request-1");
+      await storage.settlePoll("request-1", { to: "chat-123" });
     }
   });
 
@@ -538,14 +555,14 @@ describe("device-pair notify persistence", () => {
     try {
       await service.start({} as never);
       await vi.advanceTimersByTimeAsync(10_000);
-      await storage.requestStored("request-same-ms");
+      await storage.requestStored("request-same-ms", { to: "chat-123" });
 
       expect(sendText).toHaveBeenCalledWith(
         expect.objectContaining({ text: expect.stringContaining("ID: request-same-ms") }),
       );
     } finally {
       await service.stop?.({} as never);
-      await storage.settlePoll("request-same-ms");
+      await storage.settlePoll("request-same-ms", { to: "chat-123" });
     }
   });
 
@@ -583,7 +600,8 @@ describe("device-pair notify persistence", () => {
     try {
       await service.start({} as never);
       await vi.advanceTimersByTimeAsync(10_000);
-      await storage.requestStored("request-1");
+      await storage.requestStored("request-1", { to: "chat-123" });
+      await storage.settlePoll("request-1", { to: "chat-123" });
 
       expect(sendText).toHaveBeenCalledTimes(1);
       expect(sendText).toHaveBeenCalledWith(
@@ -592,7 +610,7 @@ describe("device-pair notify persistence", () => {
       await expect(openSubscriberStore().entries()).resolves.toStrictEqual([]);
     } finally {
       await service.stop?.({} as never);
-      await storage.settlePoll("request-1");
+      await storage.settlePoll("request-1", { to: "chat-123" });
     }
   });
 
