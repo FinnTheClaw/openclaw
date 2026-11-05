@@ -1,36 +1,73 @@
 /** Runtime persistence helper for clearing abort-cutoff state from sessions. */
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
-import { applyAbortCutoffToSessionEntry, hasAbortCutoff } from "./abort-cutoff.js";
+import {
+  applyAbortCutoffToSessionEntry,
+  hasAbortCutoff,
+  readAbortCutoffFromSessionEntry,
+  type AbortCutoff,
+} from "./abort-cutoff.js";
 
-/** Clears abort cutoff state in memory and persisted session storage. */
+/** Clears only the observed abort cutoff in memory and persisted session storage. */
 export async function clearAbortCutoffInSessionRuntime(params: {
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
   storePath?: string;
+  observedCutoff?: AbortCutoff;
+  observedSessionId?: string;
 }): Promise<boolean> {
   const { sessionEntry, sessionStore, sessionKey, storePath } = params;
   if (!sessionEntry || !sessionStore || !sessionKey || !hasAbortCutoff(sessionEntry)) {
     return false;
   }
-
-  applyAbortCutoffToSessionEntry(sessionEntry, undefined);
-  const updatedAt = Date.now();
-  sessionEntry.updatedAt = updatedAt;
-  sessionStore[sessionKey] = sessionEntry;
-
-  if (storePath) {
-    await patchSessionEntryCore(
-      { storePath, sessionKey },
-      () => ({
-        abortCutoffMessageSid: undefined,
-        abortCutoffTimestamp: undefined,
-        updatedAt,
-      }),
-      { fallbackEntry: sessionEntry },
+  const observedCutoff = params.observedCutoff ?? readAbortCutoffFromSessionEntry(sessionEntry);
+  const observedSessionId = params.observedSessionId ?? sessionEntry.sessionId;
+  if (!observedCutoff) {
+    return false;
+  }
+  const matchesObserved = (entry: SessionEntry | undefined): boolean => {
+    const cutoff = readAbortCutoffFromSessionEntry(entry);
+    return (
+      entry?.sessionId === observedSessionId &&
+      cutoff?.messageSid === observedCutoff.messageSid &&
+      cutoff?.timestamp === observedCutoff.timestamp
     );
+  };
+  if (
+    !matchesObserved(sessionEntry) ||
+    !matchesObserved(sessionStore[sessionKey] ?? sessionEntry)
+  ) {
+    return false;
   }
 
+  const updatedAt = Date.now();
+  if (storePath) {
+    let matched = false;
+    await patchSessionEntryCore(
+      { storePath, sessionKey },
+      (current) => {
+        if (!matchesObserved(current)) {
+          return null;
+        }
+        matched = true;
+        return {
+          abortCutoffMessageSid: undefined,
+          abortCutoffTimestamp: undefined,
+          updatedAt,
+        };
+      },
+      { fallbackEntry: sessionEntry },
+    );
+    if (!matched) {
+      return false;
+    }
+  }
+
+  if (matchesObserved(sessionEntry) && matchesObserved(sessionStore[sessionKey] ?? sessionEntry)) {
+    applyAbortCutoffToSessionEntry(sessionEntry, undefined);
+    sessionEntry.updatedAt = updatedAt;
+    sessionStore[sessionKey] = sessionEntry;
+  }
   return true;
 }

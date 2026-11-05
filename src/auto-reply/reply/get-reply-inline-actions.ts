@@ -284,6 +284,7 @@ export async function handleInlineActions(params: {
       return { kind: "reply", reply: undefined };
     }
     if (cutoff) {
+      const observedSessionId = targetSessionEntry.sessionId;
       await (
         await abortCutoffRuntimeLoader.load()
       ).clearAbortCutoffInSessionRuntime({
@@ -291,6 +292,8 @@ export async function handleInlineActions(params: {
         sessionStore,
         sessionKey,
         storePath,
+        observedCutoff: cutoff,
+        observedSessionId,
       });
     }
   }
