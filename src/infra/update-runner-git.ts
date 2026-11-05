@@ -26,6 +26,7 @@ import { createGitUpdateSteps } from "./update-runner-git-step-policy.js";
 import {
   runGitActivationBranchCheckStep,
   runGitCleanCheckStep,
+  readGitRollbackPreservation,
   runGitRollbackSteps,
   runGitUpstreamStep,
 } from "./update-runner-git-steps.js";
@@ -145,7 +146,7 @@ export async function updateGitCheckout(params: {
     runtimeSha = beforeSha,
     source?: { sha: string; branch: string | null },
   ) => {
-    const sourceRestored = await runGitRollbackSteps({
+    const rollback = {
       beforeSha,
       branch,
       gitRoot,
@@ -155,7 +156,13 @@ export async function updateGitCheckout(params: {
       checkSourceUnchanged,
       assertCurrent,
       activatedSource: source,
-    });
+    };
+    const restoreSource = () => runGitRollbackSteps(rollback);
+    // Check before runtime restoration rewrites tracked output.
+    const preserved = source ? undefined : await readGitRollbackPreservation(rollback);
+    steps.push(...(preserved ? [preserved] : []));
+    // Retained rollback must settle every source/ref fence before changing runtime.
+    let sourceRestored = source ? await restoreSource() : false;
     let runtimeRestored = true;
     try {
       await runtimePromotion?.restore(assertCurrent);
@@ -170,6 +177,10 @@ export async function updateGitCheckout(params: {
         exitCode: 1,
         stderrTail: String(error),
       });
+    }
+    // Immediate activation recovery reconstructs tracked output after runtime restoration.
+    if (!source && !preserved) {
+      sourceRestored = await restoreSource();
     }
     recovery = !sourceRestored
       ? { serviceRestartSafe: false, reason: "source-rollback-failed" }
