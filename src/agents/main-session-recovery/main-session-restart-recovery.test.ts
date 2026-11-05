@@ -2777,6 +2777,13 @@ describe("main-session-restart-recovery", () => {
       state: "owed",
       context: discordDeliveryContext,
     });
+    const nextOwner = await claimMainSessionRecoveryOwner({
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      sessionId: "main-session",
+      target: { sessionKey: "agent:main:main", storePath },
+    });
+    expect(nextOwner.kind).toBe("not_required");
+    expect(entry?.mainRestartRecovery).toBeUndefined();
   });
 
   it("preserves an acknowledged notice when the same pending final completes", async () => {
@@ -2802,6 +2809,13 @@ describe("main-session-restart-recovery", () => {
     expect(entry?.pendingFinalDelivery).toBeUndefined();
     expect(entry?.pendingDeliveryNotice?.state).toBe("acknowledged");
     expect(sendRecoveryNotice).not.toHaveBeenCalled();
+    const nextOwner = await claimMainSessionRecoveryOwner({
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      sessionId: "main-session",
+      target: { sessionKey: "agent:main:main", storePath },
+    });
+    expect(nextOwner.kind).toBe("not_required");
+    expect(entry?.mainRestartRecovery).toBeUndefined();
   });
 
   it.each(["delivered", "unknown"] as const)(
@@ -2831,6 +2845,13 @@ describe("main-session-restart-recovery", () => {
         intentId: `intent-mixed-${state}`,
         state: "owed",
       });
+      const nextOwner = await claimMainSessionRecoveryOwner({
+        lifecycleGeneration: getAgentEventLifecycleGeneration(),
+        sessionId: "main-session",
+        target: { sessionKey: "agent:main:main", storePath },
+      });
+      expect(nextOwner.kind).toBe("not_required");
+      expect(entry?.mainRestartRecovery).toBeUndefined();
     },
   );
 

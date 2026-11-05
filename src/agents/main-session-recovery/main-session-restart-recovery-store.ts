@@ -22,6 +22,7 @@ import {
 import { resolveExecDefaults } from "../exec-defaults.js";
 import type { MainSessionRecoveryAdmission } from "./main-session-recovery-admission.js";
 import type { MainSessionRecoveryCapacity } from "./main-session-recovery-capacity.js";
+import { buildMainSessionRecoveryClearPatch } from "./main-session-recovery-clear.js";
 import { createCurrentProcessOwnerLookup } from "./main-session-recovery-live-owners.js";
 import {
   getMainSessionRecoveryRetryCount,
@@ -112,6 +113,7 @@ async function completePendingFinalRecoveryWithNotice(
           entry: current,
           recordTerminalSource: true,
         }),
+        ...buildMainSessionRecoveryClearPatch(current),
         abortedLastRun: false,
         endedAt,
         lifecycleRunId: undefined,
