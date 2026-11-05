@@ -529,6 +529,103 @@ describe("graph upload request timeouts", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { name: "collects all member pages before sharing", laterError: false, truncated: false },
+    { name: "fails closed on a later member page error", laterError: true, truncated: false },
+    { name: "fails closed on incomplete member pagination", laterError: false, truncated: true },
+  ])("L06-F026 $name", async (scenario) => {
+    const membersUrl = "https://graph.microsoft.com/v1.0/chats/chat-123/members";
+    const sharingBodies: unknown[] = [];
+    let memberPages = 0;
+    const fetchFn = createGraphFetch(
+      fixedGraphRoute("/content", DEFAULT_UPLOAD_RESULT),
+      {
+        includes: "/members",
+        respond: () => {
+          memberPages++;
+          if (scenario.laterError && memberPages === 2) {
+            return new Response("later page unavailable", { status: 503 });
+          }
+          return Response.json({
+            value: [{ userId: `user-${memberPages}` }],
+            ...(scenario.truncated || memberPages === 1
+              ? { "@odata.nextLink": `${membersUrl}?$skiptoken=page-${memberPages + 1}` }
+              : {}),
+          });
+        },
+      },
+      {
+        includes: "/createLink",
+        respond: (init) => {
+          sharingBodies.push(JSON.parse(String(init?.body ?? "null")));
+          return Response.json({ link: { webUrl: "https://example.com/private" } });
+        },
+      },
+    );
+    let result: unknown;
+    let lookupError: unknown;
+
+    try {
+      result = await uploadWithPerUserSharing(fetchFn);
+    } catch (error) {
+      lookupError = error;
+    }
+
+    const memberUrls = fetchFn.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes("/members"));
+    if (scenario.laterError) {
+      expect({
+        statusCode: (lookupError as { statusCode?: number } | undefined)?.statusCode,
+        result,
+        memberUrls,
+        sharingBodies,
+      }).toEqual({
+        statusCode: 503,
+        result: undefined,
+        memberUrls: [membersUrl, `${membersUrl}?$skiptoken=page-2`],
+        sharingBodies: [],
+      });
+    } else if (scenario.truncated) {
+      expect({
+        error: lookupError instanceof Error ? lookupError.message : null,
+        result,
+        memberUrls,
+        sharingBodies,
+      }).toEqual({
+        error: "MS Teams chat member pagination limit exceeded",
+        result: undefined,
+        memberUrls: Array.from({ length: 100 }, (_, page) =>
+          page === 0 ? membersUrl : `${membersUrl}?$skiptoken=page-${page + 1}`,
+        ),
+        sharingBodies: [],
+      });
+    } else {
+      expect({ lookupError, result, memberUrls, sharingBodies }).toEqual({
+        lookupError: undefined,
+        result: {
+          itemId: DEFAULT_UPLOAD_RESULT.id,
+          webUrl: DEFAULT_UPLOAD_RESULT.webUrl,
+          name: DEFAULT_UPLOAD_RESULT.name,
+          shareUrl: "https://example.com/private",
+        },
+        memberUrls: [membersUrl, `${membersUrl}?$skiptoken=page-2`],
+        sharingBodies: [
+          {
+            type: "view",
+            scope: "users",
+            recipients: [{ objectId: "user-1" }, { objectId: "user-2" }],
+          },
+        ],
+      });
+      const [createLinkUrl, createLinkInit] = requireFetchCall(fetchFn, 3);
+      expect(createLinkUrl).toBe(
+        "https://graph.microsoft.com/beta/sites/site-123/drive/items/item-1/createLink",
+      );
+      expect(createLinkInit?.method).toBe("POST");
+    }
+  });
+
   it("creates a per-user link when member lookup succeeds", async () => {
     const fetchFn = createGraphFetch(
       fixedGraphRoute("/content", DEFAULT_UPLOAD_RESULT),

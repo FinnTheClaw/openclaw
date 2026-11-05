@@ -17,6 +17,7 @@ import { buildUserAgent } from "./user-agent.js";
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const GRAPH_BETA = "https://graph.microsoft.com/beta";
 const GRAPH_SCOPE = "https://graph.microsoft.com";
+const MAX_CHAT_MEMBER_PAGES = 100;
 
 export function requireMSTeamsSharePointSiteId(siteId?: string): string {
   const normalized = siteId?.trim();
@@ -181,17 +182,36 @@ async function getChatMemberIds(
     fetchFn?: typeof fetch;
   } & MSTeamsSendHandoff,
 ): Promise<string[]> {
-  const data = await requestSharePointJson<{ value?: Array<{ userId?: string }> }>(params, {
-    url: `${GRAPH_ROOT}/chats/${params.chatId}/members`,
-    // Graph 403 covers permissions, licensing, and conditional access. RSC
-    // grants are not token roles, so no local signal can safely widen access.
-    error: (res) =>
-      res.status === 403
-        ? "Get chat members failed; verify Graph chat-member permissions and tenant access policies"
-        : "Get chat members failed",
-    label: "msteams.graph-upload.getChatMembers",
-  });
-  return (data.value ?? []).flatMap((member) => (member.userId ? [member.userId] : []));
+  const memberIds: string[] = [];
+  let url = `${GRAPH_ROOT}/chats/${params.chatId}/members`;
+  for (let page = 0; page < MAX_CHAT_MEMBER_PAGES; page++) {
+    const data = await requestSharePointJson<{
+      value?: Array<{ userId?: string }>;
+      "@odata.nextLink"?: string;
+    }>(params, {
+      url,
+      // Graph 403 covers permissions, licensing, and conditional access. RSC
+      // grants are not token roles, so no local signal can safely widen access.
+      error: (res) =>
+        res.status === 403
+          ? "Get chat members failed; verify Graph chat-member permissions and tenant access policies"
+          : "Get chat members failed",
+      label: "msteams.graph-upload.getChatMembers",
+    });
+    memberIds.push(
+      ...(data.value ?? []).flatMap((member) => (member.userId ? [member.userId] : [])),
+    );
+    const nextLink = data["@odata.nextLink"];
+    if (!nextLink) {
+      return memberIds;
+    }
+    const nextUrl = new URL(nextLink, GRAPH_ROOT);
+    if (nextUrl.origin !== new URL(GRAPH_ROOT).origin || nextUrl.username || nextUrl.password) {
+      throw new Error("MS Teams chat member pagination returned an invalid Graph URL");
+    }
+    url = nextUrl.href;
+  }
+  throw new Error("MS Teams chat member pagination limit exceeded");
 }
 
 /**
