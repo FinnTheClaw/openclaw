@@ -1,6 +1,7 @@
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { expectDefined } from "@openclaw/normalization-core";
 import { parseStrictFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { asNullableRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
@@ -1253,7 +1254,12 @@ export function registerMcpCli(program: Command) {
         }
         const result = await updateConfiguredMcpServer({
           name,
-          update: () => next,
+          update: (server) => {
+            if (!isDeepStrictEqual(server, current)) {
+              fail(`MCP server ${JSON.stringify(name)} changed and was not updated.`);
+            }
+            return next;
+          },
         });
         if (!result.ok) {
           fail(result.error);

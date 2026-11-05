@@ -183,6 +183,105 @@ describe("mcp cli", () => {
     });
   });
 
+  it.each(["same-server", "other-server", "none"] as const)(
+    "rejects stale MCP configure snapshots after probe (%s)",
+    async (concurrent) => {
+      await withMcpHome(async (home) => {
+        const configPath = path.join(home, ".openclaw", "openclaw.json");
+        const original = {
+          command: process.execPath,
+          args: ["F025_ORIGINAL_INERT.mjs"],
+          requestTimeoutMs: 12_000,
+          connectionTimeoutMs: 3_000,
+          toolFilter: { include: ["old_*"], exclude: ["keep_*"] },
+        };
+        const other = { command: process.execPath, args: ["F025_OTHER_INERT.mjs"] };
+        const winner = {
+          ...(concurrent === "other-server" ? other : original),
+          args: ["F025_WINNER_INERT.mjs"],
+          toolFilter: { include: ["winner_*"], exclude: ["preserve_*"] },
+          supportsParallelToolCalls: true,
+        };
+        await writeMcpServers(home, { docs: original, other });
+        let probedServer: unknown;
+        let competitorCommitted = false;
+        let winnerBytes: string | undefined;
+        const dispose = vi.fn(async () => {});
+        const getCatalog = vi.fn(async () => {
+          if (concurrent !== "none") {
+            const result = await setConfiguredMcpServer({
+              name: concurrent === "same-server" ? "docs" : "other",
+              server: winner,
+            });
+            competitorCommitted = result.ok;
+            winnerBytes = await fs.readFile(configPath, "utf8");
+          }
+          return {
+            version: 1 as const,
+            generatedAt: Date.now(),
+            servers: {
+              docs: {
+                serverName: "docs",
+                launchSummary: "F025 inert controlled probe",
+                toolCount: 0,
+              },
+            },
+            tools: [],
+            diagnostics: [],
+          };
+        });
+        setCreateSessionMcpRuntimeOverride((params) => {
+          probedServer = structuredClone(params.cfg?.mcp?.servers?.docs);
+          return {
+            sessionId: params.sessionId,
+            workspaceDir: params.workspaceDir,
+            configFingerprint: "F025_FAKE_PROBE",
+            createdAt: 0,
+            lastUsedAt: 0,
+            getCatalog,
+            peekCatalog: () => null,
+            markUsed: () => {},
+            callTool: async () => ({ content: [] }),
+            dispose,
+          };
+        });
+
+        let completed = false;
+        let commandError: unknown;
+        try {
+          await runMcpCommand(["mcp", "configure", "docs", "--timeout", "20", "--probe"]);
+          completed = true;
+        } catch (error) {
+          commandError = error;
+        }
+
+        expect.soft(getCatalog).toHaveBeenCalledOnce();
+        expect.soft(dispose).toHaveBeenCalledOnce();
+        expect.soft(probedServer).toEqual({ ...original, requestTimeoutMs: 20_000 });
+        expect.soft(competitorCommitted).toBe(concurrent !== "none");
+        const savedBytes = await fs.readFile(configPath, "utf8");
+        const saved = JSON.parse(savedBytes);
+        if (concurrent === "same-server") {
+          expect.soft(completed).toBe(false);
+          expect.soft(commandError).toMatchObject({ message: "__exit__:1" });
+          expect.soft(lastErrorLine()).toBe('MCP server "docs" changed and was not updated.');
+          expect.soft(winnerBytes).toBeTypeOf("string");
+          expect.soft(savedBytes).toBe(winnerBytes);
+          expect.soft(saved.mcp.servers).toEqual({ docs: winner, other });
+        } else {
+          expect.soft(completed).toBe(true);
+          expect.soft(commandError).toBeUndefined();
+          expect.soft(lastErrorLine()).toBe("");
+          expect.soft(lastLogLine()).toBe(`Updated MCP server "docs" in ${configPath}.`);
+          expect.soft(saved.mcp.servers).toEqual({
+            docs: { ...original, requestTimeoutMs: 20_000 },
+            other: concurrent === "other-server" ? winner : other,
+          });
+        }
+      });
+    },
+  );
+
   it("updates approval mode without replacing saved Codex metadata", async () => {
     await withMcpHome(async () => {
       await runMcpCommand([
