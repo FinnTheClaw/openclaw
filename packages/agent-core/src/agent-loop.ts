@@ -672,11 +672,16 @@ async function executeToolCallGroups(
       }
       if (launched) {
         // A later admission rejection cannot settle the batch before its active prefix.
-        await Promise.all(
-          launched.started.map(async ({ index, entry, outcome }) =>
-            settle(index, entry, await outcome),
-          ),
+        const settlements = launched.started.map(async ({ index, entry, outcome }) =>
+          settle(index, entry, await outcome),
         );
+        try {
+          await Promise.all(settlements);
+        } catch (error) {
+          // A rejecting event sink must not release admitted sibling work.
+          await Promise.allSettled(settlements);
+          throw error;
+        }
       }
       for (const finalized of ordered) {
         if (finalized) {

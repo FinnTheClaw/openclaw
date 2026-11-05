@@ -2060,6 +2060,169 @@ describe("agentLoop tool termination", () => {
     },
   );
 
+  it.each(["end", "update", "none"] as const)(
+    "joins parallel tools after an event listener failure (%s)",
+    async (failureAt) => {
+      const siblingStarted = createDeferred();
+      const releaseSibling = createDeferred();
+      const siblingFinished = createDeferred();
+      const eventReached = createDeferred();
+      const eventError = new Error("F018 synthetic listener failure");
+      const events: AgentEvent[] = [];
+      const order: string[] = [];
+      const requests: Message[][] = [];
+      let bodyFinished = false;
+      let promptSettled = false;
+      let idleSettled = false;
+      let agentEnded = false;
+      const agent = new Agent({
+        initialState: {
+          model,
+          tools: [
+            {
+              ...makeTool("first", []),
+              execute: async (_toolCallId, _args, _signal, onUpdate) => {
+                await siblingStarted.promise;
+                if (failureAt === "update") {
+                  onUpdate?.({
+                    content: [{ type: "text", text: "F018 inert progress" }],
+                    details: {},
+                  });
+                }
+                return { content: [], details: { executed: "first" } };
+              },
+            },
+            {
+              ...makeTool("sibling", []),
+              execute: async () => {
+                siblingStarted.resolve();
+                try {
+                  await releaseSibling.promise;
+                  return { content: [], details: { executed: "sibling" } };
+                } finally {
+                  bodyFinished = true;
+                  order.push("sibling-finished");
+                  siblingFinished.resolve();
+                }
+              },
+            },
+          ],
+        },
+        toolExecution: "parallel",
+        streamFn: createTurnSequenceStream(
+          [
+            [
+              { type: "toolCall", id: "event-first", name: "first", arguments: {} },
+              { type: "toolCall", id: "event-sibling", name: "sibling", arguments: {} },
+            ],
+            [{ type: "text", text: "F018 ordinary completion" }],
+          ],
+          requests,
+        ),
+      });
+      agent.subscribe((event) => {
+        events.push(event);
+        if (event.type === "agent_end") {
+          agentEnded = true;
+          order.push("agent-ended");
+        }
+        const atBoundary =
+          (failureAt === "update"
+            ? event.type === "tool_execution_update"
+            : event.type === "tool_execution_end") &&
+          "toolCallId" in event &&
+          event.toolCallId === "event-first";
+        if (atBoundary) {
+          eventReached.resolve();
+          if (failureAt === "end") {
+            throw eventError;
+          }
+          if (failureAt === "update") {
+            return Promise.reject(eventError);
+          }
+        }
+      });
+
+      const prompt = agent.prompt("F018 inert parallel lifetime fixture");
+      const promptObservation = prompt.then(
+        () => {
+          promptSettled = true;
+        },
+        () => {
+          promptSettled = true;
+        },
+      );
+      const idle = agent.waitForIdle();
+      const idleObservation = idle.then(() => {
+        idleSettled = true;
+      });
+      try {
+        await siblingStarted.promise;
+        await Promise.race([
+          eventReached.promise,
+          prompt.then(() => {
+            throw new Error("Run settled before the controlled tool event");
+          }),
+        ]);
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 0);
+        });
+        expect.soft(bodyFinished).toBe(false);
+        expect.soft(agent.state.isStreaming).toBe(true);
+        expect.soft(agent.state.pendingToolCalls.has("event-sibling")).toBe(true);
+        expect.soft(promptSettled).toBe(false);
+        expect.soft(idleSettled).toBe(false);
+        expect.soft(agentEnded).toBe(false);
+      } finally {
+        releaseSibling.resolve();
+        await Promise.allSettled([
+          prompt,
+          promptObservation,
+          idle,
+          idleObservation,
+          siblingFinished.promise,
+        ]);
+      }
+      await expect(prompt).resolves.toBeUndefined();
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+
+      expect.soft(bodyFinished).toBe(true);
+      expect.soft(promptSettled).toBe(true);
+      expect.soft(idleSettled).toBe(true);
+      expect.soft(agent.state.isStreaming).toBe(false);
+      expect.soft(agent.state.pendingToolCalls.size).toBe(0);
+      expect.soft(order).toEqual(["sibling-finished", "agent-ended"]);
+      expect.soft(events.filter((event) => event.type === "agent_end")).toHaveLength(1);
+      expect.soft(events.at(-1)?.type).toBe("agent_end");
+      expect
+        .soft(
+          events.some(
+            (event) => event.type === "tool_execution_end" && event.toolCallId === "event-sibling",
+          ),
+        )
+        .toBe(true);
+      if (failureAt === "none") {
+        expect.soft(requests).toHaveLength(2);
+        expect.soft(agent.state.messages.at(-1)).toMatchObject({
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "F018 ordinary completion" }],
+        });
+        expect.soft(agent.state.errorMessage).toBeUndefined();
+      } else {
+        expect.soft(requests).toHaveLength(1);
+        expect.soft(agent.state.errorMessage).toBe(eventError.message);
+        expect.soft(agent.state.messages.at(-1)).toMatchObject({
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: eventError.message,
+        });
+      }
+    },
+  );
+
   it("keeps Agent active until started parallel work settles after a later commit failure", async () => {
     const firstStarted = createDeferred();
     const releaseFirst = createDeferred();
