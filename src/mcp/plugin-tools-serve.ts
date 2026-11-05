@@ -42,7 +42,7 @@ function resolvePluginToolPolicy(
 ): {
   toolAllowlist?: string[];
   toolDenylist?: string[];
-  steps?: ToolPolicyPipelineStep[];
+  steps: ToolPolicyPipelineStep[];
 } {
   const effective = context.agentId
     ? resolveEffectiveToolPolicy({
@@ -56,21 +56,19 @@ function resolvePluginToolPolicy(
     effective?.profileAlsoAllow ?? config.tools?.alsoAllow,
   );
   const globalPolicy = effective?.globalPolicy ?? pickSandboxToolPolicy(config.tools);
-  const steps = effective
-    ? buildDefaultToolPolicyPipelineSteps({
-        profilePolicy,
-        profile: effective.profile,
-        globalPolicy,
-        agentPolicy: effective.agentPolicy,
-        agentId: effective.agentId,
-      }).map((step) =>
-        Object.assign({}, step, {
-          // This bridge exposes only plugin tools, so core-tool entries are absent by design.
-          suppressUnavailableCoreToolWarning: true,
-        }),
-      )
-    : undefined;
-  const policies = steps?.map((step) => step.policy) ?? [profilePolicy, globalPolicy];
+  const steps = buildDefaultToolPolicyPipelineSteps({
+    profilePolicy,
+    profile: effective?.profile ?? config.tools?.profile,
+    globalPolicy,
+    agentPolicy: effective?.agentPolicy,
+    agentId: effective?.agentId,
+  }).map((step) =>
+    Object.assign({}, step, {
+      // This bridge exposes only plugin tools, so core-tool entries are absent by design.
+      suppressUnavailableCoreToolWarning: true,
+    }),
+  );
+  const policies = steps.map((step) => step.policy);
   const toolAllowlist = collectExplicitAllowlist(policies);
   const toolDenylist = collectExplicitDenylist(policies);
   return {
@@ -97,9 +95,7 @@ export async function acquirePluginToolsForMcp(params: {
     ...acquisition,
     resolveTools: () => {
       const tools = acquisition.resolveTools();
-      return steps
-        ? applyToolPolicyPipeline({ tools, toolMeta: getPluginToolMeta, warn: logWarn, steps })
-        : tools;
+      return applyToolPolicyPipeline({ tools, toolMeta: getPluginToolMeta, warn: logWarn, steps });
     },
   };
 }

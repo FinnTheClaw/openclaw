@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/types.js";
 import {
   areDiagnosticsEnabledForProcess,
   onDiagnosticEvent,
@@ -33,16 +34,23 @@ import {
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
 import { createCodexSupervisionToolsMcpServer } from "./codex-supervision-tools-serve.js";
+import { createPluginToolsMcpHandlers } from "./plugin-tools-handlers.js";
+import { acquirePluginToolsForMcp } from "./plugin-tools-serve.js";
 import { createToolsMcpServer, serveRegisteredToolsMcpServer } from "./tools-stdio-server.js";
 
 let sequence = 0;
-function nativePlugin(options: { failDisposal?: boolean; abortSdk?: boolean } = {}) {
+function nativePlugin(
+  options: { failDisposal?: boolean; abortSdk?: boolean; policyPair?: boolean } = {},
+) {
   useNoBundledPlugins();
   const key = `__mcp_registration_native_${sequence++}`;
+  const toolNames = options.policyPair ? ["read_tool", "write_tool"] : ["mcp_native_read"];
   const state: {
     database?: DatabaseSync;
     disposals: number;
     factories: number;
+    returnedToolNames: string[];
+    toolCalls: string[];
     workspaceDir?: string;
     aborted: Deferred;
     started: Deferred;
@@ -54,6 +62,8 @@ function nativePlugin(options: { failDisposal?: boolean; abortSdk?: boolean } = 
   } = {
     disposals: 0,
     factories: 0,
+    returnedToolNames: [],
+    toolCalls: [],
     aborted: createDeferredCore(),
     started: createDeferredCore(),
     finish: createDeferredCore(),
@@ -78,6 +88,17 @@ module.exports = { id: "mcp-native", register(api) {
   });
   api.registerTool(() => {
     state.factories++;
+    if (${options.policyPair === true}) {
+      state.returnedToolNames = ${JSON.stringify(toolNames)};
+      return state.returnedToolNames.map(name => ({
+        name, label: name, description: name,
+        parameters: { type: "object", properties: {} },
+        async execute() {
+          state.toolCalls.push(name);
+          return { content: [{ type: "text", text: name + " inert result" }] };
+        }
+      }));
+    }
     return { name: "mcp_native_read", label: "Native read", description: "Native read",
       parameters: { type: "object", properties: {} },
       async execute(_id, _params, signal) {
@@ -99,7 +120,7 @@ module.exports = { id: "mcp-native", register(api) {
         }
         return { content: [{ type: "text", text: String(db.prepare("SELECT 42 AS n").get().n) }] }; }
     };
-  }, { names: ["mcp_native_read"] });
+  }, { names: ${JSON.stringify(toolNames)} });
 }};`,
   });
   state.workspaceDir = plugin.dir;
@@ -108,24 +129,23 @@ module.exports = { id: "mcp-native", register(api) {
     JSON.stringify({
       id: plugin.id,
       providers: [plugin.id],
-      contracts: { tools: ["mcp_native_read"] },
+      contracts: { tools: toolNames },
       configSchema: { type: "object", properties: {}, additionalProperties: false },
     }),
   );
+  const config: OpenClawConfig = {
+    plugins: {
+      allow: [plugin.id],
+      load: { paths: [plugin.file] },
+      slots: { memory: "none" },
+    },
+  };
   return {
     state,
+    config,
     acquire: () =>
       acquireStandalonePluginToolRegistry({
-        context: {
-          workspaceDir: plugin.dir,
-          config: {
-            plugins: {
-              allow: [plugin.id],
-              load: { paths: [plugin.file] },
-              slots: { memory: "none" },
-            },
-          },
-        },
+        context: { workspaceDir: plugin.dir, config },
       }),
     cleanup() {
       if (state.database?.isOpen) {
@@ -151,6 +171,88 @@ function causes(error: unknown): unknown[] {
 }
 
 describe("MCP serving registration ownership", () => {
+  it.each([
+    {
+      label: "global allowlist",
+      toolPolicy: { allow: ["read_tool"] },
+      expectedNames: ["read_tool"],
+    },
+    {
+      label: "profile plus alsoAllow",
+      toolPolicy: { profile: "minimal", alsoAllow: ["read_tool"] },
+      expectedNames: ["read_tool"],
+    },
+    {
+      label: "explicit pair allowlist",
+      toolPolicy: { allow: ["read_tool", "write_tool"] },
+      expectedNames: ["read_tool", "write_tool"],
+    },
+    {
+      label: "unrestricted",
+      toolPolicy: undefined,
+      expectedNames: ["read_tool", "write_tool"],
+    },
+  ] satisfies Array<{
+    label: string;
+    toolPolicy: OpenClawConfig["tools"];
+    expectedNames: string[];
+  }>)("L07-F01 applies agentless final policy: $label", async ({ toolPolicy, expectedNames }) => {
+    vi.stubEnv("OPENCLAW_TOOLS_MCP_AGENT_SESSION_KEY", "");
+    const fixture = nativePlugin({ policyPair: true });
+    const config: OpenClawConfig = {
+      ...fixture.config,
+      ...(toolPolicy ? { tools: toolPolicy } : {}),
+    };
+    const originalConfig = structuredClone(config);
+    const argumentsValue = { marker: "synthetic argument" };
+    const originalArguments = structuredClone(argumentsValue);
+    let acquisition: Awaited<ReturnType<typeof acquirePluginToolsForMcp>> | undefined;
+    try {
+      acquisition = await acquirePluginToolsForMcp({ config });
+      const tools = acquisition.resolveTools();
+      // Prove the real nonoptional factory returned both tools before grading final policy.
+      expect(fixture.state.factories).toBe(1);
+      expect(fixture.state.returnedToolNames).toEqual(["read_tool", "write_tool"]);
+      expect(fixture.state.database?.isOpen).toBe(true);
+      const handlers = createPluginToolsMcpHandlers(tools);
+      const listed = await handlers.listTools();
+      const readResult = await handlers.callTool({ name: "read_tool", arguments: argumentsValue });
+      const writeResult = await handlers.callTool({
+        name: "write_tool",
+        arguments: argumentsValue,
+      });
+      const permitsWrite = expectedNames.includes("write_tool");
+      // Capture every outcome, including inert execution, before the joint policy assertion.
+      expect({
+        resolvedNames: tools.map((tool) => tool.name),
+        listedNames: listed.tools.map((tool) => tool.name),
+        readResult,
+        writeResult,
+        calls: fixture.state.toolCalls,
+        config,
+        argumentsValue,
+      }).toEqual({
+        resolvedNames: expectedNames,
+        listedNames: expectedNames,
+        readResult: { content: [{ type: "text", text: "read_tool inert result" }] },
+        writeResult: permitsWrite
+          ? { content: [{ type: "text", text: "write_tool inert result" }] }
+          : { isError: true, content: [{ type: "text", text: "Unknown tool: write_tool" }] },
+        calls: permitsWrite ? ["read_tool", "write_tool"] : ["read_tool"],
+        config: originalConfig,
+        argumentsValue: originalArguments,
+      });
+    } finally {
+      try {
+        await acquisition?.release();
+      } finally {
+        fixture.cleanup();
+      }
+    }
+    expect(fixture.state.disposals).toBe(1);
+    expect(fixture.state.database?.isOpen).toBe(false);
+  });
+
   it("keeps supplied tools usable across close/reconnect until their caller releases registration", async () => {
     const fixture = nativePlugin();
     const acquisition = await fixture.acquire();
