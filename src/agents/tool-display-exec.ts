@@ -93,7 +93,7 @@ function summarizeKnownExec(words: string[], hereInput?: ShellWords["hereInput"]
       stash: "stash git changes",
     };
 
-    const mappedSummary = sub ? map[sub] : undefined;
+    const mappedSummary = sub && Object.hasOwn(map, sub) ? map[sub] : undefined;
     if (mappedSummary) {
       return mappedSummary;
     }
@@ -282,7 +282,7 @@ function summarizeKnownExec(words: string[], hereInput?: ShellWords["hereInput"]
       lint: "run lint",
       run: positional[1] ? `run ${positional[1]}` : "run script",
     };
-    return map[sub] ?? `run ${bin} ${sub}`;
+    return (Object.hasOwn(map, sub) ? map[sub] : undefined) ?? `run ${bin} ${sub}`;
   }
 
   if (bin === "node" || bin === "python" || bin === "python3" || bin === "ruby" || bin === "php") {

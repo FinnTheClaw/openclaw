@@ -1,8 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { resolveExecDetail } from "./tool-display-exec.js";
-import { formatToolDetail, resolveToolDisplay } from "./tool-display.js";
+import { formatToolDetail, inferToolMetaFromArgsCore, resolveToolDisplay } from "./tool-display.js";
 
 describe("execution purpose display", () => {
+  it.each([
+    ["git constructor", "run git constructor"],
+    ["git toString", "run git toString"],
+    ["npm constructor", "run npm constructor"],
+    ["pnpm toString", "run pnpm toString"],
+    ["git status", "check git status"],
+    ["npm test", "run tests"],
+    ["git frobnicate", "run git frobnicate"],
+    ["npm frobnicate", "run npm frobnicate"],
+  ])("keeps exec-summary lookups within own command keys for %s", (command, summary) => {
+    const args = { command };
+    for (const detailMode of ["explain", "raw"] as const) {
+      const expected = detailMode === "raw" ? `${summary}, \`${command}\`` : summary;
+      for (const getDetail of [
+        () => resolveExecDetail(args, { detailMode }),
+        () => formatToolDetail(resolveToolDisplay({ name: "exec", args, detailMode })),
+        () => inferToolMetaFromArgsCore("exec", args, { detailMode }),
+      ]) {
+        let actual: unknown;
+        try {
+          actual = getDetail();
+        } catch (error: unknown) {
+          actual = error;
+        }
+        expect.soft(actual).toBe(expected);
+      }
+    }
+  });
+
   it.each(["exec", "bash", "shell"])(
     "shows agent intent for %s without hiding raw commands",
     (name) => {
