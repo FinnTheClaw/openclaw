@@ -133,13 +133,15 @@ const RUNWAY_RATIO_SIZES = new Map([
   ["21:9", "1584:672"],
 ]);
 
-function resolveRunwayRatio(req: VideoGenerationRequest): string {
-  const hasImageInput = (req.inputImages?.length ?? 0) > 0;
+function resolveRunwayRatio(
+  req: VideoGenerationRequest,
+  endpoint: ReturnType<typeof resolveEndpoint>,
+): string {
   const requested =
     normalizeOptionalString(req.size) ||
     RUNWAY_RATIO_SIZES.get(normalizeOptionalString(req.aspectRatio) ?? "");
   if (requested) {
-    if (!hasImageInput && requested !== "1280:720" && requested !== "720:1280") {
+    if (endpoint === "/v1/text_to_video" && requested !== "1280:720" && requested !== "720:1280") {
       throw new Error("Runway text-to-video currently supports only 16:9 or 9:16 output ratios.");
     }
     return requested;
@@ -172,7 +174,7 @@ function buildCreateBody(
   endpoint: ReturnType<typeof resolveEndpoint>,
 ): Record<string, unknown> {
   const duration = resolveDurationSeconds(req.durationSeconds);
-  const ratio = resolveRunwayRatio(req);
+  const ratio = resolveRunwayRatio(req, endpoint);
   const model = normalizeOptionalString(req.model) ?? DEFAULT_RUNWAY_MODEL;
   if (endpoint === "/v1/text_to_video") {
     if (!TEXT_ONLY_MODELS.has(model)) {

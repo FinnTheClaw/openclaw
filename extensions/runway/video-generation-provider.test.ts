@@ -233,6 +233,61 @@ describe("runway video generation provider", () => {
     );
   });
 
+  it.each([
+    ["1:1", "960:960"],
+    ["3:4", "832:1104"],
+    ["4:3", "1104:832"],
+    ["21:9", "1584:672"],
+    ["16:9", "1280:720"],
+    ["9:16", "720:1280"],
+  ] as const)("submits advertised video-to-video ratios (%s)", async (aspectRatio, ratio) => {
+    const provider = buildRunwayVideoGenerationProvider();
+    expect(provider.capabilities?.videoToVideo?.aspectRatios).toContain(aspectRatio);
+    mockSuccessfulTask();
+    const result = await generateVideo({
+      model: "gen4_aleph",
+      inputVideos: [{ url: "https://example.invalid/synthetic-input.mp4" }],
+      aspectRatio,
+    });
+
+    expect(postJsonRequestMock).toHaveBeenCalledOnce();
+    const request = requireFirstPostJsonRecordRequest(postJsonRequestMock, "Runway video edit");
+    expect(request.url).toBe("https://api.dev.runwayml.com/v1/video_to_video");
+    expect(request.body).toEqual({
+      model: "gen4_aleph",
+      promptText: "a tiny lobster DJ under neon lights",
+      videoUri: "https://example.invalid/synthetic-input.mp4",
+      ratio,
+    });
+    expect(result.videos).toEqual([
+      expect.objectContaining({ fileName: "video-1.webm", buffer: Buffer.from("mp4-bytes") }),
+    ]);
+    expect(result.metadata).toMatchObject({
+      taskId: "task-1",
+      status: "SUCCEEDED",
+      endpoint: "/v1/video_to_video",
+    });
+  });
+
+  it("keeps text-to-video ratio restriction for nonwide output", async () => {
+    await expect(generateVideo({ aspectRatio: "1:1" })).rejects.toThrow(
+      "Runway text-to-video currently supports only 16:9 or 9:16 output ratios.",
+    );
+    expect(postJsonRequestMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects mixed image and video inputs before submitting a ratio", async () => {
+    await expect(
+      generateVideo({
+        model: "gen4_aleph",
+        inputImages: [{ url: "https://example.invalid/synthetic-input.png" }],
+        inputVideos: [{ url: "https://example.invalid/synthetic-input.mp4" }],
+        aspectRatio: "1:1",
+      }),
+    ).rejects.toThrow("Runway video generation does not support image and video inputs together.");
+    expect(postJsonRequestMock).not.toHaveBeenCalled();
+  });
+
   it("requires gen4_aleph for video-to-video", async () => {
     await expect(
       generateVideo({ inputVideos: [{ url: "https://example.com/input.mp4" }] }),
