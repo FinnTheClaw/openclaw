@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { runExec } from "../process/exec.js";
 import { VERSION } from "../version.js";
 import { buildLaunchAgentPlist } from "./launchd-plist.js";
 import "./test-helpers/service-audit-mocks.js";
@@ -257,6 +258,104 @@ it.each(["other-source", "disappeared", "reload-pending"])(
     expect(result.definitionDriftError).toEqual(expect.any(String));
   },
 );
+
+it.each([
+  { format: "xml", policy: "current" },
+  { format: "binary", policy: "current" },
+  { format: "xml", policy: "false-missing" },
+  { format: "binary", policy: "false-missing" },
+] as const)("L09-F010 decoded policy: %j", async ({ format, policy }) => {
+  const home = dirs.make("definition-facts-plist-policy-");
+  const env = { HOME: home, OPENCLAW_STATE_DIR: path.join(home, "state") };
+  const sourcePath = resolveLaunchAgentPlistPath(env);
+  const command = {
+    programArguments: ["/usr/bin/node", "/opt/openclaw/index.js", "gateway"],
+    environment: { PATH: "/usr/bin:/bin", ...staleServiceEnvironment },
+  };
+  const xml =
+    policy === "current"
+      ? "<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>"
+      : "<plist><dict><key>RunAtLoad</key><false/></dict></plist>";
+  // Authentic binary dictionaries generated with Python stdlib plistlib during
+  // fixture preparation. Native plutil execution remains mocked on this host.
+  const binary = {
+    current:
+      "YnBsaXN0MDDSAQIDA1lSdW5BdExvYWRZS2VlcEFsaXZlCQgNFyEAAAAAAAABAQAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAIg==",
+    "false-missing": "YnBsaXN0MDDRAQJZUnVuQXRMb2FkCAgLFQAAAAAAAAEBAAAAAAAAAAMAAAAAAAAAAAAAAAAAAAAW",
+  };
+  const contents = format === "binary" ? Buffer.from(binary[policy], "base64") : Buffer.from(xml);
+  await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+  await fs.writeFile(sourcePath, contents);
+  const exec = vi.mocked(runExec);
+  const previous = exec.getMockImplementation()!;
+  exec.mockClear();
+  exec.mockImplementation(async (...args) => {
+    const [commandPath, arguments_, options] = args;
+    if (format === "binary" && commandPath === "/usr/bin/plutil" && arguments_[1] === "xml1") {
+      expect(Buffer.from(options!.input!)).toEqual(contents);
+      return { stdout: xml, stderr: "" };
+    }
+    return await previous(...args);
+  });
+  try {
+    const result = await auditGatewayServiceConfig({
+      env,
+      command,
+      platform: "darwin",
+      expectedServicePath: "/usr/bin:/bin",
+    });
+    expect(await fs.readFile(sourcePath)).toEqual(contents);
+    expect(exec).toHaveBeenCalledWith(
+      "/usr/bin/plutil",
+      ["-convert", "xml1", "-o", "-", "--", "-"],
+      expect.objectContaining({ input: contents }),
+    );
+    expect(exec).toHaveBeenCalledWith(
+      "/usr/bin/plutil",
+      ["-convert", "json", "-o", "-", "--", "-"],
+      expect.objectContaining({ input: xml }),
+    );
+    expect(result.definitionDriftError).toBeUndefined();
+    const policyFacts = result.definitionDrift?.filter(
+      (finding) => finding.key === "RunAtLoad" || finding.key === "KeepAlive",
+    );
+    expect(policyFacts).toEqual(
+      policy === "current"
+        ? []
+        : [
+            expect.objectContaining({ kind: "preserved", key: "RunAtLoad", sourcePath }),
+            expect.objectContaining({
+              kind: "outdated",
+              key: "KeepAlive",
+              current: null,
+              expected: true,
+              sourcePath,
+            }),
+          ],
+    );
+    expect(result.issues).toEqual(
+      policy === "current"
+        ? []
+        : [
+            {
+              code: "launchd-run-at-load",
+              message: "LaunchAgent is missing RunAtLoad=true",
+              detail: sourcePath,
+              level: "recommended",
+            },
+            {
+              code: "launchd-keep-alive",
+              message: "LaunchAgent is missing KeepAlive=true",
+              detail: sourcePath,
+              level: "recommended",
+            },
+          ],
+    );
+    expect(result.ok).toBe(policy === "current");
+  } finally {
+    exec.mockImplementation(previous);
+  }
+});
 
 it.each(["missing", "custom", "stale", "legacy-1", "legacy-60"])(
   "distinguishes missing and released launchd policy from custom policy: %s",

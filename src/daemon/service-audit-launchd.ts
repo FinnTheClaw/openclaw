@@ -34,13 +34,16 @@ export async function auditLaunchdDefinition(
   if (content === null) {
     return;
   }
-  // Keep existing repair predicates while deriving both outputs from one capture.
-  const text = content.toString("utf8");
+  // Derive repair issues and definition facts from the same native decode.
+  const installed = await decodeLaunchdPlistMetadata(content, timeoutMs);
+  if (!installed) {
+    throw new Error("LaunchAgent definition could not be decoded.");
+  }
   for (const [key, code] of [
     ["RunAtLoad", "launchd-run-at-load"],
     ["KeepAlive", "launchd-keep-alive"],
   ] as const) {
-    if (!new RegExp(`<key>${key}</key>\\s*<true\\s*/>`, "i").test(text)) {
+    if (installed[key] !== true) {
       issues.push({
         code,
         message: `LaunchAgent is missing ${key}=true`,
@@ -48,10 +51,6 @@ export async function auditLaunchdDefinition(
         level: "recommended",
       });
     }
-  }
-  const installed = await decodeLaunchdPlistMetadata(content, timeoutMs);
-  if (!installed) {
-    throw new Error("LaunchAgent definition could not be decoded.");
   }
   const wrapperPath = resolveLaunchAgentEnvWrapperPath(env, resolveLaunchAgentLabel(env));
   const args = installed.ProgramArguments;
