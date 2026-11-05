@@ -752,6 +752,63 @@ describe("resolveTelegramFetch", () => {
     expect(getDispatcherFromUndiciCall(1)).not.toBe(getDispatcherFromUndiciCall(2));
   });
 
+  it.each(
+    [
+      { method: "sendLocation", payload: { latitude: 1, longitude: 2 } },
+      {
+        method: "sendVenue",
+        payload: { latitude: 1, longitude: 2, title: "Fixture", address: "Synthetic address" },
+      },
+      {
+        method: "sendPoll",
+        payload: { question: "Fixture?", options: [{ text: "Yes" }, { text: "No" }] },
+      },
+      { method: "sendSticker", payload: { sticker: "fixture-file-id" } },
+    ].flatMap(({ method, payload }) =>
+      ["UND_ERR_SOCKET", "EHOSTUNREACH"].map((code) => ({ method, payload, code })),
+    ),
+  )("non-text send replay: $method $code", async ({ method, payload, code }) => {
+    undiciFetch.mockReset();
+    const failure = buildFetchFallbackError(code);
+    const response = { ok: true } as Response;
+    undiciFetch.mockRejectedValueOnce(failure).mockResolvedValueOnce(response);
+    const transport = resolveTelegramTransport(undefined, STICKY_IPV4_FALLBACK_NETWORK);
+    const url = `https://api.telegram.org/botx/${method}`;
+    const init = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: 123, ...payload }),
+    };
+    try {
+      const outcome = await transport.fetch(url, init).then(
+        (result) => ({ result, error: undefined }),
+        (error: unknown) => ({ result: undefined, error }),
+      );
+      const canRetry = code === "EHOSTUNREACH";
+      expect({
+        result: outcome.result,
+        error: outcome.error,
+        calls: undiciFetch.mock.calls.length,
+      }).toEqual({
+        result: canRetry ? response : undefined,
+        error: canRetry ? undefined : failure,
+        calls: canRetry ? 2 : 1,
+      });
+      for (const [input, options] of undiciFetch.mock.calls) {
+        expect(input).toBe(url);
+        expect(options).toMatchObject(init);
+      }
+      expect(getDispatcherFromUndiciCall(1).options).toMatchObject({ pipelining: 1 });
+      if (canRetry) {
+        expect(getDispatcherFromUndiciCall(2)).not.toBe(getDispatcherFromUndiciCall(1));
+        expect(getDispatcherFromUndiciCall(2).options).toMatchObject({ pipelining: 1 });
+      }
+    } finally {
+      await transport.close();
+      undiciFetch.mockReset();
+    }
+  });
+
   it.each(["sendMessage", "sendRichMessage"])(
     "moves later %s requests off a failing route without replaying ambiguous sends",
     async (method) => {

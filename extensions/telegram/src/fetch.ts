@@ -672,9 +672,15 @@ export function resolveTelegramTransport(
     }
     const method = extractTelegramApiMethod(input);
     const freshConnection = method === "sendmessage" || method === "sendrichmessage";
+    const nonIdempotent =
+      freshConnection ||
+      method === "sendlocation" ||
+      method === "sendvenue" ||
+      method === "sendpoll" ||
+      method === "sendsticker";
     const shouldRetryRequest = (error: unknown) =>
       shouldRetryTelegramTransportFallback(error) &&
-      (!freshConnection || isSafeToRetrySendError(error));
+      (!nonIdempotent || isSafeToRetrySendError(error));
     const requestFetch = bindTelegramTransportAuthority(
       sourceFetch,
       getTelegramRequestAuthority(init),
