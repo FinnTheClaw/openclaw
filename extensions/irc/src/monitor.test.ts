@@ -261,6 +261,95 @@ function installPairingMonitorRuntime(
 }
 
 describe("IRC automatic reply outcomes", () => {
+  it.for([
+    {
+      label: "DM with reference",
+      inboundTarget: "bot",
+      replyTarget: "alice",
+      replyToId: "parent-1",
+    },
+    {
+      label: "channel with reference",
+      inboundTarget: "#ops",
+      replyTarget: "#ops",
+      replyToId: "parent-1",
+    },
+    {
+      label: "DM without reference",
+      inboundTarget: "bot",
+      replyTarget: "alice",
+      replyToId: undefined,
+    },
+    {
+      label: "channel without reference",
+      inboundTarget: "#ops",
+      replyTarget: "#ops",
+      replyToId: undefined,
+    },
+  ])(
+    "preserves the reply reference through the live IRC monitor callback: $label",
+    async (row, { signal }) => {
+      await withIngressQueue(async (ingressQueue) => {
+        const completed = observeIngressCompletion(ingressQueue);
+        const core = createPluginRuntimeMock();
+        const payload = { text: "Synthetic monitor reply", replyToId: row.replyToId };
+        const dispatchReply = vi.mocked(
+          core.channel.reply.dispatchReplyWithBufferedBlockDispatcher,
+        );
+        dispatchReply.mockImplementation(async ({ dispatcherOptions }) => {
+          await dispatcherOptions.deliver(payload, { kind: "final" });
+          return { queuedFinal: true, counts: { tool: 0, block: 0, final: 1 } };
+        });
+        setIrcRuntime(core);
+        const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+        const statusSink = vi.fn();
+        const server = await startInboundIrcServer();
+        let monitor: Awaited<ReturnType<typeof monitorIrcProvider>> | undefined;
+        try {
+          monitor = await monitorIrcProvider({
+            config: monitorConfig(server.port, "bot", {
+              dmPolicy: "open",
+              allowFrom: ["*"],
+              groupPolicy: "open",
+              groups: { "#ops": { enabled: true, requireMention: false } },
+            }),
+            ingressQueue,
+            runtime,
+            statusSink,
+          });
+          server.sendInbound(row.inboundTarget);
+          const completedId = await waitForOwnedSignal(completed, signal);
+
+          expect(completedId).toBeTruthy();
+          expect(dispatchReply).toHaveBeenCalledOnce();
+          await vi.waitFor(() =>
+            expect(server.lines.some((line) => line.startsWith("PRIVMSG "))).toBe(true),
+          );
+          const reference = row.replyToId ? `  [reply:${row.replyToId}]` : "";
+          expect(server.lines.filter((line) => line.startsWith("PRIVMSG "))).toEqual([
+            `PRIVMSG ${row.replyTarget} :Synthetic monitor reply${reference}`,
+          ]);
+          expect(core.channel.activity.record).toHaveBeenCalledWith(
+            expect.objectContaining({
+              channel: "irc",
+              accountId: "default",
+              direction: "outbound",
+            }),
+          );
+          expect(
+            statusSink.mock.calls.some(([patch]) => typeof patch.lastOutboundAt === "number"),
+          ).toBe(true);
+          expect(runtime.error).not.toHaveBeenCalled();
+          expect(await ingressQueue.listPending({ limit: "all" })).toEqual([]);
+          expect(await ingressQueue.listClaims()).toEqual([]);
+        } finally {
+          await monitor?.stop();
+          await server.close();
+        }
+      });
+    },
+  );
+
   it("reports sanitized-empty replies without recording outbound delivery", async ({ signal }) => {
     await withIngressQueue(async (ingressQueue) => {
       const admitted = createDeferred<void>();
