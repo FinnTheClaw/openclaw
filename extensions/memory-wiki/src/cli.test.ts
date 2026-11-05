@@ -8,6 +8,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { registerWikiCli } from "./cli.js";
 import type { MemoryWikiPluginConfig, ResolvedMemoryWikiConfig } from "./config.js";
 import type { RootMoveHooks } from "./guarded-root.test-support.js";
+import {
+  readMemoryWikiImportRunRecord,
+  resolveMemoryWikiImportRunsDir,
+} from "./import-runs-state.js";
 import { parseWikiMarkdown, renderWikiMarkdown } from "./markdown.js";
 import {
   renderMemoryWikiStatus,
@@ -729,6 +733,148 @@ cli note
     expect(disabledResult.artifactCount).toBe(0);
     expect(callGatewayFromCliMock).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { name: "ordinary note", quoted: false, crlf: false, note: "REAL HUMAN NOTE $1" },
+    { name: "quoted transcript markers", quoted: true, crlf: false, note: "REAL HUMAN NOTE $1" },
+    { name: "CRLF quoted markers", quoted: true, crlf: true, note: "REAL CRLF HUMAN NOTE $1" },
+    {
+      name: "opening marker in note",
+      quoted: false,
+      crlf: false,
+      note: "EARLY HUMAN NOTE\n<!-- openclaw:human:start -->\nLATE HUMAN NOTE after pasted opening",
+    },
+    {
+      name: "closing marker in note",
+      quoted: false,
+      crlf: false,
+      note: "EARLY HUMAN NOTE\n<!-- openclaw:human:end -->\nLATE HUMAN NOTE after pasted closing",
+    },
+  ])("preserves ChatGPT re-import human Notes: $name", async ({ quoted, crlf, note }) => {
+    const { rootDir, config } = await createCliVault({ initialize: true });
+    const exportDir = await createChatGptExport(rootDir);
+    const conversationsPath = path.join(exportDir, "conversations.json");
+    const originalExport = await fs.readFile(conversationsPath, "utf8");
+    const firstTranscript = quoted
+      ? "TRANSCRIPT VERSION ONE\n## Notes\n<!-- openclaw:human:start -->\nOLD QUOTED TRANSCRIPT\n<!-- openclaw:human:end -->"
+      : "TRANSCRIPT VERSION ONE";
+    const secondTranscript = quoted
+      ? "TRANSCRIPT VERSION TWO\n## Notes\n<!-- openclaw:human:start -->\nNEW QUOTED TRANSCRIPT\n<!-- openclaw:human:end -->"
+      : "TRANSCRIPT VERSION TWO";
+    const firstExport = originalExport.replace(
+      JSON.stringify("Noted. I will keep travel options close to the airport."),
+      JSON.stringify(firstTranscript),
+    );
+    expect(firstExport).not.toBe(originalExport);
+    await fs.writeFile(conversationsPath, firstExport, "utf8");
+    await runRegisteredWikiCommand(config, ["chatgpt", "import", "--export", exportDir, "--json"]);
+    const sourceFile = await findImportedSourceFile(rootDir);
+    const pagePath = path.join(rootDir, "sources", sourceFile);
+    const emptyNotes = "## Notes\n<!-- openclaw:human:start -->\n<!-- openclaw:human:end -->";
+    const notes = `## Notes\n<!-- openclaw:human:start -->\n${note}\n<!-- openclaw:human:end -->`;
+    const firstPage = await fs.readFile(pagePath, "utf8");
+    expect(firstPage).toContain(emptyNotes);
+    const editedLf = firstPage.replace(emptyNotes, notes);
+    const edited = crlf ? editedLf.replace(/\r?\n/g, "\r\n") : editedLf;
+    await fs.writeFile(pagePath, edited, "utf8");
+    await fs.writeFile(
+      conversationsPath,
+      firstExport.replace(JSON.stringify(firstTranscript), JSON.stringify(secondTranscript)),
+      "utf8",
+    );
+
+    const applied = JSON.parse(
+      await runRegisteredWikiCommand(config, [
+        "chatgpt",
+        "import",
+        "--export",
+        exportDir,
+        "--json",
+      ]),
+    ) as { runId?: string; updatedCount: number };
+    expect(applied.updatedCount).toBe(1);
+    const runId = expectDefined(applied.runId, "ChatGPT re-import runId");
+    const after = (await fs.readFile(pagePath, "utf8")).replace(/\r\n/g, "\n");
+    expect.soft(after).toContain(secondTranscript);
+    expect.soft(after).toContain(notes);
+    if (quoted) {
+      expect.soft(after).not.toContain("OLD QUOTED TRANSCRIPT");
+    }
+    const record = expectDefined(
+      await readMemoryWikiImportRunRecord(rootDir, runId),
+      "ChatGPT re-import record",
+    );
+    const updated = expectDefined(
+      record.updatedPaths.find((entry) => entry.path === `sources/${sourceFile}`),
+      "updated ChatGPT source snapshot",
+    );
+    await expect(
+      fs.readFile(
+        path.join(resolveMemoryWikiImportRunsDir(rootDir), runId, updated.snapshotPath),
+        "utf8",
+      ),
+    ).resolves.toBe(edited);
+    const rollback = JSON.parse(
+      await runRegisteredWikiCommand(config, ["chatgpt", "rollback", runId, "--json"]),
+    ) as { restoredCount: number };
+    expect(rollback.restoredCount).toBe(1);
+    await expect(fs.readFile(pagePath, "utf8")).resolves.toBe(edited);
+  });
+
+  it.each([
+    {
+      name: "closing",
+      malformed: "<!-- openclaw:human:start -->\nHANDWRITTEN NOTE MUST SURVIVE",
+      missing: /openclaw:human:end/i,
+    },
+    {
+      name: "opening",
+      malformed: "HANDWRITTEN NOTE MUST SURVIVE\n<!-- openclaw:human:end -->",
+      missing: /openclaw:human:start/i,
+    },
+    {
+      name: "opening and closing",
+      malformed: "HANDWRITTEN NOTE MUST SURVIVE",
+      missing: /openclaw:human:start/i,
+    },
+  ])(
+    "rejects malformed ChatGPT re-import human Notes: missing $name",
+    async ({ malformed, missing }) => {
+      const { rootDir, config } = await createCliVault({ initialize: true });
+      const exportDir = await createChatGptExport(rootDir);
+      await runRegisteredWikiCommand(config, [
+        "chatgpt",
+        "import",
+        "--export",
+        exportDir,
+        "--json",
+      ]);
+      const sourceFile = await findImportedSourceFile(rootDir);
+      const pagePath = path.join(rootDir, "sources", sourceFile);
+      const emptyNotes = "<!-- openclaw:human:start -->\n<!-- openclaw:human:end -->";
+      const firstPage = await fs.readFile(pagePath, "utf8");
+      expect(firstPage).toContain(emptyNotes);
+      const edited = firstPage.replace(emptyNotes, malformed);
+      await fs.writeFile(pagePath, edited, "utf8");
+      const conversationsPath = path.join(exportDir, "conversations.json");
+      const firstExport = await fs.readFile(conversationsPath, "utf8");
+      await fs.writeFile(
+        conversationsPath,
+        firstExport.replace(
+          "Noted. I will keep travel options close to the airport.",
+          "TRANSCRIPT UPDATE MUST NOT OVERWRITE MALFORMED NOTES",
+        ),
+        "utf8",
+      );
+
+      await expect
+        .soft(
+          runRegisteredWikiCommand(config, ["chatgpt", "import", "--export", exportDir, "--json"]),
+        )
+        .rejects.toThrow(missing);
+      await expect.soft(fs.readFile(pagePath, "utf8")).resolves.toBe(edited);
+    },
+  );
 
   it("imports ChatGPT exports with dry-run, apply, and rollback", async () => {
     const { rootDir, config } = await createCliVault({ initialize: true });

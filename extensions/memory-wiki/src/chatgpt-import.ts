@@ -26,6 +26,7 @@ import {
 import { appendMemoryWikiLog } from "./log.js";
 import {
   parseWikiMarkdown,
+  preserveHumanNotesBlock,
   renderWikiMarkdown,
   WIKI_RELATED_END_MARKER,
   WIKI_RELATED_START_MARKER,
@@ -505,7 +506,7 @@ function renderConversationPage(record: ChatGptConversationRecord): string {
   });
 }
 
-const HUMAN_BLOCK_PATTERN = new RegExp(`${HUMAN_START_MARKER}[\\s\\S]*?${HUMAN_END_MARKER}`);
+const NOTES_HEADING_PATTERN = /(?:^|\r?\n)## Notes[\t ]*(?:\r?\n|$)/gu;
 const RELATED_BLOCK_BODY_PATTERN = new RegExp(
   `${WIKI_RELATED_START_MARKER}\\n?([\\s\\S]*?)\\n?${WIKI_RELATED_END_MARKER}`,
 );
@@ -516,12 +517,19 @@ function preserveExistingPageBlocks(rendered: string, existing: string): string 
   }
   const parsedExisting = parseWikiMarkdown(existing);
   const parsedRendered = parseWikiMarkdown(rendered);
-  let nextBody = parsedRendered.body;
-
-  const humanBlock = parsedExisting.body.match(HUMAN_BLOCK_PATTERN)?.[0];
-  if (humanBlock) {
-    nextBody = nextBody.replace(HUMAN_BLOCK_PATTERN, () => humanBlock);
+  const existingNotes = [...parsedExisting.body.matchAll(NOTES_HEADING_PATTERN)].at(-1);
+  const renderedNotes = [...parsedRendered.body.matchAll(NOTES_HEADING_PATTERN)].at(-1);
+  if (!existingNotes || !renderedNotes) {
+    throw new Error(
+      "Memory Wiki ChatGPT human Notes section is missing ## Notes; restore the Notes section before updating this page",
+    );
   }
+  let nextBody =
+    parsedRendered.body.slice(0, renderedNotes.index) +
+    preserveHumanNotesBlock(
+      parsedRendered.body.slice(renderedNotes.index),
+      parsedExisting.body.slice(existingNotes.index),
+    );
 
   const relatedBody = parsedExisting.body.match(RELATED_BLOCK_BODY_PATTERN)?.[1]?.trim();
   if (relatedBody) {
