@@ -1,4 +1,9 @@
-import { collectErrorGraphCandidates, extractErrorCode, readErrorCause } from "../infra/errors.js";
+import {
+  collectErrorGraphCandidates,
+  extractErrorCode,
+  formatErrorMessage,
+  readErrorCause,
+} from "../infra/errors.js";
 import { parseBooleanValue } from "../utils/boolean.js";
 import { VERSION } from "../version.js";
 import { isBundleCapabilitySupported } from "./bundle-capability-support.js";
@@ -227,12 +232,17 @@ export function recordPluginError(params: {
   /** Shown when the failure is a missing module so operators learn the install path. */
   missingDependencyHint?: string;
 }) {
-  const errorText =
-    isPluginLifecycleTraceEnabled() &&
-    params.error instanceof Error &&
-    typeof params.error.stack === "string"
-      ? params.error.stack
-      : String(params.error);
+  let errorText: string;
+  try {
+    errorText =
+      isPluginLifecycleTraceEnabled() &&
+      params.error instanceof Error &&
+      typeof params.error.stack === "string"
+        ? params.error.stack
+        : String(params.error);
+  } catch {
+    errorText = formatErrorMessage(params.error);
+  }
   const deprecatedApiHint =
     errorText.includes("api.registerHttpHandler") && errorText.includes("is not a function")
       ? "deprecated api.registerHttpHandler(...) was removed; use api.registerHttpRoute(...) for plugin-owned routes or registerPluginHttpRoute(...) for dynamic lifecycle routes"

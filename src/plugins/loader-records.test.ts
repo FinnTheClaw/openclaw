@@ -93,6 +93,70 @@ describe("plugin loader records", () => {
   });
 
   it.each([
+    { kind: "null-prototype", trace: "", expected: "{}" },
+    { kind: "message-getter", trace: "", expected: "Error" },
+    { kind: "stack-getter", trace: "1", expected: "stack fallback" },
+  ])("L07-F09 records an unreadable $kind failure", ({ kind, trace, expected }) => {
+    vi.stubEnv("OPENCLAW_PLUGIN_LIFECYCLE_TRACE", trace);
+    const error: unknown =
+      kind === "null-prototype" ? Object.create(null) : new Error("stack fallback");
+    if (kind !== "null-prototype") {
+      Object.defineProperty(error, kind === "message-getter" ? "message" : "stack", {
+        get() {
+          throw new Error("synthetic display accessor failed");
+        },
+      });
+    }
+    const registry = createEmptyPluginRegistry();
+    const record = createPluginRecord({
+      id: "unreadable-plugin",
+      source: "/tmp/unreadable-plugin/index.js",
+      origin: "workspace",
+      enabled: true,
+      configSchema: false,
+    });
+    const seenIds = new Map();
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    let recordingError: unknown;
+
+    try {
+      recordPluginError({
+        logger,
+        registry,
+        record,
+        seenIds,
+        phase: "register",
+        error,
+      });
+    } catch (failure) {
+      recordingError = failure;
+    }
+
+    expect({
+      threw: recordingError !== undefined,
+      plugins: registry.plugins.map(({ id, status, error: text, failurePhase }) => ({
+        id,
+        status,
+        error: text,
+        failurePhase,
+      })),
+      diagnostics: registry.diagnostics.map(({ level, pluginId, message }) => ({
+        level,
+        pluginId,
+        message,
+      })),
+      seenIds: [...seenIds],
+      logged: logger.error.mock.calls,
+    }).toEqual({
+      threw: false,
+      plugins: [{ id: record.id, status: "error", error: expected, failurePhase: "register" }],
+      diagnostics: [{ level: "error", pluginId: record.id, message: expected }],
+      seenIds: [[record.id, "workspace"]],
+      logged: [[expected]],
+    });
+  });
+
+  it.each([
     { diagnostics: "", expected: "Error: boom" },
     { diagnostics: "1", expected: "Error: boom\n    at plugin-entry.ts:1:1" },
   ])("uses lifecycle tracing for loader error stacks", ({ diagnostics, expected }) => {

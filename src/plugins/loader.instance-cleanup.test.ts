@@ -251,6 +251,90 @@ it("preserves body and unexpected registry retirement failures with async dispos
   expect(cleanup).toHaveBeenCalledOnce();
 });
 
+it.each([
+  { kind: "null-prototype", failure: "throw Object.create(null);", expected: "{}" },
+  {
+    kind: "message-getter",
+    failure: `const failure = new Error("original registration failure");
+      Object.defineProperty(failure, "message", {
+        get() { throw new Error("synthetic display accessor failed"); }
+      });
+      throw failure;`,
+    expected: "Error",
+  },
+])("L07-F09 isolates a register $kind failure before a healthy sibling", async (scenario) => {
+  useNoBundledPlugins();
+  vi.stubEnv("OPENCLAW_PLUGIN_LIFECYCLE_TRACE", "");
+  const broken = writePlugin({
+    id: `aa-l07-f09-${scenario.kind}`,
+    registration: scenario.failure,
+  });
+  const healthy = writePlugin({
+    id: `zz-l07-f09-${scenario.kind}`,
+    registration: "",
+  });
+  let registry: ReturnType<typeof loadOpenClawPlugins> | undefined;
+  let loadError: unknown;
+
+  try {
+    try {
+      registry = loadOpenClawPlugins({
+        config: {
+          plugins: {
+            allow: [broken.id, healthy.id],
+            load: { paths: [broken.file, healthy.file] },
+            slots: { memory: "none" },
+          },
+        },
+        cache: false,
+        activate: false,
+      });
+    } catch (error) {
+      loadError = error;
+    }
+
+    expect({
+      threw: loadError !== undefined,
+      plugins: registry?.plugins.map(({ id, status, error, failurePhase }) => ({
+        id,
+        status,
+        error,
+        failurePhase,
+      })),
+      diagnostics: registry?.diagnostics
+        .filter(({ level, pluginId }) => level === "error" && pluginId === broken.id)
+        .map(({ level, pluginId, message }) => ({ level, pluginId, message })),
+    }).toEqual({
+      threw: false,
+      plugins: [
+        {
+          id: broken.id,
+          status: "error",
+          error: scenario.expected,
+          failurePhase: "register",
+        },
+        { id: healthy.id, status: "loaded", error: undefined, failurePhase: undefined },
+      ],
+      diagnostics: [
+        {
+          level: "error",
+          pluginId: broken.id,
+          message: `plugin failed during register: ${scenario.expected}`,
+        },
+      ],
+    });
+  } finally {
+    try {
+      if (registry) {
+        await disposePluginRegistryInstances(registry);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      resetPluginLoaderTestStateForTest();
+    }
+  }
+});
+
 it.each(["load", "register", "id-mismatch", "missing-register"] as const)(
   "records plugin %s failure and cleans only registered native resources",
   async (phase) => {
