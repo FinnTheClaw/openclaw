@@ -38,6 +38,7 @@ import {
   type ExecAuthorizationCandidate,
   type ExecAuthorizationPlan,
 } from "./exec-authorization-plan.js";
+import { isCwdBoundHashedArgPattern } from "./exec-command-resolution.js";
 import {
   DEFAULT_SAFE_BINS,
   SAFE_BIN_PROFILES,
@@ -817,11 +818,18 @@ function evaluateAuthorizationPlan(params: {
   const skillBins = params.context.skillBins ?? [];
   const allowSkills = params.context.autoAllowSkills === true && skillBins.length > 0;
   const skillBinTrust = buildSkillBinTrustIndex(skillBins);
+  const contextAfterCwdChange: ExecAllowlistContext = {
+    ...params.context,
+    allowlist: params.context.allowlist.filter(
+      (entry) => !isCwdBoundHashedArgPattern(entry.argPattern),
+    ),
+  };
+  let cwdMayHaveChanged = false;
   for (const group of params.plan.groups) {
     for (const candidate of group.candidates) {
       const { match, satisfiedBy } = evaluateAuthorizationCandidate({
         candidate,
-        context: params.context,
+        context: cwdMayHaveChanged ? contextAfterCwdChange : params.context,
         allowSkills,
         skillBinTrust,
       });
@@ -834,6 +842,10 @@ function evaluateAuthorizationPlan(params: {
       if (!satisfiedBy) {
         result.allowlistSatisfied = false;
       }
+    }
+    // A standalone cd may change the parent shell cwd; a pipeline does not establish it.
+    if (group.candidates.length === 1 && group.candidates[0]?.sourceSegment.argv[0] === "cd") {
+      cwdMayHaveChanged = true;
     }
   }
   return result;

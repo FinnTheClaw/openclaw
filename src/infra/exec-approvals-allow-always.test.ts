@@ -318,6 +318,67 @@ describe("resolveAllowAlwaysPatterns", () => {
     expect(patterns).toEqual(["/opt/homebrew/Cellar/ripgrep/14.1.1/bin/rg"]);
   });
 
+  it.runIf(process.platform !== "win32").each([
+    { name: "generated grant after cd", changesCwd: true, manual: false, allowed: false },
+    { name: "generated grant without cd", changesCwd: false, manual: false, allowed: true },
+    { name: "explicit manual grant after cd", changesCwd: true, manual: true, allowed: true },
+  ])("keeps generated grants scoped across cd prefixes ($name)", async (row) => {
+    const root = makeExecApprovalsTempDir();
+    const approved = path.join(root, "approved");
+    const other = path.join(root, "other");
+    fs.mkdirSync(approved);
+    fs.mkdirSync(other);
+    const git = makeExecutable(root, "git");
+    const env = makePathEnv(root);
+    const safeBins = new Set<string>();
+    const generated = await resolvePersistedPatterns({
+      command: "git status",
+      dir: approved,
+      env,
+      safeBins,
+    });
+    const allowlist = row.manual ? [{ pattern: git }] : generated.entries;
+    const command = row.changesCwd ? `cd "${other}" && git status` : "git status";
+    const evaluation = await evaluateShellAllowlistWithAuthorization({
+      command,
+      allowlist,
+      safeBins,
+      cwd: approved,
+      env,
+      platform: process.platform,
+    });
+    const facts = {
+      generatedEntries: generated.entries,
+      analysisOk: evaluation.analysisOk,
+      allowlistSatisfied: evaluation.allowlistSatisfied,
+      segmentSatisfiedBy: [...evaluation.segmentSatisfiedBy],
+      segmentEntries: [...evaluation.segmentAllowlistEntries],
+      requiresApproval: requiresExecApproval({
+        ask: "on-miss",
+        security: "allowlist",
+        analysisOk: evaluation.analysisOk,
+        allowlistSatisfied: evaluation.allowlistSatisfied,
+      }),
+    };
+
+    expect.soft(facts.generatedEntries).toEqual([
+      {
+        pattern: git,
+        argPattern: buildCwdBoundHashedArgPattern([git, "status"], approved, process.platform),
+      },
+    ]);
+    expect.soft(facts.analysisOk).toBe(true);
+    expect.soft(facts.allowlistSatisfied).toBe(row.allowed);
+    expect.soft(facts.requiresApproval).toBe(!row.allowed);
+    expect.soft(facts.segmentSatisfiedBy).toHaveLength(row.changesCwd ? 2 : 1);
+    if (row.changesCwd) {
+      expect.soft(facts.segmentSatisfiedBy[0]).toBe("safeBuiltins");
+      expect.soft(facts.segmentEntries[0]).toBeNull();
+    }
+    expect.soft(facts.segmentSatisfiedBy.at(-1)).toBe(row.allowed ? "allowlist" : null);
+    expect.soft(facts.segmentEntries.at(-1)).toEqual(row.allowed ? allowlist[0] : null);
+  });
+
   it("keeps POSIX direct executable allow-always approvals bound to the approved argv", async () => {
     if (process.platform === "win32") {
       return;
