@@ -618,13 +618,13 @@ export async function resolvePluginConversationBindingApproval(params: {
         approvedAt: Date.now(),
       });
       assertCurrent();
-      const conflict = pluginBindingOwnershipConflict(
-        resolvePluginConversationBindingState(request.conversation),
-        request.pluginRoot,
-      );
-      if (conflict) {
-        throw new Error(conflict);
-      }
+    }
+    const conflict = pluginBindingOwnershipConflict(
+      resolvePluginConversationBindingState(request.conversation),
+      request.pluginRoot,
+    );
+    if (conflict) {
+      throw new Error(conflict);
     }
     const binding = await bindConversationNow({
       identity: request,

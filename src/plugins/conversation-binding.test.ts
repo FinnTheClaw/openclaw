@@ -603,6 +603,62 @@ describe("plugin conversation binding approvals", () => {
     });
   });
 
+  it.each([
+    { decision: "allow-once", owner: "core" },
+    { decision: "allow-once", owner: "foreign plugin" },
+    { decision: "allow-always", owner: "core" },
+    { decision: "allow-always", owner: "foreign plugin" },
+  ] as const)(
+    "rechecks pending approval ownership: $decision/$owner",
+    async ({ decision, owner }) => {
+      const input = createDiscordCodexBindRequest(
+        "channel:ownership-recheck",
+        "Bind this synthetic conversation to the requesting plugin.",
+      );
+      const request = await requestPendingBinding(input);
+      const newer: SessionBindingRecord = {
+        bindingId: "binding-newer-owner",
+        targetSessionKey: "agent:main:discord:newer-owner",
+        targetKind: "session",
+        conversation: input.conversation,
+        status: "active",
+        boundAt: Date.now(),
+        metadata:
+          owner === "core"
+            ? { owner: "core", marker: "newer-core-record" }
+            : {
+                pluginBindingOwner: "plugin",
+                pluginId: "other",
+                pluginName: "Other Plugin",
+                pluginRoot: "/plugins/other",
+                data: { marker: "newer-plugin-record" },
+              },
+      };
+      sessionBindingState.setRecord(newer);
+      const conflict =
+        owner === "core"
+          ? "This conversation is already bound by core routing and cannot be claimed by a plugin."
+          : 'This conversation is already bound by plugin "Other Plugin".';
+
+      await expect
+        .soft(approveBindingRequest(request.approvalId, decision))
+        .rejects.toThrow(conflict);
+      expect.soft(sessionBindingState.bind).not.toHaveBeenCalled();
+      expect.soft(sessionBindingState.resolveByConversation(input.conversation)).toEqual(newer);
+      expect
+        .soft(
+          await getCurrentPluginConversationBinding({
+            pluginRoot: input.pluginRoot,
+            conversation: input.conversation,
+          }),
+        )
+        .toBeNull();
+      await expect(approveBindingRequest(request.approvalId, decision)).resolves.toEqual({
+        status: "expired",
+      });
+    },
+  );
+
   it("keeps allow-once approval scoped to its requester and conversation", async () => {
     const firstRequest = await requestPendingBinding(
       createDiscordCodexBindRequest("channel:1", "Bind this conversation to Codex thread 123."),
