@@ -92,9 +92,13 @@ function resolveAmbientZalouserTarget(context?: ZalouserToolContext): {
 function resolveZalouserSendTarget(params: ToolParams, context?: ZalouserToolContext) {
   const explicitThreadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
   const ambientTarget = resolveAmbientZalouserTarget(context);
+  const target =
+    explicitThreadId && ambientTarget.threadId && explicitThreadId !== ambientTarget.threadId
+      ? parseZalouserOutboundTarget(explicitThreadId)
+      : { threadId: explicitThreadId || ambientTarget.threadId, isGroup: ambientTarget.isGroup };
   return {
-    threadId: explicitThreadId || ambientTarget.threadId,
-    isGroup: typeof params.isGroup === "boolean" ? params.isGroup : ambientTarget.isGroup,
+    threadId: target.threadId,
+    isGroup: typeof params.isGroup === "boolean" ? params.isGroup : target.isGroup,
   };
 }
 

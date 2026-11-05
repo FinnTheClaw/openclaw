@@ -114,6 +114,75 @@ describe("executeZalouserTool", () => {
     });
   });
 
+  it.each(
+    (["send", "image", "link"] as const).flatMap((action) => [
+      {
+        action,
+        name: "ambient group to explicit user",
+        ambientTo: "zalouser:g-ambient",
+        threadId: "u-explicit",
+        expectedGroup: false,
+      },
+      {
+        action,
+        name: "ambient user to explicit group",
+        ambientTo: "zalouser:u-ambient",
+        threadId: "g-explicit",
+        expectedGroup: true,
+      },
+    ]),
+  )(
+    "binds ZaloUser retarget kind to the explicit recipient ($action: $name)",
+    async ({ action, ambientTo, threadId, expectedGroup }) => {
+      mockSendMessage.mockResolvedValueOnce({ ok: true, messageId: "m-retarget" } as never);
+      mockSendImage.mockResolvedValueOnce({ ok: true, messageId: "m-retarget" } as never);
+      mockSendLink.mockResolvedValueOnce({ ok: true, messageId: "m-retarget" } as never);
+      const context = { deliveryContext: { channel: "zalouser", to: ambientTo } };
+      const params = {
+        action,
+        threadId,
+        message: "fixture message",
+        url: "https://example.test/fixture",
+        profile: "fixture-profile",
+      };
+      const original = structuredClone({ context, params });
+      const signal = new AbortController().signal;
+      const result = await createZalouserTool(context).execute("tool-retarget", params, signal);
+      const options = { signal, profile: "fixture-profile", isGroup: expectedGroup };
+      expect({
+        messageCalls: mockSendMessage.mock.calls,
+        imageCalls: mockSendImage.mock.calls,
+        linkCalls: mockSendLink.mock.calls,
+        details: extractDetails(result),
+        input: { context, params },
+      }).toEqual({
+        messageCalls: action === "send" ? [[threadId, "fixture message", options]] : [],
+        imageCalls:
+          action === "image"
+            ? [
+                [
+                  threadId,
+                  "https://example.test/fixture",
+                  { ...options, mediaMaxBytes: undefined, caption: "fixture message" },
+                ],
+              ]
+            : [],
+        linkCalls:
+          action === "link"
+            ? [
+                [
+                  threadId,
+                  "https://example.test/fixture",
+                  { ...options, caption: "fixture message" },
+                ],
+              ]
+            : [],
+        details: { success: true, messageId: "m-retarget" },
+        input: original,
+      });
+    },
+  );
+
   it("does not route send actions from foreign ambient thread defaults", async () => {
     const tool = createZalouserTool({
       deliveryContext: {
