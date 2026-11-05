@@ -2,6 +2,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { buildWatchedSessionsHarnessContext } from "../plugin-sdk/agent-harness-runtime.js";
+import { buildAgentMainSessionKey } from "../routing/session-key.js";
 import { registerMainSessionGroupWatch } from "../sessions/session-state-events.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -16,8 +17,8 @@ function stubStateDir() {
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 }
 
-function watchGroup(sessionKey: string) {
-  expect(registerMainSessionGroupWatch({ sessionKey, agentId: "main" })).toBe(true);
+function watchGroup(sessionKey: string, mainKey?: string) {
+  expect(registerMainSessionGroupWatch({ sessionKey, agentId: "main", mainKey })).toBe(true);
 }
 
 afterEach(() => {
@@ -31,31 +32,50 @@ afterAll(() => {
 });
 
 describe("prepareWatchedSessionsPrompt", () => {
-  it("returns key-sorted watched sessions with store-derived titles", async () => {
-    stubStateDir();
-    watchGroup("agent:main:telegram:group:beta");
-    watchGroup("agent:main:telegram:group:alpha:topic:7");
-    await upsertSessionEntryCore(
-      { sessionKey: "agent:main:telegram:group:beta" },
-      { sessionId: "session-beta", displayName: "Family group", updatedAt: 1 },
-    );
+  it.each([
+    { label: "default", mainKey: undefined },
+    { label: "custom", mainKey: "home" },
+    { label: "normalized custom", mainKey: " Home " },
+  ])(
+    "returns key-sorted watched sessions with store-derived titles for $label main key",
+    async ({ mainKey }) => {
+      stubStateDir();
+      watchGroup("agent:main:telegram:group:beta", mainKey);
+      watchGroup("agent:main:telegram:group:alpha:topic:7", mainKey);
+      const config = mainKey === undefined ? undefined : { session: { mainKey } };
+      await upsertSessionEntryCore(
+        { sessionKey: "agent:main:telegram:group:beta" },
+        { sessionId: "session-beta", displayName: "Family group", updatedAt: 1 },
+      );
 
-    const prepared = prepareWatchedSessionsPrompt({
-      enabled: true,
-      sessionKey: mainSessionKey,
-      toolNames: sessionReadTools,
-    });
+      const prepared = prepareWatchedSessionsPrompt({
+        enabled: true,
+        config,
+        sessionKey: buildAgentMainSessionKey({ agentId: "main", mainKey }),
+        toolNames: sessionReadTools,
+      });
 
-    expect(prepared).toEqual({
-      sessions: [
-        { key: "agent:main:telegram:group:alpha:topic:7" },
-        { key: "agent:main:telegram:group:beta", title: "Family group" },
-      ],
-      hiddenCount: 0,
-      readToolNames: ["sessions_history", "sessions_search"],
-      listToolAvailable: true,
-    });
-  });
+      expect(prepared).toEqual({
+        sessions: [
+          { key: "agent:main:telegram:group:alpha:topic:7" },
+          { key: "agent:main:telegram:group:beta", title: "Family group" },
+        ],
+        hiddenCount: 0,
+        readToolNames: ["sessions_history", "sessions_search"],
+        listToolAvailable: true,
+      });
+      if (mainKey !== undefined) {
+        expect(
+          prepareWatchedSessionsPrompt({
+            enabled: true,
+            config,
+            sessionKey: mainSessionKey,
+            toolNames: sessionReadTools,
+          }),
+        ).toBeUndefined();
+      }
+    },
+  );
 
   it("caps rendered rows and reports the overflow count", () => {
     stubStateDir();

@@ -48,7 +48,13 @@ export function prepareWatchedSessionsPrompt(params: {
   // Ambient watch cursors are written only for buildAgentMainSessionKey watchers
   // (registerMainSessionGroupWatch), so any other session key can skip the probe.
   const parsedKey = parseAgentSessionKey(sessionKey);
-  if (!parsedKey || buildAgentMainSessionKey({ agentId: parsedKey.agentId }) !== sessionKey) {
+  if (
+    !parsedKey ||
+    buildAgentMainSessionKey({
+      agentId: parsedKey.agentId,
+      mainKey: params.config?.session?.mainKey,
+    }) !== sessionKey
+  ) {
     return undefined;
   }
   // Sandboxed sessions with the default "spawned" clamp list/read only spawned
