@@ -57,6 +57,7 @@ type TestDispatchResult = {
 };
 
 const {
+  sendMessageSignalMock,
   sendTypingMock,
   sendReadReceiptMock,
   sendReactionSignalMock,
@@ -70,6 +71,7 @@ const {
 } = vi.hoisted(() => {
   const captureState: { ctx?: MsgContext } = {};
   return {
+    sendMessageSignalMock: vi.fn(),
     sendTypingMock: vi.fn(),
     sendReadReceiptMock: vi.fn(),
     sendReactionSignalMock: vi.fn<typeof import("../send-reactions.js").sendReactionSignal>(
@@ -92,11 +94,19 @@ const {
 });
 
 const approvalReactionMocks = vi.hoisted(() => ({
-  maybeResolveSignalApprovalReaction: vi.fn(async () => false),
+  maybeResolveSignalApprovalReaction: vi.fn<
+    typeof import("../approval-reactions.js").maybeResolveSignalApprovalReaction
+  >(async () => false),
+}));
+
+const questionReactionMocks = vi.hoisted(() => ({
+  maybeResolveSignalQuestionReaction: vi.fn<
+    typeof import("../question-reactions.js").maybeResolveSignalQuestionReaction
+  >(async () => false),
 }));
 
 vi.mock("../send.js", () => ({
-  sendMessageSignal: vi.fn(),
+  sendMessageSignal: sendMessageSignalMock,
   sendTypingSignal: sendTypingMock,
   sendReadReceiptSignal: sendReadReceiptMock,
 }));
@@ -258,6 +268,16 @@ vi.mock("../approval-reactions.js", async () => {
   return {
     ...actual,
     maybeResolveSignalApprovalReaction: approvalReactionMocks.maybeResolveSignalApprovalReaction,
+  };
+});
+
+vi.mock("../question-reactions.js", async () => {
+  const actual = await vi.importActual<typeof import("../question-reactions.js")>(
+    "../question-reactions.js",
+  );
+  return {
+    ...actual,
+    maybeResolveSignalQuestionReaction: questionReactionMocks.maybeResolveSignalQuestionReaction,
   };
 });
 
@@ -444,6 +464,7 @@ describe("signal createSignalEventHandler inbound context", () => {
     vi.useRealTimers();
     resetSignalReplyAuthorsForTests();
     delete capture.ctx;
+    sendMessageSignalMock.mockReset();
     sendTypingMock.mockReset().mockResolvedValue(true);
     sendReadReceiptMock.mockReset().mockResolvedValue(true);
     sendReactionSignalMock.mockReset().mockResolvedValue({ ok: true });
@@ -454,6 +475,7 @@ describe("signal createSignalEventHandler inbound context", () => {
     logVerboseMock.mockClear();
     shouldLogVerboseMock.mockReset().mockReturnValue(false);
     approvalReactionMocks.maybeResolveSignalApprovalReaction.mockReset().mockResolvedValue(false);
+    questionReactionMocks.maybeResolveSignalQuestionReaction.mockReset().mockResolvedValue(false);
   });
 
   it("passes a finalized MsgContext to dispatchInboundMessage", async () => {
@@ -1277,6 +1299,175 @@ describe("signal createSignalEventHandler inbound context", () => {
     await receiveGroupMessage(handler, "/status");
 
     expect(requireCapturedContext().CommandAuthorized).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "nested group notification",
+      shape: "nested",
+      bound: false,
+      consume: "none",
+      denied: false,
+      remove: false,
+    },
+    {
+      name: "nested bound group notification",
+      shape: "nested",
+      bound: true,
+      consume: "none",
+      denied: false,
+      remove: false,
+    },
+    {
+      name: "nested group approval consumption",
+      shape: "nested",
+      bound: false,
+      consume: "approval",
+      denied: false,
+      remove: false,
+    },
+    {
+      name: "nested group question consumption",
+      shape: "nested",
+      bound: false,
+      consume: "question",
+      denied: false,
+      remove: false,
+    },
+    {
+      name: "top-level group control",
+      shape: "top",
+      bound: false,
+      consume: "none",
+      denied: false,
+      remove: false,
+    },
+    {
+      name: "direct reaction control",
+      shape: "direct",
+      bound: false,
+      consume: "none",
+      denied: false,
+      remove: false,
+    },
+    {
+      name: "denied group control",
+      shape: "nested",
+      bound: false,
+      consume: "none",
+      denied: true,
+      remove: false,
+    },
+    {
+      name: "removed reaction control",
+      shape: "nested",
+      bound: false,
+      consume: "none",
+      denied: false,
+      remove: true,
+    },
+  ])("preserves the enclosing Signal reaction conversation for $name", async (scenario) => {
+    approvalReactionMocks.maybeResolveSignalApprovalReaction.mockImplementation(
+      async (params) => scenario.consume === "approval" && params.conversationKey === "group:g1",
+    );
+    questionReactionMocks.maybeResolveSignalQuestionReaction.mockImplementation(
+      async (params) => scenario.consume === "question" && params.conversationKey === "group:g1",
+    );
+    const groupAllowFrom = scenario.denied ? ["g2"] : ["g1"];
+    const cfg =
+      scenario.shape === "direct"
+        ? createDirectConfig()
+        : createGroupAllowlistConfig({ signal: { groupAllowFrom } });
+    if (scenario.bound) {
+      cfg.agents = { list: [{ id: "main", default: true }, { id: "group-agent" }] };
+      cfg.bindings = [
+        {
+          agentId: "group-agent",
+          match: { channel: "signal", accountId: "default", peer: { kind: "group", id: "g1" } },
+        },
+      ];
+    }
+    const handler = createTestHandler({
+      cfg,
+      groupPolicy: "allowlist",
+      groupAllowFrom,
+      reactionMode: "all",
+    });
+    const reactionKey =
+      scenario.consume === "approval" ? "👍" : scenario.consume === "question" ? "1️⃣" : "+1";
+    const reaction = {
+      emoji: reactionKey,
+      targetAuthor: "+15550001111",
+      targetSentTimestamp: 1700000000000,
+      isRemove: scenario.remove,
+    };
+    const groupInfo = { groupId: "g1", groupName: "Test Group" };
+    const envelope =
+      scenario.shape === "nested"
+        ? { dataMessage: { groupInfo, reaction } }
+        : { reactionMessage: { ...reaction, ...(scenario.shape === "top" ? { groupInfo } : {}) } };
+
+    await handler(createSignalReceiveEvent(envelope));
+
+    expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+    expect(sendMessageSignalMock).not.toHaveBeenCalled();
+    expect(sendTypingMock).not.toHaveBeenCalled();
+    expect(sendReadReceiptMock).not.toHaveBeenCalled();
+    expect(sendReactionSignalMock).not.toHaveBeenCalled();
+    if (scenario.remove) {
+      expect(approvalReactionMocks.maybeResolveSignalApprovalReaction).not.toHaveBeenCalled();
+      expect(questionReactionMocks.maybeResolveSignalQuestionReaction).not.toHaveBeenCalled();
+      expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+      return;
+    }
+    if (scenario.denied) {
+      expect(approvalReactionMocks.maybeResolveSignalApprovalReaction).toHaveBeenCalledTimes(1);
+      expect(questionReactionMocks.maybeResolveSignalQuestionReaction).not.toHaveBeenCalled();
+      expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+      return;
+    }
+    const conversationKey = scenario.shape === "direct" ? "+15550001111" : "group:g1";
+    expect.soft(approvalReactionMocks.maybeResolveSignalApprovalReaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: "default",
+        conversationKey,
+        messageId: "1700000000000",
+        reactionKey,
+        actorId: "+15550001111",
+        targetAuthor: "+15550001111",
+      }),
+    );
+    if (scenario.consume === "approval") {
+      expect.soft(questionReactionMocks.maybeResolveSignalQuestionReaction).not.toHaveBeenCalled();
+      expect.soft(enqueueSystemEventMock).not.toHaveBeenCalled();
+      return;
+    }
+    expect.soft(questionReactionMocks.maybeResolveSignalQuestionReaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: "default",
+        conversationKey,
+        messageId: "1700000000000",
+        reactionKey,
+        actorId: "+15550001111",
+        targetAuthor: "+15550001111",
+        isRemove: false,
+      }),
+    );
+    if (scenario.consume === "question") {
+      expect.soft(enqueueSystemEventMock).not.toHaveBeenCalled();
+      return;
+    }
+    const isGroup = scenario.shape !== "direct";
+    const text =
+      "Signal reaction added: +1 by Alice msg 1700000000000 from +15550001111" +
+      (isGroup ? " in Test Group id:g1" : "");
+    expect.soft(enqueueSystemEventMock).toHaveBeenCalledTimes(1);
+    expect.soft(enqueueSystemEventMock).toHaveBeenCalledWith(text, {
+      sessionKey: isGroup
+        ? `agent:${scenario.bound ? "group-agent" : "main"}:signal:group:g1`
+        : "agent:main:main",
+      contextKey: "signal:reaction:added:1700000000000:+15550001111:+1" + (isGroup ? ":g1" : ""),
+    });
   });
 
   it("allows reaction-only group events when groupAllowFrom matches the reaction group id", async () => {
