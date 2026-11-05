@@ -55,6 +55,21 @@ export function migrateLegacyTailscaleProfileIdentities(
       let migrated = 0;
       const warnings: string[] = [];
       for (const row of legacyRows) {
+        const currentAlias = executeSqliteQueryTakeFirstSync(
+          db,
+          transactionKysely
+            .selectFrom("user_profile_emails")
+            .select(["email", "profile_id", "created_at"])
+            .where("email", "=", row.email),
+        );
+        if (
+          !currentAlias ||
+          currentAlias.email !== row.email ||
+          currentAlias.profile_id !== row.profile_id ||
+          currentAlias.created_at !== row.created_at
+        ) {
+          continue;
+        }
         const subject =
           row.provider === "github" ? githubAuthenticationSubject(row.subject) : row.subject;
         const inserted = executeSqliteQuerySync(

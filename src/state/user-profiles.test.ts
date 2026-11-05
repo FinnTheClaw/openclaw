@@ -955,6 +955,124 @@ describe("user profiles", () => {
     }
   });
 
+  it.each(["unchanged", "relocated"] as const)(
+    "L11-F004 retains current legacy alias ownership when %s before migration",
+    (transition) => {
+      const options = stateOptions();
+      const legacyLogin = "person@microsoft";
+      const profileA = ensureProfileForEmail(legacyLogin, options);
+      linkEmail("a-keeper@example.test", profileA.id, options);
+      const profileB = ensureProfileForEmail("b-keeper@example.test", options);
+      const database = openOpenClawStateDatabase(options).db;
+      const sourceBinding = database
+        .prepare("SELECT email, profile_id, created_at FROM user_profile_emails WHERE email = ?")
+        .get(legacyLogin);
+      const realTransaction = stateDatabase.runOpenClawStateWriteTransaction;
+      let boundaries = 0;
+      let relocation: ReturnType<typeof linkEmail> | undefined;
+      const transaction = vi
+        .spyOn(stateDatabase, "runOpenClawStateWriteTransaction")
+        .mockImplementation(<T>(...args: Parameters<typeof realTransaction<T>>): T => {
+          if (args[2]?.operationLabel === "user-profiles.migrate-legacy-identities") {
+            boundaries += 1;
+            if (boundaries === 1 && transition === "relocated") {
+              relocation = linkEmail(legacyLogin, profileB.id, options);
+            }
+          }
+          return realTransaction<T>(...args);
+        });
+      try {
+        let firstResult: ReturnType<typeof migrateLegacyTailscaleProfileIdentities> | undefined;
+        let firstError: unknown;
+        try {
+          firstResult = migrateLegacyTailscaleProfileIdentities(options);
+        } catch (error) {
+          firstError = error;
+        }
+        const afterFirst = {
+          result: firstResult,
+          error: firstError,
+          boundaries,
+          relocationId: relocation?.id ?? null,
+          aliases: database
+            .prepare("SELECT email, profile_id FROM user_profile_emails ORDER BY email")
+            .all(),
+          identities: database
+            .prepare(
+              "SELECT provider, subject, profile_id FROM user_profile_identities ORDER BY provider, subject",
+            )
+            .all(),
+          profiles: listUserProfilesSync(options).map(({ id, mergedInto }) => ({ id, mergedInto })),
+        };
+        transaction.mockRestore();
+        const secondResult = migrateLegacyTailscaleProfileIdentities(options);
+        const afterSecond = {
+          result: secondResult,
+          aliases: database
+            .prepare("SELECT email, profile_id FROM user_profile_emails ORDER BY email")
+            .all(),
+          identities: database
+            .prepare(
+              "SELECT provider, subject, profile_id FROM user_profile_identities ORDER BY provider, subject",
+            )
+            .all(),
+          profiles: listUserProfilesSync(options).map(({ id, mergedInto }) => ({ id, mergedInto })),
+        };
+        const signIn = ensureProfileForTailscaleIdentity({ login: legacyLogin }, options);
+        const idempotentResult = migrateLegacyTailscaleProfileIdentities(options);
+        const migrationChange = {
+          changes: [
+            "Moved 1 legacy Tailscale provider identity out of user profile email aliases.",
+          ],
+          warnings: [],
+        };
+        const realEmails = [
+          { email: "a-keeper@example.test", profile_id: profileA.id },
+          { email: "b-keeper@example.test", profile_id: profileB.id },
+        ];
+        const currentProfileId = transition === "relocated" ? profileB.id : profileA.id;
+        expect(sourceBinding).toMatchObject({
+          email: legacyLogin,
+          profile_id: profileA.id,
+          created_at: expect.any(Number),
+        });
+        expect(afterFirst).toEqual({
+          result: transition === "relocated" ? { changes: [], warnings: [] } : migrationChange,
+          error: undefined,
+          boundaries: 1,
+          relocationId: transition === "relocated" ? profileB.id : null,
+          aliases:
+            transition === "relocated"
+              ? [...realEmails, { email: legacyLogin, profile_id: profileB.id }]
+              : realEmails,
+          identities:
+            transition === "relocated"
+              ? []
+              : [{ provider: "microsoft", subject: "person", profile_id: profileA.id }],
+          profiles: expect.arrayContaining([
+            { id: profileA.id, mergedInto: null },
+            { id: profileB.id, mergedInto: null },
+          ]),
+        });
+        expect(afterFirst.profiles).toHaveLength(2);
+        expect(afterSecond).toEqual({
+          result: transition === "relocated" ? migrationChange : { changes: [], warnings: [] },
+          aliases: realEmails,
+          identities: [{ provider: "microsoft", subject: "person", profile_id: currentProfileId }],
+          profiles: expect.arrayContaining([
+            { id: profileA.id, mergedInto: null },
+            { id: profileB.id, mergedInto: null },
+          ]),
+        });
+        expect(afterSecond.profiles).toHaveLength(2);
+        expect(signIn.id).toBe(currentProfileId);
+        expect(idempotentResult).toEqual({ changes: [], warnings: [] });
+      } finally {
+        transaction.mockRestore();
+      }
+    },
+  );
+
   it("migrates legacy provider logins while preserving profiles and real emails", () => {
     const options = stateOptions();
     const provider = ensureProfileForEmail("user@github", options);
