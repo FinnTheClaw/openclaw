@@ -442,6 +442,16 @@ export const matrixApprovalNativeRuntime = createChannelApprovalNativeRuntimeAda
               client: resolved.context.client,
               threadId: preparedTarget.threadId,
               extraContent: pendingPayload.extraContent,
+              deliveryQueueId: JSON.stringify([
+                "matrix-approval",
+                normalizeAccountId(resolved.accountId),
+                view.approvalKind,
+                pendingPayload.approvalId,
+                preparedTarget.roomId,
+                preparedTarget.threadId ?? null,
+              ]),
+              deliveryPartIndex: 0,
+              deliveryPartCount: 1,
             }),
         );
       }

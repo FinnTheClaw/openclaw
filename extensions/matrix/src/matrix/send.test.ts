@@ -9,6 +9,7 @@ import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginRuntime } from "../../runtime-api.js";
+import { matrixApprovalNativeRuntime } from "../approval-handler.runtime.js";
 import { getMatrixRuntime, setMatrixRuntime } from "../runtime.js";
 import { installMatrixTestRuntime, resetMatrixTestStores } from "../test-runtime.js";
 import type { CoreConfig } from "../types.js";
@@ -461,6 +462,150 @@ describe("sendMessageMatrix durable delivery", () => {
       integer.sendMessage.mock.calls.map((call) => requireRecord(call[1], "integer content").body),
     ).toEqual(["😀", "A", "B"]);
   });
+
+  it.each([
+    { name: "accepted prefix then later failure", failLater: true },
+    { name: "ordinary chunked success", failLater: false },
+  ])(
+    "retains accepted Matrix approval chunks across retries: $name",
+    async ({ name, failLater }) => {
+      const { client, sendMessage } = makeClient();
+      resolveTextChunkLimitMock.mockReturnValue(6);
+      chunkMarkdownTextWithModeMock.mockImplementation((text: string) => text.split("|"));
+      const roomId = "!synthetic-approval:example";
+      const approvalId = "synthetic-approval-" + (failLater ? "retry" : "control");
+      const acceptedTransactions = new Map<string, string>();
+      const accepted: Array<{ messageId: string; body: string; hasApproval: boolean }> = [];
+      let laterFailed = false;
+      sendMessage.mockImplementation(
+        async (
+          targetRoomId: string,
+          content: { body?: string; [key: string]: unknown },
+          transactionId?: string,
+          beforeWireDispatch?: (dispatch: {
+            roomId: string;
+            eventType: "m.room.message";
+            transactionId: string;
+            requestPath: string;
+          }) => Promise<void>,
+        ) => {
+          if (transactionId && beforeWireDispatch) {
+            await beforeWireDispatch({
+              roomId: targetRoomId,
+              eventType: "m.room.message",
+              transactionId,
+              requestPath:
+                "/_matrix/client/v3/rooms/" +
+                encodeURIComponent(targetRoomId) +
+                "/send/m.room.message/" +
+                transactionId,
+            });
+          }
+          const existingId = transactionId ? acceptedTransactions.get(transactionId) : undefined;
+          if (existingId) {
+            return existingId;
+          }
+          if (failLater && content.body === "second" && !laterFailed) {
+            laterFailed = true;
+            throw new Error("synthetic later-chunk failure");
+          }
+          const messageId = "$synthetic-" + name.replaceAll(" ", "-") + "-" + (accepted.length + 1);
+          accepted.push({
+            messageId,
+            body: content.body ?? "",
+            hasApproval: Object.hasOwn(content, "com.openclaw.approval"),
+          });
+          if (transactionId) {
+            acceptedTransactions.set(transactionId, messageId);
+          }
+          return messageId;
+        },
+      );
+      const view: Extract<
+        Parameters<typeof matrixApprovalNativeRuntime.transport.deliverPending>[0]["view"],
+        { approvalKind: "exec" }
+      > = {
+        approvalKind: "exec",
+        approvalId,
+        phase: "pending",
+        title: "Synthetic approval",
+        description: "Synthetic transport fixture only",
+        metadata: [],
+        ask: "on-request",
+        agentId: "synthetic-agent",
+        commandText: "SYNTHETIC_NOT_EXECUTED",
+        commandPreview: "SYNTHETIC_NOT_EXECUTED",
+        cwd: "/synthetic-not-accessed",
+        host: "gateway",
+        actions: [
+          {
+            decision: "deny",
+            label: "Deny",
+            style: "danger",
+            command: "/approve " + approvalId + " deny",
+          },
+        ],
+        expiresAtMs: Date.now() + 60_000,
+      };
+      const request = {
+        id: approvalId,
+        request: { command: view.commandText, agentId: view.agentId },
+        createdAtMs: 0,
+        expiresAtMs: view.expiresAtMs,
+      };
+      const pendingPayload = {
+        ...(await matrixApprovalNativeRuntime.presentation.buildPendingPayload({
+          cfg: {},
+          accountId: "default",
+          context: { client },
+          request,
+          approvalKind: "exec",
+          nowMs: Date.now(),
+          view,
+        })),
+        text: "first|second",
+      };
+      const reactMessage = vi.fn().mockResolvedValue(undefined);
+      const entry = await matrixApprovalNativeRuntime.transport.deliverPending({
+        cfg: {},
+        accountId: "default",
+        context: { client, deps: { reactMessage } },
+        request,
+        approvalKind: "exec",
+        plannedTarget: {
+          surface: "approver-dm",
+          target: { to: "room:" + roomId },
+          reason: "preferred",
+        },
+        preparedTarget: { to: "room:" + roomId, roomId },
+        pendingPayload,
+        view,
+      });
+
+      const originalFirstId = accepted[0]?.messageId;
+      const secondId = accepted.find((event) => event.body === "second")?.messageId;
+      expect(originalFirstId).toBeDefined();
+      expect(secondId).toBeDefined();
+      expect.soft(accepted.map((event) => event.body)).toEqual(["first", "second"]);
+      expect
+        .soft(accepted.filter((event) => event.hasApproval).map((event) => event.messageId))
+        .toEqual([originalFirstId]);
+      expect.soft(entry).toMatchObject({
+        roomId,
+        platformMessageIds: [originalFirstId, secondId],
+        reactionEventId: originalFirstId,
+      });
+      expect.soft(reactMessage.mock.calls.every((call) => call[1] === originalFirstId)).toBe(true);
+      if (failLater) {
+        for (const body of ["first", "second"]) {
+          const chunkAttempts = sendMessage.mock.calls.filter((call) => call[1]?.body === body);
+          expect(chunkAttempts).toHaveLength(2);
+          expect(chunkAttempts[0]?.[2]).toMatch(/^oc_/);
+          expect(chunkAttempts[1]?.[2]).toBe(chunkAttempts[0]?.[2]);
+        }
+      }
+    },
+  );
 
   it("persists the complete event plan before the first provider dispatch", async () => {
     const { client, sendMessage } = makeClient();
