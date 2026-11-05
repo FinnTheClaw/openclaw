@@ -1,8 +1,18 @@
 // TTS directive helpers parse inline speech directives from text.
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import {
+  buildCodeSpanIndex,
+  createInlineCodeState,
+} from "../../packages/markdown-core/src/code-spans.js";
+import {
+  findFenceSpanAt,
+  scanFenceSpans,
+  type FenceScanState,
+} from "../../packages/markdown-core/src/fences.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { AssistantDeliveryTtsFacts } from "../llm/types.js";
 import type { SpeechProviderPlugin } from "../plugins/types.js";
+import { findCodeOwnership, isInsideCode } from "../shared/text/code-regions.js";
 import { extractTtsDirectiveFacts } from "./directive-facts.js";
 import { compareSpeechProviderOrder } from "./provider-registry-core.js";
 import { listSpeechProviders } from "./provider-registry.js";
@@ -120,6 +130,48 @@ function classifyTtsTag(body: string): "hidden-open" | "hidden-close" | "tts" | 
 export function createTtsDirectiveTextStreamCleaner(): TtsDirectiveTextStreamCleaner {
   let pending = "";
   let insideHiddenTextBlock = false;
+  let inlineCode = createInlineCodeState();
+  let fence: FenceScanState = {};
+  let visibleContext = "";
+  let canonicalCodeOwnership = false;
+  let lineOnlyWhitespace = true;
+  let blockBoundaryPending = false;
+  let previousCarriageReturn = false;
+  // Speech-only Markdown must not change the code ownership of later visible text.
+  const trackVisibleText = (
+    text: string,
+    code = buildCodeSpanIndex(text, inlineCode, fence),
+  ): string => {
+    inlineCode = code.inlineState;
+    fence = code.fenceState;
+    visibleContext += text;
+    let compact = false;
+    for (const char of text) {
+      if (char === "\n" && previousCarriageReturn) {
+        previousCarriageReturn = false;
+        continue;
+      }
+      if (char === "\r" || char === "\n") {
+        blockBoundaryPending ||= lineOnlyWhitespace;
+        lineOnlyWhitespace = true;
+        previousCarriageReturn = char === "\r";
+        continue;
+      }
+      previousCarriageReturn = false;
+      if (char !== " " && char !== "\t") {
+        compact ||= blockBoundaryPending;
+        blockBoundaryPending = false;
+        lineOnlyWhitespace = false;
+      }
+    }
+    if (compact) {
+      // Keep the canonical final block, including open container/paragraph context.
+      // It can be arbitrarily long; do not replay already completed top-level history.
+      const { retainStart } = findCodeOwnership(visibleContext);
+      visibleContext = visibleContext.slice(retainStart);
+    }
+    return text;
+  };
 
   return {
     push(text: string): string {
@@ -133,34 +185,64 @@ export function createTtsDirectiveTextStreamCleaner(): TtsDirectiveTextStreamCle
         if (tagStart === -1) {
           // A chunk can end on a single "["; hold it so the next chunk can
           // complete "[[" instead of leaking markup or swallowing the rest.
-          const tail = input.endsWith("[") ? input.length - 1 : input.length;
+          let tail = input.endsWith("[") ? input.length - 1 : input.length;
           if (!insideHiddenTextBlock) {
-            output += input.slice(index, tail);
+            const ticks = /`+$/.exec(input.slice(index, tail));
+            if (ticks) {
+              const start = tail - ticks[0].length;
+              const before = buildCodeSpanIndex(input.slice(index, start), inlineCode, fence);
+              const fenced = scanFenceSpans(input.slice(index, tail), fence).spans;
+              // An opening run is not complete until the next block supplies lookahead.
+              if (!before.inlineState.open && !findFenceSpanAt(fenced, tail - index - 1)) {
+                tail = start;
+              }
+            }
+            output += trackVisibleText(input.slice(index, tail));
           }
           pending = input.slice(tail);
           break;
-        }
-
-        if (!insideHiddenTextBlock) {
-          output += input.slice(index, tagStart);
         }
 
         const tagEnd = input.indexOf("]]", tagStart + 2);
         if (tagEnd === -1) {
           // Directive delimiters can cross chunk boundaries; buffer from the
           // opener so a partial tag never leaks to a streamed client.
+          if (!insideHiddenTextBlock) {
+            output += trackVisibleText(input.slice(index, tagStart));
+          }
           pending = input.slice(tagStart);
           break;
         }
 
-        const rawTag = input.slice(tagStart, tagEnd + 2);
         const tag = classifyTtsTag(input.slice(tagStart + 2, tagEnd));
+        const keepTag = tag === "other";
+        if (!insideHiddenTextBlock) {
+          const segment = input.slice(index, tagEnd + 2);
+          const code = buildCodeSpanIndex(segment, inlineCode, fence);
+          const tagOffset = tagStart - index;
+          const source = visibleContext + segment;
+          // Once indentation needs canonical ownership, keep it authoritative:
+          // code-block backticks are not inline delimiters, even after compaction.
+          canonicalCodeOwnership ||= / {4}|\t/u.test(source);
+          const insideCode = canonicalCodeOwnership
+            ? isInsideCode(visibleContext.length + tagOffset, findCodeOwnership(source).regions)
+            : code.isInside(tagOffset);
+          if (insideCode) {
+            output += trackVisibleText(segment, code);
+            index = tagEnd + 2;
+            continue;
+          }
+          // A tag can be the trailing text that prevents a fence from closing.
+          output += trackVisibleText(
+            input.slice(index, keepTag ? tagEnd + 2 : tagStart),
+            keepTag ? code : undefined,
+          );
+        }
+
         if (tag === "hidden-open") {
           insideHiddenTextBlock = true;
         } else if (tag === "hidden-close") {
           insideHiddenTextBlock = false;
-        } else if (tag === "other" && !insideHiddenTextBlock) {
-          output += rawTag;
         }
 
         index = tagEnd + 2;
@@ -172,6 +254,13 @@ export function createTtsDirectiveTextStreamCleaner(): TtsDirectiveTextStreamCle
       const tail = insideHiddenTextBlock ? "" : pending;
       pending = "";
       insideHiddenTextBlock = false;
+      inlineCode = createInlineCodeState();
+      fence = {};
+      visibleContext = "";
+      canonicalCodeOwnership = false;
+      lineOnlyWhitespace = true;
+      blockBoundaryPending = false;
+      previousCarriageReturn = false;
       return tail;
     },
     hasBufferedDirectiveText(): boolean {

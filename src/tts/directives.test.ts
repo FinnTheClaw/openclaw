@@ -340,4 +340,95 @@ describe("createTtsDirectiveTextStreamCleaner", () => {
     expect(cleaner.push("See [[note")).toBe("See ");
     expect(cleaner.flush()).toBe("[[note");
   });
+
+  it.each([
+    {
+      name: "inline code",
+      chunks: ["Use `[[tts:text]]` literally.", " Continue after example."],
+    },
+    {
+      name: "a split backtick run",
+      chunks: ["Use `", "`[[tts:text]]", "`` literally.", " Continue after example."],
+    },
+    {
+      name: "a split fence and directive tag",
+      chunks: ["``", "`md\n[[tt", "s:text]] literal example\n", "``", "`\nAfter example."],
+    },
+    {
+      name: "a quoted fence",
+      chunks: ["> ```md\n", "> [[tts:text]] literal example\n", "> ```\n", "After example."],
+    },
+    {
+      name: "an indented code block",
+      chunks: ["    [[tts:text]] literal example\n", "\nAfter example."],
+    },
+    {
+      name: "indented code split across indentation and directive text",
+      chunks: ["  ", "  [[tt", "s:text]] literal example\n", "\nAfter example."],
+    },
+  ])("L05-F016 preserves literal TTS examples in $name", ({ chunks }) => {
+    const input = chunks.join("");
+    const finalText = parseTtsDirectives(input, fullPolicy, { providers: [] }).cleanedText;
+    const cleaner = createTtsDirectiveTextStreamCleaner();
+    const streamedText = chunks.map((chunk) => cleaner.push(chunk)).join("") + cleaner.flush();
+
+    expect({
+      finalText,
+      streamedText,
+      buffered: cleaner.hasBufferedDirectiveText(),
+    }).toEqual({ finalText: input, streamedText: input, buffered: false });
+  });
+
+  it("L05-F016 strips active TTS after an unmatched backtick in indented code", () => {
+    const chunks = ["    [[tts:text]] literal `example\n", "\nAfter [[tts:voice=alloy]]visible."];
+    const input = chunks.join("");
+    const finalText = parseTtsDirectives(input, fullPolicy, { providers: [] }).cleanedText;
+    const cleaner = createTtsDirectiveTextStreamCleaner();
+    const streamedText = chunks.map((chunk) => cleaner.push(chunk)).join("") + cleaner.flush();
+
+    expect({
+      finalText,
+      streamedText,
+      buffered: cleaner.hasBufferedDirectiveText(),
+    }).toEqual({
+      finalText: "    [[tts:text]] literal `example\n\nAfter visible.",
+      streamedText: "    [[tts:text]] literal `example\n\nAfter visible.",
+      buffered: false,
+    });
+  });
+
+  it("L05-F016 strips active TTS in an indented paragraph continuation", () => {
+    const chunks = [
+      "Paragraph text\n",
+      "  ",
+      "  [[tt",
+      "s:text]]hidden speech[[/tts:text]] after.",
+    ];
+    const input = chunks.join("");
+    const finalText = parseTtsDirectives(input, fullPolicy, { providers: [] }).cleanedText;
+    const cleaner = createTtsDirectiveTextStreamCleaner();
+    const streamedText = chunks.map((chunk) => cleaner.push(chunk)).join("") + cleaner.flush();
+
+    expect({
+      finalText,
+      streamedText,
+      buffered: cleaner.hasBufferedDirectiveText(),
+    }).toEqual({
+      finalText: "Paragraph text\n     after.",
+      streamedText: "Paragraph text\n     after.",
+      buffered: false,
+    });
+  });
+
+  it("L05-F016 keeps backticks in active hidden speech out of visible code ownership", () => {
+    const cleaner = createTtsDirectiveTextStreamCleaner();
+    const chunks = [
+      "Shown [[tts:text]]```md\n",
+      "hidden `speech`[[/tts:text]] after [[tts:voice=alloy]]visible",
+    ];
+    const streamedText = chunks.map((chunk) => cleaner.push(chunk)).join("") + cleaner.flush();
+
+    expect(streamedText).toBe("Shown  after visible");
+    expect(cleaner.hasBufferedDirectiveText()).toBe(false);
+  });
 });

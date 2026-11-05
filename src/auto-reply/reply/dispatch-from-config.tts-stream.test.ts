@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, expect, it } from "vitest";
 import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
+import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { buildReplyPayloads } from "./agent-runner-payloads.js";
 import { createBlockReplyPipeline } from "./block-reply-pipeline.js";
@@ -18,6 +19,69 @@ beforeAll(globalBeforeAll0);
 beforeEach(() => {
   describe0BeforeEach0();
   setNoAbort();
+});
+
+it.each([
+  {
+    name: "inline code",
+    chunks: ["Use `[[tts:text]]` literally.", " Continue after example."],
+  },
+  {
+    name: "a split fence",
+    chunks: ["``", "`md\n[[tt", "s:text]] literal example\n", "``", "`\nAfter example."],
+  },
+])("L05-F016 dispatches literal TTS examples in $name unchanged", async ({ chunks }) => {
+  const delivered: ReplyPayload[] = [];
+  const dispatcher = createReplyDispatcher({
+    deliver: async (payload) => {
+      delivered.push(payload);
+    },
+  });
+  await dispatchReplyFromConfig({
+    ctx: buildTestCtx({ Provider: "qa-channel", Surface: "qa-channel" }),
+    cfg: emptyConfig,
+    dispatcher,
+    replyResolver: async (_ctx, opts) => {
+      const pipeline = createBlockReplyPipeline({
+        onBlockReply: (block, context) => opts?.onBlockReply?.(block, context),
+        timeoutMs: 0,
+      });
+      try {
+        let sourceOffset = 0;
+        for (const text of chunks) {
+          pipeline.enqueue(
+            setReplyPayloadMetadata(
+              { text, replyToId: "source-message" },
+              {
+                assistantMessageIndex: 0,
+                blockSourceText: text,
+                blockSourceRange: [sourceOffset, sourceOffset + text.length],
+              },
+            ),
+          );
+          sourceOffset += text.length;
+          await pipeline.flush({ force: true });
+        }
+        return undefined;
+      } finally {
+        pipeline.stop();
+      }
+    },
+  });
+  dispatcher.markComplete();
+  await dispatcher.waitForIdle();
+
+  expect({
+    visible: delivered.map((payload) => payload.text ?? "").join(""),
+    replyToIds: delivered.filter((payload) => payload.text).map((payload) => payload.replyToId),
+    media: delivered.filter(
+      (payload) => payload.mediaUrl || payload.mediaUrls?.length || payload.audioAsVoice,
+    ),
+  }).toEqual({
+    visible: chunks.join(""),
+    replyToIds: delivered.filter((payload) => payload.text).map(() => "source-message"),
+    media: [],
+  });
 });
 
 it.each([
