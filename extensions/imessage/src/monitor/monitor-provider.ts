@@ -446,11 +446,11 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     dbPath,
     remoteHost,
   });
-  const recoveryCursorRowid = await loadIMessageRecoveryCursor(
-    accountInfo.accountId,
-    recoveryCursorDbIdentity,
-    { migrateLegacyCatchup: !catchupCfg.enabled, watermarkRowid: recoveryBoundaryRowid },
-  );
+  const recoveryCursorRowid = catchupCfg.enabled
+    ? null
+    : await loadIMessageRecoveryCursor(accountInfo.accountId, recoveryCursorDbIdentity, {
+        watermarkRowid: recoveryBoundaryRowid,
+      });
   const reconciledWatchSinceRowid = catchupCfg.enabled
     ? null
     : recoveryCursorRowid !== null
