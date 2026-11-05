@@ -573,14 +573,29 @@ async function resolveSessionAuthProfileOverride(params: {
   const shouldPersist =
     next !== sessionEntry.authProfileOverride || sessionEntry.authProfileOverrideSource !== "auto";
   if (shouldPersist) {
-    await persistSessionAuthProfileOverrideState({
+    const latest = await persistSessionAuthProfileOverrideState({
       ...overrideTarget,
       state: {
         authProfileOverride: next,
         authProfileOverrideSource: "auto",
         authProfileOverrideCompactionCount: compactionCount,
       },
+      expectedSnapshot: {
+        sessionId: sessionEntry.sessionId,
+        authProfileOverride: sessionEntry.authProfileOverride,
+        authProfileOverrideSource: sessionEntry.authProfileOverrideSource,
+        authProfileOverrideCompactionCount: sessionEntry.authProfileOverrideCompactionCount,
+      },
     });
+    const latestProfileId = latest?.authProfileOverride;
+    return {
+      profileId:
+        latestProfileId &&
+        isProfileForProvider({ cfg, providers, profileId: latestProfileId, store })
+          ? latestProfileId
+          : undefined,
+      store,
+    };
   }
 
   return { profileId: next, store };

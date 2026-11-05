@@ -321,6 +321,100 @@ describe("resolveSessionAuthProfileOverride", () => {
     });
   });
 
+  it.each([
+    ["persisted", true],
+    ["in-memory", false],
+  ] as const)(
+    "L13-F006 preserves a newer explicit pin during %s automatic rotation",
+    async (_name, persisted) => {
+      await withAuthState(async (state) => {
+        const agentDir = state.agentDir();
+        await fs.mkdir(agentDir, { recursive: true });
+        const explicitProfileId = "openai:explicit@example.test";
+        authStoreMocks.state.hasSource = true;
+        authStoreMocks.state.store = createAuthStoreWithProfiles({
+          profiles: {
+            [TEST_PRIMARY_PROFILE_ID]: createApiKeyCredential("openai", "sk-primary"),
+            [TEST_SECONDARY_PROFILE_ID]: createApiKeyCredential("openai", "sk-secondary"),
+            [explicitProfileId]: createApiKeyCredential("openai", "sk-explicit"),
+          },
+          order: {
+            openai: [TEST_PRIMARY_PROFILE_ID, TEST_SECONDARY_PROFILE_ID, explicitProfileId],
+          },
+        });
+        authStoreMocks.isProfileInCooldown.mockImplementation(
+          (_store, profileId) => profileId === TEST_PRIMARY_PROFILE_ID,
+        );
+        const sessionKey = "agent:main:main";
+        const scope = { storePath: path.join(state.sessionsDir(), "sessions.json"), sessionKey };
+        let sessionEntry = createAutomaticSessionEntry({
+          label: "stale automatic selection",
+          pinnedAt: 1,
+          compactionCount: 1,
+          authProfileOverrideCompactionCount: 0,
+        });
+        const explicitState = {
+          authProfileOverride: explicitProfileId,
+          authProfileOverrideSource: "user" as const,
+          authProfileOverrideCompactionCount: undefined,
+          label: "new explicit selection",
+          pinnedAt: undefined,
+        };
+        const latestEntry: SessionEntry = { ...sessionEntry, ...explicitState, updatedAt: 2 };
+        if (persisted) {
+          await replaceSessionEntry(scope, sessionEntry);
+          sessionEntry = loadSessionEntry({ ...scope, readConsistency: "latest" })!;
+          await patchSessionEntryCore(scope, () => explicitState);
+        }
+        const sessionStore = { [sessionKey]: persisted ? sessionEntry : latestEntry };
+        const publishedBefore = {
+          ...(persisted
+            ? loadSessionEntry({ ...scope, readConsistency: "latest" })!
+            : sessionStore[sessionKey]),
+        };
+        const selectedProfile = await resolveSession({
+          agentDir,
+          sessionEntry,
+          sessionStore,
+          sessionKey,
+          storePath: persisted ? scope.storePath : undefined,
+        });
+        const views = [sessionEntry, sessionStore[sessionKey]];
+        if (persisted) {
+          views.push(loadSessionEntry({ ...scope, readConsistency: "latest" })!);
+        }
+        const observations = {
+          publishedBefore: {
+            profile: publishedBefore.authProfileOverride,
+            source: publishedBefore.authProfileOverrideSource,
+          },
+          selectedProfile,
+          views: views.map((entry) => ({
+            sessionId: entry?.sessionId,
+            profile: entry?.authProfileOverride,
+            source: entry?.authProfileOverrideSource,
+            overrideCompactionCount: entry?.authProfileOverrideCompactionCount,
+            label: entry?.label,
+            pinnedAt: entry?.pinnedAt,
+          })),
+        };
+
+        expect(observations).toEqual({
+          publishedBefore: { profile: explicitProfileId, source: "user" },
+          selectedProfile: explicitProfileId,
+          views: Array.from({ length: persisted ? 3 : 2 }, () => ({
+            sessionId: "s1",
+            profile: explicitProfileId,
+            source: "user",
+            overrideCompactionCount: undefined,
+            label: "new explicit selection",
+            pinnedAt: undefined,
+          })),
+        });
+      });
+    },
+  );
+
   it("rotates unavailable auth state without restoring concurrent session management fields", async () => {
     await withAuthState(async (state) => {
       const agentDir = state.agentDir();
