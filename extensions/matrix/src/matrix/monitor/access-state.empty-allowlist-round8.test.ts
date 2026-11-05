@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
+import { beforeEach, describe, expect, it } from "vitest";
+import { setMatrixRuntime } from "../../runtime.js";
 import { resolveMatrixMonitorAccessState } from "./access-state.js";
+
+beforeEach(() => {
+  setMatrixRuntime(createPluginRuntimeMock());
+});
 
 type Params = Parameters<typeof resolveMatrixMonitorAccessState>[0];
 const base: Params = {
