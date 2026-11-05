@@ -12,6 +12,7 @@ import { chunkDiscordTextWithMode } from "./chunk.js";
 import { resolveDiscordClientAccountContext } from "./client.js";
 import { getDiscordEndpointRuntime } from "./endpoint-runtime.js";
 import { parseDiscordHttpErrorBody } from "./error-body.js";
+import { captureDiscordRequestAuthority } from "./internal/request-authority.js";
 import {
   DiscordError,
   RateLimitError,
@@ -101,6 +102,16 @@ export async function sendWebhookMessageDiscord(
     throw new Error("Discord webhook id/token are required");
   }
 
+  const inheritedAuthority = captureDiscordRequestAuthority();
+  const explicitAuthority = opts.assertPlatformSendAuthorized;
+  const assertPlatformSendAuthorized =
+    inheritedAuthority && explicitAuthority && inheritedAuthority !== explicitAuthority
+      ? () => {
+          inheritedAuthority();
+          explicitAuthority();
+        }
+      : (explicitAuthority ?? inheritedAuthority);
+
   const reply =
     typeof opts.replyTo === "string"
       ? createReusableDiscordReplyReference(normalizeOptionalString(opts.replyTo))
@@ -162,8 +173,8 @@ export async function sendWebhookMessageDiscord(
       const response = await request(
         async () => {
           await opts.onPlatformSendDispatch?.();
-          opts.assertPlatformSendAuthorized?.();
-          const attemptResponse = await (endpoint?.fetch ?? proxyFetch ?? fetch)(url.toString(), {
+          assertPlatformSendAuthorized?.();
+          const requestInit: RequestInit = {
             method: "POST",
             headers: {
               "content-type": "application/json",
@@ -176,7 +187,10 @@ export async function sendWebhookMessageDiscord(
               ...(messageReference ? { message_reference: messageReference } : {}),
             }),
             signal: deadline.signal,
-          });
+          };
+          const attemptResponse = endpoint
+            ? await endpoint.fetch(url.toString(), requestInit, assertPlatformSendAuthorized)
+            : await (proxyFetch ?? fetch)(url.toString(), requestInit);
           if (!attemptResponse.ok) {
             await throwWebhookResponseError(attemptResponse, deadline.signal);
           }

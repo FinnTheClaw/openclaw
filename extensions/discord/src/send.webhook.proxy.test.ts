@@ -1,16 +1,24 @@
 import { isRecentOutboundMessageIdentity } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import type { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { cancelTrackedTextResponse } from "../../test-support/streaming-error-response.js";
+import { withDiscordRequestAuthority } from "./internal/request-authority.js";
 import { DiscordError } from "./internal/rest-errors.js";
 import { DISCORD_REST_TIMEOUT_MS } from "./proxy-request-client.js";
 import { sendPollDiscord, sendStickerDiscord } from "./send.outbound.js";
 import { makeDiscordRest } from "./send.test-harness.js";
 import { sendWebhookMessageDiscord } from "./send.webhook.js";
 
-const { makeProxyFetchMock, recordChannelActivityMock } = vi.hoisted(() => ({
+const { makeProxyFetchMock, recordChannelActivityMock, guardedFetchMock } = vi.hoisted(() => ({
   makeProxyFetchMock: vi.fn(),
   recordChannelActivityMock: vi.fn(),
+  guardedFetchMock: vi.fn<typeof fetchWithSsrFGuard>(),
+}));
+vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/ssrf-runtime")>()),
+  fetchWithSsrFGuard: guardedFetchMock,
 }));
 vi.mock("openclaw/plugin-sdk/fetch-runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("openclaw/plugin-sdk/fetch-runtime")>()),
@@ -29,6 +37,7 @@ describe("Discord webhook transport", () => {
   beforeEach(() => {
     makeProxyFetchMock.mockReset();
     recordChannelActivityMock.mockClear();
+    guardedFetchMock.mockReset();
     vi.useFakeTimers();
     vi.setSystemTime(1_700_000_000_000);
     fetchMock = vi
@@ -39,6 +48,113 @@ describe("Discord webhook transport", () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
+
+  it.each(["explicit revoked", "inherited revoked", "both current", "unguarded"] as const)(
+    "configured webhook authority: %s",
+    async (kind) => {
+      vi.stubEnv("DISCORD_API_URL", "http://127.0.0.1:43210/api/v10");
+      const entered = createDeferred<void>();
+      const releasePreflight = createDeferred<void>();
+      const releaseGuard = vi.fn(async () => {});
+      let current = true;
+      const failure = new Error("synthetic writer replaced during endpoint preflight");
+      const explicit = vi.fn(() => {
+        if (!current) {
+          throw failure;
+        }
+      });
+      const inherited = vi.fn(() => {
+        if (!current) {
+          throw failure;
+        }
+      });
+      const onDispatch = vi.fn(async () => {});
+      const onResult = vi.fn();
+      guardedFetchMock.mockImplementation(async (params) => {
+        entered.resolve();
+        await releasePreflight.promise;
+        params.beforeRequest?.();
+        const response = await globalThis.fetch(params.url, params.init);
+        return { response, finalUrl: params.url, release: releaseGuard };
+      });
+      const sending = withDiscordRequestAuthority(
+        kind === "inherited revoked" || kind === "both current" ? inherited : undefined,
+        () =>
+          sendWebhookMessageDiscord("retained authority", {
+            ...opts,
+            threadId: "thread-1",
+            assertPlatformSendAuthorized:
+              kind === "explicit revoked" || kind === "both current" ? explicit : undefined,
+            onPlatformSendDispatch: onDispatch,
+            onDeliveryResult: onResult,
+          }),
+      ).then(
+        (result) => ({ result, error: undefined }),
+        (error: unknown) => ({ result: undefined, error }),
+      );
+      try {
+        await Promise.race([
+          entered.promise,
+          sending.then(() => {
+            throw new Error("Webhook settled before configured preflight");
+          }),
+        ]);
+        expect(onDispatch).toHaveBeenCalledOnce();
+        expect(fetchMock).not.toHaveBeenCalled();
+        if (kind.endsWith("revoked")) {
+          current = false;
+        }
+        releasePreflight.resolve();
+        const outcome = await sending;
+        expect(guardedFetchMock).toHaveBeenCalledOnce();
+        expect(guardedFetchMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            url: "http://127.0.0.1:43210/api/v10/webhooks/123/abc?wait=true&thread_id=thread-1",
+            capture: false,
+            maxRedirects: 0,
+            auditContext: "discord.endpoint-runtime",
+          }),
+        );
+        if (kind.endsWith("revoked")) {
+          expect(outcome.error).toBe(failure);
+          expect(outcome.result).toBeUndefined();
+          expect(fetchMock).not.toHaveBeenCalled();
+          expect(recordChannelActivityMock).not.toHaveBeenCalled();
+          expect(onResult).not.toHaveBeenCalled();
+          expect(releaseGuard).not.toHaveBeenCalled();
+          expect(kind === "explicit revoked" ? explicit : inherited).toHaveBeenCalled();
+        } else {
+          expect(outcome.error).toBeUndefined();
+          expect(outcome.result).toMatchObject({
+            messageId: "msg-1",
+            channelId: "thread-1",
+            receipt: { platformMessageIds: ["msg-1"], threadId: "thread-1" },
+          });
+          expect(fetchMock).toHaveBeenCalledOnce();
+          const [url, init] = fetchMock.mock.calls[0]!;
+          expect(url).toBe(
+            "http://127.0.0.1:43210/api/v10/webhooks/123/abc?wait=true&thread_id=thread-1",
+          );
+          expect(init?.method).toBe("POST");
+          expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+          expect(JSON.parse(await new Response(init?.body).text())).toEqual({
+            content: "retained authority",
+            flags: MessageFlags.SuppressEmbeds,
+          });
+          expect(init?.signal).toBeInstanceOf(AbortSignal);
+          expect(init?.signal?.aborted).toBe(false);
+          expect(recordChannelActivityMock).toHaveBeenCalledOnce();
+          expect(onResult).toHaveBeenCalledOnce();
+          expect(releaseGuard).toHaveBeenCalledOnce();
+        }
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        releasePreflight.resolve();
+        await sending;
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it("records the webhook receipt, outbound identity and account activity", async () => {
     const result = await sendWebhookMessageDiscord("hello", {
