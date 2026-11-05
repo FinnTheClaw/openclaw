@@ -78,6 +78,135 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("Signal configuration allowlist identity", () => {
+  const uuidA = "a0000000-0000-4000-8000-000000000000";
+  const uuidB = "b0000000-0000-4000-8000-000000000000";
+  const prefixedA = `uuid:${uuidA}`;
+  const prefixedB = `uuid:${uuidB}`;
+  it.each([
+    {
+      name: "add distinct UUID to DM",
+      scope: "dm" as const,
+      action: "add" as const,
+      initial: [prefixedA],
+      entry: prefixedB,
+      expected: [prefixedA, prefixedB],
+      changed: true,
+      distinct: true,
+    },
+    {
+      name: "remove one distinct UUID from DM",
+      scope: "dm" as const,
+      action: "remove" as const,
+      initial: [prefixedA, prefixedB],
+      entry: prefixedA,
+      expected: [prefixedB],
+      changed: true,
+      distinct: true,
+    },
+    {
+      name: "add distinct UUID to group",
+      scope: "group" as const,
+      action: "add" as const,
+      initial: [prefixedA],
+      entry: prefixedB,
+      expected: [prefixedA, prefixedB],
+      changed: true,
+      distinct: true,
+    },
+    {
+      name: "remove one distinct UUID from group",
+      scope: "group" as const,
+      action: "remove" as const,
+      initial: [prefixedA, prefixedB],
+      entry: prefixedA,
+      expected: [prefixedB],
+      changed: true,
+      distinct: true,
+    },
+    {
+      name: "bare and prefixed UUID add equivalence",
+      scope: "dm" as const,
+      action: "add" as const,
+      initial: [uuidA],
+      entry: prefixedA,
+      expected: [uuidA],
+      changed: false,
+      distinct: false,
+    },
+    {
+      name: "bare and prefixed UUID remove equivalence",
+      scope: "dm" as const,
+      action: "remove" as const,
+      initial: [prefixedA],
+      entry: uuidA,
+      expected: [],
+      changed: true,
+      distinct: false,
+    },
+    {
+      name: "phone formatting equivalence",
+      scope: "dm" as const,
+      action: "add" as const,
+      initial: ["+15550001111"],
+      entry: "signal:+1 (555) 000-1111",
+      expected: ["+15550001111"],
+      changed: false,
+      distinct: false,
+    },
+    {
+      name: "wildcard equivalence",
+      scope: "group" as const,
+      action: "add" as const,
+      initial: ["*"],
+      entry: "*",
+      expected: ["*"],
+      changed: false,
+      distinct: false,
+    },
+  ])("preserves Signal allowlist identity for $name", async (scenario) => {
+    const applyEdit = signalPlugin.allowlist?.applyConfigEdit;
+    const formatAllowFrom = signalPlugin.config.formatAllowFrom;
+    if (!applyEdit || !formatAllowFrom) {
+      throw new Error("expected Signal configuration allowlist adapters");
+    }
+    const otherEntries = ["+15550002222"];
+    const cfg = signalConfig({
+      dmPolicy: "allowlist",
+      groupPolicy: "allowlist",
+      allowFrom: scenario.scope === "dm" ? scenario.initial : otherEntries,
+      groupAllowFrom: scenario.scope === "group" ? scenario.initial : otherEntries,
+    });
+    const originalConfig = structuredClone(cfg);
+    const parsedConfig = structuredClone(cfg);
+
+    const result = await applyEdit({
+      cfg,
+      parsedConfig,
+      scope: scenario.scope,
+      action: scenario.action,
+      entry: scenario.entry,
+    });
+
+    expect.soft(result).toMatchObject({ kind: "ok", changed: scenario.changed });
+    const signal = parsedConfig.channels?.signal;
+    expect
+      .soft(scenario.scope === "dm" ? signal?.allowFrom : signal?.groupAllowFrom)
+      .toEqual(scenario.expected);
+    expect
+      .soft(scenario.scope === "dm" ? signal?.groupAllowFrom : signal?.allowFrom)
+      .toEqual(otherEntries);
+    expect(cfg).toEqual(originalConfig);
+    if (scenario.distinct) {
+      const formatted = formatAllowFrom({ cfg, allowFrom: [prefixedA, prefixedB] });
+      expect.soft(formatted).toHaveLength(2);
+      expect.soft(formatted[0]).not.toBe(formatted[1]);
+      expect.soft(formatted[0]).toContain(uuidA);
+      expect.soft(formatted[1]).toContain(uuidB);
+    }
+  });
+});
+
 describe("looksLikeUuid", () => {
   it("accepts hyphenated UUIDs", () => {
     expect(looksLikeUuid("123e4567-e89b-12d3-a456-426614174000")).toBe(true);

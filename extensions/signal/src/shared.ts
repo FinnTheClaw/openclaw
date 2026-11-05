@@ -17,6 +17,7 @@ import {
 import { resolveSignalTarget } from "./aliases.js";
 import { SignalChannelConfigSchema } from "./config-schema.js";
 import { signalDoctor } from "./doctor.js";
+import { normalizeSignalAllowRecipient } from "./identity.js";
 import { createSignalSetupWizardProxy } from "./setup-core.js";
 
 const SIGNAL_CHANNEL = "signal" as const;
@@ -34,8 +35,8 @@ const signalConfigAdapterBase = createScopedChannelConfigAdapter<ResolvedSignalA
   resolveAllowFrom: (account: ResolvedSignalAccount) => account.config.allowFrom,
   formatAllowFrom: (allowFrom) =>
     normalizeStringifiedEntries(allowFrom)
-      .map((entry) => (entry === "*" ? "*" : normalizeE164(entry.replace(/^signal:/i, ""))))
-      .filter(Boolean),
+      .map((entry) => (entry === "*" ? "*" : normalizeSignalAllowRecipient(entry)))
+      .filter((entry): entry is string => Boolean(entry)),
 });
 
 export const signalConfigAdapter = {
