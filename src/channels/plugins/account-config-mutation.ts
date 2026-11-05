@@ -203,7 +203,7 @@ export async function applyChannelAccountRemoval(params: {
   action: ChannelAccountRemovalAction;
   accountId?: string;
   runtime: RuntimeEnv;
-  beforeRemoval?: () => Promise<void>;
+  beforeRemoval?: (nextConfig: OpenClawConfig) => Promise<void>;
 }): Promise<Result<{ nextConfig: OpenClawConfig }, ChannelAccountRemovalError>> {
   const { action, plugin } = params;
   const accountId = normalizeAccountId(params.accountId);
@@ -226,7 +226,7 @@ export async function applyChannelAccountRemoval(params: {
     if (isDeepStrictEqual(JSON.parse(previousConfigJson), JSON.parse(nextConfigJson))) {
       return resultError({ kind: "nothing-to-remove", action, accountIds });
     }
-    await params.beforeRemoval?.();
+    await params.beforeRemoval?.(nextConfig);
     await plugin.lifecycle?.onAccountRemoved?.({
       prevCfg: params.cfg,
       accountId,
@@ -247,7 +247,7 @@ export async function applyChannelAccountRemoval(params: {
     accountId,
     enabled: false,
   });
-  await params.beforeRemoval?.();
+  await params.beforeRemoval?.(nextConfig);
   await plugin.lifecycle?.onAccountConfigChanged?.({
     prevCfg: params.cfg,
     nextCfg: nextConfig,

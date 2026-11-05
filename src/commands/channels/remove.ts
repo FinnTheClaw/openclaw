@@ -76,7 +76,7 @@ async function stopGatewayRuntimeBeforeRemove(params: {
   }
 }
 
-/** Disable or delete a channel account, stopping gateway runtime state before mutation. */
+/** Disable or delete a channel account, committing config before runtime removal effects. */
 export async function channelsRemoveCommand(
   opts: ChannelsRemoveOptions,
   runtime: RuntimeEnv = defaultRuntime,
@@ -212,14 +212,22 @@ async function removeChannelAccount(
     accountId,
     action: deleteConfig ? "delete" : "disable",
     runtime,
-    beforeRemoval: () =>
-      stopGatewayRuntimeBeforeRemove({
+    beforeRemoval: async (nextConfig) => {
+      await persistChannelPluginConfig({
+        cfg: nextConfig,
+        pluginInstalled: false,
+        writeOptions: writeSnapshot.writeOptions,
+        baseHash: writeSnapshot.snapshot.hash,
+        runtime,
+      });
+      await stopGatewayRuntimeBeforeRemove({
         cfg,
         channel: resolvedChannelId,
         accountId,
         shouldStopRuntime: Boolean(plugin.gateway?.startAccount || plugin.gateway?.logoutAccount),
         runtime,
-      }),
+      });
+    },
   });
   if (!removal.ok) {
     if (removal.error.kind !== "unsupported-action") {
@@ -243,13 +251,6 @@ async function removeChannelAccount(
     runtime.exit(1);
     return;
   }
-  await persistChannelPluginConfig({
-    cfg: removal.value.nextConfig,
-    pluginInstalled: false,
-    writeOptions: writeSnapshot.writeOptions,
-    baseHash: writeSnapshot.snapshot.hash,
-    runtime,
-  });
   const message = deleteConfig
     ? `Deleted ${channelLabel(resolvedChannelId)} account "${accountId}".`
     : `Disabled ${channelLabel(resolvedChannelId)} account "${accountId}".`;

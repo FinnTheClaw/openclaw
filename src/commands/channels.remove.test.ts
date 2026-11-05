@@ -439,7 +439,129 @@ describe("channelsRemoveCommand", () => {
     expectNoRemoval('external-chat has no account "ghost" to remove.');
   });
 
-  it("normalizes a listed deletion before stopping runtime, running lifecycle, and persisting", async () => {
+  it.each(["stale hash rejection", "write failure", "successful commit"] as const)(
+    "guarded removal commit: %s",
+    async (outcome) => {
+      const plugin = installWorkAccountChannel();
+      const cfg: OpenClawConfig = {
+        channels: {
+          "external-chat": {
+            accounts: {
+              default: { token: "synthetic-default" },
+              work: { token: "synthetic-work" },
+            },
+          },
+        },
+      };
+      const originalConfigBytes = JSON.stringify(cfg);
+      let committedConfig: OpenClawConfig = structuredClone(cfg);
+      if (outcome === "stale hash rejection") {
+        committedConfig.session = { mainKey: "newer-authorized-writer" };
+      }
+      const committedConfigBytes = JSON.stringify(committedConfig);
+      const accountState: Record<
+        string,
+        { running: boolean; cursor?: number; botIdentity?: string }
+      > = {
+        default: { running: true, cursor: 11, botIdentity: "default-identity" },
+        work: { running: true, cursor: 73, botIdentity: "work-identity" },
+      };
+      const originalRuntimeBytes = JSON.stringify(accountState);
+      const unrelatedState = structuredClone(accountState.default);
+      const callOrder: string[] = [];
+      const snapshot = { ...createTestConfigSnapshot(cfg), hash: "original-config-hash" };
+      configMocks.readConfigFileSnapshot.mockResolvedValue(snapshot);
+      plugin.config.listAccountIds = () => ["default", "work"];
+      plugin.config.deleteAccount = vi.fn((params) => {
+        callOrder.push("delete");
+        return deleteAccountFromConfigSection({ ...params, sectionKey: "external-chat" });
+      });
+      plugin.gateway = { startAccount: vi.fn() };
+      const onAccountRemoved = vi.fn(({ accountId }: { accountId: string }) => {
+        callOrder.push("cleanup");
+        const state = accountState[accountId];
+        if (!state) {
+          throw new Error("synthetic account state missing");
+        }
+        delete state.cursor;
+        delete state.botIdentity;
+      });
+      plugin.lifecycle = { onAccountRemoved };
+      const previousGatewayImplementation = gatewayMocks.callGateway.getMockImplementation();
+      gatewayMocks.callGateway.mockImplementation(async () => {
+        callOrder.push("stop");
+        const state = accountState.work;
+        if (!state) {
+          throw new Error("synthetic work state missing");
+        }
+        state.running = false;
+        return { stopped: true };
+      });
+      const writeError =
+        outcome === "stale hash rejection"
+          ? new Error("config changed since last load")
+          : Object.assign(new Error("synthetic guarded write failure"), { code: "EACCES" });
+      configMocks.replaceConfigFile.mockImplementationOnce(
+        async (params: { sourceConfig: OpenClawConfig; baseHash?: string }) => {
+          callOrder.push("persist");
+          expect(params.baseHash).toBe("original-config-hash");
+          if (outcome !== "successful commit") {
+            throw writeError;
+          }
+          committedConfig = structuredClone(params.sourceConfig);
+          await configMocks.writeConfigFile(params.sourceConfig);
+        },
+      );
+      const previousLogImplementation = runtime.log.getMockImplementation();
+      runtime.log.mockImplementation(() => callOrder.push("output"));
+      try {
+        let commandError: unknown;
+        try {
+          await channelsRemoveCommand(
+            { channel: "external-chat", account: "Work", delete: true },
+            runtime,
+            { hasFlags: true },
+          );
+        } catch (error) {
+          commandError = error;
+        }
+        expect(commandError).toBe(outcome === "successful commit" ? undefined : writeError);
+        expect(JSON.stringify(cfg)).toBe(originalConfigBytes);
+        expect(accountState.default).toEqual(unrelatedState);
+        if (outcome !== "successful commit") {
+          expect(JSON.stringify(committedConfig)).toBe(committedConfigBytes);
+          expect(configMocks.writeConfigFile).not.toHaveBeenCalled();
+          expect(JSON.stringify(accountState)).toBe(originalRuntimeBytes);
+          expect(gatewayMocks.callGateway).not.toHaveBeenCalled();
+          expect(onAccountRemoved).not.toHaveBeenCalled();
+          expect(runtime.log).not.toHaveBeenCalled();
+          expect(callOrder).toEqual(["delete", "persist"]);
+        } else {
+          expect(committedConfig).toEqual({
+            channels: {
+              "external-chat": { accounts: { default: { token: "synthetic-default" } } },
+            },
+          });
+          expect(accountState.work).toEqual({ running: false });
+          expect(gatewayMocks.callGateway).toHaveBeenCalledTimes(1);
+          expect(onAccountRemoved).toHaveBeenCalledExactlyOnceWith({
+            prevCfg: cfg,
+            accountId: "work",
+            runtime,
+          });
+          expect(callOrder).toEqual(["delete", "persist", "stop", "cleanup", "output"]);
+          expect(runtime.log).toHaveBeenCalledWith('Deleted external-chat account "work".');
+        }
+      } finally {
+        runtime.log.mockImplementation(previousLogImplementation ?? (() => undefined));
+        gatewayMocks.callGateway.mockImplementation(
+          previousGatewayImplementation ?? (async () => ({ stopped: true })),
+        );
+      }
+    },
+  );
+
+  it("normalizes a listed deletion before committing, stopping runtime, and running lifecycle", async () => {
     const callOrder: string[] = [];
     const cfg = {
       channels: {
@@ -497,7 +619,7 @@ describe("channelsRemoveCommand", () => {
     expect(firstWrittenChannelsConfig()?.channels?.["external-chat"]).toEqual({
       accounts: { default: { token: "default-token" } },
     });
-    expect(callOrder).toEqual(["delete", "stop", "lifecycle", "persist", "output"]);
+    expect(callOrder).toEqual(["delete", "persist", "stop", "lifecycle", "output"]);
     expect(runtime.log).toHaveBeenCalledWith('Deleted external-chat account "work".');
   });
 
