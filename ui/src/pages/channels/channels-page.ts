@@ -448,7 +448,17 @@ class ChannelsPage extends OpenClawLightDomElement {
         };
       } else {
         const merged = result.data.merged ?? result.data.imported ?? null;
-        const values = merged ? { ...currentForm.values, ...merged } : currentForm.values;
+        const values = merged
+          ? {
+              ...currentForm.values,
+              ...Object.fromEntries(
+                Object.entries(merged).filter(([field]) => {
+                  const key = field as keyof NostrProfile;
+                  return currentForm.values[key] === form.values[key];
+                }),
+              ),
+            }
+          : currentForm.values;
         this.nostrProfileFormState = {
           ...settledForm,
           values,

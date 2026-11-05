@@ -333,6 +333,163 @@ describe("ChannelsPage lifecycle", () => {
     },
   );
 
+  it.each([
+    ["name", "Relay name"],
+    ["about", null],
+  ] as const)(
+    "L02-089-F01 preserves a newer %s edit across relay import and publish",
+    async (field) => {
+      vi.useFakeTimers();
+      const response = createDeferred<Response>();
+      const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+        if (
+          String(input) === "/api/channels/nostr/default/profile/import" &&
+          init?.method === "POST"
+        ) {
+          return response.promise;
+        }
+        if (String(input) === "/api/channels/nostr/default/profile" && init?.method === "PUT") {
+          return Response.json({ ok: true, persisted: true });
+        }
+        throw new Error("Unexpected profile request: " + String(input) + " " + init?.method);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { source, refresh, page } = await mountNostrProfile();
+      const newerText = field === "name" ? "New local name" : "New local about";
+      const merged = {
+        name: "Relay name",
+        displayName: "Relay display",
+        about: null,
+        extra: { fromRelay: true },
+      };
+      refresh.mockClear();
+
+      try {
+        profileButton(page, "Import from Relays").click();
+        await page.updateComplete;
+        const input = page.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+          "#nostr-profile-" + field,
+        );
+        if (!input) {
+          throw new Error("Missing profile field: " + field);
+        }
+        const enabledWhileImporting = !input.disabled;
+        input.value = newerText;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await page.updateComplete;
+        const pending = {
+          enabledWhileImporting,
+          typed: page.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+            "#nostr-profile-" + field,
+          )?.value,
+          importing: page.textContent?.includes("Importing") ?? false,
+          saving: page.textContent?.includes("Saving") ?? false,
+          calls: fetchMock.mock.calls.map(([url, init]) => ({
+            url: String(url),
+            method: init?.method,
+            body: JSON.parse(String(init?.body)),
+          })),
+        };
+
+        response.resolve(Response.json({ ok: true, saved: true, merged }));
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        const imported = {
+          name: page.querySelector<HTMLInputElement>("#nostr-profile-name")?.value,
+          displayName: page.querySelector<HTMLInputElement>("#nostr-profile-displayName")?.value,
+          about: page.querySelector<HTMLTextAreaElement>("#nostr-profile-about")?.value,
+          importing: page.textContent?.includes("Importing") ?? false,
+          saving: page.textContent?.includes("Saving") ?? false,
+          notice: page.textContent?.includes("Profile imported") ?? false,
+          enabled: !page.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+            "#nostr-profile-" + field,
+          )?.disabled,
+        };
+
+        profileButton(page, "Save & Publish").click();
+        await vi.advanceTimersByTimeAsync(0);
+        await page.updateComplete;
+        const published = {
+          name: page.querySelector<HTMLInputElement>("#nostr-profile-name")?.value,
+          about: page.querySelector<HTMLTextAreaElement>("#nostr-profile-about")?.value,
+          importing: page.textContent?.includes("Importing") ?? false,
+          saving: page.textContent?.includes("Saving") ?? false,
+          notice: page.textContent?.includes("Profile published") ?? false,
+          refreshCalls: refresh.mock.calls.map(([probe]) => probe),
+          calls: fetchMock.mock.calls.map(([url, init]) => ({
+            url: String(url),
+            method: init?.method,
+            body: JSON.parse(String(init?.body)),
+          })),
+        };
+        const expectedName = field === "name" ? newerText : "Relay name";
+        const expectedAbout = field === "about" ? newerText : null;
+
+        expect({ pending, imported, published }).toEqual({
+          pending: {
+            enabledWhileImporting: true,
+            typed: newerText,
+            importing: true,
+            saving: false,
+            calls: [
+              {
+                url: "/api/channels/nostr/default/profile/import",
+                method: "POST",
+                body: { autoMerge: true },
+              },
+            ],
+          },
+          imported: {
+            name: expectedName,
+            displayName: "Relay display",
+            about: expectedAbout ?? "",
+            importing: false,
+            saving: false,
+            notice: true,
+            enabled: true,
+          },
+          published: {
+            name: expectedName,
+            about: expectedAbout ?? "",
+            importing: false,
+            saving: false,
+            notice: true,
+            refreshCalls: [true, true],
+            calls: [
+              {
+                url: "/api/channels/nostr/default/profile/import",
+                method: "POST",
+                body: { autoMerge: true },
+              },
+              {
+                url: "/api/channels/nostr/default/profile",
+                method: "PUT",
+                body: {
+                  name: expectedName,
+                  displayName: "Relay display",
+                  about: expectedAbout,
+                  picture: "",
+                  banner: "",
+                  website: "",
+                  nip05: "",
+                  lud16: "",
+                  extra: { fromRelay: true },
+                },
+              },
+            ],
+          },
+        });
+      } finally {
+        response.resolve(Response.json({ ok: true, saved: true, merged }));
+        await response.promise;
+        await vi.advanceTimersByTimeAsync(0);
+        page.remove();
+        source.runtimeConfig.dispose();
+        source.channels.dispose();
+      }
+    },
+  );
+
   it.each(["Imported name", null])(
     "openclaw-channels-page Import from Relays preserves profile name %s with extra fields",
     async (name) => {
