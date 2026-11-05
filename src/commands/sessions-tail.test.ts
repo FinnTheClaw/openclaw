@@ -603,7 +603,7 @@ describe("sessionsTailCommand", () => {
     ],
     ["tail-benign-unicode", { type: "session.ended", data: { status: "caf\u00e9" } }, "caf\u00e9"],
   ])("R7-L02-05 %s", async (_name, eventFields, expected) => {
-    const runtime = makeRuntime();
+    const runtime = createTestRuntime();
     await writeSessionEntry();
     await appendEvents([makeEvent({ ...eventFields, ts: "2026-05-18T12:04:21.000Z" })]);
 
