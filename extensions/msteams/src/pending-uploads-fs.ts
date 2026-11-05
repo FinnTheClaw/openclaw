@@ -127,9 +127,6 @@ async function registerUploadRows(
     );
   }
   const existing = await metaStore.lookup(buildMetaKey(record.id));
-  if (!overwrite && existing) {
-    return;
-  }
   // Keep the prior generation intact until a single metadata-row publication.
   await pruneUploadStore(metaStore, chunkStore, ttlMs, chunkCount, record.id);
   const chunkGeneration = randomUUID();
@@ -201,7 +198,9 @@ async function readUploadRows(
   }
   // Published Teams packages retain support for hosts with point reads only.
   const records = await chunkStore.lookupMany?.(
-    Array.from({ length: meta.chunkCount }, (_, index) => buildChunkKey(id, index, meta.chunkGeneration)),
+    Array.from({ length: meta.chunkCount }, (_, index) =>
+      buildChunkKey(id, index, meta.chunkGeneration),
+    ),
   );
   const chunks: Buffer[] = [];
   for (let index = 0; index < meta.chunkCount; index += 1) {
@@ -209,7 +208,9 @@ async function readUploadRows(
     if (result && !result.ok) {
       throw result.error;
     }
-    const chunk = records ? result?.value : await chunkStore.lookup(buildChunkKey(id, index, meta.chunkGeneration));
+    const chunk = records
+      ? result?.value
+      : await chunkStore.lookup(buildChunkKey(id, index, meta.chunkGeneration));
     if (!chunk || chunk.id !== id || chunk.index !== index) {
       return undefined;
     }
