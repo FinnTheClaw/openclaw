@@ -633,6 +633,7 @@ function readStabilityEventRecord(
       "pairedToolName",
       "provider",
       "model",
+      "failureKind",
     ],
     readOptionalCodeString,
   );
@@ -643,6 +644,10 @@ function readStabilityEventRecord(
     label,
     [
       "durationMs",
+      "eventLoopDelayP99Ms",
+      "eventLoopDelayMaxMs",
+      "eventLoopUtilization",
+      "cpuCoreRatio",
       "requestBytes",
       "responseBytes",
       "timeToFirstByteMs",

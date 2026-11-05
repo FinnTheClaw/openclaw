@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import JSZip from "jszip";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { emitDiagnosticEvent, resetDiagnosticEventsForTest } from "../infra/diagnostic-events.js";
+import {
+  emitDiagnosticEvent,
+  resetDiagnosticEventsForTest,
+  waitForDiagnosticEventsDrained,
+} from "../infra/diagnostic-events.js";
 import {
   readDiagnosticStabilityBundleFileSync,
   uninstallDiagnosticStabilityFatalHook,
@@ -46,6 +50,108 @@ describe("diagnostic support export", () => {
     uninstallDiagnosticStabilityFatalHook();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it.each(["liveness", "model failure"] as const)(
+    "L12-F004 preserves recorder-produced %s facts through bundle reads and support ZIPs",
+    async (family) => {
+      startDiagnosticStabilityRecorder();
+      const facts =
+        family === "liveness"
+          ? {
+              eventLoopDelayP99Ms: 125.5,
+              eventLoopDelayMaxMs: 220.25,
+              eventLoopUtilization: 0.83,
+              cpuCoreRatio: 1.25,
+            }
+          : { failureKind: "terminated" };
+      if (family === "liveness") {
+        emitDiagnosticEvent({
+          type: "diagnostic.liveness.warning",
+          reasons: ["event_loop_delay"],
+          intervalMs: 1000,
+          eventLoopDelayP99Ms: 125.5,
+          eventLoopDelayMaxMs: 220.25,
+          eventLoopUtilization: 0.83,
+          cpuCoreRatio: 1.25,
+          active: 1,
+          waiting: 2,
+          queued: 3,
+        });
+      } else {
+        emitDiagnosticEvent({
+          type: "model.call.error",
+          runId: "private-run-L12-F004",
+          callId: "private-call-L12-F004",
+          provider: "openai",
+          model: "fixture-model",
+          durationMs: 25,
+          errorCategory: "TypeError",
+          failureKind: "terminated",
+        });
+      }
+      await waitForDiagnosticEventsDrained();
+
+      const written = writeDiagnosticStabilityBundleSync({
+        reason: "gateway.restart_startup_failed",
+        stateDir: tempDir,
+        now: new Date("2026-04-22T12:00:00.000Z"),
+      });
+      if (written.status !== "written") {
+        throw new Error(`expected a written recorder bundle, got ${written.status}`);
+      }
+      const rawText = fs.readFileSync(written.path, "utf8");
+      const raw = JSON.parse(rawText) as { snapshot: { events: Record<string, unknown>[] } };
+      const reloaded = readDiagnosticStabilityBundleFileSync(written.path);
+      const outputPath = path.join(tempDir, "recorder-facts.zip");
+      await writeDiagnosticSupportExport({
+        env: {
+          HOME: tempDir,
+          OPENCLAW_STATE_DIR: tempDir,
+          OPENCLAW_CONFIG_PATH: path.join(tempDir, "openclaw.json"),
+        },
+        stateDir: tempDir,
+        outputPath,
+        stabilityBundle: written.path,
+        now: new Date("2026-04-22T12:00:01.000Z"),
+        readLogTail: async () => ({
+          file: path.join(tempDir, "logs", "openclaw.log"),
+          cursor: 0,
+          size: 0,
+          truncated: false,
+          reset: false,
+          lines: [],
+        }),
+        readStatusSnapshot: async () => ({}),
+        readHealthSnapshot: async () => ({}),
+      });
+      const entries = await readZipTextEntries(outputPath);
+      const exported = JSON.parse(entries["stability/latest.json"] ?? "{}") as {
+        snapshot?: { events?: Record<string, unknown>[] };
+      };
+      const eventType = family === "liveness" ? "diagnostic.liveness.warning" : "model.call.error";
+      const rawEvent = raw.snapshot.events.find((event) => event.type === eventType);
+      const reloadedEvent =
+        reloaded.status === "found"
+          ? reloaded.bundle.snapshot.events.find((event) => event.type === eventType)
+          : undefined;
+      const exportedEvent = exported.snapshot?.events?.find((event) => event.type === eventType);
+      const combined = [rawText, JSON.stringify(reloaded), ...Object.values(entries)].join("\n");
+
+      expect(raw.snapshot.events).toHaveLength(1);
+      expect(rawEvent).toMatchObject({ type: eventType, ...facts });
+      expect({
+        readStatus: reloaded.status,
+        reloadedEvent,
+        exportedEvent,
+      }).toEqual({
+        readStatus: "found",
+        reloadedEvent: expect.objectContaining({ type: eventType, ...facts }),
+        exportedEvent: expect.objectContaining({ type: eventType, ...facts }),
+      });
+      expect(combined).not.toContain("private-run-L12-F004");
+      expect(combined).not.toContain("private-call-L12-F004");
+    },
+  );
 
   it.each(["current", "other-state alias", "marked relocated alias"])(
     "excludes %s capture files selected as config, logs, or a stability bundle",
