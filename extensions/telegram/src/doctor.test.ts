@@ -616,6 +616,118 @@ describe("telegram doctor", () => {
     expect(warnings[1]).toContain(DOCTOR_FIX_COMMAND);
   });
 
+  it.each([
+    {
+      name: "root API root",
+      accountId: "default",
+      rootRoute: { apiRoot: "https://root.example.test/custom" },
+      accountRoute: {},
+      inheritedSecretRef: false,
+      expectedToken: "123:fixture-root",
+      expectedApiRoot: "https://root.example.test/custom",
+      expectedProxyUrl: undefined,
+    },
+    {
+      name: "account-only proxy",
+      accountId: "work",
+      rootRoute: {},
+      accountRoute: { proxy: "http://proxy.example.test:8080" },
+      inheritedSecretRef: false,
+      expectedToken: "234:fixture-work",
+      expectedApiRoot: undefined,
+      expectedProxyUrl: "http://proxy.example.test:8080",
+    },
+    {
+      name: "account overrides parent route",
+      accountId: "work",
+      rootRoute: {
+        apiRoot: "https://parent.example.test/decoy",
+        proxy: "http://parent-proxy.example.test:8080",
+      },
+      accountRoute: {
+        apiRoot: "https://work.example.test/custom",
+        proxy: "http://work-proxy.example.test:8080",
+      },
+      inheritedSecretRef: false,
+      expectedToken: "234:fixture-work",
+      expectedApiRoot: "https://work.example.test/custom",
+      expectedProxyUrl: "http://work-proxy.example.test:8080",
+    },
+    {
+      name: "account inherits route with preserved SecretRef",
+      accountId: "work",
+      rootRoute: {
+        apiRoot: "https://inherited.example.test/custom",
+        proxy: "http://inherited-proxy.example.test:8080",
+      },
+      accountRoute: {},
+      inheritedSecretRef: true,
+      expectedToken: "123:fixture-resolved",
+      expectedApiRoot: "https://inherited.example.test/custom",
+      expectedProxyUrl: "http://inherited-proxy.example.test:8080",
+    },
+  ])("doctor lookup route: $name", async (row) => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        telegram: {
+          botToken: row.inheritedSecretRef
+            ? { source: "env", provider: "default", id: "FIXTURE_TELEGRAM_TOKEN" }
+            : "123:fixture-root",
+          dmPolicy: "allowlist",
+          network: { autoSelectFamily: false, dnsResultOrder: "ipv4first" },
+          ...row.rootRoute,
+          ...(row.accountId === "default"
+            ? { allowFrom: ["@fixture"] }
+            : {
+                accounts: {
+                  work: {
+                    ...(row.inheritedSecretRef ? {} : { botToken: "234:fixture-work" }),
+                    allowFrom: ["@fixture"],
+                    ...row.accountRoute,
+                  },
+                  sibling: { botToken: "345:fixture-sibling", allowFrom: ["999"] },
+                },
+              }),
+        },
+      },
+    };
+    const before = structuredClone(cfg);
+    listTelegramAccountIdsMock.mockReturnValue([row.accountId]);
+    lookupTelegramChatIdMock.mockResolvedValue("111");
+    if (row.inheritedSecretRef) {
+      const resolvedConfig = structuredClone(cfg);
+      resolvedConfig.channels!.telegram!.botToken = "123:fixture-resolved";
+      resolveCommandSecretRefsViaGatewayMock.mockResolvedValueOnce({
+        resolvedConfig,
+        diagnostics: [],
+        targetStatesByPath: {},
+        hadUnresolvedTargets: false,
+      });
+    }
+    const result = await repairConfig(cfg);
+    const expected = structuredClone(before);
+    const path =
+      row.accountId === "default"
+        ? "channels.telegram.allowFrom"
+        : "channels.telegram.accounts.work.allowFrom";
+    if (row.accountId === "default") {
+      expected.channels!.telegram!.allowFrom = ["111"];
+    } else {
+      expected.channels!.telegram!.accounts!.work!.allowFrom = ["111"];
+    }
+    expect(result.config).toEqual(expected);
+    expect(result.changes).toEqual([`- ${path}: resolved @fixture -> 111`]);
+    expect(cfg).toEqual(before);
+    expect(lookupTelegramChatIdMock).toHaveBeenCalledExactlyOnceWith({
+      token: row.expectedToken,
+      chatId: "@fixture",
+      apiRoot: row.expectedApiRoot,
+      proxyUrl: row.expectedProxyUrl,
+      network: { autoSelectFamily: false, dnsResultOrder: "ipv4first" },
+      signal: undefined,
+    });
+  });
+
   it("repairs @username entries to numeric ids", async () => {
     lookupTelegramChatIdMock.mockResolvedValue("111");
 
