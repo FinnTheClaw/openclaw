@@ -484,6 +484,112 @@ describe("buildMinimaxSpeechProvider", () => {
       });
     });
 
+    it.each<{
+      label: string;
+      portalBaseUrl?: string;
+      talkBaseUrl?: string;
+      baseUrl?: string;
+      envBaseUrl?: string;
+      expected: string;
+    }>([
+      {
+        label: "CN portal without a Talk override",
+        portalBaseUrl: "https://api.minimaxi.com/anthropic",
+        expected: "https://api.minimaxi.com",
+      },
+      {
+        label: "custom portal without a Talk override",
+        portalBaseUrl: "https://portal.example.test/anthropic",
+        expected: "https://portal.example.test",
+      },
+      {
+        label: "CN portal with a blank Talk override",
+        portalBaseUrl: "https://api.minimaxi.com/anthropic",
+        talkBaseUrl: "   ",
+        expected: "https://api.minimaxi.com",
+      },
+      {
+        label: "custom portal with an empty Talk override",
+        portalBaseUrl: "https://portal.example.test/anthropic",
+        talkBaseUrl: "",
+        expected: "https://portal.example.test",
+      },
+      {
+        label: "explicit Talk URL control",
+        portalBaseUrl: "https://api.minimaxi.com/anthropic",
+        talkBaseUrl: "https://talk.example.test/v1/",
+        expected: "https://talk.example.test",
+      },
+      {
+        label: "explicit base-TTS URL control",
+        portalBaseUrl: "https://api.minimaxi.com/anthropic",
+        baseUrl: "https://tts.example.test/anthropic",
+        expected: "https://tts.example.test",
+      },
+      {
+        label: "environment URL control",
+        portalBaseUrl: "https://api.minimaxi.com/anthropic",
+        envBaseUrl: "https://env.example.test/anthropic",
+        expected: "https://env.example.test",
+      },
+      { label: "global default control", expected: "https://api.minimax.io" },
+    ])("inherits MiniMax Talk routing from current config for $label", async (row) => {
+      vi.stubEnv("MINIMAX_API_HOST", row.envBaseUrl);
+      const cfg = row.portalBaseUrl
+        ? { models: { providers: { "minimax-portal": { baseUrl: row.portalBaseUrl } } } }
+        : {};
+      const baseTtsConfig = {
+        providers: {
+          minimax: {
+            apiKey: "fixture-key",
+            model: "speech-01-turbo",
+            voiceId: "fixture_voice",
+            speed: 1.25,
+            vol: 2,
+            pitch: 3,
+            ...(row.baseUrl ? { baseUrl: row.baseUrl } : {}),
+          },
+        },
+      };
+      const talkProviderConfig = { baseUrl: row.talkBaseUrl };
+      const original = structuredClone({ cfg, baseTtsConfig, talkProviderConfig });
+      if (!provider.resolveTalkConfig) {
+        throw new Error("MiniMax speech provider did not expose Talk config resolution");
+      }
+      const resolved = provider.resolveTalkConfig({
+        cfg: cfg as never,
+        baseTtsConfig,
+        talkProviderConfig,
+        timeoutMs: 30000,
+      });
+      mockAudioResponse("talk-fixture-audio");
+      const result = await synthesize({
+        text: "Synthetic Talk config probe",
+        cfg: cfg as never,
+        providerConfig: resolved,
+      });
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+      expect(firstFetchInit()?.headers).toEqual({
+        Authorization: "Bearer fixture-key",
+        "Content-Type": "application/json",
+      });
+      expect(firstFetchBody()).toMatchObject({
+        model: "speech-01-turbo",
+        text: "Synthetic Talk config probe",
+        stream: false,
+        output_format: "hex",
+        voice_setting: { voice_id: "fixture_voice", speed: 1.25, vol: 2, pitch: 3 },
+      });
+      expect(result.audioBuffer.toString()).toBe("talk-fixture-audio");
+      expect(result.outputFormat).toBe("mp3");
+      expect(transcodeAudioBufferToOpusMock).not.toHaveBeenCalled();
+      expect({ cfg, baseTtsConfig, talkProviderConfig }).toEqual(original);
+      expect({ resolvedBaseUrl: resolved.baseUrl, requestUrl: firstFetchCall()[0] }).toEqual({
+        resolvedBaseUrl: row.expected,
+        requestUrl: `${row.expected}/v1/t2a_v2`,
+      });
+    });
+
     it("throws when API key is missing", async () => {
       await expect(synthesize({ providerConfig: {} })).rejects.toThrow("MiniMax TTS auth missing");
       expect(globalThis.fetch).not.toHaveBeenCalled();
