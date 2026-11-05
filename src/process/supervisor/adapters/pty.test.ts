@@ -83,9 +83,11 @@ function firstSpawnCall(): unknown[] {
 
 describe("createPtyAdapter", () => {
   let createPtyAdapter: typeof import("./pty.js").createPtyAdapter;
+  let createProcessSupervisor: typeof import("../supervisor.js").createProcessSupervisor;
 
   beforeAll(async () => {
     ({ createPtyAdapter } = await import("./pty.js"));
+    ({ createProcessSupervisor } = await import("../supervisor.js"));
   });
 
   beforeEach(() => {
@@ -135,6 +137,112 @@ describe("createPtyAdapter", () => {
     await expect(starting).rejects.toThrow("PTY construction aborted");
     expect(ptyKillMock).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    { invalidation: "abort", unconfirmed: false },
+    { invalidation: "stale guard", unconfirmed: false },
+    { invalidation: "abort", unconfirmed: true },
+    { invalidation: "stale guard", unconfirmed: true },
+  ])(
+    "retains rejected PTY construction cleanup for $invalidation (unconfirmed=$unconfirmed)",
+    async ({ invalidation, unconfirmed }) => {
+      vi.useFakeTimers();
+      const spawned = createDeferredCore<ReturnType<typeof createStubPty>>();
+      const stub = createStubPty();
+      spawnMock.mockReturnValue(spawned.promise);
+      let subscribedBeforeKill = false;
+      ptyKillMock.mockImplementationOnce(() => {
+        subscribedBeforeKill = stub.onExit.mock.calls.length > 0;
+        if (unconfirmed) {
+          throw new Error("synthetic PTY signal failure");
+        }
+      });
+      const supervisor = createProcessSupervisor();
+      const scopeKey = "scope:rejected-pty-construction";
+      const cleanupScope = supervisor.acquireScopeCleanup(scopeKey, {
+        processTree: "transport-only",
+      });
+      const stale = new Error("synthetic stale PTY ownership");
+      let current = true;
+      const starting = supervisor
+        .spawn({
+          mode: "pty",
+          argv: ["synthetic-pty"],
+          runId: "rejected-pty-construction",
+          scopeKey,
+          assertCurrent: () => {
+            if (!current) {
+              throw stale;
+            }
+          },
+        })
+        .then(
+          (run) => ({ run, error: undefined }),
+          (error: unknown) => ({ run: undefined, error }),
+        );
+      let scopeDrain: Promise<void> | undefined;
+      let shutdown: Promise<void> | undefined;
+
+      try {
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledOnce());
+        if (invalidation === "abort") {
+          supervisor.cancel("rejected-pty-construction");
+        } else {
+          current = false;
+        }
+        spawned.resolve(stub);
+        const startup = await starting;
+        if (invalidation === "abort") {
+          expect(startup.error).toBeUndefined();
+          if (!startup.run) {
+            throw new Error("expected cancelled construction result");
+          }
+          await expect(startup.run.wait()).resolves.toMatchObject({ reason: "manual-cancel" });
+        } else {
+          expect(startup.error).toBe(stale);
+          expect(startup.run).toBeUndefined();
+        }
+        expect(ptyKillMock).toHaveBeenCalledOnce();
+        expect.soft(subscribedBeforeKill).toBe(true);
+
+        const scopeSettled = vi.fn();
+        const shutdownSettled = vi.fn();
+        scopeDrain = cleanupScope();
+        shutdown = supervisor.shutdown();
+        void scopeDrain.then(scopeSettled, scopeSettled);
+        void shutdown.then(shutdownSettled, shutdownSettled);
+        await vi.advanceTimersByTimeAsync(0);
+        expect.soft(scopeSettled).not.toHaveBeenCalled();
+        expect.soft(shutdownSettled).not.toHaveBeenCalled();
+
+        if (unconfirmed) {
+          await vi.advanceTimersByTimeAsync(3999);
+          expect.soft(scopeSettled).not.toHaveBeenCalled();
+          expect.soft(shutdownSettled).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          await expect(scopeDrain).rejects.toThrow("cleanup could not be confirmed");
+          await expect(shutdown).rejects.toThrow("cleanup could not be confirmed");
+        } else {
+          stub.emitExit({ exitCode: 0, signal: 9 });
+          await expect(scopeDrain).resolves.toBeUndefined();
+          await expect(shutdown).resolves.toBeUndefined();
+        }
+      } finally {
+        spawned.resolve(stub);
+        const finalScopeDrain = scopeDrain ?? cleanupScope();
+        const finalShutdown = shutdown ?? supervisor.shutdown();
+        void finalScopeDrain.catch(() => undefined);
+        void finalShutdown.catch(() => undefined);
+        await vi.advanceTimersByTimeAsync(0);
+        stub.emitExit({ exitCode: 0, signal: 9 });
+        await vi.advanceTimersByTimeAsync(4001);
+        await starting;
+        await finalScopeDrain.catch(() => undefined);
+        await finalShutdown.catch(() => undefined);
+        ptyKillMock.mockReset();
+      }
+    },
+  );
 
   it("uses the default terminal name and child env when Windows TERM is blank", async () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");

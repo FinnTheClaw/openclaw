@@ -64,19 +64,6 @@ export async function createPtyAdapter(
       },
     },
   );
-  try {
-    params.assertCurrent?.();
-    if (params.abortSignal?.aborted) {
-      throw new Error("PTY construction aborted");
-    }
-  } catch (error) {
-    try {
-      pty.kill();
-    } catch {
-      // The stale PTY may already have exited while the ownership check ran.
-    }
-    throw error;
-  }
   const cleanup = createDeferredCore();
   void cleanup.promise.catch(() => {});
   params.onSpawnCleanup?.(cleanup.promise);
@@ -127,6 +114,22 @@ export async function createPtyAdapter(
       const signal = event.signal && event.signal !== 0 ? event.signal : null;
       settleWait({ code: event.exitCode ?? null, signal });
     }) ?? null;
+
+  try {
+    params.assertCurrent?.();
+    if (params.abortSignal?.aborted) {
+      throw new Error("PTY construction aborted");
+    }
+  } catch (error) {
+    scheduleForceKillWaitFallback("SIGKILL");
+    try {
+      pty.kill();
+    } catch {
+      // The stale PTY may already have exited while the ownership check ran.
+    }
+    void cleanup.promise.finally(() => exitListener?.dispose()).catch(() => {});
+    throw error;
+  }
 
   const stdin: ManagedRunStdin = {
     get destroyed() {
