@@ -230,6 +230,39 @@ describe("native plugin generation interop", () => {
     },
   );
 
+  it.each([
+    { label: "sync direct", asyncBridge: false, reexport: false },
+    { label: "sync reexport", asyncBridge: false, reexport: true },
+    { label: "async direct", asyncBridge: true, reexport: false },
+    { label: "async reexport", asyncBridge: true, reexport: true },
+  ])("preserves live named exports through transformed dynamic imports for $label", async (row) => {
+    const dependency = row.reexport ? "relay.mjs" : "state.mjs";
+    const reader = `export const read = async () => {
+      const namespace = await import('./${dependency}');
+      const first = namespace.value;
+      namespace.update();
+      const second = namespace.value;
+      namespace.update();
+      return [first, second, namespace.value];
+    };`;
+    const files: Record<string, string> = {
+      "state.mjs": "export let value = 1; export const update = () => value++;",
+      "entry.ts": row.asyncBridge
+        ? "export const read = async () => (await import('./bridge.ts')).read();"
+        : reader,
+    };
+    if (row.reexport) {
+      files["relay.mjs"] = "export { value, update } from './state.mjs';";
+    }
+    if (row.asyncBridge) {
+      files["bridge.ts"] = `await Promise.resolve();
+${reader}`;
+    }
+    const root = fixture(files);
+    const plugin = host(root).load("entry.ts") as { read(): Promise<number[]> };
+    await expect(plugin.read()).resolves.toEqual([1, 2, 3]);
+  });
+
   it("retains one async CommonJS evaluation failure per captured generation", async () => {
     const root = temp.make("plugin-async-commonjs-failure-");
     const effect = path.join(temp.make("plugin-async-commonjs-effects-"), "effect.txt");

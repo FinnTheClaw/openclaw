@@ -222,7 +222,7 @@ export const importModule = async (specifier) => {
       else if (key === "default") {
         value = fallback == null ? namespace
           : typeof fallback?.default === "function" && namespace.__esModule ? fallback.default : fallback;
-      } else if (key in target) value = target[key];
+      } else if (key in target) return target[key];
       else if (delegate) {
         value = fallback[key];
         if (typeof value === "function") value = value.bind(fallback);
