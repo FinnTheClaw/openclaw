@@ -267,12 +267,13 @@ describe("debug proxy runtime", () => {
   });
 
   it("returns a successful fetch when request capture storage fails", async () => {
+    const persistenceFailure = new Error("capture store unavailable");
     const failingDeps = {
       ...deps,
       getStore: () => ({
         ...store,
         recordEvent: () => {
-          throw new Error("capture store unavailable");
+          throw persistenceFailure;
         },
       }),
     };
@@ -281,10 +282,18 @@ describe("debug proxy runtime", () => {
     await expect(fetchTarget.fetch("https://api.example.com/success")).resolves.toBeInstanceOf(
       Response,
     );
-    finalizeDebugProxyCapture(settings, failingDeps);
+    let finalizationError: unknown;
+    try {
+      finalizeDebugProxyCapture(settings, failingDeps);
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(AggregateError);
+    expect((finalizationError as AggregateError).errors[0].errors).toContain(persistenceFailure);
   });
 
   it("preserves the original fetch failure when error capture storage fails", async () => {
+    const persistenceFailure = new Error("capture store unavailable");
     const networkError = new Error("network failed");
     fetchTarget.fetch = async () => {
       throw networkError;
@@ -294,24 +303,34 @@ describe("debug proxy runtime", () => {
       getStore: () => ({
         ...store,
         recordEvent: () => {
-          throw new Error("capture store unavailable");
+          throw persistenceFailure;
         },
       }),
     };
     initializeDebugProxyCapture("test", settings, failingDeps);
 
     await expect(fetchTarget.fetch("https://api.example.com/failure")).rejects.toBe(networkError);
-    finalizeDebugProxyCapture(settings, failingDeps);
+    let finalizationError: unknown;
+    try {
+      finalizeDebugProxyCapture(settings, failingDeps);
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(AggregateError);
+    expect((finalizationError as AggregateError).errors[0].errors).toContain(persistenceFailure);
   });
 
   it("settles asynchronous capture when both response and error event writes fail", async () => {
+    const persistenceFailure = new Error("capture store unavailable");
+    const failedWrite = createDeferredCore();
     const failingDeps = {
       ...deps,
       getStore: () => ({
         ...store,
         recordEvent: (event: Record<string, unknown>) => {
           if (event.kind !== "request") {
-            throw new Error("capture store unavailable");
+            failedWrite.resolve();
+            throw persistenceFailure;
           }
         },
       }),
@@ -321,10 +340,15 @@ describe("debug proxy runtime", () => {
     await expect(fetchTarget.fetch("https://api.example.com/response")).resolves.toBeInstanceOf(
       Response,
     );
-    await new Promise((resolve) => {
-      setImmediate(resolve);
-    });
-    finalizeDebugProxyCapture(settings, failingDeps);
+    await failedWrite.promise;
+    let finalizationError: unknown;
+    try {
+      finalizeDebugProxyCapture(settings, failingDeps);
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(AggregateError);
+    expect((finalizationError as AggregateError).errors[0].errors).toContain(persistenceFailure);
   });
 
   it("R9-PROXY-CAPTURE-01 healthy capture preserves exact response and records exchange", async () => {
@@ -338,20 +362,29 @@ describe("debug proxy runtime", () => {
   });
 
   it("R9-PROXY-CAPTURE-02 request payload persistence failure preserves response", async () => {
+    const persistenceFailure = new Error("request blob write failed");
     const response = new Response("ok");
     fetchTarget.fetch = async () => response;
     const failingDeps: DebugProxyCaptureRuntimeDeps = {
       ...deps,
       persistEventPayload: () => {
-        throw new Error("request blob write failed");
+        throw persistenceFailure;
       },
     };
     initializeDebugProxyCapture("test", settings, failingDeps);
     expect(await fetchTarget.fetch("https://api.example.com/blob")).toBe(response);
-    finalizeDebugProxyCapture(settings, failingDeps);
+    let finalizationError: unknown;
+    try {
+      finalizeDebugProxyCapture(settings, failingDeps);
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(AggregateError);
+    expect((finalizationError as AggregateError).errors[0].errors).toContain(persistenceFailure);
   });
 
   it("R9-PROXY-CAPTURE-03 request event write failure preserves response", async () => {
+    const persistenceFailure = new Error("request write failed");
     const response = new Response("ok");
     fetchTarget.fetch = async () => response;
     const failingDeps: DebugProxyCaptureRuntimeDeps = {
@@ -359,16 +392,24 @@ describe("debug proxy runtime", () => {
       getStore: () => ({
         ...store,
         recordEvent: () => {
-          throw new Error("request write failed");
+          throw persistenceFailure;
         },
       }),
     };
     initializeDebugProxyCapture("test", settings, failingDeps);
     expect(await fetchTarget.fetch("https://api.example.com/request")).toBe(response);
-    finalizeDebugProxyCapture(settings, failingDeps);
+    let finalizationError: unknown;
+    try {
+      finalizeDebugProxyCapture(settings, failingDeps);
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(AggregateError);
+    expect((finalizationError as AggregateError).errors[0].errors).toContain(persistenceFailure);
   });
 
   it("R9-PROXY-CAPTURE-04 metadata-only response write failure preserves response", async () => {
+    const persistenceFailure = new Error("metadata write failed");
     const response = { status: 204, headers: new Headers() } as Response;
     fetchTarget.fetch = async () => response;
     const failingDeps: DebugProxyCaptureRuntimeDeps = {
@@ -377,7 +418,7 @@ describe("debug proxy runtime", () => {
         ...store,
         recordEvent: (event: Record<string, unknown>) => {
           if (event.kind === "response") {
-            throw new Error("metadata write failed");
+            throw persistenceFailure;
           }
           store.recordEvent(event);
         },
@@ -386,7 +427,14 @@ describe("debug proxy runtime", () => {
     initializeDebugProxyCapture("test", settings, failingDeps);
     expect(await fetchTarget.fetch("https://api.example.com/metadata")).toBe(response);
     expect(events.map((event) => event.kind)).toEqual(["request"]);
-    finalizeDebugProxyCapture(settings, failingDeps);
+    let finalizationError: unknown;
+    try {
+      finalizeDebugProxyCapture(settings, failingDeps);
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(AggregateError);
+    expect((finalizationError as AggregateError).errors[0].errors).toContain(persistenceFailure);
   });
 
   it("R9-PROXY-CAPTURE-05 response clone failure preserves caller response", async () => {
@@ -403,6 +451,8 @@ describe("debug proxy runtime", () => {
   });
 
   it("R9-PROXY-CAPTURE-06 asynchronous response payload failure has no unhandled rejection", async () => {
+    const persistenceFailure = new Error("response blob write failed");
+    const failedWrite = createDeferredCore();
     const response = new Response("ok");
     fetchTarget.fetch = async () => response;
     let payloadCalls = 0;
@@ -411,20 +461,30 @@ describe("debug proxy runtime", () => {
       persistEventPayload: (captureStore, payload) => {
         payloadCalls += 1;
         if (payloadCalls === 2) {
-          throw new Error("response blob write failed");
+          failedWrite.resolve();
+          throw persistenceFailure;
         }
         return deps.persistEventPayload!(captureStore, payload);
       },
     };
     initializeDebugProxyCapture("test", settings, failingDeps);
     expect(await fetchTarget.fetch("https://api.example.com/response-blob")).toBe(response);
-    await waitForResponseSettled();
+    await failedWrite.promise;
     expect(payloadCalls).toBe(2);
-    expect(events.map((event) => event.kind)).toEqual(["request", "error"]);
-    finalizeDebugProxyCapture(settings, failingDeps);
+    expect(events.map((event) => event.kind)).toEqual(["request"]);
+    let finalizationError: unknown;
+    try {
+      finalizeDebugProxyCapture(settings, failingDeps);
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(AggregateError);
+    expect((finalizationError as AggregateError).errors[0].errors).toContain(persistenceFailure);
   });
 
   it("R9-PROXY-CAPTURE-07 response and error write failures settle without unhandled rejection", async () => {
+    const persistenceFailure = new Error("diagnostic writes failed");
+    const failedWrite = createDeferredCore();
     const response = new Response("ok");
     fetchTarget.fetch = async () => response;
     let errorWriteAttempts = 0;
@@ -437,7 +497,8 @@ describe("debug proxy runtime", () => {
             errorWriteAttempts += 1;
           }
           if (event.kind !== "request") {
-            throw new Error("diagnostic writes failed");
+            failedWrite.resolve();
+            throw persistenceFailure;
           }
           store.recordEvent(event);
         },
@@ -445,12 +506,21 @@ describe("debug proxy runtime", () => {
     };
     initializeDebugProxyCapture("test", settings, failingDeps);
     expect(await fetchTarget.fetch("https://api.example.com/double-fail")).toBe(response);
-    await vi.waitFor(() => expect(errorWriteAttempts).toBe(1));
+    await failedWrite.promise;
+    expect(errorWriteAttempts).toBe(0);
     expect(events.map((event) => event.kind)).toEqual(["request"]);
-    finalizeDebugProxyCapture(settings, failingDeps);
+    let finalizationError: unknown;
+    try {
+      finalizeDebugProxyCapture(settings, failingDeps);
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(AggregateError);
+    expect((finalizationError as AggregateError).errors[0].errors).toContain(persistenceFailure);
   });
 
   it("R9-PROXY-CAPTURE-08 original fetch rejection survives capture logging failure", async () => {
+    const persistenceFailure = new Error("diagnostic write failed");
     const networkError = new Error("original network failure");
     fetchTarget.fetch = async () => {
       throw networkError;
@@ -460,7 +530,7 @@ describe("debug proxy runtime", () => {
       getStore: () => ({
         ...store,
         recordEvent: () => {
-          throw new Error("diagnostic write failed");
+          throw persistenceFailure;
         },
       }),
     };
@@ -468,7 +538,14 @@ describe("debug proxy runtime", () => {
     await expect(fetchTarget.fetch("https://api.example.com/network-fail")).rejects.toBe(
       networkError,
     );
-    finalizeDebugProxyCapture(settings, failingDeps);
+    let finalizationError: unknown;
+    try {
+      finalizeDebugProxyCapture(settings, failingDeps);
+    } catch (error) {
+      finalizationError = error;
+    }
+    expect(finalizationError).toBeInstanceOf(AggregateError);
+    expect((finalizationError as AggregateError).errors[0].errors).toContain(persistenceFailure);
   });
 
   it("R9-PROXY-CAPTURE-09 non-HTTP input remains uncaptured", async () => {
