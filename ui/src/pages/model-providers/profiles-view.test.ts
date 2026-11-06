@@ -283,6 +283,187 @@ describe("renderProviderProfiles", () => {
     expect(onProfileOrderChange).not.toHaveBeenCalled();
   });
 
+  it("L02-140-F01 changes account priority using clicks without dragging or arrow keys", async () => {
+    const providerCard = reorderCard();
+    const onAddAccount = vi.fn();
+    const onRequestLogout = vi.fn();
+    const onProfileOrderChange = vi.fn(
+      (_cardId: string, provider: string, order: string[] | null) => {
+        if (!order) {
+          throw new Error("Expected an account order");
+        }
+        viewProps = {
+          ...viewProps,
+          profileOrders: { ...viewProps.profileOrders, [provider]: order },
+        };
+        queueMicrotask(() => render(renderProviderProfiles(providerCard, viewProps), container));
+      },
+    );
+    let viewProps = props({ onProfileOrderChange, onAddAccount, onRequestLogout });
+    const container = mount(renderProviderProfiles(providerCard, viewProps));
+    const initialMoves = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(
+      (button) =>
+        button.textContent?.trim() === "Move up" || button.textContent?.trim() === "Move down",
+    );
+    const initial = {
+      moveCount: initialMoves.length,
+      namesIncludeActionAndAccount: initialMoves.every((button) => {
+        const row = button.closest<HTMLElement>(".model-providers__profile");
+        const account = providerCard.profiles.find(
+          (profile) => profile.profileId === row?.dataset.profileId,
+        );
+        const name = button.getAttribute("aria-label") ?? button.textContent ?? "";
+        return (
+          name.includes(button.textContent?.trim() ?? "") && name.includes(account?.email ?? "")
+        );
+      }),
+    };
+    const journey = [];
+    for (const [index, direction] of ["Move up", "Move down", "Move down"].entries()) {
+      const row = container.querySelector<HTMLElement>('[data-profile-id="account:two"]')!;
+      const control = [...row.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === direction,
+      );
+      const available = Boolean(control && !control.disabled);
+      control?.click();
+      await Promise.resolve();
+      const movedRow = container.querySelector<HTMLElement>('[data-profile-id="account:two"]')!;
+      const up = [...movedRow.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Move up",
+      );
+      const down = [...movedRow.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Move down",
+      );
+      if (index === 0) {
+        up?.click();
+      } else if (index === 2) {
+        down?.click();
+      }
+      await Promise.resolve();
+      journey.push({
+        direction,
+        available,
+        order: [...container.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
+          (entry) => entry.dataset.profileId,
+        ),
+        calls: onProfileOrderChange.mock.calls.length,
+        upDisabled: up?.disabled,
+        downDisabled: down?.disabled,
+      });
+    }
+    const calls = onProfileOrderChange.mock.calls.map(([cardId, provider, order]) => ({
+      cardId,
+      provider,
+      order: order?.slice(),
+    }));
+    const otherMoves = [
+      ...container.querySelectorAll<HTMLButtonElement>('[data-profile-id="account:other"] button'),
+    ].filter(
+      (button) =>
+        button.textContent?.trim() === "Move up" || button.textContent?.trim() === "Move down",
+    ).length;
+
+    expect({
+      initial,
+      journey,
+      calls,
+      otherMoves,
+      addCalls: onAddAccount.mock.calls.length,
+      logoutCalls: onRequestLogout.mock.calls.length,
+    }).toEqual({
+      initial: { moveCount: 6, namesIncludeActionAndAccount: true },
+      journey: [
+        {
+          direction: "Move up",
+          available: true,
+          order: ["account:two", "account:one", "account:three", "account:other"],
+          calls: 1,
+          upDisabled: true,
+          downDisabled: false,
+        },
+        {
+          direction: "Move down",
+          available: true,
+          order: ["account:one", "account:two", "account:three", "account:other"],
+          calls: 2,
+          upDisabled: false,
+          downDisabled: false,
+        },
+        {
+          direction: "Move down",
+          available: true,
+          order: ["account:one", "account:three", "account:two", "account:other"],
+          calls: 3,
+          upDisabled: false,
+          downDisabled: true,
+        },
+      ],
+      calls: [
+        {
+          cardId: "route-one",
+          provider: "credential-owner",
+          order: ["account:two", "account:one", "account:three"],
+        },
+        {
+          cardId: "route-one",
+          provider: "credential-owner",
+          order: ["account:one", "account:two", "account:three"],
+        },
+        {
+          cardId: "route-one",
+          provider: "credential-owner",
+          order: ["account:one", "account:three", "account:two"],
+        },
+      ],
+      otherMoves: 0,
+      addCalls: 0,
+      logoutCalls: 0,
+    });
+  });
+
+  it.each(["read-only", "auth-config lock", "stale incomplete"] as const)(
+    "L02-140-F01 prevents click priority changes for %s",
+    (eligibility) => {
+      const providerCard = reorderCard();
+      if (eligibility === "auth-config lock") {
+        providerCard.profileOrderLocks = { "credential-owner": "auth-config" };
+      } else if (eligibility === "stale incomplete") {
+        providerCard.profileOrders = {
+          ...providerCard.profileOrders,
+          "credential-owner": ["account:missing", "account:one", "account:two"],
+        };
+        providerCard.profileOrderStoredProviders = ["credential-owner"];
+      }
+      const onProfileOrderChange = vi.fn();
+      const container = mount(
+        renderProviderProfiles(
+          providerCard,
+          props({ canMutate: eligibility !== "read-only", onProfileOrderChange }),
+        ),
+      );
+      const before = [...container.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
+        (row) => row.dataset.profileId,
+      );
+      const controls = [...container.querySelectorAll<HTMLButtonElement>("button")].filter(
+        (button) =>
+          button.textContent?.trim() === "Move up" || button.textContent?.trim() === "Move down",
+      );
+      const enabled = controls.filter((button) => !button.disabled).length;
+      for (const control of controls) {
+        control.click();
+      }
+      const after = [...container.querySelectorAll<HTMLElement>(".model-providers__profile")].map(
+        (row) => row.dataset.profileId,
+      );
+
+      expect({ enabled, after, calls: onProfileOrderChange.mock.calls }).toEqual({
+        enabled: 0,
+        after: before,
+        calls: [],
+      });
+    },
+  );
+
   it("previews the reordered gap, reverses it, then saves using the credential owner", () => {
     const onProfileOrderChange = vi.fn();
     const { grip, row, rows, hitTest, container } = pointerFixture(props({ onProfileOrderChange }));

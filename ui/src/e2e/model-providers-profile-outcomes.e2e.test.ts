@@ -112,6 +112,144 @@ suite.define(() => {
     );
   });
 
+  it("L02-140-F01 changes account priority with Move up and Move down clicks", async () => {
+    const recordVisuals = process.env.OPENCLAW_UI_E2E_RECORD === "1";
+    await suite.withPage(
+      {
+        locale: "en-US",
+        serviceWorkers: "block",
+        viewport: { height: 1000, width: 1280 },
+        ...(recordVisuals
+          ? { recordVideo: { dir: suite.artifactDir, size: { height: 1000, width: 1280 } } }
+          : {}),
+      },
+      async ({ page }) => {
+        const provider = {
+          provider: "openai",
+          displayName: "OpenAI",
+          status: "ok",
+          profiles: [
+            { profileId: "openai:alex", type: "oauth", status: "ok", email: "alex@example.com" },
+            { profileId: "openai:blair", type: "oauth", status: "ok", email: "blair@example.com" },
+          ],
+          profileOrder: ["openai:alex", "openai:blair"],
+        };
+        const gateway = await installMockGateway(page, {
+          featureMethods: [...defaultControlUiFeatureMethods, "models.authOrderSet"],
+          models: [{ id: "gpt-5.5", name: "GPT-5.5", provider: "openai", available: true }],
+          methodResponses: {
+            "config.get": {
+              config: {},
+              sourceConfig: {},
+              hash: "click-roster",
+              raw: "{}",
+              valid: true,
+              issues: [],
+            },
+            "models.authStatus": { ts: NOW, providers: [provider] },
+            "usage.status": { updatedAt: NOW, providers: [] },
+            "sessions.usage": { aggregates: { byProvider: [] } },
+          },
+        });
+        await page.goto(`${suite.server.baseUrl}settings/model-providers`);
+        const card = page.locator('[data-provider-id="openai"]');
+        const alex = card.locator('[data-profile-id="openai:alex"]');
+        const blair = card.locator('[data-profile-id="openai:blair"]');
+        const visibleOrder = () =>
+          card
+            .locator(".model-providers__profile")
+            .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-profile-id")));
+        await expect
+          .poll(() => alex.locator(".model-providers__profile-grip").isEnabled())
+          .toBe(true);
+        await card.scrollIntoViewIfNeeded();
+        if (recordVisuals) {
+          await page.screenshot({ path: path.join(suite.artifactDir, "l02-140-before-click.png") });
+        }
+        expect(await card.getByRole("button", { name: /^Move (up|down): / }).count()).toBe(4);
+        expect(
+          await alex
+            .getByRole("button", { name: "Move up: alex@example.com", exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        expect(
+          await blair
+            .getByRole("button", { name: "Move down: blair@example.com", exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        expect(await gateway.getRequests("models.authOrderSet")).toHaveLength(0);
+        await gateway.deferNext("models.authOrderSet");
+        await blair
+          .getByRole("button", { name: "Move up: blair@example.com", exact: true })
+          .click();
+        const movedOrder = ["openai:blair", "openai:alex"];
+        const upRequest = await gateway.waitForRequest("models.authOrderSet", { after: 0 });
+        expect(upRequest.params).toEqual({
+          agentId: "main",
+          provider: "openai",
+          profileIds: movedOrder,
+        });
+        await expect.poll(visibleOrder).toEqual(movedOrder);
+        await gateway.setMethodResponse("models.authStatus", {
+          ts: NOW,
+          providers: [{ ...provider, profileOrder: movedOrder, profileOrderStored: true }],
+        });
+        await gateway.resolveDeferred("models.authOrderSet", {
+          provider: "openai",
+          profileIds: movedOrder,
+        });
+        await card.getByRole("button", { name: "Clear custom order", exact: true }).waitFor();
+        await expect.poll(visibleOrder).toEqual(movedOrder);
+        if (recordVisuals) {
+          await page.screenshot({ path: path.join(suite.artifactDir, "l02-140-after-click.png") });
+        }
+        expect(
+          await blair
+            .getByRole("button", { name: "Move up: blair@example.com", exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        expect(
+          await alex
+            .getByRole("button", { name: "Move down: alex@example.com", exact: true })
+            .isDisabled(),
+        ).toBe(true);
+        await gateway.deferNext("models.authOrderSet");
+        await blair
+          .getByRole("button", { name: "Move down: blair@example.com", exact: true })
+          .click();
+        const downRequest = await gateway.waitForRequest("models.authOrderSet", { after: 1 });
+        expect(downRequest.params).toEqual({
+          agentId: "main",
+          provider: "openai",
+          profileIds: provider.profileOrder,
+        });
+        await expect.poll(visibleOrder).toEqual(provider.profileOrder);
+        await gateway.setMethodResponse("models.authStatus", {
+          ts: NOW,
+          providers: [{ ...provider, profileOrderStored: true }],
+        });
+        await gateway.resolveDeferred("models.authOrderSet", {
+          provider: "openai",
+          profileIds: provider.profileOrder,
+        });
+        await expect
+          .poll(() =>
+            blair
+              .getByRole("button", { name: "Move up: blair@example.com", exact: true })
+              .isEnabled(),
+          )
+          .toBe(true);
+        expect(await visibleOrder()).toEqual(provider.profileOrder);
+        expect(
+          (await gateway.getRequests("models.authOrderSet")).map((request) => request.params),
+        ).toEqual([
+          { agentId: "main", provider: "openai", profileIds: movedOrder },
+          { agentId: "main", provider: "openai", profileIds: provider.profileOrder },
+        ]);
+      },
+    );
+  });
+
   it("lifts an account, makes room during dragging, and saves its dropped priority", async () => {
     const recordVisuals = process.env.OPENCLAW_UI_E2E_RECORD === "1";
     await suite.withPage(

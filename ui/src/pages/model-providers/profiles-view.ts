@@ -611,6 +611,32 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                 >
                 <span class="model-providers__profile-actions">
                   ${
+                    showMoves
+                      ? html`
+                          <button
+                            type="button"
+                            class="btn btn--sm btn--ghost"
+                            aria-label=${`${t("chat.sidebar.moveUp")}: ${identity}`}
+                            title=${reorderBlocked || t("chat.sidebar.moveUp")}
+                            ?disabled=${!canMove || index <= 0}
+                            @click=${(event: Event) => move(event, -1)}
+                          >
+                            ${t("chat.sidebar.moveUp")}
+                          </button>
+                          <button
+                            type="button"
+                            class="btn btn--sm btn--ghost"
+                            aria-label=${`${t("chat.sidebar.moveDown")}: ${identity}`}
+                            title=${reorderBlocked || t("chat.sidebar.moveDown")}
+                            ?disabled=${!canMove || index >= order.length - 1}
+                            @click=${(event: Event) => move(event, 1)}
+                          >
+                            ${t("chat.sidebar.moveDown")}
+                          </button>
+                        `
+                      : nothing
+                  }
+                  ${
                     profile.logoutSupported === true && logoutProvider
                       ? html`<button
                           type="button"
