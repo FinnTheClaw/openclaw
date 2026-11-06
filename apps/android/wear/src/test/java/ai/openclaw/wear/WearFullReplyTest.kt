@@ -23,14 +23,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
@@ -119,6 +122,36 @@ class WearFullReplyTest {
   @After fun cleanup() {
     controller?.pause()?.stop()?.destroy()
     Settings.Global.putFloat(RuntimeEnvironment.getApplication().contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, previousScale)
+  }
+
+  @Test fun repeatedUnidentifiedChatMessagesRemainReadable() {
+    val reply = WearChatMessage(id = null, role = "assistant", text = "All set.", timestamp = null)
+    snapshot = snapshot.copy(messages = listOf(reply))
+    show()
+    compose.onNodeWithText("All set.").assertIsDisplayed()
+
+    compose.runOnIdle {
+      snapshot = snapshot.copy(messages = mergeEventMessage(snapshot.messages, reply))
+      assertEquals(listOf(reply, reply), snapshot.messages)
+    }
+
+    compose.onAllNodes(hasScrollToIndexAction()).let { lists -> lists[lists.fetchSemanticsNodes().lastIndex].performScrollToIndex(3) }
+    compose.onAllNodesWithText("All set.").assertCountEquals(2)
+    compose.runOnIdle { assertEquals(0, requestCount) }
+  }
+
+  @Test fun chatMessageIdDoesNotCollideWithEndAnchor() {
+    val reply = WearChatMessage(id = "chat-end", role = "assistant", text = "Reply received.", timestamp = 1)
+    snapshot = snapshot.copy(messages = listOf(reply))
+    show()
+
+    compose.onNodeWithText("Reply received.").assertIsDisplayed()
+    reveal(label(R.string.speak_reply))
+    compose.onNodeWithText(label(R.string.speak_reply)).assertIsDisplayed()
+    compose.runOnIdle {
+      assertEquals(listOf(reply), snapshot.messages)
+      assertEquals(0, requestCount)
+    }
   }
 
   @Test fun opensLongReply() {
