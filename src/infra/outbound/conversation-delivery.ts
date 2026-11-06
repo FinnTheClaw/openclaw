@@ -119,6 +119,7 @@ export async function sendGatewayConversationMessage(params: {
   preparedMessageId?: string;
   routeFingerprint: string;
   assertCurrent: () => void;
+  assertAdmissionCurrent?: () => void;
   signal?: AbortSignal;
 }): Promise<ConversationMessageDeliveryResult> {
   const scope = params.scope;
@@ -127,6 +128,7 @@ export async function sendGatewayConversationMessage(params: {
     ? { created: false, record: params.operation }
     : await runConversationDatabaseWrite(scope, (writeScope) => {
         params.assertCurrent();
+        params.assertAdmissionCurrent?.();
         return beginConversationDeliveryOperation(writeScope, {
           operationId: params.operationId,
           operationKind: params.operationKind,

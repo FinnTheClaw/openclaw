@@ -1,5 +1,17 @@
+import { setImmediate } from "node:timers/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import { getConversationDeliveryOperation } from "../../config/sessions/conversation-delivery-store.js";
+import * as conversationRegistry from "../../config/sessions/conversation-registry.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import * as messageActionRunner from "../../infra/outbound/message-action-runner.js";
 import { cancelPendingConversationTurn } from "../../sessions/conversation-turns.js";
+import {
+  conversation,
+  createConversationDeliveryTestStore,
+  holdConversationWriterForTest,
+  queueConversationDeliveryForTest,
+} from "../conversation-delivery.test-support.js";
 import {
   ConversationInputError,
   ConversationOperationConflictError,
@@ -7,7 +19,10 @@ import {
 import { runGatewayConversationList } from "../conversation-list.js";
 import { runGatewayConversationSend } from "../conversation-send.js";
 import { runGatewayConversationTurn } from "../conversation-turn.js";
+import { createOperatorClient } from "../node-invoke-plugin-policy.test-helpers.js";
+import { authorizeCurrentOperatorRoleScopes } from "../operator-role-policy.js";
 import { conversationHandlers } from "./conversations.js";
+import { captureGatewayRequestOperatorGuard } from "./session-mutation-guards.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
 vi.mock("../../sessions/conversation-turns.js", () => ({ cancelPendingConversationTurn: vi.fn() }));
@@ -175,6 +190,263 @@ describe("conversations.list Gateway handler", () => {
 });
 
 describe("conversations.send Gateway handler", () => {
+  it.each([
+    { boundary: "initial lookup", revoke: true },
+    { boundary: "first create", revoke: true },
+    { boundary: "first create", revoke: false },
+    { boundary: "already created", revoke: true },
+  ] as const)(
+    "L01-F12 retains requester currentness until first conversation admission: $boundary revoked=$revoke",
+    async ({ boundary, revoke }) => {
+      const actualSend =
+        await vi.importActual<typeof import("../conversation-send.js")>("../conversation-send.js");
+      vi.mocked(runGatewayConversationSend).mockImplementation(
+        actualSend.runGatewayConversationSend,
+      );
+      const store = createConversationDeliveryTestStore();
+      const cfg: OpenClawConfig = {
+        ...store.config,
+        gateway: {
+          roles: {
+            definitions: {
+              sender: { scopes: ["operator.admin"], sessions: { others: "all" }, agents: ["*"] },
+              viewer: { scopes: [], sessions: { others: "none" }, agents: [] },
+            },
+          },
+        },
+      };
+      const cfgBefore = structuredClone(cfg);
+      const scope = conversationRegistry.resolveConversationRegistryScope({
+        agentId: "main",
+        config: cfg,
+      });
+      expect(
+        conversationRegistry.resolveConversation(scope, conversation.conversationRef),
+      ).toMatchObject({
+        conversationRef: conversation.conversationRef,
+        channel: conversation.channel,
+        accountId: conversation.accountId,
+        target: conversation.target,
+      });
+      const params = {
+        ...sendRequest,
+        operationId: `authority-${boundary.replaceAll(" ", "-")}-${revoke}`,
+        conversationRef: conversation.conversationRef,
+      };
+      const paramsBefore = structuredClone(params);
+      expect(getConversationDeliveryOperation(scope, params.operationId)).toBeUndefined();
+      const entered = createDeferred();
+      const releaseAction = createDeferred();
+      let writer: ReturnType<typeof holdConversationWriterForTest> | undefined;
+      const actualWrite = conversationRegistry.runConversationDatabaseWrite;
+      let writeCalls = 0;
+      const gateReceipts: Array<{ agentId: string; storePath: string | undefined }> = [];
+      const gatedWrite = boundary === "initial lookup" ? 1 : boundary === "first create" ? 2 : 0;
+      const writeSpy = vi
+        .spyOn(conversationRegistry, "runConversationDatabaseWrite")
+        .mockImplementation(async (input, write) => {
+          writeCalls += 1;
+          if (writeCalls === gatedWrite) {
+            writer = holdConversationWriterForTest(scope);
+            await writer.entered;
+            const queued = actualWrite(input, write);
+            gateReceipts.push({ agentId: input.agentId, storePath: input.storePath });
+            entered.resolve();
+            return await queued;
+          }
+          return await actualWrite(input, write);
+        });
+      const actionReceipts: Array<{
+        operationId: string | undefined;
+        status: string | undefined;
+        queueId: string | undefined;
+      }> = [];
+      let attempts = 0;
+      const actionSpy = vi
+        .spyOn(messageActionRunner, "runMessageAction")
+        .mockImplementation(async (input) => {
+          const created = getConversationDeliveryOperation(scope, params.operationId);
+          actionReceipts.push({
+            operationId: created?.operationId,
+            status: created?.status,
+            queueId: created?.queueId,
+          });
+          if (boundary === "already created") {
+            entered.resolve();
+            await releaseAction.promise;
+          }
+          await input.onDeliveryAttempt?.();
+          attempts += 1;
+          await queueConversationDeliveryForTest(input);
+          return {
+            kind: "send",
+            channel: "reef",
+            action: "send",
+            to: conversation.target,
+            handledBy: "core",
+            payload: {},
+            dryRun: false,
+            sendResult: {
+              channel: "reef",
+              to: conversation.target,
+              via: "direct",
+              mediaUrl: null,
+              result: { messageId: "fixture-outbound" },
+              deliveryStatus: "sent",
+            },
+          };
+        });
+      let current = true;
+      const profile = {
+        profileId: "fixture-conversation-sender",
+        aliases: new Set(["fixture-conversation-sender"]),
+        role: "sender",
+      };
+      const client = createOperatorClient("fixture-conversation-connection");
+      client.connect.role = "operator";
+      client.connect.scopes = ["operator.admin"];
+      client.preparedSessionProfile = profile;
+      client.authenticatedUserProfile = {
+        profileId: profile.profileId,
+        displayName: "Fixture sender",
+        avatarRevision: "fixture",
+        hasAvatar: false,
+        updatedAt: 1,
+      };
+      const gatewayContext = {
+        ...context(),
+        getRuntimeConfig: () => cfg,
+        getCommittedRuntimeConfig: () => cfg,
+      };
+      const respond = vi.fn<RespondFn>();
+      const handler = conversationHandlers["conversations.send"]!;
+      const options = {
+        params,
+        respond,
+        context: gatewayContext,
+        req: { type: "req", id: params.operationId, method: "conversations.send" },
+        client,
+        isWebchatConnect: () => false,
+        hasCurrentClientAuthority: () => current,
+      } as Parameters<typeof handler>[0];
+      expect(authorizeCurrentOperatorRoleScopes(client, cfg)).toBeUndefined();
+      const capturedGuard = captureGatewayRequestOperatorGuard(options);
+      expect(capturedGuard).not.toThrow();
+      let pending: Promise<unknown> | undefined;
+      try {
+        pending = Promise.resolve(handler(options));
+        await Promise.race([
+          entered.promise,
+          pending.then(() => {
+            throw new Error("conversation handler settled before its owned admission gate");
+          }),
+        ]);
+        await setImmediate();
+        const held = {
+          responses: respond.mock.calls.length,
+          actions: actionSpy.mock.calls.length,
+          operation: getConversationDeliveryOperation(scope, params.operationId),
+          gateReceipts: [...gateReceipts],
+        };
+        if (revoke) {
+          current = false;
+          profile.role = "viewer";
+        }
+        const roleDenied = authorizeCurrentOperatorRoleScopes(client, cfg)?.code === "FORBIDDEN";
+        let guardDenied = false;
+        try {
+          capturedGuard();
+        } catch {
+          guardDenied = true;
+        }
+        releaseAction.resolve();
+        await writer?.release();
+        await pending;
+        const persisted = getConversationDeliveryOperation(scope, params.operationId);
+        const denied = revoke && boundary !== "already created";
+        const facts = {
+          held: {
+            responses: held.responses,
+            actions: held.actions,
+            status: held.operation?.status,
+            queueId: held.operation?.queueId,
+            gateReceipts: held.gateReceipts,
+          },
+          roleDenied,
+          guardDenied,
+          actionReceipts,
+          attempts,
+          persisted: persisted && {
+            operationId: persisted.operationId,
+            status: persisted.status,
+            conversationRef: persisted.conversationRef,
+            sourceSessionKey: persisted.sourceSessionKey,
+            queueId: persisted.queueId,
+            platformMessageId: persisted.platformMessageId,
+          },
+          responses: respond.mock.calls.map(([ok, value, error]) => ({
+            ok,
+            value,
+            errorPresent: error !== undefined,
+          })),
+          paramsUnchanged: params,
+          cfgUnchanged: cfg,
+        };
+        expect(facts).toEqual({
+          held: {
+            responses: 0,
+            actions: boundary === "already created" ? 1 : 0,
+            status: boundary === "already created" ? "created" : undefined,
+            queueId: undefined,
+            gateReceipts:
+              boundary === "already created"
+                ? []
+                : [{ agentId: "main", storePath: scope.storePath }],
+          },
+          roleDenied: revoke,
+          guardDenied: revoke,
+          actionReceipts: denied
+            ? []
+            : [{ operationId: params.operationId, status: "created", queueId: undefined }],
+          attempts: denied ? 0 : 1,
+          persisted: denied
+            ? undefined
+            : {
+                operationId: params.operationId,
+                status: "sent",
+                conversationRef: params.conversationRef,
+                sourceSessionKey: params.sourceSessionKey,
+                queueId: "queue-1",
+                platformMessageId: "fixture-outbound",
+              },
+          responses: denied
+            ? [{ ok: false, value: undefined, errorPresent: true }]
+            : [
+                {
+                  ok: true,
+                  value: {
+                    status: "sent",
+                    conversationRef: params.conversationRef,
+                    channel: "reef",
+                    messageId: "fixture-outbound",
+                    queueId: "queue-1",
+                  },
+                  errorPresent: false,
+                },
+              ],
+          paramsUnchanged: paramsBefore,
+          cfgUnchanged: cfgBefore,
+        });
+      } finally {
+        releaseAction.resolve();
+        await writer?.release();
+        await pending?.catch(() => undefined);
+        actionSpy.mockRestore();
+        writeSpy.mockRestore();
+      }
+    },
+  );
+
   it("rejects a source session owned by another agent", async () => {
     const runConversationSend = vi.mocked(runGatewayConversationSend);
     const handler = conversationHandlers["conversations.send"]!;

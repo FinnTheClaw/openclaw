@@ -35,6 +35,7 @@ export async function runGatewayConversationSend(params: {
   operationId: string;
   conversationRef: string;
   message: string;
+  assertAdmissionCurrent?: () => void;
   signal?: AbortSignal;
 }): Promise<ConversationSendResult> {
   const scope = resolveConversationRegistryScope(params);
@@ -80,6 +81,9 @@ export async function runGatewayConversationSend(params: {
         operationId: params.operationId,
         operationKind: "send",
         routeFingerprint,
+        ...(params.assertAdmissionCurrent
+          ? { assertAdmissionCurrent: params.assertAdmissionCurrent }
+          : {}),
         assertCurrent: () => {
           params.signal?.throwIfAborted();
           assertConversationDeliveryAttemptAuthorized({

@@ -26,6 +26,10 @@ import {
   runGatewayInflightWork,
   type GatewayInflightResult,
 } from "./inflight.js";
+import {
+  captureGatewayRequestOperatorGuard,
+  readGatewayRequestMutationAuthority,
+} from "./session-mutation-guards.js";
 import type {
   GatewayClient,
   GatewayRequestContext,
@@ -217,13 +221,10 @@ async function runConversationOperation(params: {
 }
 
 async function handleConversationWrite(
-  {
-    context,
-    client,
-    respond,
-  }: Pick<GatewayRequestHandlerOptions, "context" | "client" | "respond">,
+  options: GatewayRequestHandlerOptions,
   request: ConversationSendParams & ({ method: "send" } | { method: "turn"; timeoutMs: number }),
 ): Promise<void> {
+  const { context, client, respond } = options;
   const readCurrentConfig = () => context.getRuntimeConfig();
   const config = readCurrentConfig();
   if (!validateConversationSourceSession({ ...request, config, respond })) {
@@ -257,13 +258,23 @@ async function handleConversationWrite(
         conversationRef: request.conversationRef,
         message: request.message,
       };
-      return request.method === "send"
-        ? runGatewayConversationSend({ ...command, operationId: request.operationId })
-        : runGatewayConversationTurn({
-            ...command,
-            turnId: request.operationId,
-            timeoutMs: request.timeoutMs,
-          });
+      if (request.method === "send") {
+        const requestAuthority = readGatewayRequestMutationAuthority(options);
+        const assertOperatorCurrent = captureGatewayRequestOperatorGuard(options);
+        return runGatewayConversationSend({
+          ...command,
+          operationId: request.operationId,
+          assertAdmissionCurrent: () => {
+            requestAuthority.assertCurrent();
+            assertOperatorCurrent();
+          },
+        });
+      }
+      return runGatewayConversationTurn({
+        ...command,
+        turnId: request.operationId,
+        timeoutMs: request.timeoutMs,
+      });
     },
   });
 }
