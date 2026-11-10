@@ -11,7 +11,7 @@ read_when:
 OpenClaw has two cooperating guardrails against repetitive tool-call patterns,
 both configured under `tools.loopDetection`:
 
-1. **Loop detection** (`enabled`) - disabled by default. Watches the rolling
+1. **Loop detection** (`enabled`) - enabled by default in this frozen distribution. Watches the rolling
    tool-call history for repeated patterns and unknown-tool retries.
 2. **Post-compaction guard** - enabled whenever
    `enabled` is not explicitly `false`. Arms after every compaction-retry and
@@ -37,7 +37,7 @@ Global setting:
 {
   tools: {
     loopDetection: {
-      enabled: false, // master switch for the rolling-history detectors
+      enabled: true, // native rolling-history detectors (frozen default)
     },
   },
 }
@@ -64,13 +64,13 @@ Per-agent override (optional, at `agents.entries.*.tools.loopDetection`):
 
 The per-agent setting overrides the global setting.
 
-You can also enable the global rolling-history detectors in **Settings → Agent Defaults → Tools** in the Control UI. Reset the setting to its default to disable the rolling detectors while keeping the post-compaction guard; explicitly turning it off disables both.
+You can also enable the global rolling-history detectors in **Settings → Agent Defaults → Tools** in the Control UI. Reset the setting to its default to enable both guards in this frozen distribution; explicitly turning it off disables both.
 
 ### Field behavior
 
 | Field     | Default | Effect                                                                                            |
 | --------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `enabled` | `false` | Master switch for the rolling-history detectors. `false` also disables the post-compaction guard. |
+| `enabled` | `true`  | Master switch for the rolling-history detectors. `false` also disables the post-compaction guard. |
 
 Execution titles do not distinguish otherwise identical exec calls. Code Mode
 also supplies private outcome identities: bookkeeping counters and continuation
@@ -114,9 +114,7 @@ change authorization, or modify delivered tool results.
 
 ## Recommended setup
 
-- For smaller models, set `enabled: true`. Flagship models rarely need rolling-history detection and can
-  leave the master switch unset while still benefiting from the
-  post-compaction guard.
+- Leave the setting unset or set `enabled: true` to use both native guards. This frozen distribution enables rolling-history detection by default for all models.
 - To disable everything, including the post-compaction guard, set
   `tools.loopDetection.enabled: false` explicitly.
 
@@ -127,11 +125,7 @@ short-window guard on the next few tool calls. If the agent emits the same
 `(toolName, argsHash, resultHash)` triple enough times within that window, the guard concludes compaction did not break the
 loop and aborts the run with a `compaction_loop_persisted` error.
 
-The guard is gated by the master `tools.loopDetection.enabled` flag with one
-twist: it stays **enabled when the flag is unset or `true`**, and only turns
-off when the flag is explicitly `false`. This is intentional - the guard
-exists to escape compaction loops that would otherwise burn unbounded tokens,
-so a no-config user still gets the protection.
+The post-compaction guard remains **enabled when the flag is unset or `true`**, and only turns off when the flag is explicitly `false`. The frozen distribution now also resolves an unset flag to `true` for ordinary rolling-history detection. No detector algorithm or threshold is changed.
 
 ```json5
 {

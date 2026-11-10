@@ -18,12 +18,7 @@ export function resolveToolLoopDetectionConfig(params: {
       ? resolveAgentConfig(params.cfg, params.agentId)?.tools?.loopDetection
       : undefined;
 
-  if (!agent) {
-    return global;
-  }
-  if (!global) {
-    return agent;
-  }
-
-  return { enabled: agent.enabled ?? global.enabled };
+  // Our frozen distribution enables the native guard unless explicitly opted out.
+  // Keep per-agent choices authoritative over the global setting.
+  return { enabled: agent?.enabled ?? global?.enabled ?? true };
 }
