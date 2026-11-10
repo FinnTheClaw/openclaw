@@ -83,6 +83,20 @@ function buildLaunchAgentEnvironmentFile(entries: Array<[string, string]>): stri
   ].join("\n");
 }
 
+const LAUNCH_AGENT_NODE_SIGNING_GUARD = `invalid_node_identity() {
+  echo "LaunchAgent Node signing identity mismatch; install the approved signed Node runtime or repair its signing policy." >&2
+  exit 78
+}
+node_requirement_file="\${env_file%.env}.node-signing-requirement"
+if [ -e "$node_requirement_file" ] || [ -L "$node_requirement_file" ]; then
+  [ -f "$node_requirement_file" ] && [ -r "$node_requirement_file" ] || invalid_node_identity
+  signing_requirement="$(/bin/cat "$node_requirement_file")" || invalid_node_identity
+  [ -n "$signing_requirement" ] || invalid_node_identity
+  case "$1" in /*) ;; *) invalid_node_identity ;; esac
+  /usr/bin/codesign --verify --strict -R "=$signing_requirement" "$1" || invalid_node_identity
+fi
+`;
+
 export function buildLaunchAgentEnvironmentWrapper(): string {
   return `#!/bin/sh
 set -eu
@@ -97,7 +111,7 @@ shift
 IFS= read -r env_header < "$env_file" || invalid_env
 [ "$env_header" = '${LAUNCH_AGENT_ENV_FILE_HEADER}' ] || invalid_env
 . "$env_file"
-exec "$@"
+${LAUNCH_AGENT_NODE_SIGNING_GUARD}exec "$@"
 `;
 }
 
@@ -106,6 +120,8 @@ exec "$@"
 export function isGeneratedLaunchAgentEnvironmentWrapper(contents: string): boolean {
   return (
     contents === buildLaunchAgentEnvironmentWrapper() ||
+    contents ===
+      buildLaunchAgentEnvironmentWrapper().replace(LAUNCH_AGENT_NODE_SIGNING_GUARD, "") ||
     contents ===
       `#!/bin/sh
 set -eu
@@ -160,14 +176,23 @@ async function prepareLaunchAgentProgramArguments(params: {
   definitionTransaction: GatewayServiceDefinitionTransactionHooks;
 }): Promise<string[]> {
   const entries = collectLaunchAgentEnvironmentEntries(params.environment);
-  if (entries.length === 0) {
+  const envFilePath = resolveLaunchAgentEnvFilePath(params.env, params.label);
+  // Operator-owned policy survives regeneration, including services with no env overrides.
+  const signingPolicy = `${envFilePath.replace(/\.env$/, "")}.node-signing-requirement`;
+  const hasSigningPolicy = await fs.lstat(signingPolicy).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    },
+  );
+  if (entries.length === 0 && !hasSigningPolicy) {
     return params.programArguments;
   }
 
   // Environment values with secrets live in an owner-only env file instead of
   // inline plist XML, which can be harder to rotate and audit.
   const envDir = resolveLaunchAgentEnvDir(params.env);
-  const envFilePath = resolveLaunchAgentEnvFilePath(params.env, params.label);
   const wrapperPath = resolveLaunchAgentEnvWrapperPath(params.env, params.label);
   const generatedWrapper = buildLaunchAgentEnvironmentWrapper();
   await ensureSecureDirectory(envDir, LAUNCH_AGENT_PRIVATE_DIR_MODE);
