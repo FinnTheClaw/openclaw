@@ -240,4 +240,24 @@ describe("Gateway core reload policy", () => {
     expect(plan.hotReasons).toEqual(restart ? [] : [path]);
     expect(resolveConfigReloadMetadata(path).kind).toBe(restart ? "restart" : "hot");
   });
+
+  it("hot-applies composer prediction settings without a Gateway restart", () => {
+    const config = (enabled: boolean, model: "utility" | "conversation"): OpenClawConfig => ({
+      gateway: { controlUi: { experimental: { composerPredictions: { enabled, model } } } },
+    });
+    const previousConfig = config(false, "utility");
+    const candidateConfig = config(true, "conversation");
+    const paths = diffGatewayReloadPaths(
+      previousConfig,
+      candidateConfig,
+      listConfigReloadRefinementPrefixes(),
+    );
+    const featurePath = "gateway.controlUi.experimental.composerPredictions";
+    expect(paths.toSorted()).toEqual([`${featurePath}.enabled`, `${featurePath}.model`]);
+    expect(buildGatewayReloadPlan(paths, { previousConfig, candidateConfig })).toMatchObject({
+      restartGateway: false,
+      restartReasons: [],
+      hotReasons: paths,
+    });
+  });
 });

@@ -171,6 +171,7 @@ const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
       "gateway.controlUi.experimental.customPlugins",
       "gateway.controlUi.experimental.templates",
       "gateway.controlUi.experimental.chatBubbles",
+      "gateway.controlUi.experimental.composerPredictions",
       "gateway.controlUi.allowedOrigins",
       "gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback",
       "gateway.nodes.browser",
