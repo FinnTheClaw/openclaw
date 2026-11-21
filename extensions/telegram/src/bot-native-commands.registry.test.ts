@@ -9,10 +9,18 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { clearPluginCommands, registerPluginCommand } from "openclaw/plugin-sdk/plugin-runtime";
 import { getActivePluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  getSessionEntryAsync,
+  upsertSessionEntry,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { readVisibleSessionTranscriptMessageEntries } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("openclaw/plugin-sdk/session-store-runtime", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/session-store-runtime")>();
+  return { ...actual, getSessionEntryAsync: vi.fn(actual.getSessionEntryAsync) };
+});
 
 let registerTelegramNativeCommands: typeof import("./bot-native-commands.js").registerTelegramNativeCommands;
 let menu: typeof import("./bot-native-commands.menu-test-support.js");
@@ -211,6 +219,68 @@ describe("registerTelegramNativeCommands real plugin registry", () => {
       }
     },
   );
+
+  it("shows the configured fast menu without recording an unreadable session", async ({
+    onTestFinished,
+  }) => {
+    const state = await createOpenClawTestState({ layout: "state-only" });
+    onTestFinished(() => state.cleanup());
+    const scope = {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "fast-menu-unreadable",
+      storePath: state.statePath("sessions.sqlite"),
+    };
+    const cfg: OpenClawConfig = {
+      session: { store: scope.storePath },
+      commands: { allowFrom: { telegram: ["200"] } },
+      agents: {
+        defaults: {
+          model: "openai/gpt-test",
+          models: { "openai/gpt-test": { params: { fastMode: "auto", fastAutoOnSeconds: 30 } } },
+        },
+      },
+      channels: { telegram: { dmPolicy: "allowlist", allowFrom: ["200"] } },
+    };
+    await upsertSessionEntry({
+      ...scope,
+      entry: { sessionId: scope.sessionId, updatedAt: 1, fastMode: true },
+    });
+
+    const { commandHandlers, sendMessage } = await registerMenu({ allowFrom: ["200"] }, cfg);
+    const handler = commandHandlers.get("fast");
+    if (!handler) {
+      throw new Error("expected fast command handler");
+    }
+    const ctx = menu.createPrivateCommandContext();
+    const command = { ...ctx, message: { ...ctx.message, text: "/fast" } };
+    const readSession = vi.mocked(getSessionEntryAsync);
+    readSession.mockClear();
+    let commandFailure: unknown;
+    await readSession.withImplementation(
+      async () => {
+        throw new Error("fixture session read unavailable");
+      },
+      async () => {
+        commandFailure = await handler(command).catch((error: unknown) => error);
+      },
+    );
+
+    expect(commandFailure).toBeUndefined();
+    expect(readSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionKey: scope.sessionKey, storePath: scope.storePath }),
+    );
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("Current fast mode: auto (30 sec)");
+    expect(sendMessage.mock.calls[0]?.[2]).toMatchObject({
+      reply_markup: {
+        inline_keyboard: expect.arrayContaining([
+          expect.arrayContaining([{ text: "auto (30 sec)", callback_data: "tgcmd:/fast auto" }]),
+        ]),
+      },
+    });
+    expect(await readVisibleSessionTranscriptMessageEntries(scope)).toEqual([]);
+  });
 
   it("records the displayed native command reply after a message sending hook", async ({
     onTestFinished,

@@ -445,16 +445,22 @@ export async function prepareTelegramCommandDispatch(
     linkPreview: runtimeTelegramCfg.linkPreview,
     richMessages,
   };
-  const storePath = nativeCommandRuntime.resolveStorePath(runtimeCfg.session?.store, {
-    agentId: route.agentId,
-  });
-  let transcriptSessionId = (
-    await nativeCommandRuntime.getSessionEntryAsync({
+  // A failed capture is distinct from a successful read with no existing session.
+  let transcriptSessionId: string | undefined | null = null;
+  try {
+    const storePath = nativeCommandRuntime.resolveStorePath(runtimeCfg.session?.store, {
       agentId: route.agentId,
-      sessionKey: auth.targetSessionKey,
-      storePath,
-    })
-  )?.sessionId;
+    });
+    transcriptSessionId = (
+      await nativeCommandRuntime.getSessionEntryAsync({
+        agentId: route.agentId,
+        sessionKey: auth.targetSessionKey,
+        storePath,
+      })
+    )?.sessionId;
+  } catch {
+    logVerbose("telegram command transcript skipped: session identity unavailable");
+  }
   return {
     ...params,
     runtimeCfg,
@@ -464,6 +470,9 @@ export async function prepareTelegramCommandDispatch(
     deliveryOptions,
     loadDeliveryRuntime: loadTelegramNativeCommandDeliveryRuntime,
     recordDeliveredReply: async (commandText, replyText, replyId) => {
+      if (transcriptSessionId === null) {
+        return;
+      }
       const result = await nativeCommandRuntime.recordDeliveredCommandExchange({
         config: runtimeCfg,
         agentId: route.agentId,
