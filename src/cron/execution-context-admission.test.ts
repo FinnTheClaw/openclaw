@@ -505,6 +505,21 @@ describe("occurrence pause", () => {
     expect(text).toContain("it was archived");
     expect(text).toContain("openclaw automations enable job-1");
   });
+
+  it("keeps the 120-unit pause-notice name boundary well formed", () => {
+    const render = (name: string) =>
+      buildScheduledParentPauseNotice({
+        job: { id: "job-1", name },
+        pause: { reason: "archived", parentSessionKey: PARENT_KEY },
+      });
+
+    const fitting = `${"a".repeat(118)}📚`;
+    expect(render(fitting)).toContain(`Automation "${fitting}" is paused`);
+    const prefix = "a".repeat(119);
+    const notice = render(`${prefix}📚`);
+    expect(notice.isWellFormed()).toBe(true);
+    expect(notice).toContain(`Automation "${prefix}" is paused`);
+  });
 });
 
 describe("prepareCronRunAdmission", () => {
