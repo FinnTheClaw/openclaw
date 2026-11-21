@@ -14,6 +14,8 @@ import {
   mockHostedOfficialCatalog,
 } from "./management-service.test-helpers.js";
 
+type SelectSlot = typeof import("./slot-selection.js").applySlotSelectionForPlugin;
+
 const mocks = vi.hoisted(() => ({
   applyUninstall: vi.fn(),
   commitRecords: vi.fn(),
@@ -28,7 +30,7 @@ const mocks = vi.hoisted(() => ({
   replaceConfig: vi.fn(),
   planUninstall: vi.fn(),
   selectWriteOptions: vi.fn((writeOptions: unknown) => writeOptions),
-  slotSelection: vi.fn((config: unknown) => config),
+  slotSelection: vi.fn<(...args: Parameters<SelectSlot>) => unknown>((config) => config),
 }));
 
 vi.mock("../config/config.js", () => ({
@@ -59,7 +61,7 @@ vi.mock("./install-config-mutation.js", async (importOriginal) => ({
 }));
 
 vi.mock("./slot-selection.js", () => ({
-  applySlotSelectionForPlugin: (config: unknown) => mocks.slotSelection(config),
+  applySlotSelectionForPlugin: (...args: Parameters<SelectSlot>) => mocks.slotSelection(...args),
 }));
 
 vi.mock("./registry-refresh.js", () => ({
@@ -104,7 +106,8 @@ vi.mock("../infra/clawhub-plugin-catalog.js", async (importOriginal) => ({
 
 const { clearManagedPluginCatalogCache } = await import("./management-catalog.js");
 const { listManagedPlugins } = await import("./management-service.js");
-const { setManagedPluginEnabled, reloadManagedPlugin } = await import("./management-mutations.js");
+const { mutateManagedPluginEnabled, reloadManagedPlugin, setManagedPluginEnabled } =
+  await import("./management-mutations.js");
 const { uninstallManagedPlugin } = await import("./management-uninstall.js");
 
 describe("plugin management service", () => {
@@ -404,6 +407,57 @@ describe("plugin management service", () => {
         },
       }),
     );
+  });
+
+  it("warns when enabling a plugin preserves the selected context engine", async () => {
+    const config = {
+      plugins: {
+        slots: { contextEngine: "current-engine" },
+        entries: { "current-plugin": { enabled: true }, "next-plugin": { enabled: false } },
+      },
+    };
+    const engine = (id: string, engineId: string, enabled: boolean) => {
+      const snapshot = metadataSnapshot({ id, enabled });
+      const manifest = snapshot.plugins[0]!;
+      manifest.kind = "context-engine";
+      manifest.contextEngineIds = [engineId];
+      return snapshot;
+    };
+    const current = engine("current-plugin", "current-engine", true);
+    const next = engine("next-plugin", "next-engine", false);
+    mocks.metadata.mockReturnValue({
+      ...current,
+      index: { ...current.index, plugins: [...current.index.plugins, ...next.index.plugins] },
+      plugins: [...current.plugins, ...next.plugins],
+      byPluginId: new Map([...current.byPluginId, ...next.byPluginId]),
+    });
+    mocks.readConfig.mockResolvedValue(configSnapshot(config));
+    mocks.replaceConfig.mockResolvedValue({ path: "/tmp/openclaw.json" });
+    const { applySlotSelectionForPlugin } =
+      await vi.importActual<typeof import("./slot-selection.js")>("./slot-selection.js");
+    mocks.slotSelection.mockImplementation(applySlotSelectionForPlugin);
+
+    const result = await mutateManagedPluginEnabled({
+      caller: "cli",
+      pluginId: "next-plugin",
+      enabled: true,
+      env: {},
+    });
+
+    expect(result).toMatchObject({
+      status: "committed",
+      config: {
+        plugins: {
+          slots: { contextEngine: "current-engine" },
+          entries: { "next-plugin": { enabled: true } },
+        },
+      },
+    });
+    expect(result).toMatchObject({
+      warnings: [
+        'Preserved explicit context engine selection "current-engine". To use "next-plugin", set plugins.slots.contextEngine to "next-engine".',
+      ],
+    });
   });
 
   it("retains files and tracking when authority is revoked during drain", async () => {

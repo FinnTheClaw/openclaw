@@ -364,6 +364,7 @@ export async function mutateManagedPluginEnabled(
       await resolveConsent();
     }
     let next = snapshot.config;
+    const slotWarnings = new Set<string>();
     let policyPluginId = normalizePluginId(pluginId);
     if (params.enabled) {
       // Admin selection admits one installed plugin; CLI preserves restrictive policy.
@@ -386,7 +387,13 @@ export async function mutateManagedPluginEnabled(
       // still needs the enabled config to resolve legacy runtime-only kinds.
       const slotMetadata = cli && !isBundledManifestOwner(installedPlugin) ? undefined : metadata;
       beforePersistentApply();
-      next = await applySlotSelectionForPlugin(next, pluginId, slotMetadata, beforePersistentApply);
+      next = await applySlotSelectionForPlugin(
+        next,
+        pluginId,
+        slotMetadata,
+        beforePersistentApply,
+        (warning) => slotWarnings.add(warning),
+      );
     } else {
       next = setPluginEnabledInConfig(next, pluginId, false, { updateChannelConfig: false });
     }
@@ -435,6 +442,9 @@ export async function mutateManagedPluginEnabled(
       policyPluginIds: [policyPluginId],
       logger: { warn: (message) => registryWarnings.push(message) },
     });
+    const selectionWarnings = [...slotWarnings].filter(
+      (warning) => !registryWarnings.includes(warning),
+    );
     return {
       write,
       policyPluginId,
@@ -442,7 +452,9 @@ export async function mutateManagedPluginEnabled(
       pluginId,
       config: next,
       changedPaths: [...changedPaths].filter(Boolean).toSorted(),
-      warnings: registryWarnings,
+      warnings: cli
+        ? [...registryWarnings, ...selectionWarnings]
+        : [...selectionWarnings, ...registryWarnings],
     };
   });
 }
