@@ -6,6 +6,7 @@ import {
   type CatalogBrowseResult,
   type CatalogSearchKeywordsResult,
 } from "../../../packages/gateway-protocol/src/schema/catalog.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { resolveCoreOperatorGatewayMethodScope } from "../methods/core-method-policy.js";
 import { coreGatewayHandlers } from "./core-handlers.js";
 import type { RespondFn } from "./types.js";
@@ -214,6 +215,40 @@ it("distinguishes empty results from malformed registry responses and local stat
   local.plugins.mockRejectedValue(new Error("Inventory unavailable"));
   const statusFailure = await call("browse", { kind: "plugin" });
   expect(statusFailure).toMatchObject({ ok: false, error: { code: "UNAVAILABLE" } });
+});
+
+it("returns the plugin browse page while catalog decoration is pending", async () => {
+  const decoration = createDeferred();
+  const waitingOnDecoration = createDeferred();
+  local.plugins.mockImplementation(
+    async ({ cachedCatalogOnly }: { cachedCatalogOnly?: boolean }) => {
+      if (!cachedCatalogOnly) {
+        waitingOnDecoration.resolve();
+        await decoration.promise;
+      }
+      return {
+        mutationAllowed: true,
+        plugins: [installedPlugin("installed", false, { clawhubPackage: "official-plugin" })],
+      };
+    },
+  );
+  const fetchMock = stubRegistry([plugin("official-plugin", true)]);
+  const browsing = call("browse", { kind: "plugin" });
+  try {
+    const first = await Promise.race([
+      browsing.then(() => "browse returned"),
+      waitingOnDecoration.promise.then(() => "waiting on decoration"),
+    ]);
+    expect(first).toBe("browse returned");
+    expect(await browsing).toMatchObject({
+      ok: true,
+      result: { items: [{ local: { installed: true, enabled: false } }] },
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  } finally {
+    decoration.resolve();
+    await Promise.allSettled([browsing]);
+  }
 });
 
 it("pages the deduplicated official union without combining keywords or truncating matches", async () => {

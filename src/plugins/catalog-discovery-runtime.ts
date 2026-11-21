@@ -33,7 +33,10 @@ async function prepareCatalogLocalState(
   kinds: readonly CatalogKind[],
 ): Promise<CatalogLocalState> {
   const [plugins, skills] = await Promise.all([
-    kinds.includes("plugin") ? listManagedPlugins({ config: scope.config }) : undefined,
+    // The catalog join needs installed state, not live presentation enrichment.
+    kinds.includes("plugin")
+      ? listManagedPlugins({ config: scope.config, cachedCatalogOnly: true })
+      : undefined,
     kinds.includes("skill")
       ? import("../skills/discovery/status.js").then(async ({ prepareWorkspaceSkillStatus }) => {
           if (!scope.agentId || !scope.workspaceDir) {
