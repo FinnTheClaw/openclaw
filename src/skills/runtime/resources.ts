@@ -186,8 +186,6 @@ export async function prepareSkillResourceDelivery(
     }
     return sourceReader;
   };
-  const skills: SkillResourceDelivery["skills"] = [];
-  let total = 0;
   const libraryOptions = { env: library.libraryContext?.environment };
   const libraryEntries = library.libraryContext
     ? await prepareSkillLibrarySelection(
@@ -251,25 +249,35 @@ export async function prepareSkillResourceDelivery(
     }
     candidates.push(loaded);
   }
-  const pins = [
-    ...new Set(
-      candidates.flatMap((skill) => {
-        const pin =
-          !skill.filePath.startsWith("node://") &&
-          snapshot.librarySelections?.find((selection) => selection.name === skill.name);
-        return pin ? [pin] : [];
-      }),
-    ),
-  ];
-  let manifests: Awaited<ReturnType<typeof readSkillLibrarySelectionManifests>>;
-  for (const skill of candidates) {
+  const resources = candidates.flatMap((skill) => {
     if (skill.filePath.startsWith("node://")) {
-      continue;
+      return [];
     }
     const pin = snapshot.librarySelections?.find((selection) => selection.name === skill.name);
     const explicitlySelected = explicitSelections.some((selection) =>
       matchesExplicitSelection(skill, selection),
     );
+    const modelVisible =
+      (snapshot.resolvedSkills?.some((selected) => selected.filePath === skill.filePath) ??
+        false) ||
+      explicitlySelected;
+    return [
+      { skill, pin, explicitlySelected, modelVisible, required: modelVisible || Boolean(pin) },
+    ];
+  });
+  const pins = [...new Set(resources.flatMap(({ pin }) => (pin ? [pin] : [])))];
+  const admitted = new Map<(typeof resources)[number], SkillResourceDelivery["skills"][number]>();
+  let total = 0;
+  let manifests: Awaited<ReturnType<typeof readSkillLibrarySelectionManifests>>;
+  // Reserve bytes and slots for the required set without changing the final catalog order.
+  for (const resource of resources.toSorted((a, b) => Number(b.required) - Number(a.required))) {
+    const { skill, pin, explicitlySelected, modelVisible, required } = resource;
+    if (
+      !required &&
+      (admitted.size >= SKILL_RESOURCE_MAX_SKILLS || total >= SKILL_LIBRARY_MAX_BUNDLE_BYTES)
+    ) {
+      break;
+    }
     let files: SkillLibraryFile[] | null;
     try {
       if (pin) {
@@ -311,10 +319,14 @@ export async function prepareSkillResourceDelivery(
     } catch (error) {
       throw contextualizeSkillResourceError(skill, error);
     }
-    total += bundle.files.reduce((sum, file) => sum + file.sizeBytes, 0);
-    if (total > SKILL_LIBRARY_MAX_BUNDLE_BYTES) {
-      throw new SkillResourceDeliveryLimitError();
+    const size = bundle.files.reduce((sum, file) => sum + file.sizeBytes, 0);
+    if (total + size > SKILL_LIBRARY_MAX_BUNDLE_BYTES) {
+      if (required) {
+        throw new SkillResourceDeliveryLimitError();
+      }
+      continue;
     }
+    total += size;
     const sourcePath =
       resolveSkillFileHost(skill) === "workspace" &&
       candidates.some(
@@ -325,29 +337,22 @@ export async function prepareSkillResourceDelivery(
       )
         ? resolveSkillReadPath(skill)
         : skill.filePath;
-    skills.push({
+    admitted.set(resource, {
       name: skill.name,
       sourcePath,
-      modelVisible:
-        (snapshot.resolvedSkills?.some((selected) => selected.filePath === skill.filePath) ??
-          false) ||
-        explicitlySelected,
+      modelVisible,
       ...(skill.displayName ? { displayName: skill.displayName } : {}),
       description: skill.description,
       revision: bundle.revision,
       files,
     });
   }
-  // Discovery is optional; prompted, explicit, and pinned resources keep their slots.
-  const required = new Set(
-    skills.filter(
-      (skill) => skill.modelVisible || pins.some((selection) => selection.name === skill.name),
-    ),
-  );
-  let discoverySlots = Math.max(0, SKILL_RESOURCE_MAX_SKILLS - required.size);
   const delivery = {
     version: 1 as const,
-    skills: skills.filter((skill) => required.has(skill) || discoverySlots-- > 0),
+    skills: resources.flatMap((resource) => {
+      const skill = admitted.get(resource);
+      return skill ? [skill] : [];
+    }),
   };
   if (!Value.Check(SkillResourceDeliverySchema, delivery)) {
     throw new Error("Selected skill catalog exceeds the worker resource contract.");

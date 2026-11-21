@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { SKILL_LIBRARY_MAX_FILE_BYTES } from "../../../packages/gateway-protocol/src/schema/skill-library.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import {
@@ -8,6 +9,7 @@ import {
   skillCommandsToExplicitSelections,
 } from "../discovery/chat-command-invocation.js";
 import { buildWorkspaceSkillCommandSpecs } from "../discovery/command-specs.js";
+import * as bundles from "../library/bundle.js";
 import type { Skill } from "../loading/skill-contract.js";
 import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
 import { buildSkillSnapshot } from "../loading/workspace-skill-prompt.js";
@@ -15,6 +17,7 @@ import { recordSkillFileHost } from "../skill-file-host.js";
 import { writeSkill as writeSkillDocument } from "../test-support/e2e-test-helpers.js";
 import type { ExplicitSkillSelection } from "../types.js";
 import { resolveWorkshopSkillsDir } from "../workshop/skills-root.js";
+import { SkillResourceDeliveryLimitError } from "./resource-delivery-error.js";
 import {
   materializeSkillResources as materialize,
   prepareSkillResourceDelivery as prepare,
@@ -115,6 +118,61 @@ async function fixture() {
 let f: Awaited<ReturnType<typeof fixture>>;
 beforeEach(async () => {
   f = await fixture();
+});
+
+it("drops discovery overflow but rejects it when explicitly selected", async () => {
+  const prompted = recordSkillFileHost({ ...f.snapshot.resolvedSkills![0]! }, "workspace");
+  const baseDir = path.join(f.gateway, "skills", "discovery-only");
+  const discovery = {
+    ...prompted,
+    name: "discovery-only",
+    baseDir,
+    filePath: path.join(baseDir, "SKILL.md"),
+  };
+  const snapshot = {
+    ...f.snapshot,
+    skills: [{ name: prompted.name }, { name: discovery.name }],
+    resolvedSkills: [prompted],
+    discoverySkills: [prompted, discovery],
+    librarySelections: [],
+  };
+  f.skillResources.readSkillFiles.mockResolvedValue([
+    { path: "SKILL.md", content: "# Guide\n" },
+    ...Array.from({ length: 4 }, (_, index) => ({
+      path: `references/guide-${index}.txt`,
+      content: "tiny fixture text",
+    })),
+  ]);
+
+  // Stand in for decoded sizes, not the actual two large support bundles. Each bundle
+  // fits by itself; the combined logical size exceeds the cap by two small manifests.
+  const prepareBundle = bundles.prepareSkillBundle;
+  const sizing = vi.spyOn(bundles, "prepareSkillBundle").mockImplementation((files) => {
+    const bundle = prepareBundle(files);
+    return {
+      ...bundle,
+      files: bundle.files.map((file) =>
+        file.path === "SKILL.md" ? file : { ...file, sizeBytes: SKILL_LIBRARY_MAX_FILE_BYTES },
+      ),
+    };
+  });
+  try {
+    const [explicit, optional] = await Promise.allSettled([
+      f.deliver([{ name: "guide-alias", path: discovery.filePath }], snapshot),
+      f.deliver([], snapshot),
+    ]);
+    expect(explicit).toMatchObject({
+      status: "rejected",
+      reason: expect.any(SkillResourceDeliveryLimitError),
+    });
+    expect(optional).toMatchObject({
+      status: "fulfilled",
+      value: { version: 1, skills: [{ name: prompted.name, modelVisible: true }] },
+    });
+    expect(f.skillResources.resolveExplicitSkill).not.toHaveBeenCalled();
+  } finally {
+    sizing.mockRestore();
+  }
 });
 
 it("keeps Gateway and workspace rewrites separate when their source paths collide", async () => {
