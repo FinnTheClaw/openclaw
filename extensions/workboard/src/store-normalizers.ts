@@ -45,6 +45,7 @@ import {
 import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { definedFields } from "../record-fields.js";
+import { isDependencyLink } from "./store-card-links.js";
 import {
   MAX_ATTACHMENT_BYTES,
   MAX_CARD_ARTIFACTS,
@@ -433,10 +434,6 @@ function normalizeLink(record: unknown): WorkboardLink | null {
     title,
     url,
   });
-}
-
-function isDependencyLink(link: WorkboardLink): boolean {
-  return link.type === "parent" || link.type === "child";
 }
 
 function normalizeProof(record: Record<string, unknown>): WorkboardProof | null {
@@ -951,21 +948,6 @@ export function metadataIsEmpty(metadata: WorkboardMetadata | undefined): boolea
 
 function metadataByteSize(metadata: WorkboardMetadata): number {
   return Buffer.byteLength(JSON.stringify(metadata), "utf8");
-}
-
-export function appendLinkPreservingDependencies(
-  links: readonly WorkboardLink[],
-  link: WorkboardLink,
-): WorkboardLink[] {
-  const next = [...links, link];
-  if (next.length <= MAX_CARD_LINKS) {
-    return next;
-  }
-  const dropIndex = next.findIndex((entry) => !isDependencyLink(entry));
-  if (dropIndex < 0 || dropIndex === next.length - 1) {
-    throw new Error("card link limit reached.");
-  }
-  return next.filter((_, index) => index !== dropIndex);
 }
 
 export function trimMetadataToBudget(

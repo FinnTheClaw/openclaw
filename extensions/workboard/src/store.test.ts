@@ -1352,19 +1352,17 @@ describe("WorkboardStore", () => {
     );
   });
 
-  it("keeps a created card visible when dependency link capacity rejects the parent", async () => {
+  it("does not persist or reuse an overflow child after a parent link-limit refusal", async () => {
     const store = createStore();
     const parent = await createCard(store, "Fanout parent");
     for (let index = 0; index < 50; index += 1) {
       await createCard(store, `Child ${index}`, { parents: [parent.id] });
     }
 
-    await expectRejected(
-      createCard(store, "Overflow child", { parents: [parent.id], idempotencyKey: "overflow" }),
-      /link limit/,
-    );
-
-    expect((await store.list()).some((card) => card.title === "Overflow child")).toBe(true);
+    const request = { title: "Overflow child", parents: [parent.id], idempotencyKey: "overflow" };
+    await expectRejected(store.create(request), /link limit/);
+    await expect.soft(store.create(request)).rejects.toThrow();
+    expect((await store.list()).some((card) => card.title === request.title)).toBe(false);
   });
 
   it("rejects invalid parent creates without persisting partial cards", async () => {

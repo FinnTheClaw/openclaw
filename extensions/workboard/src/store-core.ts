@@ -25,6 +25,12 @@ import {
   workboardCardReferenceRemovalPatch,
   appendEvent,
 } from "./store-card-helpers.js";
+import {
+  appendLinkPreservingDependencies,
+  assertIdempotentLinkedCreate,
+  assertWorkboardLinkCapacity,
+  withWorkboardDependencyLink,
+} from "./store-card-links.js";
 import { MAX_CARD_COMMENTS, MAX_CARD_WORKER_LOGS, POSITION_STEP } from "./store-constants.js";
 import type {
   WorkboardCardPatch,
@@ -38,7 +44,6 @@ import type {
   WorkboardUpdateCardOptions,
 } from "./store-inputs.js";
 import {
-  appendLinkPreservingDependencies,
   metadataIsEmpty,
   normalizeBoardId,
   normalizeBoundedString,
@@ -261,6 +266,7 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
           cardBoardId(card) === (automation.boardId ?? "default"),
       );
       if (existing) {
+        assertIdempotentLinkedCreate(existing, parents, cards);
         return existing;
       }
     }
@@ -271,6 +277,7 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
         throw new Error(`card not found: ${parentId}`);
       }
       assertCanMutateClaimedCard(parent, scope);
+      assertWorkboardLinkCapacity(parent.metadata?.links);
       return parent;
     });
     const childAutomation =
@@ -762,19 +769,8 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
     if (await this.dependsOn(parent.id, child.id)) {
       throw new Error("dependency link would create a cycle.");
     }
-    const linkTo = (card: WorkboardCard, targetCardId: string, type: "parent" | "child") => {
-      const links = card.metadata?.links ?? [];
-      return links.some((link) => link.type === type && link.targetCardId === targetCardId)
-        ? links
-        : appendLinkPreservingDependencies(links, {
-            id: randomUUID(),
-            type,
-            targetCardId,
-            createdAt: now,
-          });
-    };
-    const nextParentLinks = linkTo(parent, child.id, "child");
-    const nextChildLinks = linkTo(child, parent.id, "parent");
+    const nextParentLinks = withWorkboardDependencyLink(parent, child.id, "child", now);
+    const nextChildLinks = withWorkboardDependencyLink(child, parent.id, "parent", now);
     await this.updateCard(parent, {
       metadata: { ...parent.metadata, links: nextParentLinks },
     });
