@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { standaloneSourceContextIdentity } from "./bun-standalone-source-identity.mjs";
+import { standaloneSourceLoader } from "./bun-standalone-source-parser.mjs";
 import { LOCAL_PLUGIN_ROOT } from "./extension-boundary-inputs.mts";
 
 const slash = (value) => value.split(path.sep).join("/");
@@ -472,7 +473,7 @@ export function createStandaloneSourceGraph({
           }
         }
       }
-      const loader = source.endsWith(".tsx") ? "tsx" : /\.[cm]?ts$/.test(source) ? "ts" : "js";
+      const loader = standaloneSourceLoader(source);
       files.set(filename, { filename, source, relative, context, loader });
       addAliases(slash(path.relative(runtimeRoot, filename)), filename);
     }

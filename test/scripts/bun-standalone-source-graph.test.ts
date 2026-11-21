@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { createStandaloneSourceEntries } from "../../scripts/lib/bun-standalone-source-entries.mjs";
 import { createStandaloneSourceGraph } from "../../scripts/lib/bun-standalone-source-graph.mjs";
+import { createStandaloneSourceParser } from "../../scripts/lib/bun-standalone-source-parser.mjs";
 import { prepareStandaloneWorkers } from "../../scripts/lib/bun-standalone-workers.mjs";
 import { collectNativeTypeScriptDiagnostics } from "../../scripts/lib/native-typescript-diagnostics.mts";
 import { createNativeTypeScriptProject } from "../../scripts/lib/native-typescript.mts";
@@ -42,6 +43,26 @@ function requireFilename(filename: string | undefined) {
 }
 
 describe("standalone original-source graph", () => {
+  it.each(["tsx", "jsx"])("keeps the %s loader when staging JSX source", (extension) => {
+    const fixtureRoot = fixture();
+    const { sourceRoot, write } = fixtureRoot;
+    const relative = `src/panel.${extension}`;
+    write(sourceRoot, relative, "export const panel = <section />;");
+    const config = { entry: { entry: relative } };
+    const sourceEntries = createStandaloneSourceEntries({ sourceRoot, configs: [config] });
+    const graph = createStandaloneSourceGraph({ ...fixtureRoot, sourceEntries, embeddedPaths: {} });
+    const filename = requireFilename(graph.addEntry("dist/entry.mjs"));
+    const parse = createStandaloneSourceParser();
+    expect(() =>
+      parse(fs.readFileSync(filename, "utf8"), {
+        ecmaVersion: "latest",
+        sourceType: "module",
+        filename,
+      }),
+    ).not.toThrow();
+    expect(graph.files.get(filename)?.loader).toBe(extension);
+  });
+
   it("keeps checkout-owned context paths stable without changing compiler aliases", () => {
     const capture = (target: string) => {
       const fixtureRoot = fixture();
