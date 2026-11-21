@@ -10,6 +10,7 @@ import type {
   SessionHistorySnapshot,
   SessionHistoryTranscriptTarget,
 } from "../config/sessions/session-history-types.js";
+import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import {
   projectChatDisplayMessages,
@@ -47,6 +48,18 @@ type InlineSessionHistoryAppend = {
   shouldRefresh?: boolean;
 };
 
+async function prepareHistoryCronJobNameResolver(messages: readonly unknown[]) {
+  try {
+    return await prepareForwardedMessageCronJobNameResolver(messages);
+  } catch (error) {
+    if (!(error instanceof WorkerTaskError) || error.code !== "timeout") {
+      throw error;
+    }
+    // Render the committed history with generic automation labels.
+    return () => undefined;
+  }
+}
+
 export async function readSessionHistorySnapshotAsync(
   params: SessionHistoryReadParams,
 ): Promise<SessionHistorySnapshot> {
@@ -58,9 +71,7 @@ export async function readSessionHistorySnapshotAsync(
       resolveCurrentUserProfileDisplay,
       resolveCronJobName: () => undefined,
     });
-    const resolveCronJobName = await prepareForwardedMessageCronJobNameResolver(
-      snapshot.history.messages,
-    );
+    const resolveCronJobName = await prepareHistoryCronJobNameResolver(snapshot.history.messages);
     const messages = projectForwardedMessages(snapshot.history.messages, resolveCronJobName);
     memory.assertCurrent();
     return { ...snapshot, history: { ...snapshot.history, items: messages, messages } };
@@ -76,9 +87,7 @@ export async function readSessionHistorySnapshotAsync(
       // Match the worker projection: install current names on the completed page below.
       resolveCronJobName: () => undefined,
     });
-    const resolveCronJobName = await prepareForwardedMessageCronJobNameResolver(
-      snapshot.history.messages,
-    );
+    const resolveCronJobName = await prepareHistoryCronJobNameResolver(snapshot.history.messages);
     const messages = projectForwardedMessages(snapshot.history.messages, resolveCronJobName);
     return { ...snapshot, history: { ...snapshot.history, items: messages, messages } };
   }
@@ -101,9 +110,7 @@ export async function readSessionHistorySnapshotAsync(
       },
     },
   });
-  const resolveCronJobName = await prepareForwardedMessageCronJobNameResolver(
-    snapshot.history.messages,
-  );
+  const resolveCronJobName = await prepareHistoryCronJobNameResolver(snapshot.history.messages);
   const project = createCurrentUserProfileMessageProjector(resolveCurrentUserProfileDisplay);
   const messages = projectForwardedMessages(snapshot.history.messages, resolveCronJobName).map(
     project,
@@ -211,7 +218,7 @@ export class SessionHistorySseState {
         prepared.assertCurrent,
       );
     }
-    const resolveCronJobName = await prepareForwardedMessageCronJobNameResolver([
+    const resolveCronJobName = await prepareHistoryCronJobNameResolver([
       ...this.sentHistory.messages,
       message,
     ]);

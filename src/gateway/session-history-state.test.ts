@@ -7,6 +7,8 @@ import type {
   SessionHistorySnapshot,
 } from "../config/sessions/session-history-types.js";
 import { SessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
+import { WorkerTaskError } from "../infra/worker-task-pool.js";
+import * as cronDisplay from "./chat-display-projection.cron.js";
 import {
   assistantTextMessage,
   textContent,
@@ -128,6 +130,47 @@ describe("SessionHistorySseState", () => {
 
     expect(appended?.messageSeq).toBe(9);
     expect(state.snapshot().messages.at(-1)?.["__openclaw"]?.seq).toBe(9);
+  });
+
+  test("keeps committed inline history when the automation label times out", async () => {
+    const primaryReadError = new Error("Primary history read failed");
+    using readHistory = vi
+      .spyOn(sessionTranscriptReaders, "readSessionMessagesWithSourceAsync")
+      .mockRejectedValue(primaryReadError);
+    using prepareLabel = vi
+      .spyOn(cronDisplay, "prepareForwardedMessageCronJobNameResolver")
+      .mockResolvedValueOnce(() => "Daily report")
+      .mockRejectedValueOnce(new WorkerTaskError("worker task timed out", "timeout"));
+    const initial = assistantTextMessage("Existing history", 1);
+    const state = newState([initial]);
+    await expect(state.refreshAsync()).rejects.toBe(primaryReadError);
+    expect(readHistory).toHaveBeenCalledTimes(1);
+    expect(state.snapshot().messages).toEqual([initial]);
+    expect(prepareLabel).not.toHaveBeenCalled();
+
+    const sourceSessionKey = "agent:main:cron:daily-report:run:completed-run";
+    const committed = {
+      role: "user",
+      content: "The queue is clear.",
+      provenance: { kind: "inter_session", sourceTool: "sessions_send", sourceSessionKey },
+    };
+    const expected = (label: string) => ({
+      messageSeq: 2,
+      message: {
+        role: "assistant",
+        content: committed.content,
+        senderSession: { sessionKey: sourceSessionKey, agentId: "main", label },
+        __openclaw: { id: "forwarded-result", seq: 2 },
+      },
+    });
+    await expect(
+      appendMessage(newState([initial]), committed, 2, "forwarded-result"),
+    ).resolves.toMatchObject(expected("Daily report"));
+    await expect(appendMessage(state, committed, 2, "forwarded-result")).resolves.toMatchObject(
+      expected("Automation"),
+    );
+    expect(state.snapshot().messages).toMatchObject([initial, expected("Automation").message]);
+    expect(prepareLabel).toHaveBeenCalledTimes(2);
   });
 
   test("requests refresh when inline TTS supplement merges into an existing assistant message", async () => {
