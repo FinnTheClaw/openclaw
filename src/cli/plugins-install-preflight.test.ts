@@ -4,8 +4,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import * as homeDir from "../infra/home-dir.js";
 import { resolvePluginInstallSourcePlan } from "../plugins/install-source-plan.js";
 import * as fixture from "./plugins-cli-test-helpers.js";
+import { resolvePluginInstallPreflight } from "./plugins-install-preflight.js";
 
 const { withPluginLifecycleLeaseMock } = vi.hoisted(() => ({
   withPluginLifecycleLeaseMock: vi.fn(),
@@ -127,6 +129,27 @@ describe("plugin install mutation-free preflight", () => {
       }),
     );
     expect(fixture.installPluginFromNpmSpecMock).not.toHaveBeenCalled();
+  });
+
+  it("returns a typed preflight error when the npm-pack archive path cannot be resolved", async () => {
+    const archive = "fixture-plugin.tgz";
+    const raw = `npm-pack:${archive}`;
+    const failure = Object.assign(new Error("Archive folder is not a directory"), {
+      code: "ENOTDIR",
+    });
+    using resolveFilesystemPath = vi
+      .spyOn(homeDir, "resolveUserFilesystemPath")
+      .mockImplementation(() => {
+        throw failure;
+      });
+
+    await expect(
+      resolvePluginInstallPreflight({ raw, allowInstallPolicyWarningPrompt: false, opts: {} }),
+    ).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining(failure.message),
+    });
+    expect(resolveFilesystemPath).toHaveBeenCalledWith(archive);
   });
 
   it.each([

@@ -129,17 +129,23 @@ export function resolvePluginInstallSourcePlan(params: {
 
   const npmPackPath = parseNpmPackPrefixPath(params.raw);
   if (npmPackPath !== null) {
-    return npmPackPath
-      ? sourcePlan(
-          {
-            source: "npm-pack",
-            archivePath: resolveUserFilesystemPath(npmPackPath),
-            mode: params.mode,
-          },
-          params.raw,
-          "npm-pack",
-        )
-      : { ok: false, error: "Unsupported npm-pack plugin spec: missing archive path." };
+    if (!npmPackPath) {
+      return { ok: false, error: "Unsupported npm-pack plugin spec: missing archive path." };
+    }
+    let archivePath: string;
+    try {
+      archivePath = resolveUserFilesystemPath(npmPackPath);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `Plugin path not found: ${npmPackPath} (${formatErrorMessage(error)})`,
+      };
+    }
+    return sourcePlan(
+      { source: "npm-pack", archivePath, mode: params.mode },
+      params.raw,
+      "npm-pack",
+    );
   }
   const gitPrefix = params.raw.trim().toLowerCase().startsWith("git:");
   const git = parseGitPluginSpec(params.raw);
