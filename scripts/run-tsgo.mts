@@ -22,6 +22,7 @@ import { readPositiveEnvInt } from "./lib/numeric-options.mjs";
 import { findRepoRoot } from "./lib/repo-root.mjs";
 import {
   getSparseTsgoGuardError,
+  isTsgoMetadataOnlyCommand,
   shouldSkipSparseTsgoGuardError,
 } from "./lib/tsgo-sparse-guard.mts";
 
@@ -99,7 +100,9 @@ export async function runPreparedTsgoCommand(
   evidence: { evidenceId?: string; onEvidence?: () => void } = {},
 ): Promise<number> {
   try {
-    await ensureKyselyTypes(findRepoRoot(command.cwd) ?? command.cwd);
+    if (!isTsgoMetadataOnlyCommand(command.args)) {
+      await ensureKyselyTypes(findRepoRoot(command.cwd) ?? command.cwd);
+    }
     const tsBuildInfoFile = readFlagValue(command.args, "--tsBuildInfoFile");
     if (tsBuildInfoFile) {
       fs.mkdirSync(path.dirname(path.resolve(command.cwd, tsBuildInfoFile)), { recursive: true });

@@ -13,7 +13,11 @@ import {
   getSparseTsgoGuardError,
   shouldSkipSparseTsgoGuardError,
 } from "../../scripts/lib/tsgo-sparse-guard.mts";
-import { prepareTsgoCommand, resolveTsgoTimeoutMs } from "../../scripts/run-tsgo.mts";
+import {
+  prepareTsgoCommand,
+  resolveTsgoTimeoutMs,
+  runPreparedTsgoCommand,
+} from "../../scripts/run-tsgo.mts";
 import { createBoundedChildOutput } from "../helpers/bounded-child-output.js";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import {
@@ -665,6 +669,30 @@ process.exitCode = result.status ?? 1;
     expect(result.stderr.trim().split("\n").at(-1)).toBe("[tsgo] FAILED (exit 1)");
     expect(fs.lstatSync(modules, { throwIfNoEntry: false })).toBeUndefined();
   }, 30_000);
+
+  it.each(["no schema", "one schema"] as const)(
+    "runs version metadata in a sparse checkout with %s without generating Kysely types",
+    async (schemas) => {
+      const { root, git } = createLinkedCheckoutFixture();
+      git(["config", "core.sparseCheckout", "true"]);
+      if (schemas === "one schema") {
+        write(root, "src/state/openclaw-state-schema.sql", "CREATE TABLE fixture (id INTEGER);\n");
+      }
+      // Use the installed runtime for a version-only child; the fixture temp mount may be noexec.
+      await expect(
+        runPreparedTsgoCommand({
+          args: ["--version"],
+          bin: process.execPath,
+          cwd: root,
+          env: process.env,
+          shell: false,
+          timeoutMs: 25_000,
+        }),
+      ).resolves.toBe(0);
+      expect(fs.existsSync(path.join(root, ".artifacts/kysely"))).toBe(false);
+    },
+    30_000,
+  );
 
   it("visibly skips a missing sparse project through its own wrapper before creating dependencies or outputs", () => {
     const { root, git } = createLinkedCheckoutFixture();

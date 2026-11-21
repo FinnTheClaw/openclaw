@@ -107,7 +107,7 @@ export function getSparseTsgoGuardError(
   }: SparseGuardOptions = {},
 ) {
   const projectNames = readProjectNames(args);
-  if (projectNames.length === 0 || isMetadataOnlyCommand(args)) {
+  if (projectNames.length === 0 || isTsgoMetadataOnlyCommand(args)) {
     return null;
   }
 
@@ -216,7 +216,7 @@ function readProjectNames(args: readonly string[]) {
   ];
 }
 
-function isMetadataOnlyCommand(args: readonly string[]) {
+export function isTsgoMetadataOnlyCommand(args: readonly string[]) {
   return args.some((arg) =>
     ["--help", "-h", "--version", "-v", "--init", "--showConfig"].includes(arg),
   );
