@@ -207,16 +207,16 @@ export function createSessionActorTranscriptReader(
     },
     async visitSessionMessagesAsync(_scope, visit) {
       let count = 0;
-      let offset: number | undefined;
+      let cursor: SessionActorMemoryHistoryReads["session.history.visitor-source"]["input"]["cursor"];
       do {
-        const page = await read("session.history.visitor-source", { offset }, { messages: [] });
+        const page = await read("session.history.visitor-source", { cursor }, { messages: [] });
         for (const { message, seq } of page.messages) {
           memory.assertCurrent();
           visit(message, seq);
           count++;
         }
-        offset = page.nextOffset;
-      } while (offset !== undefined);
+        cursor = page.nextCursor;
+      } while (cursor);
       return count;
     },
   };

@@ -25,6 +25,7 @@ import {
   readSessionTranscriptBoundedMessageTailPageAsync as readTail,
   readSessionTranscriptSummaryAsync as readSummary,
 } from "./session-transcript-readers.js";
+import { SOURCE_PAGE_MAX_MESSAGES } from "./session-transcript-source-pages.js";
 import { readSessionTitleFieldsFromTranscriptAsync } from "./session-transcript-title-reader.js";
 import { readSessionTitleFieldsFromTranscript } from "./session-transcript-title-reader.worker.js";
 
@@ -76,7 +77,12 @@ function event(id: string, parentId: string | null, message: Record<string, unkn
   return { type: "message" as const, id, parentId, timestamp: "2026-10-11T00:00:00.000Z", message };
 }
 
-async function fixture(sessionId = "one", agentId = "main", announce = false) {
+async function fixture(
+  sessionId = "one",
+  agentId = "main",
+  announce = false,
+  extraEvents: ReturnType<typeof event>[] = [],
+) {
   const storePath = resolveIncognitoOpenClawAgentSqlitePath({ agentId, env });
   const owner = memorySessionActorOwners.get({ agentId, path: storePath });
   const sessionKey = `agent:${agentId}:dashboard:incognito-${sessionId}`;
@@ -98,6 +104,7 @@ async function fixture(sessionId = "one", agentId = "main", announce = false) {
       content: `Answer ${sessionId}`,
       usage: { input: 10, output: 2 },
     }),
+    ...extraEvents,
   ];
   await mutate({
     type: "session.entry.create",
@@ -110,6 +117,7 @@ async function fixture(sessionId = "one", agentId = "main", announce = false) {
   return {
     owner,
     scope,
+    storage,
     run: <T>(callback: () => T) =>
       runWithSessionActorStorage({ actor, authority, agentId, path: storePath }, callback),
     append: (next: unknown) => append({ event: JSON.stringify(next) }),
@@ -233,6 +241,50 @@ it("serves queued writes through pages, exact reads, accounting, summaries, and 
       ],
     });
     await expectEmptyOverview(scope);
+  });
+});
+
+it("keeps the opening memory usage snapshot when a message appends between pages", async () => {
+  const extraEvents = Array.from({ length: SOURCE_PAGE_MAX_MESSAGES - 2 }, (_, index) =>
+    event(`context-${index + 1}`, index === 0 ? "answer" : `context-${index}`, {
+      role: "user",
+      content: "Existing context",
+    }),
+  );
+  const { run, scope, storage, appendMessage } = await fixture(
+    "paged-usage",
+    "main",
+    false,
+    extraEvents,
+  );
+  await run(async () => {
+    // Put existing nonzero usage on the second page so dropping that page also fails the test.
+    await appendMessage("existing-tail", extraEvents.at(-1)!.id, {
+      role: "assistant",
+      content: "Existing tail",
+      usage: { input: 1, output: 1 },
+    });
+    const openingUsage = { kind: "usage", usage: { inputTokens: 11, outputTokens: 3 } };
+    expect(await usage(scope)).toMatchObject(openingUsage);
+
+    const read = storage.read;
+    using firstPage = vi.spyOn(storage, "read").mockImplementationOnce(async (query, authority) => {
+      expect(query.type).toBe("session.history.visitor-source");
+      const page = await read(query, authority);
+      await appendMessage("later", "existing-tail", {
+        role: "assistant",
+        content: "Later ordinary append",
+        usage: { input: 20, output: 3 },
+      });
+      return page;
+    });
+    const inFlight = await usage(scope);
+    expect(firstPage).toHaveBeenCalled();
+    expect(await usage(scope)).toMatchObject({
+      kind: "usage",
+      usage: { inputTokens: 31, outputTokens: 6 },
+    });
+    expect(inFlight).toMatchObject(openingUsage);
   });
 });
 

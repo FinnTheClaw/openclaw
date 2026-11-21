@@ -519,11 +519,14 @@ export function readSessionActorMemoryHistoryFacts(
       return readSessionActorMemoryBoundedTail(window, navigation, query.input.options);
     case "session.history.visitor-source": {
       const rows = navigation.visibleMessages;
-      const start = resolveIntegerOption(query.input.offset, 0, { min: 0, max: rows.length });
+      // Keep the opening end: the same owner can append between these reads.
+      const endOffset = query.input.cursor?.endOffset ?? rows.length;
+      const stop = Math.min(endOffset, rows.length);
+      const start = resolveIntegerOption(query.input.cursor?.offset, 0, { min: 0, max: stop });
       const messages: Array<{ message: unknown; seq: number }> = [];
       let end = start;
       let bytes = 0;
-      for (const row of rows.slice(start, start + SOURCE_PAGE_MAX_MESSAGES)) {
+      for (const row of rows.slice(start, Math.min(stop, start + SOURCE_PAGE_MAX_MESSAGES))) {
         if (row.serializedBytes > SOURCE_PAGE_MAX_BYTES) {
           throw new Error(
             `Transcript source message exceeds the ${SOURCE_PAGE_MAX_BYTES}-byte page limit`,
@@ -539,7 +542,7 @@ export function readSessionActorMemoryHistoryFacts(
           messages.push({ message, seq: row.messagePosition! + 1 });
         }
       }
-      return { messages, ...(end < rows.length ? { nextOffset: end } : {}) };
+      return { messages, ...(end < stop ? { nextCursor: { offset: end, endOffset } } : {}) };
     }
   }
   throw new Error("Unknown memory history facts query");

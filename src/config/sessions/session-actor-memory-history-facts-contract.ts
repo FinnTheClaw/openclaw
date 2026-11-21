@@ -30,6 +30,8 @@ import type {
   SessionTranscriptMaintenanceRead,
 } from "./session-transcript-hydration.types.js";
 
+type VisitorCursor = { offset: number; endOffset: number };
+
 type Reads = {
   "visibility-inputs": {
     input: { runIds: string[] };
@@ -88,8 +90,8 @@ type Reads = {
     output: SessionTranscriptBoundedMessageTailPage;
   };
   "visitor-source": {
-    input: { offset?: number };
-    output: { messages: Array<{ message: unknown; seq: number }>; nextOffset?: number };
+    input: { cursor?: VisitorCursor };
+    output: { messages: Array<{ message: unknown; seq: number }>; nextCursor?: VisitorCursor };
   };
 };
 
