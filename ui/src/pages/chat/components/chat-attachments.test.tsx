@@ -678,6 +678,49 @@ it("retains focused pasted-text actions when a peer read completes and uses curr
   expect(h.attachments.map(({ fileName }) => fileName)).toEqual(["peer.png"]);
 });
 
+it("keeps focus in the same attachment tile when video compression starts", async () => {
+  const encoderStarted = vi.fn();
+  mockResizeWorker(encoderStarted);
+  onTestFinished(() => vi.unstubAllGlobals());
+  const h = previewFixture([], {}, true);
+  const { container } = h;
+  document.body.append(container);
+  onTestFinished(() => container.remove());
+
+  const video = new File(["synthetic oversized video"], "clip.mp4", { type: "video/mp4" });
+  expect(h.append([video])).toBe(1);
+  await vi.dynamicImportSettled();
+  await waitForSolid(() =>
+    expect(container.querySelector(".chat-attachment-compress")).not.toBeNull(),
+  );
+  const tile = expectDefined(container.querySelector(".chat-attachment-thumb"), "video tile");
+  const compress = expectDefined(
+    tile.querySelector<HTMLButtonElement>(".chat-attachment-compress"),
+    "video compression action",
+  );
+  const remove = expectDefined(
+    tile.querySelector("button[aria-label='Remove clip.mp4']"),
+    "remove action",
+  );
+  expect(compress.textContent?.trim()).toBe("Compress to fit");
+  expect(encoderStarted).not.toHaveBeenCalled();
+
+  compress.focus();
+  expect(document.activeElement).toBe(compress);
+  compress.click();
+
+  await vi.dynamicImportSettled();
+  await waitForSolid(() => {
+    expect(encoderStarted).toHaveBeenCalledOnce();
+    expect(tile.querySelector("[role='status']")?.textContent).toContain("Compressing");
+  });
+  expect(h.reads.project(h.attachments)[0]?.preparation).toBe("compressing");
+  expect(h.reads.pendingReads).toBe(1);
+  expect(container.querySelector(".chat-attachment-thumb")).toBe(tile);
+  expect(tile.querySelector("button[aria-label='Remove clip.mp4']")).toBe(remove);
+  expect(tile.contains(document.activeElement)).toBe(true);
+});
+
 it("keeps admission order when preview props lag completed attachment reads", async () => {
   vi.stubGlobal("FileReader", StubFileReader);
   onTestFinished(() => {

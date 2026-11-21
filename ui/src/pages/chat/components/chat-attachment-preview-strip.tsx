@@ -120,6 +120,7 @@ function AttachmentTile(props: {
   entry: AttachmentPreviewEntry;
   controls: ChatAttachmentControlsProps;
 }) {
+  let removeButton: HTMLButtonElement | undefined;
   const att = () => props.entry.attachment;
   const reading = () => props.entry.state === "reading";
   const failed = () => props.entry.state === "error";
@@ -183,7 +184,24 @@ function AttachmentTile(props: {
                           class="chat-attachment-compress"
                           title={failed() ? failureLabel() : t("chat.attachments.compressionHint")}
                           disabled={props.controls.disabled}
-                          onClick={() => props.entry.read.compress?.()}
+                          onClick={(event) => {
+                            const trigger = event.currentTarget;
+                            const ownerDocument = trigger.ownerDocument;
+                            const ownedFocus = ownerDocument.activeElement === trigger;
+                            const read = props.entry.read;
+                            read.compress?.();
+                            if (!ownedFocus || read.preparation !== "compressing") {
+                              return;
+                            }
+                            // The redraw can remove the trigger, but must not override newer focus.
+                            const active = ownerDocument.activeElement;
+                            if (
+                              active === trigger ||
+                              (!trigger.isConnected && active === ownerDocument.body)
+                            ) {
+                              removeButton?.focus({ preventScroll: true });
+                            }
+                          }}
                         >
                           <span>
                             {t(
@@ -232,6 +250,9 @@ function AttachmentTile(props: {
                 </span>
               </Show>
               <AttachmentRemove
+                buttonRef={(button) => {
+                  removeButton = button;
+                }}
                 label={removeLabel()}
                 disabled={props.controls.disabled}
                 onClick={() => {
