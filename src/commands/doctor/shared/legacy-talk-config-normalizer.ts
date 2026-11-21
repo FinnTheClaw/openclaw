@@ -4,6 +4,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { getRecord, type LegacyConfigMigrationSpec } from "../../../config/legacy.shared.js";
 import { normalizeTalkRealtimeConfig, normalizeTalkSection } from "../../../config/talk.js";
 import type { OpenClawConfig } from "../../../config/types.js";
+import { migrateLegacySecretInputs } from "./legacy-secret-inputs.js";
 
 /** Preserve flat speech fields for their plugin-owned migration. */
 export function normalizeLegacyTalkConfig(cfg: OpenClawConfig, changes: string[]): OpenClawConfig {
@@ -12,8 +13,13 @@ export function normalizeLegacyTalkConfig(cfg: OpenClawConfig, changes: string[]
     return cfg;
   }
 
+  // Canonicalize registered Talk references before strict Talk normalization can drop them.
+  const migrated = migrateLegacySecretInputs({
+    talk: cfg.talk,
+    secrets: { defaults: cfg.secrets?.defaults },
+  });
   const normalizedTalk: Record<string, unknown> & NonNullable<OpenClawConfig["talk"]> =
-    normalizeTalkSection(rawTalk as OpenClawConfig["talk"]) ?? {};
+    normalizeTalkSection(migrated.config.talk) ?? {};
   for (const key of ["voiceId", "voiceAliases", "modelId", "outputFormat", "apiKey"] as const) {
     if (rawTalk[key] !== undefined) {
       normalizedTalk[key] = rawTalk[key];
@@ -24,6 +30,7 @@ export function normalizeLegacyTalkConfig(cfg: OpenClawConfig, changes: string[]
   }
 
   changes.push(
+    ...migrated.changes,
     "Normalized talk.provider/providers shape (trimmed provider ids and merged missing compatibility fields).",
   );
   return {

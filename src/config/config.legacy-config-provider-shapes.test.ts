@@ -18,4 +18,22 @@ describe("legacy provider-shaped config snapshots", () => {
     expect(changes).toEqual([]);
     expect(migrated).toEqual(raw);
   });
+
+  it("preserves a providerless Talk reference during Doctor normalization", () => {
+    const legacyRef = { source: "env", id: "OPENCLAW_TEST_UNUSED_TALK_REFERENCE" };
+    const raw = {
+      talk: {
+        agentId: " ops ",
+        provider: "demo",
+        providers: { demo: { voiceId: "demo-voice", apiKey: legacyRef } },
+      },
+    };
+    const migrated = normalizeLegacyTalkConfig(raw as unknown as OpenClawConfig, []);
+
+    expect(migrated.talk).toMatchObject({
+      agentId: "ops",
+      provider: "demo",
+      providers: { demo: { voiceId: "demo-voice", apiKey: legacyRef } },
+    });
+  });
 });
