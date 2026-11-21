@@ -7,6 +7,8 @@ describe("Gemini CLI media output", () => {
       'debug: invoking gemini\n{"response":"a useful description","usage":{"inputTokens":12,"outputTokens":4}}',
       "a useful description",
     ],
+    ['debug: model said "hello\n{"response":"ok"}', "ok"],
+    ['debug: generated {\n{"response":"ok"}', "ok"],
     ['debug: "hello { world" {"response":"ok"}', "ok"],
     ['debug: it\'s done {"response":"ok"}', "ok"],
     [JSON.stringify({ response: "{".repeat(33) }), "{".repeat(33)],

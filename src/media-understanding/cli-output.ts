@@ -5,20 +5,44 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { ignoreMissingPath } from "../infra/errno.js";
 
-function extractGeminiResponse(raw: string): string | null {
+function findLastGeminiRecord(
+  raw: string,
+): { endIndex: number; response: string | null } | undefined {
   const fragments = extractBalancedJsonFragments(raw, {
     openers: ["{"],
     skipQuotedOpeners: true,
   });
-  for (const { json } of fragments.toReversed()) {
+  for (const { json, endIndex } of fragments.toReversed()) {
     try {
       const response = asOptionalRecord(JSON.parse(json))?.response;
-      return typeof response === "string" ? response.trim() || null : null;
+      return { endIndex, response: typeof response === "string" ? response.trim() || null : null };
     } catch {
       // Malformed diagnostic noise is best effort; try the previous complete object.
     }
   }
-  return null;
+}
+
+function extractGeminiResponse(raw: string): string | null {
+  const complete = findLastGeminiRecord(raw);
+  const tail = raw.slice((complete?.endIndex ?? -1) + 1);
+  const nextRecordStart = tail.search(/^[^\S\r\n]*\{/mu);
+  const diagnostics = nextRecordStart > 0 ? tail.slice(0, nextRecordStart).trim() : "";
+  if (diagnostics) {
+    // A torn diagnostic line can hide the next JSON record from the normal scanner.
+    // Do not recover through an object already containing content or through an array.
+    const canRestart = diagnostics.split(/\r\n|[\r\n]/u).every((line) => {
+      const text = line.trim();
+      const brace = text.indexOf("{");
+      return !text.startsWith("[") && (brace === -1 || (brace > 0 && brace === text.length - 1));
+    });
+    if (canRestart) {
+      const recovered = findLastGeminiRecord(tail.slice(nextRecordStart));
+      if (recovered) {
+        return recovered.response;
+      }
+    }
+  }
+  return complete?.response ?? null;
 }
 
 function findArgValue(args: string[], keys: string[]): string | undefined {
