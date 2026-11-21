@@ -52,6 +52,12 @@ export function acquireWidgetRuntime(host: ControlUiHost, listener: () => void) 
       const isCurrent = () => !disposed && current.owner === owner;
       const run = (async () => {
         while (pending && isCurrent() && current.connected && !workboardHasActiveWrites(state)) {
+          const activeLoad = workboardRuntime.loadPromise;
+          if (activeLoad && workboardRuntime.loadClient !== current.client) {
+            // A view-owned page does not satisfy an activation refresh.
+            await activeLoad;
+            continue;
+          }
           const request = pending;
           pending = null;
           await loadWorkboard({

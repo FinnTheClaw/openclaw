@@ -140,6 +140,43 @@ it("discloses incomplete widget data and loads an absent card on demand for read
   expect(request).toHaveBeenCalledTimes(2);
 });
 
+it("keeps a live refresh queued behind a view-scoped widget page read", async () => {
+  const first = expectDefined(cards[0], "first-page card");
+  const next = expectDefined(cards[1], "next-page card");
+  const renamed = { ...first, title: "Updated first-page title", updatedAt: first.updatedAt + 1 };
+  const updatedRevision = { ...revision, revision: 2 };
+  const cursor = { id: first.id, position: first.position, createdAt: first.createdAt };
+  const page = createDeferred<ReturnType<typeof snapshot>>();
+  const { fixture, request, mount } = setup(async () => ({
+    ...snapshot([renamed, next]),
+    revision: updatedRevision,
+  }));
+  request
+    .mockResolvedValueOnce({ ...snapshot([first]), revision, nextCursor: cursor })
+    .mockReturnValueOnce(page.promise);
+  const widget = mount("mini", {}, false);
+  await settle(() => expect(text(widget)).toContain(first.title));
+  expectDefined(query(widget, "button"), "load-more button").click();
+  await settle(() => {
+    expect(widget.viewRequest).toHaveBeenCalledExactlyOnceWith("workboard.cards.list", {
+      after: cursor,
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  fixture.emit("plugin.workboard.changed", { ...updatedRevision, cardsRevision: 2 });
+  page.resolve(snapshot([next]));
+  await settle(() => {
+    expect(text(widget)).toContain(next.title);
+    expect(text(widget)).toContain(renamed.title);
+    expect(text(widget)).not.toContain(first.title);
+  });
+  expect(widget.viewRequest).toHaveBeenCalledOnce();
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(request.mock.calls.at(-1)?.[0]).toBe("workboard.cards.list");
+  expect(request.mock.calls.at(-1)?.[1]).not.toHaveProperty("after");
+});
+
 it("reconnects without stale cards or a previous connection's move", async () => {
   const reconnected = createDeferred<unknown>();
   const older = createDeferred<unknown>();
