@@ -78,6 +78,7 @@ export async function runOnExit(state: CronServiceState, id: string, opts: OnExi
       opts.commitGuard();
     };
     try {
+      let retriedAfterEmptyWait = false;
       while (!opts.signal.aborted && !state.stopped && generation === state.lifecycleGeneration) {
         const waited = await racePromiseWithAbortSignal(waitForCronJobRun(state, id), opts.signal);
         const result = await requestManualCronRun(state, id, "force", {
@@ -87,9 +88,15 @@ export async function runOnExit(state: CronServiceState, id: string, opts: OnExi
         if ("requested" in result) {
           return await result.requested.completion;
         }
-        if (!waited || !(result.ok && "reason" in result && result.reason === "already-running")) {
+        if (
+          !(result.ok && "reason" in result && result.reason === "already-running") ||
+          (!waited && retriedAfterEmptyWait)
+        ) {
           return result;
         }
+        // A sibling may have started after an empty wait. Retry that observation once;
+        // an untracked receipt must not spin without progress.
+        retriedAfterEmptyWait = !waited;
       }
     } catch (error) {
       if (!isAbortError(error)) {
