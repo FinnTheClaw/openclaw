@@ -157,6 +157,37 @@ function fakeJwt(payload: Record<string, unknown>): string {
   return `${header}.${body}.signature`;
 }
 
+async function writeCodexIdentityAuth(
+  codexHome: string,
+  state: "both" | "oauth" | "api_key" | "changed-oauth",
+): Promise<void> {
+  const hasOauth = state !== "api_key";
+  const hasApiKey = state === "both" || state === "api_key";
+  const accountId = state === "changed-oauth" ? "acct_changed" : "acct_planned";
+  credentialStorage.accountType = hasApiKey ? "apiKey" : "chatgpt";
+  await writeFile(
+    path.join(codexHome, "auth.json"),
+    JSON.stringify({
+      ...(hasApiKey ? { OPENAI_API_KEY: "sk-codex-identity-test" } : {}),
+      ...(hasOauth
+        ? {
+            // Legacy dual-material records omit the exclusive native auth mode.
+            // An explicit chatgpt mode correctly makes an API key ineligible.
+            ...(state === "both" ? {} : { auth_mode: "chatgpt" }),
+            tokens: {
+              access_token: fakeJwt({
+                exp: Math.floor(Date.now() / 1000) + 3600,
+                "https://api.openai.com/auth": { chatgpt_account_id: accountId },
+              }),
+              refresh_token: "refresh-identity-test",
+              account_id: accountId,
+            },
+          }
+        : {}),
+    }),
+  );
+}
+
 function targetAgentDir(fixture: { stateDir: string }, agentId = "main"): string {
   return path.join(fixture.stateDir, "agents", agentId, "agent");
 }
@@ -291,6 +322,7 @@ afterEach(async () => {
 
 export {
   writeFile,
+  writeCodexIdentityAuth,
   makeContext,
   findItem,
   expectRecordFields,

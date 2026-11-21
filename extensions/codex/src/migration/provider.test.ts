@@ -2,6 +2,7 @@
 // oxfmt-ignore
 import {
   appServerRequest,
+  writeCodexIdentityAuth,
   sourceAppServerClientScope,
   createCodexFixture,
   createCodexTestRoot,
@@ -518,32 +519,7 @@ describe("buildCodexMigrationProvider", () => {
 
     it.each(cases)("$name", async ({ initial, selected, after, expected }) => {
       const fixture = await createCodexFixture();
-      const authPath = path.join(fixture.codexHome, "auth.json");
-      const writeAuth = async (state: "both" | "oauth" | "api_key" | "changed-oauth") => {
-        const hasOauth = state !== "api_key";
-        const hasApiKey = state === "both" || state === "api_key";
-        const accountId = state === "changed-oauth" ? "acct_changed" : "acct_planned";
-        await writeFile(
-          authPath,
-          JSON.stringify({
-            ...(hasApiKey ? { OPENAI_API_KEY: "sk-codex-identity-test" } : {}),
-            ...(hasOauth
-              ? {
-                  auth_mode: "chatgpt",
-                  tokens: {
-                    access_token: fakeJwt({
-                      exp: Math.floor(Date.now() / 1000) + 3600,
-                      "https://api.openai.com/auth": { chatgpt_account_id: accountId },
-                    }),
-                    refresh_token: "refresh-identity-test",
-                    account_id: accountId,
-                  },
-                }
-              : {}),
-          }),
-        );
-      };
-      await writeAuth(initial);
+      await writeCodexIdentityAuth(fixture.codexHome, initial);
       const provider = buildCodexMigrationProvider();
       const ctx = makeContext({
         source: fixture.codexHome,
@@ -559,6 +535,11 @@ describe("buildCodexMigrationProvider", () => {
       if (!authItem) {
         throw new Error(`Expected planned ${selected} auth item`);
       }
+      expect(authItem.status).toBe("planned");
+      expect(authItem.details?.sourceProfileId).toBe(
+        selected === "oauth" ? "openai:account-acct_planned" : "openai:codex-import",
+      );
+      expect(authItem.details?.sourceCredentialFingerprint).toEqual(expect.any(String));
       const selectedItem =
         after === "wrong-profile"
           ? {
@@ -567,7 +548,7 @@ describe("buildCodexMigrationProvider", () => {
             }
           : authItem;
       if (after !== "same" && after !== "wrong-profile") {
-        await writeAuth(after);
+        await writeCodexIdentityAuth(fixture.codexHome, after);
       }
       const result = await provider.apply(ctx, { ...plan, items: [selectedItem] });
       const migrated = result.items.find((entry) => entry.kind === "auth");

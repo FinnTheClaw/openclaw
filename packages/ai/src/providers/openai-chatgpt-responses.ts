@@ -951,14 +951,12 @@ async function acquireWebSocket(
     } else if (!cached.busy && isWebSocketReusable(cached.socket)) {
       cached.busy = true;
       return lease(cached.socket, cached);
+    } else if (!cached.busy) {
+      closeWebSocketSilently(cached.socket);
+      deleteOwnedWebSocketSession(state, sessionId, cached);
     }
     if (cached.busy) {
       return lease(await connectWebSocket(authority, signal));
-    }
-
-    if (!isWebSocketReusable(cached.socket)) {
-      closeWebSocketSilently(cached.socket);
-      deleteOwnedWebSocketSession(state, sessionId, cached);
     }
   }
 

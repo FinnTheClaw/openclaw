@@ -215,7 +215,8 @@ describe("provider request config", () => {
       expected: {
         mode: "explicit-proxy",
         proxyUrl: "http://proxy.internal:8443",
-        proxyTls: { ca: "proxy-ca" },
+        requestTls: { cert: "client-cert", key: "client-key" },
+        proxyHopTls: { ca: "proxy-ca" },
       },
     },
     {
@@ -226,7 +227,13 @@ describe("provider request config", () => {
       },
     },
   ])("isolates target and proxy TLS for $expected.mode", ({ request, expected }) => {
-    expect(buildProviderRequestDispatcherPolicy(requestConfig({ request }))).toEqual(expected);
+    const policy = buildProviderRequestDispatcherPolicy(requestConfig({ request }));
+    expect(policy).toEqual(expected);
+    if (policy?.mode === "explicit-proxy") {
+      expect(policy.requestTls).not.toHaveProperty("ca");
+      expect(policy.proxyHopTls).not.toHaveProperty("cert");
+      expect(policy.proxyHopTls).not.toHaveProperty("key");
+    }
   });
 
   it("rejects insecure TLS transport overrides", () => {

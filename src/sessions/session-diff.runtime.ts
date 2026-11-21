@@ -48,21 +48,22 @@ async function gitOut(
   args: string[],
   okCodes: readonly number[] = [0],
 ): Promise<string | null> {
-  try {
-    // quotePath=false keeps non-ASCII paths raw instead of octal-escaped, so
-    // -z output tokens match the byte-for-byte paths git reports elsewhere.
-    const result = await runGit(cwd, ["-c", "core.quotePath=false", ...args]);
-    if (result.stdoutTruncatedBytes) {
-      throw createGitCommandError("git session diff", {
-        ...result,
-        code: null,
-        outputLimitExceeded: true,
-      });
-    }
-    return okCodes.includes(result.code ?? -1) ? result.stdout : null;
-  } catch {
+  // quotePath=false keeps non-ASCII paths raw instead of octal-escaped, so
+  // -z output tokens match the byte-for-byte paths git reports elsewhere.
+  const result = await runGit(cwd, ["-c", "core.quotePath=false", ...args]).catch(() => null);
+  if (!result || !okCodes.includes(result.code ?? -1)) {
     return null;
   }
+  // Required inventories must preserve the clipping error, not turn it into an
+  // ordinary missing-output result that callers can mistake for a complete read.
+  if (result.stdoutTruncatedBytes) {
+    throw createGitCommandError("git session diff", {
+      ...result,
+      code: null,
+      outputLimitExceeded: true,
+    });
+  }
+  return result.stdout;
 }
 
 async function loadCheckoutRevision(
@@ -600,7 +601,7 @@ async function collectBaselineCandidates(
       : head
         ? await resolveSessionDiffBase({ branch, gitOut, head, root })
         : await resolveSessionDiffEmptyTree(root, objectFormat);
-  const [trackedText, untracked] = await Promise.all([
+  const [trackedResult, untrackedResult] = await Promise.allSettled([
     baseInfo
       ? gitOutForBaseline(root, ["diff", "-M", baseInfo.base, "--name-status", "-z"])
       : Promise.resolve(""),
@@ -609,6 +610,16 @@ async function collectBaselineCandidates(
         text === null ? null : text.split("\0").filter(Boolean),
       ),
   ]);
+  // Both command owners must settle before capture can release its lifetime,
+  // including when one rejects while the other still owns a live Git process.
+  if (trackedResult.status === "rejected") {
+    throw trackedResult.reason;
+  }
+  if (untrackedResult.status === "rejected") {
+    throw untrackedResult.reason;
+  }
+  const trackedText = trackedResult.value;
+  const untracked = untrackedResult.value;
   if (trackedText === null || untracked === null) {
     return { root, candidates: [], truncated: true };
   }

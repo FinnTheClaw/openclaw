@@ -193,6 +193,8 @@ describe("checkout diff required inventory output", () => {
           "--raw",
           "--numstat",
           "--no-color",
+          "--no-ext-diff",
+          "--no-textconv",
           "-z",
           head,
           "--",
