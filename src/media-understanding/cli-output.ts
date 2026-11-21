@@ -20,6 +20,7 @@ function findLastGeminiRecord(
       // Malformed diagnostic noise is best effort; try the previous complete object.
     }
   }
+  return undefined;
 }
 
 function extractGeminiResponse(raw: string): string | null {

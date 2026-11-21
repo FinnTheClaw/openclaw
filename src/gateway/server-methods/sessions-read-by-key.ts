@@ -1,3 +1,4 @@
+import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
@@ -5,7 +6,10 @@ import {
   errorShape,
   validateSessionsDescribeParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import type { NativeSubagentsSnapshot } from "../../../packages/gateway-protocol/src/schema/native-subagents.js";
+import {
+  NATIVE_SUBAGENT_ID_MAX_LENGTH,
+  type NativeSubagentsSnapshot,
+} from "../../../packages/gateway-protocol/src/schema/native-subagents.js";
 import { validateNativeSubagentsSnapshot } from "../../../packages/gateway-protocol/src/session-result-validators.js";
 import { captureAgentHarnessLifecycleHooks } from "../../agents/harness/registry-lifecycle.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
@@ -24,6 +28,16 @@ import { createVisibleActiveSessionRunProjector } from "./session-active-runs.js
 import { requireSessionKey } from "./sessions-shared.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
+
+function projectNativeSubagentId(harnessId: string, childId: string): string {
+  const id = `${harnessId}:${childId}`;
+  const limit = NATIVE_SUBAGENT_ID_MAX_LENGTH;
+  if (id.length <= limit || (id.length <= 2 * limit && [...id].length <= limit)) {
+    return id;
+  }
+  // The digest has no colon, so it cannot overlap the ordinary harness:child IDs.
+  return `native-sha256-${sha256Hex(JSON.stringify([harnessId, childId]))}`;
+}
 
 export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
   "sessions.describe": async ({
@@ -134,7 +148,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
               observed && {
                 coverage: observed.coverage,
                 children: observed.children.map((child) => ({
-                  id: `${owner.registration.harness.id}:${child.id}`,
+                  id: projectNativeSubagentId(owner.registration.harness.id, child.id),
                   label: child.label,
                   status: child.status,
                 })),

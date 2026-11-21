@@ -91,6 +91,22 @@ it("accepts provider ids registered by installed plugin manifests", () => {
   expect(validateWebSearchConfig(searchConfig("acme-search")).ok).toBe(true);
 });
 
+it("accepts a mixed-case provider id as declared by an installed plugin manifest", () => {
+  const provider = "AcmeSearch";
+  const registry = loadPluginManifestRegistryCore();
+  const installed = registry.plugins.find((plugin) => plugin.id === "acme-search");
+  assert(installed);
+  const result = validateWebSearchConfig(searchConfig(provider), {
+    pluginMetadataSnapshot: {
+      manifestRegistry: {
+        ...registry,
+        plugins: [{ ...installed, contracts: { webSearchProviders: [provider] } }],
+      },
+    },
+  });
+  expect(result).toMatchObject({ ok: true });
+});
+
 it.each([
   [
     "Brave",

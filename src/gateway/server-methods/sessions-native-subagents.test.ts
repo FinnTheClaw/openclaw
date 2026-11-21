@@ -1,5 +1,7 @@
+import assert from "node:assert/strict";
 import { expect, it, vi } from "vitest";
 import type { NativeSubagentsSnapshot } from "../../../packages/gateway-protocol/src/index.js";
+import { validateNativeSubagentsSnapshot } from "../../../packages/gateway-protocol/src/session-result-validators.js";
 import { registerAgentHarness } from "../../agents/harness/registry.js";
 import type { AgentHarness } from "../../agents/harness/types.js";
 import { setRuntimeConfigSnapshot } from "../../config/config.js";
@@ -116,6 +118,35 @@ it("exposes native observations only on an authorized explicit parent read", () 
     const denied = await f.describe(true, true);
     expect(denied[1]).not.toHaveProperty("nativeSubagents");
     expect(f.observe).not.toHaveBeenCalled();
+  }));
+
+it("keeps valid native subagent IDs within the aggregate wire limit", () =>
+  withFixture(async (f) => {
+    const sibling = snapshot.children[0]!;
+    const longChild = {
+      ...sibling,
+      id: "conversation-".padEnd(512, "a"),
+      label: "Long observation",
+    };
+    const providerSnapshot = { ...snapshot, children: [longChild, sibling] };
+    expect(validateNativeSubagentsSnapshot(providerSnapshot)).toBe(true);
+    f.observe.mockResolvedValue(providerSnapshot);
+
+    const [ok, payload] = await f.describe();
+    expect(ok).toBe(true);
+    expect(payload).toMatchObject({ session: { sessionId: "parent-original" } });
+    assert.ok(payload && typeof payload === "object" && "nativeSubagents" in payload);
+    const roster = payload.nativeSubagents;
+    assert.ok(validateNativeSubagentsSnapshot(roster));
+    expect(roster.children).toEqual([
+      { ...longChild, id: expect.any(String) },
+      { ...sibling, id: `native-roster:${sibling.id}` },
+    ]);
+    expect(new Set(roster.children.map(({ id }) => id)).size).toBe(2);
+
+    const repeated = await f.describe();
+    expect(repeated[0]).toBe(true);
+    expect(repeated[1]).toMatchObject({ nativeSubagents: roster });
   }));
 
 it.each(["session", "harness", "sharing"] as const)(

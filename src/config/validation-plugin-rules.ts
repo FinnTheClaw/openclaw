@@ -327,10 +327,10 @@ export function validatePreparedConfigWithPlugins(
       issues.push({ path: issuePath, message: "web_search provider must not be empty" });
       return;
     }
-    // Match the runtime's case-insensitive provider lookup.
+    // Compare case-insensitively while retaining manifest spelling for diagnostics.
     const normalizedProviderId = trimmed.toLowerCase();
     const activeProviderIds = collectActiveWebSearchProviderIds();
-    if (activeProviderIds.includes(normalizedProviderId)) {
+    if (activeProviderIds.some((providerId) => providerId.toLowerCase() === normalizedProviderId)) {
       return;
     }
     if (preserveUnavailableConfig(issuePath)) {
