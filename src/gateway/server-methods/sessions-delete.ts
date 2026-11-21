@@ -517,8 +517,14 @@ async function deleteGatewaySessionInScope(
             }
             if (result.deleted) {
               // Retain cloud affinity on every precommit failure. The absent-session
-              // reconciler covers a crash or artifact-publication failure after commit.
-              await retirement.retire();
+              // reconciler also owns deferred placement cleanup after commit.
+              try {
+                await retirement.retire();
+              } catch (error) {
+                sessionLog.warn(
+                  `sessions.delete: placement retirement deferred for ${target.canonicalKey}: ${formatErrorMessage(error)}`,
+                );
+              }
               emitGatewaySessionEndPluginHook({
                 cfg,
                 sessionKey: target.canonicalKey ?? key,

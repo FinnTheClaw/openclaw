@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, expect, test, vi } from "vitest";
-import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../test/helpers/promise.js";
 import { runForegroundCompactionWork } from "../agents/embedded-agent-runner/compact.foreground-work.js";
+import { sessionManagerOpenCompaction } from "../agents/sessions/session-manager-core.js";
+import { appendTranscriptMessage } from "../config/sessions/session-accessor.js";
 import { withSessionTurn } from "../sessions/session-controller.admission.js";
 import {
   beginSessionEffect,
@@ -114,6 +120,95 @@ test.each([true, false])(
     }
   },
 );
+
+test("sessions.compact prepares current history after an abortable producer settles", async ({
+  signal,
+}) => {
+  const { storePath, sessionId, sessionKey, target } = await createCompactionSession(
+    "sess-compact-late-append",
+  );
+  const { SessionManager } = await import("../agents/sessions/session-manager.js");
+  const open = SessionManager[sessionManagerOpenCompaction].bind(SessionManager);
+  const snapshotCaptured = createDeferred();
+  const appendSettled = createDeferred();
+  const started = createDeferred();
+  const stopped = createDeferred();
+  const finalText = "Last reply committed before the producer stopped";
+  let closing = false;
+  using preflight = vi
+    .spyOn(SessionManager, sessionManagerOpenCompaction)
+    .mockImplementationOnce(async (...args) => {
+      const initial = await open(...args);
+      snapshotCaptured.resolve();
+      await appendSettled.promise;
+      return initial;
+    });
+  embeddedRunMock.compactEmbeddedAgentSession.mockResolvedValueOnce(compactedResult);
+
+  const activeRun = withSessionTurn(
+    { sessionKey, sessionId, target },
+    async (operation, signal) => {
+      assert.ok(operation);
+      operation.attachBackend({ kind: "embedded", cancel: () => {}, isAbortable: () => true });
+      const effect = await beginSessionEffect({ target, assertAllowed: () => {} });
+      const onAbort = () => stopped.resolve();
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        started.resolve();
+        await snapshotCaptured.promise;
+        if (closing) {
+          return undefined;
+        }
+        const append = await appendTranscriptMessage(
+          { agentId: "main", storePath, sessionKey, sessionId },
+          { message: { role: "assistant", content: finalText } },
+        );
+        expect(append.appended).toBe(true);
+        appendSettled.resolve();
+        await stopped.promise;
+        expect(signal.aborted).toBe(true);
+        return append.messageId;
+      } finally {
+        appendSettled.resolve();
+        signal.removeEventListener("abort", onAbort);
+        effect.release();
+      }
+    },
+  );
+
+  let request: ReturnType<typeof directSessionReq> | undefined;
+  try {
+    await withinTest(
+      awaitGateBeforeSettlement(started.promise, activeRun, "Producer did not start"),
+      signal,
+    );
+    request = directSessionReq("sessions.compact", { key: "main" });
+    expect(await withinTest(request, signal)).toMatchObject({
+      ok: true,
+      payload: { compacted: true },
+    });
+    const appendedId = await withinTest(activeRun, signal);
+    assert.ok(appendedId);
+    expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledTimes(1);
+    const host = embeddedRunMock.compactEmbeddedAgentSession.mock.calls[0]?.[1];
+    assert.ok(host && typeof host === "object" && "preparedSession" in host);
+    const prepared = host.preparedSession;
+    assert.ok(prepared && typeof prepared === "object" && "sessionManager" in prepared);
+    assert.ok(prepared.sessionManager instanceof SessionManager);
+    expect(prepared.sessionManager.getBranch()).toContainEqual(
+      expect.objectContaining({
+        id: appendedId,
+        message: expect.objectContaining({ content: finalText }),
+      }),
+    );
+  } finally {
+    closing = true;
+    snapshotCaptured.resolve();
+    appendSettled.resolve();
+    stopped.resolve();
+    await Promise.allSettled([activeRun, request]);
+  }
+});
 
 test("sessions.compact preserves its active-run error when controller preemption times out", async () => {
   const { sessionId, sessionKey, storePath, target } =

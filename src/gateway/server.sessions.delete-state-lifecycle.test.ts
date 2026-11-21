@@ -50,6 +50,7 @@ import {
   sessionStoreEntry,
   setupGatewaySessionsHandlerTestHarness,
 } from "./test/server-sessions.test-helpers.js";
+import { localPlacement } from "./worker-environments/placement-suite.test-support.js";
 const runLoop = vi.hoisted(() =>
   vi.fn<
     (typeof import("../agents/embedded-agent-runner/run-loop.js"))["runPreparedEmbeddedLoop"]
@@ -502,6 +503,63 @@ test.each(["archive-publication", "worker-queue"] as const)(
     expect(placementStore.get(sessionId)).toBeUndefined();
   },
 );
+
+test("sessions.delete publishes a committed deletion when postcommit placement retirement fails", async () => {
+  const placement = localPlacement("postcommit-retirement-failure");
+  const { sessionId, sessionKey, storePath } = await createStoredSession(
+    placement.sessionId,
+    {},
+    placement.sessionKey,
+  );
+  const placements = new Map([[sessionId, placement]]);
+  const getMany = (ids: readonly string[]) =>
+    new Map([...placements].filter(([id]) => ids.includes(id)));
+  const retireSessionPlacementAsync = vi.fn(async () => {
+    expect(loadSessionEntry({ sessionKey, storePath })).toBeUndefined();
+    throw new Error("Placement worker temporarily unavailable after deletion");
+  });
+  const onResponse = vi.fn();
+  const broadcastToConnIds = vi.fn();
+  const response = await directSessionReq(
+    "sessions.delete",
+    { key: sessionKey, expectedSessionId: sessionId },
+    {
+      onResponse,
+      context: {
+        workerSessionPlacementService: {
+          getMany,
+          getManyAsync: async (ids: readonly string[]) => getMany(ids),
+          retireSessionPlacementAsync,
+        },
+        broadcastToConnIds,
+        getSessionEventSubscriberConnIds: () => new Set(["observer"]),
+      },
+    },
+  );
+
+  expect(response).toMatchObject({ ok: true, payload: { key: sessionKey, deleted: true } });
+  expect(onResponse).toHaveBeenCalledExactlyOnceWith(response);
+  expect(loadSessionEntry({ sessionKey, storePath })).toBeUndefined();
+  // The request does not replay cleanup or erase the orphan's reconciliation identity.
+  expect(retireSessionPlacementAsync).toHaveBeenCalledExactlyOnceWith({
+    sessionId,
+    expectedState: "local",
+    expectedGeneration: placement.generation,
+  });
+  expect(placements.get(sessionId)).toEqual(placement);
+  const removed = {
+    sessionKey,
+    agentId: "main",
+    sessionId,
+    reason: "delete",
+    ts: expect.any(Number),
+  };
+  expect(broadcastToConnIds.mock.calls.map(([event, payload]) => ({ event, payload }))).toEqual([
+    { event: "socket.drain", payload: removed },
+    { event: "sessions.changed", payload: removed },
+    { event: "sessions.changed", payload: { reason: "delete", ts: expect.any(Number) } },
+  ]);
+});
 
 async function createCompanion(runModel?: () => Promise<string>) {
   const { getRuntimeConfig } = await getGatewayConfigModule();

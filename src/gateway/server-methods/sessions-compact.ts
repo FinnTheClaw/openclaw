@@ -9,6 +9,7 @@ import {
   resolveSessionWorkStartError,
   isSessionWorkStartInvalidatedError,
   SESSION_LIFECYCLE_CHANGED_ERROR_REASON,
+  type SessionEntry,
 } from "../../config/sessions.js";
 import {
   preflightSessionTranscriptForManualCompact,
@@ -140,6 +141,31 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
       let compactionNoopReason: string | undefined;
       let preparedEntry: InternalSessionEntry | undefined;
       let preparedSession: PreparedCompactionSession | undefined;
+      let refreshAfterSettlement = false;
+      const prepareModelCompaction = async (candidate: SessionEntry) => {
+        const prepared = await prepareGatewaySessionCompaction({
+          cfg,
+          entry: candidate,
+          abortSignal,
+          agentId: target.agentId,
+          sessionId,
+          sessionKey: target.canonicalKey,
+          sessionStoreKey: compactPrimaryKey,
+          storePath,
+        });
+        preparedEntry = prepared.entry;
+        if (
+          !preparedEntry ||
+          preparedEntry.sessionId !== sessionId ||
+          preparedEntry.lifecycleRevision !== lifecycleRevision ||
+          resolveSessionWorkStartError(target.canonicalKey, preparedEntry)
+        ) {
+          admissionError = sessionChangedError();
+          return;
+        }
+        preparedSession = prepared.preparedSession;
+        compactionNoopReason = prepared.reason;
+      };
       const terminalSettled = await waitForTerminalSessionRunSettlement({
         context,
         storePath,
@@ -169,34 +195,14 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
         },
         assertCurrent: assertRequestCurrent,
         signal: abortSignal,
-        prepare: async () => {
+        prepare: async ({ operations }) => {
           assertRequestCurrent();
           if (maxLines === undefined) {
-            const prepared = await prepareGatewaySessionCompaction({
-              cfg,
-              entry,
-              abortSignal,
-              agentId: target.agentId,
-              sessionId,
-              sessionKey: target.canonicalKey,
-              sessionStoreKey: compactPrimaryKey,
-              storePath,
-            });
-            preparedEntry = prepared.entry;
-            if (
-              !preparedEntry ||
-              preparedEntry.sessionId !== sessionId ||
-              preparedEntry.lifecycleRevision !== lifecycleRevision ||
-              resolveSessionWorkStartError(target.canonicalKey, preparedEntry)
-            ) {
-              admissionError = sessionChangedError();
+            await prepareModelCompaction(entry);
+            if (admissionError || compactionNoopReason) {
               return;
             }
-            preparedSession = prepared.preparedSession;
-            compactionNoopReason = prepared.reason;
-            if (compactionNoopReason) {
-              return;
-            }
+            refreshAfterSettlement = operations.length > 0;
           }
           const blockedByActiveRun =
             !terminalSettled ||
@@ -213,6 +219,11 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
         },
         run: async () => {
           assertRequestCurrent();
+          // An admitted competitor can finish writing after the no-op preflight.
+          if (refreshAfterSettlement && !admissionError) {
+            await prepareModelCompaction(preparedEntry ?? entry);
+            assertRequestCurrent();
+          }
           // The controller has settled its captured competitors; remote projections still block.
           if (
             !admissionError &&
