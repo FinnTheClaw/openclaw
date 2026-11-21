@@ -30,6 +30,7 @@ import { closeCachedOpenClawAgentDatabase } from "../../state/openclaw-agent-db-
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../../state/openclaw-state-db-async-lifecycle.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import * as personalSessionPins from "../../state/user-preferences-session-pins.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { appendSqliteTrajectoryRuntimeEvents } from "../../trajectory/runtime-store.test-support.js";
 import * as diskBudgetModule from "./disk-budget.js";
@@ -703,6 +704,36 @@ describe("SQLite historical session disk budget", () => {
     expect(pruning).toHaveBeenCalledTimes(manualPruning);
     expect(evictionWarnSpy).toHaveBeenCalledOnce();
     expectSessions({ "protected-old": true, "protected-live": true });
+  });
+
+  it("returns completed disk reclamation without reading personal session pins", async () => {
+    database();
+    vi.spyOn(diskBudgetModule, "measureSessionPhysicalDiskUsage").mockResolvedValueOnce({
+      totalBytes: 192,
+      databaseWalBytes: 32,
+    });
+    const pruning = vi
+      .spyOn(archivePruning, "pruneAllSessionTranscriptArchivesToHighWater")
+      .mockResolvedValueOnce({
+        removedFiles: 0,
+        usage: { totalBytes: 96, databaseWalBytes: 0 },
+        checkpointIncomplete: 0,
+      });
+    const pins = vi
+      .spyOn(personalSessionPins, "preparePersonalSessionPins")
+      .mockRejectedValue(new Error("personal session pins are unavailable"));
+
+    await expect(enforce(128, 96)).resolves.toMatchObject({
+      totalBytesBefore: 192,
+      totalBytesAfter: 96,
+      removedEntries: 0,
+      removedFiles: 0,
+      freedBytes: 96,
+      overBudget: true,
+      walBytesAfter: 0,
+    });
+    expect(pruning).toHaveBeenCalledOnce();
+    expect(pins).not.toHaveBeenCalled();
   });
 
   it("warns when a fire-and-forget budget sweep fails instead of swallowing it", async () => {

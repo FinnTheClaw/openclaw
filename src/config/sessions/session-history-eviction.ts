@@ -506,7 +506,7 @@ async function enforceSessionHistoryMaintenanceForDatabase(
           }
         : {}),
     });
-  if (pruning.checkpointIncomplete) {
+  if (pruning.checkpointIncomplete || usage.totalBytes <= highWaterBytes) {
     return finish();
   }
   const personalPins = await preparePersonalSessionPins({ env: params.env });
