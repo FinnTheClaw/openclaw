@@ -69,7 +69,9 @@ type ConfigReadRecoveryParams = {
   measure?: ConfigSnapshotReadMeasure;
 };
 
-type ConfigReadRecoveryResult = Pick<ConfigRecoveryCandidate, "raw" | "parsed">;
+type ConfigReadRecoveryResult = Pick<ConfigRecoveryCandidate, "raw" | "parsed"> & {
+  preservationDeferred?: true;
+};
 
 function createRecoveryCommitEffect(params: {
   deps: ObserveRecoveryDeps;
@@ -186,11 +188,17 @@ export function maybeRecoverSuspiciousConfigReadSync(
 }
 
 type ConfigRecoveryOperation<T> = Generator<ConfigRecoveryEffect<unknown>, T, unknown>;
+type SuspiciousConfigRecoveryApplyResult = {
+  restored: boolean;
+  error: unknown;
+  preservationDeferred?: true;
+};
+
 type SuspiciousConfigRecoveryPlan = {
   candidate: ConfigReadRecoveryResult;
   apply: (
     beforeCommit?: () => void,
-  ) => ConfigRecoveryOperation<{ restored: boolean; error: unknown }>;
+  ) => ConfigRecoveryOperation<SuspiciousConfigRecoveryApplyResult>;
 };
 
 /** Prepare the existing recovery without observing or writing the selected config. */
@@ -240,6 +248,9 @@ function* recoverSuspiciousConfigRead(
     }
   }
   const applied = yield* plan.apply();
+  if (applied.preservationDeferred) {
+    return { raw, parsed, preservationDeferred: true };
+  }
   return applied.error instanceof ConfigMutationConflictError ? { raw, parsed } : plan.candidate;
 }
 
@@ -366,7 +377,7 @@ function* planSuspiciousConfigRead(
           `Config backup recovery deferred: ${configPath}; original config snapshot could not be saved. Retry recovery.`,
         );
         deps.logger.warn(error.message);
-        return { restored: false, error };
+        return { restored: false, error, preservationDeferred: true };
       }
       let restoredFromBackup = false;
       let restoreError: unknown;

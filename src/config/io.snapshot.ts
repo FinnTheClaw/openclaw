@@ -334,7 +334,7 @@ async function readConfigSnapshot(
     if (!deps.suppressFutureVersionWarning) {
       warnIfConfigFromFuture(validated.config, deps.logger);
     }
-    let callerRejectedSuspiciousRecovery = false;
+    let suppressObservation = false;
     if (
       options.recoverSuspicious === true &&
       deps.observe &&
@@ -360,13 +360,15 @@ async function readConfigSnapshot(
                   const allowed =
                     recoveryCandidate !== null &&
                     (await allowSuspiciousRecovery(recoveryCandidate, validated.config));
-                  callerRejectedSuspiciousRecovery = !allowed;
+                  suppressObservation = !allowed;
                   return allowed;
                 },
               }
             : {}),
         }),
       );
+      // Keep the same revision retryable if its original could not be saved.
+      suppressObservation ||= recovery.preservationDeferred === true;
       if (recovery.raw !== raw) {
         assertReadCurrent();
         restoreReadEnv?.();
@@ -403,7 +405,7 @@ async function readConfigSnapshot(
           pluginMetadataSnapshot: pluginMetadata.getSnapshot(),
           ...(validated.strictIssues ? { strictIssues: validated.strictIssues } : {}),
         },
-        { observe: !callerRejectedSuspiciousRecovery },
+        { observe: !suppressObservation },
       ),
     );
   } catch (error) {

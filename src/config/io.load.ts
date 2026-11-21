@@ -188,6 +188,7 @@ function* loadConfigWithEffects(
     if (!deps.suppressFutureVersionWarning) {
       warnIfConfigFromFuture(validated.config, deps.logger);
     }
+    let preservationDeferred = false;
     if (
       deps.observe &&
       !options.skipSuspiciousRecovery &&
@@ -209,6 +210,7 @@ function* loadConfigWithEffects(
             assertCurrent: options.assertCurrent,
           }),
       });
+      preservationDeferred = recovery.preservationDeferred === true;
       if (recovery.raw !== raw) {
         restoreEnvChangesIfUnchanged({
           env: deps.env,
@@ -240,10 +242,13 @@ function* loadConfigWithEffects(
       resolutionFacts: readResolution.resolutionFacts,
       legacyIssues: [],
     });
-    yield* resolveConfigIoEffect({
-      sync: () => context.observeLoadConfigSnapshot(snapshot),
-      async: () => context.observeLoadConfigSnapshotAsync(snapshot, options.assertCurrent),
-    });
+    // Observation would mark this anomaly handled before it can be retried.
+    if (!preservationDeferred) {
+      yield* resolveConfigIoEffect({
+        sync: () => context.observeLoadConfigSnapshot(snapshot),
+        async: () => context.observeLoadConfigSnapshotAsync(snapshot, options.assertCurrent),
+      });
+    }
     return yield* resolveConfigIoEffect({
       sync: () => context.finalizeLoadedRuntimeConfig(cfg),
       async: () =>

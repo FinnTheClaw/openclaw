@@ -330,6 +330,56 @@ ${snapshot.raw}`;
     },
   );
 
+  it("retries an unchanged suspicious config after original preservation becomes available", async () => {
+    const { configPath, warn, ioOptions } = createTestConfigIO(home);
+    const auditPath = path.join(home, ".openclaw", "logs", "config-audit.jsonl");
+    const backupPath = `${configPath}.bak`;
+    await seedConfigBackup(configPath, largeRecoverableCoreConfig);
+    const backupRaw = await fsp.readFile(backupPath, "utf8");
+    const original = await writeClobberedUpdateChannel(configPath);
+    let preservationRefusals = 0;
+    const io = createConfigIO({
+      ...ioOptions,
+      ...withAsyncFs(ioOptions, {
+        writeFile: async (target, data, options) => {
+          if (
+            preservationRefusals === 0 &&
+            typeof target === "string" &&
+            target.startsWith(`${configPath}.clobbered.`)
+          ) {
+            preservationRefusals += 1;
+            throw Object.assign(new Error("fixture: original snapshot write refused"), {
+              code: "EACCES",
+            });
+          }
+          await fsp.writeFile(target, data, options);
+        },
+      }),
+    });
+
+    const deferred = await io.readConfigFileSnapshot({ recoverSuspicious: true });
+    expect(deferred).toMatchObject({ valid: true, raw: original.raw });
+    expect(preservationRefusals).toBe(1);
+    expectWarnContaining(warn, "original config snapshot could not be saved");
+    await expectRaw(configPath, original.raw);
+    await expectRaw(backupPath, backupRaw);
+    expect(await listClobberFiles(configPath)).toEqual([]);
+    expect((await readObserveEvents(auditPath)).some((event) => event.restoredFromBackup)).toBe(
+      false,
+    );
+
+    // Recovery must remain eligible when only preservation availability changed.
+    const restored = await io.readConfigFileSnapshot({ recoverSuspicious: true });
+    expect(restored).toMatchObject({ valid: true, raw: backupRaw });
+    expect(restored.config.gateway?.mode).toBe("local");
+    await expectRaw(configPath, backupRaw);
+    await expectRaw(backupPath, backupRaw);
+    await expectArchive(configPath, original.raw);
+    expect(
+      (await readObserveEvents(auditPath)).filter((event) => event.restoredFromBackup),
+    ).toHaveLength(1);
+  });
+
   it("does not auto-restore read snapshots when observation is disabled", async () => {
     const { io, configPath } = createTestConfigIO(home, vi.fn(), { observe: false });
     const auditPath = path.join(home, ".openclaw", "logs", "config-audit.jsonl");
