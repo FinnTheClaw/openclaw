@@ -128,6 +128,19 @@ describe("resolveWorkingProgress", () => {
       ),
     ).toMatchObject({ runId: "second-run", startedAt: 60_300 });
   });
+
+  it("keeps a newly received preamble when the Gateway clock trails the browser", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(30_000);
+    clearWorkingProgress(SESSION);
+    vi.setSystemTime(31_000);
+
+    // The Gateway clock trails the local receipt clock by ten seconds.
+    const oldPreamble = { runId: "old-run", ts: 19_400, receivedAt: 29_400 };
+    const freshPreamble = { runId: "fresh-run", ts: 20_400, receivedAt: 30_400 };
+    expect(progress(null, null, [], [oldPreamble], []).runId).toBeNull();
+    expect(progress(null, null, [], [oldPreamble, freshPreamble], []).runId).toBe("fresh-run");
+  });
 });
 
 describe("resolveTurnRecap", () => {

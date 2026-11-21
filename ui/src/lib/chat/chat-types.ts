@@ -303,6 +303,8 @@ export type ChatStreamSegment = {
   afterUserSendId?: string;
   text: string;
   ts: number;
+  /** Browser receipt of a live preamble; distinct from the Gateway event time. */
+  receivedAt?: number;
   runId?: string;
   /** Hidden durable replacement; cumulative text still owns the prefix baseline. */
   persisted?: true;

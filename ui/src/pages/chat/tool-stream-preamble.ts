@@ -79,6 +79,7 @@ export function handlePreambleProgress(
     {
       text,
       ts: payload.ts,
+      ...(source === "live" ? { receivedAt: Date.now() } : {}),
       runId: payload.runId,
       itemId,
       afterUserSendId:

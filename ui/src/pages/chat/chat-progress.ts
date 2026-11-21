@@ -4,7 +4,12 @@ import type { GatewaySessionRow } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
 import { registerChatComposerEnglish } from "../../i18n/locales/en-chat-composer.ts";
 import { registerChatMessageMetadataEnglish } from "../../i18n/locales/en-chat-message-metadata.ts";
-import type { ChatGuardianNotice, ChatItem, ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import type {
+  ChatGuardianNotice,
+  ChatItem,
+  ChatQueueItem,
+  ChatStreamSegment,
+} from "../../lib/chat/chat-types.ts";
 import { formatCompactTokenCount } from "../../lib/format.ts";
 import type { CompactionStatus, RunOutputUsage } from "./tool-stream-contract.ts";
 
@@ -186,7 +191,7 @@ export function resolveWorkingProgress(
   runId: string | null,
   streamStartedAt: number | null,
   queue: ChatQueueItem[],
-  streamSegments: Array<{ ts: number; runId?: string }>,
+  streamSegments: Array<Pick<ChatStreamSegment, "ts" | "runId" | "receivedAt">>,
   toolMessages: unknown[],
 ): WorkingProgress {
   const visibleSends = queue.filter(shouldRenderQueuedSendInThread);
@@ -198,7 +203,7 @@ export function resolveWorkingProgress(
   const idleObservedAt = runId ? undefined : idleObservedAtBySession.get(sessionKey);
   const observedSinceIdle = (at: unknown) =>
     idleObservedAt === undefined || (typeof at === "number" && at > idleObservedAt);
-  const currentSegments = streamSegments.filter((segment) => observedSinceIdle(segment.ts));
+  const currentSegments = streamSegments.filter((segment) => observedSinceIdle(segment.receivedAt));
   const toolProgress = toolMessages
     .map(asRecord)
     .filter((message) => observedSinceIdle(message?.["__openclawToolStreamReceivedAt"]));

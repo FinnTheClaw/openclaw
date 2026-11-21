@@ -38,9 +38,10 @@ const fallback = {
   activeProvider: "deepinfra",
   activeModel: "moonshotai/Kimi-K2.5",
 };
-const expectedPreamble = (text: string) => ({
+const expectedPreamble = (text: string, receivedAt = TOOL_STREAM_TEST_NOW) => ({
   text,
   ts: TOOL_STREAM_TEST_NOW,
+  receivedAt,
   runId: "run-1",
   itemId: "msg-preamble-1",
 });
@@ -353,11 +354,20 @@ describe("app-tool-stream fallback lifecycle handling", () => {
 
   it("accepts a session-scoped preamble while no run is active", () => {
     const host = createTimedHost();
+    const receivedAt = TOOL_STREAM_TEST_NOW + 10_000;
+    vi.setSystemTime(receivedAt);
 
-    emitPreamble(host, "run-1", 1, "An already active session's commentary", "msg-preamble-1");
+    handleAgentEvent(host, {
+      ...agentEvent("run-1", 1, "item", {
+        kind: "preamble",
+        itemId: "msg-preamble-1",
+        progressText: "An already active session's commentary",
+      }),
+      ts: TOOL_STREAM_TEST_NOW,
+    });
 
     expect(host.chatStreamSegments).toEqual([
-      expectedPreamble("An already active session's commentary"),
+      expectedPreamble("An already active session's commentary", receivedAt),
     ]);
   });
 
