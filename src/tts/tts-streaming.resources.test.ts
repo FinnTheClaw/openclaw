@@ -30,7 +30,7 @@ function createFixture(
     explicitRelease?: boolean;
     ending?: "eof" | "error" | "blocked";
     initialState?: "empty" | "error" | "chunk";
-    projectionFailure?: "result" | "config-model";
+    projectionFailure?: "result" | "config-model" | "release";
     holdRelease?: boolean;
     invalidMetadata?: boolean;
     releaseFailure?: boolean;
@@ -103,7 +103,12 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
           if (state.options.ending === "error") { controller.error(new Error("native read failure")); return; }
           controller.close();
         },
-        async cancel() { canceled = true; record("cancel"); if (state.options.explicitRelease === false) state.aborted.resolve(); await state.aborted.promise; }
+        async cancel() {
+          canceled = true;
+          record("cancel");
+          if (state.options.explicitRelease === false || state.options.projectionFailure === "release") state.aborted.resolve();
+          await state.aborted.promise;
+        }
       }, { highWaterMark: 0 });
       let cleanup;
       const release = () => cleanup ??= (async () => {
@@ -113,12 +118,18 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
       if (state.options.projectionFailure === "config-model") {
         Object.defineProperty(request.providerConfig, "modelId", { get() { throw new Error("native config projection failure"); } });
       }
-      return {
+      const result = {
         audioStream,
         get outputFormat() { record("metadata"); if (state.options.projectionFailure === "result") throw new Error("native result projection failure"); return "pcm"; },
         fileExtension: state.options.invalidMetadata ? "" : ".pcm", voiceCompatible: false,
         release: state.options.explicitRelease === false ? undefined : release,
       };
+      if (state.options.projectionFailure === "release") {
+        Object.defineProperty(result, "release", {
+          get() { throw new Error("native release projection failure"); },
+        });
+      }
+      return result;
     }
   });
 } };`,
@@ -405,6 +416,20 @@ describe("streaming speech registration ownership", () => {
       expectClosed(fixture);
     });
   });
+
+  it("cancels the source when projecting its release accessor fails", async () => {
+    const fixture = createFixture({ projectionFailure: "release" });
+    await fixture.runTest(async () => {
+      const result = await fixture.run();
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("native release projection failure");
+      expect(fixture.state.events.filter((event) => event.phase === "cancel")).toEqual([
+        { phase: "cancel", context: "source" },
+      ]);
+      expectClosed(fixture);
+    });
+  });
+
   it.each(["empty", "error", "chunk"] as const)(
     "finishes a no-release source in initial state %s without an extra EOF read",
     async (initialState) => {

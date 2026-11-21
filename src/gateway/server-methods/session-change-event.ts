@@ -64,6 +64,7 @@ type PendingSessionChange = {
   owner: SessionChangeOwner;
   key: string;
   latest?: SessionChange;
+  eviction?: SessionChange;
   catalogChanged: boolean;
   due: boolean;
   firstDeferredAt?: number;
@@ -128,13 +129,17 @@ function snapshotTarget(payload: SessionChangedPayload, scope: SessionEventAgent
     : undefined;
 }
 
+function isSessionDrainReason(reason: string): boolean {
+  return reason === "reset" || reason === "delete" || reason === "new";
+}
+
 function resolveSessionDrain(
   context: SessionChangeContext,
   payload: SessionChangedPayload,
   scope: SessionEventAgentScope | null,
   eventReceivers: ReadonlySet<string>,
-): { connIds: ReadonlySet<string>; subscriptionKey: string } | undefined {
-  if (!payload.sessionKey || !scope?.[1] || !["reset", "delete", "new"].includes(payload.reason)) {
+): { agentId: string; connIds: ReadonlySet<string>; subscriptionKey: string } | undefined {
+  if (!payload.sessionKey || !scope?.[1] || !isSessionDrainReason(payload.reason)) {
     return undefined;
   }
   const key = resolveSessionStoreKey({
@@ -145,9 +150,28 @@ function resolveSessionDrain(
   const subscriptionKey = resolveSessionSubscriptionKey(key, scope[1]);
   const messageReceivers = context.getSessionMessageSubscriberConnIds?.(subscriptionKey);
   return {
+    agentId: scope[1],
     connIds: new Set([...eventReceivers, ...(messageReceivers ?? [])]),
     subscriptionKey,
   };
+}
+
+function broadcastSessionDrain(
+  context: SessionChangeContext,
+  payload: SessionChangedPayload & { ts?: number },
+  scope: SessionEventAgentScope | null,
+  eventReceivers = context.getSessionEventSubscriberConnIds(),
+): void {
+  const drain = resolveSessionDrain(context, payload, scope, eventReceivers);
+  if (drain && drain.connIds.size > 0) {
+    // Publish in row order; a slow recipient must reconnect instead of missing eviction.
+    context.broadcastToConnIds(
+      "socket.drain",
+      { ...payload, agentId: drain.agentId, ts: payload.ts ?? Date.now() },
+      drain.connIds,
+      { agentId: drain.agentId, sessionKeys: [drain.subscriptionKey], dropIfSlow: false },
+    );
+  }
 }
 
 function broadcastSessionsChanged(
@@ -171,20 +195,7 @@ function broadcastSessionsChanged(
     ...(eventAgentId ? { agentId: eventAgentId } : {}),
     ts: Date.now(),
   };
-  const drain = resolveSessionDrain(context, payload, scope, connIds);
-  if (drain && drain.connIds.size > 0) {
-    // Publish in row order; a slow recipient must reconnect instead of missing eviction.
-    context.broadcastToConnIds(
-      "socket.drain",
-      { ...eventPayload, agentId: routingAgentId },
-      drain.connIds,
-      {
-        ...routingOptions,
-        sessionKeys: [drain.subscriptionKey],
-        dropIfSlow: false,
-      },
-    );
-  }
+  broadcastSessionDrain(context, eventPayload, scope, connIds);
   if (!hasSessionChangeReceivers(connIds)) {
     return;
   }
@@ -351,7 +362,22 @@ function startPendingSessionChange(pending: PendingSessionChange, leading?: Sess
     while (pending.due) {
       const next = pending.latest;
       if (next) {
+        const eviction = pending.eviction;
+        pending.eviction = undefined;
         pending.latest = undefined;
+        if (
+          eviction &&
+          (eviction.payload.reason !== next.payload.reason ||
+            eviction.payload.sessionId !== next.payload.sessionId)
+        ) {
+          try {
+            broadcastSessionDrain(pending.context, eviction.payload, eviction.scope);
+          } catch (error) {
+            log.warn("Session drain publication failed", {
+              error: formatErrorMessageWithCode(error),
+            });
+          }
+        }
         await publishSessionChange(pending.context, next);
       } else {
         break;
@@ -465,8 +491,11 @@ export function emitSessionsChanged(
       ...payload,
       ...(pending.catalogChanged ? { catalogChanged: true as const } : {}),
     };
-    // Notifications are best effort: rapid delete/recreate cycles coalesce to the latest row.
     pending.latest = { payload: latestPayload, scope };
+    // Keep the replaced generation's eviction even when its ordinary row notice is superseded.
+    if (payload.sessionKey && scope?.[1] && isSessionDrainReason(payload.reason)) {
+      pending.eviction ??= pending.latest;
+    }
     if (pending.due) {
       startPendingSessionChange(pending);
       return;

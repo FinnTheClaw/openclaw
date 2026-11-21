@@ -65,10 +65,21 @@ export async function streamSpeech(
         return canceled;
       }));
     try {
-      await invoke(() => {
-        providerRelease = synthesis.release;
-        source = synthesis.audioStream;
-      });
+      // A failed accessor must not hide the other handle needed for cleanup.
+      const [releaseField, streamField] = await Promise.allSettled([
+        invoke(() => {
+          providerRelease = synthesis.release;
+        }),
+        invoke(() => {
+          source = synthesis.audioStream;
+        }),
+      ]);
+      if (releaseField.status === "rejected") {
+        throw releaseField.reason;
+      }
+      if (streamField.status === "rejected") {
+        throw streamField.reason;
+      }
       reader = source?.getReader();
       closed = reader?.closed.then(
         () => ({ ok: true as const, value: undefined }),

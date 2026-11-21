@@ -14,7 +14,7 @@ import {
   MAX_CARD_PROOF,
   MAX_CARD_WORKER_LOGS,
 } from "./store-constants.js";
-import { WorkboardCoreStore } from "./store-core.js";
+import { WorkboardCardConflictError, WorkboardCoreStore } from "./store-core.js";
 import type {
   WorkboardArtifactInput,
   WorkboardAttachmentInput,
@@ -182,7 +182,18 @@ export class WorkboardEnrichmentStore extends WorkboardCoreStore {
           };
         },
         { deleteAttachmentId: attachmentId },
-      );
+      ).catch((error: unknown) => {
+        // Another writer may already have removed this attachment. Classify
+        // that result from the current card without replaying the deletion.
+        if (
+          error instanceof WorkboardCardConflictError &&
+          !error.current.metadata?.attachments?.some((attachment) => attachment.id === attachmentId)
+        ) {
+          assertCanMutateClaimedCard(error.current, scope);
+          throw new Error(`attachment not found: ${attachmentId}`);
+        }
+        throw error;
+      });
       return result.card;
     });
   }

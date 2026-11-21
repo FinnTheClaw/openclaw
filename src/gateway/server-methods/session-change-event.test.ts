@@ -452,6 +452,49 @@ describe("sessions.changed coalescing", () => {
     ]);
   });
 
+  it("preserves the drain for a trailing deletion before a replacement row", async () => {
+    const context = createContext(new Set(["list-reader"]));
+    const sessionKey = "agent:main:chat";
+    const removed = { sessionKey, agentId: "main", sessionId: "removed" };
+    const replacement = { ...removed, sessionId: "replacement" };
+    context.getSessionMessageSubscriberConnIds = (key) =>
+      new Set(key === sessionKey ? ["message-reader"] : []);
+    const prepared = createDeferred();
+    holdExactPreparation(getSessionRowProjection(context)!, prepared.promise);
+
+    try {
+      emitSessionsChanged(context, { ...removed, reason: "patch" });
+      await Promise.resolve();
+      emitSessionsChanged(context, { ...removed, reason: "delete" });
+      mocks.loadRow.mockReturnValue({ key: sessionKey, sessionId: replacement.sessionId });
+      emitSessionsChanged(context, { ...replacement, reason: "create" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(context.broadcastToConnIds).not.toHaveBeenCalled();
+    } finally {
+      prepared.resolve();
+      await flushPendingSessionsChangedEvents(context);
+    }
+
+    const calls = broadcasts(context);
+    const drainIndex = calls.findIndex(([event]) => event === "socket.drain");
+    expect(calls.filter(([event]) => event === "socket.drain")).toEqual([
+      [
+        "socket.drain",
+        expect.objectContaining({ ...removed, reason: "delete" }),
+        new Set(["list-reader", "message-reader"]),
+        expect.objectContaining({ dropIfSlow: false }),
+      ],
+    ]);
+    expect(drainIndex).toBeGreaterThan(0);
+    expect(drainIndex).toBeLessThan(calls.length - 1);
+    expect(calls.at(-1)).toEqual([
+      "sessions.changed",
+      expect.objectContaining({ ...replacement, reason: "create" }),
+      new Set(["list-reader"]),
+      expect.anything(),
+    ]);
+  });
+
   it.each([
     { key: "main", agentId: "main", subscriptionKey: "agent:main:main" },
     { key: "global", agentId: "work", subscriptionKey: "agent:work:global" },
