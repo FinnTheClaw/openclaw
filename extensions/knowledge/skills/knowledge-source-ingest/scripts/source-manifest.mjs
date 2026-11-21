@@ -311,8 +311,9 @@ async function plan() {
       }
     }
     database.exec("CREATE INDEX manifest_items_id ON manifest_items(id,role,manifest_index);");
+    // Equal observation times use a canonical representative, not argument order.
     const latest =
-      "WITH ranked AS (SELECT id,sha256,occurred_at,ROW_NUMBER() OVER(PARTITION BY id ORDER BY manifest_observed DESC,manifest_index DESC) AS n FROM manifest_items WHERE role='previous') SELECT id,sha256,occurred_at FROM ranked WHERE n=1";
+      "WITH ranked AS (SELECT id,sha256,occurred_at,ROW_NUMBER() OVER(PARTITION BY id ORDER BY manifest_observed DESC,sha256 ASC,occurred_at ASC) AS n FROM manifest_items WHERE role='previous') SELECT id,sha256,occurred_at FROM ranked WHERE n=1";
     const added = [],
       changed = [],
       unchanged = [],

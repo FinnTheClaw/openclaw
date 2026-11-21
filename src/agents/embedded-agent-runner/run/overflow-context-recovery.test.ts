@@ -38,6 +38,7 @@ async function withRecovery(
   runId: string,
   check: (input: RecoveryInput, promptState: PromptState) => Promise<void>,
   sessionKey = `agent:main:${manager.getSessionId()}`,
+  abortSignal?: AbortSignal,
 ) {
   const sessionId = manager.getSessionId();
   const identity = { agentId: "main", sessionId, sessionKey };
@@ -55,6 +56,7 @@ async function withRecovery(
       workspaceDir: "/tmp/workspace",
       prompt: "continue",
       timeoutMs: 1_000,
+      abortSignal,
     };
     await using sessionPromptState = await createEmbeddedRunSessionPromptState({
       runParams,
@@ -124,6 +126,31 @@ async function withRecovery(
     admission.close();
   }
 }
+
+it("forwards run cancellation to the recovery transcript reload", async () => {
+  const manager = SessionManager.inMemory("/tmp/workspace");
+  const controller = new AbortController();
+  const cancelled = new Error("cancel recovery");
+  using reload = vi
+    .spyOn(manager, "reloadPersistedTranscriptAsync")
+    .mockImplementation(async (signal) => {
+      controller.abort(cancelled);
+      signal?.throwIfAborted();
+    });
+  const rewrite = vi.fn(() => undefined);
+  await withRecovery(
+    manager,
+    "run-cancel-recovery-reload",
+    async (input) => {
+      const recovery = await input.prepareRecoverySession(200_000);
+      await expect(recovery.withSessionManagerRewriteLock(rewrite)).rejects.toBe(cancelled);
+      expect(reload).toHaveBeenCalledExactlyOnceWith(controller.signal);
+      expect(rewrite).not.toHaveBeenCalled();
+    },
+    undefined,
+    controller.signal,
+  );
+});
 
 it.each(["frozen", "cache-ttl"] as const)(
   "restores %s tool bytes after attempt teardown before recovery",

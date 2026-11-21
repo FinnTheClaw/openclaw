@@ -113,6 +113,26 @@ it("newest prior observation wins independent of argument order and partial snap
   expect(result.items.unresolved_missing).toStrictEqual(["a"]);
 });
 
+it("equal-time prior manifests produce the same item plan in either order", async () => {
+  const dir = tempDirs.make("knowledge-source-ingest-");
+  const coverage = ["2026-09-25T00:00:00Z", "2026-09-27T00:00:00Z"];
+  const observed = [...coverage, "2026-09-27T01:00:00Z"];
+  const row = (text: string) => [
+    { id: "a", occurred_at: "2026-09-26T00:00:00Z", payload: { text } },
+  ];
+  const first = await snapshot(dir, "prior-first", row("original"), observed);
+  const second = await snapshot(dir, "prior-second", row("edited"), observed);
+  const current = await snapshot(dir, "current", row("original"), [
+    ...coverage,
+    "2026-09-27T02:00:00Z",
+  ]);
+
+  const forward = await plan(dir, current.output, first.output, second.output);
+  const reverse = await plan(dir, current.output, second.output, first.output);
+  expect(forward.current.item_count).toBe(1);
+  expect(forward.items).toStrictEqual(reverse.items);
+});
+
 it("duplicate stable IDs reject a snapshot", async () => {
   const dir = tempDirs.make("knowledge-source-ingest-");
   const rows = [

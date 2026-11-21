@@ -662,28 +662,26 @@ export async function restoreGitBackupDirectory(params: {
     // Transcript FTS and its identities stay empty. Omission of the watermark makes
     // Gateway startup reconciliation rebuild both from canonical transcripts.
     database.exec(`PRAGMA user_version = ${manifest.userVersion};`);
-    // Redacted and operational projection tables are absent from Git. Recreate
-    // their canonical empty schemas before enforcing database ownership.
-    const ownerSchema =
-      restoreIdentity.role === "global"
-        ? getOpenClawStateRuntimeSchema({ includeVersionLazyAdditiveTables: false })
-        : getOpenClawAgentMigrationSchema(manifest.userVersion);
-    if (
-      restoreIdentity.role === "global" &&
-      readStateSchemaContentVersion(database) < OPENCLAW_STATE_SCHEMA_VERSION
-    ) {
-      // Historical tables already have their recorded DDL. Only recreate omitted
-      // tables here; current indexes can depend on columns owned by a later migration.
-      const omitted = new Set([...manifest.excludedTables, ...GIT_BACKUP_PROJECTION_TABLES]);
-      for (const table of getCanonicalSqliteTableNames(ownerSchema)) {
-        if (omitted.has(table)) {
-          database.exec(extractSqliteTableSchema(ownerSchema, table));
+    // Recreate omitted owner tables only for OpenClaw-managed databases.
+    if (restoreIdentity.role === "global") {
+      const ownerSchema = getOpenClawStateRuntimeSchema({
+        includeVersionLazyAdditiveTables: false,
+      });
+      if (readStateSchemaContentVersion(database) < OPENCLAW_STATE_SCHEMA_VERSION) {
+        // Historical tables already have their recorded DDL. Only recreate omitted
+        // tables here; current indexes can depend on columns owned by a later migration.
+        const omitted = new Set([...manifest.excludedTables, ...GIT_BACKUP_PROJECTION_TABLES]);
+        for (const table of getCanonicalSqliteTableNames(ownerSchema)) {
+          if (omitted.has(table)) {
+            database.exec(extractSqliteTableSchema(ownerSchema, table));
+          }
         }
+      } else {
+        database.exec(ownerSchema);
       }
-    } else {
+    } else if (restoreIdentity.role === "agent") {
+      const ownerSchema = getOpenClawAgentMigrationSchema(manifest.userVersion);
       database.exec(ownerSchema);
-    }
-    if (restoreIdentity.role === "agent") {
       // Index definitions can improve without a schema-version bump. Normalize
       // derived indexes only in private staging; rows and version markers stay intact.
       repairCanonicalSqliteIndexes(database, stagedPath, ownerSchema);

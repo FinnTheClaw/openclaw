@@ -518,6 +518,7 @@ export function createEmbeddedRunCompactionRuntime(input: {
             owner.session.target,
             params.workspaceDir,
             resolveEmbeddedSessionContextLimits({ contextTokenBudget }),
+            abortSignal,
           ));
     owner.assertActive();
     return {
@@ -528,7 +529,7 @@ export function createEmbeddedRunCompactionRuntime(input: {
           if (!sessionManager) {
             throw new Error("detached recovery has no caller-owned transcript to rewrite");
           }
-          await sessionManager.reloadPersistedTranscriptAsync();
+          await sessionManager.reloadPersistedTranscriptAsync(abortSignal);
           owner.assertActive();
           return await operation();
         }),

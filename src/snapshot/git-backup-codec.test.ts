@@ -59,6 +59,31 @@ it("restores historical agent data without migration and rejects incompatible ve
   }
 });
 
+it("round-trips a generic SQLite Git backup without adding agent schema", async () => {
+  const identity = { role: "generic", id: "notes" } as const;
+  const version = OPENCLAW_AGENT_SCHEMA_VERSION;
+  withDatabase(sourcePath, (database) => {
+    database.exec(`
+      PRAGMA user_version = ${version};
+      CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+      CREATE INDEX notes_body ON notes(body);
+      INSERT INTO notes VALUES (1, 'retained note');
+    `);
+  });
+
+  expect(await dump(identity)).toMatchObject({ schemaVersion: 1, identity, userVersion: version });
+  await restore(identity);
+
+  expectDatabaseRows(targetPath, {
+    "PRAGMA user_version": [{ user_version: version }],
+    "SELECT id, body FROM notes": [{ id: 1, body: "retained note" }],
+    "SELECT type, name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name": [
+      { type: "table", name: "notes" },
+      { type: "index", name: "notes_body" },
+    ],
+  });
+});
+
 it("preserves TEXT, storage classes, key order, quoted DDL, and CASE triggers", async () => {
   const rows = [
     ["\0leading", "text\0suffix", "text\0suffix"],

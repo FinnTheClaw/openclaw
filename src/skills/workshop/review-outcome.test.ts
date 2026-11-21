@@ -326,6 +326,40 @@ describe("postWorkshopChangeNotice", () => {
     });
   });
 
+  it("uses the pre-review Undo version for equal-time changes from the newest-first feed", async () => {
+    const sessionKey = "agent:main:workshop-order";
+    mocks.delivery.mockResolvedValueOnce({ deliveryContext: undefined, threadId: undefined });
+    await post(
+      [
+        change({
+          id: "c2",
+          createdAtMs: 42,
+          summary: "latest edit",
+          versionId: "v-after-first-edit",
+        }),
+        change({ id: "c1", createdAtMs: 42, summary: "first edit", versionId: "v-before-review" }),
+      ],
+      sessionKey,
+    );
+
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.enqueue).toHaveBeenCalledOnce();
+    expect(mocks.enqueue).toHaveBeenCalledWith(
+      expect.stringContaining("skill_workshop action=restore name=budget version=v-before-review."),
+      { sessionKey },
+    );
+    expect(mocks.append).toHaveBeenCalledOnce();
+    expectTranscript({
+      sessionKey,
+      expectedSessionId: sessionEntry.sessionId,
+      expectedLifecycleRevision: sessionEntry.lifecycleRevision,
+      deliveryMirror: {
+        ...marker(),
+        skills: [{ name: "budget", action: "updated", summary: "latest edit" }],
+      },
+    });
+  });
+
   it("reads notice eligibility off-thread and observes a committed reset", async () => {
     const currentGeneration = {
       ...generation("agent:main:workshop-worker"),

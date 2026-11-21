@@ -59,7 +59,9 @@ function formatWorkshopChangeNotice(
   changes: readonly WorkshopChange[],
 ) {
   const bySkill = new Map<string, { first: WorkshopChange; notice: WorkshopChange }>();
-  for (const change of changes.toSorted((a, b) => a.createdAtMs - b.createdAtMs)) {
+  // Reverse the newest-first feed before the stable sort so ties follow oldest-first cursor order.
+  const chronological = changes.toReversed().toSorted((a, b) => a.createdAtMs - b.createdAtMs);
+  for (const change of chronological) {
     const group = bySkill.get(change.skillName);
     if (!group) {
       bySkill.set(change.skillName, { first: change, notice: change });
