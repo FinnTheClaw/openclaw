@@ -234,8 +234,12 @@ export async function readPreparedGatewayModelCatalogOwnerSnapshot(
     getPendingPreparedModelRuntimeReplacement,
     materializePreparedModelCatalogOwner,
   } = await import("../agents/prepared-model-catalog.js");
-  const replacement = getPendingPreparedModelRuntimeReplacement();
-  if (replacement) {
+  // Superseded gates resolve so readers can join the successor's publication.
+  for (
+    let replacement = getPendingPreparedModelRuntimeReplacement();
+    replacement;
+    replacement = getPendingPreparedModelRuntimeReplacement()
+  ) {
     await replacement;
   }
   const config = (params?.getConfig ?? getRuntimeConfig)();

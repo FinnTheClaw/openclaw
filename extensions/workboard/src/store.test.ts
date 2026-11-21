@@ -178,7 +178,7 @@ describe("WorkboardStore", () => {
     expect(changes.mock.calls[1]?.[0].epoch).toBe(changes.mock.calls[0]?.[0].epoch);
   });
 
-  it("reports a reference cleanup conflict without overwriting a concurrent peer edit", async () => {
+  it("removes a deleted parent reference without overwriting a concurrent child edit", async () => {
     await using harness = createConcurrentSqliteHarness("openclaw-workboard-delete-references-");
     const parent = await createCard(harness.host, "Selected parent");
     const child = await createCard(harness.host, "Selected child");
@@ -187,11 +187,7 @@ describe("WorkboardStore", () => {
     const deleted = harness.paused.pauseAfterMatchingWrite(
       (key, value) => key === parent.id && value === undefined,
     );
-    const pending = harness.operation.delete(parent.id);
-    const outcome = pending.then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error }),
-    );
+    const pending = harness.operation.delete(parent.id).catch((error: unknown) => error);
     await deleted.reached;
     const cleanup = harness.paused.pauseNextWrite();
     deleted.resume();
@@ -203,17 +199,21 @@ describe("WorkboardStore", () => {
       type: "relates_to",
     });
     cleanup.resume();
-    const result = await outcome;
-    expect(result).toMatchObject({
-      error: { name: "WorkboardCardConflictError", current: beforeCleanup },
-    });
+    const result = await pending;
     const current = await harness.host.get(child.id);
-    expect(current).toEqual(beforeCleanup);
+    expect(result).toEqual({
+      deleted: true,
+      referenceUpdates: [
+        { id: child.id, previousUpdatedAt: beforeCleanup.updatedAt, updatedAt: current?.updatedAt },
+      ],
+    });
+    expect(current?.metadata?.comments).toEqual(beforeCleanup.metadata?.comments);
+    expect(current?.metadata?.links).toEqual(
+      beforeCleanup.metadata?.links?.filter((link) => link.targetCardId !== parent.id),
+    );
     await expect(harness.host.get(parent.id)).resolves.toBeUndefined();
     await expect(harness.host.get(unrelated.id)).resolves.toEqual(unrelated);
-    await expect(
-      harness.operation.delete(child.id, { expectedUpdatedAt: current?.updatedAt }),
-    ).resolves.toEqual({ deleted: true });
+    await expect(harness.operation.promote(child.id)).resolves.toMatchObject({ status: "ready" });
   });
 
   it.each(["move", "archive", "delete"] as const)(

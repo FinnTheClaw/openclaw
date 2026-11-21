@@ -6,7 +6,7 @@ import {
 } from "./prepared-model-runtime.test-harness.js";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { assert, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import { dispatchLowLevelChannelReplyFromConfig } from "../auto-reply/reply/dispatch-from-config.js";
 import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
 import { resetInboundDedupe } from "../auto-reply/reply/inbound-dedupe.js";
@@ -573,6 +573,65 @@ describe("retained config and committed model publication", () => {
     } finally {
       release.resolve();
       await Promise.allSettled([publication, read]);
+    }
+  });
+
+  it("waits for the superseding replacement before reading the prepared catalog", async () => {
+    const retained: OpenClawConfig = { agents: { defaults: { model: "custom/before" } } };
+    const superseded: OpenClawConfig = { agents: { defaults: { model: "custom/interim" } } };
+    const committed: OpenClawConfig = { agents: { defaults: { model: "custom/after" } } };
+    await publish(retained);
+    const firstEntered = createDeferred();
+    const firstRelease = createDeferred();
+    const secondEntered = createDeferred();
+    const secondRelease = createDeferred();
+    mocks.prepareStaticCatalog
+      .mockImplementationOnce(async () => {
+        firstEntered.resolve();
+        await firstRelease.promise;
+        return { entries: [] };
+      })
+      .mockImplementationOnce(async () => {
+        secondEntered.resolve();
+        await secondRelease.promise;
+        return { entries: [] };
+      });
+
+    const firstPublication = publish(superseded);
+    let secondPublication: Promise<void> | undefined;
+    let read: CatalogRead | undefined;
+    try {
+      await awaitGateBeforeSettlement(
+        firstEntered.promise,
+        firstPublication,
+        "first reload did not start",
+      );
+      read = readCatalog({ agentId: "default", getConfig: () => committed });
+      const readSettled = watchSettlement(read);
+      await nextTurn();
+      expect(readSettled(), "catalog read should wait for the first reload").toBe(false);
+
+      secondPublication = publish(committed);
+      firstRelease.resolve();
+      await awaitGateBeforeSettlement(
+        secondEntered.promise,
+        secondPublication,
+        "replacement reload did not start",
+      );
+      await nextTurn();
+      expect(readSettled(), "catalog read must stay pending for the superseding reload").toBe(
+        false,
+      );
+
+      secondRelease.resolve();
+      await secondPublication;
+      const catalog = await read;
+      expect(catalog?.config).toBe(committed);
+      expect(catalog?.isCurrent()).toBe(true);
+    } finally {
+      firstRelease.resolve();
+      secondRelease.resolve();
+      await Promise.allSettled([firstPublication, secondPublication, read]);
     }
   });
 

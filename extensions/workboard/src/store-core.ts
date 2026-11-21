@@ -22,6 +22,7 @@ import {
   isDependencyPromotableStatus,
   syncExecutionAttemptMetadata,
   updateEvent,
+  workboardCardReferenceRemovalPatch,
   appendEvent,
 } from "./store-card-helpers.js";
 import { MAX_CARD_COMMENTS, MAX_CARD_WORKER_LOGS, POSITION_STEP } from "./store-constants.js";
@@ -199,30 +200,27 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
     cardId: string,
   ): Promise<NonNullable<WorkboardDeleteResult["referenceUpdates"]>> {
     const referenceUpdates: NonNullable<WorkboardDeleteResult["referenceUpdates"]> = [];
-    for (const card of await this.list()) {
-      if (!card.metadata?.links?.some((link) => link.targetCardId === cardId)) {
+    for (const { id, metadata, updatedAt } of await this.list()) {
+      if (!metadata?.links?.some((link) => link.targetCardId === cardId)) {
         continue;
       }
-      let previousUpdatedAt = card.updatedAt;
-      const result = await this.updateLatestCard(card.id, (current) => {
-        const links = current.metadata?.links;
-        if (!links?.some((link) => link.targetCardId === cardId)) {
-          return undefined;
+      for (let attempt = 1; ; attempt += 1) {
+        let previousUpdatedAt = updatedAt;
+        try {
+          const result = await this.updateLatestCard(id, (current) => {
+            previousUpdatedAt = current.updatedAt;
+            return workboardCardReferenceRemovalPatch(current, cardId);
+          });
+          if (result.updated) {
+            referenceUpdates.push({ id, previousUpdatedAt, updatedAt: result.card.updatedAt });
+          }
+          break;
+        } catch (error) {
+          // Only replay this derived cleanup, using a fresh peer row each time.
+          if (!(error instanceof WorkboardCardConflictError) || attempt === 3) {
+            throw error;
+          }
         }
-        previousUpdatedAt = current.updatedAt;
-        return {
-          metadata: {
-            ...current.metadata,
-            links: links.filter((link) => link.targetCardId !== cardId),
-          },
-        };
-      });
-      if (result.updated) {
-        referenceUpdates.push({
-          id: card.id,
-          previousUpdatedAt,
-          updatedAt: result.card.updatedAt,
-        });
       }
     }
     return referenceUpdates;

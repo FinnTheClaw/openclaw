@@ -612,6 +612,22 @@ export function cardChildIds(card: WorkboardCard): string[] {
   return cardDependencyIds(card, "child");
 }
 
+export function workboardCardReferenceRemovalPatch(
+  card: WorkboardCard,
+  targetCardId: string,
+): { metadata: WorkboardMetadata } | undefined {
+  const links = card.metadata?.links;
+  if (!links?.some((link) => link.targetCardId === targetCardId)) {
+    return undefined;
+  }
+  return {
+    metadata: {
+      ...card.metadata,
+      links: links.filter((link) => link.targetCardId !== targetCardId),
+    },
+  };
+}
+
 export function latestRunningAttempt(card: WorkboardCard): WorkboardRunAttempt | undefined {
   return card.metadata?.attempts?.findLast((attempt) => attempt.status === "running");
 }
