@@ -194,6 +194,21 @@ describe("session active resource discovery", () => {
     }
   });
 
+  it("retires an automatically discovered desktop when descriptor revalidation fails", async () => {
+    const f = fixture();
+    await f.sync();
+    expect(f.desktopSource()).toBe("worker-1");
+    expect(f.slots()).toContain("desktop");
+
+    f.request.mockClear();
+    f.request.mockRejectedValueOnce(new Error("Synthetic descriptor read failure"));
+    f.controller.reconcileObservation();
+    await settle();
+
+    expect(f.request).toHaveBeenCalledWith("sessions.describe", { key });
+    expect(f.desktopSource()).toBeNull();
+  });
+
   it("retains a visible verified Desktop when another resource is dismissed", async () => {
     const f = fixture();
     await f.sync();

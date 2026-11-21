@@ -453,7 +453,7 @@ export class WorkerConnection {
         return;
       }
     }
-    if (this.stateValue.kind === "ready") {
+    if (generation === this.generation && this.stateValue.kind === "ready") {
       this.startHeartbeat(intervalMs);
     }
   }

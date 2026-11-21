@@ -86,12 +86,14 @@ function makeConnection(options: Partial<WorkerConnectionOptions> = {}) {
   return connection;
 }
 
-function reply(socket: WebSocket, id: string, payload: unknown) {
+type ReplyPeer = { send: (encoded: string) => void };
+
+function reply(socket: ReplyPeer, id: string, payload: unknown) {
   socket.send(JSON.stringify({ type: "res", id, ok: true, payload }));
 }
 
 function sendWorkerHello(
-  socket: WebSocket,
+  socket: ReplyPeer,
   id: string,
   admission: WorkerConnectParams["admission"],
 ) {
@@ -231,6 +233,75 @@ it("settles admitted heartbeat work before stop releases cleanup", async () => {
     release.resolve();
   }
 });
+
+it("keeps the replacement heartbeat cadence after the previous callback settles", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const release = createDeferred();
+  const onHeartbeat = vi.fn(() => Promise.resolve()).mockImplementationOnce(() => release.promise);
+  const heartbeats: number[] = [];
+  const sockets: Array<{ open: () => void; close: () => void }> = [];
+  const connection = makeConnection({
+    onHeartbeat,
+    createSocket: () => {
+      const index = sockets.length;
+      const socket = Object.assign(new EventEmitter(), {
+        readyState: 0,
+        send: (encoded: string) => {
+          const { id, method } = JSON.parse(encoded) as { id: string; method: string };
+          if (method === "connect") {
+            sendWorkerHello(peer, id, FRAME_CONNECT_PARAMS.admission);
+            return;
+          }
+          expect(method).toBe("worker.heartbeat");
+          heartbeats.push(index);
+          reply(peer, id, {
+            receivedAtMs: Date.now(),
+            status: "ok",
+            ownerEpoch: FRAME_CONNECT_PARAMS.admission.ownerEpoch,
+          });
+        },
+        open: () => {
+          socket.readyState = WebSocket.OPEN;
+          socket.emit("open");
+        },
+        close: () => {
+          socket.readyState = WebSocket.CLOSED;
+          socket.emit("close", 1000, Buffer.alloc(0));
+        },
+        terminate: (): void => socket.close(),
+      });
+      const peer: ReplyPeer = {
+        send: (encoded) => {
+          socket.emit("message", Buffer.from(encoded));
+        },
+      };
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+  try {
+    const started = connection.start();
+    sockets[0]!.open();
+    await started;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(heartbeats).toEqual([0]);
+    expect(onHeartbeat).toHaveBeenCalledTimes(1);
+
+    sockets[0]!.close();
+    sockets[1]!.open();
+    expect(connection.state.kind).toBe("ready");
+    await vi.advanceTimersByTimeAsync(30_000);
+    release.resolve();
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(heartbeats).toEqual([0]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(heartbeats).toEqual([0, 1]);
+  } finally {
+    release.resolve();
+    await connection.stop();
+  }
+});
+
 function createFrameDispatcher() {
   return new WorkerConnectionFrameDispatcher({
     connectParams: () => FRAME_CONNECT_PARAMS,

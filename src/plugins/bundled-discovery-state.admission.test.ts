@@ -77,6 +77,28 @@ it.each(readers)("preserves invalidation and ordinary errors: %s", async (_name,
   }
 });
 
+it("does not restore an older discovery mode after the memo is cleared", () =>
+  inCache(async () => {
+    reads.snapshot.mockReturnValue(undefined);
+    const started = createDeferredCore();
+    const previous = createDeferredCore<{ value_json: string } | undefined>();
+    const preparing = prepareBundledDiscoveryMode(env, () => {
+      started.resolve();
+      return previous.promise;
+    });
+    const settled = Promise.allSettled([preparing]);
+    try {
+      await Promise.race([started.promise, preparing]);
+      clearBundledDiscoveryModeMemo();
+      expect(readBundledDiscoveryModeMemoized(env)).toBe("allowlist");
+    } finally {
+      // The earlier read found no mode; it may settle but cannot restore that value.
+      previous.resolve(undefined);
+      await settled;
+    }
+    expect(readBundledDiscoveryModeMemoized(env)).toBe("allowlist");
+  }));
+
 it("waits for pending snapshot bytes without synchronously acquiring them", () =>
   inCache(async () => {
     const snapshot = createDeferredCore<object>();

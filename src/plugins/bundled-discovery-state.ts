@@ -60,11 +60,18 @@ export function readBundledDiscoveryMode(
 // interleaved isolated scopes (agent execution, doctor lint) from inheriting
 // another root's cached mode; the reads honor the active install-root context.
 const discoveryState = resolveGlobalSingleton<{
+  memoGeneration: object;
   memoized?: { key: string; value: BundledDiscoveryMode };
   snapshotModes: WeakMap<object, { value: BundledDiscoveryMode }>;
 }>(Symbol.for("openclaw.bundledDiscoveryMode"), () => ({
+  memoGeneration: {},
   snapshotModes: new WeakMap(),
 }));
+
+function isCurrentPreparedDiscoveryGeneration(generation: object, owner: object): boolean {
+  // A private snapshot's prepared mode belongs to its admitted cache owner.
+  return generation === owner || generation === discoveryState.memoGeneration;
+}
 
 registerPluginMetadataProcessMemoLifecycleClear(() => {
   clearBundledDiscoveryModeMemo();
@@ -108,7 +115,11 @@ export function readBundledDiscoveryModeMemoized(
   if (discoveryState.memoized?.key !== key) {
     const owner = getPluginCache();
     const prepared = owner.preparedBundledDiscoveryModes.get(key);
-    if (prepared && "value" in prepared) {
+    if (
+      prepared &&
+      "value" in prepared &&
+      isCurrentPreparedDiscoveryGeneration(prepared.value.generation, owner)
+    ) {
       getPluginCacheRetirementSignal(owner).throwIfAborted();
       discoveryState.memoized = { key, value: prepared.value.value };
     } else {
@@ -156,6 +167,15 @@ export async function prepareBundledDiscoveryMode(
     return activate;
   }
   const cache = owner.preparedBundledDiscoveryModes;
+  const generation = discoveryState.memoGeneration;
+  const existing = cache.get(key);
+  if (
+    existing &&
+    "value" in existing &&
+    !isCurrentPreparedDiscoveryGeneration(existing.value.generation, owner)
+  ) {
+    cache.delete(key);
+  }
   const prepared = await preparePluginCacheFact(owner, cache, key, async () => {
     let value: BundledDiscoveryMode;
     if (discoveryState.memoized?.key === key) {
@@ -169,11 +189,21 @@ export async function prepareBundledDiscoveryMode(
           );
       value = parseBundledDiscoveryMode(row ? JSON.parse(row.value_json) : undefined);
     }
-    // Keep the SDK-reachable fact shape without a separate invalidation generation.
-    return { value, generation: owner };
+    return { value, generation };
   });
   const activate = () => {
     prepared.assertCurrent();
+    const current = cache.get(key);
+    if (
+      discoveryState.memoGeneration !== generation ||
+      !current ||
+      !("value" in current) ||
+      current.value !== prepared.value ||
+      !isCurrentPreparedDiscoveryGeneration(current.value.generation, owner)
+    ) {
+      // A cleared read may finish, but it no longer owns the process memo.
+      return;
+    }
     // Another root may use the single-slot memo while preparation awaits its row.
     // Reuse this operation's captured fact for the following synchronous derivation.
     discoveryState.memoized = { key, value: prepared.value.value };
@@ -188,6 +218,7 @@ export async function prepareBundledDiscoveryMode(
  * absent mode and rebuild plugin indexes against stale strict-gate decisions.
  */
 export function clearBundledDiscoveryModeMemo(): void {
+  discoveryState.memoGeneration = {};
   discoveryState.memoized = undefined;
   discoveryState.snapshotModes = new WeakMap();
   for (const cache of new Set([getPluginCache(), getProcessPluginCache()])) {

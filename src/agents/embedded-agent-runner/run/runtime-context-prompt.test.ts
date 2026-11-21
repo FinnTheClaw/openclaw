@@ -7,6 +7,7 @@ import {
 } from "../../internal-runtime-context.js";
 import {
   appendCurrentInboundContext,
+  applyRuntimeContextCarrierRetention,
   attachSteeringRuntimeContext,
   buildCurrentInboundPrompt,
   buildRuntimeContextCustomMessage,
@@ -269,5 +270,8 @@ describe("per-request runtime instructions", () => {
       messages[2],
     ]);
     expect(messages[1]).toBe(carrier);
+
+    applyRuntimeContextCarrierRetention(projected, true);
+    expect(projected[1]).toMatchObject({ runtimeContextCarrierRetained: true });
   });
 });

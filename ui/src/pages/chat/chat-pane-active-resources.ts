@@ -190,7 +190,19 @@ export class ChatPaneActiveResources {
     // Do not expose a resource while its assignment is being revalidated.
     this.invalidate();
     this.descriptorRead = undefined;
-    void this.readSession(owner).then(
+    const desktop = this.desktop;
+    const revalidation = this.readSession(owner, () => {
+      if (
+        desktop?.source != null &&
+        this.desktop === desktop &&
+        desktop.observation === owner.observation &&
+        this.owner?.observation === owner.observation &&
+        owner.isCurrent()
+      ) {
+        this.publishDesktop(owner, null);
+      }
+    });
+    void revalidation.then(
       () => {
         const current = this.owner;
         if (current?.isCurrent() && this.descriptorRead === undefined) {
@@ -203,7 +215,10 @@ export class ChatPaneActiveResources {
     );
   }
 
-  private readSession(owner: ActiveResourceOwner): Promise<GatewaySessionRow | null> {
+  private readSession(
+    owner: ActiveResourceOwner,
+    onCurrentFailure?: () => void,
+  ): Promise<GatewaySessionRow | null> {
     const previous = this.descriptorRead;
     const identity = resourceIdentityForSession(owner);
     if (previous?.observation === owner.observation && previous.identity === identity) {
@@ -223,11 +238,19 @@ export class ChatPaneActiveResources {
       const outcome = reconcile(session ?? undefined);
       // An overlapping row change can wait for the next refresh; discovery is read-only.
       return outcome.status === "current" ? outcome.row : null;
-    })().finally(() => {
-      if (this.descriptorRead === read) {
-        this.descriptorRead = undefined;
-      }
-    });
+    })()
+      .catch((error: unknown) => {
+        // Settle failure before releasing the descriptor owner; a newer read wins.
+        if (this.descriptorRead === read) {
+          onCurrentFailure?.();
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (this.descriptorRead === read) {
+          this.descriptorRead = undefined;
+        }
+      });
     this.descriptorRead = read;
     return read.promise;
   }

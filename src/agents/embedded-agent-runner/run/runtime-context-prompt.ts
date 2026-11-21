@@ -6,6 +6,7 @@ import {
   RUNTIME_CONTEXT_HEADER,
   setRuntimeContextRetention,
   type Context,
+  type UserMessage,
 } from "../../../llm/types.js";
 import {
   memoizeFrozenPlainDataProjection,
@@ -170,13 +171,29 @@ export function resolveRuntimeContextPromptParts(params: {
   };
 }
 
+function isRetentionCarrier(message: Context["messages"][number]): message is UserMessage {
+  return (
+    message.role === "user" &&
+    (message.runtimeContextCarrier === true || isRuntimeContextMessage(message))
+  );
+}
+
+function writeCarrierRetention(message: UserMessage, retained: boolean | undefined): void {
+  if (isRuntimeContextMessage(message)) {
+    setRuntimeContextRetention(message, retained);
+  } else {
+    // Mixed-media carriers keep only the compatibility marker, not canonical text context.
+    message.runtimeContextCarrierRetained = retained;
+  }
+}
+
 const retainedRuntimeContexts = [undefined, false, true].map((retained) =>
   memoizeFrozenPlainDataProjection((message: Context["messages"][number]) => {
-    if (!isRuntimeContextMessage(message)) {
+    if (!isRetentionCarrier(message)) {
       return message;
     }
     const projected = { ...message };
-    setRuntimeContextRetention(projected, retained);
+    writeCarrierRetention(projected, retained);
     return projected;
   }),
 );
@@ -186,7 +203,7 @@ export function applyRuntimeContextCarrierRetention(
   appendOnlyRuntimeContext: boolean | undefined,
 ): void {
   messages.forEach((message, index) => {
-    if (isRuntimeContextMessage(message)) {
+    if (isRetentionCarrier(message)) {
       if (isDeeplyFrozenPlainData(message)) {
         const project =
           retainedRuntimeContexts[
@@ -194,7 +211,7 @@ export function applyRuntimeContextCarrierRetention(
           ]!;
         messages[index] = project(message);
       } else {
-        setRuntimeContextRetention(message, appendOnlyRuntimeContext);
+        writeCarrierRetention(message, appendOnlyRuntimeContext);
       }
     }
   });
