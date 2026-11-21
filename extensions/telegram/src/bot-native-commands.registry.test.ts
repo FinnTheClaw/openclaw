@@ -282,6 +282,75 @@ describe("registerTelegramNativeCommands real plugin registry", () => {
     expect(await readVisibleSessionTranscriptMessageEntries(scope)).toEqual([]);
   });
 
+  it("keeps the topic fast mode when only its parent model lookup fails", async ({
+    onTestFinished,
+  }) => {
+    const state = await createOpenClawTestState({ layout: "state-only" });
+    onTestFinished(() => state.cleanup());
+    const parentSessionKey = "agent:main:main";
+    const threadId = 77;
+    const ctx = menu.createPrivateCommandContext({ threadId });
+    const scope = {
+      agentId: "main",
+      sessionKey: `${parentSessionKey}:thread:${ctx.message.chat.id}:${threadId}`,
+      storePath: state.statePath("sessions.sqlite"),
+    };
+    const cfg: OpenClawConfig = {
+      session: { store: scope.storePath },
+      commands: { allowFrom: { telegram: ["200"] } },
+      agents: {
+        defaults: {
+          model: "openai/gpt-test",
+          models: { "openai/gpt-test": { params: { fastMode: "auto", fastAutoOnSeconds: 30 } } },
+        },
+      },
+      channels: { telegram: { dmPolicy: "allowlist", allowFrom: ["200"] } },
+    };
+    await upsertSessionEntry({
+      ...scope,
+      entry: { sessionId: "fast-topic-parent-unreadable", updatedAt: 1, fastMode: true },
+    });
+
+    const { commandHandlers, sendMessage } = await registerMenu({ allowFrom: ["200"] }, cfg);
+    const handler = commandHandlers.get("fast");
+    if (!handler) {
+      throw new Error("expected fast command handler");
+    }
+    const command = {
+      ...ctx,
+      me: { has_topics_enabled: true },
+      message: { ...ctx.message, text: "/fast" },
+    };
+    const readSession = vi.mocked(getSessionEntryAsync);
+    const readNormally = readSession.getMockImplementation();
+    if (!readNormally) {
+      throw new Error("expected the normal fixture session reader");
+    }
+    readSession.mockClear();
+    let commandFailure: unknown;
+    await readSession.withImplementation(
+      async (params) => {
+        if (params.sessionKey === parentSessionKey) {
+          throw new Error("fixture parent model read unavailable");
+        }
+        return readNormally(params);
+      },
+      async () => {
+        commandFailure = await handler(command).catch((error: unknown) => error);
+      },
+    );
+
+    expect(commandFailure).toBeUndefined();
+    expect(readSession).toHaveBeenCalledWith(expect.objectContaining(scope));
+    expect(readSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionKey: parentSessionKey, storePath: scope.storePath }),
+    );
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage.mock.calls[0]?.[2]).toMatchObject({ message_thread_id: threadId });
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("auto (30 sec)");
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("Current fast mode: on (session).");
+  });
+
   it("records the displayed native command reply after a message sending hook", async ({
     onTestFinished,
   }) => {

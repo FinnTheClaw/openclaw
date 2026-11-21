@@ -66,7 +66,11 @@ async function resolveTelegramCommandMenuModelContext(
     } else {
       const override = await resolveStoredModelOverrideAsync({
         sessionEntry: entry,
-        loadSessionEntry: (sessionKey) => getSessionEntryAsync({ storePath, sessionKey }),
+        loadSessionEntry: (sessionKey) => {
+          const parentRead = getSessionEntryAsync({ storePath, sessionKey });
+          // A failed parent-model read must not discard the topic's known fast setting.
+          return mode === "fast" ? parentRead.catch(() => undefined) : parentRead;
+        },
         sessionKey: params.sessionKey,
         defaultProvider: defaultModel.provider,
       });
