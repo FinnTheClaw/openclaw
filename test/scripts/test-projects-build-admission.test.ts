@@ -23,6 +23,7 @@ import { createControlledWorkerCompiler } from "./vitest-worker-artifacts.test-s
 const commands = vi.hoisted(() => ({
   prepare: vi.fn(),
   prepareE2e: vi.fn(),
+  prepareKysely: vi.fn<() => Promise<void>>(),
   reader: vi.fn(),
   uiAssets: vi.fn(),
   sourceLoader: vi.fn(),
@@ -32,6 +33,9 @@ const commands = vi.hoisted(() => ({
 vi.mock("../../scripts/lib/managed-child-process.mts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../scripts/lib/managed-child-process.mts")>()),
   runManagedCommand: commands.prepare,
+}));
+vi.mock("../../scripts/generate-kysely-types.mts", () => ({
+  ensureKyselyTypes: commands.prepareKysely,
 }));
 vi.mock("../../scripts/lib/vitest-build-prerequisites.mts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../scripts/lib/vitest-build-prerequisites.mts")>()),
@@ -191,6 +195,7 @@ beforeEach(() => {
     vi.stubEnv(name, env[name]);
   }
   commands.prepare.mockReset().mockResolvedValue(0);
+  commands.prepareKysely.mockReset().mockResolvedValue(undefined);
   commands.prepareE2e.mockReset().mockResolvedValue({ OPENCLAW_E2E_USE_PREBUILT_DIST: "1" });
   commands.uiAssets.mockReset().mockReturnValue({ kind: "ready", indexPath: "fixture-index" });
   commands.sourceLoader.mockReset().mockResolvedValue(undefined);
@@ -1525,6 +1530,7 @@ describe("test-projects build admission", () => {
     await terminal.promise;
     expect(commands.reader).toHaveBeenCalledOnce();
     expect(commands.prepare).toHaveBeenCalledTimes(prepare ? 1 : 0);
+    expect(commands.prepareKysely).toHaveBeenCalledTimes(prepare ? 1 : 0);
     expect(commands.prepareE2e).not.toHaveBeenCalled();
     expect(Boolean(commands.reader.mock.calls[0]![0].workerRun)).toBe(prepare);
   });

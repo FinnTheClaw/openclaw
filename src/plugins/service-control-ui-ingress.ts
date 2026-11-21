@@ -21,7 +21,7 @@ export function createPluginServiceControlUiIngress(options: {
   record: PluginRecord;
   lease: PluginRuntimeCapabilityLease;
   isStopping: () => boolean;
-}): { factory: GatewayControlUiIngressFactoryV2; stop: () => Promise<void> } | undefined {
+}): { factory: GatewayControlUiIngressFactoryV2; stop: () => void } | undefined {
   const { registry, record, lease } = options;
   if (record.origin !== "bundled" && record.trustedOfficialInstall !== true) {
     return undefined;
@@ -56,11 +56,12 @@ export function createPluginServiceControlUiIngress(options: {
       );
     }
   };
-  const stop = async () => {
+  // Revocation is synchronous; do not make an idle stop look like a pending drain.
+  const stop = () => {
     lifetime.abort(new GatewayControlUiIngressError("closed", "Plugin Control UI ingress stopped"));
     materializeErrorStack(lifetime.signal.reason);
   };
-  lease.retain(() => void stop());
+  lease.retain(stop);
   const hostFactory = async () => {
     const { createGatewayControlUiIngressFactory } =
       await import("../gateway/remote-control-ui-ingress.js");

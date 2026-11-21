@@ -3,6 +3,8 @@ import type { RetainedOperation } from "./retained-operation.js";
 
 export type NativeWorkerEvents = {
   started: [];
+  /** Terminal constructor refusal: no physical Worker was created. */
+  "construction-refused": [];
   message: [unknown];
   messageerror: [Error];
   error: [Error];

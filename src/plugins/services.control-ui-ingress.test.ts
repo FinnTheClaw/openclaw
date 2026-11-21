@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { queryObjects } from "node:v8";
-import { beforeAll, expect, it, onTestFinished } from "vitest";
+import { beforeAll, expect, it, onTestFinished, vi } from "vitest";
 import { bindGatewayControlUiIngressHost } from "../gateway/remote-control-ui-ingress-host.js";
 import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
@@ -28,7 +28,7 @@ beforeAll(async () => {
   return () => state.cleanup();
 });
 
-async function fixture(recordOptions: Partial<PluginRecord> = {}) {
+async function fixture(recordOptions: Partial<PluginRecord> = {}, stop?: () => void) {
   const registry = createEmptyPluginRegistry();
   const record = createPluginRecord({ id: "ingress-test", origin: "bundled", ...recordOptions });
   registry.plugins.push(record);
@@ -65,6 +65,7 @@ async function fixture(recordOptions: Partial<PluginRecord> = {}) {
       start: (ctx) => {
         serviceContext = ctx;
       },
+      ...(stop ? { stop } : {}),
     },
   });
   const service = await startPluginServices({ registry, config: {} });
@@ -107,6 +108,14 @@ it.each([
   expect(serviceContext.controlUiIngress).toEqual(
     available ? expect.objectContaining({ capabilityVersion: 2 }) : undefined,
   );
+});
+
+it("settles synchronous cleanup at an exhausted deadline with unused ingress", async () => {
+  const stop = vi.fn();
+  const { service, serviceContext } = await fixture({}, stop);
+  expect(serviceContext.controlUiIngress).toBeDefined();
+  await expect(service.stop({ strict: true, deadlineAtMs: Date.now() })).resolves.toBeUndefined();
+  expect(stop).toHaveBeenCalledOnce();
 });
 
 it.each(["stop", "revoke"])("revokes retained ingress authority on %s", async (action) => {

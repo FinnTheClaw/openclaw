@@ -24,6 +24,7 @@ import {
   isWorkerGcObservationEnabled,
 } from "./worker-cpu.js";
 import { recordWorkerMessage } from "./worker-message-metrics.js";
+import { NativeWorker } from "./worker-native-handle.js";
 import {
   captureRetainedNativeWorkerSource,
   createRetainedNativeWorker,
@@ -134,10 +135,19 @@ export function createWorkerTaskHost(
         };
         admissions.set(worker, admission);
         const retained = admission;
-        worker.once("exit", () => {
-          retained.owner.finish();
-          admissions.delete(worker);
-        });
+        const finish = () => {
+          if (admissions.get(worker) === retained) {
+            try {
+              retained.owner.finish();
+            } finally {
+              admissions.delete(worker);
+            }
+          }
+        };
+        worker.once("exit", finish);
+        if (worker instanceof NativeWorker) {
+          worker.once("construction-refused", finish);
+        }
       }
       // The retained relay supplies current facts on demand; global snapshots grow with sessions.
       const selection = getDatabaseEngineSelection();

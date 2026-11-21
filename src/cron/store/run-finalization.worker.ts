@@ -1,3 +1,4 @@
+import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import { getSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import type { OpenClawStateDatabase } from "../../state/openclaw-state-db-contract.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
@@ -14,6 +15,7 @@ import { recordCronRunInDatabase } from "./run-history.kernel.js";
 import { hasCronRunDeliveryStartedInDatabase } from "./run-receipt-delivery.js";
 import { finishCronRunReceiptInDatabase } from "./run-receipt-store.js";
 import { isCronRunTriggerStateRetiredInDatabase } from "./run-receipt-trigger-state.js";
+import { CRON_RECEIPT_SETTLEMENT_ROLLED_BACK } from "./run-receipt.types.js";
 import { cronRunResultHistory } from "./run-result.js";
 import { createCronMutationLogger } from "./runtime-mutation.worker.js";
 import { mutateCronRuntimeRowsInDatabase } from "./runtime-rows.kernel.js";
@@ -28,9 +30,43 @@ export function finalizeCronRunsInWorker(
   database: OpenClawStateDatabase,
   input: CronRuntimeWorkerOperations["cron.finalizeRuns"]["input"],
 ): CronRuntimeWorkerOperations["cron.finalizeRuns"]["output"] {
+  if (!input.snapshot.receiptOnly) {
+    return finalizeCronRunsTransaction(database, input);
+  }
+  const settlement = { rolledBack: false };
+  try {
+    return finalizeCronRunsTransaction(database, input, settlement);
+  } catch (error) {
+    if (!settlement.rolledBack) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw Object.assign(new Error(message, { cause: error }), {
+      code: CRON_RECEIPT_SETTLEMENT_ROLLED_BACK,
+    });
+  }
+}
+
+function finalizeCronRunsTransaction(
+  database: OpenClawStateDatabase,
+  input: CronRuntimeWorkerOperations["cron.finalizeRuns"]["input"],
+  settlement?: { rolledBack: boolean },
+): CronRuntimeWorkerOperations["cron.finalizeRuns"]["output"] {
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
       const policy = input.snapshot;
+      if (settlement) {
+        stageSqliteTransactionState(db, {
+          commit() {},
+          rollback() {
+            settlement.rolledBack = true;
+          },
+          // An unknown native outcome must not look like a confirmed rollback.
+          invalidate() {
+            settlement.rolledBack = false;
+          },
+        });
+      }
       const committed = mutateCronRuntimeRowsInDatabase({
         database: db,
         storeKey: input.storeKey,

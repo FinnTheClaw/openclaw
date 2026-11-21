@@ -570,6 +570,23 @@ describe("persistent chat session snapshots", () => {
     expect(await new SessionSnapshotStore().read(sessionKey)).toBeNull();
   });
 
+  it("preserves a newer snapshot when a superseded projection fails", async () => {
+    const memory: ChatMessageCache = new Map();
+    const store = makeStore(memory, true);
+    await persist(store, sessionKey, snapshot("previously saved"));
+    writeSnapshotFixture(store, sessionKey, snapshot(1n));
+    const flush = store.flush();
+
+    // Preparation yields before retiring the rejected snapshot. The same key
+    // has received a new owner by the time that older outcome is handled.
+    const replacement = snapshot("newest conversation");
+    cacheSnapshot(memory, sessionKey, replacement);
+    await flush;
+
+    expect.soft(memory.get(sessionKey)?.snapshot).toEqual(replacement);
+    expect(await readSnapshot()).toEqual(replacement);
+  });
+
   it.each([
     { count: 60, message: "small" },
     { count: 3, message: "x".repeat(9 * 1024 * 1024) },

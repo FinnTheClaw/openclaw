@@ -1,4 +1,7 @@
 import type { CronAgentScope } from "../types-shared.js";
+
+export const CRON_RECEIPT_SETTLEMENT_ROLLED_BACK = "CRON_RECEIPT_SETTLEMENT_ROLLED_BACK";
+
 export type CronRunReceiptStatus =
   | "running"
   | "ok"

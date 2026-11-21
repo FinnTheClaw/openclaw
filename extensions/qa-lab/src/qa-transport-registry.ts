@@ -92,7 +92,14 @@ function resolveQaTransportFactoryModuleFlowSupport(
 function createQaTransportCleanup(cleanup: () => Promise<void> | undefined): () => Promise<void> {
   let pending: Promise<void> | undefined;
 
-  return () => (pending ??= Promise.resolve().then(cleanup));
+  return () =>
+    (pending ??= Promise.resolve()
+      .then(cleanup)
+      .catch((error: unknown) => {
+        // Keep successful phases memoized; let a later caller retry this failure.
+        pending = undefined;
+        throw error;
+      }));
 }
 
 async function collectQaTransportCleanupErrors(

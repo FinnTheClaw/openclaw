@@ -250,6 +250,31 @@ test("createGatewaySession forwards its commit guard into main-session reset", a
   }
 });
 
+test("main reset rolls back completed lifecycle preparation when the caller closes", async () => {
+  testState.sessionConfig = { dmScope: "main" };
+  const original = sessionStoreEntry("reset-before-caller-close", {
+    lifecycleRevision: "original-reset-generation",
+  });
+  await writeSessionStore({ entries: { main: original } });
+  let callerClosed = false;
+  const rollback = vi.fn(async () => {});
+  await expect(
+    resetMain({
+      commitGuard: () => {
+        if (callerClosed) {
+          throw new Error("caller closed during reset preparation");
+        }
+      },
+      prepareLifecycle: async () => {
+        callerClosed = true;
+        return { ok: true, value: { rollback } };
+      },
+    }),
+  ).rejects.toThrow("caller closed during reset preparation");
+  expect(readEntry()).toMatchObject(original);
+  expect(rollback).toHaveBeenCalledOnce();
+});
+
 test("sessions.create preserves keyed draft adoption idempotency", async () => {
   const key = "agent:main:dashboard:idempotent-draft";
   const first = await createSession({ key, visibility: "draft" });

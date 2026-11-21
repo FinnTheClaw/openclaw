@@ -507,6 +507,7 @@ export class NativeWorker extends EventEmitter<NativeWorkerEvents> implements Re
       this.runtime.handles.delete(this.id);
       this.runtime.refreshReference();
       this.abandonResource();
+      this.emit("construction-refused");
       this.emit("error", error);
     } else if (reply.type === "stopped") {
       this.finishExecution(reply.code);

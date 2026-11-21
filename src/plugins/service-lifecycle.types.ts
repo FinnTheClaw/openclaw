@@ -53,7 +53,7 @@ export type OwnedPluginService = {
   cleanupReporting?: Promise<unknown>;
   stopRequested: boolean;
   stopNodeInvocations?: () => void;
-  stopControlUiIngress?: () => Promise<void>;
+  stopControlUiIngress?: () => Promise<void> | void;
   health: NonNullable<OpenClawPluginServiceContext["serviceHealth"]>;
   lease: PluginRuntimeCapabilityLease;
   scheduling: PluginServiceSchedulerOwner;

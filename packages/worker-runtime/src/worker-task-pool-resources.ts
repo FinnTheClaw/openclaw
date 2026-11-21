@@ -33,10 +33,17 @@ export function startCloseWorkerPoolResources<Input, Output>(
       complete.resolve();
       return complete.operation;
     }
+    try {
+      worker.ref();
+    } catch (error) {
+      // A reference refusal is this slot's result, not a reason to skip its siblings.
+      const failed = createRetainedOperation<void>(() => {});
+      failed.reject(toErrorObject(error, "Worker resource cleanup could not reference its worker"));
+      return failed.operation;
+    }
     const closure = resourceClosures.get(worker) ?? { pending: 0 };
     closure.pending++;
     resourceClosures.set(worker, closure);
-    worker.ref();
     return startCloseWorkerTaskResources(slot, worker, closure, key, options, retire, observeReply);
   });
   const completion = createRetainedOperation<void>(() => {

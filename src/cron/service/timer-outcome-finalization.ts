@@ -1,9 +1,12 @@
+import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
+import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
 import { clearCronJobActive, isCronActiveJobMarkerCurrent } from "../active-jobs.js";
 import { resolveCronRunErrorReason } from "../run-error-reason.js";
 import { getCronJobsStoreRevision, noteCronJobsStoreCommit } from "../store.js";
+import { CRON_RECEIPT_SETTLEMENT_ROLLED_BACK } from "../store/run-receipt.types.js";
 import { cronRunResultEvent } from "../store/run-result.js";
 import { isDeferredCronAdmission } from "./admission-deferred.js";
 import { needsCronTimerMaintenance } from "./jobs-scheduling.js";
@@ -123,8 +126,8 @@ export async function finalizeCompletedCronRunOutcomes(
         }
         void trackAsyncWork(async () => {
           await Promise.allSettled([outcome.executionSettlement]);
-          await executeOpenClawStateWorker(context, {
-            type: "cron.finalizeRuns",
+          const command = {
+            type: "cron.finalizeRuns" as const,
             input: {
               ...input,
               snapshot: {
@@ -133,7 +136,21 @@ export async function finalizeCompletedCronRunOutcomes(
                 outcomes: [{ ...input.snapshot.outcomes[index]!, executionPending: false }],
               },
             },
-          });
+          };
+          try {
+            await executeOpenClawStateWorker(context, command);
+          } catch (error) {
+            if (
+              hasSqliteWorkerOutcomeUnknown(error) ||
+              extractErrorCode(error) !== CRON_RECEIPT_SETTLEMENT_ROLLED_BACK ||
+              state.deps.storeKey !== storeKey
+            ) {
+              throw error;
+            }
+            // Retry this rolled-back terminal write once, never the accepted execution.
+            context.admission.assertCurrent();
+            await executeOpenClawStateWorker(context, command);
+          }
           wakeCronRunQueues(state);
         }).catch((error: unknown) => {
           state.deps.log.warn(

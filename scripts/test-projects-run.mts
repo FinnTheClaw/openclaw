@@ -506,22 +506,24 @@ export async function runTestProjects(
         spec.env = { ...spec.env, ...preparedEnv };
       }
     }
-    const code = await prepareVitestRuntime(
-      runnable.flatMap(({ spec, cliArgs }) => {
-        const selections = resolveVitestRuntimeCliSelections(spec.config, cliArgs, spec.env);
-        // These selections are invocation-owned; their include files are not written yet.
-        for (const selection of selections) {
-          selection.includePatterns = spec.includePatterns;
-        }
-        return selections;
-      }),
-      baseEnv,
-      { runtimePrepared: e2eSpecs.length > 0, signal: preparationAbort.signal },
-    );
-    if (code !== 0) {
-      printTestSummary("failed", 0, performance.now() - suiteStartedAt);
-      process.exitCode = vitestInfrastructureExitCode(code);
-      return;
+    if (runnable.length > 0) {
+      const code = await prepareVitestRuntime(
+        runnable.flatMap(({ spec, cliArgs }) => {
+          const selections = resolveVitestRuntimeCliSelections(spec.config, cliArgs, spec.env);
+          // These selections are invocation-owned; their include files are not written yet.
+          for (const selection of selections) {
+            selection.includePatterns = spec.includePatterns;
+          }
+          return selections;
+        }),
+        baseEnv,
+        { runtimePrepared: e2eSpecs.length > 0, signal: preparationAbort.signal },
+      );
+      if (code !== 0) {
+        printTestSummary("failed", 0, performance.now() - suiteStartedAt);
+        process.exitCode = vitestInfrastructureExitCode(code);
+        return;
+      }
     }
 
     if (termination.signal) {

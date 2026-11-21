@@ -466,11 +466,11 @@ async function performPreparedGatewaySessionReset({
             key: target.canonicalKey,
             storePath,
           });
+          preparedLifecycle = prepared.ok ? prepared.value : undefined;
           assertReadAuthorized();
           if (!prepared.ok) {
             return { ok: false, error: prepared.error };
           }
-          preparedLifecycle = prepared.value;
         }
         const { entry, legacyKey, canonicalKey } = await loadResetSession(assertReadAuthorized);
         if (!memory && normalizeOptionalString(entry?.sessionId) !== preparedResetSessionId) {

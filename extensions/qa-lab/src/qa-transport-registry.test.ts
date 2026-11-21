@@ -142,6 +142,20 @@ describe("qa transport registry", () => {
     expect(cleanupAfterGatewayStop).toHaveBeenCalledOnce();
   });
 
+  it("retries only the rejected phase when the suite repeats cleanup", async () => {
+    const failure = new Error("temporary lease release failure");
+    const stopObserver = vi.fn(async () => {});
+    const releaseLease = vi.fn(async () => {}).mockRejectedValueOnce(failure);
+    const created = await createCleanupAdapter(stopObserver, releaseLease);
+
+    await expect(created.cleanupWithoutGateway()).rejects.toBe(failure);
+    expect(releaseLease).toHaveBeenCalledOnce();
+    await created.cleanupWithoutGateway();
+    await created.cleanupWithoutGateway();
+    expect(stopObserver).toHaveBeenCalledOnce();
+    expect(releaseLease).toHaveBeenCalledTimes(2);
+  });
+
   it("runs post-gateway cleanup when gateway-less pre-cleanup fails", async () => {
     const cleanup = vi.fn(() => fail("pre-cleanup failed"));
     const cleanupAfterGatewayStop = vi.fn(async () => undefined);

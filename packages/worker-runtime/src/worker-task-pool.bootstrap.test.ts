@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { MessagePort } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
 import { createRetainedOperation } from "./retained-operation.js";
 import type { WorkerLifecycle } from "./worker-lifecycle.js";
@@ -492,3 +493,71 @@ it("does not promise readiness for input that exceeds the pool byte limit", asyn
   expect(overload.capacityAvailable).toBeUndefined();
   expect(pool.getSnapshot().pendingTasks).toBe(0);
 });
+
+it.each([false, true])(
+  "joins sibling resource closes when one ref fails (%s)",
+  async (refFails) => {
+    const { pool, workers } = createPool({ maxWorkers: 2 });
+    const first = pool.run("first", {});
+    const second = pool.run("second", {});
+    for (const worker of workers) {
+      worker.complete();
+    }
+    await expect(Promise.all([first, second])).resolves.toEqual(["first", "second"]);
+    const [firstWorker, secondWorker] = workers;
+    assert(firstWorker && secondWorker);
+    const resourceRequested = vi.fn();
+    const sibling = Promise.withResolvers<MessagePort>();
+    const ports: MessagePort[] = [];
+    for (const worker of workers) {
+      vi.spyOn(worker, "postMessage").mockImplementation((message) => {
+        assert(
+          message !== null &&
+            typeof message === "object" &&
+            "closeResource" in message &&
+            message.closeResource === true &&
+            "key" in message &&
+            "resourcePort" in message &&
+            message.resourcePort instanceof MessagePort,
+        );
+        resourceRequested(worker.threadId, message.key);
+        ports.push(message.resourcePort);
+        if (worker === secondWorker) {
+          sibling.resolve(message.resourcePort);
+        } else {
+          message.resourcePort.postMessage({ ok: true });
+        }
+      });
+    }
+    if (refFails) {
+      vi.spyOn(firstWorker, "ref").mockImplementationOnce(() => {
+        throw new Error("synthetic worker reference refusal");
+      });
+    }
+
+    const closing = Promise.resolve().then(() => pool.startCloseResources("synthetic key").result);
+    const terminal = vi.fn();
+    const settled = closing.then(terminal, terminal);
+    try {
+      // A skipped sibling must fail this assertion, not hang the fixture.
+      const receipt = await Promise.race([sibling.promise, settled.then(() => undefined)]);
+      assert(receipt, "Resource cleanup settled without requesting the healthy sibling's receipt");
+      expect(terminal).not.toHaveBeenCalled();
+      receipt.postMessage({ ok: true });
+      if (refFails) {
+        await expect(closing).rejects.toBeInstanceOf(Error);
+        expect(resourceRequested.mock.calls).toEqual([[secondWorker.threadId, "synthetic key"]]);
+      } else {
+        await expect(closing).resolves.toBeUndefined();
+        expect(resourceRequested.mock.calls).toEqual([
+          [firstWorker.threadId, "synthetic key"],
+          [secondWorker.threadId, "synthetic key"],
+        ]);
+      }
+    } finally {
+      for (const port of ports) {
+        port.close();
+      }
+    }
+  },
+);

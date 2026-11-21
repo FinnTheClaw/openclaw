@@ -445,9 +445,12 @@ export class SessionSnapshotStore implements ChatCacheObserver {
           pending.delete(sessionKey);
           const record = await createSnapshotRecord(sessionKey, state);
           if (!record) {
-            // Rejection publishes invalidation, which awaits accepted DB writes.
-            // Keep it outside writeChain so a connected store cannot await itself.
-            await this.delete(sessionKey, "cache-eviction");
+            // Only the current preparation can evict the key; a newer write may
+            // already own its pending and in-memory snapshots.
+            if (scopes.get(sessionKey)?.isCurrent()) {
+              // Invalidation waits for accepted writes; keep it outside writeChain.
+              await this.delete(sessionKey, "cache-eviction");
+            }
             continue;
           }
           records.push(record);

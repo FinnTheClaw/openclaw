@@ -5,7 +5,10 @@ import {
   setupCronRegressionFixtures,
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import { AsyncWorkScope, trackAsyncWork } from "../../shared/async-work-scope.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import * as workerStore from "../../state/openclaw-state-worker-store.js";
 import {
   clearCronJobActive,
   markCronJobActive,
@@ -200,10 +203,12 @@ it("keeps timed-out cron runs from being overwritten by late cancellation", asyn
   }
 });
 
-it.each(["one-shot", "recurring"])(
+it.each(["one-shot", "recurring", "recurring (known settlement rollback)"])(
   "fences %s timeout retries until the original execution settles",
-  async (mode) => {
-    const job = agentJob(`timeout-retry-settlement-${mode}`, 1);
+  async (scenario) => {
+    const failSettlement = scenario === "recurring (known settlement rollback)";
+    const mode = failSettlement ? "recurring" : scenario;
+    const job = agentJob(`timeout-retry-settlement-${mode}${failSettlement ? "-rollback" : ""}`, 1);
     job.delivery = { mode: "none" };
     if (mode === "recurring") {
       job.schedule = { kind: "every", everyMs: 60_000, anchorMs: SCHEDULED_AT };
@@ -228,6 +233,7 @@ it.each(["one-shot", "recurring"])(
       },
     });
     const first = onTimer(state);
+    let restoreSettlement: (() => void) | undefined;
     try {
       await runner.started.promise;
       await advance(mode === "recurring" ? 21_010 : 1_010);
@@ -239,14 +245,65 @@ it.each(["one-shot", "recurring"])(
       if (retryAt === undefined) {
         throw new Error("Expected a retained timeout retry");
       }
-      expect(
-        inspectActiveCronRunReceipt({ storePath: state.deps.storePath, jobId: job.id }),
-      ).toBeDefined();
+      const receipt = inspectActiveCronRunReceipt({
+        storePath: state.deps.storePath,
+        jobId: job.id,
+      });
+      expect(receipt).toBeDefined();
       vi.setSystemTime(retryAt + 1);
       await onTimer(state);
       expect(runner.run).toHaveBeenCalledTimes(1);
       expect(jobState().nextRunAtMs).toBe(retryAt);
+      let observedRollback: { unknown: boolean; activeReceiptId?: string } | undefined;
+      if (failSettlement) {
+        const database = openOpenClawStateDatabase().db;
+        const dropTrigger = () =>
+          database.exec("DROP TRIGGER IF EXISTS reject_one_timeout_settlement");
+        database.exec(`
+          CREATE TRIGGER reject_one_timeout_settlement
+          BEFORE UPDATE ON cron_run_receipts
+          WHEN OLD.job_id = 'timeout-retry-settlement-recurring-rollback'
+            AND OLD.status = 'running' AND NEW.status <> 'running'
+          BEGIN
+            SELECT RAISE(ABORT, 'synthetic timeout settlement rollback');
+          END
+        `);
+        restoreSettlement = dropTrigger;
+        const execute = workerStore.executeOpenClawStateWorker;
+        const dispatch = vi
+          .spyOn(workerStore, "executeOpenClawStateWorker")
+          .mockImplementation((context, command) => {
+            const result = execute(context, command);
+            if (command.type !== "cron.finalizeRuns") {
+              return result;
+            }
+            // Observe the real worker error and committed row, then remove the fault.
+            return result.catch((error: unknown) => {
+              if (String(error).includes("synthetic timeout settlement rollback")) {
+                observedRollback = {
+                  unknown: hasSqliteWorkerOutcomeUnknown(error),
+                  activeReceiptId: inspectActiveCronRunReceipt({
+                    storePath: state.deps.storePath,
+                    jobId: job.id,
+                  })?.receiptId,
+                };
+                dropTrigger();
+              }
+              throw error;
+            });
+          });
+        restoreSettlement = () => {
+          dispatch.mockRestore();
+          dropTrigger();
+        };
+      }
       runner.result.resolve(done);
+      if (failSettlement) {
+        await vi.waitFor(() =>
+          expect(observedRollback).toEqual({ unknown: false, activeReceiptId: receipt?.receiptId }),
+        );
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
       await vi.waitFor(() =>
         expect(
           inspectActiveCronRunReceipt({ storePath: state.deps.storePath, jobId: job.id }),
@@ -265,6 +322,7 @@ it.each(["one-shot", "recurring"])(
         ]),
       );
     } finally {
+      restoreSettlement?.();
       stop(state);
       runner.result.resolve(done);
       cleanup.resolve();
