@@ -322,6 +322,43 @@ it.each([
   },
 );
 
+it.each([false, true])(
+  "offers failed-run Retry only with a configured model (%s)",
+  (configured) => {
+    const client = createGatewayBrowserClientFixture({
+      recoveryScopeReady: true,
+      request: vi.fn(),
+    });
+    const { pane, state, context } = createRefreshChatPane(client);
+    const runId = "failed-model-setup-run";
+    state.sessionKey = "agent:main:setup";
+    state.chatModelCatalogInitialized = true;
+    state.chatRunError = { runId, summary: "The previous reply failed." };
+    const send = vi.fn(async () => true);
+    state.handleSendChat = send;
+    context.agents.state.agentsList = makeBootRoster({
+      scope: "global",
+      agents: [configured ? { id: "main", model: { primary: "example/model" } } : { id: "main" }],
+    });
+
+    pane.render();
+
+    const props = pane.chatProps;
+    assert(props);
+    expect(props.runError?.runId).toBe(runId);
+    expect(props.canSend).toBe(true);
+    if (!configured) {
+      expect(props.modelRequiredReason).toBeTruthy();
+      expect(props.onRetryRun).toBeUndefined();
+      expect(send).not.toHaveBeenCalled();
+      return;
+    }
+    expect(props.modelRequiredReason).toBeUndefined();
+    props.onRetryRun?.(runId);
+    expect(send).toHaveBeenCalledOnce();
+  },
+);
+
 it.each([
   { override: "example/custom", storedModel: "retired", allowed: true },
   { override: null, storedModel: "custom", allowed: false },

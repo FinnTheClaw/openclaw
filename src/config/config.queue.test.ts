@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveQueueSettingsCore } from "../auto-reply/reply/queue/settings.js";
 import { createPluginManifestRecordFixture } from "../plugins/plugin-metadata.test-support.js";
 import { buildConfigSchemaCore } from "./schema.js";
 import { lookupConfigSchema } from "./schema.lookup.js";
@@ -74,6 +75,48 @@ describe("queue configuration", () => {
           "unknown channel id: telegarm (install its channel plugin or correct this setting)",
       },
     ]);
+  });
+
+  it("applies queue overrides for the channel ID declared by its plugin", () => {
+    for (const channel of ["chat", "Chat"]) {
+      const queue = {
+        mode: "steer",
+        byChannel: { [channel]: "followup" },
+        debounceMsByChannel: { [channel]: 250 },
+      };
+      const result = validateConfigObjectWithPlugins(
+        {
+          agents: { entries: { openclaw: {} } },
+          messages: { queue },
+          plugins: { enabled: false },
+        },
+        {
+          pluginMetadataSnapshot: {
+            manifestRegistry: {
+              diagnostics: [],
+              plugins: [
+                createPluginManifestRecordFixture({
+                  id: "chat-plugin",
+                  channels: [channel],
+                  origin: "config",
+                }),
+              ],
+            },
+          },
+        },
+      );
+      if (!result.ok) {
+        throw new Error(JSON.stringify(result.issues));
+      }
+      expect(
+        result.warnings.filter(({ path }) => path.startsWith("messages.queue.")),
+        channel,
+      ).toEqual([]);
+      expect(resolveQueueSettingsCore({ cfg: result.config, channel }), channel).toMatchObject({
+        mode: "followup",
+        debounceMs: 250,
+      });
+    }
   });
 
   it("looks up queue settings for plugin channel IDs", () => {

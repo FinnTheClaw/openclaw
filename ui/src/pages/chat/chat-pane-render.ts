@@ -579,7 +579,10 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
         addSuggestion: suggestionViewer ? () => this.addCurrentSessionSuggestion() : undefined,
       }),
       ...createChatPaneRunRecoveryActions(state, {
-        canSend: composerAvailability.canSend && !catalogKey && !suggestionViewer,
+        canSend:
+          composerAvailability.canSend &&
+          !composerAvailability.modelRequiredReason &&
+          nativeConversation,
         isCurrent: () =>
           this.state === state && this.connectionGeneration === selectionConnectionGeneration,
         latestFailedRunId: () =>

@@ -105,6 +105,50 @@ describe("channel-inbound public helpers", () => {
     expect(replyOptions.onReplyOperationOwned).toBe(callback);
   });
 
+  it.each(["own property", "prototype method"] as const)(
+    "dispatches ordinary assembled replies (dispatcher: %s)",
+    async (shape) => {
+      const sessionKey = "agent:main:test:peer";
+      const dispatch = vi.fn<AssembledInboundReply["dispatchReplyWithBufferedBlockDispatcher"]>(
+        async () => ({ queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } }),
+      );
+
+      class Reply implements AssembledInboundReply {
+        cfg = {};
+        channel = "test";
+        agentId = "main";
+        routeSessionKey = sessionKey;
+        storePath = "unused";
+        ctxPayload = { Body: "hello", SessionKey: sessionKey, CommandAuthorized: false };
+        recordInboundSession = async () => {};
+        delivery = { deliver: async () => {} };
+        replyOptions = { promptCacheKey: "assembled-inbound-fixture" };
+
+        dispatchReplyWithBufferedBlockDispatcher(params: Parameters<typeof dispatch>[0]) {
+          return dispatch(params);
+        }
+      }
+
+      const reply = new Reply();
+      const turn =
+        shape === "prototype method"
+          ? reply
+          : { ...reply, dispatchReplyWithBufferedBlockDispatcher: dispatch };
+      expect(Object.hasOwn(turn, "dispatchReplyWithBufferedBlockDispatcher")).toBe(
+        shape === "own property",
+      );
+
+      const result = await dispatchChannelInboundReply(turn);
+
+      expect(result.dispatched).toBe(true);
+      expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          replyOptions: expect.objectContaining({ promptCacheKey: "assembled-inbound-fixture" }),
+        }),
+      );
+    },
+  );
+
   it("preserves frozen class adapter receivers while stripping event custody", async () => {
     const calls: string[] = [];
     const { turn, callback, dispatch, replyOptions } = replyFixture();

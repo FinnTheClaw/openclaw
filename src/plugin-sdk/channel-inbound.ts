@@ -267,7 +267,14 @@ export async function runChannelInboundEvent<TRaw, TDispatchResult = DispatchFro
 }
 
 export async function dispatchChannelInboundReply(params: AssembledInboundReply) {
-  return await dispatchAssembledChannelTurn(publicChannelTurn(params));
+  const turn = publicChannelTurn(params);
+  if (!Object.hasOwn(turn, "dispatchReplyWithBufferedBlockDispatcher")) {
+    // Object spread omits class prototype methods. Keep the original receiver
+    // for this callback without copying additional fields into the public turn.
+    turn.dispatchReplyWithBufferedBlockDispatcher = (replyParams) =>
+      params.dispatchReplyWithBufferedBlockDispatcher(replyParams);
+  }
+  return await dispatchAssembledChannelTurn(turn);
 }
 
 export function dispatchChannelInboundTurn(

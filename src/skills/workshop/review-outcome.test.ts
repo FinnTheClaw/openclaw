@@ -307,13 +307,23 @@ describe("postWorkshopChangeNotice", () => {
     expectNoNotice();
   });
 
-  it("keeps undo instructions after delivery failure without rereading the generation", async () => {
+  it("keeps the local Learned receipt when optional delivery reports failure", async () => {
+    const sessionKey = "agent:main:telegram:direct:42";
+    const failure = { status: "failed", error: new Error("delivery failed") };
     delivery();
-    mocks.send.mockRejectedValueOnce(new Error("delivery failed"));
-    await post([change({})], undefined, channelNotices);
+    mocks.send.mockResolvedValueOnce(failure);
+    await post([change({})], sessionKey, channelNotices);
     expect(mocks.send).toHaveBeenCalledOnce();
     expect(mocks.enqueue).toHaveBeenCalledOnce();
     expect(mocks.readEntries).toHaveBeenCalledOnce();
+    expect(mocks.append).toHaveBeenCalledOnce();
+    expectTranscript({
+      sessionKey,
+      expectedSessionId: sessionEntry.sessionId,
+      expectedLifecycleRevision: sessionEntry.lifecycleRevision,
+      idempotencyKey: `skill-workshop-notice:${runId}`,
+      deliveryMirror: marker(),
+    });
   });
 
   it("reads notice eligibility off-thread and observes a committed reset", async () => {

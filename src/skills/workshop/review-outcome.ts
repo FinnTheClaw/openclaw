@@ -198,6 +198,11 @@ export async function postWorkshopChangeNotice(params: {
         throw send.error;
       }
     }
+  } catch (error) {
+    // Optional channel delivery must not suppress the local Learned receipt.
+    log.warn(`skill workshop notice delivery failed: ${String(error)}`);
+  }
+  try {
     const { appendAssistantMessageToSessionTranscript } =
       await import("../../config/sessions/transcript.runtime.js");
     const appended = await appendAssistantMessageToSessionTranscript({

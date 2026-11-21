@@ -348,7 +348,14 @@ export async function inspectOntology(
           "Ontology source unavailable. List view=sources to find an authorized sourcePath.",
         );
       }
-      const raw = source.raw.slice(offset, offset + (input.maxChars ?? 12000));
+      if (splitsPair(source.raw, offset)) {
+        throw new Error("Text offset splits a Unicode character.");
+      }
+      let end = Math.min(source.raw.length, offset + (input.maxChars ?? 12000));
+      if (splitsPair(source.raw, end)) {
+        end--;
+      }
+      const raw = source.raw.slice(offset, end);
       result.source = { path: source.path, raw, totalChars: source.raw.length };
       result.total = source.raw.length;
       result.nextOffset = next(offset, raw.length, source.raw.length);

@@ -239,6 +239,23 @@ it("source view is opt-in, bounded, and refuses arbitrary paths; invalid YAML re
   );
 });
 
+it("raw ontology pages preserve complete Unicode characters and rejoin exactly", async () => {
+  const { root, vault } = await fixture();
+  const source =
+    "# " +
+    "x".repeat(253) +
+    "🌱\nformat: knowledge-ontology-v1\nname: fixture\nversion: 1.0.0\ndescription: Plain text fixture\ndefinitions: []\n";
+  await writeFile(path.join(root, "ontology.yaml"), source);
+  const input = { view: "sources", sourcePath: "ontology.yaml", maxChars: 256 } as const;
+  const first = await inspectOntology(vault, input);
+  expect(first.source!.raw.isWellFormed()).toBe(true);
+  expect(first.nextOffset).toBe(255);
+  const second = await inspectOntology(vault, { ...input, offset: first.nextOffset! });
+  expect(second.source!.raw.isWellFormed()).toBe(true);
+  expect(second.nextOffset).toBeNull();
+  expect(first.source!.raw + second.source!.raw).toBe(source);
+});
+
 it("inspection inputs reject invalid budgets and authority selectors", () => {
   for (const input of [
     { id: "sample_person_alex", maxChars: 0 },
