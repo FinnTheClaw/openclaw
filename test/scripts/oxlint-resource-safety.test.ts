@@ -1,8 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
-import { createOxlintShards, filterOxlintShards } from "../../scripts/run-oxlint-shards.mts";
+import { afterEach, expect, it, vi } from "vitest";
+import * as artifactOwnership from "../../scripts/lib/dist-artifact-ownership.mts";
+import * as managedChildProcess from "../../scripts/lib/managed-child-process.mts";
+import {
+  createOxlintShards,
+  filterOxlintShards,
+  main as runOxlintShards,
+} from "../../scripts/run-oxlint-shards.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const roots = useAutoCleanupTempDirTracker(afterEach);
@@ -59,3 +65,41 @@ it("the canonical CI scripts selection rejects unsafe test and root-script inven
     ),
   ).toBe(true);
 });
+
+it.each([
+  { disposition: "ordinary failure", timeout: false, expected: 1 },
+  { disposition: "later timeout", timeout: true, expected: 124 },
+])(
+  "preserves the $disposition across ordered lint shard outcomes",
+  async ({ timeout, expected }) => {
+    const run = vi
+      .spyOn(managedChildProcess, "runManagedCommand")
+      .mockRejectedValue(new Error("Unexpected additional fixture shard"))
+      .mockResolvedValueOnce(1);
+    const ownership = vi
+      .spyOn(artifactOwnership, "withDistArtifactOwnership")
+      .mockImplementation(async (_root, callback) => callback());
+    if (timeout) {
+      run.mockRejectedValueOnce(
+        Object.assign(new Error("Synthetic shard timeout"), { code: "ETIMEDOUT" }),
+      );
+    } else {
+      run.mockResolvedValueOnce(0);
+    }
+    try {
+      const result = await runOxlintShards(["--only=scripts", "--openclaw-focused-config"], {
+        OPENCLAW_OXLINT_SHARD_CONCURRENCY: "1",
+        OPENCLAW_OXLINT_SHARD_HEARTBEAT_MS: "0",
+        OPENCLAW_OXLINT_SHARD_TIMEOUT_MS: "0",
+      });
+      expect(run.mock.calls.map(([options]) => options.args)).toEqual([
+        expect.arrayContaining(["config/tsconfig/oxlint.scripts.json"]),
+        expect.arrayContaining(["config/oxlint/resource-safety.json"]),
+      ]);
+      expect(result).toBe(expected);
+    } finally {
+      ownership.mockRestore();
+      run.mockRestore();
+    }
+  },
+);

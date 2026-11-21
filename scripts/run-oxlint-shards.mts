@@ -441,7 +441,8 @@ export async function main(
       evidenceId,
     });
     completed = results.completed;
-    return results.statuses.find((status) => status !== 0) ?? 0;
+    const stopped = results.statuses.find((status) => status === 124 || status >= 128);
+    return stopped ?? results.statuses.find((status) => status !== 0) ?? 0;
   };
   // One batch owner lets lint children overlap without exposing their transient
   // configuration files to a concurrent compiler's input snapshot.
