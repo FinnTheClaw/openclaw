@@ -14,6 +14,7 @@ import { ContentPresentation } from "../../lib/solid/presentation.ts";
 import type { ChatMobileHost, MobileDetailsRoute } from "./chat-mobile-host.ts";
 import type { ChatMobilePeopleMentions } from "./chat-mobile-people-mentions.ts";
 import type { ChatMobilePeople } from "./chat-mobile-people.ts";
+import { isSubagentsPanelSession } from "./chat-spawned-subagent.ts";
 import { ChatAuthorAvatar } from "./components/chat-author-avatar-view.tsx";
 import type { ChatDetailsGoalProps } from "./components/chat-details-goal.tsx";
 import {
@@ -356,7 +357,9 @@ function MobileHostContent(
       subagents: {
         workingLabel: t("chat.subagentsPanel.desktopWorking"),
         onOpenSubagent: (key) => {
-          const listed = props.details.subagentSessions?.some((session) => session.key === key);
+          const listed = props.details.subagentSessions?.some(
+            (session) => session.key === key && isSubagentsPanelSession(session),
+          );
           if (listed) {
             props.details.onOpenSubagent?.(key);
           } else {

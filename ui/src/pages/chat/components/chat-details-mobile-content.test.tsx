@@ -138,6 +138,42 @@ async function mountMobileHost(value: ChatDetailsProps) {
   return { view, element, navigate, show, query, button };
 }
 
+it("opens unlisted mobile Details children as sessions and listed children in Subagents", async () => {
+  const listedKey = "agent:main:subagent:fixture-review";
+  const unlistedKey = "agent:main:worker:fixture-copy";
+  const onOpenSubagent = vi.fn();
+  const onSessionSelect = vi.fn();
+  const child = (key: string, derivedTitle: string) => ({
+    key,
+    derivedTitle,
+    kind: "direct" as const,
+    parentSessionKey: "agent:main:details",
+  });
+  const { view, query } = await mountMobileHost(
+    details({
+      subagentSessionsHydrated: true,
+      subagentSessions: [child(listedKey, "Review notes"), child(unlistedKey, "Copy notes")],
+      onOpenSubagent,
+      onOpenSubagents: vi.fn(),
+      onSessionSelect,
+    }),
+  );
+  const row = (key: string) => query(`button[data-subagent-session-key="${key}"]`);
+  try {
+    expect(row(listedKey)).not.toBeNull();
+    expect(row(unlistedKey)).not.toBeNull();
+    row(listedKey)!.click();
+    expect(onOpenSubagent).toHaveBeenCalledExactlyOnceWith(listedKey);
+    expect(onSessionSelect).not.toHaveBeenCalled();
+
+    row(unlistedKey)!.click();
+    expect(onSessionSelect).toHaveBeenCalledExactlyOnceWith(unlistedKey);
+    expect(onOpenSubagent).toHaveBeenCalledExactlyOnceWith(listedKey);
+  } finally {
+    view.unmount();
+  }
+});
+
 it("replaces the People activation owner while retaining the mobile host content", async () => {
   const { view, element, show, query } = await mountMobileHost(details());
   const release = vi.fn();
