@@ -104,3 +104,53 @@ it("does not overwrite committed names with a delayed worker read", async () => 
     }
   });
 });
+
+it("accepts a fresh cron job name after invalidation during store selection", async () => {
+  await withOpenClawTestState({ label: "cron-name-selection-invalidation" }, async (fixture) => {
+    const storePath = fixture.statePath("cron", "jobs.json");
+    const selecting = createDeferred();
+    const releaseSelection = createDeferred();
+    const read = vi
+      .spyOn(stateReads, "executeExistingOpenClawStateRead")
+      .mockImplementation(async (_options, command) => {
+        if (command.type === "automationProactive.storeSelection") {
+          selecting.resolve();
+          await releaseSelection.promise;
+          return {
+            ok: true,
+            type: command.type,
+            selection: { status: "ready", storeKey: storePath, storePath },
+          } as const;
+        }
+        if (command.type === "cron.jobNames") {
+          expect(command).toEqual({ type: "cron.jobNames", jobIds: ["report"], storePath });
+          return {
+            ok: true,
+            type: command.type,
+            storeKey: storePath,
+            names: new Map([["report", "Renamed"]]),
+          } as const;
+        }
+        throw new Error(`Unexpected Cron name read: ${command.type}`);
+      });
+
+    const pending = prepareNames(["report"]);
+    try {
+      await awaitGateBeforeSettlement(selecting.promise, pending, "Store selection did not start");
+      expect(read).toHaveBeenCalledOnce();
+      // Simulate the save owner's invalidation, with no stored job or database.
+      noteCronJobsStoreCommit(storePath);
+      releaseSelection.resolve();
+      const resolveName = await pending;
+      expect(read.mock.calls.map(([, command]) => command.type)).toEqual([
+        "automationProactive.storeSelection",
+        "cron.jobNames",
+      ]);
+      expect((await prepareNames(["report"]))("report")).toBe("Renamed");
+      expect(resolveName("report")).toBe("Renamed");
+    } finally {
+      releaseSelection.resolve();
+      await pending.catch(() => undefined);
+    }
+  });
+});

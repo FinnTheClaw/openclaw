@@ -103,6 +103,8 @@ export async function prepareCronJobNameResolver(jobIds: string[], storePath?: s
       return resolveName;
     }
     prepared.storeKey = selection.storeKey;
+    // A publication during store selection predates this read.
+    const readRevision = prepared.revision;
     const reply = await executeExistingOpenClawStateRead(
       { path: prepared.context.admission.databasePath },
       { type: "cron.jobNames", jobIds: ids, storePath: prepared.storeKey },
@@ -113,7 +115,7 @@ export async function prepareCronJobNameResolver(jobIds: string[], storePath?: s
     }
     prepared.context.admission.assertCurrent();
     prepared.storeKey = reply?.storeKey ?? prepared.storeKey;
-    if (prepared.revision === 0) {
+    if (prepared.revision === readRevision) {
       prepared.names = new Map(ids.map((id) => [id, reply?.names.get(id)]));
     }
     return resolveName;
