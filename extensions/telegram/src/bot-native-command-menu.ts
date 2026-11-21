@@ -44,6 +44,7 @@ type TelegramSelectedPluginMenuCommand<TSpec extends TelegramPluginCommandSpec> 
 
 const TELEGRAM_COMMAND_MENU_SCOPES = [undefined, "all_group_chats"] as const;
 
+const menuSyncTails = new Map<string, Promise<void>>();
 // Successful command hashes stay process-local so restarts always republish.
 const syncedCommandHashes = new Map<string, string>();
 const cappedTelegramMenuCache = new Map<
@@ -349,17 +350,37 @@ async function applyTelegramMenuCommandsForScopes(params: {
   return allCleared;
 }
 
-export async function syncTelegramMenuCommands(params: {
+type TelegramMenuSyncParams = {
   bot: Bot;
   runtime: RuntimeEnv;
   commandsToRegister: TelegramMenuCommand[];
   accountId?: string;
   botId?: number;
   botToken?: string;
-}): Promise<void> {
-  const { bot, runtime, commandsToRegister } = params;
+};
+
+export function syncTelegramMenuCommands(params: TelegramMenuSyncParams): Promise<void> {
   const owner = resolveTelegramMenuRemoteOwner(params);
-  // A reload that overlaps this sync is best effort; the next sync reconciles it.
+  const { queueKey } = owner;
+  const previous = menuSyncTails.get(queueKey) ?? Promise.resolve();
+  const sync = () => syncTelegramMenuForOwner(params, owner);
+  // The next reload must not snapshot locales until this owner finishes publishing.
+  const next = previous.then(sync, sync);
+  menuSyncTails.set(queueKey, next);
+  const release = () => {
+    if (menuSyncTails.get(queueKey) === next) {
+      menuSyncTails.delete(queueKey);
+    }
+  };
+  void next.then(release, release);
+  return next;
+}
+
+async function syncTelegramMenuForOwner(
+  params: TelegramMenuSyncParams,
+  owner: ReturnType<typeof resolveTelegramMenuRemoteOwner>,
+): Promise<void> {
+  const { bot, runtime, commandsToRegister } = params;
   try {
     // Skip sync if the command list hasn't changed since the last successful
     // sync. This prevents hitting Telegram's 429 rate limit when the gateway

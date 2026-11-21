@@ -301,6 +301,55 @@ describe("bot-native-command-menu sync lifecycle", () => {
     expect(maxActive).toBe(1);
   });
 
+  it("clears every published locale after overlapping menu reloads", async () => {
+    const { deleteMyCommands, setMyCommands, runtimeError, sync } = createMenu();
+    const firstNeutralEntered = Promise.withResolvers<void>();
+    const releaseFirstNeutral = Promise.withResolvers<void>();
+    const publishedScopes = new Set<string>();
+    const scopeKey = (options?: MenuScope) =>
+      `${options?.language_code ?? "neutral"}:${options?.scope?.type ?? "default"}`;
+    let pauseFirstNeutral = true;
+    deleteMyCommands.mockImplementation(async (options) => {
+      publishedScopes.delete(scopeKey(options));
+    });
+    setMyCommands.mockImplementation(async (_commands, options) => {
+      const key = scopeKey(options);
+      if (key === "neutral:default" && pauseFirstNeutral) {
+        pauseFirstNeutral = false;
+        firstNeutralEntered.resolve();
+        await releaseFirstNeutral.promise;
+      }
+      publishedScopes.add(key);
+    });
+
+    const first = sync([makeCommand({ fr: "French menu" })]);
+    const paused = await Promise.race([
+      firstNeutralEntered.promise.then(() => true),
+      first.then(() => false),
+    ]);
+    expect(paused).toBe(true);
+    const second = sync([makeCommand({ ko: "Korean menu" })]);
+    // Drain the runnable mock work, without waiting on a possibly queued sync.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseFirstNeutral.resolve();
+    await Promise.all([first, second]);
+
+    expect(setMyCommands.mock.calls.map(([, options]) => scopeKey(options)).sort()).toEqual([
+      "fr:all_group_chats",
+      "fr:default",
+      "ko:all_group_chats",
+      "ko:default",
+      "neutral:all_group_chats",
+      "neutral:all_group_chats",
+      "neutral:default",
+      "neutral:default",
+    ]);
+
+    await sync([makeCommand()]);
+    expect([...publishedScopes].sort()).toEqual(["neutral:all_group_chats", "neutral:default"]);
+    expect(runtimeError).not.toHaveBeenCalled();
+  });
+
   it("retries failed localized cleanup instead of hash-caching it", async () => {
     let failFrenchGroupClear = false;
     const { deleteMyCommands, setMyCommands, runtimeError, sync } = createMenu();
