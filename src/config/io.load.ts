@@ -31,6 +31,7 @@ import {
 import { maybeLoadDotEnvForConfig } from "./io.runtime-env.js";
 import {
   materializeConfigSnapshotDefaults,
+  materializeConfigSnapshotDefaultsAsync,
   prepareConfigSnapshotValidation,
 } from "./io.snapshot-preparation.js";
 import { createConfigFileSnapshot } from "./io.snapshot-shared.js";
@@ -91,14 +92,7 @@ function* loadConfigWithEffects(
       });
       const materialized = yield* resolveConfigIoEffect({
         sync: () => materializeConfigSnapshotDefaults(context, config, metadata),
-        async: async () =>
-          materializeRuntimeConfig(config, {
-            ...pathResolution,
-            manifestRegistry:
-              context.options.pluginValidation === "core-only"
-                ? { plugins: [] }
-                : (await metadata.loadAsync(config)).manifestRegistry,
-          }),
+        async: () => materializeConfigSnapshotDefaultsAsync(context, config, metadata),
       });
       return yield* resolveConfigIoEffect({
         sync: () => context.finalizeLoadedRuntimeConfig(materialized),

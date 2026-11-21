@@ -160,11 +160,33 @@ export function createTelegramInboundMedia({
       : MEDIA_GROUP_TIMEOUT_MS;
   const buffer = new Map<string, BufferedMediaGroupEntry>();
   const queue = new Map<string, Promise<void>>();
-  const heads = new Map<string, BufferedMediaGroupEntry>();
+  const heads = new Map<string, readonly TelegramSpooledReplayDeferredParticipant[]>();
   const conversationKeyFor = (input: Pick<TelegramMediaGroupInput, "chatId" | "threadSpec">) =>
     `media:${input.chatId}:${input.threadSpec.scope}:${input.threadSpec.id ?? "main"}`;
   const pendingMediaGroups = (input: Pick<TelegramMediaGroupInput, "chatId" | "threadSpec">) =>
     queue.get(conversationKeyFor(input));
+  const enqueueMediaWork = (
+    key: string,
+    participants: readonly TelegramSpooledReplayDeferredParticipant[],
+    task: () => Promise<void>,
+  ) =>
+    enqueueKeyedTask({
+      tails: queue,
+      key,
+      task: async () => {
+        heads.set(key, participants);
+        try {
+          await task();
+        } finally {
+          heads.delete(key);
+        }
+      },
+    });
+  const enqueueAfterMediaGroups = (
+    input: Pick<TelegramMediaGroupInput, "chatId" | "threadSpec">,
+    participant: TelegramSpooledReplayDeferredParticipant,
+    task: () => Promise<void>,
+  ) => enqueueMediaWork(conversationKeyFor(input), [participant], task);
 
   const resolveUnaddressedGroupMediaDisposition = async (
     authorization: MediaAuthorization & { ctx: TelegramContext; msg: Message },
@@ -486,15 +508,13 @@ export function createTelegramInboundMedia({
     }
   };
   const renewWaitingEntry = (key: string, entry: BufferedMediaGroupEntry) => {
-    if (heads.get(key) === entry) {
+    const participants = entry.spooledReplayParticipants;
+    if (heads.get(key) === participants) {
       return;
     }
-    const participants = entry.spooledReplayParticipants;
     const heartbeat = () => {
       // Only a live predecessor can renew followers; the head must prove its own progress.
-      if (
-        heads.get(key)?.spooledReplayParticipants.some((participant) => !participant.isSettled())
-      ) {
+      if (heads.get(key)?.some((participant) => !participant.isSettled())) {
         for (const participant of participants) {
           participant.heartbeat();
         }
@@ -520,21 +540,12 @@ export function createTelegramInboundMedia({
     const stopHeartbeat = () => clearInterval(entry.heartbeatTimer);
     renewWaitingEntry(key, entry);
     void claimsSettled.then(stopHeartbeat);
-    void enqueueKeyedTask({
-      tails: queue,
-      key,
-      task: async () => {
-        stopHeartbeat();
-        heads.set(key, entry);
-        try {
-          await entry.collectionClosed.promise;
-          const processing = processMediaGroup(entry).catch(() => undefined);
-          // Released claims advance the queue even if a download ignores cancellation.
-          await (participants.length > 0 ? Promise.race([processing, claimsSettled]) : processing);
-        } finally {
-          heads.delete(key);
-        }
-      },
+    void enqueueMediaWork(key, participants, async () => {
+      stopHeartbeat();
+      await entry.collectionClosed.promise;
+      const processing = processMediaGroup(entry).catch(() => undefined);
+      // Released claims advance the queue even if a download ignores cancellation.
+      await (participants.length > 0 ? Promise.race([processing, claimsSettled]) : processing);
     });
   };
 
@@ -660,6 +671,7 @@ export function createTelegramInboundMedia({
   return {
     handleMediaGroup,
     pendingMediaGroups,
+    enqueueAfterMediaGroups,
     resolveUnaddressedGroupMediaDisposition,
     sendMediaWarning,
   };

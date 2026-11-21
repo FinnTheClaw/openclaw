@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { isMainThread } from "node:worker_threads";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
@@ -255,6 +256,38 @@ it("uses the same fresh-install defaults for a missing async configuration", asy
   const legacy = cached(() => io.loadConfig());
   expect(config).toEqual(legacy);
   expect(config.agents?.defaults?.compaction?.mode).toBe("safeguard");
+});
+
+it("loads cold missing-config defaults without awaiting plugin metadata", async () => {
+  // The async config path falls back to synchronous loading in worker threads.
+  expect(isMainThread).toBe(true);
+  const { env, configPath, homedir, logger } = fixture();
+  const io = createConfigIO({
+    env,
+    configPath,
+    homedir,
+    logger,
+    observe: false,
+    pluginValidation: "full",
+  });
+  const metadata = vi
+    .spyOn(pluginMetadata, "resolveConfigWidePluginMetadataSnapshotAsync")
+    .mockRejectedValue(new Error("fixture: plugin metadata unavailable"));
+  expect(fs.existsSync(configPath)).toBe(false);
+
+  const expected = cached(() => io.loadConfig());
+  expect(expected.agents?.defaults?.compaction?.mode).toBe("safeguard");
+  await expect(cached(() => io.readConfigFileSnapshot())).resolves.toMatchObject({
+    exists: false,
+    valid: true,
+    config: expected,
+  });
+  expect(metadata).not.toHaveBeenCalled();
+
+  // Onboarding awaits this cold loader before it can start its inference preflight.
+  await expect(cached(() => io.loadConfigAsync())).resolves.toEqual(expected);
+  expect(metadata).not.toHaveBeenCalled();
+  expect(fs.existsSync(configPath)).toBe(false);
 });
 
 it.each(["full", "core-only"] as const)(

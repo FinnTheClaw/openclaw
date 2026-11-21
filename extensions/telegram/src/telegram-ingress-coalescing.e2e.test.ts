@@ -443,6 +443,56 @@ describe("Telegram durable ingress coalescing", () => {
     }
   });
 
+  it("keeps an album together when ordinary text arrives between its members", async ({
+    signal,
+  }) => {
+    const { monitor, bot } = await createMonitor();
+    vi.useFakeTimers({ toFake: ["performance"] });
+    const albumTimers = holdTelegramMediaTimeouts(40);
+    const handleUpdate = vi.spyOn(bot, "handleUpdate");
+    const first = photoUpdate({ updateId: 1_601, messageId: 1, caption: "Album photos" });
+    const note = textUpdate({ updateId: 1_602, messageId: 2, text: "One more note" });
+    const last = photoUpdate({ updateId: 1_603, messageId: 3 });
+    const enteredHandler = (updateId: number) =>
+      vi.waitFor(
+        () =>
+          expect(handleUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({ update_id: updateId }),
+          ),
+        { timeout: 3_000, interval: 5 },
+      );
+    monitor.start();
+    try {
+      await withinTest(monitor.admit(first), signal);
+      await withinTest(monitor.waitForIdle(), signal);
+      await withinTest(monitor.admit(note), signal);
+      await withinTest(enteredHandler(note.update_id), signal);
+      await withinTest(monitor.admit(last), signal);
+
+      // The note must keep its place without keeping the album's last member out of the lane.
+      await withinTest(enteredHandler(last.update_id), signal);
+      await withinTest(monitor.waitForIdle(), signal);
+      flushHeldQuietWindow(albumTimers, 40);
+      await withinTest(monitor.waitForDeferredClaims(), signal);
+      await withinTest(monitor.waitForIdle(), signal);
+      expect(
+        downstreamTurns.mock.calls.map(([turn]) => [turn.RawBody, turn.media?.length ?? 0]),
+      ).toEqual([
+        ["Album photos", 2],
+        ["One more note", 0],
+      ]);
+      await withinTest(tombstones(first.update_id, note.update_id, last.update_id), signal);
+    } finally {
+      // Release the held collection even on the failing lane path before joining monitor shutdown.
+      vi.advanceTimersByTime(20_000);
+      const flush = resolveFlushTimerForDelay(albumTimers, 40);
+      albumTimers.mockRestore();
+      handleUpdate.mockRestore();
+      flush?.();
+      await monitor.stop();
+    }
+  });
+
   it.each([
     {
       buffer: "album",
