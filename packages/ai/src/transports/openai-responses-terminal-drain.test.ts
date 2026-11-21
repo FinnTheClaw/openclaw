@@ -408,6 +408,74 @@ describe("Responses SSE decoding", () => {
 });
 
 describe("Responses terminal body disposal", () => {
+  it.each(["caller abort", "consumer return"] as const)(
+    "settles %s before body cleanup completes",
+    async (end) => {
+      const caller = new AbortController();
+      const reading = createDeferred();
+      const cleanup = createDeferred();
+      const cancel = vi.fn(() => cleanup.promise);
+      let source: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const event = { type: "response.output_text.delta", delta: "fixture" };
+      const body = new ReadableStream<Uint8Array>(
+        {
+          start(controller) {
+            source = controller;
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+          },
+          pull() {
+            reading.resolve();
+          },
+          cancel,
+        },
+        { highWaterMark: 0 },
+      );
+      const client = new OpenAI({
+        apiKey: "fixture-key",
+        // Only SDK cancellation can interrupt this body after headers.
+        fetch: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      });
+      const request = {
+        model: "fixture",
+        stream: true,
+        input: [{ role: "user", content: "fixture" }],
+      } satisfies Parameters<typeof createResponsesStreamWithRecovery>[0]["request"];
+      const { stream } = await createResponsesStreamWithRecovery({
+        client,
+        model,
+        request,
+        requestOptions: { signal: caller.signal },
+        buildFullHistoryRequest: () => request,
+      });
+      const iterator = stream[Symbol.asyncIterator]();
+      let settlement: Promise<IteratorResult<unknown>> | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await expect(iterator.next()).resolves.toEqual({ done: false, value: event });
+        if (end === "caller abort") {
+          settlement = iterator.next();
+          await reading.promise;
+          caller.abort();
+        } else {
+          settlement = iterator.return?.();
+        }
+        const observationDeadline = new Promise<"not settled">((resolve) => {
+          timer = setTimeout(() => resolve("not settled"), 1_000);
+        });
+        expect(await Promise.race([settlement, observationDeadline])).toMatchObject({ done: true });
+        expect(cancel).toHaveBeenCalledTimes(1);
+      } finally {
+        clearTimeout(timer);
+        if (!cancel.mock.calls.length) {
+          source?.close();
+        }
+        cleanup.resolve();
+        await settlement;
+        await iterator.return?.();
+      }
+    },
+  );
+
   it.each(["byte bound", "deadline", "shutdown", "caller cancellation"] as const)(
     "returns terminal immediately and cancels trailing bytes on %s",
     async (end) => {

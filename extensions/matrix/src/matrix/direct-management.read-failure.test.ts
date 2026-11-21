@@ -78,7 +78,6 @@ describe("Matrix m.direct read failure preservation", () => {
     ).resolves.toEqual({
       classifyAsDirect: true,
       repaired: false,
-      roomId: ALICE_ROOM,
       reason: "repair-failed",
     });
     expect(setAccountData).not.toHaveBeenCalled();

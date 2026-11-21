@@ -47,6 +47,7 @@ import { summarizeParticipantMatches, type MemoryForgetReport } from "./memory-f
 import { withMemoryForgetWorker } from "./memory-forget-worker.js";
 import {
   listWorkspaceDirectory,
+  listWorkspaceLightDreamingReports,
   listWorkspaceMemoryFiles,
   readWorkspaceText,
 } from "./memory-workspace-files.js";
@@ -194,11 +195,14 @@ async function forgetWorkspaceMemory(
     scrubMemoryContent({ content, entryKeys, sessionIds, corpusSnippets, agentId: params.agentId });
   let removedMemoryEntries = 0;
   let removedMemoryLines = 0;
-  const memoryFiles = await listWorkspaceMemoryFiles(
-    workspaceDir,
-    DREAMS_FILENAMES.map((name) => path.join(workspaceDir, name)),
-  );
-  for (const absolutePath of memoryFiles) {
+  const [memoryFiles, lightReports] = await Promise.all([
+    listWorkspaceMemoryFiles(
+      workspaceDir,
+      DREAMS_FILENAMES.map((name) => path.join(workspaceDir, name)),
+    ),
+    listWorkspaceLightDreamingReports(workspaceDir),
+  ]);
+  for (const absolutePath of new Set([...memoryFiles, ...lightReports])) {
     // Corpus evidence must survive until every dependent artifact is clean.
     if (path.dirname(absolutePath) === corpusDir) {
       continue;

@@ -54,6 +54,7 @@ describe("call delivery runtime", () => {
       channelDelivery?: boolean;
       holdRoute?: boolean;
       holdSummary?: boolean;
+      priorLiveBatch?: boolean;
       realGateway?: boolean;
       requesterPeer?: string;
       route?: boolean;
@@ -295,6 +296,16 @@ describe("call delivery runtime", () => {
       ...call.metadata,
       brief: { task: "Book a plumber", approvals: "No deposit" },
     };
+    if (options.priorLiveBatch) {
+      const timestamp = Date.now();
+      call.transcript.push({
+        speaker: "user",
+        text: "Earlier live speech",
+        timestamp,
+        isFinal: true,
+      });
+      call.metadata.liveTranscriptDelivery = { status: "sent", cursor: 1, at: timestamp };
+    }
     await manager.processEvent({
       id: "final",
       callId: call.callId,
@@ -546,7 +557,10 @@ describe("call delivery runtime", () => {
   });
 
   it("persists live batches and reports in the requester transcript without admin scope or another agent turn", async () => {
-    const { manager, call, delivery, sends, requester } = await setup({ webchat: true });
+    const { manager, call, delivery, sends, requester } = await setup({
+      webchat: true,
+      priorLiveBatch: true,
+    });
     await manager.onCallUpdated?.(call);
     expect(sends).toEqual([]);
     const entries = await readVisibleSessionTranscriptMessageEntries(requester);
@@ -559,9 +573,10 @@ describe("call delivery runtime", () => {
     expect(text).toContain("live transcript:");
     expect(text).toContain("Achieved: appointment booked");
     expect(text).toContain(expectDefined(call.transcript[0], "final call transcript").text);
-    expect(
-      (await manager.getCallFromMemoryOrStore(call.callId))?.metadata?.callReport,
-    ).toMatchObject({ status: "delivered" });
+    expect((await manager.getCallFromMemoryOrStore(call.callId))?.metadata).toMatchObject({
+      callReport: { status: "delivered" },
+      liveTranscriptDelivery: { status: "sent", cursor: 2 },
+    });
     await delivery.stop();
   });
 

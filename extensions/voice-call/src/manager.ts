@@ -168,24 +168,24 @@ export class CallManager {
     }
   };
 
-  /** Accepted notification work may settle its status after terminal removal or shutdown admission. */
-  persistDeliveryStatus(snapshot: CallRecord): Promise<void> {
+  /** Accepted notification work may settle its own status after terminal removal or shutdown admission. */
+  persistDeliveryStatus(
+    callId: CallId,
+    key: "callReport" | "liveTranscriptDelivery",
+    status: Record<string, unknown>,
+  ): Promise<void> {
     const work = this.mutationQueue.enqueue("state", async () => {
       const current =
-        this.activeCalls.get(snapshot.callId) ??
-        (await findCallInStore(this.storePath, snapshot.callId, this.stateRuntime));
+        this.activeCalls.get(callId) ??
+        (await findCallInStore(this.storePath, callId, this.stateRuntime));
       if (!current) {
         throw new Error("Call delivery record is unavailable");
       }
       const next = copyCallRecord(current);
-      next.metadata = { ...next.metadata };
-      for (const key of ["callReport", "liveTranscriptDelivery"]) {
-        if (snapshot.metadata?.[key] !== undefined) {
-          next.metadata[key] = snapshot.metadata[key];
-        }
-      }
+      // Report and live-batch snapshots can predate one another's latest receipt.
+      next.metadata = { ...next.metadata, [key]: status };
       await persistCallRecord(this.storePath, next, this.stateRuntime);
-      if (this.activeCalls.get(snapshot.callId) === current) {
+      if (this.activeCalls.get(callId) === current) {
         Object.assign(current, next);
       }
     });

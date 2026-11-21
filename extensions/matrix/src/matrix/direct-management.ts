@@ -132,6 +132,7 @@ export async function promoteMatrixDirectRoomCandidate(params: {
 export async function inspectMatrixDirectRooms(params: {
   client: MatrixClient;
   remoteUserId: string;
+  requireAccountData?: boolean;
 }) {
   const remoteUserId = normalizeRemoteUserId(params.remoteUserId);
   const selfUserId =
@@ -158,7 +159,12 @@ export async function inspectMatrixDirectRooms(params: {
   };
   const directContent: MatrixDirectAccountData = await readMatrixDirectAccountData(
     params.client,
-  ).catch(() => ({}));
+  ).catch((error: unknown) => {
+    if (params.requireAccountData) {
+      throw error;
+    }
+    return {};
+  });
   const mappedRoomIds = normalizeUniqueTrimmedStringList(directContent[remoteUserId]);
   const mappedRooms = await Promise.all(
     mappedRoomIds.map(async (roomId) => await classifyRoom(roomId, "account-data")),
@@ -199,6 +205,8 @@ export async function repairMatrixDirectRooms(params: {
   const inspected = await inspectMatrixDirectRooms({
     client: params.client,
     remoteUserId,
+    // A transport failure is not evidence the account has no mapped room.
+    requireAccountData: true,
   });
   const activeRoomId =
     inspected.activeRoomId ??

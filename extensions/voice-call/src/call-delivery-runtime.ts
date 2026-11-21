@@ -16,6 +16,7 @@ import { resolveVoiceCallAgentId } from "./resolve-call-agent-id.js";
 import { TerminalStates, type CallRecord } from "./types.js";
 
 type TranscriptEntry = CallRecord["transcript"][number];
+type CallDeliveryStatusKey = Parameters<CallManager["persistDeliveryStatus"]>[1];
 
 type CallDeliveryMessage = {
   sessionKey: string;
@@ -265,13 +266,14 @@ export function createCallDeliveryRuntime(params: {
       throw new Error("Voice Call delivery stopped");
     }
   };
-  const saveStatus = async (call: CallRecord, key: string, value: Record<string, unknown>) => {
-    call.metadata = { ...call.metadata, [key]: value };
-    await params.manager.persistDeliveryStatus(call);
-  };
+  const saveStatus = (
+    call: CallRecord,
+    key: CallDeliveryStatusKey,
+    value: Record<string, unknown>,
+  ) => params.manager.persistDeliveryStatus(call.callId, key, value);
   const recordFailure = async (
     call: CallRecord,
-    key: string,
+    key: CallDeliveryStatusKey,
     error: unknown,
     extra?: Record<string, unknown>,
   ) => {

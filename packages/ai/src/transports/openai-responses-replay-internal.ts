@@ -292,14 +292,26 @@ export async function createResponsesStreamWithRecovery(params: {
 }): Promise<{
   stream: AsyncIterable<unknown>;
 }> {
-  async function* streamWithTerminalDrain(response: Response, body: ReadableStream<Uint8Array>) {
+  async function* streamWithTerminalDrain(
+    response: Response,
+    body: ReadableStream<Uint8Array>,
+    sdkController: AbortController,
+  ) {
     const reader = body.getReader();
+    const sdkSignal = sdkController.signal;
+    const cancelReader = () => {
+      void reader.cancel().catch(() => undefined);
+    };
+    // The SDK owns cancellation after headers, including fetch bodies that do
+    // not interrupt a pending read on their own.
+    sdkSignal.addEventListener("abort", cancelReader, { once: true });
+    let completed = false;
     let terminal = false;
     let firstFrame = true;
     const decoder = decodeSseFrames();
     try {
       // Frame parsing stays synchronous within each read; this owner retains terminal draining.
-      frames: for (let next = decoder.next(); !next.done;) {
+      frames: for (let next = decoder.next(); !next.done && !sdkSignal.aborted;) {
         if (next.value === undefined) {
           next = decoder.next(await reader.read());
           continue;
@@ -369,25 +381,36 @@ export async function createResponsesStreamWithRecovery(params: {
             isRecord(event) &&
             (event.type === "response.completed" || event.type === "response.incomplete");
           yield event;
+          if (sdkSignal.aborted) {
+            return;
+          }
           eventName = null;
           data = undefined;
         }
         firstFrame = false;
         next = decoder.next();
       }
+      completed = !sdkSignal.aborted;
     } catch (error) {
       // Match SDK transport cancellation without swallowing provider API errors.
       if (
         error instanceof APIError ||
-        !isRecord(error) ||
-        (error.name !== "AbortError" &&
-          !String(error.message).includes("FetchRequestCanceledException"))
+        (!(sdkSignal.aborted && error === sdkSignal.reason) &&
+          (!isRecord(error) ||
+            (error.name !== "AbortError" &&
+              !String(error.message).includes("FetchRequestCanceledException"))))
       ) {
         throw error;
       }
     } finally {
+      sdkSignal.removeEventListener("abort", cancelReader);
       if (!terminal) {
-        await reader.cancel().catch(() => undefined);
+        if (!completed && !sdkSignal.aborted) {
+          sdkController.abort();
+        }
+        // Cancel the reader immediately, but do not wait for transport cleanup
+        // to settle before returning the provider outcome.
+        cancelReader();
         reader.releaseLock();
       } else {
         const controller = new AbortController();
@@ -398,13 +421,11 @@ export async function createResponsesStreamWithRecovery(params: {
         });
         const signal = AbortSignal.any([
           controller.signal,
+          sdkSignal,
           AbortSignal.timeout(250),
           ...(params.requestOptions?.signal ? [params.requestOptions.signal] : []),
         ]);
-        const cancel = () => {
-          void reader.cancel().catch(() => undefined);
-        };
-        signal.addEventListener("abort", cancel, { once: true });
+        signal.addEventListener("abort", cancelReader, { once: true });
         void (async () => {
           try {
             let bytes = 0;
@@ -418,9 +439,9 @@ export async function createResponsesStreamWithRecovery(params: {
           } catch {
             /* Disposal must not change the delivered terminal result. */
           } finally {
-            cancel();
+            cancelReader();
             reader.releaseLock();
-            signal.removeEventListener("abort", cancel);
+            signal.removeEventListener("abort", cancelReader);
             unregister();
           }
         })();
@@ -496,7 +517,7 @@ export async function createResponsesStreamWithRecovery(params: {
         }
         const stream =
           data instanceof Stream && response.body
-            ? streamWithTerminalDrain(response, response.body)
+            ? streamWithTerminalDrain(response, response.body, data.controller)
             : data;
         return { stream, response, attempt };
       } catch (error) {

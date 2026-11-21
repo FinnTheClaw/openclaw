@@ -1,10 +1,12 @@
 import type { Dirent, Stats } from "node:fs";
 import fs from "node:fs/promises";
+import path from "node:path";
 import {
   getAgentWorkspaceAccess,
   WorkspaceAccessUnavailableError,
 } from "openclaw/plugin-sdk/agent-workspace-runtime";
 import {
+  isFileMissingError,
   listMemoryFiles,
   type MemoryWorkspaceFiles,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
@@ -84,6 +86,29 @@ export async function listWorkspaceDirectory(
     isDirectory: () => entry.isDirectory,
     isSymbolicLink: () => entry.isSymbolicLink,
   }));
+}
+
+/** Staged light reports are excluded from recall indexing but are still forget artifacts. */
+export async function listWorkspaceLightDreamingReports(workspaceDir: string): Promise<string[]> {
+  let directory = workspaceDir;
+  try {
+    for (const segment of ["memory", "dreaming", "light"]) {
+      directory = path.join(directory, segment);
+      if (!(await inspectWorkspaceFile(workspaceDir, directory, false)).isDirectory()) {
+        return [];
+      }
+    }
+    const entries = await listWorkspaceDirectory(workspaceDir, directory);
+    return entries
+      .filter((entry) => entry.isFile() && /^\d{4}-\d{2}-\d{2}\.md$/u.test(entry.name))
+      .map((entry) => path.join(directory, entry.name))
+      .toSorted();
+  } catch (error) {
+    if (isFileMissingError(error)) {
+      return [];
+    }
+    throw error;
+  }
 }
 
 export async function makeWorkspaceDirectory(
