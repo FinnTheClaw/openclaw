@@ -18,6 +18,12 @@ describe("mergeDeferredFinalText", () => {
     expect(mergeDeferredFinalText(streamed, final)).toBe(final);
   });
 
+  it("keeps fenced code literals with distinct internal blank lines", () => {
+    const streamed = '```python\nmessage = """first\n\nsecond"""\n```';
+    const final = '```python\nmessage = """first\nsecond"""\n```';
+    expect(mergeDeferredFinalText(streamed, final)).toBe(`${streamed}\n${final}`);
+  });
+
   it("keeps code literals with distinct internal spaces", () => {
     expect(mergeDeferredFinalText('print("a  b")', 'print("a b")')).toBe(
       'print("a  b")\nprint("a b")',

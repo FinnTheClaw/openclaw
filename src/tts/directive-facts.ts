@@ -6,7 +6,9 @@ import { replaceOutsideCodeRegionParts } from "../utils/directive-tags.js";
 /** Colon bodies without directive tokens are visible speech, except reserved text markers. */
 export function resolveTtsDirectiveBody(body: string): string | undefined {
   const text = body.trim();
-  return text && !text.includes("=") && text.toLowerCase() !== "text" ? text : undefined;
+  // Match the tokenizer below: a directive needs a nonempty key and value in one token.
+  const hasDirectiveToken = /(?:^|\s)[^\s=]+=\S/u.test(text);
+  return text && !hasDirectiveToken && text.toLowerCase() !== "text" ? text : undefined;
 }
 
 /** Extract final-text TTS syntax into persisted facts, leaving markdown code spans unchanged. */

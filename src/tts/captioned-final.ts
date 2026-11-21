@@ -6,6 +6,7 @@ import {
 import { resolveChannelTtsVoiceDelivery } from "../channels/plugins/tts-capabilities.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { TtsAutoMode } from "../config/types.tts.js";
+import { findCodeRegions } from "../shared/text/code-ranges.js";
 import { createTtsDirectiveTextStreamCleaner } from "./directives.js";
 import { resolveStatusTtsSnapshot } from "./status-config.js";
 import { resolveConfiguredTtsMode } from "./tts-config.js";
@@ -48,10 +49,27 @@ export function shouldDeferFinalTtsText(params: {
   );
 }
 
+function collapseProseSeparators(text: string): string {
+  if (!text.includes("\n\n")) {
+    return text;
+  }
+  let cursor = 0;
+  let normalized = "";
+  for (const { start, end } of findCodeRegions(text)) {
+    normalized += text.slice(cursor, start).replace(/\n{2,}/g, "\n") + text.slice(start, end);
+    cursor = end;
+  }
+  return normalized + text.slice(cursor).replace(/\n{2,}/g, "\n");
+}
+
 export function mergeDeferredFinalText(streamedText: string, finalText?: string): string {
   const streamed = streamedText.trim();
   const final = finalText?.trim() ?? "";
-  if (!streamed || streamed.replace(/\n{2,}/g, "\n") === final.replace(/\n{2,}/g, "\n")) {
+  if (
+    !streamed ||
+    streamed === final ||
+    collapseProseSeparators(streamed) === collapseProseSeparators(final)
+  ) {
     return final;
   }
   if (!final || streamed.startsWith(final)) {

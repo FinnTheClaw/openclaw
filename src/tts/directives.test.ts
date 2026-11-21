@@ -179,6 +179,16 @@ describe("createTtsDirectiveTextStreamCleaner", () => {
     expect(cleaner.flush()).toBe("");
   });
 
+  it("preserves standalone equals in plain colon TTS speech", () => {
+    const spoken = "Two plus two = four.";
+    const input = `[[tts:${spoken}]]`;
+    const cleaner = createTtsDirectiveTextStreamCleaner();
+    expect.soft(parse(input)).toMatchObject({ cleanedText: spoken, ttsText: spoken });
+    expect(cleaner.push("[[tts:Two plus two =") + cleaner.push(" four.]]") + cleaner.flush()).toBe(
+      spoken,
+    );
+  });
+
   it.each([
     [["Some [[tts:hello there]] note"], "Some hello there note"],
     [["Go [[tts:", "answered aloud]] back"], "Go answered aloud back"],
