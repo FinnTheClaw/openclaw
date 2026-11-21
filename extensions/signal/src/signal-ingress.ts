@@ -30,6 +30,8 @@ type SignalIngressEnvelope = {
 type SignalIngressEventFacts = {
   eventId: string;
   laneKey: string;
+  claimAfterDurableAdmission?: true;
+  numberAliasEventId?: string;
 };
 
 type SignalPreparedIngressEvent = [
@@ -135,6 +137,12 @@ function inspectSignalIngressEvent(
   return {
     eventId: JSON.stringify([senderKey, timestamp]),
     laneKey: groupId ? `group:${groupId}` : `direct:${senderKey}`,
+    ...(senderUuid && senderNumber
+      ? {
+          claimAfterDurableAdmission: true as const,
+          numberAliasEventId: JSON.stringify([`number:${senderNumber}`, timestamp]),
+        }
+      : {}),
   };
 }
 
@@ -190,10 +198,23 @@ export async function startSignalIngressMonitor(params: {
     },
     deliver: ([event, parsedPayload], lifecycle) =>
       parsedPayload ? params.dispatch(event, lifecycle, parsedPayload) : undefined,
+    onDurableAdmission: async (_event, { facts, isNew }) => {
+      const numberAliasEventId =
+        "numberAliasEventId" in facts ? facts.numberAliasEventId : undefined;
+      if (typeof numberAliasEventId !== "string") {
+        return;
+      }
+      // signal-cli can learn or forget a UUID between deliveries. Reconcile the two
+      // account-scoped event IDs while the new row is still pending and unclaimed.
+      if (!(await ingressQueue.complete(numberAliasEventId)) && isNew) {
+        await ingressQueue.complete(facts.eventId);
+      }
+    },
     pollIntervalMs: SIGNAL_INGRESS_DRAIN_INTERVAL_MS,
     retention: {
       // Signal previously pruned before every enqueue rather than on a timed cadence.
       pruneIntervalMs: 0,
+      // Keep the existing window even when a message occupies two tombstones.
       completedMaxEntries: 2_000,
       failedMaxEntries: 1_000,
     },

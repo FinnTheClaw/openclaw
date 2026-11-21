@@ -112,7 +112,12 @@ export function createChannelIngressAdmission<TRaw, TBody, TStoredPayload, TMeta
       const enqueueBatch = admissionQueue.enqueueBatch?.bind(admissionQueue);
       const enqueueAndClaim = admissionQueue.enqueueAndClaim?.bind(admissionQueue);
       const idleDrain =
-        !hasPolicy && prepared.length === 1 && enqueueAndClaim ? options.getIdleDrain() : undefined;
+        !hasPolicy &&
+        prepared.length === 1 &&
+        !prepared[0]?.facts.claimAfterDurableAdmission &&
+        enqueueAndClaim
+          ? options.getIdleDrain()
+          : undefined;
       const ownerId = idleDrain?.idleOwnerId();
       if (idleDrain && ownerId && enqueueAndClaim) {
         const { facts, payload } = prepared[0]!;

@@ -31,6 +31,8 @@ export type ChatSessionAbortParams = {
   requester: ChatAbortRequester;
   assertCurrent?: () => void;
   preserveSideRuns?: boolean;
+  /** Key-only sessions.abort preserves followups unless its caller opts into queue cleanup. */
+  preserveQueuedFollowups?: boolean;
   cascadeDescendants?: true;
   /** Current session lifecycle owner; reporting only, never descendant selection. */
   yieldedRequesterRunId?: string;

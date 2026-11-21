@@ -427,6 +427,7 @@ export function createUserTurnTranscriptRecorder(
       const persistMessage = async (
         candidate: PersistedUserTurnMessage,
         candidateUpdateMode: UserTurnTranscriptUpdateMode,
+        kind: "input" | "late-media" = "input",
       ) => {
         const assertOriginalInput =
           candidate.idempotencyKey === message?.idempotencyKey
@@ -449,21 +450,25 @@ export function createUserTurnTranscriptRecorder(
                   assertOriginalInput,
                 ])
               : assertOriginalInput,
-            onOriginalInputCommitted: notifyOriginalInputCommitted,
-            onCommitted: (committed, acceptCompletion) => {
-              committedInput = committed;
-              admittedMessage = committed.message;
-              const result = admittedUserTurnResult(
-                committed,
-                logicalTurnId,
-                resolvedTarget.sessionKey,
-              );
-              if (result) {
-                persistedResult = result;
-                acceptCompletion(() => recordAdmission(result.admission, result.message));
-              }
-              notifyMessagePersisted(committed.message);
-            },
+            onOriginalInputCommitted: kind === "input" ? notifyOriginalInputCommitted : undefined,
+            // The separate late-media row must not replace the original receipt/message pair.
+            onCommitted:
+              kind === "late-media"
+                ? undefined
+                : (committed, acceptCompletion) => {
+                    committedInput = committed;
+                    admittedMessage = committed.message;
+                    const result = admittedUserTurnResult(
+                      committed,
+                      logicalTurnId,
+                      resolvedTarget.sessionKey,
+                    );
+                    if (result) {
+                      persistedResult = result;
+                      acceptCompletion(() => recordAdmission(result.admission, result.message));
+                    }
+                    notifyMessagePersisted(committed.message);
+                  },
           });
         // Queued input prepares current custody before its worker transaction;
         // consumed input can still mirror its committed bytes after custody closes.
@@ -493,7 +498,7 @@ export function createUserTurnTranscriptRecorder(
             notifyMessagePersisted(admittedResult.message);
           }
         }
-        const appendedMedia = await persistMessage(lateMediaMessage, "none");
+        const appendedMedia = await persistMessage(lateMediaMessage, "none", "late-media");
         persistedResult = appendedMedia ?? persistedResult;
         return appendedMedia;
       }

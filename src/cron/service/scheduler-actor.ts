@@ -357,6 +357,11 @@ async function runCronSchedulerTick(
         return;
       }
       await runCronSchedulerMaintenance(state);
+      const snapshot = await captureCronSchedulerSnapshot(state);
+      // A pause or handover may have closed admission while this tick prepared.
+      if (connections.get(state) !== connection || state.stopped || state.schedulingPaused) {
+        return;
+      }
       const observedRevision = getCronJobsStoreRevision(state.deps.storeKey);
       const result = await lease.execute({
         type: "cron.schedulerTick",
@@ -365,7 +370,7 @@ async function runCronSchedulerTick(
           channelName: connection.channelName,
           paused: false,
           requests: getCronRunQueueRequests(state),
-          snapshot: await captureCronSchedulerSnapshot(state),
+          snapshot,
           nowMs: state.deps.nowMs(),
           monotonicMs: performance.now(),
         },

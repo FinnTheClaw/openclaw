@@ -18,7 +18,11 @@ import {
 import { makeChatHost, requestCalls, requireRecord } from "./chat-host.test-support.ts";
 import { chatOutboxOwner } from "./chat-outbox-owner.ts";
 import { removeQueuedMessage, updateQueuedMessage } from "./chat-queue.ts";
-import { resumeStoredChatOutboxes, retryQueuedChatMessage } from "./chat-send-actions.ts";
+import {
+  flushChatQueueForEvent,
+  resumeStoredChatOutboxes,
+  retryQueuedChatMessage,
+} from "./chat-send-actions.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
 import { updateStoredChatComposerQueueItems } from "./composer-queue-persistence.ts";
 import { admitInitialTurnHandoff } from "./initial-turn-handoff-admission.ts";
@@ -160,6 +164,31 @@ it.each([
   select("owner-b");
   select("owner-a");
   expect(host.chatQueue).toEqual([]);
+});
+
+it("resumes an in-memory send on a selected-session queue wake", async () => {
+  failStorageWrites(new DOMException("quota exceeded", "QuotaExceededError"));
+  const send = vi.fn((params: unknown) => {
+    const request = requireRecord(params, "memory send");
+    return { runId: request.idempotencyKey, status: "started" };
+  });
+  send.mockImplementationOnce(() => {
+    throw new Error("gateway closed (1006): connection lost");
+  });
+  const { host } = custodyHost({
+    chatMessage: "Retain the original delivery",
+    currentSessionId: "volatile-original-session",
+    requestHandlers: { "chat.send": send },
+  });
+  await handleSendChat(host);
+  expect(send).toHaveBeenCalledOnce();
+  expect(listStoredChatOutboxes(host)).toEqual([]);
+  expect(host.chatQueue).toMatchObject([{ sendState: "waiting-reconnect" }]);
+
+  await flushChatQueueForEvent(host);
+
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls[1]).toEqual(send.mock.calls[0]);
 });
 
 it.each(["retry", "discard"])(

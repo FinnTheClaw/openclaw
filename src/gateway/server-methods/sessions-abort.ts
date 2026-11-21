@@ -314,6 +314,8 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       lifecycleGeneration,
       startedAt: sessionEntry?.startedAt,
     });
+    const preserveQueuedFollowups =
+      !requestedRunId && (p.clearQueued !== true || canonicalKey === "global");
     const stopHookContext = {
       sessionKey: canonicalKey,
       sessionEntry,
@@ -485,6 +487,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       stopReason: "rpc",
       requester,
       stopSource: requestedRunId ? "client-run" : "client-session",
+      preserveQueuedFollowups,
       hookContext: stopHookContext,
       assertCurrent: assertAbortCurrent,
     });
@@ -566,6 +569,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       ),
       {
         ...(!requestedRunId ? { cascadeDescendants: true as const } : {}),
+        preserveQueuedFollowups,
         yieldedRequesterRunId: nativeYieldedCandidate?.runId,
         hookContext: stopHookContext,
         onDescendantsCancelled: (result) => {

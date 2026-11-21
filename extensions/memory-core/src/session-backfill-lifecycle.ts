@@ -208,6 +208,10 @@ async function deleteSessionBackfillRewindBatches(
   }
 }
 
+function belongsToAgentFileState(key: string, agentId: string): boolean {
+  return key.startsWith(`${agentId}:`);
+}
+
 function belongsToAgentSeenState(key: string, agentId: string): boolean {
   const archivePrefix = "archive:";
   if (!key.startsWith(archivePrefix)) {
@@ -228,7 +232,7 @@ export async function resetSessionBackfillIngestionState(params: {
   await writeSessionIngestionState(params.workspaceDir, {
     ...state,
     files: Object.fromEntries(
-      Object.entries(state.files).filter(([key]) => !key.startsWith(`${params.agentId}:`)),
+      Object.entries(state.files).filter(([key]) => !belongsToAgentFileState(key, params.agentId)),
     ),
     seenMessages: Object.fromEntries(
       Object.entries(state.seenMessages).filter(

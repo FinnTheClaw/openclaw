@@ -15,6 +15,7 @@ import {
   readBuiltRuntimeCommit,
   verifyGitUpdateRecovery,
 } from "../src/infra/update-git-runtime.js";
+import { resolveGitUpdateCommandEnv } from "../src/infra/update-runner-git-commands.js";
 import { runGitCandidatePreflight } from "../src/infra/update-runner-git-preflight.js";
 import {
   createGitRuntimeTransaction,
@@ -483,7 +484,7 @@ async function runReferenceSourceUpdate(
                   needsCheckoutMain: false,
                   runCommand: inspectCommand,
                   timeoutMs: PROBE_TIMEOUT_MS,
-                  defaultCommandEnv: env,
+                  defaultCommandEnv: resolveGitUpdateCommandEnv(env),
                   steps,
                   step: inspectionStep,
                   workStep: (...args) => ({ ...inspectionStep(...args), timeoutMs: undefined }),
@@ -819,7 +820,7 @@ export async function runUpdateGatewayBuild(
     });
   const build = () =>
     runBuildAllSteps("full", {
-      env: {
+      env: resolveGitUpdateCommandEnv({
         ...process.env,
         OPENCLAW_UPDATE_IN_PROGRESS: "1",
         COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
@@ -829,7 +830,7 @@ export async function runUpdateGatewayBuild(
         npm_config_workspace_dir: root,
         PNPM_CONFIG_LOCKFILE_DIR: root,
         pnpm_config_lockfile_dir: root,
-      },
+      }),
     });
   return await runSourceUpdateBuild({
     root,

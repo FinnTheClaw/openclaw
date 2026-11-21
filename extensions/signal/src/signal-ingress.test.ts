@@ -197,6 +197,34 @@ describe("Signal durable ingress", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["gains a UUID", false],
+    ["loses its UUID", true],
+  ] as const)("dedupes after restart when a sender %s", async (_label, startsWithUuid) => {
+    const phoneOnly = signalEvent({}, { message: "first" });
+    const withUuid = signalEvent(
+      { sourceUuid: "123e4567-e89b-12d3-a456-426614174000" },
+      { message: "first" },
+    );
+    const first = startsWithUuid ? withUuid : phoneOnly;
+    const redelivery = startsWithUuid ? phoneOnly : withUuid;
+    const next = signalEvent({ timestamp: 1_700_000_000_002 }, { message: "second" });
+    const observed: Array<string | undefined | null> = [];
+    const dispatch: SignalIngressDispatch = (_event, _lifecycle, payload) => {
+      observed.push(payload.envelope?.dataMessage?.message);
+    };
+    const initial = await start(dispatch);
+    await receive(initial, first);
+    expect(observed).toEqual(["first"]);
+    await initial.stop();
+    monitors.delete(initial);
+
+    const restarted = await start(dispatch);
+    await restarted.waitForIdle();
+    await receive(restarted, redelivery, next);
+    expect(observed).toEqual(["first", "second"]);
+  });
+
   it("dead-letters malformed persisted payloads without retry", async () => {
     await queue.enqueue(
       "malformed-event",

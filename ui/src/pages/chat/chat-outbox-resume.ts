@@ -1,8 +1,6 @@
 import type { GatewayEventFrame } from "../../api/gateway.ts";
-import { listStoredChatOutboxes } from "../../lib/chat/outbox-store-projection.ts";
-import { visibleSessionMatches } from "../../lib/sessions/navigation.ts";
 import { captureChatConnectionOwner } from "./chat-connection-owner.ts";
-import { collectChatOutboxes } from "./chat-outbox-scopes.ts";
+import { collectChatOutboxes, readVisibleChatOutbox } from "./chat-outbox-scopes.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
 
 export async function resumeStoredChatOutboxes(host: ChatHost, event?: GatewayEventFrame) {
@@ -19,11 +17,7 @@ export async function resumeStoredChatOutboxes(host: ChatHost, event?: GatewayEv
 }
 
 export async function flushChatQueueForEvent(host: ChatHost) {
-  if (
-    !listStoredChatOutboxes(host).some((outbox) =>
-      visibleSessionMatches(host, outbox.sessionKey, outbox.agentId),
-    )
-  ) {
+  if (!readVisibleChatOutbox(host)) {
     return;
   }
   const connectionIsCurrent = captureChatConnectionOwner(host);

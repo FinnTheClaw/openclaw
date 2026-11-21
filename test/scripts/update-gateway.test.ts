@@ -154,7 +154,7 @@ const expected = process.env.SCENARIO === 'local-pin' ? 'pnpm@11.15.1' : process
 assert.equal(JSON.parse(fs.readFileSync('package.json', 'utf8')).packageManager, expected);
 const building = ['build', 'nested'].includes(process.argv[2]);
 assert.equal(process.env.OPENCLAW_UPDATE_IN_PROGRESS, building ? '1' : undefined, 'update runtime context must be scoped to the build and its children');
-assert.equal(process.env.OPENCLAW_RUN_NODE_SKIP_DTS_BUILD, process.env.SCENARIO === 'explicit-declarations' ? '0' : undefined, 'the caller owns the declaration override');
+assert.equal(process.env.OPENCLAW_RUN_NODE_SKIP_DTS_BUILD, process.env.SCENARIO === 'explicit-declarations' ? '0' : building ? '1' : undefined, 'only build defaults to skipping declarations; explicit override wins');
 NODE
       case "$1" in
         install) [[ "$2" == --frozen-lockfile ]]; echo install >> "$FIXTURE/steps"; [[ "$SCENARIO" != install-failure ]] || exit 42 ;;

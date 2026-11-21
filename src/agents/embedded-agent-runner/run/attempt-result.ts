@@ -1,5 +1,6 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { isPlainTextToolCallAttempt } from "../../../../packages/tool-call-repair/src/index.js";
+import { parseReplyDirectives } from "../../../auto-reply/reply/reply-directives.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { isTransientNetworkError } from "../../../infra/retryable-network-errors.js";
 import { extractAssistantTranscriptSourceText } from "../../../shared/chat-message-content.js";
@@ -254,12 +255,25 @@ export function completeEmbeddedAttemptResult(
   // after every other tool result; an empty stop after it is the reply.
   const terminalAssistant = state.currentAttemptCompletedAssistant ?? state.currentAttemptAssistant;
   const closingReply = prepareTerminalAssistantReply(terminalAssistant);
-  const progressIsReply =
+  let progressIsReply = false;
+  if (
     subscription.endsWithSourceProgress() &&
     resolveReplyExpectation(attempt) !== "result-required" &&
     state.terminal.kind === "ok" &&
     terminalAssistant?.stopReason === "stop" &&
-    closingReply.terminalReply.disposition !== "visible";
+    closingReply.terminalReply.disposition !== "visible"
+  ) {
+    // Terminal reply evidence is text-only; an attachment or speech still owes delivery.
+    const { mediaUrls, audioAsVoice } = parseReplyDirectives(closingReply.text);
+    const storedDelivery = terminalAssistant.openclawDelivery;
+    progressIsReply = !(
+      mediaUrls?.length ||
+      audioAsVoice ||
+      storedDelivery?.mediaUrls?.length ||
+      storedDelivery?.audioAsVoice ||
+      storedDelivery?.tts?.text?.trim()
+    );
+  }
   const completeLastProgress = <T extends { sourceReplyFinal?: boolean }>(sends: T[]): T[] => {
     const index = sends.findLastIndex((send) => send.sourceReplyFinal === false);
     return progressIsReply && index >= 0

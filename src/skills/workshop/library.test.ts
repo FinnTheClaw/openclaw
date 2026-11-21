@@ -395,3 +395,42 @@ it.each(["version pruning", "change recording"] as const)(
     expect(await readLive()).not.toContain("step 0");
   },
 );
+
+const detachedCleanupCases = [
+  ["archive", ".archiving-"],
+  ["restore", ".restore-previous-"],
+] as const;
+it.each(detachedCleanupCases)(
+  "returns a committed receipt after detached-tree cleanup fails during %s",
+  async (action, prefix) => {
+    await (action === "archive" ? create("step 0") : createPatched());
+    const remove = fs.rm;
+    const denied = vi.fn();
+    vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      if (
+        path.dirname(String(target)) === skillPath(".archive") &&
+        path.basename(String(target)).startsWith(prefix)
+      ) {
+        denied();
+        throw new Error("controlled detached-tree cleanup failure");
+      }
+      await remove(target, options);
+    });
+
+    const settlement = await (action === "archive" ? archive() : restore()).catch(
+      (error: unknown) => error,
+    );
+    expect(denied).toHaveBeenCalledOnce();
+    expect(await liveNames()).toEqual(action === "archive" ? [] : ["deploy"]);
+    if (action === "restore") {
+      expect(await readLive()).toContain("step 0");
+    }
+    expect((await versions())[0]?.versions[0]?.action).toBe(action);
+    expect(settlement).toMatchObject({
+      action,
+      skillName: "deploy",
+      versionId: expect.any(String),
+      postCommitWarnings: [expect.stringContaining("controlled detached-tree cleanup failure")],
+    });
+  },
+);

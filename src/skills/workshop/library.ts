@@ -43,6 +43,10 @@ export { listWorkshopChanges } from "./changes.js";
 /** A committed write receipt; warnings never imply the mutation should be replayed. */
 export type WorkshopMutationResult = WorkshopChange & { postCommitWarnings?: string[] };
 
+type CommittingSkillPaths = MutationPaths & {
+  postCommit: <T>(label: string, run: () => Promise<T>) => Promise<T | undefined>;
+};
+
 export type WorkshopMutationContext = {
   config: OpenClawConfig;
   agentId: string;
@@ -326,7 +330,7 @@ export async function mutateSkill(
   ctx: WorkshopMutationContext,
   name: string,
   action: WorkshopChangeAction,
-  apply: (paths: MutationPaths) => Promise<{ summary: string; versionId?: string }>,
+  apply: (paths: CommittingSkillPaths) => Promise<{ summary: string; versionId?: string }>,
   alsoLock: readonly SkillPaths[] = [],
 ): Promise<WorkshopMutationResult> {
   const paths = resolveSkillPaths(ctx.config, ctx.agentId, name);
@@ -344,8 +348,6 @@ export async function mutateSkill(
           })
         : undefined;
     const before = await snapshotArtifact();
-    // Checked at lock time to skip needless work, and again right before each file effect.
-    const { summary, versionId } = await apply({ ...paths, assertLive: () => ctx.assertLive?.() });
     const postCommitWarnings: string[] = [];
     const postCommit = async <T>(label: string, run: () => Promise<T>): Promise<T | undefined> => {
       try {
@@ -357,6 +359,12 @@ export async function mutateSkill(
         return undefined;
       }
     };
+    // Checked at lock time to skip needless work, and again right before each file effect.
+    const { summary, versionId } = await apply({
+      ...paths,
+      assertLive: () => ctx.assertLive?.(),
+      postCommit,
+    });
     const after = await postCommit("artifact snapshot", snapshotArtifact);
     await postCommit("version pruning", () => pruneVersions(paths.versionsDir));
     await postCommit("discovery refresh", async () => {
@@ -621,7 +629,9 @@ export async function archiveWorkshopSkill(
       const detached = path.join(paths.root, ARCHIVE_DIR, `.archiving-${randomUUID()}`);
       paths.assertLive();
       await fs.rename(paths.skillDir, detached);
-      await fs.rm(detached, { recursive: true, force: true });
+      await paths.postCommit("detached archive cleanup", () =>
+        fs.rm(detached, { recursive: true, force: true }),
+      );
       const detail = [
         params.absorbedInto ? `merged into ${params.absorbedInto}` : undefined,
         params.reason?.trim() || undefined,
@@ -679,7 +689,7 @@ export async function restoreWorkshopSkill(
  * are kept byte for byte, binary assets included; without a live skill the files are the skill.
  */
 export async function publishSkillOverlay(
-  paths: MutationPaths,
+  paths: CommittingSkillPaths,
   files: ReadonlyArray<readonly [string, string | Buffer]>,
 ): Promise<string | undefined> {
   const live = await pathExists(paths.skillDir);
@@ -708,17 +718,19 @@ export async function writeStagedFile(staging: string, filePath: string, content
  * or failed rename leaves the previous live skill in place. Returns the snapshot's version id.
  */
 export async function publishSkillBundle(
-  paths: MutationPaths,
+  paths: CommittingSkillPaths,
   action: WorkshopChangeAction,
   fill: (staging: string) => Promise<void>,
 ): Promise<string | undefined> {
   const staging = path.join(paths.root, ARCHIVE_DIR, `.${action}-${randomUUID()}`);
   const previous = path.join(paths.root, ARCHIVE_DIR, `.${action}-previous-${randomUUID()}`);
+  let versionId: string | undefined;
+  let hadLive: boolean;
   try {
     await fs.mkdir(staging, { recursive: true });
     await fill(staging);
-    const versionId = await snapshotSkill(paths, action);
-    const hadLive = await pathExists(paths.skillDir);
+    versionId = await snapshotSkill(paths, action);
+    hadLive = await pathExists(paths.skillDir);
     if (hadLive) {
       paths.assertLive();
       await fs.rename(paths.skillDir, previous);
@@ -732,10 +744,15 @@ export async function publishSkillBundle(
       }
       throw error;
     }
-    // Only successful publication may discard the original live copy.
-    await fs.rm(previous, { recursive: true, force: true });
-    return versionId;
-  } finally {
+  } catch (error) {
+    // Only failed publication leaves the staging path in place.
     await fs.rm(staging, { recursive: true, force: true });
+    throw error;
   }
+  if (hadLive) {
+    await paths.postCommit("replaced skill cleanup", () =>
+      fs.rm(previous, { recursive: true, force: true }),
+    );
+  }
+  return versionId;
 }

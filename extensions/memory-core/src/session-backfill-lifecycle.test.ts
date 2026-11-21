@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  readSessionIngestionState,
+  writeSessionIngestionState,
+} from "./dreaming-ingestion-state.js";
+import {
   readMemoryCoreWorkspaceEntries,
   SESSION_BACKFILL_REWIND_NAMESPACE,
   writeMemoryCoreWorkspaceEntry,
@@ -8,7 +12,6 @@ import {
   recordSessionBackfillRewindBatch,
   rewindSessionBackfillIngestionState,
 } from "./session-backfill-lifecycle.js";
-import { readSessionIngestionState, writeSessionIngestionState } from "./session-ingestion.js";
 import { createMemoryCoreTestHarness } from "./test-helpers.js";
 
 const harness = createMemoryCoreTestHarness();

@@ -476,7 +476,7 @@ describe("trailing source progress at runtime settlement", () => {
     baseUrl: "https://example.test",
   });
   // Native-async calls run while the provider streams; each settles before the next fragment.
-  type ModelCall = { tools?: Array<"progress" | "read">; async?: true };
+  type ModelCall = { tools?: Array<"progress" | "read">; async?: true; text?: string };
 
   async function settleRealLoop(calls: ModelCall[]) {
     const sessionManager = {};
@@ -542,7 +542,7 @@ describe("trailing source progress at runtime settlement", () => {
           api: testModel.api,
           provider: testModel.provider,
           model: testModel.id,
-          content: [...toolCalls, { type: "text", text: "" }],
+          content: [...toolCalls, { type: "text", text: call.text ?? "" }],
           stopReason: toolCalls.length > 0 && !call.async ? "toolUse" : "stop",
           errorMessage: undefined,
         });
@@ -604,6 +604,23 @@ describe("trailing source progress at runtime settlement", () => {
       }),
     };
   }
+
+  it("keeps a media-only final after a delivered progress message", async () => {
+    const mediaUrl = "https://example.test/report.png";
+    const { result } = await settleRealLoop([
+      { tools: ["progress"] },
+      { text: `MEDIA:${mediaUrl}` },
+    ]);
+
+    expect(result.sourceReplyDeliveryState).toBe("missing");
+    expect(result.messagingToolSentTargets?.map((send) => send.sourceReplyFinal)).toEqual([false]);
+    expect(
+      buildPayloads({
+        ...result,
+        currentAssistant: result.currentAttemptCompletedAssistant,
+      }),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ mediaUrl })]));
+  });
 
   it.each<[string, ModelCall[], boolean]>([
     ["last tool batch", [{ tools: ["progress"] }, {}], true],

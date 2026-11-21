@@ -97,9 +97,17 @@ describe("user turn transcript persistence", () => {
     expect(submissions).toBe(1);
   });
 
-  async function startLateMedia(input: UserTurnInput, options: Parameters<typeof record>[2] = {}) {
+  async function startLateMedia(
+    input: UserTurnInput,
+    options: Parameters<typeof record>[2] = {},
+    guarded = false,
+  ) {
     const dir = sessionDirs.make();
-    const target = makeTarget(undefined, dir);
+    const source = makeTarget(undefined, dir);
+    const target = guarded ? { ...source, expectedSessionId: source.sessionId } : source;
+    if (guarded) {
+      await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
+    }
     const resolverStarted = createDeferred();
     const mediaInput = createDeferred<UserTurnInput>();
     const committedEntries: string[] = [];
@@ -462,9 +470,14 @@ describe("user turn transcript persistence", () => {
       });
     });
 
-    it.each(["capture", "dispatch"] as const)(
-      "appends #99495 media during %s without changing the admitted turn",
-      async (timing) => {
+    it.each([
+      ["capture", false],
+      ["dispatch", false],
+      ["capture", true],
+      ["dispatch", true],
+    ] as const)(
+      "appends #99495 media during %s without changing the admitted turn (guarded: %s)",
+      async (timing, guarded) => {
         const admittedInput = {
           text: "describe @Ada",
           timestamp: 123,
@@ -472,10 +485,14 @@ describe("user turn transcript persistence", () => {
           mentions: [{ profileId: "ada", start: 9, end: 13 }],
         };
         const { dir, target, recorder, persistence, admitted, mediaInput, committedEntries } =
-          await startLateMedia(admittedInput, {
-            beforeMessageWrite: ({ message }) =>
-              castAgentMessage({ ...message, __openclaw: { hookOwned: true } }),
-          });
+          await startLateMedia(
+            admittedInput,
+            {
+              beforeMessageWrite: ({ message }) =>
+                castAgentMessage({ ...message, __openclaw: { hookOwned: true } }),
+            },
+            guarded,
+          );
         recorder.markRuntimePersisted(recorder.message, admitted?.admission, {
           appended: admitted?.appended === true,
         });

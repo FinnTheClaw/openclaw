@@ -278,6 +278,10 @@ export function prepareChatSessionAbort(
     const cancelInput: NonNullable<SessionStopRequest["cancelInput"]> = (input, cancel, queued) => {
       const target = targetByInput.get(input);
       if (!target) {
+        // Registered RPC sources still stop; ordinary followups require a queue-clear request.
+        if (queued && params.preserveQueuedFollowups && input.source) {
+          return false;
+        }
         if (!controllerStop.inputs.includes(input) && !(queued && canRunLifecycleCleanup)) {
           return false;
         }

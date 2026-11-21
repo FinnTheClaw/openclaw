@@ -77,6 +77,7 @@ type ChatAbortLifecycle = {
     result: NonNullable<Awaited<ReturnType<typeof abortControlledSubagents>>>,
   ) => void;
   cascadeDescendants?: true;
+  preserveQueuedFollowups?: boolean;
   yieldedRequesterRunId?: string;
   hookContext?: SessionStopHookContext;
 };
@@ -194,6 +195,7 @@ export async function handleChatAbortRequestWithLifecycle(
         requester,
         assertCurrent,
         preserveSideRuns,
+        preserveQueuedFollowups: lifecycle.preserveQueuedFollowups,
         cascadeDescendants: lifecycle.cascadeDescendants,
         yieldedRequesterRunId: lifecycle.yieldedRequesterRunId,
       },

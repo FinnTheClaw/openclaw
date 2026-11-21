@@ -91,9 +91,9 @@ async function setup() {
   const queued = source("queued", true);
   const authority = revocableAuthority("original queue authority revoked");
   const respond = vi.fn();
-  const stop = () =>
+  const stop = (options: { clearQueued?: boolean } = { clearQueued: true }) =>
     handleGatewayRequest({
-      req: gatewayRequest("ui-stop", "sessions.abort", { key, clearQueued: true }),
+      req: gatewayRequest("ui-stop", "sessions.abort", { key, ...options }),
       client,
       context,
       respond,
@@ -201,6 +201,22 @@ it("UI-style narrow Stop clears owned lane entries through their signals and pre
     release.resolve();
     await Promise.allSettled([blocker, ...queuedTasks]);
   }
+});
+
+it("sessions.abort without clearQueued preserves queued followups", async () => {
+  const fixture = await setup();
+  const pending = followup("accepted followup");
+  const queue = readQueue();
+
+  await fixture.stop({});
+
+  expect(fixture.respond.mock.calls[0]?.[0], JSON.stringify(fixture.respond.mock.calls[0])).toBe(
+    true,
+  );
+  expect([fixture.active, fixture.queued].map(aborted)).toEqual([true, true]);
+  expect(pending.settled).not.toHaveBeenCalled();
+  expect(readQueue()).toBe(queue);
+  expect(queue?.items).toEqual([pending.run]);
 });
 
 it.each([true, false])(

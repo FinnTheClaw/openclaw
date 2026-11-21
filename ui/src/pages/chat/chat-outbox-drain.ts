@@ -1,10 +1,7 @@
 import type { GatewayBrowserClient, GatewayEventFrame } from "../../api/gateway.ts";
 import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import { sameQueuedDeliveryVersion } from "../../lib/chat/outbox-store-codec.ts";
-import {
-  listStoredChatOutboxes,
-  type StoredChatOutbox,
-} from "../../lib/chat/outbox-store-projection.ts";
+import type { StoredChatOutbox } from "../../lib/chat/outbox-store-projection.ts";
 import type { StoredChatOutboxScope } from "../../lib/chat/outbox-store-scope.ts";
 import { storedChatOutboxScopeKey } from "../../lib/chat/outbox-store.ts";
 import { formatUiError } from "../../lib/format-error.ts";
@@ -24,7 +21,11 @@ import {
   scheduleChatOutboxRetry,
   settleChatOutboxRetry,
 } from "./chat-outbox-retry.ts";
-import { collectChatOutboxes, readChatOutboxLane } from "./chat-outbox-scopes.ts";
+import {
+  collectChatOutboxes,
+  readChatOutboxLane,
+  readVisibleChatOutbox,
+} from "./chat-outbox-scopes.ts";
 import { chatProviderReviewRow, holdProviderReviewQueuedInputs } from "./chat-provider-review.ts";
 import { readQueuedMessageById, updateQueuedMessage } from "./chat-queue.ts";
 import type { PendingComposerSnapshot } from "./chat-send-composer.ts";
@@ -577,9 +578,7 @@ export async function flushStoredChatOutbox(
   host: ChatHost,
   dependencies: ChatOutboxDrainDependencies,
 ) {
-  const outbox = listStoredChatOutboxes(host).find((candidate) =>
-    visibleSessionMatches(host, candidate.sessionKey, candidate.agentId),
-  );
+  const outbox = readVisibleChatOutbox(host);
   if (outbox) {
     await scheduleStoredChatOutboxDrain(host, outbox, dependencies, undefined, undefined, true);
   }

@@ -4,7 +4,12 @@ import type { CreateChannelIngressDrainOptions } from "./ingress-drain.js";
 import type { ChannelIngressQueue, ChannelIngressQueueClaim } from "./ingress-queue.js";
 
 /** Stable identity and serialization lane extracted before durable admission. */
-export type ChannelIngressMonitorFacts = { eventId: string; laneKey: string };
+export type ChannelIngressMonitorFacts = {
+  eventId: string;
+  laneKey: string;
+  /** Finish admission-time row reconciliation before creating the first claim. */
+  claimAfterDurableAdmission?: true;
+};
 
 /** Versioned body presented to a channel's persisted-payload encoder. */
 type ChannelIngressPayloadEnvelope<TBody> = { version: number; body: TBody };

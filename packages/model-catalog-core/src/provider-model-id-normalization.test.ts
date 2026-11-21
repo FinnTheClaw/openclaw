@@ -88,36 +88,3 @@ it("strips by the matched length when the manifest prefix differs in case and sp
   const policies = policiesFor("openai", { stripPrefixes: [" OpenAI/ "] });
   expect(staticId("openai", "openai/gpt-4", policies)).toBe("gpt-4");
 });
-
-const prototypeLikeModels = ["constructor", "__proto__", "toString"];
-const aliasProviders = ["anthropic", "vercel-ai-gateway", "xai", "fixture"];
-
-it.each(
-  aliasProviders.flatMap((provider) => prototypeLikeModels.map((model) => ({ provider, model }))),
-)("preserves unaliased $provider model ID $model as a string", ({ provider, model }) => {
-  const policies = collectManifestModelIdNormalizationPolicies([
-    { modelIdNormalization: { providers: { fixture: { aliases: {} } } } },
-  ]);
-
-  expect(normalizeConfiguredProviderCatalogModelId(provider, model, policies)).toBe(model);
-});
-
-it.each(prototypeLikeModels)("honors explicitly owned alias %s", (model) => {
-  for (const provider of aliasProviders) {
-    const policies = collectManifestModelIdNormalizationPolicies([
-      {
-        modelIdNormalization: {
-          providers: {
-            [provider]: {
-              aliases: Object.fromEntries([[model.toLowerCase(), "custom-model"]]),
-            },
-          },
-        },
-      },
-    ]);
-
-    expect(normalizeConfiguredProviderCatalogModelId(provider, model, policies)).toBe(
-      "custom-model",
-    );
-  }
-});

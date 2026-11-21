@@ -178,6 +178,74 @@ it("joins a disabled scheduler borrow when stopped during its native command", a
   }
 }, 10_000);
 
+it("does not admit a newly due job when scheduling pauses during tick preparation", async ({
+  signal,
+}) => {
+  const { storePath } = fixtures.makeStorePath();
+  const now = Date.now();
+  const nextRunAtMs = now + 600_000;
+  const job = createDueIsolatedJob({ id: "pause-in-tick", nowMs: now, nextRunAtMs });
+  job.sessionTarget = "main";
+  job.payload = { kind: "systemEvent", text: job.id };
+  await withinTest(saveCronStore(storePath, { version: 1, jobs: [job] }), signal);
+
+  const clock = createGatewaySchedulerClock(now);
+  const scheduler = createTestGatewayScheduler(clock.clock);
+  const entered = createDeferred();
+  const release = createDeferred();
+  const runSessionEvent = vi.fn<NonNullable<CronServiceDeps["runSessionEvent"]>>(async () => ({
+    status: "ok",
+  }));
+  const { cron, state } = createCronServiceWithStateForTest({
+    scheduler,
+    storePath,
+    cronEnabled: true,
+    log: noopLogger,
+    enqueueSystemEvent: vi.fn(),
+    runSessionEvent,
+    runIsolatedAgentJob: vi.fn(),
+    resolveSessionStorePath: () => "",
+    resolveSessionStoreAgentIds: async () => {
+      entered.resolve();
+      await release.promise;
+      return [];
+    },
+  });
+
+  let pendingTick: Promise<void> | undefined;
+  try {
+    const { wake } = await withinTest(
+      captureCronSchedulerWakeForTest(() => cron.start()),
+      signal,
+    );
+    clock.setTime(nextRunAtMs);
+    pendingTick = wake(state);
+    await withinTest(
+      awaitGateBeforeSettlement(entered.promise, pendingTick, "Tick did not reach preparation"),
+      signal,
+    );
+    cron.pauseScheduling();
+    release.resolve();
+    await withinTest(pendingTick, signal);
+    await withinTest(waitForCronRunQueue(state), signal);
+    const paused = (await withinTest(loadCronStore(storePath), signal)).jobs[0]?.state;
+    expect(paused?.nextRunAtMs).toBe(nextRunAtMs);
+    expect(paused?.queuedAtMs).toBeUndefined();
+    expect(paused?.runningReceiptId).toBeUndefined();
+    expect(runSessionEvent).not.toHaveBeenCalled();
+
+    cron.resumeScheduling();
+    await withinTest(wake(state), signal);
+    await withinTest(waitForCronRunQueue(state), signal);
+    expect(runSessionEvent.mock.calls.map(([request]) => request.text)).toEqual([job.id]);
+  } finally {
+    release.resolve();
+    cron.stop();
+    await Promise.allSettled([pendingTick, state.schedulerDrain]);
+    await scheduler.stop();
+  }
+});
+
 it.each([false, true])(
   "delivers future jobs after suspension (write failure=%s)",
   async (failWrite) => {

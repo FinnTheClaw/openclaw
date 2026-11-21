@@ -6,6 +6,7 @@ import {
 } from "../../lib/chat/outbox-store-projection.ts";
 import type { StoredChatOutboxScope } from "../../lib/chat/outbox-store-scope.ts";
 import { storedChatOutboxScopeKey } from "../../lib/chat/outbox-store.ts";
+import { visibleSessionMatches } from "../../lib/sessions/navigation.ts";
 import {
   areUiSessionKeysEquivalent,
   isUiGlobalSessionKey,
@@ -56,5 +57,11 @@ export function collectChatOutboxes(host: ChatHost, event?: GatewayEventFrame): 
         (!isUiGlobalSessionKey(outbox.sessionKey) ||
           (eventScope.agentId !== null &&
             outbox.agentId === normalizeAgentId(eventScope.agentId)))),
+  );
+}
+
+export function readVisibleChatOutbox(host: ChatHost): StoredChatOutbox | undefined {
+  return collectChatOutboxes(host).find((outbox) =>
+    visibleSessionMatches(host, outbox.sessionKey, outbox.agentId),
   );
 }

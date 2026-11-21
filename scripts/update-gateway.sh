@@ -199,6 +199,6 @@ log "clean building"
 check_build_roots
 # Manual lifecycle remains operator-owned, including recovery after failure.
 log "manual lifecycle: automatic stop/restart skipped (OPENCLAW_UPDATE_RESTART_CMD is empty)"
-OPENCLAW_UPDATE_IN_PROGRESS=1 run_pnpm build
+OPENCLAW_UPDATE_IN_PROGRESS=1 OPENCLAW_RUN_NODE_SKIP_DTS_BUILD="${OPENCLAW_RUN_NODE_SKIP_DTS_BUILD-1}" run_pnpm build
 
 log "OK $(git rev-parse --short HEAD) ($branch)"
