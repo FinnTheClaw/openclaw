@@ -17,6 +17,7 @@ type NpmFixturePackage = {
   pluginId?: string;
   expectedDependencySpec?: string;
   versions?: string[];
+  openclaw?: Record<string, unknown>;
 };
 
 export function registerNpmUpdateMetadataTests({
@@ -81,6 +82,36 @@ export function registerNpmUpdateMetadataTests({
   ): NpmFixturePackage {
     return { spec, version, npmRoot: getNpmRoot(), packageName: spec, ...overrides };
   }
+
+  it("reports only the selected npm version metadata in a dry run", async () => {
+    vi.stubEnv("OPENCLAW_COMPATIBILITY_HOST_VERSION", "2026.5.10-beta.1");
+    const spec = "dry-run-fixture-plugin";
+    const selected = npmPackage(`${spec}@1.0.0`, "1.0.0", { packageName: spec });
+    mockNpmViewAndInstallMany([
+      npmPackage(spec, "2.0.0", {
+        versions: [selected.version, "2.0.0"],
+        openclaw: { compat: { pluginApi: ">=2026.5.27" } },
+      }),
+      selected,
+    ]);
+    const registry = expectDefined(
+      runCommandWithTimeoutMock.getMockImplementation(),
+      "npm registry mock",
+    );
+    runCommandWithTimeoutMock.mockImplementation((...args) => {
+      if (npmCommandArgs(args[0])?.[0] !== "view") {
+        throw new Error("Dry run must use only mocked npm view");
+      }
+      return registry(...args);
+    });
+
+    const result = await installPluginFromNpmSpec({ spec, dryRun: true, config: {} });
+
+    assert(result.ok, JSON.stringify(result));
+    expect(result.npmResolution?.resolvedSpec).toBe(selected.spec);
+    expect(result.npmResolution).not.toHaveProperty("packageOpenClaw");
+  });
+
   it.each(["spec", "trust"])(
     "rejects prepared fallback facts after %s changes",
     async (changed) => {

@@ -89,7 +89,7 @@ export async function installPluginFromNpmSpec(
           : {}),
     };
   }
-  const npmResolution: NpmSpecResolution = {
+  let npmResolution: NpmSpecResolution = {
     ...metadataResult.metadata,
     resolvedAt: new Date().toISOString(),
   };
@@ -148,9 +148,7 @@ export async function installPluginFromNpmSpec(
       logger,
     });
     if (compatibleResolution) {
-      Object.assign(npmResolution, compatibleResolution, {
-        resolvedAt: npmResolution.resolvedAt,
-      });
+      npmResolution = { ...compatibleResolution, resolvedAt: npmResolution.resolvedAt };
       compatibilityError = null;
     }
   }
