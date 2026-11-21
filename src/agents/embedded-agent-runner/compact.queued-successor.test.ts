@@ -3,7 +3,11 @@ import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
-import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -229,6 +233,48 @@ it("releases the projection wait when queued compaction is cancelled", async () 
     await Promise.allSettled([pending, waiting]);
     wait.mockRestore();
   }
+});
+
+it("does not construct an engine after cancellation during queued compaction initialization", async ({
+  signal,
+}) => {
+  const initialization = await import("../../context-engine/init.js");
+  const { AsyncWorkScope } = await import("../../shared/async-work-scope.js");
+  const parent = new AsyncWorkScope();
+  const caller = new AbortController();
+  const entered = createDeferred();
+  const release = createDeferred();
+  const initialize = vi
+    .spyOn(initialization, "ensureContextEnginesInitialized")
+    .mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+  const pending = parent.run(() =>
+    compact({ ...backendCompactParams(caller.signal), trigger: "budget" }),
+  );
+
+  try {
+    await withinTest(waitForCheckpoint(entered.promise, pending), signal);
+    caller.abort(new Error("queued compaction cancelled during initialization"));
+    release.resolve();
+    await expect(pending).resolves.toEqual({
+      ok: false,
+      compacted: false,
+      reason: "compaction aborted",
+    });
+  } finally {
+    caller.abort();
+    release.resolve();
+    await Promise.allSettled([pending]);
+    await AsyncWorkScope.runWhenAllIdle(
+      () => [parent],
+      () => parent.drain(),
+    );
+    initialize.mockRestore();
+  }
+  expect(resolveContextEngineMock).not.toHaveBeenCalled();
+  expect(contextEngineCompactMock).not.toHaveBeenCalled();
 });
 
 it.each(["compact", "maintain"] as const)(

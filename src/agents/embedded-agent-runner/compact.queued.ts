@@ -371,6 +371,7 @@ async function compactEmbeddedAgentSessionImpl(
     return await withPluginRuntimeGenerationScope(lease.snapshot, async () => {
       owner.captureContext();
       await ensureContextEnginesInitialized();
+      assertQueuedCompactionPreparationActive(admittedParams, host);
       const contextEngine = await owner.resolveEngine(() =>
         resolveContextEngine(admittedParams.config, {
           agentDir: admittedParams.agentDir,
