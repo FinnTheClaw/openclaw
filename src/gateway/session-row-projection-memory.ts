@@ -124,10 +124,8 @@ export async function withMemorySessionRows<T>(
                 authority,
               )
             : undefined;
-        const facts: PreparedSessionRowDatabaseFacts = {
+        const facts: Omit<PreparedSessionRowDatabaseFacts, "entry" | "hasBoard"> = {
           sessionKey: query.key,
-          entry,
-          hasBoard: snapshot.hasBoard,
           transcriptAssistantMessage: "unknown",
           activitySummaryWatermark: readSessionActivitySummary(entry)
             ? snapshot.transcript.watermark
@@ -215,7 +213,7 @@ export async function withMemorySessionRows<T>(
               membership: new Set(current.members.map((member) => member.identityId)),
               source: { identity: snapshot.version.epoch, assertCurrent },
               prepared: {
-                databaseFacts: { ...facts, entry: current.entry },
+                databaseFacts: { ...facts, entry: current.entry, hasBoard: current.hasBoard },
                 relatedRows,
                 titleFields: title.fields,
                 terminalModel: selectSessionTerminalFallbackModel(entry, tail?.events[0]?.event),

@@ -164,6 +164,28 @@ it("prepares memory title, bounded fallback, board presence and cross-agent line
   });
 });
 
+it("includes a Board committed while preparing a memory session row", async () => {
+  const root = await fixture();
+  const readBoardPresence = () =>
+    readRows(root.binding, [key], (rows) => {
+      return rowAt(rows, key)?.preparedPrivate?.databaseFacts.hasBoard;
+    });
+  expect(await readBoardPresence()).toBe(false);
+
+  shared.beforeAcp = async () => {
+    await commitMemory(root.actor.storage!, "boards.putWidget", {
+      sessionKey: key,
+      viewGeneration: "view",
+      params: { sessionKey: key, name: "note", content: { kind: "html", html: "<p>Ready</p>" } },
+    });
+  };
+  const inFlightRowHadBoard = await readBoardPresence();
+  shared.beforeAcp = undefined;
+
+  expect(await readBoardPresence()).toBe(true);
+  expect(inFlightRowHadBoard).toBe(true);
+});
+
 it("uses current sharing facts after async preparation and closes the presentation lifetime", async () => {
   const root = await fixture();
   await commitMemory(root.actor.storage!, "session.collaboration.add", {

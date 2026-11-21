@@ -87,6 +87,16 @@ describe("provider-owned model params", () => {
     }
   });
 
+  it("looks up provider model params for a documented model id containing a dot", () => {
+    const ref = "vllm/Qwen-Qwen2.5-Coder-32B-Instruct";
+    const response = schemaFor();
+    const lookups = scopes.map((scope) =>
+      schemaAt(response, `${scope}.models.${ref}.params.priorityScheduling`),
+    );
+    const field = { type: "boolean", title: "Priority scheduling" };
+    expect(lookups).toMatchObject([field, field]);
+  });
+
   it("budgets both default and per-agent copies of provider model schemas", () => {
     const providers = Object.fromEntries(
       Array.from({ length: 5 }, (_, index) => [

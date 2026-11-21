@@ -97,14 +97,9 @@ function resolveLookupChildSchema(
   if (properties && Object.hasOwn(properties, segment)) {
     return asSchemaObject(properties[segment]);
   }
-  for (const [pattern, child] of Object.entries(schema.patternProperties ?? {})) {
-    try {
-      if (new RegExp(pattern).test(segment)) {
-        return asSchemaObject(child);
-      }
-    } catch {
-      // Config validation reports malformed plugin schemas; lookup remains available.
-    }
+  const patternChild = resolvePatternLookupChildSchema(schema, segment);
+  if (patternChild !== undefined) {
+    return patternChild;
   }
 
   const itemIndex = parseConfigPathArrayIndex(segment);
@@ -134,11 +129,26 @@ function resolveLookupChildSchema(
   return null;
 }
 
-function resolveLookupSchema(
-  response: ConfigSchemaResponse,
+function resolvePatternLookupChildSchema(
+  schema: JsonSchemaObject,
+  segment: string,
+): JsonSchemaObject | null | undefined {
+  for (const [pattern, child] of Object.entries(schema.patternProperties ?? {})) {
+    try {
+      if (new RegExp(pattern).test(segment)) {
+        return asSchemaObject(child);
+      }
+    } catch {
+      // Config validation reports malformed plugin schemas; lookup remains available.
+    }
+  }
+  return undefined;
+}
+
+function walkLookupSchema(
+  current: JsonSchemaObject | null,
   parts: readonly string[],
 ): JsonSchemaObject | null {
-  let current = asSchemaObject(response.schema);
   for (const segment of parts) {
     if (!current) {
       break;
@@ -146,6 +156,42 @@ function resolveLookupSchema(
     current = resolveLookupChildSchema(current, segment);
   }
   return current;
+}
+
+function resolveLookupSchema(
+  response: ConfigSchemaResponse,
+  parts: readonly string[],
+): JsonSchemaObject | null {
+  return walkLookupSchema(asSchemaObject(response.schema), parts);
+}
+
+function resolveDottedPatternLookupSchema(
+  response: ConfigSchemaResponse,
+  parts: readonly string[],
+): JsonSchemaObject | null {
+  if (parts.some(isBlockedObjectKey)) {
+    return null;
+  }
+  let current = asSchemaObject(response.schema);
+  for (let index = 0; current && index + 2 < parts.length; index++) {
+    const segment = parts[index]!;
+    if (current.patternProperties) {
+      let key = segment;
+      for (let field = index + 2; field < parts.length; field++) {
+        key += `.${parts[field - 1]}`;
+        const entry = resolvePatternLookupChildSchema(current, key);
+        // Anchor the rejoined key at a declared field, not an arbitrary suffix.
+        if (entry?.properties && Object.hasOwn(entry.properties, parts[field]!)) {
+          const resolved = walkLookupSchema(entry, parts.slice(field));
+          if (resolved) {
+            return resolved;
+          }
+        }
+      }
+    }
+    current = resolveLookupChildSchema(current, segment);
+  }
+  return null;
 }
 
 type ConfigSchemaPathSegmentKind = "property" | "record-key" | "array-index" | "invalid-record-key";
@@ -413,7 +459,9 @@ export function lookupConfigSchema(
     return null;
   }
 
-  const current = resolveLookupSchema(response, parts);
+  // Keep ordinary traversal first; patterned map keys (such as model IDs) may contain dots.
+  const current =
+    resolveLookupSchema(response, parts) ?? resolveDottedPatternLookupSchema(response, parts);
   if (!current) {
     return null;
   }
