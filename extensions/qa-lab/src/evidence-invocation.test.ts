@@ -141,16 +141,22 @@ describe("evidence invocation owner", () => {
     expect(continuation.entries).toEqual(before.entries);
   });
 
-  it("rejects publication when a selected failure would become ineffective", () => {
+  it("rejects a stale selection without consuming a valid staged retry", () => {
     const parent = createInvocation();
     const first = record(parent, "fail", 0);
     const before = snapshot(parent);
     const child = createInvocation({ anchors: parent.anchors, continuation: before });
-    record(child, "pass", 0);
-    const input = snapshot(child);
-    parent.importChild(0, input);
-    parent.select(0, first);
-    expect(() => snapshot(parent)).toThrow(/selected observation is ineffective/);
+    const retry = record(child, "pass", 0);
+    expect(parent.importChild(0, snapshot(child))).toBe(retry);
+
+    expect(() => parent.select(0, first)).toThrow(/selected observation is ineffective/);
+    expect(snapshot(parent)).toEqual(before);
+
+    expect(parent.select(0, retry)).toBe(retry);
+    expect(projectQaEvidenceScenarioOutcomes(snapshot(parent))[0]).toMatchObject({
+      occurrenceId: retry,
+      status: "pass",
+    });
   });
 
   it("accepts an identical pending replay after another instance appends and retains insertion order", () => {

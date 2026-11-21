@@ -242,28 +242,15 @@ export function createQaEvidenceInvocation(params: {
   function select(index: number, occurrenceId: null): null;
   function select(index: number, occurrenceId: string | null): string | null;
   function select(index: number, occurrenceId: string | null): string | null {
-    anchorFor(index);
-    const setEffective = (id: string, effective: boolean) => {
-      for (const entry of entries) {
-        if (entry.binding.occurrenceId === id) {
-          entry.effective = effective;
-        }
-      }
-    };
-    const anchor = anchors[index]!;
+    const anchor = anchorFor(index);
     const pending = pendingChildren.get(index);
-    if (pending) {
-      for (const completion of pending.completions) {
-        const offset = observations.findIndex((item) => item.id === completion.id);
-        observations[offset] = completion;
-      }
-      for (const update of pending.updates) {
-        setEffective(update.occurrenceId, update.effective);
-      }
-      observations.splice(pending.observationOffset, 0, ...pending.additions);
-      entries.splice(pending.entryOffset, 0, ...pending.rows);
-    }
     const byId = new Map(observations.map((occurrence) => [occurrence.id, occurrence]));
+    for (const occurrence of pending?.completions ?? []) {
+      byId.set(occurrence.id, occurrence);
+    }
+    for (const occurrence of pending?.additions ?? []) {
+      byId.set(occurrence.id, occurrence);
+    }
     let selected = occurrenceId === null ? null : byId.get(occurrenceId);
     if (
       occurrenceId !== null &&
@@ -289,22 +276,51 @@ export function createQaEvidenceInvocation(params: {
       selected = previous;
     }
     const selectedId = selected?.id ?? null;
-    anchor.scenario = { kind: "instance", resultOccurrenceId: selectedId };
-    // Retrying changes whole-attempt selection, never individual assertion rows.
+    // Plan whole-attempt selection without consuming or changing the staged child.
+    const effectiveUpdates = new Map<string, boolean>();
+    for (const update of pending?.updates ?? []) {
+      effectiveUpdates.set(update.occurrenceId, update.effective);
+    }
     let priorId = selected?.retryOf ?? null;
     while (priorId !== null) {
-      setEffective(priorId, false);
+      effectiveUpdates.set(priorId, false);
       priorId = byId.get(priorId)!.retryOf;
     }
-    for (const occurrence of observations) {
+    for (const occurrence of byId.values()) {
       let ancestor = occurrence.retryOf;
       while (ancestor !== null && ancestor !== selectedId) {
         ancestor = byId.get(ancestor)!.retryOf;
       }
       if (selectedId !== null && ancestor === selectedId && occurrence.terminalStatus !== "pass") {
-        setEffective(occurrence.id, false);
+        effectiveUpdates.set(occurrence.id, false);
       }
     }
+    if (selectedId !== null) {
+      const plannedEffective = effectiveUpdates.get(selectedId);
+      const isSelectedAndIneffective = (entry: QaEvidenceSummaryV3Entry) =>
+        entry.binding.occurrenceId === selectedId && !(plannedEffective ?? entry.effective);
+      if (entries.some(isSelectedAndIneffective) || pending?.rows.some(isSelectedAndIneffective)) {
+        throw new Error(`selected observation is ineffective for ${anchor.id}`);
+      }
+    }
+
+    if (pending) {
+      for (const completion of pending.completions) {
+        const offset = observations.findIndex((item) => item.id === completion.id);
+        observations[offset] = completion;
+      }
+      observations.splice(pending.observationOffset, 0, ...pending.additions);
+      entries.splice(pending.entryOffset, 0, ...pending.rows);
+    }
+    if (effectiveUpdates.size > 0) {
+      for (const entry of entries) {
+        const effective = effectiveUpdates.get(entry.binding.occurrenceId);
+        if (effective !== undefined) {
+          entry.effective = effective;
+        }
+      }
+    }
+    anchor.scenario = { kind: "instance", resultOccurrenceId: selectedId };
     pendingChildren.delete(index);
     return selectedId;
   }
