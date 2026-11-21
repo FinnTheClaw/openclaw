@@ -72,6 +72,40 @@ function* markdownLines(text: string): Generator<{ line: string; fenced: boolean
   }
 }
 
+/** Keep contiguous prose together so multiline link checks still work outside fences. */
+function* markdownBlocks(text: string): Generator<{ text: string; fenced: boolean }> {
+  let lines: string[] = [];
+  let blockFenced = false;
+  for (const { line, fenced } of markdownLines(text)) {
+    if (fenced !== blockFenced && lines.length > 0) {
+      yield { text: lines.join("\n"), fenced: blockFenced };
+      lines = [];
+    }
+    blockFenced = fenced;
+    lines.push(line);
+  }
+  yield { text: lines.join("\n"), fenced: blockFenced };
+}
+
+function hasMarkdownProseMatch(text: string, pattern: RegExp): boolean {
+  for (const { text: block, fenced } of markdownBlocks(text)) {
+    if (!fenced && pattern.test(block)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function* markdownLinkDestinations(text: string): Generator<string> {
+  for (const { text: block, fenced } of markdownBlocks(text)) {
+    if (!fenced) {
+      for (const [, target = ""] of block.matchAll(MARKDOWN_LINK)) {
+        yield target;
+      }
+    }
+  }
+}
+
 /** Splits a body at top-level `## ` headings, ignoring headings inside fenced code. */
 function splitSkillSections(body: string): Section[] {
   const sections: Section[] = [];
@@ -96,20 +130,22 @@ function splitSkillSections(body: string): Section[] {
 
 /** Re-points relative links in text moved from the skill root into `references/`. */
 function relinkForReferences(text: string): string {
-  return text.replace(MARKDOWN_LINK, (match, target: string) => {
+  const rebase = (match: string, target: string) => {
     if (EXTERNAL_LINK.test(target)) {
       return match;
     }
     const [file = "", anchor] = target.split("#", 2);
     const moved = path.posix.relative("references", path.posix.normalize(file));
     return `](${moved}${anchor === undefined ? "" : `#${anchor}`})`;
-  });
+  };
+  return Array.from(markdownBlocks(text), ({ text: block, fenced }) =>
+    fenced ? block : block.replace(MARKDOWN_LINK, rebase),
+  ).join("\n");
 }
 
 /** Absolute targets of the relative links in one file of the skill. */
 function linkTargets(skillDir: string, filePath: string, text: string): string[] {
-  return [...text.matchAll(MARKDOWN_LINK)]
-    .map((match) => match[1] ?? "")
+  return [...markdownLinkDestinations(text)]
     .filter((target) => !EXTERNAL_LINK.test(target))
     .map((target) =>
       path.resolve(
@@ -242,7 +278,7 @@ function buildCandidate(params: {
         throw new SkillDietRejected(`section "${heading}" is unknown or moved twice`);
       }
       // An in-page link's target depends on the file it sits in; moving it could silently retarget it.
-      if (section.text.includes("](#")) {
+      if (hasMarkdownProseMatch(section.text, /\]\(#/)) {
         throw new SkillDietRejected(`section "${heading}" has in-page links and cannot move`);
       }
       moved.add(heading);
@@ -258,8 +294,8 @@ function buildCandidate(params: {
   }
   if (
     moved.size > 0 &&
-    (UNMOVABLE_LINK.test(params.liveSkillMd.slice(params.frontmatter.length)) ||
-      params.liveReferences.some(([, content]) => UNMOVABLE_LINK.test(content)))
+    (hasMarkdownProseMatch(params.liveSkillMd.slice(params.frontmatter.length), UNMOVABLE_LINK) ||
+      params.liveReferences.some(([, content]) => hasMarkdownProseMatch(content, UNMOVABLE_LINK)))
   ) {
     throw new SkillDietRejected(
       "the skill uses titled or reference-style links, which a move cannot re-point",
@@ -302,7 +338,7 @@ function buildCandidate(params: {
     ]),
   );
   for (const [file, content] of [...files, ...params.liveReferences]) {
-    for (const [, target = ""] of content.matchAll(MARKDOWN_LINK)) {
+    for (const target of markdownLinkDestinations(content)) {
       const [linked = "", fragment] = target.split("#", 2);
       if (!fragment || /^[a-z][a-z0-9+.-]*:|^\//i.test(linked)) {
         continue;

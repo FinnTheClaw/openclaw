@@ -105,6 +105,11 @@ export function buildProjectedSubagentActivity(
   return active;
 }
 
+function projectNativeChildSpawnDepth(entry: SessionEntry) {
+  // Compact links omit ACP metadata; those rows must not gain durable off-prefix lineage.
+  return entry.acp ? undefined : entry.spawnDepth;
+}
+
 /** Child presentation needs live ownership and sharing facts, never the child's stored payload. */
 export function projectSessionRowChildLinks(links: readonly SessionChildLink[] | undefined) {
   return links?.map(({ key, entry, agentId, storePath }) => ({
@@ -121,6 +126,7 @@ export function projectSessionRowChildLinks(links: readonly SessionChildLink[] |
       startedAt: entry.startedAt,
       endedAt: entry.endedAt,
       spawnedBy: entry.spawnedBy,
+      spawnDepth: projectNativeChildSpawnDepth(entry),
       parentSessionKey: entry.parentSessionKey,
       sidebarRoot: entry.sidebarRoot,
       createdActor: entry.createdActor,
@@ -144,11 +150,10 @@ export function reuseSessionRowChildLinks(
         agentId === before.agentId &&
         storePath === before.storePath &&
         // SAFETY: projectSessionRowChildLinks creates this compact entry with only SessionEntry keys.
-        (Object.keys(before.entry) as (keyof typeof before.entry)[]).every(
-          (field) =>
-            entry[field] === before.entry[field] ||
-            isDeepStrictEqual(entry[field], before.entry[field]),
-        )
+        (Object.keys(before.entry) as (keyof typeof before.entry)[]).every((field) => {
+          const value = field === "spawnDepth" ? projectNativeChildSpawnDepth(entry) : entry[field];
+          return value === before.entry[field] || isDeepStrictEqual(value, before.entry[field]);
+        })
       );
     })
     ? previous

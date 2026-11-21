@@ -125,6 +125,29 @@ test.each(["idle", "fork", "visible spawn", "native spawn", "legacy native spawn
   },
 );
 
+test("keeps old off-prefix native lineage in both parent and child views", async () => {
+  using clock = vi.spyOn(Date, "now");
+  clock.mockReturnValue(now);
+  const parentKey = "agent:main:dashboard:parent";
+  const nativeKey = "agent:main:dashboard:legacy-worker";
+  const ordinaryKey = "agent:main:dashboard:ordinary-child";
+  const finished = { spawnedBy: parentKey, updatedAt: old, endedAt: old, status: "done" } as const;
+  const store = {
+    [parentKey]: { sessionId: "parent", updatedAt: now },
+    [nativeKey]: { ...finished, sessionId: "legacy-worker", spawnDepth: 1 },
+    [ordinaryKey]: { ...finished, sessionId: "ordinary-child" },
+  };
+  const list = (spawnedBy?: string) =>
+    listSessionFixture({ cfg, storePath: storePath(), store, opts: { spawnedBy } });
+
+  const children = (await list(parentKey)).sessions;
+  expect(children.map(({ key }) => key)).toEqual([nativeKey]);
+  const all = (await list()).sessions;
+  expect(all.map(({ key }) => key)).toContain(ordinaryKey);
+  const parent = all.find(({ key }) => key === parentKey);
+  expect(parent?.childSessions).toEqual([nativeKey]);
+});
+
 test.each(["explicit", "legacy"] as const)(
   "preserves %s lineage without stealing a verified active controller",
   async (kind) => {

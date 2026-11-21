@@ -146,6 +146,24 @@ it("publishes a reviewed diet as one versioned change that restore fully undoes"
   expect((await live()).files).toEqual(["SKILL.md", "references/checks.md"]);
 });
 
+it("preserves a fenced Markdown example while rebasing the adjacent real link", async () => {
+  const fencedExample = [
+    "```markdown",
+    "[literal checks](references/checks.md#verify)",
+    "```",
+  ].join("\n");
+  await seed(LIVE.replace("## Rollback\n\n", `## Rollback\n\n${fencedExample}\n\n`));
+  const { complete, calls } = scripted({ audits: [clean] });
+
+  const change = await diet(complete);
+
+  expect(calls).toEqual(["plan", "audit"]);
+  expect(change).toMatchObject({ action: "write_file", skillName: "deploy" });
+  const moved = (await live("references/branches.md")).content;
+  expect(moved).toContain("Use [checks](checks.md#verify)");
+  expect(moved).toContain(fencedExample);
+});
+
 it("repairs once on reviewer findings and leaves the skill unchanged when they persist", async () => {
   await seed();
   const repaired = scripted({ audits: [finding, clean] });
