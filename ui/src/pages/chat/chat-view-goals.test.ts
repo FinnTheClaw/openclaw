@@ -144,6 +144,57 @@ it("restores goal actions and expansion after a transient missing session goal",
   expect(onGoalAction).toHaveBeenCalledExactlyOnceWith("goal-1", "resume");
 });
 
+it("disables fresh Goal Resume when a model is required without disabling other actions or recovery", async () => {
+  const pausedGoal = { status: "paused", pausedAt: Date.now() } satisfies Goal;
+  const modelRequiredReason = "Choose a model before sending messages.";
+  const onGoalSubmit = vi.fn(async () => true);
+  const onCheck = vi.fn(async () => true);
+  const action = (name: ChatGoalAction | "edit") =>
+    container.querySelector<HTMLButtonElement>(`button.agent-chat__goal-${name}[aria-label]`);
+
+  // Load the same lazy owner as the composer before checking its configured control.
+  await import("./components/chat-composer-goal.tsx");
+  renderGoal(pausedGoal, { onGoalSubmit });
+  await waitForSolid(() => expect(action("resume")).toMatchObject({ disabled: false }));
+  action("resume")!.click();
+  expect(onGoalAction).toHaveBeenCalledExactlyOnceWith("goal-1", "resume");
+
+  onGoalAction.mockClear();
+  renderGoal(pausedGoal, { modelRequiredReason, onGoalSubmit });
+  expect(action("resume")).toMatchObject({ disabled: true });
+  expect(action("edit")).toMatchObject({ disabled: false });
+  expect(action("clear")).toMatchObject({ disabled: false });
+  action("resume")!.click();
+  expect(onGoalAction).not.toHaveBeenCalled();
+  action("clear")!.click();
+  expect(onGoalAction).toHaveBeenCalledExactlyOnceWith("goal-1", "clear");
+
+  onGoalAction.mockClear();
+  renderGoal({}, { modelRequiredReason });
+  expect(action("pause")).toMatchObject({ disabled: false });
+  action("pause")!.click();
+  expect(onGoalAction).toHaveBeenCalledExactlyOnceWith("goal-1", "pause");
+
+  onGoalAction.mockClear();
+  const recovery = { goalId: "goal-1", action: "resume" as const, onCheck };
+  renderGoal(pausedGoal, {
+    modelRequiredReason,
+    goalRecovery: { ...recovery, pending: true },
+  });
+  expect(container.querySelector(".agent-chat__goal")?.getAttribute("aria-busy")).toBe("true");
+  expect(container.querySelector(".agent-chat__goal-resume")).toBeNull();
+
+  renderGoal(pausedGoal, {
+    modelRequiredReason,
+    goalRecovery: { ...recovery, pending: false },
+  });
+  const retry = container.querySelector<HTMLButtonElement>(".agent-chat__goal-resume");
+  expect(retry).toMatchObject({ disabled: false, textContent: "Retry resume" });
+  retry!.click();
+  expect(onCheck).toHaveBeenCalledOnce();
+  expect(onGoalAction).not.toHaveBeenCalled();
+});
+
 it("edits the plain objective and restores the conversation draft on cancellation", async () => {
   let draft = "Keep my conversation draft";
   let goalDraftMode: ChatGoalDraftMode | null = null;

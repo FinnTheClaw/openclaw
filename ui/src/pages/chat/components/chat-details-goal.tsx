@@ -36,6 +36,7 @@ export type ChatDetailsGoalProps = {
   connected: boolean;
   /** Native composer write availability, including admission and pending-operation guards. */
   canAct: boolean;
+  modelRequiredReason?: string | null;
   resumeBusy?: boolean;
   recovery?: ChatGoalRecovery;
   onGoalAction?: (goalId: string, action: ChatGoalAction) => void;
@@ -289,6 +290,16 @@ export function ChatDetailsGoal(props: ChatDetailsGoalProps) {
           }
         >
           <ChatGoalBody goal={props.goal!} resumeRecovery={resumeRecovery()} />
+          <Show
+            when={
+              canAct() &&
+              props.onGoalAction &&
+              props.goal?.status !== "active" &&
+              props.modelRequiredReason
+            }
+          >
+            {(reason) => <div class="agent-chat__goal-detail-note">{reason()}</div>}
+          </Show>
         </Show>
       </div>
       <div class="chat-details-goal__tools">
@@ -318,6 +329,7 @@ export function ChatDetailsGoal(props: ChatDetailsGoalProps) {
               <ChatGoalActions
                 goal={props.goal!}
                 canAct={canAct()}
+                modelRequiredReason={props.modelRequiredReason}
                 resumeBusy={props.resumeBusy}
                 connected={props.connected && props.presented}
                 resumeRecovery={resumeRecovery()}

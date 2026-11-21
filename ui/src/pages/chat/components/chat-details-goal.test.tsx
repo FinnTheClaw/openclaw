@@ -120,6 +120,54 @@ it("retains the objective while hidden and keeps recovery available after the go
   }
 });
 
+it("keeps Mobile Details Goal Resume named and disables only fresh Resume when a model is required", () => {
+  const modelRequiredReason = "Choose a model before sending messages.";
+  const pausedGoal = { ...goal, status: "paused", pausedAt: goal.updatedAt } satisfies SessionGoal;
+  const onGoalAction = vi.fn();
+  const onCheck = vi.fn(async () => true);
+  const view = createGoalView({
+    goal: pausedGoal,
+    onGoalAction,
+    onGoalSubmit: async () => true,
+  });
+  const resume = () => view.getByRole("button", { name: "Resume goal" });
+  const reason = () => view.queryByText(modelRequiredReason);
+  expect(resume()).toMatchObject({ disabled: false });
+  expect(reason()).toBeNull();
+  resume().click();
+  expect(onGoalAction).toHaveBeenCalledExactlyOnceWith(goal.id, "resume");
+
+  onGoalAction.mockClear();
+  view.update({ modelRequiredReason });
+  expect(resume()).toMatchObject({ disabled: true });
+  const message = view.getByText(modelRequiredReason);
+  expect(message.closest(".chat-details-goal__body")).not.toBeNull();
+  expect(message.closest('openclaw-tooltip, [hidden], [aria-hidden="true"]')).toBeNull();
+  resume().click();
+  expect(onGoalAction).not.toHaveBeenCalled();
+  expect(view.getByRole("button", { name: "Edit goal" })).toMatchObject({ disabled: false });
+  expect(view.getByRole("button", { name: "Clear goal" })).toMatchObject({ disabled: false });
+
+  view.update({ goal });
+  expect(view.queryByRole("button", { name: "Resume goal" })).toBeNull();
+  expect(reason()).toBeNull();
+
+  const recovery = { action: "resume" as const, goalId: goal.id, onCheck };
+  view.update({ goal: pausedGoal, recovery: { ...recovery, pending: true } });
+  expect(view.getByRole("status", { name: /Resuming goal/ })).toBeTruthy();
+  expect(view.queryByRole("button", { name: "Resume goal" })).toBeNull();
+  expect(view.queryByRole("button", { name: "Retry resume" })).toBeNull();
+  expect(reason()).toBeNull();
+
+  view.update({ recovery: { ...recovery, pending: false } });
+  expect(reason()).toBeNull();
+  const retry = view.getByRole("button", { name: "Retry resume" });
+  expect(retry).toMatchObject({ disabled: false });
+  retry.click();
+  expect(onCheck).toHaveBeenCalledOnce();
+  expect(onGoalAction).not.toHaveBeenCalled();
+});
+
 it.each(["session", "goal", "presentation", "retry"] as const)(
   "retains a rejected goal edit through %s",
   async (changed) => {

@@ -382,6 +382,7 @@ export abstract class ChatPaneHeaderLayout extends ChatPaneBrowserAnnotationRend
             goal: {
               connected: chatProps.connected,
               resumeBusy: chatProps.goalResumeBusy,
+              modelRequiredReason: chatProps.modelRequiredReason,
               canAct:
                 chatProps.connected &&
                 chatProps.canSend &&

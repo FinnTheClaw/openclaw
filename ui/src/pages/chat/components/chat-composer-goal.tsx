@@ -45,6 +45,7 @@ type ChatGoalProps = {
   goal?: SessionGoal;
   expanded: boolean;
   canAct: boolean;
+  modelRequiredReason?: string | null;
   resumeBusy?: boolean;
   resumeRecovery?: ChatGoalRecovery;
   connected?: boolean;
@@ -63,11 +64,21 @@ const goalActionIcons = {
 
 type GoalPresentationProps = Pick<
   ChatGoalProps,
-  "canAct" | "resumeBusy" | "resumeRecovery" | "connected" | "onGoalAction" | "onGoalEdit"
+  | "canAct"
+  | "modelRequiredReason"
+  | "resumeBusy"
+  | "resumeRecovery"
+  | "connected"
+  | "onGoalAction"
+  | "onGoalEdit"
 > & { goal: SessionGoal };
 
 /** Shared eligibility and callbacks; the parent supplies native write availability. */
 export function ChatGoalActions(props: GoalPresentationProps) {
+  const disabledReason = (action: (typeof goalActions)[number]) =>
+    action === "resume"
+      ? props.modelRequiredReason || (props.resumeBusy ? t("chat.goals.busy") : undefined)
+      : undefined;
   const visibleAction = (action: (typeof goalActions)[number]) =>
     !props.resumeRecovery &&
     props.canAct &&
@@ -96,20 +107,17 @@ export function ChatGoalActions(props: GoalPresentationProps) {
         {(action) => (
           <>
             {visibleAction(action) ? (
-              <openclaw-tooltip
-                content={t(
-                  action === "resume" && props.resumeBusy
-                    ? "chat.goals.busy"
-                    : `chat.goals.${action}`,
-                )}
-              >
+              <openclaw-tooltip content={disabledReason(action) ?? t(`chat.goals.${action}`)}>
                 <button
                   class={["agent-chat__goal-action", `agent-chat__goal-${action}`]}
                   type="button"
                   aria-label={t(`chat.goals.${action}`)}
-                  disabled={action === "resume" && props.resumeBusy}
-                  style={{ opacity: action === "resume" && props.resumeBusy ? 0.5 : undefined }}
+                  disabled={Boolean(disabledReason(action))}
+                  style={{ opacity: disabledReason(action) ? 0.5 : undefined }}
                   onClick={() => {
+                    if (disabledReason(action)) {
+                      return;
+                    }
                     if (action === "edit") {
                       props.onGoalEdit?.(props.goal);
                     } else {
@@ -218,6 +226,7 @@ function GoalCard(props: Omit<ChatGoalProps, "goal"> & { goal: SessionGoal }) {
           <ChatGoalActions
             goal={props.goal}
             canAct={props.canAct}
+            modelRequiredReason={props.modelRequiredReason}
             resumeBusy={props.resumeBusy}
             resumeRecovery={props.resumeRecovery}
             connected={props.connected}
@@ -261,6 +270,7 @@ export function ChatGoal(props: ChatGoalProps) {
         goal={props.goal!}
         expanded={props.expanded}
         canAct={props.canAct}
+        modelRequiredReason={props.modelRequiredReason}
         resumeBusy={props.resumeBusy}
         resumeRecovery={props.resumeRecovery}
         connected={props.connected}
