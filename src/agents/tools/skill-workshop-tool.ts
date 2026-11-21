@@ -125,7 +125,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
       runWithAgentToolSourceExecutionScope(ctx.assertLive, run);
     if (action === "list") {
       const [skills, archive] = await Promise.all([
-        listWorkshopSkills(options.config, options.agentId),
+        listWorkshopSkills(options.config, options.agentId, { flatOnly: true }),
         listWorkshopArchive(options.config, options.agentId),
       ]);
       const archived = archive.filter((entry) => !entry.live);
@@ -188,6 +188,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         name,
         filePath,
         version,
+        { flatOnly: true },
       );
       // Only a view of the live skill counts: it satisfies the review read-before-edit guard,
       // and a foreground view is skill use (review trigger and unused-skill archive clock,
@@ -246,8 +247,11 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
       ((action === "patch" || action === "write_file") &&
         (!filePath?.trim() || filePath.trim() === "SKILL.md"));
     const readLiveSkillFile = async () =>
-      (await viewWorkshopSkill(options.config, options.agentId, name).catch(() => undefined))
-        ?.content;
+      (
+        await viewWorkshopSkill(options.config, options.agentId, name, undefined, undefined, {
+          flatOnly: true,
+        }).catch(() => undefined)
+      )?.content;
     const before = !skillFileWrite
       ? undefined
       : action === "create"
@@ -349,10 +353,12 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
     if (action === "create") {
       // The agent, not a string heuristic, judges whether a new skill duplicates an old one.
       const others = (
-        await listWorkshopSkills(options.config, options.agentId).catch((error: unknown) => {
-          (change.postCommitWarnings ??= []).push(`related skills listing: ${String(error)}`);
-          return [];
-        })
+        await listWorkshopSkills(options.config, options.agentId, { flatOnly: true }).catch(
+          (error: unknown) => {
+            (change.postCommitWarnings ??= []).push(`related skills listing: ${String(error)}`);
+            return [];
+          },
+        )
       ).filter((skill) => skill.name !== name);
       if (others.length > 0) {
         lines.push(

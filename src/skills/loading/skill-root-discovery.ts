@@ -366,6 +366,7 @@ export function discoverSkillCandidates(params: {
   source: string;
   limits: ResolvedSkillDiscoveryLimits;
   allowedSymlinkTargetRealPaths: readonly string[];
+  followSymlinks?: false;
   onDiagnostic?: SkillDiscoveryReporter;
 }) {
   const rootDir = path.resolve(params.dir);
@@ -410,6 +411,9 @@ export function discoverSkillCandidates(params: {
   ): CandidateSkillDir | undefined => {
     const { source, onDiagnostic } = params;
     const candidatePath = path.join(skillDir, "SKILL.md");
+    if (params.followSymlinks === false && isSymlinkPath(candidatePath)) {
+      return undefined;
+    }
     const resolved = resolveContainedSkillPath({
       source,
       rootDir: skillDir,
@@ -464,6 +468,7 @@ export function discoverSkillCandidates(params: {
     });
   };
   const childDirScan = listChildDirectories(baseDir, {
+    followSymlinks: params.followSymlinks,
     budget: discoveryBudget,
     maxCandidateDirs: maxCandidatesPerRoot,
     onDiagnostic: params.onDiagnostic,
@@ -522,6 +527,7 @@ export function discoverSkillCandidates(params: {
     }
 
     const nestedChildScan = listChildDirectories(candidate.skillDir, {
+      followSymlinks: params.followSymlinks,
       budget: discoveryBudget,
       maxCandidateDirs: maxCandidatesPerRoot,
       onDiagnostic: params.onDiagnostic,

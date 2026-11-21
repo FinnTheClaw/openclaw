@@ -103,6 +103,30 @@ it("lists broken frontmatter but prunes links, hidden and dependency trees befor
   expect((await lib.viewWorkshopSkill({}, "main", "broken")).files).toEqual(files);
 });
 
+it("lists and shows a legacy grouped skill by its declared name", async () => {
+  const name = "release-recovery";
+  const description = "Recover staging releases";
+  const content = skill(name, "Verify the last good staging release.", description);
+  await seed("deploy", skill("deploy", "Deploy the staging build."));
+  await seed(path.join("release", "recovery-notes"), content);
+
+  const inventoryAndView = await Promise.allSettled([
+    lib.listWorkshopSkills({}, "main"),
+    lib.viewWorkshopSkill({}, "main", name),
+  ]);
+
+  expect(inventoryAndView).toMatchObject([
+    {
+      status: "fulfilled",
+      value: [
+        { name: "deploy", files: ["SKILL.md"] },
+        { name, description, files: ["SKILL.md"] },
+      ],
+    },
+    { status: "fulfilled", value: { name, filePath: "SKILL.md", files: ["SKILL.md"], content } },
+  ]);
+});
+
 it("refreshes changes after writes without sharing caller mutations", async () => {
   expect(await lib.listWorkshopChanges("main", { runId: "before" })).toEqual([]);
 

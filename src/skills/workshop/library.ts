@@ -28,6 +28,12 @@ import { recordWorkshopChange } from "./changes.js";
 import type { WorkshopActor, WorkshopChange } from "./changes.kernel.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
 import {
+  listLiveWorkshopSkills,
+  readGroupedWorkshopView,
+  type WorkshopReadOptions,
+  type WorkshopSkillSummary,
+} from "./library-live-read.js";
+import {
   listVersions,
   pruneVersions,
   snapshotSkill,
@@ -39,6 +45,7 @@ import {
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 export { listWorkshopChanges } from "./changes.js";
+export type { WorkshopSkillSummary } from "./library-live-read.js";
 
 /** A committed write receipt; warnings never imply the mutation should be replayed. */
 export type WorkshopMutationResult = WorkshopChange & { postCommitWarnings?: string[] };
@@ -55,13 +62,6 @@ export type WorkshopMutationContext = {
   runId?: string;
   /** Throws once the caller lost write authority; checked under the skill locks before any write. */
   assertLive?: () => void;
-};
-export type WorkshopSkillSummary = {
-  name: string;
-  description: string;
-  updatedAtMs: number;
-  sizeBytes: number;
-  files: string[];
 };
 export type WorkshopArchivedSkill = {
   name: string;
@@ -399,33 +399,18 @@ export async function mutateSkill(
   });
 }
 
-export async function listWorkshopSkills(
+const liveReadContext = {
+  skillFile: SKILL_FILE,
+  namePattern: EXISTING_SKILL_NAME_PATTERN,
+  listSkillFiles,
+};
+
+export function listWorkshopSkills(
   config: OpenClawConfig,
   agentId: string,
+  options?: WorkshopReadOptions,
 ): Promise<WorkshopSkillSummary[]> {
-  const skillsRoot = resolveWorkshopSkillsDir(config, agentId);
-  const entries = await fs
-    .readdir(skillsRoot, { withFileTypes: true })
-    .catch((error: unknown) => ignoreMissingPath(error) ?? []);
-  const skills: WorkshopSkillSummary[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !EXISTING_SKILL_NAME_PATTERN.test(entry.name)) {
-      continue;
-    }
-    const skillDir = path.join(skillsRoot, entry.name);
-    const content = await readWorkspaceSkillFile(path.join(skillDir, SKILL_FILE));
-    if (content === null) {
-      continue;
-    }
-    let description = "";
-    try {
-      description = parseSkillFrontmatter(content).description?.trim() ?? "";
-    } catch {
-      // A hand-edited skill with broken frontmatter still lists; view shows the file.
-    }
-    skills.push({ name: entry.name, description, ...(await listSkillFiles(skillDir)) });
-  }
-  return skills.toSorted((a, b) => a.name.localeCompare(b.name));
+  return listLiveWorkshopSkills(liveReadContext, config, agentId, options);
 }
 
 export async function listWorkshopArchive(
@@ -456,10 +441,12 @@ export async function viewWorkshopSkill(
   name: string,
   filePath?: string,
   versionId?: string,
+  options?: WorkshopReadOptions,
 ): Promise<{ name: string; filePath: string; content: string; files: string[] }> {
   const paths = resolveSkillPaths(config, agentId, name);
   const file = normalizeSkillFilePath(filePath);
   let baseDir = paths.skillDir;
+  let grouped: Awaited<ReturnType<typeof readGroupedWorkshopView>>;
   if (versionId) {
     const versions = await listVersions(paths.versionsDir);
     if (!versions.some((version) => version.id === versionId)) {
@@ -468,11 +455,18 @@ export async function viewWorkshopSkill(
       );
     }
     baseDir = path.join(paths.versionsDir, versionId);
-  } else {
-    await requireLiveSkill(paths, name);
+  } else if (options?.flatOnly || !(await pathExists(path.join(baseDir, SKILL_FILE)))) {
+    if (!options?.flatOnly) {
+      grouped = await readGroupedWorkshopView(liveReadContext, config, paths.root, name, file);
+    }
+    if (!grouped) {
+      await requireLiveSkill(paths, name);
+    }
   }
-  const { files } = await listSkillFiles(baseDir);
-  const content = await readSkillFile(baseDir, file);
+  const { files, content } = grouped ?? {
+    ...(await listSkillFiles(baseDir)),
+    content: await readSkillFile(baseDir, file),
+  };
   if (content === null) {
     throw new WorkshopWriteError(
       `${file} does not exist in "${name}". Files: ${files.join(", ")}.`,

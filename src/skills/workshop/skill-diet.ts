@@ -471,7 +471,9 @@ async function dietWorkshopSkill(params: {
   assertLive: () => void;
 }): Promise<WorkshopChange | undefined> {
   const { config, agentId, name, complete } = params;
-  const live = await viewWorkshopSkill(config, agentId, name);
+  const live = await viewWorkshopSkill(config, agentId, name, undefined, undefined, {
+    flatOnly: true,
+  });
   const liveSkillMd = live.content;
   const frontmatter = FRONTMATTER.exec(liveSkillMd)?.[0];
   const skillDir = path.join(resolveWorkshopSkillsDir(config, agentId), name);
@@ -556,7 +558,7 @@ async function selectSkillForDiet(
 ): Promise<string | undefined> {
   const root = resolveWorkshopSkillsDir(config, agentId);
   const oversized: string[] = [];
-  for (const skill of await listWorkshopSkills(config, agentId)) {
+  for (const skill of await listWorkshopSkills(config, agentId, { flatOnly: true })) {
     // A skill edited within the last day may be mid-use or mid-lesson; leave it to settle.
     if (skill.updatedAtMs > nowMs - DAY_MS) {
       continue;

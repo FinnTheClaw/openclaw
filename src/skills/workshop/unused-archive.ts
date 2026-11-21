@@ -72,7 +72,7 @@ export async function archiveUnusedWorkshopSkills(
   if (runtime !== "openclaw") {
     return [];
   }
-  const skills = await listWorkshopSkills(config, agentId);
+  const skills = await listWorkshopSkills(config, agentId, { flatOnly: true });
   if (skills.length === 0) {
     return [];
   }

@@ -107,7 +107,9 @@ async function revertReview(
   }
   // A created skill that is no longer live was already reverted, e.g. by the agent after a chat "undo".
   const live = new Set(
-    (await listWorkshopSkills(ctx.config, ctx.agentId)).map((skill) => skill.name),
+    (await listWorkshopSkills(ctx.config, ctx.agentId, { flatOnly: true })).map(
+      (skill) => skill.name,
+    ),
   );
   const targets = [...firstBySkill.values()].filter(
     ({ skillName, versionId }) => !undone.has(skillName) && (versionId || live.has(skillName)),
