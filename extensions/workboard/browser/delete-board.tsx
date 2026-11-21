@@ -104,6 +104,7 @@ export function deleteWorkboardBoard(
       label: title,
       description: t("workboard.deleteBoardHelp"),
       content,
+      onMountError: finish,
       onCancel: () => (busy ? false : finish()),
     });
     const stopAbort = listen(host.signal, "abort", finish, { once: true });

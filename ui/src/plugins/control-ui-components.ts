@@ -39,6 +39,7 @@ export function createControlUiComponents(options: {
     ) => { subscribe(notify: () => void): () => void }[] = () => [],
     apply?: (element: HTMLElementTagNameMap[K], props: P) => void,
     hydrate?: (props: P, context: ApplicationContext) => void,
+    onMountError?: (props: P) => void,
   ): (container: HTMLElement, initial: P) => ControlUiComponentHandle<P> {
     return (container, initial) => {
       let props = initial;
@@ -106,6 +107,7 @@ export function createControlUiComponents(options: {
           if (active) {
             dispose();
             options.onError(error);
+            onMountError?.(props);
           }
         });
       return {
@@ -215,6 +217,8 @@ export function createControlUiComponents(options: {
             content = next.content;
           }
         },
+        undefined,
+        (next) => next.onMountError?.(),
       )(container, props);
     },
     mountAgentPicker: component(

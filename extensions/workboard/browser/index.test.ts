@@ -304,6 +304,43 @@ it("keeps a board and its pin when deletion is canceled, refused, or fails", asy
   await pending;
 });
 
+it("releases the delete action after the confirmation dialog fails to load", async () => {
+  const { host } = fixture;
+  const { createControlUiComponents } =
+    await import("../../../ui/src/plugins/control-ui-components.ts");
+  const onError = vi.fn();
+  const components = createControlUiComponents({ current: vi.fn(), signal: host.signal, onError });
+  const mountDialog = vi.mocked(host.components.mountDialog);
+  mountDialog.mockImplementationOnce(components.mountDialog);
+  request.mockImplementation(async (method: string) =>
+    method === "workboard.boards.delete" ? { deleted: true } : { boards: [makeBoard("ops")] },
+  );
+  await activate();
+
+  const action = deleteAction();
+  const firstSettled = vi.fn();
+  // mock-isolation: Reject only the first attempt through the real host lazy loader.
+  vi.doMock("../../../ui/src/components/modal-dialog.tsx", () => {
+    throw new Error("Synthetic dialog module load failure");
+  });
+  try {
+    void Promise.resolve(action.run()).then(firstSettled, firstSettled);
+    await vi.dynamicImportSettled();
+    await tick();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(deleteCalls()).toHaveLength(0);
+  } finally {
+    vi.doUnmock("../../../ui/src/components/modal-dialog.tsx");
+  }
+
+  const second = Promise.resolve(action.run());
+  expect(mountDialog).toHaveBeenCalledTimes(2);
+  expect(firstSettled).toHaveBeenCalledOnce();
+  clickDialog(true);
+  await second;
+  expect(deleteCalls()).toEqual([["workboard.boards.delete", { id: "ops" }]]);
+});
+
 it("disambiguates a created board and its sibling before pinning through a stale catalog completion", async () => {
   const { host, registrations } = fixture;
   const board = { id: "created", name: "Created", icon: "rocket", createdAt: 1, updatedAt: 1 };

@@ -13,6 +13,8 @@ export type ControlUiDialogProps = {
   /** The plugin retains rendering ownership of this node. */
   content: HTMLElement;
   returnFocusTarget?: HTMLElement | null;
+  /** Notified after the host reports a deferred dialog mount failure. */
+  onMountError?: () => void;
   /** Returning false keeps the dialog open, for example during a pending save. */
   onCancel: () => boolean | void;
 };
