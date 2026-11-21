@@ -401,6 +401,21 @@ describe("chat pane catalog", () => {
     expect(item).toEqual(original);
   });
 
+  it("shows the raw tool result preview when catalog text is blank", () => {
+    const request = vi.fn();
+    const { pane } = createCatalogPane(request);
+    const output = "Fixture tool output.";
+    const item: SessionCatalogTranscriptItem = {
+      type: "toolResult",
+      text: "",
+      raw: { aggregatedOutput: output },
+    };
+    expect(extractToolCardsCached(pane.catalogItemMessage(item))).toMatchObject([
+      { outputText: output, completed: true },
+    ]);
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("keeps paging when an advancing older page renders nothing new", async () => {
     const readPage: SessionsCatalogReadResult = {
       ...catalogKey,

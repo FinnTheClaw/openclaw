@@ -39,6 +39,8 @@ type PlacementReadKind = "resident" | "exact";
 type PlacementReadBatch = {
   kind: PlacementReadKind;
   ids: Set<string>;
+  staleIds?: Set<string>;
+  staleAll?: true;
   inputBytes: number;
   started: boolean;
   settled: boolean;
@@ -67,6 +69,21 @@ export function createSessionRowPlacementProjection(
   const queuedReads: PlacementReadBatch[] = [];
   const reads = new Set<PlacementReadBatch>();
   let retainedInputBytes = 0;
+  const hasCurrentId = (read: PlacementReadBatch, id: string) =>
+    !read.staleAll && read.ids.has(id) && !read.staleIds?.has(id);
+  const invalidateStartedReads = (id?: string) => {
+    for (const read of reads) {
+      // Queued reads have not captured a snapshot and already see this invalidation.
+      if (!read.started) {
+        continue;
+      }
+      if (id === undefined) {
+        read.staleAll = true;
+      } else if (hasCurrentId(read, id)) {
+        (read.staleIds ??= new Set()).add(id);
+      }
+    }
+  };
   const releaseRead = (read: PlacementReadBatch) => {
     if (read.settled && read.readers === 0 && reads.delete(read)) {
       retainedInputBytes -= read.inputBytes;
@@ -102,7 +119,7 @@ export function createSessionRowPlacementProjection(
       throw new Error("Session row projection is no longer active");
     }
     const covers = (batch: PlacementReadBatch) =>
-      batch.kind === kind && ids.every((id) => batch.ids.has(id));
+      batch.kind === kind && ids.every((id) => hasCurrentId(batch, id));
     // Exact requests must not join broader resident preparation and wait for unrelated work.
     let read = [...activeReads].find(covers) ?? queuedReads.find(covers);
     let addedBytes = 0;
@@ -166,6 +183,7 @@ export function createSessionRowPlacementProjection(
     read.readers++;
     return {
       result: read.completion.promise,
+      isCurrent: (id: string) => hasCurrentId(read, id),
       release() {
         read.readers--;
         releaseRead(read);
@@ -189,6 +207,19 @@ export function createSessionRowPlacementProjection(
   };
   const missing = (ids: readonly string[]) =>
     reader ? [...new Set(ids)].filter((id) => !resident.has(id)) : [];
+  const invalidateResident = (id?: string) => {
+    if (id) {
+      resident.delete(id);
+      if (registered.has(id)) {
+        dirty.add(id);
+      }
+    } else {
+      resident.clear();
+      for (const registeredId of registered) {
+        dirty.add(registeredId);
+      }
+    }
+  };
   const owner = {
     getProjectionFacts: (id: string) => resident.get(id) ?? exact?.get(id),
     isPrepared: (id: string) => !reader || exact?.has(id) === true || resident.has(id),
@@ -207,7 +238,7 @@ export function createSessionRowPlacementProjection(
       if (!prepared) {
         // Row preparation can yield after its exact placement read has settled.
         for (const read of reads) {
-          if (read.snapshot && read.ids.has(id)) {
+          if (read.snapshot && hasCurrentId(read, id)) {
             prepared = select(read.snapshot, id);
             break;
           }
@@ -220,6 +251,7 @@ export function createSessionRowPlacementProjection(
       }
     },
     forget(id: string) {
+      invalidateStartedReads(id);
       registered.delete(id);
       dirty.delete(id);
       resident.delete(id);
@@ -234,26 +266,18 @@ export function createSessionRowPlacementProjection(
       return true;
     },
     invalidate(id?: string) {
-      if (id) {
-        resident.delete(id);
-        if (registered.has(id)) {
-          dirty.add(id);
-        }
-      } else {
-        resident.clear();
-        for (const registeredId of registered) {
-          dirty.add(registeredId);
-        }
-      }
+      invalidateStartedReads(id || undefined);
+      invalidateResident(id);
     },
     invalidateChange(change: SessionRowChange) {
-      if (
-        "all" in change &&
-        (change.scope === "worker-placements" ||
-          change.scope === "worker-environments" ||
-          change.scope === "stores")
-      ) {
+      if (!("all" in change)) {
+        return;
+      }
+      if (change.scope === "worker-placements" || change.scope === "worker-environments") {
         owner.invalidate();
+      } else if (change.scope === "stores") {
+        // Session topology reselects rows but does not change their placement snapshots.
+        invalidateResident();
       }
     },
     update(row: Row, previous: Row | undefined, related: (id: string) => Row[]) {
@@ -482,9 +506,15 @@ export function createSessionRowPlacementProjection(
             await pending;
             assertActive();
           }
-          const prepared = new Map(
-            requested.map((id) => [id, resident.get(id) ?? select(snapshot, id)]),
-          );
+          const prepared = new Map<string, SessionRowPlacementFacts>();
+          for (const id of requested) {
+            // A committed resident postimage can satisfy a read even if its batch is stale.
+            const facts =
+              resident.get(id) ?? (read.isCurrent(id) ? select(snapshot, id) : undefined);
+            if (facts) {
+              prepared.set(id, facts);
+            }
+          }
           if (selectedIds.some((id) => !resident.has(id) && !prepared.has(id))) {
             continue;
           }
@@ -521,7 +551,7 @@ export function createSessionRowPlacementProjection(
           return;
         }
         for (const id of requested) {
-          if (registered.has(id) && !dirty.has(id)) {
+          if (registered.has(id) && !dirty.has(id) && read.isCurrent(id)) {
             resident.set(id, resident.get(id) ?? select(snapshot, id));
           }
         }

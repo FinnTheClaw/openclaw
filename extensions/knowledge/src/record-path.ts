@@ -1,3 +1,5 @@
+import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+
 /** Human-readable paths; identity remains the immutable frontmatter ID. */
 export function recordPath(
   directory: string,
@@ -5,14 +7,12 @@ export function recordPath(
   id: string,
   occupied: (path: string) => boolean,
 ): string {
-  let slug =
-    title
-      .normalize("NFKC")
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}]+/gu, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 100)
-      .replace(/-$/g, "") || "untitled";
+  const normalized = title
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-|-$/g, "");
+  let slug = truncateUtf16Safe(normalized, 100).replace(/-$/g, "") || "untitled";
   while (new TextEncoder().encode(slug).length > 180) {
     slug = Array.from(slug).slice(0, -1).join("");
   }

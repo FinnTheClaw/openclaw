@@ -390,6 +390,41 @@ it.each(directEntries)(
   },
 );
 
+it.each(["plugin-v1", "plugin-v2"] as const)(
+  "keeps %s result and accounting when the caller reuses its options",
+  async (entry) => {
+    const host = pendingDecision();
+    const { started, release, evaluate } = host;
+    const signal = new AbortController().signal;
+    const options = {
+      ...operationOptions,
+      purpose: "reused-options",
+      signal,
+      agentId: "operation-owner",
+    };
+    const pending = invoke(entry, host, options);
+    try {
+      await Promise.race([started.promise, pending]);
+      // Reuse the caller-owned options for the next decision, not this in-flight one.
+      options.signal = AbortSignal.abort(new Error("next decision discarded"));
+      release.resolve();
+
+      await expect(pending).resolves.toMatchObject({ status: "ok", result: accepted().result });
+      expect(signal.aborted).toBe(false);
+      expect(evaluate).toHaveBeenCalledOnce();
+      expect(host.events).toEqual([
+        expect.objectContaining({
+          hostPluginId: host.consumer.id,
+          event: usageEvent(0.0002, "operation-owner"),
+        }),
+      ]);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([pending]);
+    }
+  },
+);
+
 it.each(directEntries)(
   "still cancels %s under its admitted signal after replacement with a live signal",
   async (entry) => {

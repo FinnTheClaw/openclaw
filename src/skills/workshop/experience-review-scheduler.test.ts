@@ -158,6 +158,32 @@ it("waits for 30 quiet seconds after the session's latest turn", async () => {
   expect(runReview).toHaveBeenCalledOnce();
 });
 
+it("keeps the rearmed quiet window when an older idle check resolves", async () => {
+  const oldIdleCheck = Promise.withResolvers<boolean>();
+  const isSystemActive = vi.fn((): boolean | Promise<boolean> => false);
+  isSystemActive.mockReturnValueOnce(oldIdleCheck.promise);
+  scheduler = createSkillExperienceReviewScheduler({ isSystemActive, runReview });
+
+  countedTurn(10, 1);
+  vi.advanceTimersByTime(30_000);
+  expect(isSystemActive).toHaveBeenCalledOnce();
+  countedTurn(1, 1);
+
+  oldIdleCheck.resolve(false);
+  await setImmediate();
+  expect(runReview).not.toHaveBeenCalled();
+
+  vi.advanceTimersByTime(29_999);
+  await setImmediate();
+  expect(runReview).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(1);
+  await setImmediate();
+  expect(isSystemActive).toHaveBeenCalledTimes(2);
+  expect(runReview).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ ctx: expect.objectContaining({ runId: "run-10" }) }),
+  );
+});
+
 it("ignores errored turns and sessions while Workshop is off", () => {
   turn(8);
   turn(20, { event: { messages: [], success: false, error: "provider 500" } });

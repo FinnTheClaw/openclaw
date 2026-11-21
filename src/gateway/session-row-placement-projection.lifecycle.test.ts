@@ -11,6 +11,7 @@ import { createSessionRowProjectionFixture } from "./session-row-projection.test
 import * as sessionStoreKeys from "./session-store-key.js";
 import { buildSessionListRowMetadataContext } from "./session-utils-projection.js";
 import type { WorkerSessionPlacementProjection } from "./worker-environments/placement-read-projection.types.js";
+import { activePlacement } from "./worker-environments/placement-suite.test-support.js";
 
 function placementReadView() {
   const projection: SessionRowReadView & {
@@ -234,6 +235,49 @@ it.each(["facts", "rows"] as const)(
     }
   },
 );
+
+it("refreshes an exact placement snapshot invalidated by a completed move", async () => {
+  const { read } = placementReadView();
+  const id = "moved-session";
+  const original = activePlacement(id, { environmentId: "source" });
+  const moved = activePlacement(id, {
+    environmentId: "destination",
+    generation: original.generation + 1,
+  });
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  let committed = original;
+  const readProjection = vi.fn(async (ids: readonly string[]) => {
+    expect(ids).toEqual([id]);
+    const captured = committed;
+    if (captured === original) {
+      entered.resolve();
+      await release.promise;
+    }
+    return { ...placementSnapshot([]), placements: new Map([[id, captured]]) };
+  });
+  const owner = createSessionRowPlacementProjection({ readProjection }, () => undefined);
+  const consume = vi.fn(() => owner.getProjectionFacts(id)?.placement);
+  owner.register(id);
+  const pending = read(owner, id, consume);
+  const settled = Promise.allSettled([pending]);
+  try {
+    await awaitGateBeforeSettlement(entered.promise, pending, "Exact placement read did not enter");
+    committed = moved;
+    owner.invalidateChange({ all: true, scope: "worker-placements" });
+    release.resolve();
+
+    await expect(pending).resolves.toEqual(moved);
+    expect(consume).toHaveBeenCalledOnce();
+    expect(owner.getProjectionFacts(id)?.placement).toEqual(moved);
+    expect(readProjection).toHaveBeenCalledTimes(2);
+    expect(owner.needsPreparation).toBe(false);
+  } finally {
+    release.resolve();
+    owner.dispose();
+    await settled;
+  }
+});
 
 it("settles queued placement preparation on disposal without dispatching it", async () => {
   const { query, read } = placementReadView();

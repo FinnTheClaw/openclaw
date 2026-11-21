@@ -308,9 +308,10 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         }
         if (prop === "decisions") {
           return {
-            evaluate: async (batch, options) => {
+            evaluate: async (batch, inputOptions) => {
               assertRuntimeCurrent();
               const capturedRegistry = currentDecisionRegistry();
+              const options = { ...inputOptions };
               const { evaluateDecisionOperation, completeDecisionEvaluation } =
                 await import("../decisions/runtime.js");
               assertRuntimeCurrent();
@@ -332,9 +333,10 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               options.signal.throwIfAborted();
               return completeDecisionEvaluation(result);
             },
-            evaluateV2: async (batch, options) => {
+            evaluateV2: async (batch, inputOptions) => {
               assertRuntimeCurrent();
               const capturedRegistry = currentDecisionRegistry();
+              const options = { ...inputOptions };
               const { evaluateDecisionV2Operation, completeDecisionEvaluation } =
                 await import("../decisions/runtime.js");
               assertRuntimeCurrent();

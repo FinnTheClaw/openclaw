@@ -232,6 +232,16 @@ it("descriptive filenames are safe, Unicode-aware and collision preserving", () 
   expect(!recordPath("people/", "東京", "12345678", () => false).includes("untitled")).toBeTruthy();
 });
 
+it("descriptive filenames never split a supplementary letter at the slug length limit", () => {
+  const prefix = "a".repeat(98);
+  const letter = "\u{10428}";
+  const filename = (title: string) => recordPath("people/", title, "12345678", () => false);
+  expect(filename(prefix + letter)).toBe("people/" + prefix + letter + ".md");
+  const truncated = filename(prefix + "a" + letter);
+  expect(truncated.isWellFormed()).toBe(true);
+  expect(truncated).toBe("people/" + prefix + "a.md");
+});
+
 it("real scans expose scoped link resolutions and diagnostics without invalidating authored pages; renames rebuild navigation", async () => {
   const { cp, readFile, writeFile, rename } = await import("node:fs/promises");
   const { SampleVault } = await import("./vault.js");

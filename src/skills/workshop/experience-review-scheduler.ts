@@ -74,6 +74,7 @@ type ExperienceReviewSchedulerDeps = {
 
 type PendingExperienceReview = {
   candidate: ExperienceReviewCandidate;
+  armGeneration: number;
   timer?: ReturnType<typeof setTimeout>;
 };
 
@@ -155,14 +156,18 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
     if (pending.timer) {
       clearTimeout(pending.timer);
     }
+    // A foreground completion can rearm this same pending record during the idle check.
+    const generation = ++pending.armGeneration;
+    const isCurrentArm = () =>
+      pendingBySession.get(key) === pending && pending.armGeneration === generation;
     const timerCallback = () => {
-      if (pendingBySession.get(key) !== pending) {
+      if (!isCurrentArm()) {
         return;
       }
       pending.timer = undefined;
       void (async () => {
         const active = await deps.isSystemActive();
-        if (pendingBySession.get(key) !== pending) {
+        if (!isCurrentArm()) {
           return;
         }
         const cooldownRemaining = cooldownUntil - Date.now();
@@ -192,7 +197,7 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
         } else {
           log.warn(`skill experience review failed: ${formatErrorMessage(error)}`);
         }
-        if (pendingBySession.get(key) === pending) {
+        if (isCurrentArm()) {
           pendingBySession.delete(key);
         }
       });
@@ -291,7 +296,7 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
         usedSkills: params.usedSkills ? [...params.usedSkills] : undefined,
         turnAborted: !params.event.success,
       };
-      const pending = existing ?? { candidate };
+      const pending = existing ?? { candidate, armGeneration: 0 };
       pending.candidate = candidate;
       pendingBySession.set(key, pending);
       arm(key, pending, EXPERIENCE_REVIEW_IDLE_MS);

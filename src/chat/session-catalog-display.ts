@@ -80,13 +80,15 @@ export function projectCatalogItemForDisplay(
         ? "null"
         : item.toolInput;
   let text = item.text?.trim() ? item.text : item.text === undefined ? undefined : "";
-  if (item.type === "toolResult") {
+  // A catalog source can supply blank projected text alongside a raw tool preview.
+  if (item.type === "toolResult" && !text) {
     const result = asOptionalRecord(item.raw)?.result;
-    text ??=
+    text =
       rawText(item.raw, ["aggregatedOutput"]) ??
-      (result === undefined ? undefined : JSON.stringify(result));
-  } else if (item.type === "toolCall") {
-    text ??= rawText(item.raw, ["command", "name", "tool", "title", "query"]);
+      (result === undefined ? undefined : JSON.stringify(result)) ??
+      text;
+  } else if (item.type === "toolCall" && !text) {
+    text = rawText(item.raw, ["command", "name", "tool", "title", "query"]) ?? text;
   }
   const displayTruncated =
     tool && Boolean(text && text.length > CATALOG_TOOL_RESULT_PREVIEW_MAX_CHARS);
