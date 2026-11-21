@@ -231,6 +231,53 @@ describe("historical page recovery context", () => {
     );
   });
 
+  it("keeps the history page when a quoted archive disappears", async () => {
+    await withTranscript(
+      [
+        ["current", user],
+        [
+          "reply",
+          {
+            role: "assistant",
+            content: "The reply is still readable.",
+            openclawDelivery: { replyToId: "archived-original" },
+          },
+        ],
+      ],
+      async ({ read }) => {
+        let primaryLoaded = false;
+        const readRecent = anchorReader.readRecentSessionMessagesWithStatsAsync;
+        using primary = vi
+          .spyOn(anchorReader, "readRecentSessionMessagesWithStatsAsync")
+          .mockImplementationOnce(async (...args) => {
+            const page = await readRecent(...args);
+            primaryLoaded = true;
+            return page;
+          });
+        using quote = vi
+          .spyOn(anchorReader, "readSessionMessageByIdAsync")
+          .mockImplementationOnce(async (_scope, messageId) => {
+            expect(primaryLoaded).toBe(true);
+            expect(messageId).toBe("archived-original");
+            throw Object.assign(new Error("Fixture archive no longer exists"), {
+              code: "ENOENT",
+              syscall: "open",
+              path: "/synthetic/quoted-original.jsonl.reset.2026-10-11T00-00-00.000Z",
+            });
+          });
+
+        await expect(read({ max: 2, offset: 0 })).resolves.toMatchObject({
+          messages: [
+            { content: user.content, __openclaw: { id: "current" } },
+            { content: "The reply is still readable.", __openclaw: { id: "reply" } },
+          ],
+        });
+        expect(primary).toHaveBeenCalledTimes(1);
+        expect(quote).toHaveBeenCalledTimes(1);
+      },
+    );
+  });
+
   it("carries unavailable reply previews without exposing hidden or oversized originals", async () => {
     const sessionStartedAt = 10_000;
     const references = [

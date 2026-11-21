@@ -1,14 +1,33 @@
+import { basename } from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { CHAT_PENDING_INPUT_MESSAGE_PREFIX } from "../../packages/gateway-protocol/src/schema/chat-history-constants.js";
 import type { ChatMessageGetResult } from "../../packages/gateway-protocol/src/schema/logs-chat.js";
 import type { ChatHistoryPageParams } from "../config/sessions/session-history-types.js";
+import { hasArchiveSuffix } from "../config/sessions/transcript-file-names.js";
+import { hasErrnoCode } from "../infra/errno.js";
 import { jsonUtf8Bytes } from "../infra/json-utf8-bytes.js";
 import {
   projectChatDisplayMessage,
   type ChatDisplayProjectionOptions,
 } from "./chat-display-projection.core.js";
-import type { SessionTranscriptPageReader } from "./session-transcript-read.types.js";
+import type {
+  ReadSessionMessageByIdResult,
+  SessionTranscriptPageReader,
+} from "./session-transcript-read.types.js";
+
+function isMissingQuotedResetArchive(error: unknown): boolean {
+  const details = asOptionalRecord(error);
+  if (
+    !hasErrnoCode(error, "ENOENT") ||
+    details?.syscall !== "open" ||
+    typeof details.path !== "string"
+  ) {
+    return false;
+  }
+  const fileName = basename(details.path);
+  return fileName.includes(".jsonl.reset.") && hasArchiveSuffix(fileName, "reset");
+}
 
 /** Batch label projection includes quoted originals without recursively following their replies. */
 export async function projectChatHistoryWithReplies(
@@ -86,20 +105,27 @@ export async function attachChatHistoryReplyMessages(
       reply = { ok: false, unavailableReason: "not_found" };
     }
     if (!reply) {
-      const original = await options.readers.readSessionMessageByIdAsync(
-        {
-          agentId: params.sessionAgentId,
-          sessionId: params.sessionId,
-          sessionKey: params.canonicalKey,
-          storePath: params.storePath,
-          sessionEntry: params.entry,
-        },
-        messageId,
-        {
-          allowResetArchiveFallback: true,
-          historyVisibility: { sessionStartedAt: params.entry?.sessionStartedAt },
-        },
-      );
+      const original = await options.readers
+        .readSessionMessageByIdAsync(
+          {
+            agentId: params.sessionAgentId,
+            sessionId: params.sessionId,
+            sessionKey: params.canonicalKey,
+            storePath: params.storePath,
+            sessionEntry: params.entry,
+          },
+          messageId,
+          {
+            allowResetArchiveFallback: true,
+            historyVisibility: { sessionStartedAt: params.entry?.sessionStartedAt },
+          },
+        )
+        .catch((error: unknown): ReadSessionMessageByIdResult => {
+          if (!isMissingQuotedResetArchive(error)) {
+            throw error;
+          }
+          return { found: false, oversized: false };
+        });
       const projected = original.message
         ? projectChatDisplayMessage(original.message, {
             maxChars: 500,
