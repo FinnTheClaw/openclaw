@@ -106,6 +106,7 @@ async function appendBranchEntry(params: {
         entry.content,
         entry.display,
         entry.details,
+        Date.parse(entry.timestamp),
       );
     case "session_info":
       return sessionManager.appendSessionInfoAsync(entry.name || "");

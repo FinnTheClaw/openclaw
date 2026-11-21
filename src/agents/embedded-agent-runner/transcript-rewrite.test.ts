@@ -497,6 +497,39 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     },
   );
 
+  it("preserves custom-context creation time when rewriting an earlier message", async () => {
+    const { directory, target } = await persistedTarget("custom-context-timestamp");
+    const manager = await SessionManager.openAsync(target, directory);
+    const originalId = expectDefined(
+      await manager.appendMessageAsync(makeUserMessage("before rewrite", 1)),
+      "rewrite target",
+    );
+    const context = { role: "custom", customType: "fixture-context", content: "Synthetic context" };
+    const timestamp = 1_700_000_000_000;
+    await manager.appendCustomMessageEntryAsync(
+      context.customType,
+      context.content,
+      false,
+      undefined,
+      timestamp,
+    );
+    expect(manager.buildSessionContext().messages).toMatchObject([
+      { role: "user", content: "before rewrite" },
+      { ...context, timestamp },
+    ]);
+
+    expect(await rewrite(manager, originalId, makeUserMessage("after rewrite", 1))).toMatchObject({
+      changed: true,
+    });
+    const reopened = await SessionManager.openAsync(target, directory);
+    const replayedTimestamps = [manager, reopened].map((view) => {
+      const { messages } = view.buildSessionContext();
+      expect(messages).toMatchObject([{ role: "user", content: "after rewrite" }, context]);
+      return messages[1]?.timestamp;
+    });
+    expect(replayedTimestamps).toEqual([timestamp, timestamp]);
+  });
+
   it("rejects stale loaded suffix bytes even when persisted entry ids are unchanged", async () => {
     const { directory, target } = await persistedTarget("stale-rewrite");
     const manager = SessionManager.open(target, directory);
