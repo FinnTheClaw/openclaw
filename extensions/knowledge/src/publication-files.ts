@@ -8,17 +8,16 @@ import { SOURCE_DESCRIPTOR_MAX_BYTES } from "./source-descriptors.js";
 // Backslash or any C0 control character.
 const UNSAFE_PATH_CHARACTER = new RegExp(String.raw`[\\\u0000-\u001f]`);
 
-export type PublicationRole = "record" | "auxiliary" | "source-descriptor";
+export type PublicationRole = "record" | "auxiliary" | "source-descriptor" | "original";
 /** Classify only canonical destinations; retained names inherit their destination role. */
 export function publicationRole(relative: string): PublicationRole {
   if (/\/artifacts\/sources\/[^/]+\.json$/.test(relative)) {
     return "source-descriptor";
   }
-  if (
-    relative.endsWith(".md") &&
-    !relative.includes("/artifacts/") &&
-    !relative.includes("/.knowledge-history/")
-  ) {
+  if (relative.includes("/artifacts/")) {
+    return "original";
+  }
+  if (relative.endsWith(".md") && !relative.includes("/.knowledge-history/")) {
     return "record";
   }
   return "auxiliary";
@@ -148,7 +147,10 @@ export class PublicationFiles {
       ) {
         throw new Error("Publication file changed");
       }
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, used));
+      // Keep the BOM in exact original comparisons; metadata readers still normalize it.
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: role === "original" }).decode(
+        bytes.subarray(0, used),
+      );
     } finally {
       fs.closeSync(fd);
     }

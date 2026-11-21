@@ -144,18 +144,6 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
     });
   }
 
-  protected async deleteDetachedAttachments(
-    existing: WorkboardCard,
-    next: WorkboardCard,
-  ): Promise<void> {
-    const nextIds = new Set(next.metadata?.attachments?.map((attachment) => attachment.id) ?? []);
-    for (const attachment of existing.metadata?.attachments ?? []) {
-      if (!nextIds.has(attachment.id)) {
-        await this.attachmentStore.delete(attachment.id);
-      }
-    }
-  }
-
   protected nextNotificationSequence(now: number): number {
     const base = Math.max(0, Math.trunc(now)) * 1000;
     this.lastNotificationSequence = Math.max(this.lastNotificationSequence + 1, base);
@@ -592,6 +580,7 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
     const expectedUpdatedAt = options.expectedUpdatedAt ?? existing.updatedAt;
     const nextEntry: PersistedWorkboardCard = { version: 1, card: next };
     let updated: boolean;
+    let atomicallyDeletedAttachmentId: string | undefined;
     if (options.deleteAttachmentId && this.store.deleteAttachmentIfUpdatedAt) {
       updated = await this.store.deleteAttachmentIfUpdatedAt(
         next.id,
@@ -599,6 +588,9 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
         expectedUpdatedAt,
         options.deleteAttachmentId,
       );
+      if (updated) {
+        atomicallyDeletedAttachmentId = options.deleteAttachmentId;
+      }
     } else if (options.ownerSlot) {
       const result = await this.store.claimIfOwnerAvailable(
         next.id,
@@ -615,7 +607,7 @@ export class WorkboardCoreStore extends WorkboardBoardStore {
       updated = await this.store.registerIfUpdatedAt(next.id, nextEntry, expectedUpdatedAt);
     }
     if (updated) {
-      await this.deleteDetachedAttachments(existing, next);
+      await this.deleteDetachedAttachments(existing, next, atomicallyDeletedAttachmentId);
       return next;
     }
     const current = await this.get(next.id);

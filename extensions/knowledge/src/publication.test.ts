@@ -73,6 +73,23 @@ it("UI creates sourced page; agent reads and edits; durable retry/history/readba
   expect(JSON.parse(await readFile(path.join(f.root, "vault.json"), "utf8")).generation).toBe(2);
 });
 
+it("a sourced page preserves a leading UTF-8 BOM in the retained original", async () => {
+  const f = await fixture();
+  const text = "\uFEFFExact original\nSecond line";
+  const receipt = await f.service.save_page(
+    { ...draft(), source: { text, attribution: "User supplied note" } },
+    f.operator,
+  );
+  expect(receipt.state).toBe("published");
+
+  const read = await f.service.record({ id: receipt.id, includeEvidence: true }, f.owner);
+  const evidence = read.evidence![0]!;
+  expect(evidence.verified).toBe(true);
+  expect(await readFile(path.join(f.root, "private", evidence.path))).toStrictEqual(
+    Buffer.from(text, "utf8"),
+  );
+});
+
 it("stale hash/revision, rename, deletion, and unknown metadata preservation", async () => {
   const f = await fixture(),
     created = await f.service.save_page(draft(), f.owner);

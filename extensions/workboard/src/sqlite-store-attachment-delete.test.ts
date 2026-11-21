@@ -51,10 +51,16 @@ function countRows(db: DatabaseSync, table: string, attachmentId: string): numbe
 
 describe("workboard SQLite attachment deletion", () => {
   it("01 removes the card index and blob in one successful deletion", async () => {
-    await withSqlite(async (store, _stores, dbPath) => {
+    await withSqlite(async (store, stores, dbPath) => {
       const card = await store.create({ title: "Delete attachment" });
       const attachmentId = await attach(store, card.id);
       const before = await store.get(card.id);
+      const standaloneDeletes: string[] = [];
+      const deleteBlob = stores.attachments.delete.bind(stores.attachments);
+      stores.attachments.delete = (id) => {
+        standaloneDeletes.push(id);
+        return deleteBlob(id);
+      };
       const deleted = await store.deleteAttachment(card.id, attachmentId);
       const db = new DatabaseSync(dbPath);
       try {
@@ -63,6 +69,8 @@ describe("workboard SQLite attachment deletion", () => {
         expect(await store.getAttachment(attachmentId)).toBeUndefined();
         expect(countRows(db, "workboard_card_attachments", attachmentId)).toBe(0);
         expect(countRows(db, "workboard_attachment_blobs", attachmentId)).toBe(0);
+        // The atomic card operation already removed the blob; no follow-up write is needed.
+        expect(standaloneDeletes).toEqual([]);
       } finally {
         db.close();
       }

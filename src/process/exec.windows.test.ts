@@ -254,7 +254,21 @@ describe("Windows command execution", () => {
 
     const resultPromise = runVersion();
     command.finish({ exitCode: undefined, failed: true });
+    await vi.advanceTimersByTimeAsync(251);
     await expect(resultPromise).resolves.toMatchObject({ code: 0, termination: "exit" });
+  });
+
+  it("preserves a delayed nonzero exit code from a Windows shim", async () => {
+    const command = pendingCommand();
+
+    const resultPromise = runVersion();
+    command.finish({ exitCode: undefined, failed: true });
+    setTimeout(() => {
+      command.exitCode = 7;
+    }, 20);
+    await vi.advanceTimersByTimeAsync(30);
+
+    await expect(resultPromise).resolves.toMatchObject({ code: 7, termination: "exit" });
   });
 
   it("sanitizes a Windows shim launch error without an exit state", async () => {

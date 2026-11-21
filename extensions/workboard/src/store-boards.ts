@@ -67,6 +67,19 @@ export class WorkboardBoardStore extends WorkboardStoreRuntime {
     };
   }
 
+  protected async deleteDetachedAttachments(
+    existing: WorkboardCard,
+    next: WorkboardCard,
+    atomicallyDeletedAttachmentId?: string,
+  ): Promise<void> {
+    const nextIds = new Set(next.metadata?.attachments?.map((attachment) => attachment.id) ?? []);
+    for (const attachment of existing.metadata?.attachments ?? []) {
+      if (attachment.id !== atomicallyDeletedAttachmentId && !nextIds.has(attachment.id)) {
+        await this.attachmentStore.delete(attachment.id);
+      }
+    }
+  }
+
   async list(options: WorkboardListOptions = {}): Promise<WorkboardCard[]> {
     const boardId = normalizeBoardId(options.boardId);
     return readCards(this.store, boardId === undefined ? undefined : { kind: "board", boardId });

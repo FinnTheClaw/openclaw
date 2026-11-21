@@ -58,6 +58,9 @@ import { createCommandTerminationController } from "./exec-termination.js";
 import { setProcessTimeout } from "./process-deadline.js";
 import { BrokerChild } from "./spawn-broker/child.js";
 
+const WINDOWS_SHIM_WAIT_MS = 250;
+const WINDOWS_SHIM_POLL_MS = 10;
+
 type CommandTerminationReason = SpawnResult["termination"] | "output-limit";
 
 export type CommandOptions = {
@@ -601,6 +604,43 @@ async function runCommandWithOutputEncoding(
   let cleanup = await processCleanup.catch((error: unknown) => {
     throw failedProcess(error);
   });
+  // Patched Node can report null/null after a cmd.exe shim exits. Execa turns
+  // that into a cause-less failure; preserve the shim fallback only post-spawn.
+  const isCauseLessWindowsShimResult =
+    !termination &&
+    invocation.usesWindowsExitCodeShim &&
+    typeof nodeChild.pid === "number" &&
+    result.code === undefined &&
+    result.cause === undefined &&
+    !result.timedOut &&
+    !result.isCanceled &&
+    !result.isMaxBuffer &&
+    !result.isTerminated;
+  if (
+    isCauseLessWindowsShimResult &&
+    result.failed &&
+    result.exitCode == null &&
+    result.signal == null &&
+    !inputAdmissionError &&
+    !terminatingOutputError &&
+    outputObserverError === undefined
+  ) {
+    // A patched Windows runtime can populate exitCode or signalCode after close.
+    // Give that status a bounded chance to arrive before inferring a clean exit.
+    for (let waitedMs = 0; waitedMs < WINDOWS_SHIM_WAIT_MS; waitedMs += WINDOWS_SHIM_POLL_MS) {
+      if (
+        childExitState?.code != null ||
+        childExitState?.signal != null ||
+        nodeChild.exitCode != null ||
+        nodeChild.signalCode != null
+      ) {
+        break;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, WINDOWS_SHIM_POLL_MS);
+      });
+    }
+  }
   const resolvedSignal = result.signal ?? childExitState?.signal ?? nodeChild.signalCode ?? null;
   // An explicit POSIX tree join already confirmed extinction in the exit handler.
   if (
@@ -622,18 +662,6 @@ async function runCommandWithOutputEncoding(
       cleanup,
     );
   }
-  // Patched Node can report null/null after a cmd.exe shim exits. Execa turns
-  // that into a cause-less failure; preserve the shim fallback only post-spawn.
-  const isCauseLessWindowsShimResult =
-    !termination &&
-    invocation.usesWindowsExitCodeShim &&
-    typeof nodeChild.pid === "number" &&
-    result.code === undefined &&
-    result.cause === undefined &&
-    !result.timedOut &&
-    !result.isCanceled &&
-    !result.isMaxBuffer &&
-    !result.isTerminated;
   if (
     result.failed &&
     !termination &&
