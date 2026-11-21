@@ -95,7 +95,8 @@ describe("QA maturity taxonomy", () => {
       category.lts.decision = decision(true);
       taxonomy.surfaces[0]!.level_decision = decision("stable");
       const result = read();
-      expect(result).toEqual({ scores, taxonomy });
+      expect({ scores: result.scores, taxonomy: result.taxonomy }).toEqual({ scores, taxonomy });
+      expect(result).toHaveProperty("warnings", []);
       expect(qaMaturityTaxonomyIdentity(result.taxonomy)).toEqual(identity);
       expect(result.scores.rollups.surface_average).toEqual({
         quality: { score: 70, label: "Beta" },

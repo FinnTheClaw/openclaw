@@ -532,7 +532,7 @@ export function readValidatedQaMaturityScoreSources(params?: {
     taxonomy,
     scoresPath,
   });
-  return { scores, taxonomy };
+  return { scores, taxonomy, warnings: [] as string[] };
 }
 
 function readQaMaturityTaxonomy(repoRoot: string | undefined) {
