@@ -3,6 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resolveCronStoreSelectionInDatabase } from "../cron/store/paths.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import {
   CRON_DEFAULT_STORE_IDENTITY_SCHEMA_VERSION,
@@ -72,13 +73,14 @@ function seedPartition(db: DatabaseSync, storeKey: string, jobs: boolean) {
 function legacyStore(
   jobs = true,
   previousVersion = CRON_DEFAULT_STORE_IDENTITY_SCHEMA_VERSION - 1,
+  cronDirectory = "cron",
 ) {
   const root = tempDirs.make("cron-identity-");
   const stateDir = path.join(root, "source");
   const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
   const database = openState(options);
   const databasePath = database.path;
-  const storeKey = path.join(stateDir, "cron", "jobs.json");
+  const storeKey = path.join(stateDir, cronDirectory, "jobs.json");
   closeState();
   using legacy = new DatabaseSync(databasePath);
   legacy.exec(`DELETE FROM config_machine_state WHERE state_key IN
@@ -165,6 +167,33 @@ it.each([32, 33])(
     });
   },
 );
+
+it("keeps the configured empty default separate from a retained custom partition", async () => {
+  const fixture = legacyStore(true, 33, "custom-cron");
+  const defaultStoreKey = path.join(fixture.stateDir, "cron", "jobs.json");
+  {
+    using legacy = new DatabaseSync(fixture.databasePath);
+    // Frozen Doctor persisted the operator's retired cron.store setting here.
+    legacy
+      .prepare(`INSERT INTO config_machine_state (state_key, value_json, updated_at_ms)
+      VALUES ('cron.store', ?, 1)`)
+      .run(JSON.stringify(defaultStoreKey));
+  }
+  replaceClosedFile(fixture.databasePath);
+  await withStateMigrationBackupForTest(fixture.options, () => openState(fixture.options));
+  const { db } = openState(fixture.options);
+  expect(db.prepare("PRAGMA user_version").get()).toMatchObject({
+    user_version: OPENCLAW_STATE_SCHEMA_VERSION,
+  });
+  expect(readCronStorePartitionInventoryInDatabase(db)).toMatchObject([
+    { storeKey: fixture.storeKey, jobs: 1 },
+  ]);
+  expect(resolveCronStoreSelectionInDatabase(db, undefined, fixture.options.env)).toEqual({
+    status: "ready",
+    storeKey: defaultStoreKey,
+    storePath: defaultStoreKey,
+  });
+});
 
 it("leaves multiple already-moved partitions unresolved without deleting them", async () => {
   const fixture = legacyStore(true, 33);

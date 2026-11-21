@@ -200,11 +200,13 @@ class NodeWorkerSupervisor {
       return await admission.done;
     }
     const abort = new AbortController();
-    const idleRetention =
+    const idleGeneration =
       input.idleRetention &&
       descriptor.admission.handshake.protocolFeatures.includes(
         NODE_WORKER_IDLE_RETENTION_PROTOCOL_FEATURE,
-      );
+      )
+        ? this.children.captureIdleGeneration()
+        : undefined;
     const admissionSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
     const done = (async () => {
       const workspace = await this.workspace.acquirePreparedWorkspace({
@@ -286,7 +288,7 @@ class NodeWorkerSupervisor {
             descriptor,
             claimInput,
             launchSignal,
-            idleRetention,
+            idleGeneration,
             assertWorkspaceCurrent,
           );
         }
@@ -338,7 +340,7 @@ class NodeWorkerSupervisor {
           supervisor,
           signal: launchSignal,
           claim: claimInput,
-          idleRetention,
+          idleGeneration,
           assertWorkspaceCurrent,
         });
         this.starting.set(input.launchId, startup);

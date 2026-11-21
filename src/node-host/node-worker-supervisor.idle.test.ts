@@ -759,6 +759,22 @@ describe("node worker idle retention", () => {
     f.expectCapacity(1, 2);
   });
 
+  it("disconnect invalidates pending idle acknowledgments without evicting background work", async () => {
+    await using f = fixture(2);
+    const current = await f.launch(input("current", "current-env"));
+    const background = await f.retained(input("background", "background-env"), "background");
+
+    await f.supervisor.retireIdle();
+    expect(background.adapter.kill).not.toHaveBeenCalled();
+    expect(current.adapter.kill).not.toHaveBeenCalled();
+
+    await current.complete("current", "idle");
+    await background.emit({ type: "idle-ready", turnId: "background" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(background.adapter.dispose).toHaveBeenCalledOnce();
+    expect(current.adapter.dispose).toHaveBeenCalledOnce();
+  });
+
   it.each(["explicit", "expiry", "limit"] as const)(
     "retries failed %s idle cleanup without freeing its slot or evicting background work",
     async (trigger) => {

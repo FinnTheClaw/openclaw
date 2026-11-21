@@ -36,7 +36,11 @@ export function resolveCronIdentityMigrationDefaultStoreKey(env: NodeJS.ProcessE
   return getSqliteWorkerCronDefaultStoreKey() ?? resolveLegacyCronDefaultStoreKey(env);
 }
 
-function readBindingRow(db: EngineConnection, sourceTables?: ReadonlySet<string>) {
+function readCronMachineStateRow(
+  db: EngineConnection,
+  key: string,
+  sourceTables?: ReadonlySet<string>,
+) {
   if (!(sourceTables?.has("config_machine_state") ?? tableExists(db, "config_machine_state"))) {
     return undefined;
   }
@@ -45,14 +49,14 @@ function readBindingRow(db: EngineConnection, sourceTables?: ReadonlySet<string>
     getNodeSqliteKysely<ConfigMachineStateDatabase>(db)
       .selectFrom("config_machine_state")
       .select("value_json")
-      .where("state_key", "=", CRON_DEFAULT_STORE_KEY_STATE_KEY),
+      .where("state_key", "=", key),
   );
 }
 
 export function readCronDefaultStoreBindingInDatabase(
   db: EngineConnection,
 ): { status: "absent" | "invalid" } | { status: "ready"; storeKey: string } {
-  const row = readBindingRow(db);
+  const row = readCronMachineStateRow(db, CRON_DEFAULT_STORE_KEY_STATE_KEY);
   if (!row) {
     return { status: "absent" };
   }
@@ -273,6 +277,24 @@ export function selectCronDefaultStoreIdentityInDatabase(
   );
 }
 
+function hasConfiguredLegacyDefault(db: EngineConnection, options: CronIdentityMigrationOptions) {
+  // The retired setting can establish an empty default without taking a retained custom partition.
+  const row = readCronMachineStateRow(db, "cron.store", options.sourceTables);
+  if (!row) {
+    return false;
+  }
+  try {
+    const value: unknown = JSON.parse(row.value_json);
+    if (typeof value !== "string") {
+      return false;
+    }
+    const selected = value.trim();
+    return path.isAbsolute(selected) && path.normalize(selected) === options.legacyDefaultStoreKey;
+  } catch {
+    return false;
+  }
+}
+
 /** Runs within the state owner's existing schema transaction, on both engines. */
 export function migrateCronDefaultStoreIdentity(
   db: EngineConnection,
@@ -280,12 +302,14 @@ export function migrateCronDefaultStoreIdentity(
 ): boolean {
   if (
     options.previousVersion >= CRON_DEFAULT_STORE_IDENTITY_SCHEMA_VERSION ||
-    readBindingRow(db, options.sourceTables)
+    readCronMachineStateRow(db, CRON_DEFAULT_STORE_KEY_STATE_KEY, options.sourceTables)
   ) {
     return false;
   }
-  let storeKey = options.fresh ? options.legacyDefaultStoreKey : undefined;
-  if (!options.fresh) {
+  let storeKey: string | undefined;
+  if (options.fresh || hasConfiguredLegacyDefault(db, options)) {
+    storeKey = options.legacyDefaultStoreKey;
+  } else {
     // Normal upgrades with jobs use indexed existence reads instead of scanning retained history.
     const matched = keyedTables.some(
       ([table]) =>
