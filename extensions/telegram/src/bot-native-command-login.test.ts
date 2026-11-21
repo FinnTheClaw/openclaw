@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import {
+  addTestHook,
+  createEmptyPluginRegistry,
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import * as providerLoginRuntime from "openclaw/plugin-sdk/provider-auth-login-flow-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type {
   getSessionEntryAsync,
@@ -173,6 +180,67 @@ describe("registerTelegramNativeCommands /login", () => {
     });
     expectMenu("Choose how to connect");
     expect(loginFlow).not.toHaveBeenCalled();
+  });
+
+  it("records the displayed synthetic login menu after a message sending hook", async ({
+    onTestFinished,
+  }) => {
+    const originalText = "Original settings menu.";
+    const displayedText = "Displayed settings menu.";
+    const prepare = vi
+      .spyOn(providerLoginRuntime, "prepareProviderChannelLogin")
+      .mockResolvedValue({
+        status: "reply",
+        reply: {
+          text: originalText,
+          presentation: {
+            blocks: [
+              {
+                type: "buttons",
+                buttons: [{ label: "Help", action: { type: "command", command: "/help" } }],
+              },
+            ],
+          },
+        },
+      });
+    onTestFinished(() => {
+      prepare.mockRestore();
+    });
+    sessionStore["agent:main:main"] = sessionEntry();
+    const loginFlow = vi.fn<TelegramLoginFlow>(async () => {
+      throw new Error("synthetic menu must not start a login flow");
+    });
+    const { handler, sendMessage } = await registerSessionLogin(loginFlow);
+    const registry = createEmptyPluginRegistry();
+    const rewrite = vi.fn((event: { content: string }) => ({
+      content: event.content === originalText ? displayedText : event.content,
+    }));
+    addTestHook({
+      registry,
+      pluginId: "menu-text-fixture",
+      hookName: "message_sending",
+      handler: rewrite,
+    });
+    initializeGlobalHookRunner(registry);
+    onTestFinished(resetGlobalHookRunner);
+    const delivery = await vi.importActual<typeof import("./bot/delivery.replies.js")>(
+      "./bot/delivery.replies.js",
+    );
+    await deliverReplies.withImplementation(delivery.deliverReplies, () =>
+      handler(ownerContext("")),
+    );
+
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(loginFlow).not.toHaveBeenCalled();
+    expect(rewrite).toHaveBeenCalledOnce();
+    expect(messages(sendMessage)).toEqual([displayedText]);
+    expect(sessionMocks.recordDeliveredCommandExchange).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        commandText: "/login",
+        replyText: displayedText,
+        expectedSessionId: "sess-main",
+      }),
+    );
   });
 
   it("releases the chat lane only after structured device-code delivery", async () => {

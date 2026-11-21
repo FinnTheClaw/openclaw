@@ -108,10 +108,11 @@ export async function executeTelegramLoginCommand(params: {
     const result = await deliverReplies({
       replies: [reply],
       ...dispatch.deliveryOptions,
+      onDeliveredText: reply.text
+        ? (text) =>
+            dispatch.recordDeliveredReply(params.commandText, text, String(++deliveredReply))
+        : undefined,
     });
-    if (result.delivered && reply.text) {
-      await dispatch.recordDeliveredReply(params.commandText, reply.text, String(++deliveredReply));
-    }
     return result.delivered;
   };
   const prepared = await prepareProviderChannelLogin({
