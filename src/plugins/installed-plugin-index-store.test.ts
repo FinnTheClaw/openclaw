@@ -42,6 +42,12 @@ import {
   resolveInstalledPluginIndexPolicyHash as policyHash,
   type InstalledPluginIndex,
 } from "./installed-plugin-index.js";
+import {
+  createPluginCache,
+  getPluginCacheRetirementSignal,
+  retirePluginCache,
+  withPluginCache,
+} from "./plugin-cache.js";
 import { withPluginLifecycleLease as withLease } from "./plugin-lifecycle-lease.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
 import { loadPluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
@@ -544,6 +550,40 @@ function readStateRow(filePath: string) {
 
 describe("installed plugin index read state", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("rejects a prepared warm install ledger after its cache retires", async () => {
+    const cache = createPluginCache();
+    const options = { filePath: path.resolve("fixture-plugin-index.sqlite") };
+    const installRecords = { demo: { source: "npm", spec: "demo@1.0.0" } } as const;
+    cache.persistedInstalledIndex.set(storePath(options), {
+      value: {
+        state: {
+          status: "present",
+          value: { index: createIndex({ installRecords, plugins: [] }) },
+        },
+      },
+    });
+    const readWorker = vi
+      .spyOn(metadataWorker, "readPluginMetadataStateRow")
+      .mockRejectedValue(new Error("Warm fixture must not read from storage"));
+
+    await expect(withPluginCache(cache, () => readRecords(options))).resolves.toEqual(
+      installRecords,
+    );
+    const ledger = withPluginCache(cache, () => readRecords(options));
+    const index = withPluginCache(cache, () => readIndex(options));
+    // Let the warm row wrapper resolve before the public projections resume.
+    await Promise.resolve();
+    const retirement = retirePluginCache(cache);
+    try {
+      const reason = getPluginCacheRetirementSignal(cache).reason;
+      await Promise.all([expect(index).rejects.toBe(reason), expect(ledger).rejects.toBe(reason)]);
+      expect(readWorker).not.toHaveBeenCalled();
+    } finally {
+      await retirement;
+    }
+  });
+
   it("preserves the original read error through both full-index readers", async () => {
     const stateDir = makeTempDir();
     const error = readError();

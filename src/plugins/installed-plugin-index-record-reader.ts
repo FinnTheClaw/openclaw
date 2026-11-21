@@ -451,6 +451,7 @@ export async function readPersistedInstalledPluginIndexInstallRecordsAsync(
   options: InstalledPluginIndexStoreOptions = {},
 ): Promise<Record<string, PluginInstallRecord> | null> {
   const prepared = await preparePersistedInstalledPluginIndexCacheEntry(options);
+  prepared.assertCurrent();
   const state = inspectPersistedInstalledPluginIndexInstallRecords(prepared.entry);
   return state.status === "valid" ? copyPluginInstallRecordMap(state.records) : null;
 }
