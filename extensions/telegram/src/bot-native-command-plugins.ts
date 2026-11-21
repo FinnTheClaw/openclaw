@@ -225,14 +225,14 @@ export async function executeTelegramPluginCommand(
     }
   }
   await cleanupProgressPlaceholder();
-  const delivered = await deliverReplies({
+  await deliverReplies({
     replies: [deliverableResult],
     ...dispatch.deliveryOptions,
     ...(hasReaction ? { replyToMode: "all" as const } : {}),
     silent:
       dispatch.runtimeTelegramCfg.silentErrorReplies === true && deliverableResult.isError === true,
+    onDeliveredText: deliverableResult.text
+      ? (text) => dispatch.recordDeliveredReply(commandBody, text, "final")
+      : undefined,
   });
-  if (delivered.delivered && deliverableResult.text) {
-    await dispatch.recordDeliveredReply(commandBody, deliverableResult.text, "final");
-  }
 }

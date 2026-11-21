@@ -1,11 +1,18 @@
 import {
+  addTestHook,
   createTestRegistry,
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
   resetPluginRuntimeStateForTest,
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { clearPluginCommands, registerPluginCommand } from "openclaw/plugin-sdk/plugin-runtime";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { getActivePluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { readVisibleSessionTranscriptMessageEntries } from "openclaw/plugin-sdk/session-transcript-runtime";
+import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 let registerTelegramNativeCommands: typeof import("./bot-native-commands.js").registerTelegramNativeCommands;
 let menu: typeof import("./bot-native-commands.menu-test-support.js");
@@ -204,6 +211,74 @@ describe("registerTelegramNativeCommands real plugin registry", () => {
       }
     },
   );
+
+  it("records the displayed native command reply after a message sending hook", async ({
+    onTestFinished,
+  }) => {
+    const state = await createOpenClawTestState({ layout: "state-only" });
+    onTestFinished(() => state.cleanup());
+    const scope = {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "native-reply-hook",
+      storePath: state.statePath("sessions.sqlite"),
+    };
+    const cfg: OpenClawConfig = {
+      session: { store: scope.storePath },
+      commands: { allowFrom: { telegram: ["200"] } },
+      channels: {
+        telegram: { dmPolicy: "allowlist", allowFrom: ["200"], richMessages: false },
+      },
+    };
+    await upsertSessionEntry({ ...scope, entry: { sessionId: scope.sessionId, updatedAt: 1 } });
+    const originalText = "Original command reply";
+    const displayedText = "Displayed command reply";
+    registerCommand("demo-plugin", {
+      name: "transcript_echo",
+      description: "Echo fixture text",
+      requireAuth: true,
+      handler: async () => ({ text: originalText }),
+    });
+    const registry = getActivePluginRegistry();
+    if (!registry) {
+      throw new Error("expected a fixture plugin registry");
+    }
+    const rewrite = vi.fn((event: { content: string }) => ({
+      content: event.content === originalText ? displayedText : event.content,
+    }));
+    addTestHook({
+      registry,
+      pluginId: "demo-plugin",
+      hookName: "message_sending",
+      handler: rewrite,
+    });
+    initializeGlobalHookRunner(registry);
+    onTestFinished(resetGlobalHookRunner);
+
+    const { commandHandlers, sendMessage } = await registerMenu({ allowFrom: ["200"] }, cfg);
+    const handler = commandHandlers.get("transcript_echo");
+    if (!handler) {
+      throw new Error("expected transcript_echo command handler");
+    }
+    const { deliverReplies } = await vi.importActual<typeof import("./bot/delivery.replies.js")>(
+      "./bot/delivery.replies.js",
+    );
+    const ctx = menu.createPrivateCommandContext();
+    const commandText = "/transcript_echo";
+    await menu.deliverReplies.withImplementation(deliverReplies, () =>
+      handler({ ...ctx, message: { ...ctx.message, text: commandText } }),
+    );
+
+    expect(rewrite).toHaveBeenCalledOnce();
+    expect(sendMessage.mock.calls.map(([, text]) => text)).toEqual([displayedText]);
+    const messages = (await readVisibleSessionTranscriptMessageEntries(scope)).map(
+      ({ message }) => message,
+    );
+    expect(messages).toMatchObject([
+      { role: "user", content: [{ type: "text", text: commandText }] },
+      { role: "assistant", content: [{ type: "text", text: displayedText }] },
+    ]);
+  });
 
   it("allows requireAuth:false plugin commands for unauthorized senders through the real registry", async () => {
     registerPairPluginCommand();

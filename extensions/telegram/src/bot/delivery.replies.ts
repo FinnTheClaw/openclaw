@@ -55,6 +55,12 @@ import { recordSentMessage } from "../sent-message-cache.js";
 import { resolveTelegramTargetChatType } from "../targets.js";
 import { planTelegramTextDeliveryPages } from "../telegram-text-delivery.js";
 import { emitTelegramMessageSentHooks, runTelegramMessageSendingHook } from "./delivery.hooks.js";
+import {
+  mirrorDeliveredReplies,
+  observeDeliveredText,
+  type DeliveredTextObserver,
+  type DeliveryTranscriptMirror,
+} from "./delivery.transcript.js";
 import { resolveTelegramReplyId, type TelegramThreadSpec } from "./helpers.js";
 import {
   resolveReplyQuoteForSend,
@@ -531,7 +537,9 @@ type DeliverRepliesParams = {
   replyQuoteByMessageId?: TelegramNativeQuoteCandidateByMessageId;
   /** Override media loader (tests). */
   mediaLoader?: typeof loadWebMedia;
-  transcriptMirror?: (payload: { text?: string; mediaUrls?: string[] }) => Promise<void> | void;
+  transcriptMirror?: DeliveryTranscriptMirror;
+  /** Plain-text projection of all provider-accepted parts of a settled reply. */
+  onDeliveredText?: DeliveredTextObserver;
   promptContextSequence?: TelegramPromptContextProjectionSequence;
   /** Text is already prepared Telegram HTML and must not be parsed as Markdown again. */
   textMode?: "html";
@@ -780,21 +788,11 @@ async function deliverReplyPlan(
   }
 
   if (deliveredCount() > 0 && transcriptMirror) {
-    const text = deliveredContents
-      .map((content) => content.text)
-      .filter(Boolean)
-      .join("\n\n");
-    const mediaUrls = deliveredContents.flatMap((content) => content.mediaUrls);
-    if (text || mediaUrls.length > 0) {
-      try {
-        await transcriptMirror({
-          text: text || undefined,
-          mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined,
-        });
-      } catch (mirrorErr) {
-        logVerbose(`telegram transcriptMirror failed: ${formatErrorMessage(mirrorErr)}`);
-      }
-    }
+    await mirrorDeliveredReplies(transcriptMirror, deliveredContents);
+  }
+
+  if (params.onDeliveredText) {
+    await observeDeliveredText(params.onDeliveredText, sender.parts);
   }
 
   return {
