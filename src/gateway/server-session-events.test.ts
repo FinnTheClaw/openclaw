@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../test/helpers/promise.js";
+import * as cronDisplay from "./chat-display-projection.cron.js";
 import { registerTranscriptMarkerQueueTests } from "./server-session-events.marker-queue.test-support.js";
 import {
   createGatewayBroadcaster,
@@ -79,6 +80,48 @@ describe("createTranscriptUpdateBroadcastHandler", () => {
       storedMessage(id),
     );
     sessionRow.thinkingLevel = "ultra";
+  });
+
+  it("publishes committed forwarded messages when the cron label is unavailable", async () => {
+    const display = await vi.importActual<typeof import("./chat-display-projection.js")>(
+      "./chat-display-projection.js",
+    );
+    const prepare = vi
+      .spyOn(cronDisplay, "prepareForwardedMessageCronJobNameResolver")
+      .mockResolvedValueOnce(() => "Daily report")
+      .mockRejectedValueOnce(new Error("Cron label read temporarily unavailable"));
+    projectChatDisplayMessageMock.mockImplementation(display.projectChatDisplayMessage);
+    try {
+      const { broadcastToConnIds, handler } = createHandler(false);
+      const target = transcriptTarget("/tmp/forwarded-cron-label-fixture.sqlite");
+      const sourceSessionKey = "agent:main:cron:daily-report:run:completed-run";
+      const message = {
+        role: "user",
+        content: "The queue is clear.",
+        provenance: { kind: "inter_session", sourceTool: "sessions_send", sourceSessionKey },
+      };
+      readSessionMessageByIdAsyncMock.mockResolvedValue({ ...storedMessage("forwarded"), message });
+      const emit = (messageId: string) => handler({ target, messageId, message });
+      const expectForwarded = (messageId: string, label: string) =>
+        expectBroadcast(broadcastToConnIds, {
+          sessionKey: target.sessionKey,
+          messageId,
+          message: expect.objectContaining({
+            role: "assistant",
+            content: message.content,
+            senderSession: { sessionKey: sourceSessionKey, agentId: "main", label },
+          }),
+        });
+
+      await emit("forwarded-with-label");
+      expectForwarded("forwarded-with-label", "Daily report");
+      await emit("forwarded-while-label-unavailable");
+      expectForwarded("forwarded-while-label-unavailable", "Automation");
+      expect(readSessionMessageByIdAsyncMock).toHaveBeenCalledTimes(2);
+    } finally {
+      prepare.mockRestore();
+      projectChatDisplayMessageMock.mockImplementation((message) => message);
+    }
   });
 
   it("bounds queued presentation behind a held canonical read and invalidates history", async ({

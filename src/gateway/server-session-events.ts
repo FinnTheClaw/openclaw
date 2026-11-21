@@ -502,9 +502,18 @@ async function handleTranscriptUpdateBroadcast(
       publicationFailed = true;
     }
   }
-  const resolveCronJobName = await prepareForwardedMessageCronJobNameResolver(
+  // Optional sender labels must not block delivery of a committed message.
+  const preparedCronJobName = await prepareForwardedMessageCronJobNameResolver(
     message === undefined ? [] : [message],
-  );
+  ).catch(() => undefined);
+  const resolveCronJobName = (jobId: string) => {
+    try {
+      return preparedCronJobName?.(jobId);
+    } catch {
+      // The cron owner can invalidate its resolver while the session row is prepared.
+      return undefined;
+    }
+  };
   await withPreparedEventRow(
     projection,
     routingAgentId
