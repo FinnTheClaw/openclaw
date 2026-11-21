@@ -13,7 +13,7 @@ import {
   validateQaEvidenceSummaryJson,
 } from "./evidence-summary.js";
 import type { QaTransportAdapter } from "./qa-transport.js";
-import { writeQaSuiteArtifacts } from "./suite-artifacts.js";
+import { invalidateQaSuiteArtifactGeneration, writeQaSuiteArtifacts } from "./suite-artifacts.js";
 import { createQaSuiteEvidenceInvocation, rebaseQaSuiteEvidence } from "./suite-evidence.js";
 import {
   makeQaSuiteTestLaunch,
@@ -92,6 +92,21 @@ describe("suite artifacts", () => {
     await expect(fs.access(artifacts.evidencePath)).rejects.toMatchObject({ code: "ENOENT" });
     await fs.access(artifacts.reportPath);
     await fs.access(artifacts.summaryPath);
+  });
+
+  it("invalidates stale mock request evidence while preserving unrelated artifacts", async () => {
+    const outputDir = await tempDirs.makeTempDir("qa-suite-artifact-invalidation-");
+    const artifactDir = path.join(outputDir, "artifacts");
+    const staleRequestPath = path.join(artifactDir, "mock-openai-requests.json");
+    const unrelatedPath = path.join(artifactDir, "unrelated.txt");
+    await fs.mkdir(artifactDir);
+    await fs.writeFile(staleRequestPath, "[]\n", "utf8");
+    await fs.writeFile(unrelatedPath, "keep\n", "utf8");
+
+    await invalidateQaSuiteArtifactGeneration(outputDir);
+
+    await expect(fs.readFile(unrelatedPath, "utf8")).resolves.toBe("keep\n");
+    await expect(fs.access(staleRequestPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("distinguishes partial Markdown from the terminal report shape", async () => {

@@ -2,9 +2,10 @@ import path from "node:path";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { QaMockProviderServer } from "./providers/index.js";
 import type { QaProviderMode } from "./providers/shared/types.js";
-import { publishQaSuiteArtifactFiles } from "./suite-artifacts.js";
-
-const QA_MOCK_PROVIDER_REQUESTS_ARTIFACT = path.join("artifacts", "mock-openai-requests.json");
+import {
+  publishQaSuiteArtifactFiles,
+  QA_MOCK_PROVIDER_REQUESTS_ARTIFACT,
+} from "./suite-artifacts.js";
 
 export async function captureQaMockProviderRequests(params: {
   outputDir: string;

@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { removePathWithinRoot } from "openclaw/plugin-sdk/file-access-runtime";
 import type { QaRunnerTransportArtifacts } from "openclaw/plugin-sdk/qa-runner-runtime";
-import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
+import { extractErrorCode, replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { qaEvidenceSummaryV3Schema } from "./evidence-summary-schema.js";
 import { QA_EVIDENCE_FILENAME, type QaEvidenceSummaryV3Json } from "./evidence-summary.js";
 import { splitQaModelRef, type QaProviderMode } from "./model-selection.js";
@@ -14,6 +15,8 @@ import {
   rejectRemovedQaChannelDriverSelection,
   type QaSuiteScenarioResult,
 } from "./suite-types.js";
+
+export const QA_MOCK_PROVIDER_REQUESTS_ARTIFACT = "artifacts/mock-openai-requests.json";
 
 /** Atomically replaces each file in order; summary-last is a completion signal, not a set transaction. */
 export async function publishQaSuiteArtifactFiles(params: {
@@ -40,6 +43,21 @@ export async function publishQaSuiteArtifactFiles(params: {
 export async function invalidateQaSuiteArtifactGeneration(outputDir: string) {
   for (const fileName of ["qa-suite-summary.json", QA_EVIDENCE_FILENAME, "qa-suite-report.md"]) {
     await fs.rm(path.join(outputDir, fileName), { force: true });
+  }
+  const artifactsDir = path.join(outputDir, path.dirname(QA_MOCK_PROVIDER_REQUESTS_ARTIFACT));
+  const artifactsDirStat = await fs.lstat(artifactsDir).catch((error: unknown) => {
+    if (extractErrorCode(error) === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  });
+  // Skip aliased directories and still require scoped removal at mutation time.
+  if (artifactsDirStat?.isDirectory()) {
+    await removePathWithinRoot({
+      rootDir: outputDir,
+      relativePath: QA_MOCK_PROVIDER_REQUESTS_ARTIFACT,
+      force: true,
+    });
   }
 }
 
