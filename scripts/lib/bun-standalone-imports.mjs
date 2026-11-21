@@ -75,6 +75,7 @@ export function rewriteStandaloneImports({
     /import\.meta|import\s*\(|createRequire|_resolveFilename|__dirname|__filename/.test(contents)
       ? parse(contents, {
           ecmaVersion: "latest",
+          filename,
           sourceType,
           allowImportExportEverywhere: true,
           allowAwaitOutsideFunction: true,

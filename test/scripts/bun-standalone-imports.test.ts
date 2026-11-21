@@ -430,6 +430,27 @@ const later = "./later.js";
     expect(rewrite(staticImport)).toBe(staticImport);
   });
 
+  it("rebases import.meta.url without losing TSX syntax", () => {
+    const source = "export const panel = <section data-url={import.meta.url} />;";
+    const contents = rewriteStandaloneImports({
+      contents: source,
+      filename: `${runtimeRoot}/.typed-source/panel.tsx`,
+      physicalFilename: `${runtimeRoot}/dist/panel.mjs`,
+      runtimeRoot,
+      embeddedPaths,
+      moduleAliases,
+      workerThreadsShim,
+      parse,
+      preserveTypes: true,
+    });
+    expect(contents).toBe(
+      source.replace(
+        "import.meta.url",
+        '(globalThis.__openclawStandaloneRootUrl + "dist/panel.mjs")',
+      ),
+    );
+  });
+
   it("fails the build when a generated alias has no embedded entry", () => {
     expect(() => rewrite(`import(${JSON.stringify(moduleAliases.ws)})`, {})).toThrow(
       "Missing embedded standalone import: node_modules/ws/index.js",
