@@ -43,6 +43,18 @@ const selected = enabled ? async (BUILD_FLAG: boolean): Promise<{ BUILD_FLAG: bo
     expect(() => parse(result.contents)).not.toThrow();
   });
 
+  it("preserves JSX syntax in a TSX source transform", async () => {
+    const { sourceRoot, runtimeRoot } = fixture();
+    const adapter = createStandaloneSourceTransforms({ sourceRoot, runtimeRoot, parse });
+    const source = "export const panel = <section />;";
+    const { contents } = await adapter.transform({
+      filename: path.join(sourceRoot, "component.tsx"),
+      contents: source,
+      config: {},
+    });
+    expect(contents).toBe(source);
+  });
+
   it("keeps build-constant comparisons type-correct without changing runtime branches", async () => {
     const { sourceRoot, runtimeRoot, write } = fixture();
     const adapter = createStandaloneSourceTransforms({ sourceRoot, runtimeRoot, parse });

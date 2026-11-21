@@ -56,13 +56,14 @@ export function standaloneSourceLoader(filename) {
 /** Keep source offsets and TypeScript annotations while the packaging adapters edit syntax. */
 export function createStandaloneSourceParser() {
   return createStandaloneParser((contents, options = {}) => {
+    const jsx = typeof options.filename === "string" && /\.[jt]sx$/u.test(options.filename);
     try {
       return parse(contents, {
         sourceType: options.sourceType ?? "module",
         allowReturnOutsideFunction: options.allowReturnOutsideFunction ?? false,
         allowAwaitOutsideFunction: options.allowAwaitOutsideFunction ?? false,
         allowImportExportEverywhere: options.allowImportExportEverywhere ?? false,
-        plugins: ["estree", "typescript", "decorators-legacy"],
+        plugins: ["estree", "typescript", "decorators-legacy", ...(jsx ? ["jsx"] : [])],
       }).program;
     } catch (error) {
       if (!(error instanceof SyntaxError)) {
