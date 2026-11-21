@@ -1,6 +1,8 @@
+import { once } from "node:events";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
+import { promisify } from "node:util";
 import { createOpenAIResponsesTransportStreamFn } from "@openclaw/ai/transports";
 import { Type } from "typebox";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -15,6 +17,7 @@ import {
   closeOpenAICodexWebSocketSessions,
   streamOpenAICodexResponses,
 } from "../../../../packages/ai/src/providers/openai-chatgpt-responses.js";
+import { createJwt } from "../../../../packages/ai/src/providers/openai-chatgpt-responses.test-helpers.js";
 import { writeOpenAiResponsesSse } from "../../../../test/helpers/openai-responses-sse.js";
 import { replaceSessionEntry } from "../../../config/sessions/session-accessor.js";
 import { useTempSessionsFixture } from "../../../config/sessions/test-helpers.js";
@@ -43,6 +46,8 @@ function toLlmMessages(items: AgentMessage[]): Message[] {
 }
 
 function responseEvents(first: boolean): Record<string, unknown>[] {
+  const text = "Note saved once.";
+  const position = { output_index: 0 };
   const item = first
     ? {
         type: "function_call",
@@ -57,33 +62,24 @@ function responseEvents(first: boolean): Record<string, unknown>[] {
         id: "msg_final",
         role: "assistant",
         status: "completed",
-        content: [{ type: "output_text", text: "Note saved once.", annotations: [] }],
+        content: [{ type: "output_text", text, annotations: [] }],
       };
   return [
     {
       type: "response.output_item.added",
-      output_index: 0,
+      ...position,
       item: { ...item, status: "in_progress", ...(!first ? { content: [] } : {}) },
     },
     ...(!first
-      ? [
-          {
-            type: "response.output_text.delta",
-            item_id: item.id,
-            output_index: 0,
-            content_index: 0,
-            delta: "Note saved once.",
-          },
-          {
-            type: "response.output_text.done",
-            item_id: item.id,
-            output_index: 0,
-            content_index: 0,
-            text: "Note saved once.",
-          },
-        ]
+      ? ["delta", "done"].map((phase) =>
+          Object.assign(
+            { type: `response.output_text.${phase}`, item_id: item.id, content_index: 0 },
+            position,
+            phase === "delta" ? { delta: text } : { text },
+          ),
+        )
       : []),
-    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.output_item.done", ...position, item },
     {
       type: "response.completed",
       response: {
@@ -96,16 +92,6 @@ function responseEvents(first: boolean): Record<string, unknown>[] {
   ];
 }
 
-function syntheticLoopbackJwt(): string {
-  const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return (
-    encode({ alg: "none", typ: "JWT" }) +
-    "." +
-    encode({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-loopback" } }) +
-    ".signature"
-  );
-}
-
 const fixture = useTempSessionsFixture("settled-provider-error-loopback-");
 let admission: ReturnType<typeof prepareSystemAgentRunAdmission>;
 beforeEach(() => {
@@ -113,267 +99,226 @@ beforeEach(() => {
 });
 afterEach(() => admission.close());
 
-it.each(
-  ["HTTP", "WebSocket", "terminated"].flatMap((failure) =>
-    [false, true].map((cancelAfterPersistence) => ({ failure, cancelAfterPersistence })),
-  ),
-)(
-  "finalizes after $failure failure (cancel=$cancelAfterPersistence)",
-  async ({ failure, cancelAfterPersistence }) => {
-    const controller = new AbortController();
-    const websocket = failure === "WebSocket";
-    const apiKey = websocket ? syntheticLoopbackJwt() : "synthetic-loopback-key";
-    const requests: Array<{ tools?: unknown[] }> = [];
-    const server = createServer((request, response) => {
-      request.setEncoding("utf8");
-      let body = "";
-      request.on("data", (chunk: string) => {
-        body += chunk;
-      });
-      request.on("end", () => {
-        requests.push(JSON.parse(body));
-        if (requests.length === 2) {
-          if (failure === "terminated") {
-            // Close a valid response body before completion so the real client fails.
-            response.writeHead(200, {
-              "content-type": "text/event-stream",
-              "cache-control": "no-store",
-            });
-            response.write(
-              `data: ${JSON.stringify({
-                type: "response.output_item.added",
-                output_index: 0,
-                item: {
-                  type: "message",
-                  id: "msg_cut",
-                  role: "assistant",
-                  status: "in_progress",
-                  content: [],
-                },
-              })}\n\n`,
-              () => {
-                response.destroy();
-              },
-            );
-            return;
-          }
-          response.writeHead(503, { "content-type": "application/json" });
-          response.end(
-            JSON.stringify({
-              error: {
-                message: "upstream connect error: connection refused",
-                type: "server_error",
-              },
-            }),
-          );
-          return;
-        }
-        writeOpenAiResponsesSse(response, responseEvents(requests.length === 1));
-      });
+it.each(["HTTP", "WebSocket", "terminated"])("finalizes after %s failure", async (failure) => {
+  const websocket = failure === "WebSocket";
+  const apiKey = websocket
+    ? createJwt({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-loopback" } })
+    : "synthetic-loopback-key";
+  const requests: Array<{ tools?: unknown[]; prompt_cache_key?: string }> = [];
+  const conversationCacheKey = "conversation-cache-key";
+  const server = createServer((request, response) => {
+    request.setEncoding("utf8");
+    let body = "";
+    request.on("data", (chunk: string) => {
+      body += chunk;
     });
-    const sockets = new WebSocketServer({ server });
-    sockets.on("connection", (socket) => {
-      socket.on("message", (data) => {
-        requests.push(JSON.parse(rawDataToString(data)));
-        if (requests.length === 2) {
-          socket.terminate();
-          return;
-        }
-        for (const event of responseEvents(requests.length === 1)) {
-          socket.send(JSON.stringify(event));
-        }
-      });
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    try {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        throw new Error("Missing loopback address");
-      }
-      const resolved = createResolvedEmbeddedRunnerModel("loopback-provider", "test-model", {
-        baseUrl: "http://127.0.0.1:" + address.port + "/v1",
-      });
-      const model: Model = {
-        ...resolved.model,
-        api: websocket ? "openai-chatgpt-responses" : "openai-responses",
-        provider: websocket ? "openai" : "loopback-provider",
-        input: ["text"],
-        contextWindow: 8192,
-        maxTokens: 256,
-      };
-      const target = {
-        agentId: "main",
-        sessionId: "session-settled",
-        sessionKey: "agent:main:settled",
-        storePath: path.join(fs.realpathSync(fixture.sessionsDir()), "sessions.json"),
-      };
-      await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
-      const persist = (message: AgentMessage) =>
-        appendSessionTranscriptMessageByIdentity({ ...target, config: {}, message });
-      const note = path.join(fixture.sessionsDir(), "note.txt");
-      const execute = vi.fn(async () => {
-        fs.appendFileSync(note, "saved\n");
-        return { content: [{ type: "text" as const, text: "Note saved once" }], details: {} };
-      });
-      const tool: AgentTool = {
-        name: "write",
-        label: "Write",
-        description: "Save a note",
-        parameters: Type.Object({}),
-        execute,
-      };
-      const stream: StreamFn = websocket
-        ? (requestModel, context, options) =>
-            streamOpenAICodexResponses(
-              // Responses-specific compat settings do not belong to the ChatGPT API.
-              { ...requestModel, api: "openai-chatgpt-responses", compat: undefined },
-              context,
-              { ...options, transport: "websocket" },
-            )
-        : createOpenAIResponsesTransportStreamFn();
-      const itemLifecycle = { startedCount: 0, completedCount: 0, activeCount: 0 };
-      const messages = await runAgentLoop(
-        [{ role: "user", content: "Save the note, then summarize.", timestamp: 1 }],
-        { systemPrompt: "Save once.", messages: [], tools: [tool] },
-        {
-          model,
-          apiKey,
-          convertToLlm: toLlmMessages,
-        },
-        async (event) => {
-          if (event.type === "tool_execution_start") {
-            itemLifecycle.startedCount++;
-            itemLifecycle.activeCount++;
-          }
-          if (event.type === "tool_execution_end") {
-            itemLifecycle.completedCount++;
-            itemLifecycle.activeCount--;
-          }
-          if (event.type === "message_end") {
-            await persist(event.message);
-          }
-        },
-        undefined,
-        stream,
-      );
-      const assistant = messages.at(-1);
-      if (assistant?.role !== "assistant") {
-        throw new Error("Missing failed provider response");
-      }
-      expect(assistant.stopReason).toBe("error");
-      const error = Object.assign(new Error(assistant.errorMessage), { code: assistant.errorCode });
-      if (failure === "terminated") {
-        // The bare transport message reaches the transcript unclassified; the
-        // recovery below must therefore come from the exact `terminated` match.
-        expect(assistant.errorMessage).toBe("terminated");
-        expect(isTransientNetworkError(error)).toBe(false);
-      } else {
-        expect(isTransientNetworkError(error)).toBe(true);
-      }
-      expect(execute).toHaveBeenCalledOnce();
-      expect(itemLifecycle).toEqual({ startedCount: 1, completedCount: 1, activeCount: 0 });
-      const prefix = await readVisibleSessionTranscriptMessageEntries(target);
-      expect(prefix.some((entry) => entry.message.role === "toolResult")).toBe(true);
-      const attempt = projectSettledProviderFailureAttempt(
-        createSettledProviderFailureAttempt({
-          terminal: { kind: "ok" },
-          sessionIdUsed: target.sessionId,
-          messagesSnapshot: messages,
-          toolMetas: [
-            { toolName: "write", toolCallId: "call_write", isError: false, replaySafe: false },
-          ],
-          itemLifecycle,
-        }),
-      );
-      expect(attempt).toMatchObject({
-        terminal: { kind: "ok" },
-        settledTurnFinalizationContext: { source: "openclaw-transcript" },
-      });
-      const input = createSettledFinalizationTestInput(attempt, await admission.admit("embedded"));
-      input.finalization.abortSignal = controller.signal;
-      input.terminalBase.runParams.trigger = "user";
-      input.terminalBase.runParams.config = {};
-      input.terminalBase.provider = model.provider;
-      input.terminalBase.model = model.id;
-      input.terminalBase.activeErrorContext = { provider: model.provider, model: model.id };
-      input.finalization.modelApi = model.api;
-      Object.assign(input.finalization.preparedAttempt, resolved, {
-        model,
-        config: {},
-        provider: model.provider,
-        modelId: model.id,
-        resolvedApiKey: apiKey,
-        agentId: target.agentId,
-        sessionKey: target.sessionKey,
-        sessionTarget: target,
-        authProfileStore: { version: 1, profiles: {} },
-      });
-      const finalize = vi.fn<NonNullable<typeof input.finalization.harness.finalizeSettledTurn>>(
-        async ({ attempt: prepared, settledAttempt }) => {
-          expect(prepared).toMatchObject({
-            disableTools: true,
-            skipPreparedUserTurnMessage: true,
-            suppressNextUserMessagePersistence: true,
+    request.on("end", () => {
+      requests.push(JSON.parse(body));
+      if (requests.length === 2) {
+        if (failure === "terminated") {
+          response.writeHead(200, {
+            "content-type": "text/event-stream",
+            "cache-control": "no-store",
           });
-          expect(settledAttempt).toBe(attempt);
-          const response = await stream(
-            model,
-            {
-              systemPrompt: prepared.prompt,
-              messages: toLlmMessages(messages),
-              tools: prepared.disableTools ? [] : [tool],
-            },
-            { apiKey, signal: prepared.abortSignal },
+          response.write(`data: ${JSON.stringify(responseEvents(false)[0])}\n\n`, () =>
+            response.destroy(),
           );
-          const answer = await response.result();
-          await persist(answer);
-          if (cancelAfterPersistence) {
-            controller.abort(new Error("cancelled while finalization settled"));
-          }
-          return { assistant: answer, assistantTranscriptOwned: true };
-        },
-      );
-      input.finalization.harness.finalizeSettledTurn = finalize;
-      const runAttempt = vi.fn();
-      input.finalization.harness.runAttempt = runAttempt;
-      const before = prepareEmbeddedRunTerminal({ ...input.terminalBase, ...input.initial });
-      expect(before.payloadsWithToolMedia).toEqual([expect.objectContaining({ isError: true })]);
-      const result = await prepareTerminalWithSettledTurnFinalization(input);
-
-      expect(result.finalizationOutcome).toBe(cancelAfterPersistence ? "failed" : "answered");
-      expect(finalize).toHaveBeenCalledOnce();
-      expect(runAttempt).not.toHaveBeenCalled();
-      expect(execute).toHaveBeenCalledOnce();
-      expect(fs.readFileSync(note, "utf8")).toBe("saved\n");
-      expect(requests).toHaveLength(3);
-      expect(requests.map((request) => request.tools?.length ?? 0)).toEqual([1, 1, 0]);
-      if (cancelAfterPersistence) {
-        expect(result.attempt).toBe(attempt);
-        expect(result.prepared.payloadsWithToolMedia).toEqual(before.payloadsWithToolMedia);
-      } else {
-        expect(result.prepared.payloadsWithToolMedia).toEqual([
-          expect.objectContaining({ text: "Note saved once." }),
-        ]);
-        expect(result.prepared.payloadsWithToolMedia?.[0]?.isError).not.toBe(true);
+          return;
+        }
+        response.writeHead(503, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            error: { message: "upstream connect error: connection refused", type: "server_error" },
+          }),
+        );
+        return;
       }
-      const transcript = await readVisibleSessionTranscriptMessageEntries(target);
-      expect(transcript.slice(0, prefix.length)).toEqual(prefix);
-      expect(transcript).toHaveLength(prefix.length + 1);
-    } finally {
-      closeOpenAICodexWebSocketSessions();
-      for (const socket of sockets.clients) {
+      writeOpenAiResponsesSse(response, responseEvents(requests.length === 1));
+    });
+  });
+  const sockets = new WebSocketServer({ server });
+  sockets.on("connection", (socket) => {
+    socket.on("message", (data) => {
+      requests.push(JSON.parse(rawDataToString(data)));
+      if (requests.length === 2) {
         socket.terminate();
+        return;
       }
-      await new Promise<void>((resolve, reject) => {
-        sockets.close((error) => (error ? reject(error) : resolve()));
-      });
-      server.closeAllConnections();
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
+      for (const event of responseEvents(requests.length === 1)) {
+        socket.send(JSON.stringify(event));
+      }
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Missing loopback address");
     }
-  },
-);
+    const resolved = createResolvedEmbeddedRunnerModel("loopback-provider", "test-model", {
+      baseUrl: "http://127.0.0.1:" + address.port + "/v1",
+    });
+    const model: Model = {
+      ...resolved.model,
+      input: ["text"],
+      api: websocket ? "openai-chatgpt-responses" : "openai-responses",
+      provider: websocket ? "openai" : "loopback-provider",
+      compat: { supportsPromptCacheKey: true },
+    };
+    const target = {
+      agentId: "main",
+      sessionId: "session-settled",
+      sessionKey: "agent:main:settled",
+      storePath: path.join(fs.realpathSync(fixture.sessionsDir()), "sessions.json"),
+    };
+    await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const persist = (message: AgentMessage) =>
+      appendSessionTranscriptMessageByIdentity({ ...target, config: {}, message });
+    const note = path.join(fixture.sessionsDir(), "note.txt");
+    const execute = vi.fn(async () => {
+      fs.appendFileSync(note, "saved\n");
+      return { content: [{ type: "text" as const, text: "Note saved once" }], details: {} };
+    });
+    const tool: AgentTool = {
+      name: "write",
+      label: "Write",
+      description: "Save a note",
+      parameters: Type.Object({}),
+      execute,
+    };
+    const stream: StreamFn = websocket
+      ? (requestModel, context, options) =>
+          streamOpenAICodexResponses(
+            // Responses-specific compat settings do not belong to the ChatGPT API.
+            { ...requestModel, api: "openai-chatgpt-responses", compat: undefined },
+            context,
+            { ...options, transport: "websocket" },
+          )
+      : createOpenAIResponsesTransportStreamFn();
+    const itemLifecycle = { startedCount: 0, completedCount: 0, activeCount: 0 };
+    const messages = await runAgentLoop(
+      [{ role: "user", content: "Save the note, then summarize.", timestamp: 1 }],
+      { systemPrompt: "Save once.", messages: [], tools: [tool] },
+      { model, apiKey, promptCacheKey: conversationCacheKey, convertToLlm: toLlmMessages },
+      async (event) => {
+        if (event.type === "tool_execution_start") {
+          itemLifecycle.startedCount++;
+          itemLifecycle.activeCount++;
+        }
+        if (event.type === "tool_execution_end") {
+          itemLifecycle.completedCount++;
+          itemLifecycle.activeCount--;
+        }
+        if (event.type === "message_end") {
+          await persist(event.message);
+        }
+      },
+      undefined,
+      stream,
+    );
+    const assistant = messages.at(-1);
+    if (assistant?.role !== "assistant") {
+      throw new Error("Missing failed provider response");
+    }
+    expect(assistant.stopReason).toBe("error");
+    const error = Object.assign(new Error(assistant.errorMessage), { code: assistant.errorCode });
+    if (failure === "terminated") {
+      // The bare transport message reaches the transcript unclassified; the
+      // recovery below must therefore come from the exact `terminated` match.
+      expect(assistant.errorMessage).toBe("terminated");
+    }
+    expect(isTransientNetworkError(error)).toBe(failure !== "terminated");
+    expect(execute).toHaveBeenCalledOnce();
+    expect(itemLifecycle).toEqual({ startedCount: 1, completedCount: 1, activeCount: 0 });
+    const prefix = await readVisibleSessionTranscriptMessageEntries(target);
+    expect(prefix.some((entry) => entry.message.role === "toolResult")).toBe(true);
+    const attempt = projectSettledProviderFailureAttempt(
+      createSettledProviderFailureAttempt({
+        terminal: { kind: "ok" },
+        sessionIdUsed: target.sessionId,
+        messagesSnapshot: messages,
+        toolMetas: [
+          { toolName: "write", toolCallId: "call_write", isError: false, replaySafe: false },
+        ],
+        itemLifecycle,
+      }),
+    );
+    expect(attempt).toMatchObject({
+      terminal: { kind: "ok" },
+      settledTurnFinalizationContext: { source: "openclaw-transcript" },
+    });
+    const input = createSettledFinalizationTestInput(attempt, await admission.admit("embedded"));
+    const modelIdentity = { provider: model.provider, model: model.id };
+    Object.assign(input.terminalBase.runParams, { trigger: "user", config: {} });
+    Object.assign(input.terminalBase, modelIdentity, { activeErrorContext: modelIdentity });
+    input.finalization.modelApi = model.api;
+    Object.assign(input.finalization.preparedAttempt, resolved, {
+      model,
+      config: {},
+      provider: model.provider,
+      modelId: model.id,
+      resolvedApiKey: apiKey,
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+      sessionTarget: target,
+      promptCacheKey: conversationCacheKey,
+      authProfileStore: { version: 1, profiles: {} },
+    });
+    const finalize = vi.fn<NonNullable<typeof input.finalization.harness.finalizeSettledTurn>>(
+      async ({ attempt: prepared, settledAttempt }) => {
+        expect(prepared).toMatchObject({
+          disableTools: true,
+          skipPreparedUserTurnMessage: true,
+          suppressNextUserMessagePersistence: true,
+        });
+        expect(settledAttempt).toBe(attempt);
+        const response = await stream(
+          model,
+          {
+            systemPrompt: prepared.prompt,
+            messages: toLlmMessages(messages),
+            tools: prepared.disableTools ? [] : [tool],
+          },
+          { apiKey, signal: prepared.abortSignal, promptCacheKey: prepared.promptCacheKey },
+        );
+        const answer = await response.result();
+        await persist(answer);
+        return { assistant: answer, assistantTranscriptOwned: true };
+      },
+    );
+    input.finalization.harness.finalizeSettledTurn = finalize;
+    const runAttempt = vi.spyOn(input.finalization.harness, "runAttempt");
+    const before = prepareEmbeddedRunTerminal({ ...input.terminalBase, ...input.initial });
+    expect(before.payloadsWithToolMedia).toEqual([expect.objectContaining({ isError: true })]);
+    const result = await prepareTerminalWithSettledTurnFinalization(input);
+
+    expect(result.finalizationOutcome).toBe("answered");
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(runAttempt).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(fs.readFileSync(note, "utf8")).toBe("saved\n");
+    expect(requests.map((request) => request.tools?.length ?? 0)).toEqual([1, 1, 0]);
+    expect(requests.slice(0, 2).map((request) => request.prompt_cache_key)).toEqual([
+      conversationCacheKey,
+      conversationCacheKey,
+    ]);
+    expect(requests[2]?.prompt_cache_key).toBeTruthy();
+    expect(requests[2]?.prompt_cache_key).not.toBe(conversationCacheKey);
+    expect(result.prepared.payloadsWithToolMedia).toEqual([
+      expect.objectContaining({ text: "Note saved once." }),
+    ]);
+    expect(result.prepared.payloadsWithToolMedia?.[0]?.isError).not.toBe(true);
+    const transcript = await readVisibleSessionTranscriptMessageEntries(target);
+    expect(transcript.slice(0, prefix.length)).toEqual(prefix);
+    expect(transcript).toHaveLength(prefix.length + 1);
+  } finally {
+    closeOpenAICodexWebSocketSessions();
+    for (const socket of sockets.clients) {
+      socket.terminate();
+    }
+    await promisify(sockets.close.bind(sockets))();
+    server.closeAllConnections();
+    await promisify(server.close.bind(server))();
+  }
+});

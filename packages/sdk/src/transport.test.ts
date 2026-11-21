@@ -1,8 +1,13 @@
 // OpenClaw SDK tests cover transport behavior.
+import assert from "node:assert/strict";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OpenClaw } from "./client.js";
 import { createAgentEvent, createChatEvent } from "./client.test-support.js";
-import { GatewayClientTransport } from "./transport.js";
+import {
+  GatewayClientTransport,
+  observeGatewayReconnects,
+  takeGatewayResponseReceipt,
+} from "./transport.js";
 import type { GatewayEvent, OpenClawEvent } from "./types.js";
 
 type MockGatewayClientInstance = {
@@ -47,6 +52,33 @@ describe("GatewayClientTransport", () => {
   beforeEach(() => {
     gatewayClientMocks.instances.length = 0;
     gatewayClientMocks.synchronousStartError = undefined;
+  });
+
+  it("keeps replacement reconnect observers when an old disposer runs again", async () => {
+    const transport = new GatewayClientTransport();
+    const retired = vi.fn();
+    const unsubscribe = observeGatewayReconnects(transport, retired);
+    unsubscribe();
+    const active = vi.fn();
+    const stop = observeGatewayReconnects(transport, active);
+    try {
+      unsubscribe();
+      const connecting = transport.connect();
+      const client = gatewayClientMocks.instances[0];
+      client?.opts.onHelloOk?.({ sessionId: "connection-1" });
+      await connecting;
+      client?.opts.onClose?.(1006, "connection lost");
+      client?.opts.onHelloOk?.({ sessionId: "connection-2" });
+      expect(retired).not.toHaveBeenCalled();
+      expect(active).toHaveBeenCalledOnce();
+      stop();
+      client?.opts.onClose?.(1006, "connection lost again");
+      client?.opts.onHelloOk?.({ sessionId: "connection-3" });
+      expect(active).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+      await transport.close();
+    }
   });
 
   it.each(["chat", "assistant"])(
@@ -146,6 +178,28 @@ describe("GatewayClientTransport", () => {
     expect(client?.stopAndWait).toHaveBeenCalledTimes(1);
   });
 
+  it("acknowledges unsubscribe in the new connection before its first event", async () => {
+    const transport = new GatewayClientTransport();
+    try {
+      const connecting = transport.connect();
+      const client = gatewayClientMocks.instances[0];
+      if (!client) {
+        throw new Error("Expected the SDK Gateway client");
+      }
+      client.opts.onHelloOk?.({ sessionId: "connection-1" });
+      await connecting;
+      client.opts.onEvent?.(createChatEvent("run", "global", 1, "delta", "old", 1));
+      client.opts.onClose?.(1006, "connection lost");
+      client.opts.onHelloOk?.({ sessionId: "connection-2" });
+      client.request.mockResolvedValueOnce({ subscribed: false, key: "global" });
+
+      const response = await transport.request("sessions.messages.unsubscribe", { key: "global" });
+      expect(takeGatewayResponseReceipt(response)).toEqual({ epoch: { current: true } });
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("retries an initial synchronous startup failure with a fresh client", async () => {
     const transport = new GatewayClientTransport();
     gatewayClientMocks.synchronousStartError = new Error("socket startup failed");
@@ -171,6 +225,41 @@ describe("GatewayClientTransport", () => {
 
     await expect(transport.connect()).rejects.toThrow("gateway transport is closed");
     expect(gatewayClientMocks.instances).toHaveLength(0);
+  });
+
+  it.each(["success", "failure"])("joins parallel and repeated close after %s", async (outcome) => {
+    const transport = new GatewayClientTransport();
+    const connecting = transport.connect();
+    const client = gatewayClientMocks.instances[0];
+    assert(client);
+    client.opts.onHelloOk?.({ sessionId: "closing-session" });
+    await connecting;
+    const drain = Promise.withResolvers<void>();
+    client.stopAndWait.mockReturnValue(drain.promise);
+    let settled = false;
+    const closing = Promise.allSettled([transport.close(), transport.close()]).then((results) => {
+      settled = true;
+      return results;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    const failure = new Error("stop failed");
+    if (outcome === "failure") {
+      drain.reject(failure);
+    } else {
+      drain.resolve();
+    }
+    const expected =
+      outcome === "failure"
+        ? { status: "rejected", reason: failure }
+        : { status: "fulfilled", value: undefined };
+    expect(await closing).toEqual([expected, expected]);
+    if (outcome === "failure") {
+      await expect(transport.close()).rejects.toBe(failure);
+    } else {
+      await expect(transport.close()).resolves.toBeUndefined();
+    }
+    expect(client.stopAndWait).toHaveBeenCalledOnce();
   });
 
   it("resolves connect when a hello observer throws", async () => {

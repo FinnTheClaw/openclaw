@@ -11,7 +11,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderArtifactsSummary, renderAttendanceSummary } from "./cli-export.js";
-import { captureStdout, setupCli, stubMeetArtifactsApi } from "./test-support/cli-harness.js";
+import { setupCli, stubMeetArtifactsApi } from "./test-support/cli-harness.js";
+import { captureStdout } from "./test-support/fixtures.test-helpers.js";
 
 const options = [
   "--access-token",

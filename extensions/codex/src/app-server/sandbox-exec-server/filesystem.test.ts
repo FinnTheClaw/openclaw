@@ -15,7 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { copyPath, readDirectory } from "./filesystem.js";
+import type { JsonObject, JsonValue } from "../protocol.js";
+import { CodexSandboxExecSession } from "./session.js";
 import type { OpenClawExecServer } from "./types.js";
 
 const roots: string[] = [];
@@ -61,11 +62,32 @@ function fixture() {
       },
     },
   } as unknown as OpenClawExecServer;
+  const replies: JsonObject[] = [];
+  const session = new CodexSandboxExecSession(execServer, {
+    isOpen: () => true,
+    send: (message) => {
+      replies.push(message);
+    },
+  });
+  let id = 0;
+  const request = async (method: string, params: JsonObject): Promise<JsonValue | undefined> => {
+    const requestId = ++id;
+    await session.handleRequest({ id: requestId, method, params });
+    const reply = replies.find((message) => message.id === requestId);
+    if (!reply) throw new Error("Missing filesystem RPC response");
+    if (reply.error) {
+      const error = reply.error as JsonObject;
+      throw new Error(String(error.message));
+    }
+    return reply.result;
+  };
   const uri = (path: string) => pathToFileURL(path).href;
-  const list = async (path = source) =>
-    (await readDirectory(execServer, { path: uri(path) })).entries;
+  const list = async (path = source) => {
+    const result = await request("fs/readDirectory", { path: uri(path) });
+    return (result as JsonObject).entries;
+  };
   const copy = async () =>
-    copyPath(execServer, {
+    request("fs/copy", {
       sourcePath: uri(source),
       destinationPath: uri(target),
       recursive: true,

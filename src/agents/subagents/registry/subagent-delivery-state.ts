@@ -1,4 +1,7 @@
+import { asPositiveSafeInteger } from "@openclaw/normalization-core/number-coercion";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeAgentRunTerminalReplySnapshot } from "../../agent-run-terminal-reply.js";
+import type { SubagentAnnounceDeliveryResult } from "../announce/subagent-announce-dispatch.js";
 import type {
   PendingFinalDeliveryPayload,
   SubagentCompletionDeliveryState,
@@ -11,13 +14,40 @@ import type {
   SubagentRunRecord,
 } from "./subagent-registry.types.js";
 
+export function resetRequesterSettleWakeRetry(
+  wake?: RequesterSettleWakeState,
+): RequesterSettleWakeState {
+  return {
+    ...wake,
+    status: "pending",
+    attemptCount: 0,
+    privateInput: undefined,
+    nextAttemptAt: undefined,
+    lastError: undefined,
+  };
+}
+
+/** A pause uses the existing retry owner, but never consumes the completion cohort. */
+export function consumeSubagentPauseNotice(entry: SubagentRunRecord): boolean {
+  const wake = entry.requesterSettleWake;
+  if (entry.pauseReason !== "sessions_yield" || !wake?.pauseNotice) {
+    return false;
+  }
+  const { pauseNotice: _notice, ...completionWake } = wake;
+  entry.requesterSettleWake = resetRequesterSettleWakeRetry(completionWake);
+  return true;
+}
+
 export function projectSubagentRunForSessionList(entry: SubagentRunRecord): SubagentRunReadRecord {
   return {
     runId: entry.runId,
     ...(entry.taskRunId !== undefined ? { taskRunId: entry.taskRunId } : {}),
     ...(entry.pauseReason ? { pauseReason: entry.pauseReason } : {}),
     ...(entry.swarmRunId ? { swarmRunId: entry.swarmRunId } : {}),
+    ...(entry.schedulerSlotId ? { schedulerSlotId: entry.schedulerSlotId } : {}),
+    ...(entry.swarmLaunchReplayKey ? { swarmLaunchReplayKey: entry.swarmLaunchReplayKey } : {}),
     childSessionKey: entry.childSessionKey,
+    ...(entry.childAgentId ? { childAgentId: entry.childAgentId } : {}),
     ...(entry.controllerSessionKey ? { controllerSessionKey: entry.controllerSessionKey } : {}),
     requesterSessionKey: entry.requesterSessionKey,
     requesterStorePath: entry.requesterStorePath,
@@ -38,9 +68,6 @@ export function projectSubagentRunForSessionList(entry: SubagentRunRecord): Suba
     createdAt: entry.createdAt,
     execution: {
       status: entry.execution.status,
-      ...(entry.execution.interruptionReason
-        ? { interruptionReason: entry.execution.interruptionReason }
-        : {}),
       ...(entry.execution.startedAt !== undefined ? { startedAt: entry.execution.startedAt } : {}),
       ...(entry.execution.endedAt !== undefined ? { endedAt: entry.execution.endedAt } : {}),
       ...(entry.execution.outcome ? { outcome: { status: entry.execution.outcome.status } } : {}),
@@ -60,9 +87,8 @@ export function projectSubagentRunForSessionList(entry: SubagentRunRecord): Suba
       ? {
           delivery: {
             status: entry.delivery.status,
-            ...(entry.delivery.disposition === "intentional_non_delivery"
-              ? { disposition: entry.delivery.disposition }
-              : {}),
+            requesterDelivery: entry.delivery.requesterDelivery,
+            ...(entry.delivery.disposition ? { disposition: entry.delivery.disposition } : {}),
             ...(entry.delivery.suspendedAt !== undefined
               ? { suspendedAt: entry.delivery.suspendedAt }
               : {}),
@@ -72,6 +98,23 @@ export function projectSubagentRunForSessionList(entry: SubagentRunRecord): Suba
   };
 }
 
+export function shouldPreserveSubagentForMaintenance(entry: SubagentRunMaintenanceRecord): boolean {
+  if (entry.killReconciliation || entry.killIntent || entry.requesterSettleWake) {
+    // Requester settlement still reads child policy after child cleanup has completed.
+    // Reconciliation tombstones own provider results until completion or cancellation settles.
+    return true;
+  }
+  if (typeof entry.cleanupCompletedAt === "number") {
+    return false;
+  }
+  return (
+    typeof entry.execution.endedAt !== "number" ||
+    (entry.expectsCompletionMessage === true && entry.delivery?.status !== "delivered") ||
+    entry.delivery?.status === "pending" ||
+    isDeliverySuspended(entry)
+  );
+}
+
 /** Copy only protection facts; live memory retains its existing, unnormalized semantics. */
 export function projectSubagentRunForMaintenance(
   entry: SubagentRunRecord,
@@ -79,9 +122,13 @@ export function projectSubagentRunForMaintenance(
   return {
     runId: entry.runId,
     childSessionKey: entry.childSessionKey,
+    ...(entry.childAgentId ? { childAgentId: entry.childAgentId } : {}),
     requesterSessionKey: entry.requesterSessionKey,
     createdAt: entry.createdAt,
     cleanupCompletedAt: entry.cleanupCompletedAt,
+    requesterSettleWake: entry.requesterSettleWake
+      ? { status: entry.requesterSettleWake.status }
+      : undefined,
     expectsCompletionMessage: entry.expectsCompletionMessage,
     killIntent: entry.killIntent ? { ...entry.killIntent } : entry.killIntent,
     killReconciliation: entry.killReconciliation
@@ -95,33 +142,18 @@ export function projectSubagentRunForMaintenance(
 }
 
 export function normalizeSubagentRunState(entry: SubagentRunRecord): SubagentRunRecord {
-  const taskRunId = typeof entry.taskRunId === "string" ? entry.taskRunId.trim() : "";
-  entry.taskRunId = taskRunId || undefined;
-  const requesterTurnRunId =
-    typeof entry.requesterTurnRunId === "string" ? entry.requesterTurnRunId.trim() : "";
-  entry.requesterTurnRunId = requesterTurnRunId || undefined;
+  entry.taskRunId = normalizeOptionalString(entry.taskRunId);
+  const requesterTurnRunId = normalizeOptionalString(entry.requesterTurnRunId);
+  entry.requesterTurnRunId = requesterTurnRunId;
   entry.requesterTurnYielded =
     requesterTurnRunId && entry.requesterTurnYielded === true ? true : undefined;
   entry.retireAfterRequesterTurn =
     requesterTurnRunId && entry.retireAfterRequesterTurn === true ? true : undefined;
-  entry.generation =
-    typeof entry.generation === "number" &&
-    Number.isSafeInteger(entry.generation) &&
-    entry.generation > 0
-      ? entry.generation
-      : undefined;
+  entry.generation = asPositiveSafeInteger(entry.generation);
   entry.deleteCleanupDispatchedAt = Number.isFinite(entry.deleteCleanupDispatchedAt)
     ? entry.deleteCleanupDispatchedAt
     : undefined;
   entry.suppressCompletionDelivery = entry.suppressCompletionDelivery === true ? true : undefined;
-  entry.terminalOwner =
-    entry.terminalOwner === "interrupted-recovery" &&
-    Number.isFinite(entry.execution.endedAt) &&
-    entry.execution.outcome?.status === "error" &&
-    entry.endedReason === "subagent-error" &&
-    entry.pauseReason !== "sessions_yield"
-      ? "interrupted-recovery"
-      : undefined;
   if (entry.completion) {
     entry.completion.terminalReply = normalizeAgentRunTerminalReplySnapshot(
       entry.completion.terminalReply,
@@ -158,21 +190,15 @@ export function normalizeSubagentRunState(entry: SubagentRunRecord): SubagentRun
     entry.killIntent = {
       requestedAt: killIntent.requestedAt,
       reason: killIntent.reason.trim(),
-      lifecycleGeneration:
-        typeof killIntent.lifecycleGeneration === "string" && killIntent.lifecycleGeneration.trim()
-          ? killIntent.lifecycleGeneration.trim()
-          : undefined,
-      sessionId:
-        typeof killIntent.sessionId === "string" && killIntent.sessionId.trim()
-          ? killIntent.sessionId.trim()
-          : undefined,
-      sessionLifecycleRevision:
-        typeof killIntent.sessionLifecycleRevision === "string" &&
-        killIntent.sessionLifecycleRevision.trim()
-          ? killIntent.sessionLifecycleRevision.trim()
-          : undefined,
+      lifecycleGeneration: normalizeOptionalString(killIntent.lifecycleGeneration),
+      sessionId: normalizeOptionalString(killIntent.sessionId),
+      sessionLifecycleRevision: normalizeOptionalString(killIntent.sessionLifecycleRevision),
       suppressTaskDelivery: killIntent.suppressTaskDelivery === true ? true : undefined,
     };
+  }
+  // Only the durable session queue can retain in-progress delivery across restart.
+  if (entry.delivery?.status === "in_progress" && !entry.delivery.queueId) {
+    entry.delivery = { ...entry.delivery, status: "pending" };
   }
   // cleanupHandled is an in-process lock; after restart, unfinished cleanup must
   // retry unless durable cleanup completion was recorded.
@@ -186,7 +212,6 @@ export function normalizeSubagentRunState(entry: SubagentRunRecord): SubagentRun
   return entry;
 }
 
-/** Ensures a run has a nested completion state object. */
 export function ensureCompletionState(entry: SubagentRunRecord): SubagentCompletionState {
   entry.completion ??= {
     required: entry.expectsCompletionMessage === true,
@@ -194,7 +219,6 @@ export function ensureCompletionState(entry: SubagentRunRecord): SubagentComplet
   return entry.completion;
 }
 
-/** Ensures a run has a nested delivery state object. */
 export function ensureDeliveryState(entry: SubagentRunRecord): SubagentCompletionDeliveryState {
   entry.delivery ??= {
     status: entry.expectsCompletionMessage === false ? "not_required" : "pending",
@@ -202,66 +226,28 @@ export function ensureDeliveryState(entry: SubagentRunRecord): SubagentCompletio
   return entry.delivery;
 }
 
-/** Resets delivery state to its initial status for the run's completion requirement. */
 export function clearDeliveryState(entry: SubagentRunRecord): void {
   entry.delivery = {
     status: entry.expectsCompletionMessage === false ? "not_required" : "pending",
   };
 }
 
-/** Returns true when delivery is suspended with a durable timestamp. */
 export function isDeliverySuspended(entry: Pick<SubagentRunRecord, "delivery">): boolean {
   return entry.delivery?.status === "suspended" && typeof entry.delivery.suspendedAt === "number";
 }
 
-/** A finished requester without its required message receipt must not execute again implicitly. */
+/** A finished requester without its required reply receipt must not execute again implicitly. */
 export function isCompletedRequesterDeliveryBlocked(
   entry: Pick<SubagentRunRecord, "delivery">,
 ): boolean {
   return (
     isDeliverySuspended(entry) &&
     entry.delivery?.suspendedReason === "permanent_failure" &&
-    entry.delivery.lastDropReason === "message_tool_delivery_missing"
+    (entry.delivery.lastDropReason === "message_tool_delivery_missing" ||
+      entry.delivery.lastDropReason === "visible_reply_missing")
   );
 }
 
-/** Returns true when required delivery still owns the row after its child session is gone. */
-export function hasRetainedRequiredCompletionDelivery(
-  entry: Pick<
-    SubagentRunRecord,
-    "completion" | "delivery" | "expectsCompletionMessage" | "suppressCompletionDelivery"
-  >,
-): boolean {
-  const delivery = entry.delivery;
-  if (
-    entry.expectsCompletionMessage !== true ||
-    entry.suppressCompletionDelivery === true ||
-    entry.completion?.required !== true ||
-    !delivery?.payload
-  ) {
-    return false;
-  }
-  if (isDeliverySuspended(entry)) {
-    return true;
-  }
-  if (delivery.status === "in_progress") {
-    // The correlated session queue owns this delivery and resumes it separately.
-    return true;
-  }
-  return (
-    delivery.status === "pending" &&
-    delivery.disposition !== "ambiguous" &&
-    delivery.disposition !== "intentional_non_delivery" &&
-    delivery.disposition !== "permanent_failure"
-  );
-}
-
-/** Reads the current delivery attempt count. */
-export function getDeliveryAttemptCount(entry: SubagentRunRecord): number {
-  return entry.delivery?.attemptCount ?? 0;
-}
-
-/** Reads the non-empty last delivery error. */
 export function getDeliveryLastError(entry: SubagentRunRecord): string | undefined {
   const error = entry.delivery?.lastError;
   return typeof error === "string" && error.trim() ? error : undefined;
@@ -273,7 +259,7 @@ export const markRequesterSettleWakePending = (
 ) => {
   const existing = entry.requesterSettleWake;
   entry.requesterSettleWake = {
-    ...structuredClone(existing),
+    ...existing,
     status: existing?.status ?? "pending",
     attemptCount: existing?.attemptCount ?? 0,
     ...(existing?.retireAfterSettle === true || options?.retireAfterSettle === true
@@ -282,8 +268,57 @@ export const markRequesterSettleWakePending = (
   } satisfies RequesterSettleWakeState;
 };
 
+export function recordRequesterDelivery(
+  entry: SubagentRunRecord,
+  fact: NonNullable<SubagentCompletionDeliveryState["requesterDelivery"]>,
+): void {
+  const delivery = ensureDeliveryState(entry);
+  if (delivery.requesterDelivery?.state === "consumed") {
+    return;
+  }
+  delivery.requesterDelivery = fact;
+  if (delivery.status === "pending" || delivery.status === "in_progress") {
+    delivery.disposition = undefined;
+    delivery.lastError = undefined;
+  }
+}
+
+/** A result committed to the requester transcript is never replayed. */
+export function hasConsumedRequesterInput(entry: SubagentRunRecord): boolean {
+  return entry.delivery?.requesterDelivery?.state === "consumed";
+}
+
+// The requester turn itself stopped; no answer exists to deliver.
+const REQUESTER_TURN_FAILURES = new Set(["requester_aborted", "requester_transcript_conflict"]);
+
+/**
+ * A committed result is delivered when its turn failed before answering. A turn that answered,
+ * or ended for a recorded reason, keeps its own outcome: a missed send stays a failure.
+ */
+export function resolveRequesterDeliveryOutcome(
+  entries: readonly SubagentRunRecord[],
+  outcome: SubagentAnnounceDeliveryResult | undefined,
+): SubagentAnnounceDeliveryResult | undefined {
+  const turnFailedBeforeAnswer =
+    outcome?.finalAssistantVisibleText === undefined &&
+    (outcome?.reason === undefined || REQUESTER_TURN_FAILURES.has(outcome.reason));
+  return outcome &&
+    !outcome.delivered &&
+    outcome.disposition !== "intentional_non_delivery" &&
+    outcome.disposition !== "ambiguous" &&
+    outcome.finalAssistantVisibleText === undefined &&
+    entries.length > 0 &&
+    turnFailedBeforeAnswer &&
+    entries.every(hasConsumedRequesterInput)
+    ? { delivered: true, path: "direct" }
+    : outcome;
+}
+
 export const clearSubagentPendingDelivery = (entry: SubagentRunRecord) => {
   const delivery = ensureDeliveryState(entry);
+  const consumed =
+    delivery.requesterDelivery?.state === "consumed" ? delivery.requesterDelivery : undefined;
+  delivery.requesterDelivery = consumed;
   delivery.payload = undefined;
   delivery.createdAt = undefined;
   delivery.lastAttemptAt = undefined;
@@ -294,6 +329,7 @@ export const clearSubagentPendingDelivery = (entry: SubagentRunRecord) => {
   delivery.suspendedReason = undefined;
   if (delivery.status !== "delivered" && delivery.status !== "failed") {
     clearDeliveryState(entry);
+    entry.delivery!.requesterDelivery = consumed;
   }
 };
 
@@ -322,3 +358,56 @@ export const loadPendingFinalDeliveryPayload = (
     terminalReply: entry.completion?.terminalReply ?? entry.delivery?.payload?.terminalReply,
   };
 };
+
+export function transitionRequesterSettleWakeState(
+  entry: SubagentRunRecord,
+  state: Omit<RequesterSettleWakeState, "retireAfterSettle">,
+): void {
+  entry.requesterSettleWake = {
+    ...state,
+    ...(entry.requesterSettleWake?.progressOperationId
+      ? { progressOperationId: entry.requesterSettleWake.progressOperationId }
+      : {}),
+    ...(entry.requesterSettleWake?.retireAfterSettle === true ? { retireAfterSettle: true } : {}),
+  };
+}
+
+export function completeRequesterSettleWakeState(entry: SubagentRunRecord): boolean {
+  let retire = false;
+  if (entry.pauseReason !== "sessions_yield") {
+    if (entry.requesterTurnRunId && entry.expectsCompletionMessage === true) {
+      entry.retireAfterRequesterTurn =
+        entry.retireAfterRequesterTurn === true ||
+        entry.requesterSettleWake?.retireAfterSettle === true
+          ? true
+          : undefined;
+    } else {
+      retire = entry.requesterSettleWake?.retireAfterSettle === true;
+    }
+  }
+  entry.requesterSettleWake = undefined;
+  return retire;
+}
+
+/** A consumed receipt cannot overwrite a previously recorded delivery refusal. */
+export function resolveConsumedRequesterDeliveryOutcome(
+  entries: readonly SubagentRunRecord[],
+): SubagentAnnounceDeliveryResult {
+  const failed = entries.find(
+    (entry) =>
+      entry.delivery?.status === "failed" ||
+      entry.delivery?.disposition === "ambiguous" ||
+      entry.delivery?.disposition === "permanent_failure" ||
+      entry.delivery?.disposition === "intentional_non_delivery" ||
+      entry.delivery?.lastDropReason !== undefined,
+  );
+  return failed
+    ? {
+        delivered: false,
+        path: "none",
+        disposition: failed.delivery?.disposition ?? "permanent_failure",
+        reason: "delivery_suppressed",
+        error: getDeliveryLastError(failed),
+      }
+    : { delivered: true, path: "direct" };
+}

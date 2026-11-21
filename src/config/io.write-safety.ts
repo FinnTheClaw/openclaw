@@ -7,6 +7,8 @@ import {
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { isMissingPathError } from "../infra/errors.js";
+import { readExistingStateRootMode } from "../infra/private-dir-mode.js";
+import { decodeUtf8Input } from "../infra/utf8-input.js";
 import { isPathInside } from "../security/scan-paths.js";
 import { isRecord } from "../utils.js";
 import { hashConfigIncludeRaw } from "./includes.js";
@@ -15,10 +17,8 @@ import { hashConfigRaw, parseConfigJson5 } from "./io.read-helpers.js";
 import type { NormalizedConfigIoDeps } from "./io.read.types.js";
 import type { ConfigWriteOptions } from "./io.types.js";
 import { ConfigMutationConflictError } from "./mutation-conflict.js";
-import { resolveStateDir } from "./paths.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "./types.js";
 import { createConfigWriteAuthorityGuard } from "./write-authority.js";
-import { captureConfigWriteLockGuard } from "./write-lock.js";
 
 export type ConfigFileWritePathSnapshot = {
   targetPath: string;
@@ -184,6 +184,8 @@ export function chmodConfigBestEffortSync(params: ConfigPermissionHardeningParam
   }
 }
 
+type ConfigStateDirectory = { path: string; warn: (message: string) => void };
+
 /** Keep config conflicts and compensation policy outside the atomic file owner. */
 export function createConfigFileWriteGuard(
   configPath: string,
@@ -196,7 +198,9 @@ export function createConfigFileWriteGuard(
     onRootRemoved?: () => void;
     onRootPublished?: () => void;
     preserveDirectoryMode?: boolean;
+    stateDirectory?: ConfigStateDirectory;
     targetPathProof?: ReturnType<typeof captureConfigFileWritePathProof>;
+    validateUtf8?: boolean;
   },
 ) {
   const includePathProofs = new Map(
@@ -248,6 +252,7 @@ export function createConfigFileWriteGuard(
           fsModule,
           publication?.includeGraph,
           includePathProofs,
+          publication?.validateUtf8,
         );
       }
     } catch (error) {
@@ -276,7 +281,7 @@ export function createConfigFileWriteGuard(
       assertOwner();
       publication?.targetPathProof?.assertCurrent();
     };
-    assertRollbackOwner();
+    assertOwner();
     assertPublishedIdentity();
     if (publishedIdentity === undefined) {
       throw new ConfigMutationConflictError("config write has no publication to roll back", {
@@ -287,6 +292,11 @@ export function createConfigFileWriteGuard(
     return { assertCurrent: assertRollbackOwner, publicationIdentity: publishedIdentity };
   };
   let stagedIdentity: ConfigFileWriteIdentity | undefined;
+  const stateDirectory =
+    publication?.stateDirectory &&
+    path.resolve(path.dirname(configPath)) === path.resolve(publication.stateDirectory.path)
+      ? publication.stateDirectory
+      : undefined;
   const fileSystem: typeof fs = {
     ...fsModule,
     writeFileSync: new Proxy(fsModule.writeFileSync, {
@@ -305,12 +315,24 @@ export function createConfigFileWriteGuard(
         onDestinationState({ state: "published", path: configPath, ...stagedIdentity });
       }
     },
-    ...(publication?.preserveDirectoryMode
+    ...(publication?.preserveDirectoryMode || stateDirectory
       ? {
           fchmodSync: (fd, mode) => {
-            if (!fsModule.fstatSync(fd).isDirectory()) {
-              fsModule.fchmodSync(fd, mode);
+            const stat = fsModule.fstatSync(fd);
+            if (stat.isDirectory()) {
+              if (publication?.preserveDirectoryMode) {
+                return;
+              }
+              // fs-safe has pinned the config parent; a managed volume root is not ours to chmod.
+              const uid = process.geteuid?.();
+              if (stateDirectory && uid !== undefined && stat.uid !== uid) {
+                stateDirectory.warn(
+                  `State directory root ${JSON.stringify(stateDirectory.path)} is owned by another user: uid ${stat.uid}, gid ${stat.gid}; leaving mode ${(stat.mode & 0o7777).toString(8)}.`,
+                );
+                return;
+              }
             }
+            fsModule.fchmodSync(fd, mode);
           },
         }
       : {}),
@@ -331,7 +353,12 @@ export function assertBaseSnapshotStillCurrent(
   ioFs: typeof fs,
   includeGraph?: { hashes: Record<string, string>; targets: Record<string, string> },
   includePathProofs?: ReadonlyMap<string, ReturnType<typeof captureConfigFileWritePathProof>>,
+  validateUtf8 = false,
 ): void {
+  const readSource = (pathname: string) =>
+    validateUtf8
+      ? decodeUtf8Input(ioFs.readFileSync(pathname), pathname)
+      : ioFs.readFileSync(pathname, "utf-8");
   if (snapshot.path !== configPath) {
     throw new ConfigMutationConflictError("config path changed since last load", {
       retryable: false,
@@ -356,7 +383,7 @@ export function assertBaseSnapshotStillCurrent(
       if (expectedTarget === configPath) {
         continue;
       }
-      if (hashConfigIncludeRaw(ioFs.readFileSync(expectedTarget, "utf-8")) !== expectedHash) {
+      if (hashConfigIncludeRaw(readSource(expectedTarget)) !== expectedHash) {
         throw new ConfigMutationConflictError("included config changed since last load");
       }
     } catch (error) {
@@ -373,8 +400,10 @@ export function assertBaseSnapshotStillCurrent(
   const expectedHash = snapshot.raw === null ? null : hashConfigRaw(snapshot.raw);
   let currentRaw: string | null = null;
   let currentExists = true;
+  // Owned fallback bytes may end mid-character until the next short write completes.
   try {
-    currentRaw = ioFs.readFileSync(configPath, "utf-8");
+    currentRaw =
+      snapshot.raw === null ? ioFs.readFileSync(configPath, "utf-8") : readSource(configPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
       throw error;
@@ -390,36 +419,6 @@ export function assertBaseSnapshotStillCurrent(
   }
 }
 
-export async function tightenStateDirPermissionsIfNeeded(params: {
-  configPath: string;
-  env: NodeJS.ProcessEnv;
-  homedir: () => string;
-  fsModule: typeof fs;
-  assertConfigPathForWrite?: () => void;
-}): Promise<void> {
-  const assertCurrent = captureConfigWriteLockGuard(params.configPath);
-  if (process.platform === "win32") {
-    return;
-  }
-  const stateDir = resolveStateDir(params.env, params.homedir);
-  const configDir = path.dirname(params.configPath);
-  if (path.resolve(configDir) !== path.resolve(stateDir)) {
-    return;
-  }
-  try {
-    const stat = await params.fsModule.promises.stat(configDir);
-    if ((stat.mode & 0o077) !== 0) {
-      assertCurrent?.();
-      params.assertConfigPathForWrite?.();
-      await params.fsModule.promises.chmod(configDir, 0o700);
-    }
-  } catch {
-    assertCurrent?.();
-    params.assertConfigPathForWrite?.();
-    // Best-effort hardening only; the config write must still proceed.
-  }
-}
-
 export type ConfigFileRollbackPublication = (publish: () => void, didMutate: () => boolean) => void;
 
 export async function rollbackConfigFileWriteIfUnchanged(params: {
@@ -427,6 +426,7 @@ export async function rollbackConfigFileWriteIfUnchanged(params: {
   previousSnapshot: Pick<ConfigFileSnapshot, "path" | "exists" | "raw" | "readError">;
   committedHash: string;
   preserveDirectoryMode?: boolean;
+  stateDirectory?: ConfigStateDirectory;
   durable?: boolean;
   destinationHardlinks?: "reject";
   fsModule: typeof fs;
@@ -461,6 +461,7 @@ export async function rollbackConfigFileWriteIfUnchanged(params: {
     snapshot: { ...params.previousSnapshot, exists: currentRaw !== null, raw: currentRaw },
     includeGraph: { hashes: {}, targets: {} },
     preserveDirectoryMode: params.preserveDirectoryMode,
+    stateDirectory: params.stateDirectory,
     onRootPublished: () => {
       mutated = true;
     },
@@ -473,7 +474,13 @@ export async function rollbackConfigFileWriteIfUnchanged(params: {
       replaceFileAtomicSync({
         filePath: params.configPath,
         content: previousRaw,
-        dirMode: 0o700,
+        dirMode: params.stateDirectory
+          ? (readExistingStateRootMode(
+              path.dirname(params.configPath),
+              params.stateDirectory.path,
+              params.fsModule,
+            ) ?? 0o700)
+          : 0o700,
         mode: 0o600,
         copyFallbackOnPermissionError: true,
         syncTempFile: params.durable,
@@ -578,22 +585,23 @@ export function formatConfigArtifactTimestamp(ts: string): string {
 
 export function resolveConfigSizeBaselineBytes(params: {
   raw: string | null;
-  json5: { parse: (value: string) => unknown };
   lastTouchedVersionOverride?: string;
+  env?: NodeJS.ProcessEnv;
 }): number | null {
   if (params.raw === null) {
     return null;
   }
   const rawBytes = Buffer.byteLength(params.raw, "utf-8");
-  const parsed = parseConfigJson5(params.raw, params.json5);
+  const parsed = parseConfigJson5(params.raw);
   if (!parsed.ok || !isRecord(parsed.parsed)) {
     return rawBytes;
   }
   const canonical = JSON.stringify(
     stampConfigWriteMetadata(
       parsed.parsed as OpenClawConfig,
-      undefined,
       params.lastTouchedVersionOverride,
+      undefined,
+      params.env,
     ),
     null,
     2,

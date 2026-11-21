@@ -1,4 +1,4 @@
-// Memory Core plugin module owns bounded deep-phase MEMORY.md consolidation.
+import { isStringArray } from "openclaw/plugin-sdk/collection-input-runtime";
 import {
   DEFAULT_MEMORY_DEEP_DREAMING_MAX_PROMOTED_SNIPPET_TOKENS,
   formatMemoryDreamingDay,
@@ -98,8 +98,7 @@ function parseConsolidationPlan(
       if (
         typeof value.candidateKey !== "string" ||
         (value.action !== "added" && value.action !== "merged" && value.action !== "superseded") ||
-        !Array.isArray(value.priorEntries) ||
-        !value.priorEntries.every((entry): entry is string => typeof entry === "string")
+        !isStringArray(value.priorEntries)
       ) {
         return [];
       }
@@ -149,8 +148,7 @@ function memoryEntryIndices(lines: string[]): number[] {
   return indices;
 }
 
-function extractMemoryEntries(content: string): string[] {
-  const lines = content.replace(/\r\n/gu, "\n").split("\n");
+function extractMemoryEntries(lines: string[]): string[] {
   return memoryEntryIndices(lines).map((index) => lines[index]!.trim());
 }
 
@@ -208,15 +206,13 @@ function readAttachedLineageKey(lines: string[], entryIndex: number): string | n
   );
 }
 
-function findLineageEntries(content: string, lineageKey: string): string[] {
-  const lines = content.replace(/\r\n/gu, "\n").split("\n");
+function findLineageEntries(lines: string[], lineageKey: string): string[] {
   return memoryEntryIndices(lines).flatMap((index) =>
     readAttachedLineageKey(lines, index) === lineageKey ? [lines[index]!.trim()] : [],
   );
 }
 
-function priorEntryHasContinuation(content: string, priorEntry: string): boolean {
-  const lines = content.replace(/\r\n/gu, "\n").split("\n");
+function priorEntryHasContinuation(lines: string[], priorEntry: string): boolean {
   const index = memoryEntryIndices(lines).find(
     (entryIndex) => lines[entryIndex]!.trim() === priorEntry,
   );
@@ -229,11 +225,11 @@ function validateConsolidationPlan(params: {
   candidates: PromotionCandidate[];
   projectKey?: string;
 }): string | null {
-  const priorEntries = extractMemoryEntries(params.previous);
+  const lines = params.previous.split(/\r?\n/);
+  const priorEntries = extractMemoryEntries(lines);
   if (params.plan.operations.length !== params.candidates.length) {
     return "output operation count does not match the candidate count";
   }
-  const priorEntrySet = new Set(priorEntries);
   const priorEntryCounts = countStrings(priorEntries);
   const operationsByCandidate = new Map(
     params.plan.operations.map((operation) => [operation.candidateKey, operation]),
@@ -260,11 +256,11 @@ function validateConsolidationPlan(params: {
       (operation.action !== "added" && operation.priorEntries.length === 0) ||
       operation.priorEntries.some(
         (entry) =>
-          !priorEntrySet.has(entry) ||
+          !priorEntryCounts.has(entry) ||
           (priorEntryCounts.get(entry) ?? 0) > 1 ||
-          priorEntryHasContinuation(params.previous, entry),
+          priorEntryHasContinuation(lines, entry),
       ) ||
-      (operation.action === "added" && priorEntrySet.has(operation.resultEntry))
+      (operation.action === "added" && priorEntryCounts.has(operation.resultEntry))
     ) {
       return `output has invalid prior-entry evidence for candidate ${candidate.key}`;
     }
@@ -284,14 +280,11 @@ function validateConsolidationPlan(params: {
     ) {
       return `output merges candidate ${candidate.key} with an unrelated prior entry`;
     }
-    if (operation.action === "superseded") {
-      const lineageKey = candidate.provenance?.supersedesKey;
-      if (!lineageKey) {
-        return `output supersedes candidate ${candidate.key} without matching lineage`;
-      }
-    }
     const lineageKey = candidate.provenance?.supersedesKey;
-    const lineageEntries = lineageKey ? findLineageEntries(params.previous, lineageKey) : [];
+    if (operation.action === "superseded" && !lineageKey) {
+      return `output supersedes candidate ${candidate.key} without matching lineage`;
+    }
+    const lineageEntries = lineageKey ? findLineageEntries(lines, lineageKey) : [];
     if (
       lineageEntries.length > 0 &&
       (operation.action !== "superseded" ||
@@ -311,7 +304,8 @@ export function applyMemoryConsolidationPlan(params: {
   memoryFileMaxChars?: number;
   maxPriorEntryLossFraction: number;
 }): MemoryConsolidationResult | null {
-  const currentEntries = extractMemoryEntries(params.existingMemory);
+  const lines = params.existingMemory.split(/\r?\n/);
+  const currentEntries = extractMemoryEntries(lines);
   const removedEntryCount = params.plan.operations.reduce(
     (count, operation) => count + operation.priorEntries.length,
     0,
@@ -320,12 +314,11 @@ export function applyMemoryConsolidationPlan(params: {
   if (lossFraction > params.maxPriorEntryLossFraction) {
     return null;
   }
-  const lines = params.existingMemory.replace(/\r\n/gu, "\n").split("\n");
   for (const operation of params.plan.operations) {
     if (lines.some((line) => line.includes(buildPromotionMarker(operation.candidateKey)))) {
       return null;
     }
-    const latestEntries = extractMemoryEntries(lines.join("\n"));
+    const latestEntries = extractMemoryEntries(lines);
     const existingResultCount = latestEntries.filter(
       (entry) => entry === operation.resultEntry,
     ).length;
@@ -336,7 +329,7 @@ export function applyMemoryConsolidationPlan(params: {
       return null;
     }
     if (operation.lineageKey) {
-      const currentLineageEntries = findLineageEntries(lines.join("\n"), operation.lineageKey);
+      const currentLineageEntries = findLineageEntries(lines, operation.lineageKey);
       if (!sameStringCounts(operation.priorEntries, currentLineageEntries)) {
         return null;
       }
@@ -422,6 +415,7 @@ export async function consolidateMemory(params: {
   existingMemory: string;
   candidates: PromotionCandidate[];
   model?: string;
+  timeoutMs?: number;
   maxPriorEntryLossFraction: number;
   memoryFileMaxChars?: number;
   maxPromotedSnippetTokens?: number;
@@ -453,7 +447,7 @@ export async function consolidateMemory(params: {
         ),
         extraSystemPrompt: CONSOLIDATION_SYSTEM_PROMPT,
         ...(params.model ? { model: params.model } : {}),
-        timeoutMs: CONSOLIDATION_TIMEOUT_MS,
+        timeoutMs: params.timeoutMs ?? CONSOLIDATION_TIMEOUT_MS,
       });
       const plan = parseConsolidationPlan(result.text, group.candidates, maxPromotedSnippetTokens);
       if (!plan) {

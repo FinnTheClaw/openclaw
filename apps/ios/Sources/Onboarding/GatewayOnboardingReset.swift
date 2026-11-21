@@ -145,10 +145,9 @@ enum GatewayOnboardingReset {
         }
 
         if gatewayStableID == nil {
-            GatewaySettingsStore.clearGatewayRegistry(defaults: defaults)
+            GatewaySettingsStore.clearGatewayRegistry()
         }
-        GatewaySettingsStore.clearPreferredGatewayStableID(defaults: defaults)
-        GatewaySettingsStore.clearLastDiscoveredGatewayStableID(defaults: defaults)
+        GatewaySettingsStore.clearGatewaySelectors(defaults: defaults)
         defaults.set(false, forKey: "gateway.autoconnect")
         return true
     }
@@ -160,7 +159,6 @@ enum GatewayOnboardingReset {
         defaults.set(false, forKey: "gateway.hasConnectedOnce")
         defaults.set(false, forKey: "gateway.manual.enabled")
         defaults.set("", forKey: "gateway.manual.host")
-        defaults.set("", forKey: "gateway.setupCode")
         defaults.set(defaults.integer(forKey: "onboarding.requestID") + 1, forKey: "onboarding.requestID")
     }
 }

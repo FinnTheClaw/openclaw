@@ -1,4 +1,3 @@
-/** Runtime persistence helper for clearing abort-cutoff state from sessions. */
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import {

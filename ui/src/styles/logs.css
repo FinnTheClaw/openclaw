@@ -41,6 +41,10 @@ main.content:where(.content--logs-page) .content-header {
   container-type: inline-size;
 }
 
+.log-stream--windowed {
+  overflow-anchor: none;
+}
+
 .log-row {
   display: grid;
   grid-template-columns: 90px 70px minmax(140px, 200px) minmax(0, 1fr);
@@ -56,17 +60,18 @@ main.content:where(.content--logs-page) .content-header {
   background: var(--bg-hover);
 }
 
-.log-row:last-child {
+.log-row--last {
   border-bottom: none;
 }
 
-.log-time {
+.log-time,
+.log-subsystem {
   color: var(--muted);
   font-family: var(--mono);
 }
 
 .log-level {
-  font-size: 12px; /* was 11px */
+  font-size: 12px;
   font-weight: 500;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -99,11 +104,6 @@ main.content:where(.content--logs-page) .content-header {
 .log-chip.fatal {
   color: var(--danger);
   border-color: var(--danger-subtle);
-}
-
-.log-subsystem {
-  color: var(--muted);
-  font-family: var(--mono);
 }
 
 .log-message {

@@ -1,8 +1,10 @@
+import "./process-reaper.test-support.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   cleanupOpenClawOwnedAcpxPendingLease,
   cleanupOpenClawOwnedAcpxProcessTree,
 } from "./process-reaper.js";
+import { mockAcpxProcessSystem } from "./process-reaper.test-support.js";
 
 const wrapperRoot = "/tmp/openclaw-state/acpx";
 const wrapperPath = `${wrapperRoot}/codex-acp-wrapper.mjs`;
@@ -40,38 +42,38 @@ function setup(snapshots: Snapshot[]) {
     sleep: vi.fn(async () => {}),
     platform: "linux" as const,
   };
+  mockAcpxProcessSystem(deps);
   return { deps, signals };
 }
-const cleanup = (deps: ReturnType<typeof setup>["deps"]) =>
+const cleanup = () =>
   cleanupOpenClawOwnedAcpxProcessTree({
     rootPid: 81001,
     rootCommand: command,
     wrapperRoot,
-    deps,
   });
 
 describe("ACPX process start identity before signaling", () => {
   it("ACPX-01 changed-start PID before SIGTERM sends no signal", async () => {
-    const { deps, signals } = setup([[root()], [root("replacement")]]);
-    expect((await cleanup(deps)).terminatedPids).toEqual([]);
+    const { signals } = setup([[root()], [root("replacement")]]);
+    expect((await cleanup()).terminatedPids).toEqual([]);
     expect(signals).toEqual([]);
   });
 
   it("ACPX-02 changed-start PID after SIGTERM prevents SIGKILL", async () => {
-    const { deps, signals } = setup([[root()], [root()], [root("replacement")]]);
-    await cleanup(deps);
+    const { signals } = setup([[root()], [root()], [root("replacement")]]);
+    await cleanup();
     expect(signals).toEqual([{ pid: 81001, signal: "SIGTERM" }]);
   });
 
   it("ACPX-03 exited PID after SIGTERM receives no SIGKILL", async () => {
-    const { deps, signals } = setup([[root()], [root()], []]);
-    await cleanup(deps);
+    const { signals } = setup([[root()], [root()], []]);
+    await cleanup();
     expect(signals).toEqual([{ pid: 81001, signal: "SIGTERM" }]);
   });
 
   it("ACPX-04 same PID and start still live gets TERM then KILL", async () => {
-    const { deps, signals } = setup([[root()]]);
-    await cleanup(deps);
+    const { signals } = setup([[root()]]);
+    await cleanup();
     expect(signals).toEqual([
       { pid: 81001, signal: "SIGTERM" },
       { pid: 81001, signal: "SIGKILL" },
@@ -79,37 +81,38 @@ describe("ACPX process start identity before signaling", () => {
   });
 
   it("ACPX-05 process-list failure before TERM sends no signal", async () => {
-    const { deps, signals } = setup([[root()], new Error("ps unavailable")]);
-    expect((await cleanup(deps)).terminatedPids).toEqual([]);
+    const { signals } = setup([[root()], new Error("ps unavailable")]);
+    expect((await cleanup()).terminatedPids).toEqual([]);
     expect(signals).toEqual([]);
   });
 
   it("ACPX-06 process-list failure before KILL prevents force signal", async () => {
-    const { deps, signals } = setup([[root()], [root()], new Error("ps unavailable")]);
-    await cleanup(deps);
+    const { signals } = setup([[root()], [root()], new Error("ps unavailable")]);
+    await cleanup();
     expect(signals).toEqual([{ pid: 81001, signal: "SIGTERM" }]);
   });
 
   it("ACPX-07 equal command and PID with changed start does not force-kill", async () => {
-    const { deps, signals } = setup([[root()], [root()], [root("same-command-new-start")]]);
-    await cleanup(deps);
+    const { signals } = setup([[root()], [root()], [root("same-command-new-start")]]);
+    await cleanup();
     expect(signals).toEqual([{ pid: 81001, signal: "SIGTERM" }]);
 
     // Darwin's ps lstart is only second-resolution; even a stable-looking
     // snapshot cannot justify a delayed force-kill there.
     const mac = setup([[root()]]);
-    await cleanup({ ...mac.deps, platform: "darwin" });
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    await cleanup();
     expect(mac.signals).toEqual([{ pid: 81001, signal: "SIGTERM" }]);
   });
 
   it("ACPX-08 changed child identity is skipped without cross-kill", async () => {
-    const { deps, signals } = setup([
+    const { signals } = setup([
       [root(), child()],
       [root(), child("replacement-child")],
       [root(), child("replacement-child")],
       [root(), child("replacement-child")],
     ]);
-    await cleanup(deps);
+    await cleanup();
     expect(signals).toEqual([
       { pid: 81001, signal: "SIGTERM" },
       { pid: 81001, signal: "SIGKILL" },
@@ -124,7 +127,7 @@ describe("ACPX process start identity before signaling", () => {
       startIdentity: "second",
     };
     const initial = [root(), child(), second];
-    const { deps, signals } = setup([
+    const { signals } = setup([
       initial,
       initial,
       initial,
@@ -133,7 +136,7 @@ describe("ACPX process start identity before signaling", () => {
       [root(), second],
       [root(), second],
     ]);
-    await cleanup(deps);
+    await cleanup();
     const termPids = signals.filter((item) => item.signal === "SIGTERM").map((item) => item.pid);
     expect(termPids).toHaveLength(3);
     expect(termPids.slice(0, 2).toSorted()).toEqual([81002, 81003]);
@@ -150,13 +153,12 @@ describe("ACPX process start identity before signaling", () => {
       command: leasedCommand.replace("gateway-1", "gateway-foreign"),
       startIdentity: "lease-start",
     };
-    const { deps, signals } = setup([[foreign]]);
+    const { signals } = setup([[foreign]]);
     const result = await cleanupOpenClawOwnedAcpxPendingLease({
       leaseId: "lease-1",
       gatewayInstanceId: "gateway-1",
       wrapperRoot,
       wrapperPath,
-      deps,
     });
     expect(result.skippedReason).toBe("missing-root");
     expect(signals).toEqual([]);

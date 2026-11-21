@@ -16,6 +16,14 @@ function expectCompiledRegex(pattern: string, flags?: string): RegExp {
 }
 
 describe("safe regex", () => {
+  it.each(["(ab)", "(a|b)+", "a{2}", "a\\+b", "[ab]+"] as const)(
+    "keeps tokenizer state self-contained for %s",
+    (pattern) => {
+      expect(() => compileSafeRegexDetailed(pattern)).not.toThrow();
+      expect(compileSafeRegexDetailed(pattern).regex).toBeInstanceOf(RegExp);
+    },
+  );
+
   it.each([
     ["(a+)+$", null],
     ["(a|aa)+$", null],

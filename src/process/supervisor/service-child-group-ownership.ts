@@ -1,20 +1,62 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
+import { ProcSafeError } from "@openclaw/proc-safe/errors";
 import { isPidDefinitelyDead } from "../../shared/pid-alive.js";
+import { readDarwinProcessCensus } from "../darwin-process-inspection.js";
 
 export type ProcessCommand =
-  | { argv: string[]; serviceMarker?: string }
-  | { argvUnavailable: true; uid: number };
+  | {
+      argv: string[];
+      executable?: string;
+      serviceMarker?: string;
+      /** A JS runtime whose environment Darwin could not bound; argv still classifies. */
+      serviceMarkerUnavailable?: true;
+      uid?: number;
+      owner?: "same" | "different" | "unknown";
+    }
+  | { argvUnavailable: true; uid: number; owner?: "same" | "different" | "unknown" }
+  | { argvUnavailable: true; uid?: never; owner: "different" };
 
-type GroupMember = {
-  pid: number;
-  pgid: number;
-  state: string;
-  command?: { ppid: number } & ProcessCommand;
-};
+/** Reject a known unsupported legacy contract before launching application work. */
+export function assertProcessGroupControl(): void {
+  if (process.platform !== "linux") {
+    return;
+  }
+  try {
+    process.kill(0, 0);
+  } catch (cause) {
+    throw new Error(
+      "Process-group ownership is unavailable; use a matching Node host and worker with native process ownership. Cleanup cannot fall back to transport-only execution.",
+      { cause },
+    );
+  }
+}
 
-/** Only kernel absence, observed outside the owned group, confirms extinction. */
+function readLinuxProcessUid(pid: number): number | undefined {
+  try {
+    const lines = readFileSync(`/proc/${pid}/status`, "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("Uid:"));
+    const fields =
+      lines.length === 1
+        ? /^Uid:[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]*$/.exec(lines[0]!)
+        : null;
+    const ids = fields?.slice(1).map(Number);
+    const inspectorUid = process.getuid?.();
+    // Any matching credential UID denotes our account; otherwise retain the real UID.
+    return ids?.every((uid) => Number.isSafeInteger(uid) && uid <= 0xffff_ffff)
+      ? (ids.find((uid) => uid === inspectorUid) ?? ids[0])
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * For the relay's own anchor group: only kernel absence, observed outside the owned group, confirms extinction.
+ * Unlike `isProcessGroupGone`, EPERM deliberately stays "not gone" here (kernel-only proof).
+ */
 export function isOwnedProcessGroupGone(pgid: number): boolean {
   try {
     process.kill(-pgid, 0);
@@ -31,13 +73,38 @@ export function isOwnedProcessGroupGone(pgid: number): boolean {
   }
 }
 
-/** The caller supplies native command inspection; the standalone group worker stays dependency-free. */
+/** Stop in-group descendants without killing the anchor that observes their lineage. */
+export function killOwnedProcessGroupMembers(): void {
+  for (const { pid, pgid } of readProcessGroupMembers(1_000)) {
+    if (pid === process.pid || pgid !== process.pid) {
+      continue;
+    }
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (extractErrorCode(error) !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
+}
+
+/** The caller supplies command inspection; group cleanup only reads native topology. */
 export function* readProcessGroupMembers(
   timeoutMs: number,
   commandInspection?: {
-    readDarwinCommand: (pid: number, uid: number) => ProcessCommand | undefined;
+    readDarwinCommand: (
+      pid: number,
+      owner: "same" | "different" | "unknown",
+    ) => ProcessCommand | undefined;
   },
-): Generator<GroupMember> {
+): Generator<{
+  pid: number;
+  ppid?: number;
+  pgid: number;
+  state: string;
+  command?: { ppid: number } & ProcessCommand;
+}> {
   const includeCommand = commandInspection !== undefined;
   if (process.platform === "linux") {
     const deadline = Date.now() + timeoutMs;
@@ -51,10 +118,25 @@ export function* readProcessGroupMembers(
       const pid = Number(name);
       let stat: string;
       let argv: string[] | undefined;
+      let uid: number | undefined;
+      let opaqueForeignOwner = false;
       try {
         stat = readFileSync(`/proc/${name}/stat`, "utf8");
         if (includeCommand) {
-          argv = readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").filter(Boolean);
+          uid = readLinuxProcessUid(pid);
+          try {
+            argv = readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").filter(Boolean);
+          } catch (error) {
+            const inspectorUid = process.getuid?.();
+            opaqueForeignOwner =
+              uid !== undefined &&
+              inspectorUid !== undefined &&
+              uid !== inspectorUid &&
+              ["EACCES", "EPERM"].includes(extractErrorCode(error) ?? "");
+            if (!opaqueForeignOwner) {
+              throw error;
+            }
+          }
         }
       } catch (error) {
         // Foreign processes may disappear between enumeration and their stat read.
@@ -68,7 +150,8 @@ export function* readProcessGroupMembers(
       }
       // comm can contain spaces, newlines and parentheses; pgrp follows PPID
       // after its final closing parenthesis (Linux procfs stat fields 1..5).
-      const match = /^(\d+) \([\s\S]*\) (\S) (\d+) (\d+)(?:\s|$)/.exec(stat);
+      // A task reaped during do_task_stat can retain the kernel's pgid=-1 sentinel.
+      const match = /^(\d+) \([\s\S]*\) (\S) (\d+) (-1|\d+)(?:\s|$)/.exec(stat);
       if (!match || Number(match[1]) !== pid || Date.now() >= deadline) {
         throw new Error("Process group census is unavailable");
       }
@@ -78,16 +161,26 @@ export function* readProcessGroupMembers(
         const flags = Number(stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[6]);
         const kernelThread = Number.isInteger(flags) && (flags & 0x0020_0000) !== 0;
         if (!kernelThread && !isPidDefinitelyDead(pid)) {
-          throw new Error(
-            `Could not classify PID ${pid}: live userspace process has no readable arguments.`,
-          );
+          const inspectorUid = process.getuid?.();
+          if (uid !== undefined && inspectorUid !== undefined && uid !== inspectorUid) {
+            opaqueForeignOwner = true;
+            argv = undefined;
+          } else {
+            throw new Error(
+              `Could not classify PID ${pid}: live userspace process has no readable arguments.`,
+            );
+          }
         }
       }
       yield {
         pid,
         pgid: Number(match[4]),
         state: match[2]!,
-        ...(argv ? { command: { ppid: Number(match[3]), argv } } : {}),
+        ...(argv
+          ? { command: { ppid: Number(match[3]), argv, ...(uid === undefined ? {} : { uid }) } }
+          : opaqueForeignOwner && uid !== undefined
+            ? { command: { ppid: Number(match[3]), argvUnavailable: true, uid } }
+            : {}),
       };
     }
     if (Date.now() >= deadline) {
@@ -95,19 +188,47 @@ export function* readProcessGroupMembers(
     }
     return;
   }
-  if (includeCommand && process.platform !== "darwin") {
+  if (process.platform === "darwin") {
+    for (const member of readDarwinProcessCensus(timeoutMs)) {
+      const row = { pid: member.pid, pgid: member.pgid, state: member.state };
+      let command: ProcessCommand | undefined;
+      try {
+        command = includeCommand
+          ? member.state.startsWith("Z") || member.pid === 0
+            ? { argv: [] }
+            : commandInspection?.readDarwinCommand(member.pid, member.owner)
+          : undefined;
+      } catch (error) {
+        // One unparseable argument image (Intel layout-mismatch) leaves only that PID unknown.
+        if (
+          !(error instanceof ProcSafeError) ||
+          (error.code !== "incomplete" && error.code !== "layout-mismatch")
+        ) {
+          throw error;
+        }
+        // Preserve unknown custody for this PID without dropping later observations.
+        yield { ...row, ppid: member.ppid };
+        continue;
+      }
+      if (includeCommand && !command) {
+        continue;
+      }
+      yield {
+        ...row,
+        ...(command ? { command: { ppid: member.ppid, owner: member.owner, ...command } } : {}),
+      };
+    }
+    return;
+  }
+  if (includeCommand) {
     throw new Error(`Exact process command census is unavailable on ${process.platform}.`);
   }
   const deadline = Date.now() + timeoutMs;
-  const census = spawnSync(
-    "/bin/ps",
-    ["-A", "-o", includeCommand ? "pid=,pgid=,stat=,ppid=,uid=" : "pid=,pgid=,stat="],
-    {
-      encoding: "utf8",
-      timeout: timeoutMs,
-      maxBuffer: 4 * 1024 * 1024,
-    },
-  );
+  const census = spawnSync("/bin/ps", ["-A", "-o", "pid=,pgid=,stat="], {
+    encoding: "utf8",
+    timeout: timeoutMs,
+    maxBuffer: 4 * 1024 * 1024,
+  });
   if (census.error || census.status !== 0) {
     throw new Error("Process group census is unavailable");
   }
@@ -115,35 +236,60 @@ export function* readProcessGroupMembers(
     if (!line.trim()) {
       continue;
     }
-    const match = includeCommand
-      ? /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(-?\d+)\s*$/.exec(line)
-      : /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
+    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
     if (!match) {
       throw new Error("Process group census is unavailable");
     }
     const pid = Number(match[1]);
     if (pid !== census.pid) {
-      if (includeCommand && Date.now() >= deadline) {
-        throw new Error("Process group census exceeded its deadline");
-      }
-      const command = includeCommand
-        ? match[3]!.startsWith("Z") || pid === 0
-          ? { argv: [] }
-          : commandInspection?.readDarwinCommand(pid, Number(match[5]) >>> 0)
-        : undefined;
-      if (includeCommand && !command) {
-        continue;
-      }
-      yield {
-        pid,
-        pgid: Number(match[2]),
-        state: match[3]!,
-        ...(command ? { command: { ppid: Number(match[4]), ...command } } : {}),
-      };
+      yield { pid, pgid: Number(match[2]), state: match[3]! };
     }
   }
   if (includeCommand && Date.now() >= deadline) {
     throw new Error("Process group census exceeded its deadline");
+  }
+}
+
+// A zombie leader may retain live Linux threads; share the existing check.
+function isLiveCensusMember({ pid, state }: { pid: number; state: string }): boolean {
+  return !state.startsWith("Z") || (process.platform === "linux" && !isPidDefinitelyDead(pid));
+}
+
+/**
+ * Whether the process table is this PID namespace's. A nested PID namespace with the parent's
+ * /proc mounted still lists processes under the parent's numbers, so a pid row proves nothing;
+ * only /proc/self naming this pid does. Other platforms read a host-wide table.
+ */
+export function isOwnProcfs(): boolean {
+  if (process.platform !== "linux") {
+    return true;
+  }
+  try {
+    return readlinkSync("/proc/self") === String(process.pid);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Denied-probe fallback for groups whose members we only observe; callers reach it through
+ * `isProcessGroupGone`. A failed census, or a procfs that is not this PID namespace's, keeps the
+ * group alive. Accepted edge case: hidepid or a restricted `/proc` can still hide a member, so an
+ * otherwise empty census reads as gone.
+ */
+export function isProcessGroupGoneByCensus(pgid: number): boolean {
+  if (!isOwnProcfs()) {
+    return false;
+  }
+  try {
+    for (const member of readProcessGroupMembers(1_000)) {
+      if (member.pgid === pgid && isLiveCensusMember(member)) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -159,11 +305,7 @@ export function hasLiveOwnedProcessGroupMembers(timeoutMs = 1_000): boolean | un
           return undefined;
         }
         observedOwner = true;
-      } else if (
-        pgid === process.pid &&
-        // A zombie leader may retain live Linux threads; share the existing check.
-        (!state.startsWith("Z") || (process.platform === "linux" && !isPidDefinitelyDead(pid)))
-      ) {
+      } else if (pgid === process.pid && isLiveCensusMember({ pid, state })) {
         return true;
       }
     }

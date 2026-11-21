@@ -30,46 +30,18 @@ function setZaloUpdateMode(
   webhookSecret?: SecretInput,
   webhookPath?: string,
 ): OpenClawConfig {
-  if (
-    mode === "polling" &&
-    accountId === DEFAULT_ACCOUNT_ID &&
-    cfg.channels?.zalo?.accounts?.[accountId]
-  ) {
-    return patchScopedAccountConfig({
-      cfg,
-      channelKey: channel,
-      accountId,
-      scopeDefaultToAccounts: true,
-      ensureChannelEnabled: false,
-      ensureAccountEnabled: false,
-      clearFields: ["webhookUrl", "webhookSecret", "webhookPath"],
-      patch: {},
-    });
-  }
-  const isDefault = accountId === DEFAULT_ACCOUNT_ID;
-  const current = isDefault ? cfg.channels?.zalo : cfg.channels?.zalo?.accounts?.[accountId];
-  const next = { ...current };
-  if (mode === "polling") {
-    delete next.webhookUrl;
-    delete next.webhookSecret;
-    delete next.webhookPath;
-  } else {
-    next.webhookUrl = webhookUrl;
-    next.webhookSecret = webhookSecret;
-    next.webhookPath = webhookPath;
-  }
-  let patch: Record<string, unknown> = next;
-  if (!isDefault) {
-    const accounts = { ...cfg.channels?.zalo?.accounts };
-    accounts[accountId] = next;
-    patch = { accounts };
-  }
-  return patchTopLevelChannelConfigSection({
+  return patchScopedAccountConfig({
     cfg,
-    channel,
-    clearFields:
-      isDefault && mode === "polling" ? ["webhookUrl", "webhookSecret", "webhookPath"] : undefined,
-    patch,
+    channelKey: channel,
+    accountId,
+    scopeDefaultToAccounts:
+      mode === "polling" &&
+      accountId === DEFAULT_ACCOUNT_ID &&
+      Boolean(cfg.channels?.zalo?.accounts?.[accountId]),
+    ensureChannelEnabled: false,
+    ensureAccountEnabled: false,
+    clearFields: mode === "polling" ? ["webhookUrl", "webhookSecret", "webhookPath"] : undefined,
+    patch: mode === "polling" ? {} : { webhookUrl, webhookSecret, webhookPath },
   });
 }
 
@@ -129,23 +101,12 @@ export const zaloSetupWizard: ChannelSetupWizard = {
             })
           : currentCfg,
       applySet: async (currentCfg, value) =>
-        patchTopLevelChannelConfigSection({
+        patchScopedAccountConfig({
           cfg: currentCfg,
-          channel,
-          enabled: true,
-          patch:
-            accountId === DEFAULT_ACCOUNT_ID
-              ? { botToken: value }
-              : {
-                  accounts: {
-                    ...currentCfg.channels?.zalo?.accounts,
-                    [accountId]: {
-                      ...currentCfg.channels?.zalo?.accounts?.[accountId],
-                      enabled: true,
-                      botToken: value,
-                    },
-                  },
-                },
+          channelKey: channel,
+          accountId,
+          patch: { botToken: value },
+          accountPatch: { enabled: true, botToken: value },
         }),
     });
     next = tokenStep.cfg;

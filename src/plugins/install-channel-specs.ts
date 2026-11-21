@@ -1,11 +1,10 @@
-// Parses channel-oriented plugin install specs from package inputs.
 import { parseClawHubPluginSpec } from "../infra/clawhub-spec.js";
-import type { NpmSpecResolution } from "../infra/install-source-utils.js";
 import {
   isExactSemverVersion,
   parseRegistryNpmSpec,
-  type ParsedRegistryNpmSpec,
   resolveOpenClawReleaseCohortVersion,
+  type NpmSpecResolution,
+  type ParsedRegistryNpmSpec,
 } from "../infra/npm-registry-spec.js";
 import { selectNpmChannelVersion, type UpdateChannel } from "../infra/update-channels.js";
 import { CLAWHUB_INSTALL_ERROR_CODE, isUnavailableClawHubTarget } from "./clawhub-error-codes.js";
@@ -115,10 +114,13 @@ type ChannelInstallParams = {
   timeoutMs?: number;
 };
 
-function resolveCoreBoundNpmSpec(params: ChannelInstallParams): string | undefined {
+function resolveCoreBoundNpmSpec(
+  params: ChannelInstallParams,
+  preferCoreVersion = false,
+): string | undefined {
   if (
     params.updateChannel === "extended-stable" ||
-    (params.updateChannel === "stable" && params.versionBoundToCore)
+    (params.updateChannel === "stable" && (params.versionBoundToCore || preferCoreVersion))
   ) {
     const target = resolveDefaultNpmSpec(params.spec);
     if (target && params.officialPackageName === target.name) {
@@ -202,19 +204,32 @@ export function resolveClawHubInstallSpecsForUpdateChannel(params: {
   officialPackageName?: string;
   coreVersion?: string;
   versionBoundToCore?: boolean;
+  /** Managed installs may prefer the host build; updates retain their registry target. */
+  preferCoreVersion?: boolean;
 }): ChannelInstallSpecs {
   const parsed = parseClawHubPluginSpec(params.spec);
   if (
     parsed &&
     params.officialPackageName === parsed.name &&
     (params.updateChannel === "extended-stable" ||
-      (params.updateChannel === "stable" && params.versionBoundToCore))
+      (params.updateChannel === "stable" &&
+        (params.versionBoundToCore || params.preferCoreVersion)))
   ) {
-    const npmSpec = resolveCoreBoundNpmSpec({
-      ...params,
-      spec: `${parsed.name}${parsed.version ? `@${parsed.version}` : ""}`,
-    });
-    return { installSpec: npmSpec ? `clawhub:${npmSpec}` : params.spec, recordSpec: params.spec };
+    const npmSpec = resolveCoreBoundNpmSpec(
+      {
+        ...params,
+        spec: `${parsed.name}${parsed.version ? `@${parsed.version}` : ""}`,
+      },
+      params.preferCoreVersion,
+    );
+    const installSpec = npmSpec ? `clawhub:${npmSpec}` : params.spec;
+    return {
+      installSpec,
+      recordSpec: params.spec,
+      ...(npmSpec && params.updateChannel === "stable" && params.preferCoreVersion
+        ? { fallbackSpec: params.spec, fallbackLabel: installSpec }
+        : {}),
+    };
   }
   if (
     params.updateChannel !== "beta" ||

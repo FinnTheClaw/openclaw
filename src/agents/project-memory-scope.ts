@@ -1,5 +1,5 @@
 import path from "node:path";
-import { pruneMapToMaxSize } from "../infra/map-size.js";
+import { LruCache } from "../infra/lru-cache.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { parseGitUrl } from "./utils/git.js";
 
@@ -7,7 +7,7 @@ const MAX_PROJECT_KEY_CACHE_ENTRIES = 128;
 // Cheap git reads elsewhere bound at 4s (see detectGitRoot in infra/update-check.ts).
 const GIT_CONFIG_TIMEOUT_MS = 4_000;
 
-const projectKeyByRepoRoot = new Map<string, Promise<string>>();
+const projectKeyByRepoRoot = new LruCache<Promise<string>>(MAX_PROJECT_KEY_CACHE_ENTRIES);
 const DEFAULT_GIT_ORIGIN_PORTS: Record<string, string> = { "ssh:": "22", "git:": "9418" };
 
 function escapeProjectKeyForAnnotation(value: string): string {
@@ -42,7 +42,7 @@ async function resolveUncachedProjectKey(repoRoot: string): Promise<string> {
   try {
     const result = await runCommandWithTimeout(
       ["git", "-C", repoRoot, "config", "--get", "remote.origin.url"],
-      { timeoutMs: GIT_CONFIG_TIMEOUT_MS },
+      { timeoutMs: GIT_CONFIG_TIMEOUT_MS, env: { GIT_NO_LAZY_FETCH: "1" } },
     );
     if (result.code === 0) {
       const remoteUrl = result.stdout.trim();
@@ -72,12 +72,9 @@ export function resolveProjectKey(repoRoot: string): Promise<string> {
   const canonicalRoot = path.resolve(repoRoot);
   const cached = projectKeyByRepoRoot.get(canonicalRoot);
   if (cached) {
-    projectKeyByRepoRoot.delete(canonicalRoot);
-    projectKeyByRepoRoot.set(canonicalRoot, cached);
     return cached;
   }
   const pending = resolveUncachedProjectKey(canonicalRoot);
   projectKeyByRepoRoot.set(canonicalRoot, pending);
-  pruneMapToMaxSize(projectKeyByRepoRoot, MAX_PROJECT_KEY_CACHE_ENTRIES);
   return pending;
 }

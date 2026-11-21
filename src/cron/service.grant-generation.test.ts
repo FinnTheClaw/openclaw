@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
+import { clearCronJobActive, markCronJobActive } from "./active-jobs.js";
 import { CronService } from "./service.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 
@@ -18,7 +19,7 @@ function readGrantDefinitionProjection(jobId: string) {
     .get(jobId);
 }
 
-it("preserves the grant generation when clearing an absent description", async () => {
+it("preserves grant generations across non-definition edits and advances changed definitions", async () => {
   const { storePath } = await makeStorePath();
   const cron = new CronService({
     scheduler: createTestGatewayScheduler(),
@@ -27,7 +28,6 @@ it("preserves the grant generation when clearing an absent description", async (
     cronEnabled: true,
     log: logger,
     enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
     runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
   });
   await cron.start();
@@ -51,7 +51,58 @@ it("preserves the grant generation when clearing an absent description", async (
 
     expect(updated.description).toBeUndefined();
     expect(after).toEqual(before);
+
+    await cron.update(created.id, { enabled: false });
+    expect(readGrantDefinitionProjection(created.id)).toEqual(before);
+    await cron.update(created.id, { enabled: true });
+    expect(readGrantDefinitionProjection(created.id)).toEqual(before);
+
+    await cron.update(created.id, { payload: { kind: "agentTurn", message: "changed" } });
+    const changed = readGrantDefinitionProjection(created.id);
+    expect(changed?.grant_definition_generation).toBe(2);
+    expect(changed?.grant_definition_revision).not.toBe(before?.grant_definition_revision);
+    await cron.update(created.id, { payload: { kind: "agentTurn", message: "run" } });
+    expect(readGrantDefinitionProjection(created.id)).toEqual({
+      ...before,
+      grant_definition_generation: 3,
+    });
   } finally {
+    cron.stop();
+  }
+});
+
+it("retires standing authority on a committed definition edit, not a no-op edit", async () => {
+  const { storePath } = await makeStorePath();
+  const cron = new CronService({
+    scheduler: createTestGatewayScheduler(),
+    storePath,
+    cronEnabled: true,
+    log: logger,
+    enqueueSystemEvent: vi.fn(),
+    runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+  });
+  await cron.start();
+  const job = await cron.add({
+    name: "definition-owner",
+    enabled: true,
+    schedule: { kind: "every", everyMs: 60_000 },
+    sessionTarget: "isolated",
+    wakeMode: "now",
+    payload: { kind: "agentTurn", message: "run" },
+  });
+  const marker = markCronJobActive(job.id);
+  if (!marker) {
+    throw new Error("Expected an active cron occurrence");
+  }
+  try {
+    await cron.update(job.id, { name: "definition-owner" });
+    expect(marker.standingGrantDefinitionRevoked).toBeUndefined();
+    await cron.update(job.id, { name: "changed-owner" });
+    expect(marker.standingGrantDefinitionRevoked).toBe(true);
+    await cron.update(job.id, { name: "definition-owner" });
+    expect(marker.standingGrantDefinitionRevoked).toBe(true);
+  } finally {
+    clearCronJobActive(job.id, marker);
     cron.stop();
   }
 });

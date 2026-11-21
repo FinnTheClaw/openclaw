@@ -1,5 +1,5 @@
 ---
-summary: "Connect OpenAI with an API key, Codex subscription, or Sign in with ChatGPT (Beta)"
+summary: "Connect OpenAI with an API key, Codex subscription, or Sign in with ChatGPT"
 read_when:
   - You are connecting OpenAI to OpenClaw for the first time
   - You want Codex subscription auth instead of API keys
@@ -121,7 +121,8 @@ choose based on model access, hosted plugins, usage tracking, and permissions.
         openclaw models auth login --provider openai --device-code
         ```
       </Step>
-      <Step title="Use the canonical OpenAI model route">
+      <Step title="Use the standard OpenAI model route">
+        <a id="use-the-canonical-openai-model-route" />
         ```bash
         openclaw config set agents.defaults.model.primary openai/gpt-6-astra
         ```
@@ -355,7 +356,7 @@ choose based on model access, hosted plugins, usage tracking, and permissions.
     `openai/gpt-5.6-sol` configuration. Dense turns reached `295098`, `586562`,
     and `863664` prompt tokens. Turn three emitted and persisted a first-class
     server compaction item; the next request replayed that exact opaque item,
-    pruned its prefix, and used `9602` prompt tokens. A deterministic long
+    pruned its prefix, and used `9602` prompt tokens. A long
     response produced `5480` output tokens, durable markers survived compaction
     and Gateway restart, restart latency was `12081` ms, every call reported
     `serviceTier: priority`, and the full suite took `220.03` seconds. These
@@ -429,16 +430,15 @@ choose based on model access, hosted plugins, usage tracking, and permissions.
 
 <a id="sign-in-with-chatgpt-preview" />
 
-## Sign in with ChatGPT (Beta)
+<a id="sign-in-with-chatgpt-beta" />
 
-Use Sign in with ChatGPT (SIWC) for app-specific authorization to spend your
-Codex allowance on eligible Responses API requests. Check shared allowance
-usage in [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage). OpenClaw
-does not show SIWC quota or per-app usage, and does not set per-app limits;
-ChatGPT may offer app-specific controls for your account.
+## Sign in with ChatGPT
 
-Your account and workspace must have SIWC registration and token sharing enabled
-by OpenAI.
+Use Sign in with ChatGPT (SIWC) to authorize OpenClaw to use your eligible
+ChatGPT plan for Responses API requests. Your account and workspace must support
+token sharing. On ChatGPT Business, your workspace admin controls whether
+OpenClaw can use the workspace plan. See [SIWC usage limits](/providers/openai/authentication#sign-in-with-chatgpt-usage-limits)
+to check your own app limit or the workspace sharing cap.
 
 SIWC does not support OpenAI-hosted plugins or connected apps yet. Those require
 a Codex credential with connector invocation scope, which device-code login does

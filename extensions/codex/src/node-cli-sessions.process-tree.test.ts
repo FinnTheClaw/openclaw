@@ -7,9 +7,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCodexCliSessionNodeHostCommands } from "./node-cli-sessions.js";
 
-const command = createCodexCliSessionNodeHostCommands().find(
-  (entry) => entry.command === "codex.cli.session.resume",
-);
+const command = createCodexCliSessionNodeHostCommands(async () => {
+  throw new Error("Unscoped continuation must not resolve an agent catalog source");
+}).find((entry) => entry.command === "codex.cli.session.resume");
 const stub = `#!/usr/bin/env node
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
@@ -54,6 +54,7 @@ let tempDir: string;
 let oldPath: string | undefined;
 let oldMode: string | undefined;
 let oldMarker: string | undefined;
+let oldCodexHome: string | undefined;
 
 async function invoke(sessionId: string, mode: string, timeoutMs = 120): Promise<string> {
   if (!command) {
@@ -84,6 +85,8 @@ describe.runIf(process.platform === "linux")(
     beforeEach(async () => {
       tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-resume-tree-"));
       oldPath = process.env.PATH;
+      oldCodexHome = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = tempDir;
       oldMode = process.env.OC_TREE_TEST_MODE;
       oldMarker = process.env.OC_TREE_TEST_MARKER;
       await fs.writeFile(path.join(tempDir, "codex"), stub, { mode: 0o755 });
@@ -91,6 +94,8 @@ describe.runIf(process.platform === "linux")(
     });
 
     afterEach(async () => {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
       if (oldPath === undefined) delete process.env.PATH;
       else process.env.PATH = oldPath;
       if (oldMode === undefined) delete process.env.OC_TREE_TEST_MODE;

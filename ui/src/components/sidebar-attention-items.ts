@@ -8,15 +8,8 @@ import type { SidebarAttentionItem } from "./sidebar-attention-entries.ts";
 
 registerSidebarAttentionEnglish();
 
-// A cron job counts as overdue when its next planned run is this far in the
-// past; mirrors the threshold the Overview attention list used.
 const CRON_OVERDUE_GRACE_MS = 300_000;
 const ALERT_QUESTION_MAX_LENGTH = 1_000;
-const SIDEBAR_ATTENTION_PRIORITY: Record<SidebarAttentionItem["kind"], number> = {
-  modelAuthExpired: 0,
-  cronFailed: 1,
-  cronOverdue: 2,
-};
 
 export type CronAttentionJob = Pick<
   CronJob,
@@ -37,18 +30,6 @@ export function cronOverdueAt(job: CronAttentionJob, schedulerEnabled: boolean |
     : Infinity;
 }
 
-export function compareSidebarAttentionEntries(
-  left: SidebarAttentionItem,
-  right: SidebarAttentionItem,
-): number {
-  return SIDEBAR_ATTENTION_PRIORITY[left.kind] - SIDEBAR_ATTENTION_PRIORITY[right.kind];
-}
-
-type SidebarAttentionContent = Omit<
-  SidebarAttentionItem,
-  "category" | "dismissal" | "requiresAction" | "type"
->;
-
 export function buildSidebarAttentionEntries(params: {
   cronJobs: readonly CronAttentionJob[];
   cronSchedulerEnabled: boolean | null;
@@ -59,7 +40,7 @@ export function buildSidebarAttentionEntries(params: {
 }): SidebarAttentionItem[] {
   const entries: SidebarAttentionItem[] = [];
   const attentionEntry = (
-    item: SidebarAttentionContent,
+    item: Omit<SidebarAttentionItem, "category" | "dismissal" | "requiresAction" | "type">,
     category: SidebarAttentionItem["category"],
   ): SidebarAttentionItem => ({
     ...item,
@@ -68,44 +49,6 @@ export function buildSidebarAttentionEntries(params: {
     dismissal: { kind: item.kind, signature: item.signature },
     requiresAction: true,
   });
-  for (const kind of ["cronFailed", "cronOverdue"] as const) {
-    const failed = kind === "cronFailed";
-    const timestamp = (job: CronAttentionJob) =>
-      (failed ? job.state?.lastRunAtMs : job.state?.nextRunAtMs) ?? job.updatedAtMs;
-    const jobs = params.cronJobs
-      .filter((job) =>
-        failed
-          ? isCronJobActiveFailure(job)
-          : params.now > cronOverdueAt(job, params.cronSchedulerEnabled),
-      )
-      .toSorted((left, right) => timestamp(right) - timestamp(left));
-    for (const job of jobs) {
-      const time = formatTimeAgo(Math.max(0, params.now - timestamp(job)));
-      const context = params.cronOwnerByJobId?.get(job.id);
-      entries.push(
-        attentionEntry(
-          {
-            kind,
-            severity: failed ? "error" : "warning",
-            icon: "clock",
-            label: job.name?.trim() || job.id,
-            detail: t(failed ? "attention.automationFailed" : "attention.automationOverdue", {
-              time,
-            }),
-            meta: {
-              ...(context ? { context } : {}),
-              status: t(failed ? "attention.failed" : "attention.overdue"),
-              time,
-            },
-            action: { kind: "navigate", routeId: "cron" },
-            // A later overdue episode must resurface after its planned run changes.
-            signature: failed ? job.id : `${job.id}@${job.state?.nextRunAtMs}`,
-          },
-          "automations",
-        ),
-      );
-    }
-  }
 
   const monitored = listEffectiveModelAuthProviders(params.modelAuthStatus?.providers ?? []).filter(
     isMonitoredAuthProvider,
@@ -170,5 +113,44 @@ export function buildSidebarAttentionEntries(params: {
       ),
     );
   }
+  for (const kind of ["cronFailed", "cronOverdue"] as const) {
+    const failed = kind === "cronFailed";
+    const timestamp = (job: CronAttentionJob) =>
+      (failed ? job.state?.lastRunAtMs : job.state?.nextRunAtMs) ?? job.updatedAtMs;
+    const jobs = params.cronJobs
+      .filter((job) =>
+        failed
+          ? isCronJobActiveFailure(job)
+          : params.now > cronOverdueAt(job, params.cronSchedulerEnabled),
+      )
+      .toSorted((left, right) => timestamp(right) - timestamp(left));
+    for (const job of jobs) {
+      const time = formatTimeAgo(Math.max(0, params.now - timestamp(job)));
+      const context = params.cronOwnerByJobId?.get(job.id);
+      entries.push(
+        attentionEntry(
+          {
+            kind,
+            severity: failed ? "error" : "warning",
+            icon: "clock",
+            label: job.name?.trim() || job.id,
+            detail: t(failed ? "attention.automationFailed" : "attention.automationOverdue", {
+              time,
+            }),
+            meta: {
+              ...(context ? { context } : {}),
+              status: t(failed ? "attention.failed" : "attention.overdue"),
+              time,
+            },
+            action: { kind: "navigate", routeId: "cron" },
+            // A later overdue episode must resurface after its planned run changes.
+            signature: failed ? job.id : `${job.id}@${job.state?.nextRunAtMs}`,
+          },
+          "automations",
+        ),
+      );
+    }
+  }
+
   return entries;
 }

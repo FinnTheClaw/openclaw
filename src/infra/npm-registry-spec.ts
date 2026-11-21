@@ -1,4 +1,3 @@
-// Parses npm registry specs into package, version, and tag references.
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import {
   parse as parseSemver,
@@ -8,38 +7,40 @@ import {
 } from "semver";
 import { compareOpenClawSemver, isOpenClawCorrectionSemver } from "./semver.js";
 
-const OPENCLAW_RELEASE_PREFIX_RE = /^\d{4}\./;
-const DIST_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export { resolveNpmJsonEntries } from "../../scripts/lib/npm-json-output.mts";
 
-/**
- * npm ≤11 prints `npm view`/`npm pack` `--json` results as a bare entry object
- * or an entry array; npm 12 wraps view results in a singleton array and keys
- * pack results by package name. Normalize both shapes to the entry list, or
- * metadata reads mistake the wrapper for an entry and fail closed with
- * incomplete-metadata errors.
- */
-export function resolveNpmJsonEntries(value: unknown): unknown[] {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const looksLikeEntry =
-      typeof record.id === "string" ||
-      typeof record.name === "string" ||
-      typeof record.version === "string" ||
-      typeof record.filename === "string";
-    if (!looksLikeEntry) {
-      const entries = Object.values(record).filter(
-        (entry) => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry),
-      );
-      if (entries.length > 0) {
-        return entries;
-      }
-    }
-  }
-  return [value];
+const OPENCLAW_RELEASE_PREFIX_RE = /^\d{4}\./;
+export type NpmSpecResolution = {
+  name?: string;
+  version?: string;
+  resolvedSpec?: string;
+  integrity?: string;
+  shasum?: string;
+  resolvedAt?: string;
+  packageOpenClaw?: Record<string, unknown>;
+};
+
+type NpmResolutionFields = {
+  resolvedName?: string;
+  resolvedVersion?: string;
+  resolvedSpec?: string;
+  integrity?: string;
+  shasum?: string;
+  resolvedAt?: string;
+};
+
+export function buildNpmResolutionFields(resolution?: NpmSpecResolution): NpmResolutionFields {
+  return {
+    resolvedName: resolution?.name,
+    resolvedVersion: resolution?.version,
+    resolvedSpec: resolution?.resolvedSpec,
+    integrity: resolution?.integrity,
+    shasum: resolution?.shasum,
+    resolvedAt: resolution?.resolvedAt,
+  };
 }
+
+const DIST_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
  * Parsed registry-only npm spec accepted by plugin install flows.
@@ -54,7 +55,7 @@ export type ParsedRegistryNpmSpec = {
   selectorIsPrerelease: boolean;
 };
 
-function parseRegistryNpmSpecInternal(
+export function parseRegistryNpmSpecResult(
   rawSpec: string,
 ): { ok: true; parsed: ParsedRegistryNpmSpec } | { ok: false; error: string } {
   const spec = rawSpec.trim();
@@ -92,37 +93,29 @@ function parseRegistryNpmSpecInternal(
       error: "unsupported npm spec: expected <name> or <name>@<version> from the npm registry",
     };
   }
-  if (!hasSelector) {
-    return {
-      ok: true,
-      parsed: {
-        name,
-        raw: spec,
-        selectorKind: "none",
-        selectorIsPrerelease: false,
-      },
-    };
-  }
-  if (!selector) {
-    return { ok: false, error: "unsupported npm spec: missing version/tag after @" };
-  }
-  if (/[\\/]/.test(selector)) {
-    return { ok: false, error: "unsupported npm spec: invalid version/tag" };
-  }
-  const exactVersion = validSemver(selector);
-  if (!exactVersion && !DIST_TAG_RE.test(selector)) {
-    return {
-      ok: false,
-      error: "unsupported npm spec: use an exact version or dist-tag (ranges are not allowed)",
-    };
+  let exactVersion: string | null = null;
+  if (hasSelector) {
+    if (!selector) {
+      return { ok: false, error: "unsupported npm spec: missing version/tag after @" };
+    }
+    if (/[\\/]/.test(selector)) {
+      return { ok: false, error: "unsupported npm spec: invalid version/tag" };
+    }
+    exactVersion = validSemver(selector);
+    if (!exactVersion && !DIST_TAG_RE.test(selector)) {
+      return {
+        ok: false,
+        error: "unsupported npm spec: use an exact version or dist-tag (ranges are not allowed)",
+      };
+    }
   }
   return {
     ok: true,
     parsed: {
       name,
       raw: spec,
-      selector,
-      selectorKind: exactVersion ? "exact-version" : "tag",
+      ...(hasSelector ? { selector } : {}),
+      selectorKind: !hasSelector ? "none" : exactVersion ? "exact-version" : "tag",
       selectorIsPrerelease:
         exactVersion !== null &&
         parseSemverPrerelease(exactVersion) !== null &&
@@ -133,13 +126,13 @@ function parseRegistryNpmSpecInternal(
 
 /** Parses a registry-only npm package spec into package name and optional selector metadata. */
 export function parseRegistryNpmSpec(rawSpec: string): ParsedRegistryNpmSpec | null {
-  const parsed = parseRegistryNpmSpecInternal(rawSpec);
+  const parsed = parseRegistryNpmSpecResult(rawSpec);
   return parsed.ok ? parsed.parsed : null;
 }
 
 /** Validates a registry-only npm spec and returns a user-facing error when rejected. */
 export function validateRegistryNpmSpec(rawSpec: string): string | null {
-  const parsed = parseRegistryNpmSpecInternal(rawSpec);
+  const parsed = parseRegistryNpmSpecResult(rawSpec);
   return parsed.ok ? null : parsed.error;
 }
 
@@ -232,7 +225,7 @@ export function formatPrereleaseResolutionError(params: {
   const selectorHint =
     params.spec.selectorKind === "none" ||
     normalizeLowercaseStringOrEmpty(params.spec.selector) === "latest"
-      ? `Use "${params.spec.name}@beta" (or another prerelease tag) or an exact prerelease version to opt in explicitly.`
+      ? `Use "npm:${params.spec.name}@beta" (or another prerelease tag) or an exact prerelease version to opt in explicitly.`
       : `Use an explicit prerelease tag or exact prerelease version if you want prerelease installs.`;
   return `Resolved ${params.spec.raw} to prerelease version ${params.resolvedVersion}, but prereleases are only installed when explicitly requested. ${selectorHint}`;
 }

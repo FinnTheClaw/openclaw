@@ -45,7 +45,7 @@ export function installDebugProxyGlobalFetchPatch(
   uninstallDebugProxyGlobalFetchPatch(deps);
   // Patch only once per target and keep the original fetch for deterministic
   // teardown in tests and nested capture sessions.
-  const fetchImpl: typeof globalThis.fetch & { mock?: unknown } = fetchTarget.fetch;
+  const fetchImpl = fetchTarget.fetch;
   const originalFetch = resolveDebugProxyFetchTransport(fetchImpl).bind(fetchTarget);
   const captureSafely = (
     current: CaptureOwner,
@@ -103,10 +103,5 @@ export function installDebugProxyGlobalFetchPatch(
     }
     return response;
   };
-  const mockState = fetchImpl.mock;
-  if (typeof mockState === "object" && mockState !== null) {
-    // Preserve Vitest mock metadata when patching mocked fetch targets.
-    patchedFetch.mock = mockState;
-  }
   registerDebugProxyFetchPatch(fetchTarget, originalFetch, patchedFetch, sessionAdmission);
 }

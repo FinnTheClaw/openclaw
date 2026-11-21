@@ -7,6 +7,8 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   buildLaunchAgentEnvironmentWrapper,
   isGeneratedLaunchAgentEnvironmentWrapper,
+} from "./launchd-env-wrapper.js";
+import {
   resolveLaunchAgentEnvFilePath,
   resolveLaunchAgentEnvWrapperPath,
   writeLaunchAgentPlist,

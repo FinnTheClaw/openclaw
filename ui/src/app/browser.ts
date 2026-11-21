@@ -7,6 +7,7 @@ import {
   routeIdFromPath,
 } from "../app-route-paths.ts";
 import { uiDevGatewayResourceBasePath } from "../dev-gateway.ts";
+import { listen } from "../lib/reactive/listener.ts";
 import { isNativeEmbedHost } from "./native-web-chrome.ts";
 
 type WindowWithControlUiBasePath = Window &
@@ -14,7 +15,7 @@ type WindowWithControlUiBasePath = Window &
     [key: string]: unknown;
   };
 
-function readControlUiResourceBasePath(): string | null {
+export function resolveControlUiPaths(pathname: string) {
   const windowValue =
     typeof window === "undefined"
       ? undefined
@@ -25,13 +26,8 @@ function readControlUiResourceBasePath(): string | null {
       : typeof document === "undefined"
         ? null
         : document.documentElement.getAttribute(CONTROL_UI_BASE_PATH_ATTRIBUTE);
-  return value === null ? null : normalizeBasePath(value);
-}
-
-export function resolveControlUiPaths(pathname: string) {
-  const resourceBasePath = readControlUiResourceBasePath();
-  // Explicit root mounts own root routes and cold plugin links; prefixed routes
-  // may still use root resources without becoming root-mounted themselves.
+  const resourceBasePath = value === null ? null : normalizeBasePath(value);
+  // Cold slug links use the declared root; known route namespaces can still use root resources.
   const basePath =
     resourceBasePath === "" && (pluginSlugCandidate(pathname) || routeIdFromPath(pathname))
       ? ""
@@ -71,27 +67,6 @@ export function createBrowserHistory(): RouterHistory {
   const listeners = new Set<(location: RouteLocation) => void>();
   let stopPopState: (() => void) | undefined;
 
-  const ensurePopStateListener = () => {
-    if (stopPopState) {
-      return;
-    }
-    const onPopState = () => {
-      const location = readLocation();
-      for (const listener of listeners) {
-        listener(location);
-      }
-    };
-    window.addEventListener("popstate", onPopState);
-    stopPopState = () => window.removeEventListener("popstate", onPopState);
-  };
-
-  const releasePopStateListener = () => {
-    if (listeners.size === 0) {
-      stopPopState?.();
-      stopPopState = undefined;
-    }
-  };
-
   return {
     location: readLocation,
     // Only app-owned pushes establish a usable back target. history.length also
@@ -110,10 +85,18 @@ export function createBrowserHistory(): RouterHistory {
       ),
     listen: (listener) => {
       listeners.add(listener);
-      ensurePopStateListener();
+      if (!stopPopState) {
+        stopPopState = listen(window, "popstate", () => {
+          const location = readLocation();
+          listeners.forEach((subscriber) => subscriber(location));
+        });
+      }
       return () => {
         listeners.delete(listener);
-        releasePopStateListener();
+        if (listeners.size === 0) {
+          stopPopState?.();
+          stopPopState = undefined;
+        }
       };
     },
   };

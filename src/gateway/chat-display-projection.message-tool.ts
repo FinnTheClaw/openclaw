@@ -2,7 +2,13 @@ import { safeParseJsonRecord } from "@openclaw/normalization-core";
 import { asPositiveSafeInteger } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { isSilentReplyText } from "../auto-reply/tokens.js";
 import { readAssistantDisplayContent } from "../shared/assistant-display-content.js";
+import {
+  isSilentAssistantTranscriptMessage,
+  readTerminalSourceReplyDeliveryMirror,
+  resolveAssistantMessagePhase,
+} from "../shared/chat-message-content.js";
 import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-only-openclaw-assistant.js";
 import {
   extractAssistantTextForSilentCheck,
@@ -11,7 +17,10 @@ import {
   isProjectedForwardedMessage as isProjectedSessionsSendForwardedMessage,
   isForwardedUserMessage as isSessionsSendInterSessionUserMessage,
 } from "./chat-display-projection.helpers.js";
-import { isSuppressedControlReplyText } from "./control-reply-text.js";
+
+// Only historical raw tool transcripts need this projection; current sends persist delivery mirrors.
+const isSuppressedControlReplyText = (text: string) =>
+  isSilentReplyText(text) || ["ANNOUNCE_SKIP", "REPLY_SKIP"].includes(text.trim().toUpperCase());
 
 type PendingMessageToolVisibleReply = {
   toolCallId?: string;
@@ -177,10 +186,19 @@ function extractMessageToolVisibleReplies(
 }
 
 function isAssistantSilentControlReplyOnly(message: Record<string, unknown>): boolean {
+  // Current persisted visibility/phase facts outrank the legacy whole-token fallback.
+  if (
+    message.display === true ||
+    readTerminalSourceReplyDeliveryMirror(message) ||
+    resolveAssistantMessagePhase(message) === "commentary" ||
+    message.endTurn === false
+  ) {
+    return false;
+  }
   const text = extractAssistantTextForSilentCheck(message);
   return (
     text !== undefined &&
-    isSuppressedControlReplyText(text) &&
+    (isSilentAssistantTranscriptMessage(message) || isSuppressedControlReplyText(text)) &&
     !hasAssistantDisplayableNonTextContent(message)
   );
 }
@@ -189,8 +207,13 @@ function isRenderableAssistantDisplayMessage(message: Record<string, unknown>): 
   if (message.role !== "assistant") {
     return false;
   }
+  if (resolveAssistantMessagePhase(message) === "commentary" || message.endTurn === false) {
+    return false;
+  }
   const text = extractAssistantTextForSilentCheck(message);
-  return text !== undefined && !isSuppressedControlReplyText(text);
+  return (
+    message.display === true || (text !== undefined && !isAssistantSilentControlReplyOnly(message))
+  );
 }
 
 function readMessageToolResultName(message: Record<string, unknown>): string | undefined {
@@ -485,6 +508,14 @@ export function mirrorMessageToolVisibleReplies(messages: unknown[]): unknown[] 
     }
 
     if (record.role === "user") {
+      clearPending();
+      next.push(message);
+      continue;
+    }
+
+    // Current producers persist their own final source-reply mirror. Never replace
+    // that authoritative row with a historical inferred display mirror.
+    if (readTerminalSourceReplyDeliveryMirror(record)) {
       clearPending();
       next.push(message);
       continue;

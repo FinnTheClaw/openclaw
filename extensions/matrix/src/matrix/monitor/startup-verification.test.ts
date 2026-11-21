@@ -104,7 +104,7 @@ function failRoundSevenStartupStateWritesOn(numbers: number[]): void {
   let count = 0;
   setMatrixRuntime({
     state: {
-      openKeyedStore: (options: OpenKeyedStoreOptions) => {
+      openKeyedStoreV2: (options: OpenKeyedStoreOptions) => {
         const store = createPluginStateKeyedStoreForTests<unknown>("matrix", options);
         if (options.namespace !== "startup-verification") {
           return store;
@@ -145,7 +145,7 @@ describe("ensureMatrixStartupVerification", () => {
   beforeEach(() => {
     setMatrixRuntime({
       state: {
-        openKeyedStore: (options: OpenKeyedStoreOptions) =>
+        openKeyedStoreV2: (options: OpenKeyedStoreOptions) =>
           createPluginStateKeyedStoreForTests("matrix", options),
       },
     } as unknown as PluginRuntime);

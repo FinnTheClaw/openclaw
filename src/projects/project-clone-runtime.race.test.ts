@@ -42,7 +42,7 @@ let root: string;
 let target: string;
 const ok = { code: 0, termination: "exit", stderr: "", stdout: "" };
 const fail = { code: 1, termination: "exit", stderr: "clone failed", stdout: "" };
-const stageFrom = (argv: string[]) => argv[5];
+const stageFrom = (argv: string[]) => argv.at(-1)!;
 
 async function stages(): Promise<string[]> {
   return (await fs.readdir(path.dirname(target))).filter((entry) => entry.includes(".clone-"));
@@ -150,6 +150,14 @@ describe("project clone target ownership", () => {
     expect(runner.run.mock.calls[0]?.[0]).toEqual([
       "git",
       "clone",
+      "--config",
+      "maintenance.auto=false",
+      "--config",
+      "gc.auto=0",
+      "--config",
+      "pack.threads=1",
+      "--config",
+      "pack.windowMemory=64m",
       "--no-recurse-submodules",
       "--",
       "fixture",

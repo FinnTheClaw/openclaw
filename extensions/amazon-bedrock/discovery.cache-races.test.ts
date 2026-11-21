@@ -1,7 +1,20 @@
 // Deterministic Bedrock cache-boundary cases; no AWS client or credentials.
 import type { BedrockClient } from "@aws-sdk/client-bedrock";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { discoverBedrockModels, resolveImplicitBedrockProvider } from "./api.js";
+const { createClientMock } = vi.hoisted(() => ({ createClientMock: vi.fn() }));
+vi.mock("@aws-sdk/client-bedrock", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@aws-sdk/client-bedrock")>()),
+  BedrockClient: class {
+    constructor() {
+      return createClientMock();
+    }
+  },
+}));
+afterEach(() => {
+  vi.restoreAllMocks();
+  createClientMock.mockReset();
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -86,13 +99,11 @@ function createHarness() {
       destroy: () => {},
     } as unknown as BedrockClient;
   };
-  const discover = (key: string, now: number, refreshInterval = 1) =>
-    discoverBedrockModels({
-      region: key,
-      now: () => now,
-      config: { refreshInterval },
-      clientFactory,
-    });
+  createClientMock.mockImplementation(clientFactory);
+  const discover = (key: string, now: number, refreshInterval = 1) => {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    return discoverBedrockModels({ region: key, config: { refreshInterval } });
+  };
   return { reserve, created, clientFactory, discover };
 }
 
@@ -357,7 +368,6 @@ describe("Bedrock B02 shared in-flight failure", () => {
     const params = {
       pluginConfig: { discovery: { enabled: true, region: key, refreshInterval: 60 } },
       env: {},
-      clientFactory: h.clientFactory,
     };
     const a = h.reserve();
     const first = resolveImplicitBedrockProvider(params);

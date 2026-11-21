@@ -8,14 +8,14 @@ struct VoiceWakeOverlayControllerTests {
     @Test(arguments: ["corrected", "", " \n", "new\nline", "café", "你好", "emoji 🦞", "  trimmed  ", "a'b", "recognized"])
     func `user edits update the text owned by the coordinator`(_ edited: String) {
         let coordinator = VoiceSessionCoordinator.shared
-        let token = coordinator.startSession(source: .wakeWord, text: "recognized")
+        let token = coordinator.startSession(text: "recognized")
         defer { coordinator.dismiss(token: token, reason: .explicit, outcome: .empty) }
         let controller = VoiceWakeOverlayController.shared
         controller.userBeganEditing()
         controller.updateText(edited)
         #expect(controller.snapshot().text == edited)
         #expect(coordinator.snapshot().text == edited)
-        coordinator.updateUserText(token: UUID(), text: "stale", attributed: NSAttributedString(string: "stale"))
+        coordinator.updateEditedText(token: UUID(), text: "stale")
         #expect(coordinator.snapshot().text == edited)
     }
 
@@ -23,7 +23,6 @@ struct VoiceWakeOverlayControllerTests {
     @Test func `overlay controller lifecycle without UI`() async {
         let controller = VoiceWakeOverlayController(enableUI: false)
         let token = controller.startSession(
-            source: .wakeWord,
             transcript: "hello",
             attributed: nil,
             forwardEnabled: true,
@@ -50,7 +49,6 @@ struct VoiceWakeOverlayControllerTests {
         let coordinator = VoiceSessionCoordinator.shared
         let controller = VoiceWakeOverlayController.shared
         let token = coordinator.startSession(
-            source: .wakeWord,
             text: "recognized words",
             forwardEnabled: true)
         defer { coordinator.dismiss(token: token, reason: .explicit, outcome: .empty) }
@@ -78,7 +76,6 @@ struct VoiceWakeOverlayControllerTests {
     @Test func `update level throttles rapid changes`() async {
         let controller = VoiceWakeOverlayController(enableUI: false)
         let token = controller.startSession(
-            source: .wakeWord,
             transcript: "level test",
             attributed: nil,
             forwardEnabled: false,

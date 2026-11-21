@@ -40,7 +40,7 @@ export function clearDefaultGoogleChatCredentialOverrides(
   };
 }
 
-const baseGooglechatSetupAdapter = createPatchedAccountSetupAdapter({
+const baseGooglechatSetupAdapter = createPatchedAccountSetupAdapter<GoogleChatSetupInput>({
   channelKey: channel,
   validateInput: createSetupInputPresenceValidator({
     defaultAccountOnlyEnvError:
@@ -52,8 +52,7 @@ const baseGooglechatSetupAdapter = createPatchedAccountSetupAdapter({
       },
     ],
   }),
-  buildPatch: (input) => {
-    const setupInput = input as GoogleChatSetupInput;
+  buildPatch: (setupInput) => {
     const patch = setupInput.useEnv
       ? { serviceAccount: "", serviceAccountFile: "" }
       : setupInput.tokenFile

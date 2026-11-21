@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveCodexSupervisionAppServerRuntimeOptions } from "./app-server/config-runtime.js";
 import { createCodexSupervisionTools } from "./supervision-tools.js";
 
 type Options = Parameters<typeof createCodexSupervisionTools>[0];
@@ -29,6 +30,10 @@ function makeTools(ids: string[], handler: Handler, getConfig?: () => unknown) {
   const tools = createCodexSupervisionTools({
     getPluginConfig: getConfig ?? (() => configFor(ids)),
     senderIsOwner: true,
+    resolveAuthProfileId: async () => undefined,
+    withAuthProfileIdAtEffect: async (_params, consume) =>
+      consume({ read: async () => undefined, assertCurrent() {} }),
+    resolveRuntimeOptions: resolveCodexSupervisionAppServerRuntimeOptions,
     env: {},
     request,
   });

@@ -165,7 +165,7 @@ describe("worker conflict ref durability — ten-case checkpoint pack", () => {
       await expect(operation).rejects.toThrow("controlled");
     } else {
       const result = await operation;
-      expect(result.conflictRetained).toBe(input.next !== "clear");
+      expect(result).toBe(input.next !== "clear");
     }
     expect(report).toHaveBeenCalledTimes(input.reportCount);
     await expect(hasWorkerWorkspaceResultRef({ root, stagedResultRef: priorRef })).resolves.toBe(

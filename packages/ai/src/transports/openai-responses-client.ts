@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { AssistantMessage, Context, Model, StreamFn } from "@openclaw/llm-core";
-import OpenAI, { AzureOpenAI } from "openai";
+import type { AssistantMessage, Model, ModelRequestHeaders, StreamFn } from "@openclaw/llm-core";
+import OpenAI from "openai";
 import { getEnvApiKey } from "../env-api-keys.js";
 import { getAiTransportHost } from "../host.js";
 import { codeModeToolSurfaceObserver } from "../provider-options.js";
 import { resolveAzureDeploymentNameFromMap } from "../providers/azure-deployment-map.js";
-import { isOpenAICompatibleAzureResponsesBaseUrl } from "../providers/azure-openai-responses-client-compat.js";
+import { createAzureOpenAIClient } from "../providers/openai-provider-client.js";
 import { applyResponsesServiceTierPricing } from "../providers/openai-responses-shared.js";
+import { notifyLlmRequestActivity } from "../utils/llm-request-activity.js";
 import {
   createFirstStreamEventAbortController,
   getFirstStreamEventTimeoutHandler,
@@ -24,6 +25,7 @@ import {
   suppressOpenAIResponsesCompaction,
   type OpenAIResponsesReplayMode,
 } from "./openai-responses-compaction-replay.js";
+import { createResponsesV2CompactionCollector } from "./openai-responses-compaction-v2.js";
 import { recordResponsesContextUsage } from "./openai-responses-context-usage.js";
 import {
   claimOpenAIResponsesHttpContinuation,
@@ -31,24 +33,25 @@ import {
 } from "./openai-responses-continuation.js";
 import {
   AZURE_RESPONSES_FIRST_EVENT_TIMEOUT_MS,
-  OpenAIResponsesWebSocketPreDispatchError,
   OpenAIResponsesWebSocketPostDispatchError,
-  OpenAIResponsesWebSocketSafeRetryError,
+  responsesServiceTierObserver,
   type OpenAIResponsesOptions,
 } from "./openai-responses-contracts.js";
 import {
-  logResponsesFailedNoDetails,
-  ResponsesStreamFailure,
+  observeResponsesTransportFailure,
   safeDebugValue,
-  summarizeOpenAITransportError,
   summarizeResponsesPayload,
 } from "./openai-responses-debug.js";
+import { supportsNativeOpenAIResponsesEndpoint } from "./openai-responses-endpoint.js";
 import { recordResponsesInputReplay } from "./openai-responses-input-replay.js";
 import {
   buildOpenAIResponsesParams,
   sanitizeOpenAICodexResponsesParams,
 } from "./openai-responses-params-internal.js";
-import { resolveOpenAIResponsesPayloadPolicy } from "./openai-responses-payload-policy.js";
+import {
+  enforceOpenAIResponsesCompactionReplayStorage,
+  resolveOpenAIResponsesPayloadPolicy,
+} from "./openai-responses-payload-policy.js";
 import { createResponsesPromptEgressObserver } from "./openai-responses-prompt-observer-internal.js";
 import {
   recordResponsesReasoningState,
@@ -57,25 +60,28 @@ import {
 import { supportsResponsesReasoningUpdate } from "./openai-responses-reasoning-update.js";
 import {
   createOpenAIResponsesAssistantOutput,
-  createResponsesStreamWithEncryptedContentRetry,
-  isInvalidEncryptedContentError,
-  resolveNextResponsesEncryptedContentAttempt,
-  resolveAzureOpenAIApiVersion,
+  createResponsesStreamWithRecovery,
+  createResponsesItemConflictRecovery,
 } from "./openai-responses-replay-internal.js";
 import { createResponsesRequestFetch } from "./openai-responses-request-fetch.js";
 import {
+  independentResponsesRequest,
   responsesRequestLifecycle,
   withResponsesRequestAcceptance,
 } from "./openai-responses-request-lifecycle.js";
 import { projectResponsesSteeringInput } from "./openai-responses-steering.js";
-import { hasOnlyResponsesFunctionTools } from "./openai-responses-stream-errors.js";
+import {
+  DegenerateToolCallArgumentsError,
+  hasOnlyResponsesFunctionTools,
+} from "./openai-responses-stream-errors.js";
 import { processResponsesStream } from "./openai-responses-stream-internal.js";
 import { observeResponsesStream } from "./openai-responses-stream-observer-internal.js";
+import { RESPONSES_BOOKKEEPING_TIMEOUT_MS } from "./openai-responses-stream-slots-internal.js";
 import {
-  createOpenAIResponsesWebSocketStream,
-  type OpenAIResponsesWebSocketMode,
-  supportsNativeOpenAIResponsesEndpoint,
-} from "./openai-responses-websocket.js";
+  combineWebSocketTimeoutSignal,
+  resolveNativeOpenAIResponsesWebSocketMode,
+} from "./openai-responses-websocket-options.js";
+import { createRecoverableResponsesWebSocketStream } from "./openai-responses-websocket-recovery.js";
 import {
   assertCodeModeResponsesToolSurface,
   buildOpenAIClientHeaders,
@@ -89,6 +95,7 @@ import {
   createOpenAIProviderAcceptanceHook,
   log,
   resolveOpenAIClientBaseUrl,
+  withOpenAIErrorResponseHook,
 } from "./openai-transport-shared.js";
 import {
   filterProviderTurnHeadersForExplicitOpencodeSession,
@@ -99,50 +106,15 @@ import {
   createWritableTransportEventStream,
   failTransportStream,
   finalizeTransportStream,
-  notifyProviderStreamOpened,
   transportAbortError,
   withProviderResponseHook,
 } from "./transport-stream-shared.js";
 import { redactIdentifier } from "./transport-utils.js";
 
-function resolveNativeOpenAIResponsesWebSocketMode(
-  model: Model,
-  transport: OpenAIResponsesOptions["transport"],
-): OpenAIResponsesWebSocketMode | undefined {
-  if (transport !== "websocket" && transport !== "websocket-cached" && transport !== "auto") {
-    return undefined;
-  }
-  if (getAiTransportHost().requiresManagedTransport(model)) {
-    return undefined;
-  }
-  return supportsNativeOpenAIResponsesEndpoint({
-    provider: model.provider,
-    api: model.api,
-    baseUrl: model.baseUrl,
-  })
-    ? transport
-    : undefined;
-}
-
-function combineWebSocketTimeoutSignal(
-  signal: AbortSignal,
-  model: Model,
-  timeoutMs: number | undefined,
-) {
-  const resolvedTimeoutMs =
-    timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0
-      ? timeoutMs
-      : getAiTransportHost().resolveModelRequestTimeoutMs(model);
-  if (resolvedTimeoutMs === undefined || !Number.isFinite(resolvedTimeoutMs)) {
-    return signal;
-  }
-  return AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, resolvedTimeoutMs))]);
-}
-
 export function createOpenAIResponsesClient(
   model: Model,
   apiKey: string,
-  defaultHeaders: Record<string, string>,
+  defaultHeaders: ModelRequestHeaders,
   fetchOverride?: typeof globalThis.fetch,
 ) {
   return new OpenAI({
@@ -155,53 +127,53 @@ export function createOpenAIResponsesClient(
   });
 }
 
-type ResponsesPricingOptions = Pick<
-  NonNullable<Parameters<typeof processResponsesStream>[4]>,
-  "serviceTier" | "applyServiceTierPricing"
->;
-type ResponsesStreamParams = Parameters<
-  typeof createResponsesStreamWithEncryptedContentRetry
->[0] & {
+type ResponsesStreamParams = Parameters<typeof createResponsesStreamWithRecovery>[0] & {
   requestOptions: ReturnType<typeof buildOpenAISdkRequestOptions>;
 };
 
-type ResponsesTransportExecutorOptions = {
+function createResponsesTransportExecutor(config: {
   outputApi?: AssistantMessage["api"];
   firstEventTimeoutMs?: number;
   streamRequest?: boolean;
   httpContinuation?: boolean;
   createClient: typeof createOpenAIResponsesClient;
-  buildRequest: (
-    model: Model,
-    context: Context,
-    options: OpenAIResponsesOptions | undefined,
-    metadata?: Record<string, string>,
-    replayMode?: OpenAIResponsesReplayMode,
-  ) => ReturnType<typeof buildOpenAIResponsesParams>;
+  buildRequest: typeof buildOpenAIResponsesParams;
   pricingOptions?: (
     options: OpenAIResponsesOptions | undefined,
     model: Model,
-  ) => ResponsesPricingOptions;
-};
-
-function createResponsesTransportExecutor(config: ResponsesTransportExecutorOptions): StreamFn {
+  ) => Pick<
+    NonNullable<Parameters<typeof processResponsesStream>[4]>,
+    "serviceTier" | "applyServiceTierPricing"
+  >;
+}): StreamFn {
   return (model, context, options) => {
     const responsesOptions = options as OpenAIResponsesOptions | undefined;
+    const independent = independentResponsesRequest.has(options);
     const compactRequest = claimResponsesCompactRequest(responsesOptions);
+    const v2Compaction =
+      compactRequest?.mode === "v2"
+        ? createResponsesV2CompactionCollector(compactRequest.replayBudget)
+        : undefined;
     const { eventStream, stream } = createWritableTransportEventStream();
     void (async () => {
       const output = createOpenAIResponsesAssistantOutput(model, config.outputApi);
       let firstEventAbort: ReturnType<typeof createFirstStreamEventAbortController> | undefined;
+      let requestSignal = options?.signal;
       let continuationClaim: ReturnType<typeof claimOpenAIResponsesHttpContinuation>;
+      const itemRecovery = createResponsesItemConflictRecovery(output, model, responsesOptions);
       const requestLifecycle = responsesRequestLifecycle.get(options);
       try {
+        if (compactRequest && requestLifecycle) {
+          throw new Error(
+            "Provider review continuation cannot replace its reviewed input with compaction",
+          );
+        }
         const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
-        const websocketMode = resolveNativeOpenAIResponsesWebSocketMode(
-          model,
-          responsesOptions?.transport,
-        );
+        const websocketMode = independent
+          ? undefined
+          : resolveNativeOpenAIResponsesWebSocketMode(model, responsesOptions?.transport);
         const encodeBody = prepareModelRequestBody(
-          websocketMode || compactRequest ? undefined : options,
+          websocketMode || compactRequest?.mode === "endpoint" ? undefined : options,
         );
         const turnState = resolveProviderTransportTurnState(model, {
           sessionId: options?.sessionId,
@@ -238,11 +210,18 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
           options?.sessionId,
           options?.cacheRetention,
         );
-        const fetchOverride = createResponsesRequestFetch(model, {
-          compact: Boolean(compactRequest),
-          stream: config.streamRequest,
-          lifecycle: requestLifecycle,
-        });
+        const fetchOverride = withOpenAIErrorResponseHook(
+          createResponsesRequestFetch(model, {
+            compact: compactRequest?.mode === "endpoint",
+            stream: config.streamRequest,
+            lifecycle: requestLifecycle,
+            // The SDK replaces the fetch signal; retain the watchdog caller signal.
+            onSseComment: () =>
+              notifyLlmRequestActivity(options?.signal, false, RESPONSES_BOOKKEEPING_TIMEOUT_MS),
+          }) ?? buildGuardedModelFetch(model),
+          options?.onResponse,
+          model,
+        );
         const client = config.createClient(model, apiKey, httpHeaders, fetchOverride);
         const nativeAstra =
           model.id === "gpt-6-astra" && supportsNativeOpenAIResponsesEndpoint(model);
@@ -252,21 +231,26 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
           !responsesOptions?.openclawCodeModeToolSurface;
         const prepareRequest = async (request: ReturnType<typeof config.buildRequest>) => {
           let params = request;
+          const preserveUsers = v2Compaction?.preserveUsers(request.input ?? []);
           const nextParams = await options?.onPayload?.(params, model);
           if (nextParams !== undefined) {
             params = nextParams as typeof params;
+          }
+          enforceOpenAIResponsesCompactionReplayStorage(
+            params,
+            resolveOpenAIResponsesPayloadPolicy(model, { storeMode: "preserve" }),
+          );
+          if (preserveUsers) {
+            params = { ...params, input: preserveUsers(params.input ?? []) };
           }
           params = sanitizeOpenAICodexResponsesParams(
             model,
             params as Record<string, unknown>,
           ) as typeof params;
-          params = sanitizeResponsesImagePayload(
-            params as Record<string, unknown>,
-          ) as typeof params;
-          if (
-            (options as { openclawCodeModeToolSurface?: unknown } | undefined)
-              ?.openclawCodeModeToolSurface === true
-          ) {
+          params = v2Compaction
+            ? v2Compaction.sanitizeImages(params)
+            : sanitizeResponsesImagePayload(params);
+          if (responsesOptions?.openclawCodeModeToolSurface === true) {
             const visibleToolNames = resolveCodeModeResponsesVisibleToolNames(context);
             const allowedHostedToolTypes = responsesOptions?.openclawCodeModeAllowedHostedToolTypes;
             enforceCodeModeResponsesToolSurface(
@@ -283,9 +267,19 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
             params.multi_agent?.enabled !== true &&
             params.tools
           ) {
-            params.tools = params.tools.map((tool) =>
-              tool.type === "function" ? { ...tool, async: true } : tool,
+            const synchronousTools = new Set(
+              context.tools?.flatMap((tool) => (tool.async === false ? [tool.name] : [])),
             );
+            params.tools = params.tools.map((tool) =>
+              tool.type === "function" && !synchronousTools.has(tool.name)
+                ? { ...tool, async: true }
+                : tool,
+            );
+          }
+          if (v2Compaction) {
+            // V2 is the next normal request, with one protocol control item.
+            params.input = [...(params.input ?? []), { type: "compaction_trigger" }];
+            v2Compaction.assertReplayFits(params.input, model);
           }
           return params;
         };
@@ -297,23 +291,25 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
               responsesOptions,
               turnState?.metadata,
               replayMode,
+              Boolean(v2Compaction),
+              itemRecovery.applied,
             ),
           );
+        const buildItemConflictRequest = () => itemRecovery.retry(buildRequest);
         let params = await buildRequest("checkpoint");
         const asyncTools =
+          !compactRequest &&
           asyncToolExecutionEligible &&
           params.model === "gpt-6-astra" &&
           params.multi_agent?.enabled !== true;
-        if (compactRequest) {
+        if (compactRequest?.mode === "endpoint") {
           const compacted = await postOpenAIResponsesCompaction({
             client,
             model,
             request: params,
             options: responsesOptions,
           });
-          output.usage.input = compacted.usage.input_tokens;
-          output.usage.output = compacted.usage.output_tokens;
-          output.usage.totalTokens = compacted.usage.input_tokens + compacted.usage.output_tokens;
+          output.usage = compacted.modelUsage;
           compactRequest.resolve(compacted);
           finalizeTransportStream({ stream, output, signal: options?.signal });
           return;
@@ -323,13 +319,11 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
         // their existing eligibility and final request storage checks below.
         const httpContinuationEligible =
           config.httpContinuation &&
+          !compactRequest &&
+          !independent &&
           !websocketMode &&
           !getAiTransportHost().requiresManagedTransport(model) &&
-          (supportsNativeOpenAIResponsesEndpoint({
-            provider: model.provider,
-            api: model.api,
-            baseUrl: model.baseUrl,
-          }) ||
+          (supportsNativeOpenAIResponsesEndpoint(model) ||
             resolveOpenAIResponsesPayloadPolicy(model).explicitContinuationOptIn);
         if (
           httpContinuationEligible &&
@@ -337,24 +331,20 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
           (params.store === true || supportsResponsesReasoningUpdate(params)) &&
           !params.previous_response_id
         ) {
+          const restoreRequest = () =>
+            restoreResponsesReasoningState(context, model, responsesOptions, params);
           continuationClaim = claimOpenAIResponsesHttpContinuation({
             sessionId,
             apiKey,
             baseUrl: model.baseUrl,
             headers: httpHeaders,
             request: params as ResponsesContinuationRequest,
-            restoreRequest: () =>
-              restoreResponsesReasoningState(context, model, responsesOptions, params),
+            restoreRequest,
           });
-          if (continuationClaim) {
-            // SAFETY: The owner preserves the request; SDK inputs predate configuration_update.
-            params = continuationClaim.fullRequest as typeof params;
-          }
+          // SAFETY: Restoration preserves SDK parameters and adds validated reasoning input controls.
+          params = (continuationClaim?.fullRequest ?? restoreRequest()) as typeof params;
         }
-        const observePrompt = createResponsesPromptEgressObserver(
-          responsesOptions,
-          context.systemPrompt,
-        );
+        const observePrompt = createResponsesPromptEgressObserver(responsesOptions, context);
         const requestStartedAt = Date.now();
         let started = false;
         const startStream = () => {
@@ -376,7 +366,8 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
         );
         emitModelTransportDebug(
           log,
-          `[responses] start provider=${model.provider} api=${model.api} model=${model.id} ` +
+          () =>
+            `[responses] start provider=${model.provider} api=${model.api} model=${model.id} ` +
             `requestIdHash=${redactIdentifier(options?.requestId, { len: 64 })} ` +
             `baseUrl=${formatModelTransportDebugBaseUrl(model.baseUrl)} timeoutMs=${safeDebugValue(requestOptions?.timeout)} ` +
             `apiKey=${apiKey ? "present" : "missing"} ${summarizeResponsesPayload(params)}`,
@@ -385,12 +376,14 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
         let continuationBaseline: ResponsesContinuationRequest | undefined;
         let dispatchedPreviousResponseId: string | undefined;
         let contextUsageEligible = true;
+        let requestedTier: unknown;
         const createSseStream = async (
           initialRequest = (continuationClaim?.request ?? params) as typeof params,
           initialAttemptKind: NonNullable<ResponsesStreamParams["initialAttemptKind"]> = "initial",
           initialRejectedCompaction?: ResponsesStreamParams["initialRejectedCompaction"],
         ): Promise<AsyncIterable<unknown>> => {
-          const { stream: responseStream } = await createResponsesStreamWithEncryptedContentRetry({
+          requestSignal = firstEvent.signal;
+          const { stream: responseStream } = await createResponsesStreamWithRecovery({
             client,
             request: initialRequest,
             requestOptions,
@@ -400,10 +393,13 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
             initialAttemptKind,
             initialRejectedCompaction,
             buildFullHistoryRequest: () => buildRequest("full-history"),
+            buildItemConflictRequest,
             onCompactionRejected: (checkpoint) =>
               suppressOpenAIResponsesCompaction(output, model, responsesOptions, checkpoint),
             canRetryStream: () => output.content.length === 0,
+            onServiceTierRejected: (tier) => responsesServiceTierObserver.reject(options, tier),
             wrapStream: ({ stream: rawResponseStream, response, attempt }) => {
+              requestedTier = attempt.request.service_tier;
               contextUsageEligible &&= attempt.kind === "initial";
               dispatchedPreviousResponseId = attempt.request.previous_response_id;
               continuationBaseline = attempt.request.previous_response_id
@@ -411,14 +407,22 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
                 : (attempt.request as ResponsesContinuationRequest);
               const trackedResponseStream = responseModelTracker.track(response, rawResponseStream);
               return withProviderResponseHook({
-                stream: observeResponsesStream(trackedResponseStream, model, requestStartedAt),
+                stream: observeResponsesStream(
+                  v2Compaction
+                    ? v2Compaction.observe(trackedResponseStream)
+                    : trackedResponseStream,
+                  model,
+                  requestStartedAt,
+                  attempt.request,
+                ),
                 signal: firstEvent.signal,
                 abort: firstEvent.abort,
                 hook: createOpenAIProviderAcceptanceHook(options, response, model),
                 onReady: () => {
                   emitModelTransportDebug(
                     log,
-                    `[responses] headers provider=${model.provider} api=${model.api} model=${model.id} ` +
+                    () =>
+                      `[responses] headers provider=${model.provider} api=${model.api} model=${model.id} ` +
                       `transport=sse elapsedMs=${Date.now() - requestStartedAt}`,
                   );
                   startStream();
@@ -436,7 +440,8 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
         const logWebSocketFallback = (reason: string) =>
           emitModelTransportDebug(
             log,
-            `[responses] websocket_fallback provider=${model.provider} api=${model.api} ` +
+            () =>
+              `[responses] websocket_fallback provider=${model.provider} api=${model.api} ` +
               `model=${model.id} reason=${reason}`,
           );
         const closeWebSocketForFallback = (reason: string) => {
@@ -446,7 +451,13 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
           logWebSocketFallback(reason);
         };
         if (websocketMode) {
+          requestSignal = websocketSignal;
           try {
+            const { createOpenAIResponsesWebSocketStream } =
+              await import("./openai-responses-websocket.js");
+            if (websocketSignal.aborted) {
+              throw transportAbortError(websocketSignal);
+            }
             const websocket = createOpenAIResponsesWebSocketStream({
               client,
               request: params,
@@ -459,7 +470,7 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
               callerSignal: options?.signal,
               degradeCooldownMs: websocketSessionPolicy?.degradeCooldownMs,
               onActiveResponse:
-                nativeAstra && params.model === "gpt-6-astra"
+                !compactRequest && nativeAstra && params.model === "gpt-6-astra"
                   ? options?.onActiveResponse
                   : undefined,
               steeringInput: (messages) => {
@@ -473,6 +484,7 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
               },
             });
             finishWebSocket = websocket.finish;
+            requestedTier = websocket.request.service_tier;
             websocketBaseline = websocket.fullRequest;
             recordResponsesInputReplay(output, websocket.inputReplay);
             contextUsageEligible &&= websocket.inputReplay === undefined;
@@ -483,69 +495,37 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
             transport = "websocket";
             emitModelTransportDebug(
               log,
-              `[responses] websocket_selected provider=${model.provider} api=${model.api} model=${model.id} ` +
+              () =>
+                `[responses] websocket_selected provider=${model.provider} api=${model.api} model=${model.id} ` +
                 `mode=${websocketMode} reused=${websocket.reusedConnection} ` +
                 `continuation=${websocket.continuationStatus === "continued"} continuationStatus=${websocket.continuationStatus} ` +
                 `sessionIdHash=${redactIdentifier(options?.sessionId)} ` +
                 `headersHash=${redactIdentifier(JSON.stringify(Object.entries(websocketHeaders ?? {}).toSorted(([a], [b]) => a.localeCompare(b))))}`,
             );
-            const trackedWebSocketStream = responseModelTracker.track(undefined, websocket.stream);
-            responseStream = {
-              async *[Symbol.asyncIterator]() {
-                let providerAccepted = false;
-                try {
-                  for await (const event of trackedWebSocketStream) {
-                    if (!providerAccepted) {
-                      providerAccepted = true;
-                      await notifyProviderStreamOpened({
-                        options,
-                        cancelStream: () => websocket.finish({ keep: false }),
-                      });
-                    }
-                    startStream();
-                    yield event;
-                  }
-                } catch (error) {
-                  if (error instanceof OpenAIResponsesWebSocketSafeRetryError) {
-                    // Explicit server rejection proves no output was accepted. Resume at the next
-                    // semantic attempt instead of treating this like an ambiguous disconnect.
-                    const encryptedContentRejected = isInvalidEncryptedContentError(error);
-                    const recovery = encryptedContentRejected
-                      ? await resolveNextResponsesEncryptedContentAttempt(
-                          {
-                            kind: "initial",
-                            // WebSocket sanitization removes `stream`; SSE must restore it.
-                            request: { ...websocket.request, stream: true } as typeof params,
-                          },
-                          error,
-                          { buildFullHistoryRequest: () => buildRequest("full-history") },
-                        )
-                      : undefined;
-                    if (encryptedContentRejected && !recovery) {
-                      throw error;
-                    }
-                    closeWebSocketForFallback(
-                      `safe_server_error code=${error.code} status=${safeDebugValue(error.status)} param=${safeDebugValue(error.param)}`,
-                    );
-                    yield* await createSseStream(
-                      recovery?.request ?? (await buildRequest("full-history")),
-                      recovery?.kind ?? "continuation-rejected",
-                      recovery?.rejectedCompaction,
-                    );
-                    return;
-                  }
-                  if (
-                    websocketSignal.aborted ||
-                    !(error instanceof OpenAIResponsesWebSocketPreDispatchError)
-                  ) {
-                    throw error;
-                  }
-                  transport = "sse";
-                  logWebSocketFallback("before_first_event");
-                  yield* await createSseStream();
-                }
+            responseStream = createRecoverableResponsesWebSocketStream({
+              trackedWebSocketStream: observeResponsesStream(
+                v2Compaction
+                  ? v2Compaction.observe(responseModelTracker.track(undefined, websocket.stream))
+                  : responseModelTracker.track(undefined, websocket.stream),
+                model,
+                requestStartedAt,
+                websocket.request,
+                "websocket",
+              ),
+              websocket,
+              websocketSignal,
+              options,
+              output,
+              buildRequest,
+              buildItemConflictRequest,
+              createSseStream,
+              closeWebSocketForFallback,
+              logWebSocketFallback,
+              startStream,
+              setTransportToSse: () => {
+                transport = "sse";
               },
-            };
+            });
           } catch (error) {
             if (error instanceof OpenAIResponsesWebSocketPostDispatchError) {
               throw error;
@@ -573,13 +553,20 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
                   transport === "websocket" ? websocketBaseline : continuationBaseline,
                 ),
               ...config.pricingOptions?.(responsesOptions, model),
+              promptCacheTtl: params.prompt_cache_options?.ttl,
+              resolveServiceTier: (responseTier, originalTier) =>
+                responseTier ??
+                (requestedTier === "priority" || requestedTier === "default"
+                  ? requestedTier
+                  : originalTier),
+              onServiceTier: (tier, response) =>
+                responsesServiceTierObserver.observe(options, requestedTier, tier, response),
               firstEventTimeoutMs:
                 getFirstStreamEventTimeoutMs(options) ?? config.firstEventTimeoutMs,
               abortFirstEventStream: firstEvent.abort,
               onFirstEventTimeout: getFirstStreamEventTimeoutHandler(options),
               signal: options?.signal,
               reasoningReplayMetadata: buildOpenAIResponsesReasoningReplayMetadata(model, {
-                authProfileId: responsesOptions?.authProfileId,
                 sessionId: options?.sessionId,
               }),
               asyncToolExecution: asyncTools,
@@ -594,7 +581,20 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
             // Keep the provider's terminal fact; the catch-side projection would overwrite it.
             throw new Error(output.errorMessage ?? "An unknown error occurred");
           }
-          const admitted = transport === "websocket" ? websocketBaseline : continuationBaseline;
+          // Independent side requests never update the parent's reasoning or context state.
+          const admitted =
+            !independent && (transport === "websocket" ? websocketBaseline : continuationBaseline);
+          if (v2Compaction && compactRequest) {
+            const compacted = v2Compaction.finish({
+              terminal,
+              input: params.input ?? [],
+              model,
+              options: responsesOptions,
+            });
+            compactRequest.resolve({ ...compacted, modelUsage: output.usage });
+            finalizeTransportStream({ stream, output, signal: options?.signal });
+            return;
+          }
           if (terminal && admitted && supportsNativeOpenAIResponsesEndpoint(model)) {
             recordResponsesReasoningState(
               output,
@@ -623,11 +623,16 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
         }
         emitModelTransportDebug(
           log,
-          `[responses] completed provider=${model.provider} api=${model.api} model=${model.id} ` +
+          () =>
+            `[responses] completed provider=${model.provider} api=${model.api} model=${model.id} ` +
             `transport=${transport} elapsedMs=${Date.now() - requestStartedAt}`,
         );
         finalizeTransportStream({ stream, output, signal: options?.signal });
       } catch (error) {
+        itemRecovery.reject(error);
+        if (error instanceof DegenerateToolCallArgumentsError) {
+          firstEventAbort?.abort(error);
+        }
         if (requestLifecycle) {
           await requestLifecycle.settle().catch(() => undefined);
         }
@@ -636,15 +641,21 @@ function createResponsesTransportExecutor(config: ResponsesTransportExecutorOpti
           failTransportStream({ stream, output, signal: options?.signal, error });
           return;
         }
-        if (error instanceof ResponsesStreamFailure && error.observation) {
-          logResponsesFailedNoDetails(error.observation);
-        }
-        log.warn(
-          `[responses] error provider=${model.provider} api=${model.api} model=${model.id} ` +
-            summarizeOpenAITransportError(error),
-        );
-        failTransportStream({ stream, output, signal: options?.signal, error });
+        failTransportStream({
+          stream,
+          output,
+          signal: options?.signal,
+          error,
+          diagnostic: observeResponsesTransportFailure({
+            error,
+            model,
+            output,
+            signal: options?.signal,
+            requestSignal,
+          }),
+        });
       } finally {
+        itemRecovery.finish();
         continuationClaim?.release();
         firstEventAbort?.dispose();
       }
@@ -674,45 +685,23 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
     outputApi: "azure-openai-responses",
     firstEventTimeoutMs: AZURE_RESPONSES_FIRST_EVENT_TIMEOUT_MS,
     createClient: createAzureOpenAIClient,
-    buildRequest: (model, context, options, metadata, replayMode) => {
-      const deploymentName = resolveAzureDeploymentName(model);
-      const params = buildOpenAIResponsesParams(model, context, options, metadata, replayMode);
+    buildRequest: (model, context, options, metadata, replayMode, retainUsers, onItemRecovery) => {
+      const deploymentName = resolveAzureDeploymentNameFromMap({
+        modelId: model.id,
+        deploymentMap: process.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP,
+      });
+      const params = buildOpenAIResponsesParams(
+        model,
+        context,
+        options,
+        metadata,
+        replayMode,
+        retainUsers,
+        onItemRecovery,
+      );
       params.model = deploymentName;
       delete params.store;
       return params;
     },
-  });
-}
-
-function resolveAzureDeploymentName(model: Model): string {
-  return resolveAzureDeploymentNameFromMap({
-    modelId: model.id,
-    deploymentMap: process.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP,
-  });
-}
-
-function createAzureOpenAIClient(
-  model: Model,
-  apiKey: string,
-  defaultHeaders: Record<string, string>,
-  fetchOverride?: typeof globalThis.fetch,
-) {
-  const baseURL = model.baseUrl.replace(/\/+$/, "");
-  const clientOptions = {
-    apiKey,
-    dangerouslyAllowBrowser: true,
-    defaultHeaders,
-    baseURL,
-    fetch: fetchOverride ?? buildGuardedModelFetch(model),
-    ...buildOpenAISdkClientOptions(model),
-  };
-
-  if (isOpenAICompatibleAzureResponsesBaseUrl(baseURL)) {
-    return new OpenAI(clientOptions);
-  }
-
-  return new AzureOpenAI({
-    ...clientOptions,
-    apiVersion: resolveAzureOpenAIApiVersion(),
   });
 }

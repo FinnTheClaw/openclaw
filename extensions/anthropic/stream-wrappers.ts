@@ -1,4 +1,5 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import type { ModelRequestHeaders } from "openclaw/plugin-sdk/llm";
 import { getEnvApiKey, streamSimple } from "openclaw/plugin-sdk/llm";
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
 import {
@@ -13,12 +14,12 @@ import {
   isAnthropicOAuthApiKey,
   resolveAnthropicPayloadPolicy,
   resolveAnthropicServerCompactionPlan,
+  streamWithPayloadPatch,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import {
   normalizeFastMode,
   normalizeLowercaseStringOrEmpty,
-  readStringValue,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   normalizeAnthropicServiceTier,
@@ -45,10 +46,17 @@ const OPENCLAW_OAUTH_ANTHROPIC_BETAS = [
 
 type DynamicFastMode = boolean | (() => boolean | undefined);
 
-/** Publish installed-version evidence; the transport owns the floor and billing snapshot. */
+/**
+ * Publish the newest known Claude Code version (installed CLI or the version
+ * Anthropic last required) and collect new requirements; the transport owns
+ * the floor, the retry, and the billing snapshot.
+ */
 export function createAnthropicClaudeCodeIdentityWrapper(
   baseStreamFn: StreamFn | undefined,
-  resolveVersion: () => Promise<string | undefined>,
+  identity: {
+    resolveVersion: () => Promise<string | undefined>;
+    record: (version: string) => void;
+  },
   sourceApi?: ProviderWrapStreamFnContext["sourceApi"],
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
@@ -60,15 +68,16 @@ export function createAnthropicClaudeCodeIdentityWrapper(
     ) {
       return underlying(model, context, options);
     }
-    return resolveVersion().then((version) =>
-      underlying(
-        model,
-        context,
-        version
-          ? { ...options, headers: { ...options?.headers, "user-agent": `claude-cli/${version}` } }
-          : options,
-      ),
-    );
+    return identity.resolveVersion().then((version) => {
+      const requestOptions = {
+        ...options,
+        ...(version
+          ? { headers: { ...options?.headers, "user-agent": `claude-cli/${version}` } }
+          : {}),
+        onClaudeCodeVersionRequired: identity.record,
+      };
+      return underlying(model, context, requestOptions);
+    });
   };
 }
 
@@ -83,9 +92,9 @@ function parseHeaderList(value: unknown): string[] {
 }
 
 function mergeAnthropicBetaHeader(
-  headers: Record<string, string> | undefined,
+  headers: ModelRequestHeaders | undefined,
   betas: string[],
-): Record<string, string> {
+): ModelRequestHeaders {
   const merged = { ...headers };
   const existingKey = Object.keys(merged).find(
     (key) => normalizeLowercaseStringOrEmpty(key) === "anthropic-beta",
@@ -159,7 +168,7 @@ export function createAnthropicBetaHeadersWrapper(
     const openClawBetas = isOauth
       ? OPENCLAW_OAUTH_ANTHROPIC_BETAS
       : OPENCLAW_DEFAULT_ANTHROPIC_BETAS;
-    const allBetas = [...new Set([...openClawBetas, ...effectiveBetas])];
+    const allBetas = [...openClawBetas, ...effectiveBetas];
     return underlying(model, context, {
       ...options,
       headers: mergeAnthropicBetaHeader(options?.headers, allBetas),
@@ -224,7 +233,11 @@ function createAnthropicCompactionWrapper(
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
   return (model, context, options) => {
-    const compaction = resolveAnthropicServerCompactionPlan(model, extraParams, options?.apiKey);
+    const compaction = resolveAnthropicServerCompactionPlan(
+      model,
+      extraParams,
+      options?.apiKey ?? getEnvApiKey(model.provider),
+    );
     if (!compaction.enabled) {
       return underlying(model, context, options);
     }
@@ -242,32 +255,23 @@ export function createAnthropicServiceTierWrapper(
   baseStreamFn: StreamFn | undefined,
   serviceTier: AnthropicServiceTier,
 ): StreamFn {
-  return createPayloadPatchStreamWrapper(
-    baseStreamFn,
-    ({ payload, model }) => {
-      const payloadPolicy = resolveAnthropicPayloadPolicy({
-        provider: readStringValue(model.provider),
-        api: readStringValue(model.api),
-        baseUrl: readStringValue(model.baseUrl),
-        serviceTier,
-      });
-      applyAnthropicPayloadPolicyToParams(payload, payloadPolicy, new Set());
-    },
-    {
-      shouldPatch: ({ model, options }) => {
-        // Opus 5 and Sonnet 5 do not support Priority Tier; omit service_tier entirely.
-        if (isAnthropicOAuthApiKey(options?.apiKey) || !supportsAnthropicPriorityTier(model)) {
-          return false;
-        }
-        return resolveAnthropicPayloadPolicy({
-          provider: readStringValue(model.provider),
-          api: readStringValue(model.api),
-          baseUrl: readStringValue(model.baseUrl),
-          serviceTier,
-        }).allowsServiceTier;
-      },
-    },
-  );
+  const underlying = baseStreamFn ?? streamSimple;
+  return (model, context, options) => {
+    if (isAnthropicOAuthApiKey(options?.apiKey) || !supportsAnthropicPriorityTier(model)) {
+      return underlying(model, context, options);
+    }
+    const policy = resolveAnthropicPayloadPolicy({
+      provider: model.provider,
+      api: model.api,
+      baseUrl: model.baseUrl,
+      serviceTier,
+    });
+    return policy.allowsServiceTier
+      ? streamWithPayloadPatch(underlying, model, context, options, (payload) =>
+          applyAnthropicPayloadPolicyToParams(payload, policy, new Set()),
+        )
+      : underlying(model, context, options);
+  };
 }
 
 function createAnthropicThinkingPrefillWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
@@ -282,11 +286,8 @@ export function resolveAnthropicFastMode(
   extraParams: Record<string, unknown> | undefined,
 ): boolean | undefined {
   const raw = extraParams?.fastMode ?? extraParams?.fast_mode;
-  const fastMode =
-    typeof raw === "function"
-      ? normalizeFastMode((raw as () => unknown)() as string | boolean | null | undefined)
-      : normalizeFastMode(raw as string | boolean | null | undefined);
-  return fastMode === "auto" ? undefined : fastMode;
+  const fastMode = normalizeFastMode(typeof raw === "function" ? (raw as () => unknown)() : raw);
+  return fastMode === "auto" ? undefined : fastMode === "ultrafast" ? true : fastMode;
 }
 
 export function resolveAnthropicServiceTier(
@@ -301,9 +302,7 @@ export function resolveAnthropicServiceTier(
   return normalized;
 }
 
-export function wrapAnthropicProviderStream(
-  ctx: ProviderWrapStreamFnContext,
-): StreamFn | undefined {
+export function wrapAnthropicProviderStream(ctx: ProviderWrapStreamFnContext): StreamFn {
   const anthropicBetas = resolveAnthropicBetas(ctx.extraParams, ctx.modelId);
   const needsAnthropicBetaWrapper =
     anthropicBetas !== undefined ||
@@ -313,7 +312,7 @@ export function wrapAnthropicProviderStream(
   const hasFastModeParam =
     ctx.extraParams !== undefined &&
     (Object.hasOwn(ctx.extraParams, "fastMode") || Object.hasOwn(ctx.extraParams, "fast_mode"));
-  return composeProviderStreamWrappers(
+  const wrapped = composeProviderStreamWrappers(
     ctx.streamFn,
     needsAnthropicBetaWrapper
       ? (streamFn) => createAnthropicBetaHeadersWrapper(streamFn, anthropicBetas ?? [])
@@ -329,9 +328,8 @@ export function wrapAnthropicProviderStream(
             ctx.extraParams,
           )
       : undefined,
-    ctx.extraParams?.anthropicServerCompaction === true
-      ? (streamFn) => createAnthropicCompactionWrapper(streamFn, ctx.extraParams)
-      : undefined,
-    createAnthropicThinkingPrefillWrapper,
+    // The shared plan owns the default, opt-out, and per-request auth/route gates.
+    (streamFn) => createAnthropicCompactionWrapper(streamFn, ctx.extraParams),
   );
+  return createAnthropicThinkingPrefillWrapper(wrapped);
 }

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import OpenClaw
 
 struct RootTabsSourceGuardTests {
     @Test func `initial scene phase reaches the model before gateway admission`() throws {
@@ -49,29 +50,62 @@ struct RootTabsSourceGuardTests {
         #expect(lifecycle.contains("self.stopScannerCapture()"))
     }
 
-    @Test func `credential fields stay scoped to exact gateway owners`() throws {
-        let onboarding = try Self.sources([
-            "Sources/Onboarding/OnboardingWizardView.swift",
-            "Sources/Onboarding/OnboardingWizardConnectionSections.swift",
-        ])
-        let settings = try Self.source("Sources/Design/SettingsProTabActions.swift")
-
-        for (source, tokenStart, tokenEnd) in [
-            (onboarding, "var gatewayTokenBinding: Binding<String>", "var gatewayPasswordBinding: Binding<String>"),
-            (settings, "func persistGatewayToken(_ value: String)", "func persistGatewayPassword(_ value: String)"),
-        ] {
-            #expect(source.contains(
-                "if !GatewayStableIdentifier.matches(self.gatewayCredentialFieldStableID, stableID)"))
-            #expect(!source.contains("gatewayCredentialFieldStableID == stableID"))
-
-            let tokenSetter = try Self.extract(
-                source,
-                from: tokenStart,
-                to: tokenEnd)
-            let assignment = try #require(tokenSetter.range(of: "self.gatewayToken = value"))
-            let owner = try #require(tokenSetter.range(of: "self.gatewayCredentialTargetStableID"))
-            #expect(assignment.lowerBound < owner.lowerBound)
+    @Test @MainActor func `credential fields stay scoped to exact gateway owners`() throws {
+        let instanceID = "credential-fields-\(UUID().uuidString)"
+        defer { GatewaySettingsStore.deleteAllGatewayCredentials(instanceId: instanceID) }
+        let firstID = "manual|caf\u{e9}.example|443"
+        let secondID = "manual|cafe\u{301}.example|443"
+        for (stableID, token) in [(firstID, "first-token"), (secondID, "second-token")] {
+            #expect(GatewaySettingsStore.saveGatewayCredentials(
+                token: token,
+                bootstrapToken: nil,
+                password: nil,
+                gatewayStableID: stableID,
+                suppressStoredDeviceAuth: true,
+                instanceId: instanceID))
         }
+        var fields = GatewayConnectionController.ManualAuthOverride.Fields()
+        fields.load(instanceId: instanceID, targetStableID: firstID)
+        #expect(fields.token == "first-token")
+        fields.token = "edited-token"
+        fields.persist(instanceId: instanceID, targetStableID: firstID)
+        #expect(GatewaySettingsStore.loadGatewayCredentials(
+            instanceId: instanceID,
+            gatewayStableID: firstID).token == "edited-token")
+
+        fields.selectTarget(secondID, instanceId: instanceID, allowManualOverride: false)
+        #expect(fields.token == "second-token")
+        #expect(fields.pendingOverride == nil)
+        #expect(fields.prepareManualConnection(instanceId: instanceID, targetStableID: firstID) == nil)
+        #expect(GatewaySettingsStore.loadGatewayCredentials(
+            instanceId: instanceID,
+            gatewayStableID: firstID).token == "edited-token")
+        let selected = try #require(fields.prepareManualConnection(instanceId: instanceID, targetStableID: secondID))
+        #expect(selected.token == "second-token")
+        #expect(GatewaySettingsStore.loadGatewayCredentials(
+            instanceId: instanceID,
+            gatewayStableID: secondID).token == "second-token")
+    }
+
+    @Test func `pasted setup codes stay in memory and clear when mounted settings reset`() throws {
+        let settings = try Self.source("Sources/Design/SettingsProTab.swift")
+        let reset = try Self.extract(
+            Self.source("Sources/Design/SettingsProTabActions.swift"),
+            from: "func syncAfterOnboardingReset()",
+            to: "func connect(")
+        #expect(!settings.contains(#"@AppStorage("gateway.setupCode")"#))
+        #expect(settings.contains(#"@State var setupCode = """#))
+        #expect(reset.contains(#"self.setupCode = """#))
+    }
+
+    @Test func `startup deletes legacy setup codes before creating the app model`() throws {
+        let startup = try Self.source("Sources/OpenClawApp.swift")
+        let cleanup = try #require(startup.range(
+            of: #"UserDefaults.standard.removeObject(forKey: "gateway.setupCode")"#))
+        let model = try #require(startup.range(of: "let appModel = NodeAppModel("))
+        #expect(cleanup.lowerBound < model.lowerBound)
+        let reset = try Self.source("Sources/Onboarding/GatewayOnboardingReset.swift")
+        #expect(!reset.contains(#""gateway.setupCode""#))
     }
 
     private static func source(_ path: String) throws -> String {

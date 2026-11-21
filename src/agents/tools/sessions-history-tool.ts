@@ -15,9 +15,11 @@ import { redactSecrets, redactToolPayloadText } from "../../logging/redact.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { resolveSessionAgentId, resolveSessionAgentIds } from "../agent-scope.js";
+import { requesterProfileSchema } from "../schema/typebox.js";
 import {
   describeSessionLinkRule,
   describeSessionsHistoryTool,
+  SESSION_LINK_RULE_DESCRIPTION,
   SESSIONS_HISTORY_TOOL_DISPLAY_SUMMARY,
 } from "../tool-description-presets.js";
 import { stripToolMessages } from "./chat-history-text.js";
@@ -29,6 +31,7 @@ import {
   readToolStringParam,
   ToolInputError,
 } from "./common.js";
+import { wrapGatewayPersonalToolExecution } from "./gateway-caller-context.js";
 import {
   callAgentToolGatewayRequest,
   type AgentToolGatewayRequestCaller,
@@ -40,6 +43,7 @@ import {
 import {
   createSessionVisibilityRowChecker,
   formatSessionToolAccessDenial,
+  isSessionToolMainAlias,
   resolveSessionReference,
   resolveSessionToolAccess,
   resolveSessionToolContext,
@@ -48,6 +52,7 @@ import {
 } from "./sessions-helpers.js";
 
 const SessionsHistoryToolSchema = Type.Object({
+  user: requesterProfileSchema({ defaultToTurnOwner: true }),
   sessionKey: ChatHistoryParamsSchema.properties.sessionKey,
   limit: ChatHistoryParamsSchema.properties.limit,
   offset: Type.With(ChatHistoryParamsSchema.properties.offset, {
@@ -75,11 +80,7 @@ const SessionsHistoryOutputSchema = Type.Union([
       contentTruncated: Type.Boolean(),
       contentRedacted: Type.Boolean(),
       bytes: Type.Number(),
-      sessionLinkRule: Type.Optional(
-        Type.String({
-          description: "How to build Control UI URLs for sessionKey values in this result.",
-        }),
-      ),
+      sessionLinkRule: Type.Optional(Type.String({ description: SESSION_LINK_RULE_DESCRIPTION })),
       offset: Type.Optional(Type.Number()),
       nextOffset: Type.Optional(Type.Number()),
       hasMore: Type.Optional(Type.Boolean()),
@@ -318,12 +319,7 @@ function resolveSessionsHistoryPaginationMetadata(params: {
   if (params.requestedMessageId) {
     return typeof result?.totalMessages === "number" ? { totalMessages: result.totalMessages } : {};
   }
-  const offset =
-    typeof result?.offset === "number"
-      ? result.offset
-      : params.requestedOffset !== undefined
-        ? params.requestedOffset
-        : undefined;
+  const offset = typeof result?.offset === "number" ? result.offset : params.requestedOffset;
   if (offset === undefined) {
     return {};
   }
@@ -377,7 +373,7 @@ export function createSessionsHistoryTool(opts?: {
     description: describeSessionsHistoryTool({ sessionLinkBase: opts?.sessionLinkBase }),
     parameters: SessionsHistoryToolSchema,
     outputSchema: SessionsHistoryOutputSchema,
-    execute: async (_toolCallId, args) => {
+    execute: wrapGatewayPersonalToolExecution(async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const gatewayCall = opts?.callGateway ?? callAgentToolGatewayRequest;
       const sessionKeyParam = readToolStringParam(params, "sessionKey", {
@@ -411,11 +407,7 @@ export function createSessionsHistoryTool(opts?: {
       }).sessionAgentId;
       const normalizedInputKey = sessionKeyParam.trim();
       const isCurrentSession = normalizedInputKey === "current";
-      const isConfiguredMainAlias =
-        normalizedInputKey === "main" ||
-        normalizedInputKey === "global" ||
-        normalizedInputKey === mainKey ||
-        normalizedInputKey === alias;
+      const isConfiguredMainAlias = isSessionToolMainAlias(normalizedInputKey, { mainKey, alias });
       const inputStoreOwner =
         shouldResolveSessionIdInput(sessionKeyParam) && !isConfiguredMainAlias
           ? { kind: "none" as const }
@@ -565,6 +557,6 @@ export function createSessionsHistoryTool(opts?: {
           : {}),
         ...pagination,
       });
-    },
+    }),
   };
 }

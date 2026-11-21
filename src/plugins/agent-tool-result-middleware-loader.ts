@@ -1,4 +1,3 @@
-// Loads agent tool result middleware from plugin runtime surfaces.
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getLoadedRuntimePluginRegistry } from "./active-runtime-registry.js";
 import type {
@@ -13,22 +12,6 @@ import { getPluginRuntimeGenerationRegistry } from "./runtime/generation-scope.j
 
 const log = createSubsystemLogger("plugins/agent-tool-result-middleware");
 
-function listMiddlewareOwners(params: {
-  registry: PluginRegistry | null;
-  runtime: AgentToolResultMiddlewareRuntime;
-}): PluginAgentToolResultMiddlewareOwner[] {
-  const owners: PluginAgentToolResultMiddlewareOwner[] = [];
-  for (const owner of params.registry?.agentToolResultMiddlewareOwners ?? []) {
-    if (
-      owner.runtimes.includes(params.runtime) &&
-      !owners.some((entry) => entry.pluginId === owner.pluginId)
-    ) {
-      owners.push(owner);
-    }
-  }
-  return owners;
-}
-
 function listRuntimeMiddlewareOwnerPluginIds(
   registry: PluginRegistry | null | undefined,
   runtime: AgentToolResultMiddlewareRuntime,
@@ -42,32 +25,24 @@ function listRuntimeMiddlewareOwnerPluginIds(
   return pluginIds;
 }
 
-function registryHasMiddlewareOwners(params: {
-  registry: PluginRegistry;
-  pluginIds: readonly string[];
-  runtime: AgentToolResultMiddlewareRuntime;
-}): boolean {
-  const ownerPluginIds = listRuntimeMiddlewareOwnerPluginIds(params.registry, params.runtime);
-  return params.pluginIds.every((pluginId) => ownerPluginIds.has(pluginId));
-}
-
 export async function loadAgentToolResultMiddlewaresForRuntime(params: {
   runtime: AgentToolResultMiddlewareRuntime;
 }): Promise<AgentToolResultMiddleware[]> {
   const activeHandlers = listAgentToolResultMiddlewares(params.runtime);
 
   try {
-    // Tool feedback must use the same prepared run registry as prompt hooks.
     const activeRegistry = getPluginRuntimeGenerationRegistry() ?? getActivePluginRegistry();
-    const owners = listMiddlewareOwners({
-      registry: activeRegistry,
-      runtime: params.runtime,
-    });
-    if (owners.length === 0) {
-      return activeHandlers;
-    }
     const activePluginIds = listRuntimeMiddlewareOwnerPluginIds(activeRegistry, params.runtime);
-    const missingOwners = owners.filter((owner) => !activePluginIds.has(owner.pluginId));
+    const missingOwners: PluginAgentToolResultMiddlewareOwner[] = [];
+    for (const owner of activeRegistry?.agentToolResultMiddlewareOwners ?? []) {
+      if (
+        owner.runtimes.includes(params.runtime) &&
+        !activePluginIds.has(owner.pluginId) &&
+        !missingOwners.some((entry) => entry.pluginId === owner.pluginId)
+      ) {
+        missingOwners.push(owner);
+      }
+    }
     if (missingOwners.length === 0) {
       return activeHandlers;
     }
@@ -77,13 +52,9 @@ export async function loadAgentToolResultMiddlewaresForRuntime(params: {
     const loadedRegistry = getLoadedRuntimePluginRegistry({
       requiredPluginIds: missingPluginIds,
     });
+    const loadedPluginIds = listRuntimeMiddlewareOwnerPluginIds(loadedRegistry, params.runtime);
     const runtimeRegistry =
-      loadedRegistry &&
-      registryHasMiddlewareOwners({
-        registry: loadedRegistry,
-        pluginIds: missingPluginIds,
-        runtime: params.runtime,
-      })
+      loadedRegistry && missingPluginIds.every((pluginId) => loadedPluginIds.has(pluginId))
         ? loadedRegistry
         : loadPluginRegistryHandle({
             config: (await import("../config/config.js")).getRuntimeConfig(),

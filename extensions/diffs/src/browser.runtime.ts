@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { canAccess } from "openclaw/plugin-sdk/path-existence-runtime";
 import { writeExternalFileWithinRoot } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chromium } from "playwright-core";
@@ -15,21 +16,11 @@ import {
   getServedViewerAsset,
 } from "./viewer-assets.js";
 
-const DEFAULT_BROWSER_IDLE_MS = 30_000;
-const SHARED_BROWSER_KEY = "__default__";
+const BROWSER_IDLE_MS = 30_000;
 const IMAGE_SIZE_LIMIT_ERROR = "Diff frame did not render within image size limits.";
 const PDF_REFERENCE_PAGE_HEIGHT_PX = 1_056;
 const MAX_PDF_PAGES = 50;
 const LOCAL_VIEWER_BASE_HREF = "http://127.0.0.1/plugins/diffs/view/local/local";
-
-export type DiffScreenshotter = {
-  screenshotHtml(params: {
-    html: string;
-    outputPath: string;
-    theme: DiffTheme;
-    image: DiffRenderOptions["image"];
-  }): Promise<string>;
-};
 
 type BrowserInstance = Awaited<ReturnType<typeof chromium.launch>>;
 
@@ -40,9 +31,9 @@ type BrowserLease = {
 
 type SharedBrowserState = {
   browser?: BrowserInstance;
+  key: string;
   browserPromise: Promise<BrowserInstance>;
   idleTimer: ReturnType<typeof setTimeout> | null;
-  key: string;
   users: number;
   acquisitions: number;
   retired: boolean;
@@ -50,21 +41,15 @@ type SharedBrowserState = {
   disconnected: boolean;
 };
 
-type ExecutablePathCache = {
-  key: string;
-  valuePromise: Promise<string | undefined>;
-};
-
 let sharedBrowserState: SharedBrowserState | null = null;
-let executablePathCache: ExecutablePathCache | null = null;
 
-export class PlaywrightDiffScreenshotter implements DiffScreenshotter {
+export class PlaywrightDiffScreenshotter {
   private readonly config: OpenClawConfig;
-  private readonly browserIdleMs: number;
+  private readonly idleMs: number;
 
-  constructor(params: { config: OpenClawConfig; browserIdleMs?: number }) {
+  constructor(params: { config: OpenClawConfig; idleMs?: number }) {
     this.config = params.config;
-    this.browserIdleMs = params.browserIdleMs ?? DEFAULT_BROWSER_IDLE_MS;
+    this.idleMs = params.idleMs ?? BROWSER_IDLE_MS;
   }
 
   async screenshotHtml(params: {
@@ -72,13 +57,10 @@ export class PlaywrightDiffScreenshotter implements DiffScreenshotter {
     outputPath: string;
     theme: DiffTheme;
     image: DiffRenderOptions["image"];
-  }): Promise<string> {
+  }): Promise<number> {
     let lease: BrowserLease;
     try {
-      lease = await acquireSharedBrowser({
-        config: this.config,
-        idleMs: this.browserIdleMs,
-      });
+      lease = await acquireSharedBrowser({ config: this.config, idleMs: this.idleMs });
     } catch (error) {
       throw buildBrowserUnavailableError(error);
     }
@@ -106,14 +88,8 @@ export class PlaywrightDiffScreenshotter implements DiffScreenshotter {
             await route.continue();
             return;
           }
-          let parsed: URL;
-          try {
-            parsed = new URL(requestUrl);
-          } catch {
-            await route.abort();
-            return;
-          }
-          if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1") {
+          const parsed = URL.parse(requestUrl);
+          if (!parsed || parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1") {
             await route.abort();
             return;
           }
@@ -151,6 +127,7 @@ export class PlaywrightDiffScreenshotter implements DiffScreenshotter {
               );
             });
           },
+          undefined,
           {
             timeout: 10_000,
           },
@@ -233,7 +210,7 @@ export class PlaywrightDiffScreenshotter implements DiffScreenshotter {
               });
             },
           });
-          return params.outputPath;
+          return params.image.scale;
         }
 
         const dpr = await page.evaluate(() => window.devicePixelRatio || 1);
@@ -287,7 +264,7 @@ export class PlaywrightDiffScreenshotter implements DiffScreenshotter {
             });
           },
         });
-        return params.outputPath;
+        return dpr;
       }
       throw new Error(IMAGE_SIZE_LIMIT_ERROR);
     } finally {
@@ -326,36 +303,6 @@ function injectBaseHref(html: string): string {
 }
 
 async function resolveBrowserExecutablePath(config: OpenClawConfig): Promise<string | undefined> {
-  const cacheKey = JSON.stringify({
-    configPath: config.browser?.executablePath?.trim() || "",
-    env: [
-      process.env.OPENCLAW_BROWSER_EXECUTABLE_PATH ?? "",
-      process.env.BROWSER_EXECUTABLE_PATH ?? "",
-      process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ?? "",
-    ],
-    path: process.env.PATH ?? "",
-  });
-
-  if (executablePathCache?.key === cacheKey) {
-    return await executablePathCache.valuePromise;
-  }
-
-  const valuePromise = resolveBrowserExecutablePathUncached(config).catch((error: unknown) => {
-    if (executablePathCache?.valuePromise === valuePromise) {
-      executablePathCache = null;
-    }
-    throw error;
-  });
-  executablePathCache = {
-    key: cacheKey,
-    valuePromise,
-  };
-  return await valuePromise;
-}
-
-async function resolveBrowserExecutablePathUncached(
-  config: OpenClawConfig,
-): Promise<string | undefined> {
   const configPath = config.browser?.executablePath?.trim();
   if (configPath) {
     await assertExecutable(configPath, "browser.executablePath");
@@ -371,15 +318,23 @@ async function resolveBrowserExecutablePathUncached(
     .filter((value): value is string => Boolean(value));
 
   for (const candidate of envCandidates) {
-    if (await isExecutable(candidate)) {
+    if (await canAccess(candidate, fsConstants.X_OK)) {
       return candidate;
     }
   }
 
   for (const candidate of await collectExecutableCandidates()) {
-    if (await isExecutable(candidate)) {
+    if (await canAccess(candidate, fsConstants.X_OK)) {
       return candidate;
     }
+  }
+
+  // Full-only images omit the shell selected by an unspecified headless launch.
+  // Keep discovery owned by the shared browser promise, using Playwright's public
+  // full-browser path; absence preserves its default shell-only selection.
+  const playwrightPath = chromium.executablePath();
+  if (await canAccess(playwrightPath, fsConstants.X_OK)) {
+    return playwrightPath;
   }
 
   return undefined;
@@ -390,7 +345,7 @@ async function acquireSharedBrowser(params: {
   idleMs: number;
 }): Promise<BrowserLease> {
   const executablePath = await resolveBrowserExecutablePath(params.config);
-  const desiredKey = executablePath || SHARED_BROWSER_KEY;
+  const desiredKey = executablePath || "default";
   if (sharedBrowserState && sharedBrowserState.key !== desiredKey) {
     retireBrowserState(sharedBrowserState);
   }
@@ -417,9 +372,9 @@ async function acquireSharedBrowser(params: {
       });
 
     state = {
+      key: desiredKey,
       browserPromise,
       idleTimer: null,
-      key: desiredKey,
       users: 0,
       acquisitions: 0,
       retired: false,
@@ -600,7 +555,7 @@ async function findExecutableInPath(command: string): Promise<string | undefined
       continue;
     }
     const candidate = path.join(directory, command);
-    if (await isExecutable(candidate)) {
+    if (await canAccess(candidate, fsConstants.X_OK)) {
       return candidate;
     }
   }
@@ -609,16 +564,7 @@ async function findExecutableInPath(command: string): Promise<string | undefined
 }
 
 async function assertExecutable(candidate: string, label: string): Promise<void> {
-  if (!(await isExecutable(candidate))) {
+  if (!(await canAccess(candidate, fsConstants.X_OK))) {
     throw new Error(`${label} not found or not executable: ${candidate}`);
-  }
-}
-
-async function isExecutable(candidate: string): Promise<boolean> {
-  try {
-    await fs.access(candidate, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
   }
 }

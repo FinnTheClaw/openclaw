@@ -189,6 +189,7 @@ export async function observeReleaseNpmState(input: {
             timeoutMs: 15_000,
             attempts: 2,
             redirect: "manual",
+            exactVersion: pkg.version,
           });
           if (
             registry.status !== 404 &&
@@ -248,7 +249,7 @@ export async function observeReleaseNpmState(input: {
             : supersededBy
               ? "No publication or dist-tag move; the newer release keeps the selector. Retain the exact selection."
               : bootstrap
-                ? "If a recent run may have published this package, reconcile its registry readback first. Otherwise verify bootstrap approval eligibility and run the documented read-only whoami probe against the workflow's NPM_TOKEN before dispatch."
+                ? "Reconcile any recent publication first. Otherwise verify bootstrap approval eligibility and ask the release credential owner to confirm NPM_TOKEN readiness and scope/package-creation access."
                 : published && pkg.packageName === "openclaw"
                   ? "Supply openclaw_npm_resume_run_id for the verified original successful publisher; resume rechecks immutable tarball identity."
                   : published
@@ -286,9 +287,6 @@ export async function observeReleaseNpmState(input: {
       .filter((result) => result.published)
       .map((result) => result.pkg),
     unknownPackages: observed.results.filter((result) => !result.known).map((result) => result.pkg),
-    corePublished: observed.results.some(
-      (result) => result.pkg.packageName === "openclaw" && result.published,
-    ),
   };
 }
 

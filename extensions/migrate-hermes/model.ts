@@ -37,34 +37,28 @@ const HERMES_PROVIDER_ALIASES: Record<string, string> = {
   copilot: "github-copilot",
   gemini: "google",
   github: "github-copilot",
-  "github-copilot": "github-copilot",
   "github-model": "github-copilot",
   "github-models": "github-copilot",
   glm: "zai",
-  google: "google",
   "google-ai-studio": "google",
   "google-gemini": "google",
   grok: "xai",
   kilo: "kilocode",
   "kilo-code": "kilocode",
   "kilo-gateway": "kilocode",
-  kimi: "kimi",
   "kimi-cn": "moonshot",
   "kimi-for-coding": "kimi",
   "kimi-coding": "kimi",
   "kimi-coding-cn": "moonshot",
   "moonshot-cn": "moonshot",
-  moonshot: "moonshot",
   "minimax-global": "minimax-portal",
   "minimax-cn": "minimax",
   "minimax-oauth": "minimax-portal",
-  "minimax-portal": "minimax-portal",
   minimax_oauth: "minimax-portal",
   "opencode-zen": "opencode",
   "openai-api": "openai",
   "openai-codex": "openai",
   dashscope: "qwen",
-  qwen: "qwen",
   "qwen-cli": "qwen",
   "qwen-oauth": "qwen",
   "qwen-portal": "qwen",
@@ -134,7 +128,9 @@ const HERMES_RETIRED_QWEN_PROVIDER_IDS = new Set(["qwen-cli", "qwen-oauth", "qwe
 
 export function normalizeHermesProviderId(provider: string): string {
   const normalized = normalizeHermesCustomProviderId(provider);
-  return HERMES_PROVIDER_ALIASES[normalized] ?? normalized;
+  return Object.hasOwn(HERMES_PROVIDER_ALIASES, normalized)
+    ? (HERMES_PROVIDER_ALIASES[normalized] ?? normalized)
+    : normalized;
 }
 
 export function normalizeHermesCustomProviderId(provider: string): string {
@@ -164,7 +160,7 @@ export function usesRetiredHermesQwenProvider(config: Record<string, unknown>): 
   ].some((value) => value !== undefined && isRetiredHermesQwenProviderValue(value));
 }
 
-function readBaseUrl(value: Record<string, unknown> | undefined): string | undefined {
+export function readHermesBaseUrl(value: Record<string, unknown> | undefined): string | undefined {
   return value
     ? (normalizeOptionalString(value.base_url) ??
         normalizeOptionalString(value.baseUrl) ??
@@ -185,7 +181,7 @@ function readKimiBaseUrl(
     selectedProvider &&
     HERMES_DYNAMIC_KIMI_PROVIDER_IDS.has(normalizeHermesCustomProviderId(selectedProvider))
   ) {
-    const modelBaseUrl = readBaseUrl(model);
+    const modelBaseUrl = readHermesBaseUrl(model);
     if (modelBaseUrl) {
       return modelBaseUrl;
     }
@@ -193,7 +189,7 @@ function readKimiBaseUrl(
   const providers = asOptionalRecord(config.providers);
   for (const [id, value] of Object.entries(providers ?? {})) {
     if (normalizeHermesCustomProviderId(id) === normalizeHermesCustomProviderId(provider)) {
-      const providerBaseUrl = readBaseUrl(asOptionalRecord(value));
+      const providerBaseUrl = readHermesBaseUrl(asOptionalRecord(value));
       if (providerBaseUrl) {
         return providerBaseUrl;
       }
@@ -351,7 +347,7 @@ export async function applyModelItem(
   item: MigrationItem,
 ): Promise<MigrationItem> {
   const details = readHermesModelDetails(item);
-  if (!details || item.status !== "planned") {
+  if (!details) {
     return item;
   }
   try {
@@ -360,16 +356,6 @@ export async function applyModelItem(
       return markMigrationItemError(item, HERMES_REASON_CONFIG_RUNTIME_UNAVAILABLE);
     }
     const agentId = ctx.targetAgentId ?? resolveDefaultAgentId(ctx.config);
-    const currentModel = resolveAgentEffectiveModelPrimary(
-      configApi.current() as MigrationProviderContext["config"],
-      agentId,
-    );
-    if (currentModel === details.model) {
-      return markMigrationItemSkipped(item, HERMES_REASON_ALREADY_CONFIGURED);
-    }
-    if (currentModel && !ctx.overwrite) {
-      return markMigrationItemConflict(item, HERMES_REASON_DEFAULT_MODEL_CONFIGURED);
-    }
     await configApi.mutateConfigFile({
       base: "runtime",
       afterWrite: { mode: "auto" },

@@ -595,11 +595,12 @@ class OpenClawA2UIHost extends LitElement {
         ${repeat(
           this.surfaces,
           ([surfaceId]) => surfaceId,
-          ([surfaceId, surface]) => html`<a2ui-surface
-            .surfaceId=${surfaceId}
-            .surface=${surface}
-            .processor=${this.#processor}
-          ></a2ui-surface>`,
+          ([surfaceId, surface]) =>
+            html`<a2ui-surface
+              .surfaceId=${surfaceId}
+              .surface=${surface}
+              .processor=${this.#processor}
+            ></a2ui-surface>`,
         )}
       </section>`;
   }

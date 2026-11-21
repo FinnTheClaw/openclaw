@@ -3,6 +3,7 @@ import {
   type resolveEnvelopeFormatOptions,
 } from "openclaw/plugin-sdk/channel-inbound";
 import { parseDateStringTimestampMs } from "openclaw/plugin-sdk/number-runtime";
+import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { IMessageRpcClient } from "../client.js";
 import { normalizeIMessageHandle } from "../targets.js";
@@ -107,7 +108,6 @@ export async function resolveIMessageDmHistoryContext(params: {
   senderNormalized: string;
   limit: number;
   envelopeOptions: ReturnType<typeof resolveEnvelopeFormatOptions>;
-  logVerbose?: (msg: string) => void;
 }): Promise<IMessageDmHistoryContext> {
   const maxMessages = Math.max(0, Math.floor(params.limit));
   const chatId =
@@ -130,7 +130,7 @@ export async function resolveIMessageDmHistoryContext(params: {
       { timeoutMs: DM_HISTORY_RPC_TIMEOUT_MS },
     );
   } catch (err) {
-    params.logVerbose?.(`imessage: DM history fetch failed for chat_id=${chatId}: ${String(err)}`);
+    logVerbose(`imessage: DM history fetch failed for chat_id=${chatId}: ${String(err)}`);
     return {};
   }
 
@@ -139,7 +139,23 @@ export async function resolveIMessageDmHistoryContext(params: {
     .map((row) => parseIMessageNotification({ message: row }))
     .filter((message): message is IMessagePayload => Boolean(message))
     .filter((message) => message.is_group !== true)
-    .filter((message) => isBeforeCurrentMessage({ message, currentMessage: params.message }))
+    .filter((message) => {
+      const currentMessage = params.message;
+      if (
+        typeof message.id === "number" &&
+        typeof currentMessage.id === "number" &&
+        Number.isFinite(message.id) &&
+        Number.isFinite(currentMessage.id)
+      ) {
+        return message.id < currentMessage.id;
+      }
+      const guid = normalizeOptionalString(message.guid);
+      const currentGuid = normalizeOptionalString(currentMessage.guid);
+      if (guid && currentGuid) {
+        return guid !== currentGuid;
+      }
+      return true;
+    })
     .toSorted((a, b) => historyRowSortValue(a) - historyRowSortValue(b))
     .map((message) => historyEntryFromMessage(message, params.senderNormalized))
     .filter((entry): entry is IMessageDmHistoryEntry => Boolean(entry))

@@ -1,16 +1,7 @@
 import type { OpenClawPluginNodeInvokePolicy } from "openclaw/plugin-sdk/plugin-entry";
 import { FILE_TRANSFER_NODE_INVOKE_COMMANDS } from "./node-invoke-policy-commands.js";
 
-type LoadFileTransferNodeInvokePolicy = () => Promise<OpenClawPluginNodeInvokePolicy>;
-
-const loadFileTransferNodeInvokePolicy: LoadFileTransferNodeInvokePolicy = async () => {
-  const { createFileTransferNodeInvokePolicy } = await import("./node-invoke-policy.js");
-  return createFileTransferNodeInvokePolicy();
-};
-
-export function createLazyFileTransferNodeInvokePolicy(
-  loadPolicy: LoadFileTransferNodeInvokePolicy = loadFileTransferNodeInvokePolicy,
-): OpenClawPluginNodeInvokePolicy {
+export function createLazyFileTransferNodeInvokePolicy(): OpenClawPluginNodeInvokePolicy {
   let policyPromise: Promise<OpenClawPluginNodeInvokePolicy> | undefined;
 
   return {
@@ -19,7 +10,9 @@ export function createLazyFileTransferNodeInvokePolicy(
       let policy: OpenClawPluginNodeInvokePolicy;
       let pending: Promise<OpenClawPluginNodeInvokePolicy> | undefined;
       try {
-        pending = policyPromise ??= loadPolicy();
+        pending = policyPromise ??= import("./node-invoke-policy.js").then(
+          ({ createFileTransferNodeInvokePolicy }) => createFileTransferNodeInvokePolicy(),
+        );
         policy = await pending;
       } catch (error) {
         if (policyPromise === pending) {

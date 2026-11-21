@@ -1,9 +1,10 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import os from "node:os";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
-import type { SpawnBrokerHost } from "./host.js";
+import { AsyncContext } from "../../shared/async-context.js";
+import { createSpawnBrokerHost, type SpawnBrokerHost } from "./host.js";
 
-const context = new AsyncLocalStorage<SpawnBrokerHost | undefined>();
+const context = new AsyncContext<SpawnBrokerHost | undefined>(Symbol("spawnBroker"));
 let gatewayStartupDisabled = false;
 
 /** A failed startup optimization stays disabled across Gateway restarts in this process. */
@@ -14,12 +15,20 @@ export async function startGatewaySpawnBroker(options: {
   if (gatewayStartupDisabled) {
     return undefined;
   }
+  const constrained = process.constrainedMemory();
+  const memory = constrained > 0 ? Math.min(os.totalmem(), constrained) : os.totalmem();
+  // The synchronous native-worker owner shares the host implementation. Defer the
+  // optional Gateway broker process, not a module already required by that owner.
+  // On small hosts, keep the broker's resident memory available to requests.
+  // Direct spawning retains the existing lifecycle at the cost of Linux fork latency.
+  if (memory <= 1024 ** 3) {
+    return undefined;
+  }
   let broker: SpawnBrokerHost | undefined;
   let entryPath: string = runtimeProcessEntrypoints.spawnBroker.distWorkerPath;
   try {
-    const { createSpawnBrokerHost, spawnBrokerEntryPath } = await import("./host.js");
-    entryPath = spawnBrokerEntryPath;
     broker = createSpawnBrokerHost({ onReady: options.onReady });
+    entryPath = broker.entryPath;
     await broker.ready();
     return broker;
   } catch (error) {
@@ -40,7 +49,7 @@ export async function startGatewaySpawnBroker(options: {
 }
 
 export function runWithSpawnBroker<T>(host: SpawnBrokerHost | undefined, run: () => T): T {
-  return context.run(host, run);
+  return context.getStore() === host ? run() : context.run(host, run);
 }
 
 export function getSpawnBroker(): SpawnBrokerHost | undefined {

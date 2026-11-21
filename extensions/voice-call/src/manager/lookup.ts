@@ -1,8 +1,6 @@
 import type { CallId, CallRecord } from "../types.js";
 
-// Lookup helpers for active calls by internal or provider call ids.
-
-/** Resolve an active call from provider call id with map lookup plus stale-map fallback scan. */
+/** Resolve an active call through the index maintained by call mutations. */
 export function getCallByProviderCallId(params: {
   activeCalls: Map<CallId, CallRecord>;
   providerCallIdMap: Map<string, CallId>;
@@ -24,19 +22,17 @@ export function getCallByProviderCallId(params: {
   return undefined;
 }
 
-/** Resolve an active call by internal call id or provider call id. */
 export function findCall(params: {
   activeCalls: Map<CallId, CallRecord>;
   providerCallIdMap: Map<string, CallId>;
   callIdOrProviderCallId: string;
 }): CallRecord | undefined {
-  const directCall = params.activeCalls.get(params.callIdOrProviderCallId);
-  if (directCall) {
-    return directCall;
-  }
-  return getCallByProviderCallId({
-    activeCalls: params.activeCalls,
-    providerCallIdMap: params.providerCallIdMap,
-    providerCallId: params.callIdOrProviderCallId,
-  });
+  return (
+    params.activeCalls.get(params.callIdOrProviderCallId) ??
+    getCallByProviderCallId({
+      activeCalls: params.activeCalls,
+      providerCallIdMap: params.providerCallIdMap,
+      providerCallId: params.callIdOrProviderCallId,
+    })
+  );
 }

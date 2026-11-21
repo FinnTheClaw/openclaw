@@ -4,7 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { requireDirectorySync, syncDirectorySync } from "../infra/directory-durability.js";
-import { hashFileDescriptorSync } from "../infra/file-descriptor.js";
+import {
+  flushAndHashFileSync as syncAndHash,
+  hashFileDescriptorSync,
+} from "../infra/file-descriptor.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import {
   assertSqliteIntegrity,
@@ -23,6 +26,7 @@ type OrphanDeliveryRow = {
   task_id: string;
   requester_origin_json: string | null;
   last_notified_event_at: bigint | null;
+  last_notified_event_ordinal?: bigint | null;
 };
 
 function orphanRows(database: DatabaseSync): Iterable<OrphanDeliveryRow> {
@@ -38,7 +42,10 @@ function encodeOrphanRow(row: OrphanDeliveryRow): string {
     typeof row.rowid !== "bigint" ||
     typeof row.task_id !== "string" ||
     (row.requester_origin_json !== null && typeof row.requester_origin_json !== "string") ||
-    (row.last_notified_event_at !== null && typeof row.last_notified_event_at !== "bigint")
+    (row.last_notified_event_at !== null && typeof row.last_notified_event_at !== "bigint") ||
+    (row.last_notified_event_ordinal !== undefined &&
+      row.last_notified_event_ordinal !== null &&
+      typeof row.last_notified_event_ordinal !== "bigint")
   ) {
     throw new Error("Orphan task delivery values do not match the supported recovery contract.");
   }
@@ -68,6 +75,18 @@ function assertRecoveryShape(database: DatabaseSync): void {
       hidden: 0,
     },
   ];
+  // The frozen stable fork shipped this nullable ordering column. Preserve it in exports.
+  if (columns.length === expected.length + 1) {
+    expected.push({
+      cid: 3,
+      name: "last_notified_event_ordinal",
+      type: "INTEGER",
+      notnull: 0,
+      dflt_value: null,
+      pk: 0,
+      hidden: 0,
+    });
+  }
   const foreignKeys = database.prepare("PRAGMA foreign_key_list(task_delivery_state)").all();
   const canonicalForeignKey = [
     {
@@ -106,16 +125,6 @@ function assertKnownOrphanIntegrity(database: DatabaseSync): number {
       return error.repair.orphanCount;
     }
     throw error;
-  }
-}
-
-function syncAndHash(filePath: string) {
-  const descriptor = fs.openSync(filePath, "r+");
-  try {
-    fs.fsyncSync(descriptor);
-    return hashFileDescriptorSync(descriptor);
-  } finally {
-    fs.closeSync(descriptor);
   }
 }
 

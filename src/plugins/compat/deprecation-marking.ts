@@ -46,9 +46,6 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "TypeScript @deprecated annotations on the reader-backed ChannelSetupInput compatibility tier",
       "published-plugin artifact reader sweep required before field removal",
     ],
-    tests: ["src/plugin-sdk/channel-setup.test.ts", "src/plugins/compat/registry.test.ts"],
-    releaseNote:
-      "ChannelSetupInput keeps its reader-backed channel fields through the dated migration window while plugins move them into plugin-local input types.",
   },
   {
     code: "plugin-sdk-broad-runtime-barrels",
@@ -75,12 +72,6 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "TypeScript @deprecated annotations on broad plugin SDK barrels",
       "plugin boundary report compatibility inventory",
     ],
-    tests: [
-      "src/plugins/contracts/plugin-sdk-subpaths.test.ts",
-      "src/plugins/compat/registry.test.ts",
-    ],
-    releaseNote:
-      "Broad agent, CLI, conversation, hook, media, plugin, and security runtime barrels remain available while bundled and external plugins migrate to focused subpaths.",
   },
   {
     code: "plugin-sdk-provider-owned-helper-shims",
@@ -90,13 +81,7 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "provider-local auth, model, replay, OAuth, and stream helper APIs; retain until every helper is migrated in official providers and absent from published plugins",
     docsPath: "/plugins/sdk-migration#compatibility-policy",
     surfaces: [
-      "openclaw/plugin-sdk/provider-stream GOOGLE_THINKING_STREAM_HOOKS",
-      "openclaw/plugin-sdk/provider-stream KILOCODE_THINKING_STREAM_HOOKS",
       "openclaw/plugin-sdk/provider-stream MOONSHOT_THINKING_STREAM_HOOKS",
-      "openclaw/plugin-sdk/provider-stream MINIMAX_FAST_MODE_STREAM_HOOKS",
-      "openclaw/plugin-sdk/provider-stream OPENAI_RESPONSES_STREAM_HOOKS",
-      "openclaw/plugin-sdk/provider-stream OPENROUTER_THINKING_STREAM_HOOKS",
-      "openclaw/plugin-sdk/provider-stream TOOL_STREAM_DEFAULT_ON_HOOKS",
       "openclaw/plugin-sdk/provider-stream-shared defaultToolStreamExtraParams",
       "openclaw/plugin-sdk/provider-stream-shared stripTrailingAnthropicAssistantPrefillWhenThinking",
       "openclaw/plugin-sdk/provider-stream-shared createAnthropicThinkingPrefillPayloadWrapper",
@@ -109,16 +94,10 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "openclaw/plugin-sdk/provider-stream-shared createGoogleThinkingPayloadWrapper",
       "openclaw/plugin-sdk/provider-stream-shared createGoogleThinkingStreamWrapper",
       "openclaw/plugin-sdk/provider-model-shared isProxyReasoningUnsupportedModelHint",
-      "openclaw/plugin-sdk/provider-model-shared OPENAI_COMPATIBLE_REPLAY_HOOKS",
-      "openclaw/plugin-sdk/provider-model-shared ANTHROPIC_BY_MODEL_REPLAY_HOOKS",
       "openclaw/plugin-sdk/provider-model-shared NATIVE_ANTHROPIC_REPLAY_HOOKS",
       "openclaw/plugin-sdk/provider-model-shared PASSTHROUGH_GEMINI_REPLAY_HOOKS",
-      "openclaw/plugin-sdk/provider-auth DEFAULT_COPILOT_API_BASE_URL",
-      "openclaw/plugin-sdk/provider-auth deriveCopilotApiBaseUrlFromToken",
-      "openclaw/plugin-sdk/provider-auth resolveCopilotApiToken",
-      "openclaw/plugin-sdk/provider-auth-copilot-cache CachedCopilotToken",
-      "openclaw/plugin-sdk/oauth-utils toFormUrlEncoded",
-      "openclaw/plugin-sdk/oauth-utils generatePkceVerifierChallenge",
+      "openclaw/plugin-sdk/provider-auth toFormUrlEncoded",
+      "openclaw/plugin-sdk/provider-auth generatePkceVerifierChallenge",
       "openclaw/plugin-sdk/provider-oauth-runtime OAuthProvider",
       "openclaw/plugin-sdk/provider-oauth-runtime OAuthProviderInfo",
     ],
@@ -126,12 +105,6 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "TypeScript @deprecated annotations naming provider-local replacements",
       "plugin boundary report compatibility inventory",
     ],
-    tests: [
-      "src/plugins/contracts/plugin-sdk-subpaths.test.ts",
-      "src/plugins/compat/registry.test.ts",
-    ],
-    releaseNote:
-      "Provider-specific auth, model, replay, OAuth, and stream shortcuts remain as deprecated SDK shims while providers move to their local APIs.",
   },
   {
     code: "message-presentation-legacy-bridges",
@@ -161,19 +134,11 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "reduceInteractiveReply",
       "@openclaw/discord buildDiscordInteractiveComponents",
       "@openclaw/slack buildSlackInteractiveBlocks",
-      "@openclaw/telegram buildTelegramInteractiveButtons",
     ],
     diagnostics: [
       "TypeScript @deprecated annotations naming MessagePresentation replacements",
       "plugin boundary report compatibility inventory",
     ],
-    tests: [
-      "src/interactive/payload.test.ts",
-      "src/plugin-sdk/reply-payload.test.ts",
-      "src/plugins/compat/registry.test.ts",
-    ],
-    releaseNote:
-      "Legacy interactive reply values and channel-specific rendering bridges remain available while producers migrate to MessagePresentation.",
   },
   {
     code: "plugin-sdk-focused-compat-aliases",
@@ -184,21 +149,12 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
     docsPath: "/plugins/sdk-migration#compatibility-policy",
     surfaces: [
       "openclaw/plugin-sdk/acp-runtime __testing",
-      "openclaw/plugin-sdk/approval-reaction-runtime",
       "openclaw/plugin-sdk/channel-inbound BuildChannelTurnContextParams",
       "openclaw/plugin-sdk/channel-inbound BuiltChannelTurnContext",
       "openclaw/plugin-sdk/channel-inbound buildChannelTurnContext",
       "openclaw/plugin-sdk/channel-inbound finalizeChannelInboundContext",
       "openclaw/plugin-sdk/channel-inbound filterChannelTurnSupplementalContext",
       "openclaw/plugin-sdk/channel-send-result ChannelSendRawResult",
-      "openclaw/plugin-sdk/command-auth",
-      "openclaw/plugin-sdk/command-auth ResolveSenderCommandAuthorizationParams",
-      "openclaw/plugin-sdk/command-auth resolveCommandAuthorizedFromAuthorizers",
-      "openclaw/plugin-sdk/command-auth CommandAuthorizationRuntime",
-      "openclaw/plugin-sdk/command-auth ResolveSenderCommandAuthorizationWithRuntimeParams",
-      "openclaw/plugin-sdk/command-auth resolveDirectDmAuthorizationOutcome",
-      "openclaw/plugin-sdk/command-auth resolveSenderCommandAuthorizationWithRuntime",
-      "openclaw/plugin-sdk/command-auth resolveSenderCommandAuthorization",
       "openclaw/plugin-sdk/keyed-async-queue KeyedAsyncQueue.getTailMapForTesting",
       "openclaw/plugin-sdk/persistent-dedupe PersistentDedupeLegacyPathOptions.lockOptions",
       "openclaw/plugin-sdk/retry-runtime createTelegramRetryRunner",
@@ -211,14 +167,6 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "TypeScript @deprecated annotations naming focused replacements",
       "plugin boundary report compatibility inventory",
     ],
-    tests: [
-      "src/plugin-sdk/channel-inbound.test.ts",
-      "src/plugin-sdk/command-auth.test.ts",
-      "src/plugin-sdk/ssrf-policy.test.ts",
-      "src/plugins/compat/registry.test.ts",
-    ],
-    releaseNote:
-      "Focused SDK compatibility aliases remain available through a dated window while callers adopt their annotated replacements.",
   },
   {
     code: "agent-harness-terminal-result-aliases",
@@ -243,22 +191,15 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "TypeScript @deprecated annotations on agent harness result and delivery defaults",
       "plugin boundary report compatibility inventory",
     ],
-    tests: [
-      "src/agents/harness/settled-turn-finalization-result.test.ts",
-      "src/plugins/compat/registry.test.ts",
-    ],
-    releaseNote:
-      "Agent harness result booleans and sourceVisibleReplies remain available while harnesses migrate to terminal outcomes and visibleReplies.",
   },
   {
     code: "official-plugin-export-aliases",
     ...DEPRECATION_MARKING,
     owner: "channel",
     replacement:
-      "the canonical testing export, MessagePresentation renderers, and host-owned timeout/runtime behavior; retain until minimum supported official plugin packages no longer import these aliases",
+      "MessagePresentation renderers and host-owned timeout/runtime behavior; retain until minimum supported official plugin packages no longer import these aliases",
     docsPath: "/plugins/compatibility#current-compatibility-areas",
     surfaces: [
-      "@openclaw/google-meet __testing",
       "@openclaw/discord buildDiscordInteractiveComponents",
       "@openclaw/discord normalizeDiscordListenerTimeoutMs",
       "@openclaw/discord normalizeDiscordInboundWorkerTimeoutMs",
@@ -270,25 +211,17 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "TypeScript @deprecated annotations on published official-plugin exports",
       "plugin boundary report compatibility inventory",
     ],
-    // Owning discord/slack suites live under extensions/*/src; the core import
-    // guardrail forbids that path shape in core string literals, so cite the
-    // package-root and registry tests here.
-    tests: ["extensions/google-meet/index.test.ts", "src/plugins/compat/registry.test.ts"],
-    releaseNote:
-      "Published Google Meet testing, channel presentation, and Discord timeout aliases remain available while consumers move to their canonical exports and host-owned behavior.",
   },
   {
     code: "memory-host-compatibility-aliases",
     ...DEPRECATION_MARKING,
     owner: "sdk",
     replacement:
-      "canonical memory cache/FTS tables and getRuntimeConfig or caller-provided config; retain until memory integrations are verified to use canonical tables and prepared runtime config without these aliases",
+      "canonical memory cache/FTS tables; retain until supported memory integrations are verified to use canonical tables without overrides and legacy table data remains preserved",
     docsPath: "/plugins/sdk-migration#compatibility-policy",
     surfaces: [
       "@openclaw/memory-host-sdk ensureMemoryIndexSchema.embeddingCacheTable",
       "@openclaw/memory-host-sdk ensureMemoryIndexSchema.ftsTable",
-      "@openclaw/memory-host-sdk/runtime-core loadConfig",
-      "@openclaw/memory-host-sdk/host/openclaw-runtime loadConfig",
     ],
     diagnostics: [
       "TypeScript @deprecated annotations on memory-host SDK compatibility fields",
@@ -299,7 +232,27 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "src/plugins/compat/registry.test.ts",
     ],
     releaseNote:
-      "Memory-host cache-table overrides and runtime config reload aliases remain available while callers migrate to canonical tables and prepared config.",
+      "Memory-host table overrides remain available until supported artifact usage and legacy data preservation are verified.",
+  },
+  {
+    code: "plugin-runtime-api-unused-flat-aliases",
+    ...DEPRECATION_MARKING,
+    status: "removed",
+    owner: "plugin-execution",
+    replacement:
+      "api.agent.events.emitAgentEvent, api.runContext methods, api.session.controls.registerSessionAction, and api.session.workflow attachment and scheduling methods",
+    docsPath: "/plugins/sdk-overview/host-hooks",
+    surfaces: [
+      "OpenClawPluginApi.emitAgentEvent",
+      "OpenClawPluginApi.setRunContext",
+      "OpenClawPluginApi.getRunContext",
+      "OpenClawPluginApi.clearRunContext",
+      "OpenClawPluginApi.registerSessionAction",
+      "OpenClawPluginApi.sendSessionAttachment",
+      "OpenClawPluginApi.scheduleSessionTurn",
+      "OpenClawPluginApi.unscheduleSessionTurnsByTag",
+    ],
+    diagnostics: ["TypeScript reports removed flat members; use the grouped API namespaces"],
   },
   {
     code: "plugin-runtime-api-compat-aliases",
@@ -314,15 +267,7 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "OpenClawPluginApi.registerControlUiDescriptor",
       "OpenClawPluginApi.registerRuntimeLifecycle",
       "OpenClawPluginApi.registerAgentEventSubscription",
-      "OpenClawPluginApi.emitAgentEvent",
-      "OpenClawPluginApi.setRunContext",
-      "OpenClawPluginApi.getRunContext",
-      "OpenClawPluginApi.clearRunContext",
       "OpenClawPluginApi.registerSessionSchedulerJob",
-      "OpenClawPluginApi.registerSessionAction",
-      "OpenClawPluginApi.sendSessionAttachment",
-      "OpenClawPluginApi.scheduleSessionTurn",
-      "OpenClawPluginApi.unscheduleSessionTurnsByTag",
       "PluginHookContext.senderExternalId",
       "PluginAttachmentChannelHints.telegram",
       "PluginAttachmentChannelHints.slack",
@@ -336,19 +281,11 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "PluginRuntime.channel.session.recordInboundSession",
       "PluginRuntime.channel.inbound.runPreparedReply",
       "PluginRuntime.channel.turn",
-      "PluginRuntime.system.requestHeartbeatNow",
     ],
     diagnostics: [
       "TypeScript @deprecated annotations on plugin API and runtime aliases",
       "plugin boundary report compatibility inventory",
     ],
-    tests: [
-      "src/plugins/captured-registration.test.ts",
-      "src/plugins/runtime/index.test.ts",
-      "src/plugins/compat/registry.test.ts",
-    ],
-    releaseNote:
-      "Flat plugin registration and broad runtime aliases remain available while plugins migrate to namespaced APIs and focused runtime methods.",
   },
   {
     code: "plugin-provider-manifest-compat-aliases",
@@ -372,12 +309,5 @@ export const DEPRECATION_MARKING_COMPAT_RECORDS = [
       "TypeScript @deprecated annotations on plugin manifest and provider catalog aliases",
       "plugin boundary report compatibility inventory",
     ],
-    tests: [
-      "src/plugins/contracts/package-manifest.contract.test.ts",
-      "src/plugins/contracts/provider-catalog-deprecation.contract.test.ts",
-      "src/plugins/compat/registry.test.ts",
-    ],
-    releaseNote:
-      "Runtime plugin kind/setup metadata and provider catalog hooks remain available while plugins migrate ownership into manifests and catalog registrations.",
   },
 ] as const satisfies readonly PluginCompatRecord[];

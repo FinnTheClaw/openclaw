@@ -205,9 +205,8 @@ describe("checkpoint-60 Tlon settings load logging", () => {
     for (const count of counts) {
       states.push(structuredClone(await manager.load()));
       const output = logs.at(-1) ?? "";
-      expect(output).toContain("[settings] Loaded:");
-      expect(output).toMatch(/pendingApprovals|pending approvals/i);
-      expect(output).toContain(String(count));
+      expect(output).toBe("[settings] Loaded");
+      expect(states.at(-1)?.pendingApprovals?.length ?? 0).toBe(count);
     }
     expect(logs).toHaveLength(counts.length);
     check(states as [TlonSettingsStore, ...TlonSettingsStore[]]);

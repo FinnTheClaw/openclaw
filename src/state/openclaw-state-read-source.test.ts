@@ -1,0 +1,357 @@
+// Register the existing pool fixture before importing its consumers.
+// oxfmt-ignore
+import { emptyReply, mock, queueTask, source } from "./openclaw-state-read-worker.test-harness.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import fs from "node:fs";
+import path from "node:path";
+import { expect, it, vi } from "vitest";
+import * as processRole from "../infra/database-engine/admission-scope.js";
+import {
+  readGatewayLockProcessNamespace,
+  type LockPayload,
+} from "../infra/gateway-lock-payload.js";
+import {
+  StateDatabaseAdmissionPendingError,
+  StateDatabaseOfflineMaintenanceError,
+} from "../infra/gateway-state-owner-record.js";
+import { resolveGatewayStateOwnerPath } from "../infra/gateway-state-owner.js";
+import { resolveRuntimeProcessEntrypointUrl } from "../infra/runtime-process-url.js";
+import { withRuntimeWorkerGeneration } from "../infra/runtime-worker-generation.js";
+import { captureRetainedNativeWorkerSource } from "../infra/worker-native-lifecycle.js";
+import { createDeferredCore } from "../shared/deferred.js";
+import { runOpenClawAgentWriteAdmission } from "./openclaw-agent-write-admission.js";
+import { executeExistingOpenClawStateRead } from "./openclaw-state-db-readonly.js";
+import {
+  captureOpenClawStateReadSource,
+  retireIdleOpenClawStateReadWorkers,
+} from "./openclaw-state-read-worker.js";
+import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
+
+const backupRead = { type: "backup.runs" } as const;
+function readyTask() {
+  const task = queueTask();
+  task.result.resolve(emptyReply);
+  return task;
+}
+
+function withReadGeneration(
+  workerUrl: URL,
+  operation: (source: ReturnType<typeof captureOpenClawStateReadSource>) => Promise<void>,
+) {
+  const moduleUrl = resolveRuntimeProcessEntrypointUrl("stateRead");
+  return withRuntimeWorkerGeneration(
+    async (bind) => {
+      bind((url) => (url.href === moduleUrl.href ? workerUrl : url));
+      await operation(captureOpenClawStateReadSource());
+    },
+    async () => {},
+  );
+}
+
+function readFixture() {
+  const { options, pathname } = source();
+  return {
+    options,
+    read: () => executeExistingOpenClawStateRead(options, backupRead),
+    get location() {
+      return {
+        context: captureOpenClawStateWorkerContext(options),
+        location: pathname,
+        checkFreshAdmission: false,
+      };
+    },
+    authority: {
+      signal: new AbortController().signal,
+      assertCurrent: () => {},
+      acquire: <T>(operation: () => T) => operation(),
+    },
+  };
+}
+
+it.each(["release", "offline", "exhausted", "cancelled"] as const)(
+  "settles queued shared-state admission without dispatch or replay: %s",
+  async (outcome) => {
+    const { options, pathname } = source();
+    const ownerPath = resolveGatewayStateOwnerPath(pathname);
+    const dispatch = createDeferredCore();
+    const task = queueTask(dispatch.promise);
+    const dispatched = vi.fn();
+    void task.captured.then(dispatched, () => {});
+    const controller = new AbortController();
+    const cancelled = new Error("read cancelled while awaiting foreign schema owner");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const admissionWaiting = createDeferredCore();
+    const schedule = globalThis.setTimeout;
+    const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((...args) => {
+      const timer = schedule(...args);
+      admissionWaiting.resolve();
+      return timer;
+    });
+    const reading = executeExistingOpenClawStateRead(options, backupRead, {
+      signal: controller.signal,
+    });
+    let settled = false;
+    const result = reading.then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error: unknown) => {
+        settled = true;
+        return { error };
+      },
+    );
+    try {
+      await task.submitted;
+      // The real persisted-owner classifier sees a live foreign process, not a mocked error.
+      fs.mkdirSync(path.dirname(ownerPath), { recursive: true });
+      fs.writeFileSync(
+        ownerPath,
+        JSON.stringify({
+          pid: process.ppid,
+          createdAt: new Date().toISOString(),
+          configPath: path.join(path.dirname(pathname), "openclaw.json"),
+          processNamespace: readGatewayLockProcessNamespace(),
+          role: "sqlite-maintenance",
+          ...(outcome === "offline" ? {} : { stateOwnerKind: "schema" }),
+        } satisfies LockPayload),
+      );
+      dispatch.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispatched).not.toHaveBeenCalled();
+      if (outcome === "release") {
+        await vi.advanceTimersByTimeAsync(30);
+        expect(settled).toBe(false);
+        fs.unlinkSync(ownerPath);
+        await vi.advanceTimersByTimeAsync(10);
+        await task.captured;
+        task.result.resolve(emptyReply);
+        expect(await result).toEqual({ value: emptyReply });
+        expect(dispatched).toHaveBeenCalledOnce();
+      } else {
+        if (outcome === "exhausted") {
+          // Real owner-file I/O must establish the admission deadline before time advances.
+          await admissionWaiting.promise;
+          await vi.advanceTimersByTimeAsync(4_999);
+          expect(settled).toBe(false);
+          await vi.advanceTimersByTimeAsync(1);
+        } else if (outcome === "cancelled") {
+          expect(settled).toBe(false);
+          controller.abort(cancelled);
+        }
+        const settledResult = await result;
+        if (outcome === "cancelled") {
+          expect("error" in settledResult && settledResult.error).toBe(cancelled);
+        } else {
+          expect(settledResult).toMatchObject({
+            error: expect.any(
+              outcome === "offline"
+                ? StateDatabaseOfflineMaintenanceError
+                : StateDatabaseAdmissionPendingError,
+            ),
+          });
+        }
+      }
+      if (outcome !== "release") {
+        expect(dispatched).not.toHaveBeenCalled();
+      }
+      expect(mock.runTask).toHaveBeenCalledOnce();
+      expect(task.close).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      fs.rmSync(ownerPath, { force: true });
+      controller.abort(cancelled);
+      dispatch.resolve();
+      task.result.resolve(emptyReply);
+      await result;
+      timerSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it.each(["gateway", "cli-oneshot", undefined] as const)(
+  "uses the %s process lifetime for early awaited reads",
+  async (role) => {
+    const roleSpy = vi.spyOn(processRole, "getDatabaseProcessRole").mockReturnValue(role);
+    const { location, authority } = readFixture();
+    try {
+      for (const awaitedOnly of [true, true, true, false]) {
+        const transport = captureOpenClawStateReadSource().createTransport(
+          backupRead,
+          undefined,
+          undefined,
+          awaitedOnly,
+        );
+        const task = readyTask();
+        await expect(transport.startRead(location, authority)).resolves.toEqual({
+          value: emptyReply,
+        });
+        await transport.startClose();
+        expect(task.close).toHaveBeenCalledExactlyOnceWith(
+          awaitedOnly && role !== "gateway" ? { retire: true } : undefined,
+        );
+      }
+      expect(mock.create).toHaveBeenCalledTimes(role === "gateway" ? 1 : 2);
+    } finally {
+      roleSpy.mockRestore();
+    }
+  },
+);
+
+it("shares read setup methods while each read retains independent task custody", async () => {
+  const { location, authority } = readFixture();
+  const factories = new Set();
+  const readers = new Set();
+  const validators = new Set();
+  const closers = new Set();
+  for (let index = 0; index < 16; index += 1) {
+    const captured = captureOpenClawStateReadSource();
+    const transport = captured.createTransport(backupRead);
+    factories.add(captured.createTransport);
+    readers.add(transport.startRead);
+    validators.add(transport.startValidateFresh);
+    closers.add(transport.startClose);
+    const task = readyTask();
+    await expect(transport.startRead(location, authority)).resolves.toEqual({ value: emptyReply });
+    await transport.startClose();
+    expect(task.close).toHaveBeenCalledOnce();
+  }
+  expect(mock.create).toHaveBeenCalledOnce();
+  expect([factories.size, readers.size, validators.size, closers.size]).toEqual([1, 1, 1, 1]);
+});
+
+it("retires cached readers after independent custody joins and permits reuse", async () => {
+  const { read } = readFixture();
+  const nativeSource = captureRetainedNativeWorkerSource();
+  const task = queueTask();
+  const reading = read();
+  try {
+    await task.captured;
+    expect(await retireIdleOpenClawStateReadWorkers(nativeSource)).toBe(false);
+    expect(mock.closePool).not.toHaveBeenCalled();
+  } finally {
+    task.result.resolve(emptyReply);
+    await reading;
+  }
+  expect(mock.closePool).not.toHaveBeenCalled();
+  expect(await retireIdleOpenClawStateReadWorkers(nativeSource)).toBe(true);
+  expect(mock.closePool).toHaveBeenCalledOnce();
+
+  readyTask();
+  await expect(read()).resolves.toEqual(emptyReply);
+  expect(mock.create).toHaveBeenCalledTimes(2);
+});
+
+it.each([true, false])(
+  "refuses writer-held reader retirement before cleanup (targeted close: %s)",
+  async (explicitSqliteCloseReleasesNativeResources) => {
+    const { options, read } = readFixture();
+    mock.capabilities.mockReturnValue({
+      explicitSqliteCloseReleasesNativeResources,
+      decided: true,
+      reason: "test policy",
+    });
+    const nativeSource = captureRetainedNativeWorkerSource();
+    readyTask();
+    await read();
+
+    await expect(
+      runOpenClawAgentWriteAdmission({ agentId: "main", path: options.path }, () =>
+        retireIdleOpenClawStateReadWorkers(nativeSource),
+      ),
+    ).rejects.toThrow("while holding a store writer");
+    expect(mock.closeResources).not.toHaveBeenCalled();
+    expect(mock.rotate).not.toHaveBeenCalled();
+    expect(mock.closePool).not.toHaveBeenCalled();
+
+    await expect(retireIdleOpenClawStateReadWorkers(nativeSource)).resolves.toBe(true);
+    expect(
+      explicitSqliteCloseReleasesNativeResources ? mock.closeResources : mock.rotate,
+    ).toHaveBeenCalledOnce();
+    expect(mock.closePool).toHaveBeenCalledOnce();
+  },
+);
+
+it("keeps lazy reads with their captured generation when another generation dispatches them", async () => {
+  const { location, authority } = readFixture();
+  const firstUrl = new URL("file:///synthetic/first/state-reader.mjs");
+  const secondUrl = new URL("file:///synthetic/second/state-reader.mjs");
+  await withReadGeneration(firstUrl, async (first) => {
+    expect(mock.create).not.toHaveBeenCalled();
+    expect(mock.selectSqlite).not.toHaveBeenCalled();
+    await withReadGeneration(secondUrl, async (second) => {
+      const transports = [first, second].map((reader) => {
+        readyTask();
+        return reader.createTransport(backupRead);
+      });
+      try {
+        for (const transport of transports) {
+          await expect(transport.startRead(location, authority)).resolves.toEqual({
+            value: emptyReply,
+          });
+        }
+        expect(mock.create.mock.calls).toMatchObject(
+          [firstUrl, secondUrl].map((workerUrl) => [{ workerUrl }, { retainedTransport: true }]),
+        );
+      } finally {
+        await Promise.all(transports.map((transport) => transport.startClose()));
+      }
+    });
+  });
+});
+
+it("joins captured domain cleanup before retiring its pool and execution generation", async () => {
+  const { location, authority } = readFixture();
+  const scope = new AsyncLocalStorage<string>();
+  const ownerCloseStarted = createDeferredCore();
+  const ownerMayClose = createDeferredCore();
+  const events: string[] = [];
+  const record = (event: string) => async () => {
+    events.push(event);
+  };
+  const releaseGeneration = vi.fn(record("generation released"));
+  mock.closeResources.mockImplementation(record("resources closed"));
+  mock.closePool.mockImplementation(record("pool closed"));
+  let captured: ReturnType<typeof captureOpenClawStateReadSource> | undefined;
+  const generation = withRuntimeWorkerGeneration(async (bind) => {
+    bind((url) => new URL(`${url.href}?synthetic-generation=owned`));
+    captured = captureOpenClawStateReadSource();
+    const retainedSource = captured;
+    const transport = retainedSource.createTransport(backupRead);
+    readyTask();
+    scope.run("accepted reader", () => {
+      const unregister = retainedSource.own(async () => {
+        expect(scope.getStore()).toBe("accepted reader");
+        events.push("domain closing");
+        ownerCloseStarted.resolve();
+        await ownerMayClose.promise;
+        await transport.startRead(location, authority);
+        await transport.startClose();
+        unregister();
+        events.push("domain closed");
+      });
+    });
+  }, releaseGeneration);
+  try {
+    await Promise.race([
+      ownerCloseStarted.promise,
+      generation.then(() => {
+        throw new Error("Generation completed before domain cleanup");
+      }),
+    ]);
+    expect(events).toEqual(["domain closing"]);
+    expect(mock.create).not.toHaveBeenCalled();
+    expect(() => captured?.own(async () => {})).toThrow(/closing/);
+  } finally {
+    ownerMayClose.resolve();
+    await generation;
+  }
+  expect(events).toEqual([
+    "domain closing",
+    "domain closed",
+    "resources closed",
+    "pool closed",
+    "generation released",
+  ]);
+});

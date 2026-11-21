@@ -10,7 +10,7 @@ struct CanvasWindowSmokeTests {
     @Test func `repeated manager present applies the new placement immediately`() throws {
         let manager = CanvasManager.shared
         let key = "placement-\(UUID().uuidString)"
-        let first = try manager.showDetailed(
+        let first = try manager.show(
             sessionKey: key, placement: CanvasPlacement(x: 120, y: 200, width: 520, height: 680))
         let window = try #require(NSApp.windows.first {
             ($0.windowController as? CanvasWindowController)?.sessionKey == key
@@ -18,9 +18,9 @@ struct CanvasWindowSmokeTests {
         defer {
             manager.hide(sessionKey: key)
             window.close()
-            try? FileManager().removeItem(atPath: first.directory)
+            try? FileManager().removeItem(atPath: first)
         }
-        _ = try manager.showDetailed(
+        _ = try manager.show(
             sessionKey: key, placement: CanvasPlacement(x: 240, y: 260, width: 640, height: 720))
         let proposed = NSRect(x: 240, y: 260, width: 640, height: 720)
         let expected = window.screen.map {
@@ -44,28 +44,28 @@ struct CanvasWindowSmokeTests {
 
         #expect(controller.directoryPath.contains("main_invalid__") == true)
         #expect(controller.webView.configuration.preferences.tabFocusesLinks)
-        #expect(controller._testIsFilePollingActive == false)
+        #expect(controller.watcher.isPolling == false)
 
         controller.preferredPlacement = CanvasPlacement(x: 120, y: 200, width: 520, height: 680)
         controller.load(target: "/")
-        #expect(controller._testIsFilePollingActive == false)
+        #expect(controller.watcher.isPolling == false)
         let localURL = try #require(CanvasScheme.makeURL(session: "main", path: "/"))
         controller.updateFilePollingForCommittedNavigation(to: localURL)
         controller.showCanvas()
-        #expect(controller._testIsFilePollingActive)
+        #expect(controller.watcher.isPolling)
         let remoteURL = try #require(URL(string: "https://example.com"))
         controller.load(target: remoteURL.absoluteString)
-        #expect(controller._testIsFilePollingActive)
+        #expect(controller.watcher.isPolling)
         controller.updateFilePollingForCommittedNavigation(to: remoteURL)
-        #expect(controller._testIsFilePollingActive == false)
+        #expect(controller.watcher.isPolling == false)
         controller.load(target: "/")
-        #expect(controller._testIsFilePollingActive == false)
+        #expect(controller.watcher.isPolling == false)
         controller.updateFilePollingForCommittedNavigation(to: localURL)
-        #expect(controller._testIsFilePollingActive)
+        #expect(controller.watcher.isPolling)
         controller.windowDidMove(Notification(name: NSWindow.didMoveNotification))
         controller.windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification))
         controller.hideCanvas()
-        #expect(controller._testIsFilePollingActive == false)
+        #expect(controller.watcher.isPolling == false)
         controller.close()
     }
 

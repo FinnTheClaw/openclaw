@@ -1,7 +1,15 @@
-import { isSilentReplyText } from "../../auto-reply/tokens.js";
+import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
+import { resolveRawAssistantAnswerText } from "../../shared/assistant-answer-text.js";
 import { normalizeAgentRunAttemptTerminal } from "../agent-run-terminal-outcome.js";
-import { resolveFinalAssistantVisibleText } from "../embedded-agent-runner/run/helpers.js";
-import { EmptySettledTurnFinalizationError } from "./settled-turn-finalization-outcome.js";
+import {
+  prepareAgentRunTerminalReply,
+  sanitizeAgentRunTerminalReply,
+} from "../agent-run-terminal-reply.js";
+import { extractAssistantVisibleText } from "../embedded-agent-utils.js";
+import {
+  EmptySettledTurnFinalizationError,
+  type PreparedSettledTurnFinalizationResult,
+} from "./settled-turn-finalization-outcome.js";
 import type {
   AgentHarnessAttemptResult,
   AgentHarnessSettledTurnFinalizationResult,
@@ -9,6 +17,7 @@ import type {
 
 const ALLOWED_SETTLED_FINALIZATION_RESULT_KEYS = new Set([
   "assistant",
+  "preparedTerminalReply",
   "usage",
   "assistantTranscriptOwned",
   "assistantTranscriptIdempotencyKey",
@@ -30,7 +39,7 @@ function assistantContainsToolCall(
  */
 export function assertSettledTurnFinalizationResult(
   result: AgentHarnessSettledTurnFinalizationResult,
-): AgentHarnessSettledTurnFinalizationResult {
+): PreparedSettledTurnFinalizationResult {
   const unknownKey = Object.keys(result).find(
     (key) => !ALLOWED_SETTLED_FINALIZATION_RESULT_KEYS.has(key),
   );
@@ -44,36 +53,45 @@ export function assertSettledTurnFinalizationResult(
     throw new Error("Settled-turn finalization returned a tool call");
   }
   if (
-    result.assistantMessageIndex !== undefined &&
-    (!Number.isSafeInteger(result.assistantMessageIndex) || result.assistantMessageIndex < 0)
-  ) {
-    throw new Error("Settled-turn finalization returned an invalid assistant message index");
-  }
-  // Output-budget exhaustion without visible text needs the same remaining
-  // answer-only pass as an empty stop, not the generic failed-finalizer path.
-  if (
     result.assistant.stopReason === "length" &&
-    !resolveFinalAssistantVisibleText(result.assistant)
+    !resolveRawAssistantAnswerText(result.assistant).trim()
   ) {
-    throw new EmptySettledTurnFinalizationError(result);
+    throw new EmptySettledTurnFinalizationError({
+      ...result,
+      preparedTerminalReply: prepareAgentRunTerminalReply({ rawText: "" }),
+    });
   }
   if (result.assistant.stopReason !== "stop") {
     throw new Error(
       `Settled-turn finalization returned unsuccessful stop reason: ${result.assistant.stopReason}`,
     );
   }
-  resolveSettledTurnFinalizationText(result);
-  return result;
-}
-
-export function resolveSettledTurnFinalizationText(
-  result: AgentHarnessSettledTurnFinalizationResult,
-): string {
-  const text = resolveFinalAssistantVisibleText(result.assistant);
-  if (!text || isSilentReplyText(text)) {
-    throw new EmptySettledTurnFinalizationError(result);
+  if (
+    result.assistantMessageIndex !== undefined &&
+    (!Number.isSafeInteger(result.assistantMessageIndex) || result.assistantMessageIndex < 0)
+  ) {
+    throw new Error("Settled-turn finalization returned an invalid assistant message index");
   }
-  return text;
+  const preparedTerminalReply =
+    result.preparedTerminalReply ??
+    prepareAgentRunTerminalReply({
+      rawText: resolveRawAssistantAnswerText(result.assistant),
+    });
+  if (
+    !result.preparedTerminalReply &&
+    preparedTerminalReply.terminalReply.disposition !== "silent"
+  ) {
+    const rawText = preparedTerminalReply.text;
+    preparedTerminalReply.text = parseReplyDirectives(
+      extractAssistantVisibleText(result.assistant, (_text, final) => (final ? rawText : "")),
+    ).text;
+    preparedTerminalReply.terminalReply = sanitizeAgentRunTerminalReply(preparedTerminalReply.text);
+  }
+  const preparedResult = { ...result, preparedTerminalReply };
+  if (preparedTerminalReply.terminalReply.disposition !== "visible") {
+    throw new EmptySettledTurnFinalizationError(preparedResult);
+  }
+  return preparedResult;
 }
 
 /**
@@ -96,9 +114,6 @@ export function projectSettledTurnFinalizationAttemptResult(
   ) {
     throw new Error("Settled-turn finalization attempt did not complete successfully");
   }
-  // The native loop records lifecycle events even when a requested tool does
-  // not exist. Keep its later real answer only when every call was rejected
-  // before execution; unknown or executed activity remains invalid here.
   const rejectedToolCount = result.toolMetas.filter(
     (tool) => tool.executionStarted === false && tool.isError === true,
   ).length;
@@ -120,7 +135,6 @@ export function projectSettledTurnFinalizationAttemptResult(
     result.messagingToolSentMediaUrls.length > 0 ||
     result.messagingToolSentTargets.length > 0 ||
     (result.messagingToolSourceReplyPayloads?.length ?? 0) > 0 ||
-    result.heartbeatToolResponse ||
     (result.toolMediaUrls?.length ?? 0) > 0 ||
     (result.hostOwnedToolMediaUrls?.length ?? 0) > 0 ||
     result.toolAudioAsVoice ||
@@ -139,6 +153,7 @@ export function projectSettledTurnFinalizationAttemptResult(
   }
   return assertSettledTurnFinalizationResult({
     assistant,
+    preparedTerminalReply: result.preparedTerminalReply,
     ...(result.attemptUsage ? { usage: result.attemptUsage } : {}),
     ...(result.assistantTranscriptOwned
       ? {

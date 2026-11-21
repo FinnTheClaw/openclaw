@@ -12,7 +12,7 @@ export type OAuthCredential = {
   type: "oauth";
 } & OAuthCredentials;
 
-export type TokenCredential = {
+type TokenCredential = {
   type: "token";
   token: string;
   expires?: number;
@@ -29,6 +29,7 @@ export type LockResult<T> = {
 
 export interface AuthStorageBackend {
   read?(): string | undefined;
+  prepareProviderReady?(): Promise<void>;
   assertProviderReady?(provider?: string, baseUrl?: string): void;
   getCredentialSource?(provider: string): AuthProfileCredentialSource | undefined;
   assertCredentialReady?(source: AuthProfileCredentialSource, baseUrl?: string): void;

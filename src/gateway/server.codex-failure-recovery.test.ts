@@ -1,58 +1,132 @@
-import childProcess, { type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
-import { syncBuiltinESMExports } from "node:module";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import nodeProcess from "node:process";
+import { Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { assert, expect, it, onTestFinished, vi } from "vitest";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { createPluginStateKeyedStore } from "../plugin-state/plugin-state-store.js";
 import { captureEnv } from "../test-utils/env.js";
-import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
 
-type ProviderRequest = {
-  body: string;
-  threadId: string | string[] | undefined;
+// Native plugins share the actual host graph, outside Vitest's transformed graph.
+// Prepare deferred runtime during collection, outside the recovery deadline.
+const requireHost = createRequire(import.meta.url);
+requireHost("../agents/prepared-model-runtime.ts");
+requireHost("./server-start.ts");
+const { createPluginStateKeyedStore } = requireHost(
+  "../plugin-state/plugin-state-store.ts",
+) as typeof import("../plugin-state/plugin-state-store.js");
+const { buildCodexHarnessAppServerArgs } = requireHost(
+  "./gateway-codex-harness.live-helpers.ts",
+) as typeof import("./gateway-codex-harness.live-helpers.js");
+const { connectGatewayClient, disconnectGatewayClient } = requireHost(
+  "./test-helpers.e2e.ts",
+) as typeof import("./test-helpers.e2e.js");
+
+const { startGatewayServer } = requireHost("./server.ts") as typeof import("./server.js");
+const { startClaimedGateway } = requireHost(
+  "./test-helpers.listener.ts",
+) as typeof import("./test-helpers.listener.js");
+const { acquireTestPortBlock } = requireHost(
+  "../test-utils/port-claims.ts",
+) as typeof import("../test-utils/port-claims.js");
+const { clearConfigCache, clearRuntimeConfigSnapshot } = requireHost(
+  "../config/config.ts",
+) as typeof import("../config/config.js");
+const { clearSessionStoreCacheForTest } = requireHost(
+  "../config/sessions/store-writer-state.ts",
+) as typeof import("../config/sessions/store-writer-state.js");
+const { GATEWAY_STARTUP_MUTATED_ENV_KEYS } = requireHost(
+  "./test-helpers.env.ts",
+) as typeof import("./test-helpers.env.js");
+
+// Native ESM exports cannot be spied on for retained-listener adoption.
+// Use the real listener with the same port-claim and client owners instead.
+async function startNativeGatewayWithClient(
+  params: Pick<
+    Parameters<typeof import("./test-helpers.e2e.js").startGatewayWithClient>[0],
+    "cfg" | "configPath" | "token" | "onEvent"
+  >,
+) {
+  const startupEnv = captureEnv([...GATEWAY_STARTUP_MUTATED_ENV_KEYS, "OPENCLAW_CONFIG_PATH"]);
+  let server: Awaited<ReturnType<typeof startGatewayServer>> | undefined;
+  try {
+    await fs.writeFile(params.configPath, `${JSON.stringify(params.cfg, null, 2)}\n`);
+    process.env.OPENCLAW_CONFIG_PATH = params.configPath;
+    clearRuntimeConfigSnapshot();
+    clearConfigCache();
+    clearSessionStoreCacheForTest();
+    const claim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
+    const started = await startClaimedGateway(claim, () =>
+      startGatewayServer(claim.port, {
+        bind: "loopback",
+        auth: { mode: "token", token: params.token },
+        controlUiEnabled: false,
+      }),
+    );
+    server = started;
+    const client = await connectGatewayClient({
+      url: `ws://127.0.0.1:${claim.port}`,
+      token: params.token,
+      onEvent: params.onEvent,
+    });
+    return {
+      client,
+      server: {
+        close: async () => {
+          await started.close();
+          startupEnv.restore();
+        },
+      },
+    };
+  } catch (error) {
+    await server?.close();
+    startupEnv.restore();
+    throw error;
+  }
+}
+
+type ProviderRequest = { body: string; threadId: string | string[] | undefined };
+type ReadyThread = { threadId: string; clientId: string; action: string };
+type NativeReceipt =
+  | { type: "spawn"; pid: number }
+  | { type: "exit"; code: number | null; signal: NodeJS.Signals | null };
+type NativeProcess = {
+  output: string;
+  pid?: number;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
 };
 
-type ReadyThread = {
-  threadId: string;
-  clientId: string;
-  action: string;
-};
+// Mirrors the Codex plugin's private CODEX_THREAD_UNLOAD_CONFIRMATION_TIMEOUT_MS.
+const CODEX_UNLOAD_CONFIRMATION_MS = 10_000;
+const RECOVERY_FAILURE_TEXT =
+  "⚠️ OpenClaw couldn't finish this reply. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow` in your terminal.";
+const SHUTDOWN_FAILURE_DETAIL =
+  "The previous conversation process did not confirm shutdown; the conversation was preserved.";
 
 const cases: Array<{
   name: string;
-  failFirst: boolean;
+  healthy?: boolean;
   activeSibling?: boolean;
   idleSibling?: "incognito" | "persistent";
   shutdown?: "delayed" | "cancelled" | "unconfirmed";
 }> = [
   {
-    name: "leaves active siblings alone",
-    failFirst: true,
+    name: "recovers on the same client while an active sibling continues",
     activeSibling: true,
   },
-  {
-    name: "reloads a healthy thread",
-    failFirst: false,
-    activeSibling: false,
-  },
-  { name: "preserves an idle Incognito sibling", failFirst: true, idleSibling: "incognito" },
-  { name: "cold resumes an idle persistent sibling", failFirst: true, idleSibling: "persistent" },
-  { name: "waits for physical exit before recovery", failFirst: true, shutdown: "delayed" },
-  {
-    name: "cancels during physical exit without reacquisition",
-    failFirst: true,
-    shutdown: "cancelled",
-  },
+  { name: "reloads a healthy thread", healthy: true },
+  { name: "preserves an idle Incognito sibling", idleSibling: "incognito" },
+  { name: "preserves an idle persistent sibling", idleSibling: "persistent" },
+  { name: "waits for physical exit before recovery", shutdown: "delayed" },
+  { name: "cancels during physical exit without reacquisition", shutdown: "cancelled" },
   {
     name: "preserves its binding when physical exit is unconfirmed",
-    failFirst: true,
     shutdown: "unconfirmed",
   },
 ];
@@ -60,7 +134,8 @@ const cases: Array<{
 it.each(cases)(
   "chat.send $name",
   { timeout: 180_000 },
-  async ({ failFirst, activeSibling, idleSibling, shutdown }) => {
+  async ({ healthy, activeSibling, idleSibling, shutdown }) => {
+    const failFirst = !healthy;
     const dirs = useAutoCleanupTempDirTracker(onTestFinished);
     const root = await fs.realpath(dirs.make("gateway-native-recovery-"));
     const workspace = path.join(root, "workspace");
@@ -79,38 +154,52 @@ it.each(cases)(
     );
     await fs.writeFile(
       path.join(plugin, "index.js"),
-      [
-        'const fs = require("node:fs");',
-        "module.exports = {",
-        '  id: "recovery-instructions",',
-        "  register(api) {",
-        '    api.on("before_prompt_build", () => ({',
-        `      systemPrompt: fs.readFileSync(${JSON.stringify(instruction)}, "utf8"),`,
-        "    }));",
-        "  },",
-        "};",
-      ].join("\n"),
+      `const fs = require("node:fs");
+module.exports = {
+  id: "recovery-instructions",
+  register(api) {
+    api.on("before_prompt_build", () => ({
+      systemPrompt: fs.readFileSync(${JSON.stringify(instruction)}, "utf8"),
+    }));
+  },
+};`,
     );
 
-    const nativeProcesses = new Map<ChildProcess, { output: string }>();
+    const nativeProcesses = new Map<Worker, NativeProcess>();
     if (shutdown) {
-      const spawn = childProcess.spawn;
-      const spawnSpy = vi.spyOn(childProcess, "spawn").mockImplementation((...args) => {
-        const child = spawn(...args);
-        if (Array.isArray(args[1]) && args[1].includes("app-server")) {
-          const captured = { output: "" };
-          nativeProcesses.set(child, captured);
-          child.stdout?.on("data", (chunk: Buffer) => {
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- Every call supplies its Worker receiver.
+      const postMessage = Worker.prototype.postMessage;
+      const launch = vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
+        this: Worker,
+        message: unknown,
+        transfer,
+      ) {
+        // Native spawning is worker-owned. Observe its real process receipts, not Worker exit.
+        if (
+          isRecord(message) &&
+          message.type === "launch" &&
+          Array.isArray(message.args) &&
+          message.args.includes("app-server")
+        ) {
+          message.args = message.args.map((arg) =>
+            arg === "thread_unload_delay_secs=0" ? "thread_unload_delay_secs=1800" : arg,
+          );
+          const captured: NativeProcess = { output: "", exitCode: null, signalCode: null };
+          nativeProcesses.set(this, captured);
+          this.stdout?.on("data", (chunk: Buffer) => {
             captured.output += chunk.toString();
           });
+          this.on("message", (receipt: NativeReceipt) => {
+            if (receipt.type === "spawn") {
+              captured.pid = receipt.pid;
+            } else if (receipt.type === "exit") {
+              Object.assign(captured, { exitCode: receipt.code, signalCode: receipt.signal });
+            }
+          });
         }
-        return child;
+        return postMessage.call(this, message, transfer);
       });
-      syncBuiltinESMExports();
-      onTestFinished(() => {
-        spawnSpy.mockRestore();
-        syncBuiltinESMExports();
-      });
+      onTestFinished(() => launch.mockRestore());
     }
     const requests: ProviderRequest[] = [];
     const idleSiblingRequests: ProviderRequest[] = [];
@@ -130,25 +219,17 @@ it.each(cases)(
       });
       req.on("end", () => {
         const request = { body, threadId: req.headers["thread-id"] };
+        const reply = (text: string, id: string) =>
+          writeOpenAiResponsesText(res, { text, messageId: id, responseId: `${id}-response` });
         requests.push(request);
         if (body.includes("IDLE_SIBLING_CONTEXT")) {
           idleSiblingRequests.push(request);
-          writeOpenAiResponsesText(res, {
-            text: "IDLE_SIBLING_REPLY",
-            messageId: `idle-${idleSiblingRequests.length}`,
-            responseId: `idle-response-${idleSiblingRequests.length}`,
-          });
+          reply("IDLE_SIBLING_REPLY", `idle-${idleSiblingRequests.length}`);
           return;
         }
         if (body.includes("SIBLING_HELD")) {
           siblingReceived.resolve(request);
-          void releaseSibling.promise.then(() => {
-            writeOpenAiResponsesText(res, {
-              text: "SIBLING_COMPLETE",
-              messageId: "sibling-message",
-              responseId: "sibling-response",
-            });
-          });
+          void releaseSibling.promise.then(() => reply("SIBLING_COMPLETE", "sibling-message"));
           return;
         }
         primaryRequests.push(request);
@@ -164,11 +245,10 @@ it.each(cases)(
           );
           return;
         }
-        writeOpenAiResponsesText(res, {
-          text: primaryRequests.length === 1 ? "INITIAL_REPLY" : "HISTORY_ALPHA NEW_POLICY_BETA",
-          messageId: `primary-message-${primaryRequests.length}`,
-          responseId: `primary-response-${primaryRequests.length}`,
-        });
+        reply(
+          primaryRequests.length === 1 ? "INITIAL_REPLY" : "HISTORY_ALPHA NEW_POLICY_BETA",
+          `primary-message-${primaryRequests.length}`,
+        );
       });
     });
     onTestFinished(async () => {
@@ -201,6 +281,8 @@ it.each(cases)(
       OPENCLAW_SKIP_PROVIDERS: "0",
       OPENCLAW_DISABLE_BUNDLED_PLUGINS: "0",
       OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(process.cwd(), "dist/extensions"),
+      // Keep the SDK on the running source host; the plugin artifact remains compiled.
+      OPENCLAW_DEV_SOURCE_ROOT: process.cwd(),
       OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR: "1",
       HTTP_PROXY: "http://127.0.0.1:9",
       HTTPS_PROXY: "http://127.0.0.1:9",
@@ -222,7 +304,6 @@ it.each(cases)(
           workspace,
           skipBootstrap: true,
           utilityModel: "",
-          heartbeat: { every: "0m" },
           model: { primary: `openai/${model}` },
           models: { [`openai/${model}`]: { agentRuntime: { id: "codex" } } },
           maxConcurrent: 2,
@@ -251,6 +332,8 @@ it.each(cases)(
         },
       },
       plugins: {
+        // Keep unrelated memory retries off the fixture's held transport clock.
+        slots: { memory: "none" },
         allow: ["codex", "openai", "recovery-instructions"],
         load: { paths: [plugin] },
         entries: {
@@ -259,19 +342,12 @@ it.each(cases)(
             config: {
               sessionCatalog: { enabled: false },
               appServer: {
-                args: [
-                  "app-server",
-                  "--listen",
-                  "stdio://",
-                  "-c",
+                args: buildCodexHarnessAppServerArgs([
                   `openai_base_url="${baseUrl}"`,
-                  "-c",
                   "analytics.enabled=false",
-                  "-c",
                   "feedback.enabled=false",
-                  "-c",
                   "features.shell_snapshot=false",
-                ],
+                ]),
               },
             },
           },
@@ -284,28 +360,36 @@ it.each(cases)(
       },
     };
     const readyThreads = new Map<string, ReadyThread>();
-    const gateway = await startGatewayWithClient({
+    const lifecycleErrors = new Map<string, string[]>();
+    const abortedRuns = new Set<string>();
+    const gateway = await startNativeGatewayWithClient({
       cfg,
       configPath: values.OPENCLAW_CONFIG_PATH,
       token: values.OPENCLAW_GATEWAY_TOKEN,
       onEvent: ({ event, payload }) => {
-        if (
-          event !== "agent" ||
-          !isRecord(payload) ||
-          payload.stream !== "codex_app_server.lifecycle" ||
-          typeof payload.runId !== "string" ||
-          !isRecord(payload.data) ||
-          payload.data.phase !== "thread_ready"
-        ) {
+        if (!isRecord(payload) || typeof payload.runId !== "string") {
           return;
         }
-        const { threadId, clientId, action } = payload.data;
+        const { runId, stream, data } = payload;
+        if (event === "chat" && payload.state === "aborted") {
+          abortedRuns.add(runId);
+        }
+        if (event !== "agent" || !isRecord(data)) {
+          return;
+        }
+        if (stream === "lifecycle" && data.phase === "error" && typeof data.error === "string") {
+          lifecycleErrors.set(runId, [...(lifecycleErrors.get(runId) ?? []), data.error]);
+        }
+        if (stream !== "codex_app_server.lifecycle" || data.phase !== "thread_ready") {
+          return;
+        }
+        const { threadId, clientId, action } = data;
         if (
           typeof threadId === "string" &&
           typeof clientId === "string" &&
           typeof action === "string"
         ) {
-          readyThreads.set(payload.runId, { threadId, clientId, action });
+          readyThreads.set(runId, { threadId, clientId, action });
         }
       },
     });
@@ -353,7 +437,7 @@ it.each(cases)(
     const settled = await wait(first.runId);
     expect(settled).toMatchObject({ status: failFirst ? "error" : "ok" });
     if (failFirst) {
-      expect(settled.error).toContain("controlled settled failure");
+      expect(settled.error).toBe("LLM request rejected: controlled settled failure");
     }
     const previous = await ready(first.runId);
     expect(previous.action).toBe("started");
@@ -376,16 +460,14 @@ it.each(cases)(
         maxEntries: 50_000,
         overflowPolicy: "reject-new",
       });
-      expect(await bindings.entries()).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            value: expect.objectContaining({
-              sessionId: history.sessionId,
-              state: "active",
-              binding: expect.objectContaining({ threadId: previous.threadId }),
-            }),
+      expect(await bindings.entries()).toContainEqual(
+        expect.objectContaining({
+          value: expect.objectContaining({
+            sessionId: history.sessionId,
+            state: "active",
+            binding: expect.objectContaining({ threadId: previous.threadId }),
           }),
-        ]),
+        }),
       );
     };
     const continueIdleSibling = async (expectedClientId: string) => {
@@ -421,80 +503,49 @@ it.each(cases)(
     }
 
     await fs.writeFile(instruction, "NEW_POLICY_BETA");
-    if (siblingRunId) {
-      for (const key of ["second", "retry"]) {
-        const refused = await start("Continue with changed instructions.", key);
-        const result = await wait(refused.runId);
-        expect(result.status).toBe("error");
-        expect(result.error).toContain("did not confirm unloading");
-        expect(readyThreads.has(refused.runId)).toBe(false);
-      }
-      expect(primaryRequests).toHaveLength(1);
-      await assertOriginalBinding();
-
-      releaseSibling.resolve();
-      expect(await wait(siblingRunId)).toMatchObject({ status: "ok" });
-      const siblingThread = await ready(siblingRunId);
-      await fs.writeFile(instruction, "INITIAL_POLICY");
-      const continuedSibling = await start(
-        "Continue the sibling.",
-        "sibling-next",
-        siblingSessionKey,
-      );
-      expect(await wait(continuedSibling.runId)).toMatchObject({ status: "ok" });
-      expect(await ready(continuedSibling.runId)).toMatchObject({
-        threadId: siblingThread.threadId,
-        clientId: previous.clientId,
-      });
-      expect(primaryRequests).toHaveLength(1);
-      expect(requests).toHaveLength(3);
-      return;
-    }
-    if (idleSibling === "incognito") {
-      const refused = await start("Continue with changed instructions.", "second");
-      const result = await wait(refused.runId);
-      expect(result).toMatchObject({
-        status: "error",
-        error: expect.stringContaining("did not confirm unloading"),
-      });
-      expect(readyThreads.has(refused.runId)).toBe(false);
-      expect(primaryRequests).toHaveLength(1);
-      await assertOriginalBinding();
-      await continueIdleSibling(previous.clientId);
-      expect(requests).toHaveLength(3);
-      return;
-    }
     const exitGate = shutdown
       ? holdNativeExit(nativeProcesses, previous.threadId, shutdown === "unconfirmed")
       : undefined;
-    if (exitGate) {
-      onTestFinished(exitGate.release);
-    }
+    onTestFinished(() => exitGate?.release());
     const beforeRecoveryProcesses = nativeProcesses.size;
     const continued = await start("Continue with changed instructions.", "second");
+    let abortRequest: ReturnType<typeof gateway.client.request> | undefined;
     if (exitGate) {
-      await withTestTimeout(exitGate.waiting, 10_000, "startup did not wait for physical exit");
-      expect(exitGate.child.exitCode).toBeNull();
-      expect(exitGate.child.signalCode).toBeNull();
+      // The retained thread never confirms its unload, so closure starts only after Codex's
+      // 10s unload confirmation window (thread-lifecycle-adoption.ts) expires.
+      await withTestTimeout(
+        exitGate.waiting,
+        CODEX_UNLOAD_CONFIRMATION_MS + 10_000,
+        "startup did not wait for physical exit",
+      );
+      expect(exitGate.child).toMatchObject({ exitCode: null, signalCode: null });
       expect(nativeProcesses.size).toBe(beforeRecoveryProcesses);
       expect(primaryRequests).toHaveLength(1);
       await assertOriginalBinding();
       if (shutdown === "cancelled") {
-        expect(
-          await gateway.client.request("chat.abort", { sessionKey, runId: continued.runId }),
-        ).toMatchObject({ aborted: true });
-        expect(exitGate.child.exitCode).toBeNull();
-        expect(exitGate.child.signalCode).toBeNull();
+        abortRequest = gateway.client.request("chat.abort", { sessionKey, runId: continued.runId });
+        void abortRequest.catch(() => {});
+        await vi.waitFor(() => expect(abortedRuns.has(continued.runId)).toBe(true));
+        expect(exitGate.child).toMatchObject({ exitCode: null, signalCode: null });
         expect(nodeProcess.kill(exitGate.pid, 0)).toBe(true);
       } else if (shutdown === "unconfirmed") {
-        await vi.advanceTimersByTimeAsync(2_000);
         expect(await wait(continued.runId)).toMatchObject({
           status: "error",
-          error: expect.stringContaining("did not confirm shutdown"),
+          error: RECOVERY_FAILURE_TEXT,
         });
+        expect(lifecycleErrors.get(continued.runId)).toEqual(
+          expect.arrayContaining([expect.stringContaining(SHUTDOWN_FAILURE_DETAIL)]),
+        );
       }
       exitGate.release();
       await withTestTimeout(exitGate.exited, 10_000, "old native process did not exit");
+      if (abortRequest) {
+        expect(await abortRequest).toEqual({
+          ok: true,
+          aborted: true,
+          runIds: [continued.runId],
+        });
+      }
       if (shutdown !== "delayed") {
         await wait(continued.runId);
         expect(nativeProcesses.size).toBe(beforeRecoveryProcesses);
@@ -506,13 +557,8 @@ it.each(cases)(
     }
     expect(await wait(continued.runId)).toMatchObject({ status: "ok" });
     const recovered = await ready(continued.runId);
-    expect(recovered.threadId).toBe(previous.threadId);
-    expect(recovered.action).toBe("resumed");
-    if (failFirst) {
-      expect(recovered.clientId).not.toBe(previous.clientId);
-    } else {
-      expect(recovered.clientId).toBe(previous.clientId);
-    }
+    expect(recovered).toMatchObject({ threadId: previous.threadId, action: "resumed" });
+    expect(recovered.clientId === previous.clientId).toBe(!shutdown);
     expect(primaryRequests).toHaveLength(2);
     expect(primaryRequests[1]).toMatchObject({
       threadId: previous.threadId,
@@ -525,84 +571,60 @@ it.each(cases)(
     if (exitGate) {
       expect(nativeProcesses.size).toBe(beforeRecoveryProcesses + 1);
     }
-    if (idleSibling === "persistent") {
-      await continueIdleSibling(recovered.clientId);
+    if (siblingRunId) {
+      releaseSibling.resolve();
+      expect(await wait(siblingRunId)).toMatchObject({ status: "ok" });
+      expect((await ready(siblingRunId)).clientId).toBe(previous.clientId);
     }
-    expect(requests).toHaveLength(idleSibling ? 4 : 2);
+    if (idleSibling) {
+      await continueIdleSibling(previous.clientId);
+    }
+    expect(requests).toHaveLength(idleSibling ? 4 : activeSibling ? 3 : 2);
   },
 );
 
 /** Hold only the observed native child's exit; protocol, writer lock and run cancellation stay real. */
 function holdNativeExit(
-  processes: Map<ChildProcess, { output: string }>,
+  processes: Map<Worker, NativeProcess>,
   threadId: string,
   withholdExitConfirmation: boolean,
 ) {
   const matches = [...processes].filter(([, captured]) => captured.output.includes(threadId));
   expect(matches).toHaveLength(1);
-  const child = matches[0]?.[0];
-  assert(child?.stdin && child.pid, "the native thread must belong to a captured process");
-  const stdin = child.stdin;
+  const [worker, child] = matches[0]!;
+  assert(worker.stdin && child.pid, "the native thread must belong to a captured process");
+  const stdin = worker.stdin;
   const pid = child.pid;
   const waiting = createDeferred();
   const exited = createDeferred();
   let closing = false;
-  child.once("exit", () => exited.resolve());
-  const onListener = (event: string) => {
-    // close() installs its exit handler before ending stdin. closeAndWait()
-    // subsequently subscribes to physical exit, after closure has begun.
-    if (event === "exit" && closing) {
-      waiting.resolve();
+  worker.on("message", (message: NativeReceipt) => {
+    if (message.type === "exit") {
+      exited.resolve();
     }
-  };
-  child.on("newListener", onListener);
+  });
   const end = vi.spyOn(stdin, "end").mockImplementation(() => {
+    // Missing-exit proof keeps real deadlines; only explicitly released controls pause timers.
+    if (!closing && !withholdExitConfirmation) {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    }
     closing = true;
-    // Hold the shutdown clock with the child: binding reads and chat.abort
-    // must precede the exit deadline, even when the host is busy.
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    waiting.resolve();
     return stdin;
   });
   const destroy = vi.spyOn(stdin, "destroy").mockImplementation(() => stdin);
-  // Lost exit notification and stale child status must not become a successful
-  // shutdown receipt. Keep actual Node exit state separately for teardown.
-  let restoreExitConfirmation = () => {};
-  if (withholdExitConfirmation) {
-    let exitCode = child.exitCode;
-    let signalCode = child.signalCode;
-    const exitDescriptor = Object.getOwnPropertyDescriptor(child, "exitCode");
-    const signalDescriptor = Object.getOwnPropertyDescriptor(child, "signalCode");
-    assert(exitDescriptor && signalDescriptor);
-    Object.defineProperty(child, "exitCode", {
-      configurable: true,
-      get: () => null,
-      set: (value: typeof exitCode) => {
-        exitCode = value;
-      },
-    });
-    Object.defineProperty(child, "signalCode", {
-      configurable: true,
-      get: () => null,
-      set: (value: typeof signalCode) => {
-        signalCode = value;
-      },
-    });
-    const once = child.once.bind(child);
-    const receipt = vi.spyOn(child, "once").mockImplementation((event, listener) => {
-      if (event === "exit" && closing) {
-        waiting.resolve();
-        return child;
-      }
-      return once(event, listener);
-    });
-    restoreExitConfirmation = () => {
-      receipt.mockRestore();
-      Object.defineProperty(child, "exitCode", { ...exitDescriptor, value: exitCode });
-      Object.defineProperty(child, "signalCode", { ...signalDescriptor, value: signalCode });
-    };
-  }
-  // Containment stops the launcher before killing its native child. Keep it
-  // stopped after stdin closes: on resume it mirrors the child's fatal signal.
+  // Withhold native receipts and Worker exit, leaving host status stale until cleanup.
+  const emit = worker.emit.bind(worker);
+  const held: Array<[string | symbol, ...unknown[]]> = [];
+  const receipt = vi.spyOn(worker, "emit").mockImplementation((event, ...args: unknown[]) => {
+    const nativeExit = event === "message" && isRecord(args[0]) && args[0].type === "exit";
+    if (withholdExitConfirmation && (nativeExit || event === "exit")) {
+      held.push([event, ...args]);
+      return true;
+    }
+    return emit(event, ...args);
+  });
+  // Keep containment's stopped native process paused until explicit release.
   const kill = nodeProcess.kill.bind(nodeProcess);
   const signal = vi.spyOn(nodeProcess, "kill").mockImplementation((targetPid, value) => {
     if (
@@ -614,12 +636,19 @@ function holdNativeExit(
     return kill(targetPid, value);
   });
   syncBuiltinESMExports();
-  const killChild = child.kill.bind(child);
+  const postMessage = worker.postMessage.bind(worker);
   const childKill = vi
-    .spyOn(child, "kill")
-    .mockImplementation((value) =>
-      value === "SIGSTOP" || (value === "SIGCONT" && !closing) ? killChild(value) : true,
-    );
+    .spyOn(worker, "postMessage")
+    .mockImplementation((message: unknown, transfer) => {
+      if (
+        !isRecord(message) ||
+        message.type !== "kill" ||
+        message.signal === "SIGSTOP" ||
+        (message.signal === "SIGCONT" && !closing)
+      ) {
+        postMessage(message, transfer);
+      }
+    });
   let released = false;
   return {
     child,
@@ -632,15 +661,15 @@ function holdNativeExit(
       }
       released = true;
       vi.useRealTimers();
-      child.off("newListener", onListener);
-      restoreExitConfirmation();
+      receipt.mockRestore();
+      held.forEach(([event, ...args]) => emit(event, ...args));
       end.mockRestore();
       destroy.mockRestore();
       signal.mockRestore();
       syncBuiltinESMExports();
       childKill.mockRestore();
       stdin.end();
-      killChild("SIGCONT");
+      postMessage({ type: "kill", signal: "SIGCONT" });
     },
   };
 }

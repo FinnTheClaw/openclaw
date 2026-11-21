@@ -1,55 +1,11 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { parse } from "yaml";
-import { evaluateWorkflowExpression, evaluateWorkflowRunner } from "./ci-workflow.test-support.js";
+import { expect, it } from "vitest";
+import { evaluateWorkflowRunner as runner, readWorkflow } from "./ci-workflow.test-support.js";
 
-const dedicated = [
-  "full-release-validation",
-  "full-release-artifacts",
-  "full-release-candidate",
-  "full-release-child-evidence",
-  "plugin-prerelease",
-  "openclaw-release-checks",
-  "openclaw-npm-preflight",
-  "docker-release-prepare",
-  "openclaw-cross-os-release-checks-reusable",
-  "openclaw-release-publish",
-  "openclaw-npm-release",
-  "plugin-clawhub-release",
-  "plugin-clawhub-new",
-  "plugin-clawhub-postpublish",
-];
-const shared = [
-  "install-smoke-reusable",
-  "openclaw-live-and-e2e-checks-reusable",
-  "openclaw-repo-e2e-reusable",
-  "package-acceptance",
-  "maturity-scorecard",
-  "qa-profile-evidence",
-  "qa-live-transports-convex",
-  "npm-telegram-beta-e2e",
-  "docker-release",
-  "vercel-container-registry-publish",
-];
-// Route only for a release dispatch; ordinary events keep their labels.
-const mixed = ["ci", "openclaw-performance", "plugin-npm-release"];
-// Publication paths: approval and credentialed publish jobs stay on default
-// GitHub-hosted labels (npm trusted publishing rejects self-hosted runners).
-const publishing = new Set([
-  "openclaw-release-publish",
-  "openclaw-npm-release",
-  "plugin-npm-release",
-  "plugin-clawhub-release",
-  "plugin-clawhub-new",
-  "plugin-clawhub-postpublish",
-  "docker-release",
-  "vercel-container-registry-publish",
-]);
 type Job = {
-  if?: string;
   "runs-on"?: string;
   uses?: string;
-  with?: Record<string, string>;
+  with?: Record<string, unknown>;
+  steps?: { uses?: string; if?: string; with?: Record<string, unknown> }[];
   environment?: unknown;
   permissions?: Record<string, string>;
 };
@@ -57,142 +13,163 @@ type Workflow = {
   on: { workflow_call?: { inputs?: Record<string, { default?: unknown }> } };
   jobs: Record<string, Job>;
 };
-const workflows = new Map(
-  [...dedicated, ...shared, ...mixed].map((name) => [
-    name,
-    parse(readFileSync(`.github/workflows/${name}.yml`, "utf8")) as Workflow,
-  ]),
-);
+const workflow = (name: string): Workflow => readWorkflow(`.github/workflows/${name}.yml`);
 const group = 'Release "reserved"';
 const context = {
-  matrix: { runner: "ubuntu-24.04", group: "fixture", task: "test", check_name: "fixture" },
   runnerBackend: "github" as const,
   preflightOutputs: { node_runner_backend: "github" },
 };
-const releaseDispatch = {
+const reserved = {
   ...context,
   releaseRunnerGroup: group,
+  runnerGroup: group,
   dispatchId: "full-release-validation-123-1",
   releasePublishRunId: "123",
 };
 
-function credentialed(name: string, job: Job) {
-  return (
-    publishing.has(name) &&
-    (job.environment !== undefined ||
-      job.permissions?.["id-token"] === "write" ||
-      /\$\{\{\s*secrets\.(?!GITHUB_TOKEN\b)/u.test(JSON.stringify(job)))
-  );
-}
+it.each([
+  ["full-release-validation", "resolve_target"],
+  ["install-smoke-reusable", "preflight"],
+  ["ci", "checks-fast-core"],
+])("routes %s/%s through the reservation without changing its label", (name, job) => {
+  const selector = workflow(name).jobs[job]!["runs-on"];
+  const label = runner(selector, context);
+  expect(label).toMatch(/^ubuntu-/u);
+  expect(runner(selector, reserved)).toEqual({ group, labels: label });
+  if (name === "ci") {
+    for (const eventName of ["pull_request", "workflow_dispatch"] as const) {
+      expect(runner(selector, { ...reserved, eventName, dispatchId: "", releaseGate: true })).toBe(
+        label,
+      );
+    }
+  }
+});
 
-describe("release runner reservation", () => {
-  it.each([...workflows])(
-    "routes every %s worker while preserving its selected labels",
-    (name, workflow) => {
-      for (const [jobName, job] of Object.entries(workflow.jobs)) {
-        if (!job["runs-on"]) {
-          continue;
-        }
-        if (name === "ci" && jobName === "pr-fail-fast") {
-          expect(
-            evaluateWorkflowExpression(job.if!, {
-              ...context,
-              eventName: "workflow_dispatch",
-              repository: "openclaw/openclaw",
-              runAttempt: 1,
-              preflightOutputs: { run_checks_node_core_nondist: "true" },
-            }),
-          ).toBe(false);
-          continue;
-        }
-        const baseline = evaluateWorkflowRunner(job["runs-on"], context);
-        expect(baseline, `${name}/${jobName}`).toBeTypeOf("string");
-        expect(baseline).not.toBe("");
-        const routed = evaluateWorkflowRunner(job["runs-on"], {
-          ...releaseDispatch,
-          runnerGroup: shared.includes(name) ? group : "",
-        });
-        expect(routed, `${name}/${jobName}`).toEqual(
-          credentialed(name, job) ? baseline : { group, labels: baseline },
-        );
+it("keeps credentialed publishers on GitHub-hosted runners despite a reservation", () => {
+  const publishers = `
+    openclaw-release-publish openclaw-release-promote openclaw-npm-release plugin-npm-release
+    plugin-clawhub-release plugin-clawhub-new plugin-clawhub-postpublish docker-release
+    vercel-container-registry-publish
+  `
+    .trim()
+    .split(/\s+/u);
+  for (const name of publishers) {
+    for (const job of Object.values(workflow(name).jobs)) {
+      if (
+        job["runs-on"] &&
+        (job.environment !== undefined ||
+          job.permissions?.["id-token"] === "write" ||
+          /\$\{\{\s*secrets\.(?!GITHUB_TOKEN\b)/u.test(JSON.stringify(job)))
+      ) {
+        expect(runner(job["runs-on"], reserved), name).toMatch(/^(?:ubuntu|windows|macos)-/u);
       }
-    },
+    }
+  }
+});
+
+it("forwards reservations through reusable calls in both release orchestrators", () => {
+  for (const name of ["full-release-validation", "openclaw-release-checks"]) {
+    for (const [jobName, job] of Object.entries(workflow(name).jobs)) {
+      const child = /^\.\/\.github\/workflows\/(.+)\.yml$/u.exec(job.uses ?? "")?.[1];
+      if (!child || !workflow(child).on.workflow_call?.inputs?.runner_group) {
+        continue;
+      }
+      expect(workflow(child).on.workflow_call?.inputs?.runner_group?.default, child).toBe("");
+      expect(runner(job.with?.runner_group, reserved), `${name}/${jobName}`).toBe(group);
+    }
+  }
+});
+
+// Artifact-owned work must not inherit a self-hosted release reservation.
+it("keeps artifact producers and FRV plugin consumers on hosted runners", () => {
+  const artifacts = workflow("full-release-artifacts");
+  const candidate = workflow("full-release-candidate");
+  const plugins = workflow("plugin-prerelease");
+  expect(artifacts.jobs.npm!.with?.use_github_hosted_runners).toBe(true);
+  expect(artifacts.jobs.docker!.with?.use_github_hosted_runners).toBe(true);
+  expect(candidate.jobs.prepare!.with?.use_github_hosted_runners).toBe(true);
+  expect(plugins.jobs["plugin-prerelease-docker-suite"]!.with?.use_github_hosted_runners).toBe(
+    true,
   );
+  for (const source of [artifacts, candidate, plugins]) {
+    for (const job of Object.values(source.jobs)) {
+      if (job["runs-on"]) {
+        expect(
+          runner(job["runs-on"], {
+            ...reserved,
+            runnerBackend: "hybrid",
+            inputs: { full_release_validation: true },
+          }),
+        ).toBe("ubuntu-24.04");
+      }
+    }
+  }
+});
 
-  it.each([
-    ["openclaw-npm-release", "publish_openclaw_npm"],
-    ["plugin-npm-release", "publish_plugins_npm"],
-    ["plugin-clawhub-release", "approve_plugins_clawhub_release"],
-    ["docker-release", "publish"],
-  ])("classifies %s/%s as credentialed", (name, jobName) => {
-    expect(credentialed(name, workflows.get(name)!.jobs[jobName]!)).toBe(true);
-  });
-
-  it.each([...shared, ...mixed])("keeps unrelated %s callers outside the release group", (name) => {
-    const workflow = workflows.get(name)!;
-    for (const [jobName, job] of Object.entries(workflow.jobs)) {
+it("lets explicit hosted selection override groups without changing unselected callers", () => {
+  for (const name of [
+    "openclaw-npm-preflight",
+    "openclaw-live-and-e2e-checks-reusable",
+    "openclaw-repo-e2e-reusable",
+    "docker-release-prepare",
+  ]) {
+    const labels =
+      name === "docker-release-prepare" ? ["ubuntu-24.04", "ubuntu-24.04-arm"] : ["ubuntu-24.04"];
+    for (const [jobName, job] of Object.entries(workflow(name).jobs)) {
       if (!job["runs-on"]) {
         continue;
       }
-      for (const eventName of ["pull_request", "push", "schedule", "workflow_dispatch"] as const) {
-        const ordinary = { ...context, eventName, releaseGate: true };
-        if (name === "ci" && jobName === "pr-fail-fast" && eventName !== "pull_request") {
-          expect(
-            evaluateWorkflowExpression(job.if!, {
-              ...ordinary,
-              repository: "openclaw/openclaw",
-              runAttempt: 1,
-              preflightOutputs: { run_checks_node_core_nondist: "true" },
-            }),
-          ).toBe(false);
-          continue;
-        }
-        expect(
-          evaluateWorkflowRunner(job["runs-on"], { ...ordinary, releaseRunnerGroup: group }),
-        ).toEqual(evaluateWorkflowRunner(job["runs-on"], ordinary));
+      for (const label of labels) {
+        const selection = {
+          ...reserved,
+          runnerBackend: "hybrid" as const,
+          matrix: { runner: label },
+        };
+        const expected =
+          name === "docker-release-prepare" && jobName === "build" ? label : "ubuntu-24.04";
+        expect(runner(job["runs-on"], { ...selection, useGithubHostedRunners: true }), name).toBe(
+          expected,
+        );
+        const unreserved = runner(job["runs-on"], {
+          ...selection,
+          releaseRunnerGroup: "",
+          runnerGroup: "",
+        });
+        expect(runner(job["runs-on"], selection), name).toEqual({ group, labels: unreserved });
       }
     }
-  });
-
-  it("forwards the reservation through shared workers and nested reusable calls", () => {
-    for (const name of shared) {
-      expect(workflows.get(name)?.on.workflow_call?.inputs?.runner_group?.default, name).toBe("");
+  }
+  for (const job of Object.values(workflow("plugin-prerelease").jobs)) {
+    if (job["runs-on"]) {
+      expect(runner(job["runs-on"], reserved)).toEqual({ group, labels: "ubuntu-24.04" });
     }
-    for (const [name, workflow] of workflows) {
-      for (const [jobName, job] of Object.entries(workflow.jobs)) {
-        const child = /^\.\/\.github\/workflows\/(.+)\.yml$/u.exec(job.uses ?? "")?.[1];
-        if (!child || !shared.includes(child)) {
-          continue;
-        }
-        expect(
-          evaluateWorkflowRunner(job.with?.runner_group, {
-            ...releaseDispatch,
-            runnerGroup: group,
-          }),
-          `${name}/${jobName} -> ${child}`,
-        ).toBe(group);
-      }
-    }
-  });
-
-  it("retains the public Linux and native default labels", () => {
-    expect(
-      evaluateWorkflowRunner(
-        Object.values(workflows.get("openclaw-release-publish")!.jobs)[0]?.["runs-on"],
-        context,
-      ),
-    ).toBe("ubuntu-latest");
-    expect(
-      evaluateWorkflowRunner(
-        workflows.get("full-release-validation")?.jobs.resolve_target?.["runs-on"],
-        context,
-      ),
-    ).toBe("ubuntu-24.04");
-    expect(
-      evaluateWorkflowRunner(workflows.get("ci")?.jobs["macos-swift"]?.["runs-on"], context),
-    ).toBe("xcode-27");
-    expect(
-      evaluateWorkflowRunner(workflows.get("ci")?.jobs["checks-windows"]?.["runs-on"], context),
-    ).toBe("windows-2025");
-  });
+  }
 });
+
+it.each([false, true])(
+  "builds live image artifacts with the selected builder (hosted=%s)",
+  (hosted) => {
+    const steps = workflow("openclaw-live-and-e2e-checks-reusable").jobs.prepare_live_test_image!
+      .steps!;
+    const selected = steps
+      .filter((step) => step.uses?.startsWith("docker/") || step.uses?.startsWith("useblacksmith/"))
+      .filter((step) =>
+        runner("${{ " + step.if + " }}", {
+          ...reserved,
+          useGithubHostedRunners: hosted,
+          inputs: { shared_image_policy: "no-push-artifact" },
+        }),
+      );
+    expect(selected.map((step) => step.uses!.split("@")[0])).toEqual(
+      hosted
+        ? ["docker/setup-buildx-action", "docker/build-push-action"]
+        : ["useblacksmith/setup-docker-builder", "useblacksmith/build-push-action"],
+    );
+    expect(selected[1]!.with).toMatchObject({
+      load: true,
+      push: false,
+      provenance: false,
+      sbom: false,
+    });
+  },
+);

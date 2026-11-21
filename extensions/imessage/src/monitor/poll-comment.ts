@@ -3,25 +3,18 @@
 // and timing shape; this tracker can only flag ambiguity, never prove a
 // caption or authorize dropping a message.
 
-const DEFAULT_COMMENT_WINDOW_MS = 15_000;
+import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 
-function normalizeGuid(guid?: string | null): string {
-  return guid?.trim() ?? "";
-}
-
-function normalizeSender(sender?: string | null): string {
-  return sender?.trim().toLowerCase() ?? "";
-}
+const COMMENT_WINDOW_MS = 15_000;
 
 type SeenPoll = { atMs: number; sender: string };
 
-export function createPollCommentFolder(options?: { windowMs?: number }) {
-  const windowMs = options?.windowMs ?? DEFAULT_COMMENT_WINDOW_MS;
+export function createPollCommentFolder() {
   const seenPolls = new Map<string, SeenPoll>();
 
   function prune(referenceMs: number): void {
     for (const [key, seen] of seenPolls) {
-      if (referenceMs - seen.atMs > windowMs) {
+      if (referenceMs - seen.atMs > COMMENT_WINDOW_MS) {
         seenPolls.delete(key);
       }
     }
@@ -33,12 +26,12 @@ export function createPollCommentFolder(options?: { windowMs?: number }) {
     // flagged. `atMs` is the poll's created_at; without a usable timestamp or
     // guid the poll is not tracked (flag stays disabled — messages deliver).
     rememberPoll(guid: string | null | undefined, atMs: number, sender?: string | null): void {
-      const key = normalizeGuid(guid);
+      const key = guid?.trim();
       if (!key || !Number.isFinite(atMs)) {
         return;
       }
       prune(atMs);
-      seenPolls.set(key, { atMs, sender: normalizeSender(sender) });
+      seenPolls.set(key, { atMs, sender: normalizeLowercaseStringOrEmpty(sender) });
     },
     // Flag a possible caption, which could equally be a genuine quick reply.
     // Callers must not suppress delivery based on this heuristic alone.
@@ -47,15 +40,15 @@ export function createPollCommentFolder(options?: { windowMs?: number }) {
       atMs: number,
       sender?: string | null,
     ): boolean {
-      const key = normalizeGuid(replyToGuid);
+      const key = replyToGuid?.trim();
       if (!key || !Number.isFinite(atMs)) {
         return false;
       }
       const seen = seenPolls.get(key);
-      if (!seen || atMs < seen.atMs || atMs - seen.atMs > windowMs) {
+      if (!seen || atMs < seen.atMs || atMs - seen.atMs > COMMENT_WINDOW_MS) {
         return false;
       }
-      const replySender = normalizeSender(sender);
+      const replySender = normalizeLowercaseStringOrEmpty(sender);
       // Require known matching senders to limit diagnostic noise. Unknown or
       // mismatched identity is not evidence of a caption either.
       return seen.sender.length > 0 && replySender.length > 0 && seen.sender === replySender;

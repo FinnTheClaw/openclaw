@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { createBoundDeliveryRouter } from "./bound-delivery-router.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveBoundDeliveryDestination } from "./bound-delivery-router.js";
 import type { ConversationRef, SessionBindingRecord } from "./session-binding-service.js";
+
+const listBindings = vi.hoisted(() => vi.fn());
+vi.mock("./session-binding-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./session-binding-service.js")>()),
+  listSessionBindingsBySessionAsync: listBindings,
+}));
+beforeEach(() => listBindings.mockReset());
 
 const sessionKey = "agent:main:subagent:bound-regression";
 const binding = (
@@ -20,17 +27,18 @@ const requester = (
   channel = "richchat",
   accountId = "runtime",
 ): ConversationRef => ({ channel, accountId, conversationId });
-const resolve = (
+const resolve = async (
   bindings: SessionBindingRecord[],
   requestedConversation: ConversationRef | undefined,
-  failClosed: boolean,
-) =>
-  createBoundDeliveryRouter(async () => bindings).resolveDestination({
-    eventKind: "task_completion",
+  _failClosed: boolean,
+) => {
+  listBindings.mockResolvedValue(bindings);
+  const binding = await resolveBoundDeliveryDestination({
     targetSessionKey: sessionKey,
     requester: requestedConversation,
-    failClosed,
   });
+  return { binding };
+};
 
 type Case = {
   name: string;
@@ -66,12 +74,12 @@ const cases: Case[] = [
     bindingId: null,
   },
   {
-    name: "preserves permissive parent-child singleton fallback",
+    name: "rejects a parent-child singleton without exact requester scope",
     bindings: [binding("child-thread", "parent-thread")],
     requestedConversation: requester("parent-thread"),
     failClosed: false,
     reason: "single-active-binding-fallback",
-    bindingId: "runtime:child-thread",
+    bindingId: null,
   },
   {
     name: "rejects different conversation among multiple bindings",
@@ -115,22 +123,15 @@ const cases: Case[] = [
 ];
 
 describe("bound delivery conversation isolation regression", () => {
-  it.each(cases)(
-    "$name",
-    async ({ bindings, requestedConversation, failClosed, reason, bindingId }) => {
-      const result = await resolve(bindings, requestedConversation, failClosed);
-      expect(result.reason).toBe(reason);
-      expect(result.mode).toBe(bindingId ? "bound" : "fallback");
-      expect(result.binding?.bindingId ?? null).toBe(bindingId);
-    },
-  );
+  it.each(cases)("$name", async ({ bindings, requestedConversation, failClosed, bindingId }) => {
+    const result = await resolve(bindings, requestedConversation, failClosed);
+    expect(result.binding?.bindingId ?? null).toBe(bindingId);
+  });
 
-  it("keeps no-requester singleton fallback but rejects ambiguous multiples", async () => {
-    const sole = await resolve([binding("thread-1")], undefined, false);
-    expect(sole.reason).toBe("single-active-binding");
-    expect(sole.binding?.bindingId).toBe("runtime:thread-1");
-    const ambiguous = await resolve([binding("thread-1"), binding("thread-2")], undefined, false);
-    expect(ambiguous.reason).toBe("ambiguous-without-requester");
-    expect(ambiguous.binding).toBeNull();
+  it("rejects missing requester for single and multiple active bindings", async () => {
+    expect((await resolve([binding("thread-1")], undefined, false)).binding).toBeNull();
+    expect(
+      (await resolve([binding("thread-1"), binding("thread-2")], undefined, false)).binding,
+    ).toBeNull();
   });
 });

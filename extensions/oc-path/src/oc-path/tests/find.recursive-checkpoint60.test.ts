@@ -20,9 +20,9 @@ function expectConcretePaths(ast: OcAst, pattern: string, expected: readonly str
 
 const json = parseJsonc(
   JSON.stringify({ name: "top", child: { name: "nested", deep: { name: "deep" } } }),
-).ast;
+);
 
-const yaml = parseYaml("name: top\nchild:\n  name: nested\n  deep:\n    name: deep\n").ast;
+const yaml = parseYaml("name: top\nchild:\n  name: nested\n  deep:\n    name: deep\n");
 
 describe("checkpoint 60 recursive wildcard regression", () => {
   it("CP60-PATH01 terminal ** emits each JSONC path once, including the root", () => {
@@ -79,7 +79,7 @@ describe("checkpoint 60 recursive wildcard regression", () => {
   });
 
   it("CP60-PATH07 JSONL keeps line addresses while recursing within line values", () => {
-    const ast = parseJsonl('{"name":"first"}\n{"child":{"name":"second"}}\n').ast;
+    const ast = parseJsonl('{"name":"first"}\n{"child":{"name":"second"}}\n');
     expectConcretePaths(ast, "oc://events.jsonl/*/**.name", [
       "oc://events.jsonl/L1/name",
       "oc://events.jsonl/L2/child.name",
@@ -89,7 +89,7 @@ describe("checkpoint 60 recursive wildcard regression", () => {
   it("CP60-PATH08 Markdown recursion finds the target across blocks", () => {
     const ast = parseMd(
       "## Boundaries\n\n- never: delete\n\n## Tools\n\n- send_email: enabled\n- search: enabled\n",
-    ).ast;
+    );
     expectConcretePaths(ast, "oc://SOUL.md/**/send-email", ["oc://SOUL.md/tools/send-email"]);
   });
 

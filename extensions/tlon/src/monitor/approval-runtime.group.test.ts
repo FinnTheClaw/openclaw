@@ -60,15 +60,17 @@ function setup(options: { missingFlag?: boolean; original?: boolean } = {}) {
       typeof createTlonApprovalRuntime
     >[0]["runtime"],
     botShipName: "~bot",
-    getPendingApprovals: () => pending,
-    setPendingApprovals: (value) => {
-      pending = value;
+    state: {
+      get pendingApprovals() {
+        return pending;
+      },
+      set pendingApprovals(value) {
+        pending = value;
+      },
+      currentSettings: {} as TlonSettingsStore,
+      effectiveDmAllowlist: [],
+      effectiveOwnerShip: "~owner",
     },
-    getCurrentSettings: () => ({}) as TlonSettingsStore,
-    setCurrentSettings: vi.fn(),
-    getEffectiveDmAllowlist: () => [],
-    setEffectiveDmAllowlist: vi.fn(),
-    getEffectiveOwnerShip: () => "~owner",
     processApprovedMessage,
     refreshWatchedChannels,
   });

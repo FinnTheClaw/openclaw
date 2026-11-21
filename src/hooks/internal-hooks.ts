@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { SessionsPatchParams } from "../../packages/gateway-protocol/src/schema/sessions.js";
 import type { WorkspaceBootstrapFile } from "../agents/workspace.js";
 import type { CliDeps } from "../cli/outbound-send-deps.js";
@@ -6,10 +7,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
-  clearLegacyPluginInternalHooks,
-  listLegacyPluginInternalHookEventKeys,
-  listLegacyPluginInternalHooks,
-} from "../plugins/legacy-internal-hook-state.js";
+  getActivePluginRegistry,
+  getPluginRegistrationContext,
+  requireActivePluginRegistry,
+} from "../plugins/runtime.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type {
   InternalHookEvent,
@@ -52,7 +53,6 @@ export type MessageReceivedHookContext = {
   content: string;
   /** Unix timestamp when the message was received */
   timestamp?: number;
-  /** Channel identifier (for example "chat" or "support-chat") */
   channelId: string;
   /** Provider account ID for multi-account setups */
   accountId?: string;
@@ -75,11 +75,8 @@ export type MessageSentHookContext = Pick<
 > & {
   to: string;
   success: boolean;
-  /** Error message if sending failed */
   error?: string;
-  /** Whether this message was sent in a group/channel context */
   isGroup?: boolean;
-  /** Group or channel identifier, if applicable */
   groupId?: string;
 };
 
@@ -112,16 +109,12 @@ type MessageEnrichedBodyHookContext = Pick<
 };
 
 export type MessageTranscribedHookContext = MessageEnrichedBodyHookContext & {
-  /** The transcribed text from audio */
   transcript: string;
 };
 
 export type MessagePreprocessedHookContext = MessageEnrichedBodyHookContext & {
-  /** Transcribed audio text, if the message contained audio */
   transcript?: string;
-  /** Whether this message was sent in a group/channel context */
   isGroup?: boolean;
-  /** Group or channel identifier, if applicable */
   groupId?: string;
 };
 
@@ -149,6 +142,21 @@ const internalHooksEnabledState = resolveGlobalSingleton<{ enabled: boolean }>(
   () => ({ enabled: true }),
 );
 const log = createSubsystemLogger("internal-hooks");
+
+function listActiveRegistrations() {
+  return getActivePluginRegistry()?.legacyInternalHooks ?? [];
+}
+
+function listLegacyPluginInternalHooks(event: string): InternalHookHandler[] {
+  return listActiveRegistrations()
+    .filter((registration) => registration.event === event)
+    .map((registration) => registration.handler);
+}
+
+function clearLegacyPluginInternalHooks(): void {
+  const context = getPluginRegistrationContext();
+  (context?.registry ?? requireActivePluginRegistry()).legacyInternalHooks.length = 0;
+}
 
 /** Register for a family (e.g. "command") or an exact action (e.g. "command:new"). */
 export function registerInternalHook(eventKey: string, handler: InternalHookHandler): void {
@@ -181,10 +189,6 @@ export function clearInternalHooks(): void {
 
 export function setInternalHooksEnabled(enabled: boolean): void {
   internalHooksEnabledState.enabled = enabled;
-}
-
-export function getRegisteredEventKeys(): string[] {
-  return [...new Set([...handlers.keys(), ...listLegacyPluginInternalHookEventKeys()])];
 }
 
 export function hasInternalHookListeners(type: InternalHookEventType, action: string): boolean {
@@ -230,10 +234,26 @@ export function createInternalHookEvent(
     type,
     action,
     sessionKey,
-    context,
+    context: omitHookContextOperatorSources(context),
     timestamp: new Date(),
     messages: [],
   };
+}
+
+/** Hook payloads must not disclose the private source used to recover a person. */
+function omitHookContextOperatorSources(context: Record<string, unknown>): Record<string, unknown> {
+  if (!("sessionEntry" in context) && !("previousSessionEntry" in context)) {
+    return context;
+  }
+  const next = { ...context };
+  for (const key of ["sessionEntry", "previousSessionEntry"]) {
+    const entry = next[key];
+    if (isRecord(entry) && Object.hasOwn(entry, "operatorSources")) {
+      const { operatorSources: _private, ...projected } = entry;
+      next[key] = projected;
+    }
+  }
+  return next;
 }
 
 function hasHookEventContext(
@@ -259,19 +279,4 @@ export function isAgentBootstrapEvent(event: InternalHookEvent): event is AgentB
 
 export function isGatewayStartupEvent(event: InternalHookEvent): event is GatewayStartupHookEvent {
   return hasHookEventContext(event, "gateway", "startup");
-}
-
-export function isSessionPatchEvent(event: InternalHookEvent): event is SessionPatchHookEvent {
-  if (!hasHookEventContext(event, "session", "patch")) {
-    return false;
-  }
-  const context = event.context;
-  return (
-    typeof context.patch === "object" &&
-    context.patch !== null &&
-    typeof context.cfg === "object" &&
-    context.cfg !== null &&
-    typeof context.sessionEntry === "object" &&
-    context.sessionEntry !== null
-  );
 }

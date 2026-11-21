@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createToolErrorState } from "../../tool-error-state.js";
 import { buildTraceToolSummary, resolveSuccessfulToolNames } from "./run-attempt-result.js";
 
 describe("tool result summary", () => {
   it.each([false, true])(
     "keeps failure counts independent of same-tool recovery (%s)",
     (recovered) => {
-      const errors = createToolErrorState();
-      errors.recordFailure({ toolName: "bash", error: "private tool failure details" });
       const successfulTool = recovered ? "bash" : "read";
-      errors.recordSuccess(successfulTool);
 
       expect(
         buildTraceToolSummary({
@@ -18,7 +14,9 @@ describe("tool result summary", () => {
             { toolName: "bash", meta: "exit=2", isError: true },
             { toolName: successfulTool, isError: false },
           ],
-          lastToolError: errors.read().lastToolError,
+          lastToolError: recovered
+            ? undefined
+            : { toolName: "bash", error: "private tool failure details" },
         }),
       ).toEqual({
         calls: 3,
@@ -29,7 +27,6 @@ describe("tool result summary", () => {
     },
   );
 });
-
 
 describe("canonical Responses tool receipts after reasoning-only continuation", () => {
   const callId = "chatcmpl-tool-9600d0db369f3e8b|fc_ce7ab020";
@@ -42,44 +39,65 @@ describe("canonical Responses tool receipts after reasoning-only continuation", 
       messagesSnapshot: [
         { role: "user", content: "Return ALISTAR_RESPONSES_TOOL_42 after node -p 6*7." },
         {
-          role: "assistant", stopReason: "toolUse",
-          content: [{ type: "toolCall", id: callId, name: "exec", arguments: { command: "node -p '6*7'" } }],
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [
+            { type: "toolCall", id: callId, name: "exec", arguments: { command: "node -p '6*7'" } },
+          ],
         },
         {
-          role: "toolResult", toolCallId: overrides.resultId ?? callId, toolName: "exec",
-          content: [{ type: "text", text: "42" }], isError: overrides.resultError ?? false,
+          role: "toolResult",
+          toolCallId: overrides.resultId ?? callId,
+          toolName: "exec",
+          content: [{ type: "text", text: "42" }],
+          isError: overrides.resultError ?? false,
           details: { exitCode: 0 },
         },
-        { role: "assistant", stopReason: "stop", content: [{ type: "thinking", thinking: "Internal continuation" }] },
-        { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "ALISTAR_RESPONSES_TOOL_42" }] },
+        {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "thinking", thinking: "Internal continuation" }],
+        },
+        {
+          role: "assistant",
+          stopReason: "stop",
+          content: [{ type: "text", text: "ALISTAR_RESPONSES_TOOL_42" }],
+        },
       ],
     } as unknown as Parameters<typeof resolveSuccessfulToolNames>[0];
   }
   it("keeps the canonical successful compound-ID call after a tool-free final attempt", () => {
     expect(resolveSuccessfulToolNames(attemptWithCanonicalTurn())).toEqual(["exec"]);
   });
-  it.each([
-    { resultId: "different-call|fc_ce7ab020" },
-    { resultError: true },
-  ])("does not infer success from an unmatched or failed result: %j", (overrides) => {
-    expect(resolveSuccessfulToolNames(attemptWithCanonicalTurn(overrides))).toEqual([]);
-  });
+  it.each([{ resultId: "different-call|fc_ce7ab020" }, { resultError: true }])(
+    "does not infer success from an unmatched or failed result: %j",
+    (overrides) => {
+      expect(resolveSuccessfulToolNames(attemptWithCanonicalTurn(overrides))).toEqual([]);
+    },
+  );
 
   it("does not revive successful calls from a prior user turn", () => {
-    const attempt = attemptWithCanonicalTurn() as Parameters<typeof resolveSuccessfulToolNames>[0] & {
+    const attempt = attemptWithCanonicalTurn() as Parameters<
+      typeof resolveSuccessfulToolNames
+    >[0] & {
       messagesSnapshot: unknown[];
     };
-    (attempt as unknown as { messagesSnapshot: unknown[] }).messagesSnapshot.push({ role: "user", content: "A different turn" });
-    expect(resolveSuccessfulToolNames(attempt)).toEqual([]);
-  });
-  it("does not pair a duplicate opaque id with a later result", () => {
-    const attempt = attemptWithCanonicalTurn() as Parameters<typeof resolveSuccessfulToolNames>[0] & {
-      messagesSnapshot: unknown[];
-    };
-    (attempt as unknown as { messagesSnapshot: unknown[] }).messagesSnapshot.splice(2, 0, {
-      role: "assistant", content: [{ type: "toolCall", id: callId, name: "read", arguments: {} }],
+    (attempt as unknown as { messagesSnapshot: unknown[] }).messagesSnapshot.push({
+      role: "user",
+      content: "A different turn",
     });
     expect(resolveSuccessfulToolNames(attempt)).toEqual([]);
   });
-
+  it("does not pair a duplicate opaque id with a later result", () => {
+    const attempt = attemptWithCanonicalTurn() as Parameters<
+      typeof resolveSuccessfulToolNames
+    >[0] & {
+      messagesSnapshot: unknown[];
+    };
+    (attempt as unknown as { messagesSnapshot: unknown[] }).messagesSnapshot.splice(2, 0, {
+      role: "assistant",
+      content: [{ type: "toolCall", id: callId, name: "read", arguments: {} }],
+    });
+    expect(resolveSuccessfulToolNames(attempt)).toEqual([]);
+  });
 });

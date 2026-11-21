@@ -1,41 +1,29 @@
 /* @vitest-environment jsdom */
 
+import { createComponent, createStore, flush } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GatewayBrowserClient } from "../api/gateway.ts";
+import { createDeferred } from "../../../test/helpers/promise.ts";
 import { i18n } from "../i18n/index.ts";
+import { mountSolid } from "../test-helpers/mount-solid.ts";
+import { waitForSolid } from "../test-helpers/solid-settle.ts";
+import { saveIndicatorProps } from "./settings-save-indicator.test-support.ts";
 import {
-  createConfigCapabilityHarness,
-  createConfigServerMock,
-} from "../lib/config/config-test-harness.ts";
-import type { SettingsSaveIndicatorProps } from "./settings-save-indicator.ts";
-import "./settings-save-indicator.ts";
+  SettingsSaveIndicator,
+  type SettingsSaveIndicatorProps,
+} from "./settings-save-indicator.tsx";
 
-type SettingsSaveIndicatorElement = HTMLElement & {
-  props?: SettingsSaveIndicatorProps;
-  updateComplete: Promise<boolean>;
-};
+let indicator: HTMLElement;
+let view: ReturnType<typeof mountSolid>;
+let setProps: (next: SettingsSaveIndicatorProps) => void;
 
-let indicator: SettingsSaveIndicatorElement;
-
-function props(overrides: Partial<SettingsSaveIndicatorProps> = {}): SettingsSaveIndicatorProps {
-  return {
-    status: "idle",
-    lastError: null,
-    needsApply: false,
-    applying: false,
-    applyDisabled: false,
-    onRetry: vi.fn(),
-    onSave: vi.fn(),
-    onReload: vi.fn(),
-    onApply: vi.fn(),
-    ...overrides,
-  };
+async function update(overrides: Partial<SettingsSaveIndicatorProps> = {}) {
+  const next = saveIndicatorProps(overrides);
+  setProps(next);
+  flush();
+  return next;
 }
 
-async function update(next: SettingsSaveIndicatorProps): Promise<void> {
-  indicator.props = next;
-  await indicator.updateComplete;
-}
+const part = (name: string) => indicator.querySelector(`.settings-save-indicator__${name}`);
 
 function button(label: string): HTMLButtonElement | undefined {
   return [...indicator.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -45,244 +33,134 @@ function button(label: string): HTMLButtonElement | undefined {
 
 beforeEach(async () => {
   await i18n.setLocale("en");
-  indicator = document.createElement(
-    "openclaw-settings-save-indicator",
-  ) as SettingsSaveIndicatorElement;
-  document.body.append(indicator);
+  const [state, setState] = createStore(saveIndicatorProps());
+  setProps = (next) => setState((draft) => Object.assign(draft, next));
+  view = mountSolid(() => createComponent(SettingsSaveIndicator, state));
+  indicator = view.container;
 });
 
 afterEach(() => {
-  indicator.remove();
+  view.unmount();
   vi.useRealTimers();
 });
 
 describe("settings save indicator", () => {
   it("stays empty while idle", async () => {
-    await update(props());
-
+    await update();
     expect(indicator.textContent?.trim()).toBe("");
     expect(indicator.querySelector('[role="status"]')).toBeNull();
+    await update({ status: "saved" });
+    expect(indicator.textContent?.trim()).toBe("");
   });
 
-  it("renders the shared working claw while saving", async () => {
-    await update(props({ status: "saving" }));
-
-    expect(indicator.textContent?.trim()).toBe("Saving…");
-    expect(indicator.querySelector(".settings-save-indicator__claw--saving svg")).not.toBeNull();
-    expect(
-      indicator.querySelector(".settings-save-indicator__claw")?.getAttribute("aria-hidden"),
-    ).toBe("true");
+  it("stays quiet through autosave and offers pending Apply changes immediately", async () => {
+    await update({ status: "saving" });
+    expect(indicator.textContent?.trim()).toBe("");
+    expect(indicator.querySelector('[role="status"]')).toBeNull();
+    await update({ status: "saved" });
+    expect(indicator.textContent?.trim()).toBe("");
+    expect(indicator.querySelector('[role="status"]')).toBeNull();
+    await update({ status: "saving", needsApply: true });
+    expect(button("Apply changes")).toBeUndefined();
+    await update({ status: "saved", needsApply: true });
+    expect(button("Apply changes")?.disabled).toBe(false);
   });
 
-  it("L02-006-F01 keeps a failed post-save refresh visible and recovers with a read only", async () => {
-    vi.useFakeTimers();
-    const server = createConfigServerMock();
-    const refreshError = "Configuration refresh unavailable";
-    let failReads = false;
-    const request = vi.fn(async (method: string, params?: unknown) => {
-      if (method === "config.get" && failReads) {
-        throw new Error(refreshError);
-      }
-      return server.request(method, params);
-    });
-    const { runtimeConfig } = createConfigCapabilityHarness(
-      request as GatewayBrowserClient["request"],
-    );
-    let reloadWork: Promise<void> | undefined;
-    const onReload = vi.fn(() => {
-      reloadWork = runtimeConfig.refresh();
-    });
-    const onRetry = vi.fn();
-    const raw = '{\n  "count": 2\n}\n';
-
-    try {
-      await runtimeConfig.ensureLoaded();
-      failReads = true;
-      runtimeConfig.setRaw(raw);
-      const saved = await runtimeConfig.save();
-      await update(
-        props({
-          status: runtimeConfig.state.configAutoSaveStatus,
-          lastError: runtimeConfig.state.lastError,
-          needsApply: runtimeConfig.state.configNeedsApply,
-          applying: runtimeConfig.state.configApplying,
-          onReload,
-          onRetry,
-        }),
-      );
-      const failedRefresh = {
-        saved,
-        hash: runtimeConfig.state.configSnapshot?.hash,
-        config: structuredClone(runtimeConfig.state.configSnapshot?.config),
-        raw: runtimeConfig.state.configRaw,
-        dirty: runtimeConfig.state.configFormDirty,
-        needsApply: runtimeConfig.state.configNeedsApply,
-        status: runtimeConfig.state.configAutoSaveStatus,
-        error: runtimeConfig.state.lastError,
-        submissions: server.submissions.map((submission) => ({ ...submission })),
-        requestMethods: request.mock.calls.map(([method]) => method),
-        warningVisible:
-          indicator.querySelector('[role="status"]')?.textContent?.includes(refreshError) ?? false,
-        savedVisible: indicator.textContent?.includes("Saved") ?? false,
-        falseSaveFailure: indicator.textContent?.includes("Save failed") ?? false,
-        reloadAvailable: button("Reload") !== undefined,
-        writeRetryAvailable: button("Retry") !== undefined,
-      };
-
-      failReads = false;
-      button("Reload")?.click();
-      await reloadWork;
-      await update(
-        props({
-          status: runtimeConfig.state.configAutoSaveStatus,
-          lastError: runtimeConfig.state.lastError,
-          needsApply: runtimeConfig.state.configNeedsApply,
-          applying: runtimeConfig.state.configApplying,
-          onReload,
-          onRetry,
-        }),
-      );
-      const recovered = {
-        hash: runtimeConfig.state.configSnapshot?.hash,
-        config: structuredClone(runtimeConfig.state.configSnapshot?.config),
-        raw: runtimeConfig.state.configRaw,
-        dirty: runtimeConfig.state.configFormDirty,
-        needsApply: runtimeConfig.state.configNeedsApply,
-        error: runtimeConfig.state.lastError,
-        submissions: server.submissions.map((submission) => ({ ...submission })),
-        requestMethods: request.mock.calls.map(([method]) => method),
-        reloadCalls: onReload.mock.calls.length,
-        retryCalls: onRetry.mock.calls.length,
-        warningVisible: indicator.textContent?.includes(refreshError) ?? false,
-      };
-
-      expect({ failedRefresh, recovered }).toEqual({
-        failedRefresh: {
-          saved: true,
-          hash: "hash-2",
-          config: { count: 2 },
-          raw,
-          dirty: false,
-          needsApply: true,
-          status: "saved",
-          error: refreshError,
-          submissions: [{ method: "config.set", raw, baseHash: "hash-1" }],
-          requestMethods: ["config.get", "config.set", "config.get"],
-          warningVisible: true,
-          savedVisible: true,
-          falseSaveFailure: false,
-          reloadAvailable: true,
-          writeRetryAvailable: false,
-        },
-        recovered: {
-          hash: "hash-2",
-          config: { count: 2 },
-          raw,
-          dirty: false,
-          needsApply: true,
-          error: null,
-          submissions: [{ method: "config.set", raw, baseHash: "hash-1" }],
-          requestMethods: ["config.get", "config.set", "config.get", "config.get"],
-          reloadCalls: 1,
-          retryCalls: 0,
-          warningVisible: false,
-        },
-      });
-    } finally {
-      await Promise.allSettled(reloadWork ? [reloadWork] : []);
-      runtimeConfig.dispose();
+  it.each([
+    ["error", "permission denied", "Save failed"],
+    ["rejected", "logging.level: Invalid option", "Settings not applied"],
+  ] as const)("explains %s and retries", async (status, lastError, message) => {
+    const { onRetry } = await update({ status, lastError });
+    const feedback = indicator.querySelector('[role="status"]');
+    expect(feedback?.textContent).toContain(message);
+    if (status === "error") {
+      expect(feedback).toMatchObject({ title: lastError, ariaLabel: `${message}: ${lastError}` });
+    } else {
+      expect(indicator.textContent).toContain("Current settings are unchanged.");
+      expect(indicator.querySelector("details")?.textContent).toContain(lastError);
+      expect(indicator.querySelector(".settings-save-indicator--danger")).toBeNull();
     }
-  });
-
-  it("shows saved for two seconds after saving, then returns to apply", async () => {
-    vi.useFakeTimers();
-    await update(props({ status: "saving" }));
-    await update(props({ status: "saved", needsApply: true }));
-
-    expect(indicator.textContent).toContain("Saved");
-    expect(indicator.querySelector(".settings-save-indicator__claw--saved")).not.toBeNull();
-    expect(indicator.querySelector(".settings-save-indicator__check")).not.toBeNull();
-
-    await vi.advanceTimersByTimeAsync(1_999);
-    expect(indicator.textContent).toContain("Saved");
-    await vi.advanceTimersByTimeAsync(1);
-    await indicator.updateComplete;
-    expect(indicator.textContent?.trim()).toBe("Apply changes");
-  });
-
-  it("surfaces save errors and retries with the original message", async () => {
-    const onRetry = vi.fn();
-    await update(props({ status: "error", lastError: "permission denied", onRetry }));
-
-    const status = indicator.querySelector('[role="status"]');
-    expect(status?.textContent).toContain("Save failed");
-    expect(status?.getAttribute("title")).toBe("permission denied");
-    expect(status?.getAttribute("aria-label")).toBe("Save failed: permission denied");
     button("Retry")?.click();
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
-  it("reloads on conflicts instead of offering retry", async () => {
-    const onReload = vi.fn();
-    await update(props({ status: "conflict", onReload }));
-
-    expect(indicator.textContent).toContain("Settings changed elsewhere");
-    expect(button("Retry")).toBeUndefined();
-    button("Reload")?.click();
-    expect(onReload).toHaveBeenCalledOnce();
+  it.each([
+    ["conflict", "Reload", "onReload"],
+    ["paused", "Save", "onSave"],
+  ] as const)("offers %s recovery through %s, not Retry", async (status, label, handler) => {
+    const next = await update({ status });
+    if (status === "conflict") {
+      expect(indicator.textContent).toContain("Settings changed elsewhere");
+      expect(button("Retry")).toBeUndefined();
+    }
+    button(label)?.click();
+    expect(next[handler]).toHaveBeenCalledOnce();
+    expect(next.onRetry).not.toHaveBeenCalled();
   });
 
-  it("explains validation rejection locally with a reason and retry action", async () => {
-    const onRetry = vi.fn();
-    await update(
-      props({ status: "rejected", lastError: "logging.level: Invalid option", onRetry }),
-    );
-
-    expect(indicator.querySelector('[role="status"]')?.textContent).toContain(
-      "Settings not applied",
-    );
-    expect(indicator.textContent).toContain("Current settings are unchanged.");
-    expect(indicator.querySelector("details")?.textContent).toContain(
-      "logging.level: Invalid option",
-    );
-    expect(indicator.querySelector(".settings-save-indicator--danger")).toBeNull();
-    button("Retry")?.click();
-    expect(onRetry).toHaveBeenCalledOnce();
-  });
-
-  it("submits the paused draft through Save instead of retrying a failed patch", async () => {
-    const onSave = vi.fn();
-    const onRetry = vi.fn();
-    await update(props({ status: "paused", onSave, onRetry }));
-
-    button("Save")?.click();
-
-    expect(onSave).toHaveBeenCalledOnce();
-    expect(onRetry).not.toHaveBeenCalled();
+  it("retires the previous failure during a manual save and shows the same error again", async () => {
+    const lastError = "permission denied";
+    await update({ status: "error", lastError });
+    expect(indicator.textContent).toContain("Save failed");
+    await update({ status: "error", saving: true, lastError: null });
+    expect(indicator.textContent?.trim()).toBe("");
+    expect(indicator.querySelector('[role="status"]')).toBeNull();
+    await update({ status: "error", lastError });
+    expect(indicator.textContent).toContain("Save failed");
+    expect(indicator.querySelector('[role="status"]')).toMatchObject({ title: lastError });
   });
 
   it("applies pending changes and reports the in-flight state", async () => {
-    const onApply = vi.fn();
-    await update(props({ needsApply: true, onApply }));
+    const { onApply } = await update({ needsApply: true });
 
     button("Apply changes")?.click();
     expect(onApply).toHaveBeenCalledOnce();
 
-    await update(props({ needsApply: true, applying: true, onApply }));
+    await update({ needsApply: true, applying: true, onApply });
     expect(indicator.textContent?.trim()).toBe("Applying…");
-    expect(indicator.querySelector(".settings-save-indicator__spinner")).not.toBeNull();
+    expect(part("spinner")).not.toBeNull();
     expect(button("Apply changes")).toBeUndefined();
   });
 
-  it("cleans the saved timer when disconnected", async () => {
-    vi.useFakeTimers();
-    await update(props({ status: "saving" }));
-    expect(vi.getTimerCount()).toBe(0);
-    await update(props({ status: "saved" }));
-    expect(vi.getTimerCount()).toBe(1);
-
-    indicator.remove();
-
-    expect(vi.getTimerCount()).toBe(0);
+  it("presents an admitted Save without inventing an accepted owner result", async () => {
+    const held = createDeferred<boolean>();
+    const onSave = vi.fn(() => held.promise);
+    await update({ status: "paused", onSave });
+    button("Save")!.click();
+    await waitForSolid(() => expect(indicator.textContent?.trim()).toBe(""));
+    expect(onSave).toHaveBeenCalledOnce();
+    held.resolve(false);
+    await waitForSolid(() => expect(button("Save")?.disabled).toBe(false));
+    expect(indicator.textContent).toContain("Autosave paused after reconnect");
+    expect(indicator.textContent).not.toContain("Saved");
   });
+
+  it("consumes a rejected command and allows a later retry", async () => {
+    const held = createDeferred<boolean>();
+    const onRetry = vi.fn(() => held.promise);
+    await update({ status: "error", onRetry });
+    button("Retry")!.click();
+    await waitForSolid(() => expect(indicator.textContent?.trim()).toBe(""));
+    held.reject(new Error("Synthetic retry transport failed"));
+    await waitForSolid(() =>
+      expect(indicator.querySelector('[role="alert"]')?.textContent).toContain(
+        "Synthetic retry transport failed",
+      ),
+    );
+    const retry = vi.fn(async () => false);
+    await update({ status: "error", onRetry: retry });
+    button("Retry")!.click();
+    await waitForSolid(() => expect(retry).toHaveBeenCalledOnce());
+    await waitForSolid(() => expect(indicator.querySelector('[role="alert"]')).toBeNull());
+  });
+});
+
+it("keeps an acknowledged save refresh warning visible and offers Reload", async () => {
+  const onReload = vi.fn(async () => {});
+  await update({ status: "saved", lastError: "refresh unavailable", onReload });
+  const feedback = indicator.querySelector('[role="status"]');
+  expect(feedback?.textContent).toContain("refresh unavailable");
+  expect(button("Reload")?.disabled).toBe(false);
+  button("Reload")!.click();
+  expect(onReload).toHaveBeenCalledOnce();
 });

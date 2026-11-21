@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchGoogleMeetAttendance } from "./meet.js";
-import { jsonResponse, requestUrl } from "./test-support/cli-harness.js";
+import { jsonResponse } from "./test-support/cli-harness.js";
+function requestUrl(input: RequestInfo | URL): URL {
+  return new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+}
 
 type Person = {
   id: string;

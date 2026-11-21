@@ -1,7 +1,6 @@
 import {
   resolveOutboundSendDep,
   sanitizeForPlainText,
-  type OutboundDeliveryFormattingOptions,
   type OutboundSendDeps,
 } from "openclaw/plugin-sdk/channel-outbound";
 import {
@@ -62,59 +61,6 @@ async function resolveDefaultTelegramSend(deps?: OutboundSendDeps): Promise<Tele
   );
 }
 
-async function resolveTelegramOutboundSendContext(params: {
-  to: string;
-  cfg: NonNullable<TelegramSendOpts>["cfg"];
-  deps?: OutboundSendDeps;
-  accountId?: string | null;
-  replyToId?: string | null;
-  replyToIdSource?: TelegramSendOpts["replyToIdSource"];
-  replyToMode?: TelegramSendOpts["replyToMode"];
-  threadId?: string | number | null;
-  formatting?: OutboundDeliveryFormattingOptions;
-  silent?: boolean;
-  signal?: AbortSignal;
-  gatewayClientScopes?: readonly string[];
-  onDeliveryResult?: Parameters<
-    NonNullable<ChannelOutboundAdapter["sendText"]>
-  >[0]["onDeliveryResult"];
-  onPlatformSendDispatch?: () => Promise<void>;
-  assertDirectAdapterHandoff?: () => void;
-  resolveSend: ResolveTelegramSendFn;
-}) {
-  const outboundTo = normalizeTelegramOutboundTarget(params.to);
-  const send = await params.resolveSend(params.deps);
-  return {
-    outboundTo,
-    send,
-    baseOpts: {
-      verbose: false,
-      cfg: params.cfg,
-      messageThreadId: parseTelegramThreadId(params.threadId),
-      replyToMessageId: parseTelegramReplyToMessageId(params.replyToId),
-      ...(params.replyToIdSource !== undefined ? { replyToIdSource: params.replyToIdSource } : {}),
-      ...(params.replyToMode !== undefined ? { replyToMode: params.replyToMode } : {}),
-      accountId: params.accountId ?? undefined,
-      silent: params.silent,
-      signal: params.signal,
-      gatewayClientScopes: params.gatewayClientScopes,
-      onDeliveryResult: params.onDeliveryResult
-        ? async (result) => {
-            await params.onDeliveryResult?.(
-              attachChannelToResult("telegram", toTelegramOutboundResult(result)),
-            );
-          }
-        : undefined,
-      onPlatformSendDispatch: params.onPlatformSendDispatch,
-      assertPlatformSendAuthorized: params.assertDirectAdapterHandoff,
-      ...(params.formatting?.parseMode === "HTML" ? { textMode: "html" as const } : {}),
-      tableMode: params.formatting?.tableMode,
-      textLimit: params.formatting?.textLimit,
-      chunkMode: params.formatting?.chunkMode,
-    } satisfies TelegramSendOpts,
-  };
-}
-
 type CreateTelegramOutboundAdapterOptions = Pick<
   ChannelOutboundAdapter,
   | "beforeDeliverPayload"
@@ -151,13 +97,10 @@ function normalizeTelegramMetadataOnlyPayload(payload: ReplyPayload): ReplyPaylo
   const hasReaction =
     typeof telegramData?.reaction?.emoji === "string" &&
     Boolean(telegramData.reaction.emoji.trim());
-  if (hasReaction && !buttons?.length && !hasQuoteText) {
-    return payload;
+  if (!buttons?.length && !hasQuoteText) {
+    return hasReaction ? payload : null;
   }
   const fallbackText = payload.fallbackText?.text.trim();
-  if (!buttons?.length && !hasQuoteText) {
-    return null;
-  }
   return fallbackText ? { ...payload, text: fallbackText } : null;
 }
 
@@ -242,13 +185,14 @@ export async function sendTelegramPayloadMessages(params: {
   payload: ReplyPayload;
   baseOpts: Omit<NonNullable<TelegramSendOpts>, "buttons" | "mediaUrl" | "mediaUrls" | "quoteText">;
 }): Promise<Awaited<ReturnType<TelegramSendFn>>> {
+  const richMessages = resolveTelegramRichMessages({
+    cfg: params.baseOpts.cfg,
+    accountId: params.baseOpts.accountId,
+    htmlTextMode: params.baseOpts.textMode === "html",
+  });
   const payload = canonicalizeTelegramPresentationPayload(params.payload, {
     allowWebAppButtons: parseTelegramTarget(params.to).chatType === "direct",
-    richTables: resolveTelegramRichMessages({
-      cfg: params.baseOpts.cfg,
-      accountId: params.baseOpts.accountId,
-      htmlTextMode: params.baseOpts.textMode === "html",
-    }),
+    richTables: richMessages,
   });
   const telegramData = payload.channelData?.telegram as TelegramPayloadData | undefined;
   const quoteText =
@@ -257,11 +201,14 @@ export async function sendTelegramPayloadMessages(params: {
     typeof telegramData?.reaction?.emoji === "string" ? telegramData.reaction.emoji : undefined;
   const text = resolveTelegramInteractiveTextFallback(payload) ?? "";
   const mediaUrls = resolveSendableOutboundReplyParts(payload).mediaUrls;
-  const buttons = resolveTelegramInlineButtons({
-    buttons: telegramData?.buttons,
-    presentation: payload.presentation,
-    interactive: payload.interactive,
-  });
+  const buttons = resolveTelegramInlineButtons(
+    {
+      buttons: telegramData?.buttons,
+      presentation: payload.presentation,
+      interactive: payload.interactive,
+    },
+    { supportsDisabled: richMessages },
+  );
   const replyToMessageId = parseStrictPositiveInteger(
     telegramData?.reaction?.replyToId ?? params.baseOpts.replyToMessageId,
   );
@@ -348,6 +295,44 @@ export function createTelegramOutboundAdapter(
 ): ChannelOutboundAdapter {
   const resolveSend = options.resolveSend ?? resolveDefaultTelegramSend;
   const loadSendModule = options.loadSendModule ?? loadTelegramSendModule;
+
+  async function resolveTelegramOutboundSendContext(
+    params: Parameters<NonNullable<ChannelOutboundAdapter["sendText"]>>[0],
+  ) {
+    const outboundTo = normalizeTelegramOutboundTarget(params.to);
+    const send = await resolveSend(params.deps);
+    return {
+      outboundTo,
+      send,
+      baseOpts: {
+        verbose: false,
+        cfg: params.cfg,
+        messageThreadId: parseTelegramThreadId(params.threadId),
+        replyToMessageId: parseTelegramReplyToMessageId(params.replyToId),
+        ...(params.replyToIdSource !== undefined
+          ? { replyToIdSource: params.replyToIdSource }
+          : {}),
+        ...(params.replyToMode !== undefined ? { replyToMode: params.replyToMode } : {}),
+        accountId: params.accountId ?? undefined,
+        silent: params.silent,
+        signal: params.signal,
+        gatewayClientScopes: params.gatewayClientScopes,
+        onDeliveryResult: params.onDeliveryResult
+          ? async (result) => {
+              await params.onDeliveryResult?.(
+                attachChannelToResult("telegram", toTelegramOutboundResult(result)),
+              );
+            }
+          : undefined,
+        onPlatformSendDispatch: params.onPlatformSendDispatch,
+        assertPlatformSendAuthorized: params.assertDirectAdapterHandoff,
+        ...(params.formatting?.parseMode === "HTML" ? { textMode: "html" as const } : {}),
+        tableMode: params.formatting?.tableMode,
+        textLimit: params.formatting?.textLimit,
+        chunkMode: params.formatting?.chunkMode,
+      } satisfies TelegramSendOpts,
+    };
+  }
 
   return {
     deliveryMode: "direct",
@@ -491,17 +476,11 @@ export function createTelegramOutboundAdapter(
     ...createAttachedChannelResultAdapter({
       channel: "telegram",
       sendText: async (params) => {
-        const { outboundTo, send, baseOpts } = await resolveTelegramOutboundSendContext({
-          ...params,
-          resolveSend,
-        });
+        const { outboundTo, send, baseOpts } = await resolveTelegramOutboundSendContext(params);
         return toTelegramOutboundResult(await send(outboundTo, params.text, baseOpts));
       },
       sendMedia: async (params) => {
-        const { outboundTo, send, baseOpts } = await resolveTelegramOutboundSendContext({
-          ...params,
-          resolveSend,
-        });
+        const { outboundTo, send, baseOpts } = await resolveTelegramOutboundSendContext(params);
         return toTelegramOutboundResult(
           await send(outboundTo, params.text, {
             ...baseOpts,
@@ -515,10 +494,7 @@ export function createTelegramOutboundAdapter(
       },
     }),
     sendPayload: async (params) => {
-      const { outboundTo, send, baseOpts } = await resolveTelegramOutboundSendContext({
-        ...params,
-        resolveSend,
-      });
+      const { outboundTo, send, baseOpts } = await resolveTelegramOutboundSendContext(params);
       const { reactMessageTelegram, sendLocationTelegram } = await loadSendModule();
       const result = await sendTelegramPayloadMessages({
         send,

@@ -4,6 +4,11 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveRequiredOsHomeDir } from "./home-dir.js";
+import { markPrivateDirectoryCreationRefused } from "./private-directory-creation.js";
+import {
+  hasSqliteSnapshotCapacityCode,
+  SqliteSnapshotCapacityError,
+} from "./sqlite-snapshot-capacity-error.js";
 import { resolvePreferredOpenClawTmpDir } from "./tmp-openclaw-dir.js";
 import { createPrivateWindowsDirectory } from "./windows-private-directory.js";
 
@@ -20,6 +25,30 @@ export async function createPrivateSqliteDirectory(directoryPath: string): Promi
 export function resolvePrivateSqliteSnapshotStagingRoot(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
+  try {
+    return resolveSnapshotStagingRoot(env);
+  } catch (error) {
+    // Only root allocation capacity is disposable; admission and permissions stay blocking.
+    if (error instanceof Error && hasSqliteSnapshotCapacityCode(error)) {
+      throw new SqliteSnapshotCapacityError(
+        `SQLite snapshot staging root is unavailable: ${error.message}; free disk space/quota`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+function resolveSnapshotStagingRoot(env: NodeJS.ProcessEnv): string {
+  // Shipped update drivers already give their candidate helpers a private TMPDIR.
+  // Keep disposable inspection images there, not beside retained recovery backups.
+  const updateTmp = env.OPENCLAW_UPDATE_IN_PROGRESS === "1" ? env.TMPDIR?.trim() : undefined;
+  if (updateTmp && path.isAbsolute(updateTmp)) {
+    return resolvePreferredOpenClawTmpDir({
+      preferredDir: path.join(updateTmp, "openclaw"),
+      tmpdir: () => updateTmp,
+    });
+  }
   const appData = process.platform === "win32" ? env.LOCALAPPDATA?.trim() : undefined;
   const defaultRoot = process.platform === "win32" ? "AppData/Local" : ".cache";
   const platformRoot = process.platform === "darwin" ? "Library/Caches" : defaultRoot;
@@ -46,7 +75,11 @@ export async function createPrivateSqliteTempDirectory(
 
 export function createPrivateSqliteTempDirectorySync(rootPath: string, prefix: string): string {
   if (process.platform !== "win32") {
-    return fsSync.mkdtempSync(path.join(rootPath, prefix));
+    try {
+      return fsSync.mkdtempSync(path.join(rootPath, prefix));
+    } catch (error) {
+      throw markPrivateDirectoryCreationRefused(error);
+    }
   }
   const directoryPath = path.join(rootPath, `${prefix}${randomUUID()}`);
   createPrivateWindowsDirectory(directoryPath);
