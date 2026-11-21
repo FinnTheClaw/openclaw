@@ -515,6 +515,28 @@ it("preserves projection dependencies when a rewrite replaces the bounded anchor
   expect(replay(bounded)).toEqual([fixture.expected]);
 });
 
+it("retains the cache projection checkpoint after trimming its bounded anchor", async () => {
+  const fixture = await seedProjection("projection-trimmed-anchor");
+  const limits = { cwd: fixture.dir, maxEvents: 2, maxBytes: 64_000 };
+  const bounded = await SessionManager.openBoundedAsync(fixture.scope, limits);
+  const projectionIds = (manager: SessionManager) =>
+    manager.getToolResultProjectionEntries().map((entry) => entry.id);
+  const removedIds = [fixture.retainedId, fixture.deltaId];
+  const removes = new Set(removedIds);
+
+  expect(bounded.getBranch().map((entry) => entry.id)).toEqual(removedIds);
+  expect(projectionIds(bounded)).toEqual([fixture.checkpointId, ...removedIds]);
+  expect(await bounded.removeTrailingEntriesAsync((entry) => removes.has(entry.id))).toBe(2);
+
+  const reopened = await SessionManager.openBoundedAsync(fixture.scope, limits);
+  expect(reopened.getLeafId()).toBe(fixture.checkpointId);
+  expect(projectionIds(reopened)).toContain(fixture.checkpointId);
+  for (const id of removedIds) {
+    expect(projectionIds(reopened)).not.toContain(id);
+  }
+  expect(projectionIds(bounded)).toContain(fixture.checkpointId);
+});
+
 it("recovers projection dependencies without retaining intervening cache touches", async () => {
   const fixture = await seedProjection("projection-many-touches", false, 40);
   const bounded = await SessionManager.openBoundedAsync(fixture.scope, {

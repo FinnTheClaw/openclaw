@@ -449,6 +449,20 @@ export class SessionManagerSuffixPersistence extends SessionManagerPersistence {
       this.leafId = prepared.leafId;
       this.appendParentId = prepared.appendParentId;
       this.appendMode = prepared.appendMode;
+      // The omitted prefix can still belong to the retained tail when its exact
+      // final marker is the predecessor we just kept, but its visible anchors are gone.
+      this.cacheTtlProjectionPrefixes = this.cacheTtlProjectionPrefixes?.map((prefix) => {
+        const retainsOmittedPredecessor =
+          replacementParentId !== null &&
+          prefix.anchorIds.length > 0 &&
+          prefix.anchorIds.every((id) => removedEntryIds.has(id)) &&
+          prefix.entries.at(-1)?.id === replacementParentId &&
+          prefix.entries.every(
+            ({ id }) =>
+              typeof id === "string" && !removedEntryIds.has(id) && !prepared.byId.has(id),
+          );
+        return retainsOmittedPredecessor ? { ...prefix, anchorIds: [] } : prefix;
+      });
       this.pendingDeliberateAppend = prepared.pendingDeliberateAppend;
       this.boundedContextIncomplete = Boolean(this.boundedContextLimits && this.persistenceTarget);
       this.persistedBoundaryCount =
