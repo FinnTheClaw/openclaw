@@ -162,6 +162,10 @@ export function startNodeHostAutoUpdate(params: {
     }
     params.log(`node auto-update preparing ${available.version}`);
     const { prepareNodeRuntimeUpdate } = await import("./auto-update-install.js");
+    const installPolicy = await readPolicy();
+    if (!installPolicy.enabled || installPolicy.channel !== policy.channel) {
+      return CHECK_INTERVAL_MS;
+    }
     signal.throwIfAborted();
     const candidate = await prepareNodeRuntimeUpdate({
       targetVersion: available.version,

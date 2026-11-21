@@ -156,6 +156,23 @@ afterEach(async () => {
 });
 
 describe("node auto-update controller", () => {
+  it.each([
+    ["disabled", { nodeHost: { autoUpdate: { enabled: false } } }],
+    ["channel changed", { update: { channel: "beta" } }],
+  ] satisfies [string, OpenClawConfig][])(
+    "does not stage a late discovery after policy is %s",
+    async (_label, config) => {
+      const available = { tag: "latest", version: candidate.version };
+      const discovery = hold(available);
+      mocks.discover.mockImplementationOnce(() => discovery.promise);
+      const host = start();
+      await host.advance(0, { discover: 1, prepare: 0 });
+      mocks.config = config;
+      discovery.resolve(available);
+      await host.advance(0, { discover: 1, prepare: 0, restart: 0 });
+    },
+  );
+
   it("checks immediately and hourly without repeatedly staging the installed release", async () => {
     mocks.discover.mockResolvedValue({ tag: "latest", version: "2026.9.17" });
     const host = start();
