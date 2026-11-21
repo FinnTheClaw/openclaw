@@ -118,6 +118,46 @@ it("requires a canonical reload after disconnect before writes", () => {
   expect(state.cards).toHaveLength(1);
 });
 
+it("does not restore write readiness from a continuation of a stale card window", async () => {
+  const first = createWorkboardCard();
+  const second = createWorkboardCard({ id: "card-2", position: 2000 });
+  const cursor = { id: first.id, position: first.position, createdAt: first.createdAt };
+  let firstPageCard = first;
+  let failCanonical = false;
+  const { ctx, state, methods } = setup((_method, params) => {
+    // SAFETY: this mock receives only the cards-list request shape.
+    const { after } = params as { after?: typeof cursor };
+    if (after) {
+      return { cards: [second], boards: [] };
+    }
+    if (failCanonical) {
+      throw new Error("Canonical read temporarily unavailable");
+    }
+    return { cards: [firstPageCard], boards: [], nextCursor: cursor };
+  });
+  expect(await loadWorkboard(ctx)).toBe(true);
+  resetWorkboardConnectionState(ctx.host);
+  failCanonical = true;
+  expect(await loadWorkboard({ ...ctx, force: true })).toBe(false);
+  expect(state).toMatchObject({
+    cards: [first],
+    nextCursor: cursor,
+    loaded: false,
+    mutationReadiness: "canonical_reload_required",
+  });
+
+  await loadWorkboard({ ...ctx, more: true });
+  expect(state.mutationReadiness).toBe("canonical_reload_required");
+  expect(state.loaded).toBe(false);
+
+  failCanonical = false;
+  firstPageCard = { ...first, title: "Reloaded first-page title", updatedAt: 2 };
+  expect(await refreshWorkboard({ ...ctx, source: "manual" })).toBe(true);
+  expect(state).toMatchObject({ loaded: true, mutationReadiness: "ready" });
+  expect(state.cards[0]).toEqual(firstPageCard);
+  expect(new Set(methods())).toEqual(new Set(["workboard.cards.list"]));
+});
+
 it("reserves every reordered card until the ordered move settles", async () => {
   const moving = createWorkboardCard({ id: "moving", position: 2000 });
   const peer = createWorkboardCard({ id: "peer", position: 0 });

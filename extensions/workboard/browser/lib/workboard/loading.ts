@@ -44,6 +44,10 @@ export async function loadWorkboard(params: LoadWorkboardParams): Promise<boolea
       ? await loadWorkboard(params)
       : result;
   }
+  if (params.more && state.mutationReadiness === "canonical_reload_required") {
+    // A continuation cannot make the retained first page current.
+    return loadWorkboard({ ...params, force: true, more: false });
+  }
   runtime.loadClient = client;
   state.loadAttempted = true;
   state.loading = true;
