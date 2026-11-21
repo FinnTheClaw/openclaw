@@ -2,6 +2,7 @@ import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbou
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { handlePreviewFinalizedResult } from "./bot-message-dispatch-delivery.js";
+import { emitTelegramMessageSentHooks } from "./bot/delivery.js";
 import { createTestDraftStream } from "./draft-stream.test-helpers.js";
 import {
   createLaneTextDeliverer,
@@ -10,6 +11,11 @@ import {
   type LaneName,
 } from "./lane-delivery-text-deliverer.js";
 import { createTelegramPromptContextProjectionSequence } from "./prompt-context-projection.js";
+
+vi.mock("./bot/delivery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./bot/delivery.js")>();
+  return { ...actual, emitTelegramMessageSentHooks: vi.fn() };
+});
 
 function setup(streamed = true) {
   const answerStream = createTestDraftStream({ messageId: 999 });
@@ -175,14 +181,17 @@ describe("TELEGRAM-LANE-DELIVERY-01 ten-case production-component pack", () => {
     const h = setup();
     h.sendPayload.mockResolvedValueOnce({ visibleReplySent: false });
     const result = expectPartial(await finalMedia(h));
-    const emit = vi.fn();
+    const emit = vi.mocked(emitTelegramMessageSentHooks);
+    emit.mockClear();
     const turn = {
       isSuperseded: () => false,
-      telegramDeps: { emitTelegramMessageSentHooks: emit },
       context: { chatId: 42, route: { accountId: "default" }, ctxPayload: {}, isGroup: false },
     } as unknown as Parameters<typeof handlePreviewFinalizedResult>[0];
     let partialError: unknown;
-    const handled = handlePreviewFinalizedResult(turn, result).catch((error: unknown) => {
+    const handled = handlePreviewFinalizedResult(turn, result, {
+      text: "photo",
+      mediaUrl: "https://example.com/a.png",
+    }).catch((error: unknown) => {
       partialError = error;
       throw error;
     });

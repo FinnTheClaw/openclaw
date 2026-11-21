@@ -3,11 +3,19 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { listDevicePairing as listDevicePairingFn } from "openclaw/plugin-sdk/device-bootstrap";
+import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
+  createPluginStateKeyedStoreV2ForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+  createTestPluginServiceScheduler,
+  createTestPluginApi,
+} from "openclaw/plugin-sdk/plugin-test-api";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEVICE_PAIR_NOTIFY_MAX_SEEN_AGE_MS,
@@ -25,7 +33,7 @@ vi.mock("openclaw/plugin-sdk/device-bootstrap", async (importOriginal) => ({
   listDevicePairing: listMock,
 }));
 
-import { createPairingNotifierService, handleNotifyCommand } from "./notify.js";
+import { startPairingNotifier, handleNotifyCommand } from "./notify.js";
 
 afterAll(() => {
   vi.doUnmock("openclaw/plugin-sdk/device-bootstrap");
@@ -55,6 +63,8 @@ describe("round-five L4-04 per-subscriber retries", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    await closeOpenClawStateDatabaseAsync();
+    resetPluginStateStoreForTests();
     await fs.rm(stateDir, { recursive: true, force: true });
   });
 
@@ -65,6 +75,12 @@ describe("round-five L4-04 per-subscriber retries", () => {
           resolveStateDir: () => stateDir,
           openKeyedStore: <T>(options: { namespace: string; maxEntries: number }) =>
             createPluginStateKeyedStoreForTests<T>("device-pair", { ...options, env }),
+          openKeyedStoreV2: <T>(options: OpenAsyncKeyedStoreOptions) =>
+            createPluginStateKeyedStoreV2ForTests<T>(
+              "device-pair",
+              { ...options, env },
+              { assertCurrent() {} },
+            ),
         },
         channel: { outbound: { loadAdapter: vi.fn(async () => ({ sendText })) } },
       } as never,
@@ -85,10 +101,20 @@ describe("round-five L4-04 per-subscriber retries", () => {
   }
 
   async function poll(api: ReturnType<typeof apiFor>) {
-    const service = createPairingNotifierService(api);
-    await service.start({} as never);
-    await vi.advanceTimersByTimeAsync(10_000);
-    await service.stop?.({} as never);
+    const clock = createGatewaySchedulerClock(Date.now());
+    const scheduler = createTestPluginServiceScheduler(createTestGatewayScheduler(clock.clock));
+    const warn = vi.spyOn(api.logger, "warn");
+    try {
+      startPairingNotifier(api, scheduler);
+      vi.setSystemTime(Date.now() + 10_000);
+      await clock.advanceBy(10_000);
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("device-pair: notify poll failed:"),
+      );
+    } finally {
+      await scheduler.stop();
+      warn.mockRestore();
+    }
   }
 
   it.each([

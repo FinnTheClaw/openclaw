@@ -682,7 +682,7 @@ prepare_gates() {
         run_quiet_logged \
           "pnpm test" \
           ".local/gates-test.log" \
-          env OPENCLAW_VITEST_MAX_WORKERS="$OPENCLAW_VITEST_MAX_WORKERS" pnpm test
+          env OPENCLAW_VITEST_MAX_WORKERS="$OPENCLAW_VITEST_MAX_WORKERS" pnpm test || return $?
       else
         echo "Running pnpm test with host-aware scheduling defaults."
         run_quiet_logged "pnpm test" ".local/gates-test.log" pnpm test || return $?

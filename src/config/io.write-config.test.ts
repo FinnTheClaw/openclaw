@@ -2690,7 +2690,9 @@ for (const phase of ["before-recovery", "forensic-save", "atomic-staging", "unch
       expect(recovered).toBe(true);
       await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(cleanRaw);
       if (process.platform !== "win32") {
-        expect((await fs.stat(configPath)).mode & 0o777).toBe(originalMode);
+        // Successful recovery publishes a new private file, matching the native
+        // writer contract; rejected races below must leave the old mode intact.
+        expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
       }
       expect(warnMessages(warn).join("\n")).toContain(
         `Config auto-stripped non-JSON prefix: ${configPath}`,

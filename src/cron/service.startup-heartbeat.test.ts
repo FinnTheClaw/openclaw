@@ -4,8 +4,12 @@ import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
-import { CronService } from "./service.js";
-import { createFinishedBarrier, setupCronServiceSuite } from "./service.test-harness.js";
+import {
+  createCronServiceWithStateForTest,
+  createFinishedBarrier,
+  setupCronServiceSuite,
+} from "./service.test-harness.js";
+import { captureCronSchedulerWakeForTest } from "./service/scheduler-actor.test-support.js";
 import { loadCronStore, saveCronStore } from "./store.js";
 import type { CronJob } from "./types.js";
 
@@ -66,7 +70,7 @@ describe("L06-F002 startup command isolation", () => {
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const finished = createFinishedBarrier();
     const commandFinished = finished.waitForOk(command.id);
-    const cron = new CronService({
+    const { cron, state } = createCronServiceWithStateForTest({
       scheduler,
       storePath: store.storePath,
       cronEnabled: true,
@@ -77,59 +81,39 @@ describe("L06-F002 startup command isolation", () => {
       runIsolatedAgentJob,
       onEvent: finished.onEvent,
     });
-    const starting = cron.start();
-    const observedStarting = starting.then(() => {
-      startSettled = true;
-    });
-    const wakes: Promise<void>[] = [];
+    let observedStarting = Promise.resolve();
     const wakeErrors: unknown[] = [];
     try {
-      await Promise.race([entered.promise, observedStarting]);
-      if (runCommandJob.mock.calls.length === 0) {
-        const startupWake = clock.wake();
-        if (startupWake) {
-          wakes.push(
-            Promise.resolve(startupWake).catch((error: unknown) => {
-              wakeErrors.push(error);
-            }),
-          );
-        }
-        await vi.waitUntil(() => runCommandJob.mock.calls.length === 1, {
-          timeout: 2_000,
-          interval: 10,
+      const { wake } = await captureCronSchedulerWakeForTest(async () => {
+        observedStarting = cron.start().then(() => {
+          startSettled = true;
         });
-      }
+        await Promise.race([entered.promise, observedStarting]);
+      });
+      expect(runCommandJob).toHaveBeenCalledOnce();
       if (!pending) {
         await commandFinished;
-        await vi.waitUntil(() => clock.armedAtMs !== null, {
-          timeout: 2_000,
-          interval: 10,
-        });
+        await observedStarting;
       }
       const before = (await loadCronStore(store.storePath)).jobs.find(
         (job) => job.id === command.id,
       )?.state;
-      const armedBeforeFuture = clock.armedAtMs;
-      const wake = clock.advanceTo(futureAt);
-      if (wake) {
-        wakes.push(
-          Promise.resolve(wake).catch((error: unknown) => {
-            wakeErrors.push(error);
-          }),
+      // The native SQLite actor now owns the timer. Exercise its registered
+      // BroadcastChannel wake, not the retired host GatewayScheduler timer.
+      const nextWakeBeforeFuture = (await cron.status()).nextWakeAtMs;
+      clock.setTime(futureAt);
+      await wake(state).catch((error: unknown) => {
+        wakeErrors.push(error);
+      });
+      const automaticObserved = await vi
+        .waitUntil(() => runIsolatedAgentJob.mock.calls.length === 1, {
+          timeout: 2_000,
+          interval: 10,
+        })
+        .then(
+          () => true,
+          () => false,
         );
-      }
-      let automaticObserved = runIsolatedAgentJob.mock.calls.length === 1;
-      if (armedBeforeFuture !== null) {
-        automaticObserved = await vi
-          .waitUntil(() => runIsolatedAgentJob.mock.calls.length === 1, {
-            timeout: 2_000,
-            interval: 10,
-          })
-          .then(
-            () => true,
-            () => false,
-          );
-      }
       const after = (await loadCronStore(store.storePath)).jobs.find(
         (job) => job.id === command.id,
       )?.state;
@@ -147,7 +131,7 @@ describe("L06-F002 startup command isolation", () => {
         commandCompleted: after?.lastRunStatus === "ok",
         wakeErrors,
         startSettled,
-        armedBeforeFuture,
+        nextWakeBeforeFuture,
       };
       expect(observed).toMatchObject({
         automaticObserved: true,
@@ -162,8 +146,9 @@ describe("L06-F002 startup command isolation", () => {
       commandReleased = true;
       release.resolve();
       await observedStarting;
-      await Promise.all(wakes);
       cron.stop();
+      await cron.waitForIdle();
+      await scheduler.stop();
       await store.cleanup();
     }
   });

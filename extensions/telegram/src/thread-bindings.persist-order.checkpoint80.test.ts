@@ -1,9 +1,10 @@
 // Checkpoint-80 regression pack: real SQLite and explicit persistence fault injection.
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { getSessionBindingService } from "openclaw/plugin-sdk/conversation-runtime";
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
-  createPluginStateSyncKeyedStoreForTests,
+  createPluginStateKeyedStoreV2ForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
@@ -17,9 +18,9 @@ import {
 } from "./thread-bindings-store.js";
 import { createTelegramThreadBindingManager } from "./thread-bindings.js";
 
-type Manager = ReturnType<typeof createTelegramThreadBindingManager>;
+type Manager = Awaited<ReturnType<typeof createTelegramThreadBindingManager>>;
 type Binding = ReturnType<Manager["listBindings"]>[number];
-type Store = PluginStateSyncKeyedStore<Binding>;
+type Store = PluginStateKeyedStore<Binding, 2>;
 const cfg = { channels: { telegram: { token: "test-token" } } } as OpenClawConfig;
 const session = "plugin-binding:fixture:old";
 const replacement = "plugin-binding:fixture:new";
@@ -34,9 +35,8 @@ describe("telegram binding durable mutation order", () => {
   let deleteCalls = 0;
   let faultAccount: string | undefined;
 
-  function rows(accountId: string): Binding[] {
-    return sqlite
-      .entries()
+  async function rows(accountId: string): Promise<Binding[]> {
+    return (await sqlite.entries())
       .map((entry) => entry.value)
       .filter((entry) => entry.accountId === accountId);
   }
@@ -44,16 +44,16 @@ describe("telegram binding durable mutation order", () => {
   function faultedStore(): Store {
     return {
       ...sqlite,
-      register(key, value) {
+      register(key, value, options) {
         if (!faultAccount || value.accountId === faultAccount) {
           registerCalls++;
           if (registerCalls === registerFaultAt) {
             throw new Error("injected register fault");
           }
         }
-        return sqlite.register(key, value);
+        return sqlite.register(key, value, options);
       },
-      delete(key) {
+      delete(key, options) {
         // Delete faults are call-indexed; a faulted call never reaches SQLite.
         if (!faultAccount) {
           deleteCalls++;
@@ -61,13 +61,13 @@ describe("telegram binding durable mutation order", () => {
             throw new Error("injected delete fault");
           }
         }
-        return sqlite.delete(key);
+        return sqlite.delete(key, options);
       },
     };
   }
 
-  function manager(accountId = "work", persist = true): Manager {
-    const created = createTelegramThreadBindingManager({
+  async function manager(accountId = "work", persist = true): Promise<Manager> {
+    const created = await createTelegramThreadBindingManager({
       cfg,
       accountId,
       persist,
@@ -105,23 +105,26 @@ describe("telegram binding durable mutation order", () => {
       prefix: "openclaw-telegram-bindings-order-",
     });
     resetPluginStateStoreForTests({ closeDatabase: false });
-    sqlite = createPluginStateSyncKeyedStoreForTests("telegram", {
-      namespace: TELEGRAM_THREAD_BINDINGS_NAMESPACE,
-      maxEntries: TELEGRAM_THREAD_BINDINGS_MAX_ENTRIES,
-    });
-    sqlite.clear();
-    const wrapper = faultedStore();
-    setTelegramRuntime({
-      state: {
-        openSyncKeyedStore: (() => wrapper) as TelegramRuntime["state"]["openSyncKeyedStore"],
+    sqlite = createPluginStateKeyedStoreV2ForTests<Binding>(
+      "telegram",
+      {
+        namespace: TELEGRAM_THREAD_BINDINGS_NAMESPACE,
+        maxEntries: TELEGRAM_THREAD_BINDINGS_MAX_ENTRIES,
       },
-      channel: {},
-    } as TelegramRuntime);
+      { assertCurrent() {} },
+    );
+    await sqlite.clear();
+    const wrapper = faultedStore();
+    const runtime = createPluginRuntimeMock();
+    // Exercise the same asynchronous SQLite-backed API used by the bundled owner.
+    runtime.state.openKeyedStoreV2 = (() =>
+      wrapper) as TelegramRuntime["state"]["openKeyedStoreV2"];
+    setTelegramRuntime(runtime);
   });
 
   afterEach(async () => {
     for (const item of managers) {
-      item.stop();
+      await item.stop();
     }
     clearTelegramRuntimeForTest();
     resetPluginStateStoreForTests();
@@ -129,33 +132,33 @@ describe("telegram binding durable mutation order", () => {
   });
 
   it("CP80-TB01 failed new bind leaves live and SQLite empty", async () => {
-    const owner = manager();
+    const owner = await manager();
     registerFaultAt = 1;
-    await expect(bind("work", "one")).rejects.toThrow();
+    await expect(bind("work", "one")).rejects.toThrow("injected register fault");
     expect(owner.getByConversationId("one")).toBeUndefined();
-    expect(rows("work")).toEqual([]);
+    expect(await rows("work")).toEqual([]);
   });
 
   it("CP80-TB02 failed rebind keeps the old live and SQLite target", async () => {
-    const owner = manager();
+    const owner = await manager();
     await bind("work", "one");
     registerFaultAt = 2;
-    await expect(bind("work", "one", replacement)).rejects.toThrow();
+    await expect(bind("work", "one", replacement)).rejects.toThrow("injected register fault");
     expect(owner.getByConversationId("one")?.targetSessionKey).toBe(session);
-    expect(rows("work")[0]?.targetSessionKey).toBe(session);
+    expect((await rows("work"))[0]?.targetSessionKey).toBe(session);
   });
 
   it("CP80-TB03 failed single unbind retains live and SQLite row", async () => {
-    const owner = manager();
+    const owner = await manager();
     await bind("work", "one");
     deleteFaultAt = 1;
-    await expect(unbindConversation("work", "one")).rejects.toThrow();
+    await expect(unbindConversation("work", "one")).rejects.toThrow("injected delete fault");
     expect(owner.getByConversationId("one")?.targetSessionKey).toBe(session);
-    expect(rows("work").map((row) => row.conversationId)).toEqual(["one"]);
+    expect((await rows("work")).map((row) => row.conversationId)).toEqual(["one"]);
   });
 
   it("CP80-TB04 failed first multi-delete retains every row", async () => {
-    const owner = manager();
+    const owner = await manager();
     await bind("work", "one");
     await bind("work", "two");
     deleteFaultAt = 1;
@@ -165,16 +168,16 @@ describe("telegram binding durable mutation order", () => {
         targetSessionKey: session,
         reason: "fixture",
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("injected delete fault");
     expect(owner.listBySessionKey(session).map((row) => row.conversationId)).toEqual([
       "one",
       "two",
     ]);
-    expect(rows("work").map((row) => row.conversationId)).toEqual(["one", "two"]);
+    expect((await rows("work")).map((row) => row.conversationId)).toEqual(["one", "two"]);
   });
 
   it("CP80-TB05 failed later multi-delete retains only the committed subset", async () => {
-    const owner = manager();
+    const owner = await manager();
     await bind("work", "one");
     await bind("work", "two");
     deleteFaultAt = 2;
@@ -184,61 +187,61 @@ describe("telegram binding durable mutation order", () => {
         targetSessionKey: session,
         reason: "fixture",
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("injected delete fault");
     expect(owner.listBySessionKey(session).map((row) => row.conversationId)).toEqual(["two"]);
-    expect(rows("work").map((row) => row.conversationId)).toEqual(["two"]);
+    expect((await rows("work")).map((row) => row.conversationId)).toEqual(["two"]);
   });
 
   it("CP80-TB06 successful bind installs matching live and SQLite target", async () => {
-    const owner = manager();
+    const owner = await manager();
     await bind("work", "one");
     expect(owner.getByConversationId("one")?.targetSessionKey).toBe(session);
-    expect(rows("work")[0]?.targetSessionKey).toBe(session);
+    expect((await rows("work"))[0]?.targetSessionKey).toBe(session);
   });
 
   it("CP80-TB07 successful unbind removes matching live and SQLite target", async () => {
-    const owner = manager();
+    const owner = await manager();
     await bind("work", "one");
     await unbindConversation("work", "one");
     expect(owner.getByConversationId("one")).toBeUndefined();
-    expect(rows("work")).toEqual([]);
+    expect(await rows("work")).toEqual([]);
   });
 
   it("CP80-TB08 persist:false still changes only live state", async () => {
-    const owner = manager("work", false);
+    const owner = await manager("work", false);
     registerFaultAt = 1;
     deleteFaultAt = 1;
     await bind("work", "one");
     expect(owner.getByConversationId("one")).toBeDefined();
     await unbindConversation("work", "one");
     expect(owner.getByConversationId("one")).toBeUndefined();
-    expect(rows("work")).toEqual([]);
+    expect(await rows("work")).toEqual([]);
     expect(registerCalls).toBe(0);
     expect(deleteCalls).toBe(0);
   });
 
   it("CP80-TB09 restart after failed unbind reloads the retained SQLite row", async () => {
-    const owner = manager();
+    const owner = await manager();
     await bind("work", "one");
     deleteFaultAt = 1;
-    await expect(unbindConversation("work", "one")).rejects.toThrow();
-    owner.stop();
-    const reloaded = manager();
+    await expect(unbindConversation("work", "one")).rejects.toThrow("injected delete fault");
+    await owner.stop();
+    const reloaded = await manager();
     expect(reloaded.getByConversationId("one")?.targetSessionKey).toBe(session);
-    expect(rows("work")[0]?.targetSessionKey).toBe(session);
+    expect((await rows("work"))[0]?.targetSessionKey).toBe(session);
   });
 
   it("CP80-TB10 a fault scoped to one account does not change another account", async () => {
-    const work = manager("work");
-    const personal = manager("personal");
+    const work = await manager("work");
+    const personal = await manager("personal");
     await bind("personal", "same");
     faultAccount = "work";
     registerCalls = 0;
     registerFaultAt = 1;
-    await expect(bind("work", "same")).rejects.toThrow();
+    await expect(bind("work", "same")).rejects.toThrow("injected register fault");
     expect(work.getByConversationId("same")).toBeUndefined();
-    expect(rows("work")).toEqual([]);
+    expect(await rows("work")).toEqual([]);
     expect(personal.getByConversationId("same")?.targetSessionKey).toBe(session);
-    expect(rows("personal")[0]?.targetSessionKey).toBe(session);
+    expect((await rows("personal"))[0]?.targetSessionKey).toBe(session);
   });
 });

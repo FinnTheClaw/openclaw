@@ -140,10 +140,7 @@ describe("memory_search real manager", () => {
       const args = { query: "alpha", corpus: "memory" };
       const originalArgs = structuredClone(args);
       try {
-        const tool = createMemorySearchTool({ config: cfg, agentId: "main" });
-        if (!tool) {
-          throw new Error("memory_search tool missing");
-        }
+        const tool = searchTool(cfg);
         const result = await tool.execute("knn-failure-disclosure", args);
         expect(knn).toHaveBeenCalledOnce();
         expect(knn.mock.calls[0]?.[2].queryVec.some((value) => value !== 0)).toBe(true);

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DiscordError } from "./internal/rest.js";
 import { discordWebMediaMockFactory, makeDiscordRest, requestBody } from "./send.test-harness.js";
 
 vi.mock("openclaw/plugin-sdk/web-media", () => discordWebMediaMockFactory());
@@ -9,7 +10,9 @@ describe("Discord multipart retry fallback", () => {
 
   it("does not replace an ambiguously accepted upload with a new-nonce text send", async () => {
     const { rest, postMock } = makeDiscordRest();
-    const rejected = Object.assign(new Error("upload rejected"), { status: 413 });
+    const rejected = new DiscordError(new Response(null, { status: 413 }), {
+      message: "upload rejected",
+    });
     postMock
       .mockRejectedValueOnce(Object.assign(new Error("response lost"), { status: 502 }))
       .mockRejectedValueOnce(rejected)
@@ -50,7 +53,9 @@ describe("Discord multipart retry fallback", () => {
       .mockRejectedValueOnce(
         Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }),
       )
-      .mockRejectedValueOnce(Object.assign(new Error("upload rejected"), { status: 413 }))
+      .mockRejectedValueOnce(
+        new DiscordError(new Response(null, { status: 413 }), { message: "upload rejected" }),
+      )
       .mockResolvedValueOnce({ id: "fallback-text", channel_id: "789" });
     const result = await sendMessageDiscord("channel:789", "report", {
       cfg: { channels: { discord: { token: "synthetic-token" } } },
