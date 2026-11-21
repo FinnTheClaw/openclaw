@@ -1,14 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { Check } from "typebox/value";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { contract } from "./contract.js";
 import { createKnowledgeService } from "./service.js";
-import { operatorContext, storeFixture, toolContext, useTestTempDirs } from "./test-support.js";
+import { KnowledgeStorage } from "./storage.js";
+import {
+  accessFor,
+  operatorContext,
+  storeFixture,
+  toolContext,
+  useTestTempDirs,
+} from "./test-support.js";
 
 const tempDirs = useTestTempDirs();
 
 async function fixture() {
-  const { api } = await storeFixture(tempDirs.make("knowledge-relink-"), {
+  const { api, config } = await storeFixture(tempDirs.make("knowledge-relink-"), {
     policy: { writesEnabled: true, operatorRead: true },
   });
   const service = createKnowledgeService(api),
@@ -34,7 +41,7 @@ async function fixture() {
   };
   const entities = async (id: any) =>
     (await service.record({ id, includeMetadata: true }, owner)).record!.metadata!.entities;
-  return { service, owner, operator, page, remember, relink, entities };
+  return { config, service, owner, operator, page, remember, relink, entities };
 }
 
 it("relink links unique mentions, leaves ambiguous and unnamed claims, and a repeat pass links nothing", async () => {
@@ -90,6 +97,31 @@ it("relink links unique mentions, leaves ambiguous and unnamed claims, and a rep
     "Linked claims leave the candidate set; nothing new links",
   ).toStrictEqual([3, 0, 0]);
   expect(nimbus.id).toBeTruthy();
+});
+
+it("relink counts a resolved publication conflict as failed, not linked", async () => {
+  const f = await fixture();
+  const claim = (await f.remember("Atlas Labs moved its launch to March.")).items[0]!;
+  const subject = await f.page("Atlas Labs", "company");
+  const storage = new KnowledgeStorage(f.config);
+  const annotate = vi.spyOn(storage, "annotate").mockImplementation(async (input) => ({
+    requestId: input.requestId,
+    state: "conflict",
+    id: input.id,
+    path: "claims/launch.md",
+    revision: input.expectedRevision + 1,
+    hash: input.expectedHash,
+    at: "2026-10-20T00:00:00Z",
+    message: "Concurrent filesystem change preserved.",
+    indexed: false,
+  }));
+  const result = await storage.relink({}, accessFor(f.owner, true), "agent");
+  expect(annotate).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ id: claim.id, entities: [subject.id] }),
+    expect.anything(),
+    "agent",
+  );
+  expect(result).toMatchObject({ scanned: 1, failed: 1, linked: 0, examples: [] });
 });
 
 it("relink uses a recorded source entity page, pages with a cursor, and only runs through agent tools", async () => {

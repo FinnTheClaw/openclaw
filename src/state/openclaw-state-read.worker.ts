@@ -77,7 +77,8 @@ const read: WorkerTaskHandler<OpenClawStateReadReply> = async function read(
       input.command.type === "subagents.sessionList";
     const prepared = dedicatedRead ? undefined : stateReadRegistry.prepare(input.command.type);
     if (prepared) {
-      return prepared.then(() => read(input, channel, control));
+      await prepared;
+      return read(input, channel, control);
     }
     const handlers =
       dedicatedRead || stateReadRegistry.has(input.command)

@@ -349,6 +349,30 @@ it.each([
   expect(mock.query).toHaveBeenCalledTimes(outcome === "schema-error" ? 0 : 1);
 });
 
+it("reports a typed before-read failure when the registered handler loader rejects", async () => {
+  const load = vi.fn(() => {
+    throw new Error("Controlled provenance loader failure");
+  });
+  vi.doMock("./agent-provenance.kernel.js", load);
+  try {
+    const input = {
+      ...request,
+      command: { type: "agentProvenance.list", input: undefined },
+    } satisfies OpenClawStateReadRequest;
+    await expect(mock.handler(input)).resolves.toMatchObject({
+      ok: false,
+      sourceAdmitted: undefined,
+      message: expect.any(String),
+      error: { version: 1 },
+    });
+    expect(load).toHaveBeenCalledOnce();
+    expect(mock.admit).not.toHaveBeenCalled();
+    expect(mock.open).not.toHaveBeenCalled();
+  } finally {
+    vi.doUnmock("./agent-provenance.kernel.js");
+  }
+});
+
 describe.each([
   { type: "subagents.restore" },
   {

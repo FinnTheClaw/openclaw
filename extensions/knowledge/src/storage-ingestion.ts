@@ -413,7 +413,7 @@ export class StorageIngestion extends StorageLifecycle {
       let outcome: RelinkExample["outcome"] | "failed" = plan.outcome;
       if (plan.outcome === "linked" && !dryRun) {
         try {
-          await this.annotate(
+          const receipt = await this.annotate(
             {
               requestId: relinkRequestId(plan.record, plan.subject!.id),
               id: plan.record.id,
@@ -426,8 +426,10 @@ export class StorageIngestion extends StorageLifecycle {
             access,
             actor,
           );
+          if (receipt.state !== "published") {
+            outcome = "failed";
+          }
         } catch (e) {
-          // A changed or conflicting claim stays unlinked; the next pass re-plans it.
           if (
             /authority|reloaded|assignment changed|disabled|identity or storage/i.test(
               // SAFETY: publication failures are Error instances.
@@ -436,11 +438,14 @@ export class StorageIngestion extends StorageLifecycle {
           ) {
             throw e;
           }
-          failed++;
           outcome = "failed";
         }
       }
-      if (outcome === "failed" || (shown[outcome] ?? 0) >= RELINK_EXAMPLES_MAX) {
+      if (outcome === "failed") {
+        failed++;
+        continue;
+      }
+      if ((shown[outcome] ?? 0) >= RELINK_EXAMPLES_MAX) {
         continue;
       }
       shown[outcome] = (shown[outcome] ?? 0) + 1;
@@ -469,7 +474,7 @@ export class StorageIngestion extends StorageLifecycle {
       failed,
       examples,
       nextCursor,
-      message: `${plans.length} unlinked remembered claims examined: ${linked} ${verb}, ${ambiguous} ambiguous, ${noSubject} with no entity page named${failed ? `, ${failed} not linked because the claim changed (retried next pass)` : ""}.${nextCursor ? " More remain; continue with nextCursor." : ""}`,
+      message: `${plans.length} unlinked remembered claims examined: ${linked} ${verb}, ${ambiguous} ambiguous, ${noSubject} with no entity page named${failed ? `, ${failed} not linked because publication did not complete` : ""}.${nextCursor ? " More remain; continue with nextCursor." : ""}`,
     };
   }
 }
