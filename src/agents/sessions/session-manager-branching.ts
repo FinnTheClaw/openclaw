@@ -1,6 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { publishCommittedSessionIdentity } from "../../config/sessions/session-accessor.sqlite-identity.js";
+import { resolveSqliteSessionKey } from "../../config/sessions/session-accessor.sqlite-scope-helpers.js";
 import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import { targetDiscoveryLane } from "../../config/sessions/session-transcript-worker-resources.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
@@ -246,6 +247,7 @@ export class SessionManagerBranching extends SessionManagerMetadata {
           assertCurrent();
           assertDestinationOwned();
         };
+        const committedSessionKey = resolveSqliteSessionKey(scope.sessionKey, scope.agentId);
         let adopted = false;
         const receipt = await receiveSessionManagerCommit("session.transcript.branch", () =>
           withSessionMetadataWorker(
@@ -268,7 +270,7 @@ export class SessionManagerBranching extends SessionManagerMetadata {
                   .find(
                     (fact) =>
                       fact.kind === "postimage" &&
-                      fact.value.sessionKey === scope.sessionKey &&
+                      fact.value.sessionKey === committedSessionKey &&
                       fact.value.sessionId === newSessionId,
                   );
                 if (transcript?.kind !== "postimage") {

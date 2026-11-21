@@ -9,7 +9,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { assistantText, expectCancelledReads } from "./session-manager-fixtures.test-support.js";
 import { readSessionManagerModelContextAsync } from "./session-manager-incognito.js";
-import { withSessionMetadataWorker } from "./session-manager-metadata-runtime.js";
+import * as metadataRuntime from "./session-manager-metadata-runtime.js";
 import { receiveSessionManagerCommit } from "./session-manager-persistence-error.js";
 import { withSessionManagerWrite } from "./session-manager-write-admission.js";
 import { SessionManager } from "./session-manager.js";
@@ -142,6 +142,104 @@ it("adopts its branch's new actor window and keeps subsequent writes on that own
   });
   await current.release();
 });
+
+it.each(["canonical", "mixed-case"] as const)(
+  "adopts a canonical branch postimage for a %s session key",
+  async (spelling) => {
+    const { target, run } = await actorFixture(`branch-postimage-${spelling}`);
+    const sessionKey =
+      spelling === "canonical"
+        ? target.sessionKey
+        : target.sessionKey.replace(":dashboard:", ":Dashboard:");
+    const manager = await run(() => SessionManager.openAsync({ ...target, sessionKey }));
+    expect(manager.getSessionTarget()?.sessionKey).toBe(sessionKey);
+    const selected = await manager.appendMessageAsync(userMessage("retained", 1));
+    assert(selected, "Missing fixture branch entry");
+
+    const original = metadataRuntime.withSessionMetadataWorker;
+    const publishCanonicalPostimage: typeof original = (
+      options,
+      database,
+      assertCurrent,
+      operation,
+      controls,
+    ) =>
+      original(
+        options,
+        database,
+        assertCurrent,
+        (worker) =>
+          operation({
+            async execute(command, commandOptions) {
+              const result = await worker.execute(command, commandOptions);
+              if (command.type === "session.transcript.branch" && "branch" in command.input) {
+                assert(controls?.beforeIdentityPublication, "Missing branch publication callback");
+                assert(
+                  result && typeof result === "object" && "version" in result && result.version,
+                  "Missing committed branch version",
+                );
+                // Deliver the synthetic memory commit as the durable callback would:
+                // its postimage carries the canonical key, not the caller's spelling.
+                controls.beforeIdentityPublication({
+                  kind: "session-manager-authority",
+                  entryPublication: [],
+                  conversationPublication: [],
+                  transcriptPublication: [
+                    {
+                      version: 1,
+                      operationId: "synthetic-branch",
+                      domain: "session-transcript-context",
+                      source: {
+                        identity: "synthetic-branch-store",
+                        birthtime: undefined,
+                        incarnation: "synthetic",
+                        filename: target.storePath,
+                      },
+                      facts: new Map([
+                        [
+                          target.sessionKey,
+                          {
+                            kind: "postimage",
+                            value: {
+                              ...result.version,
+                              sessionKey: target.sessionKey,
+                              sessionId: command.input.branch.sessionId,
+                              leafEventId: selected,
+                              indexedSeq: null,
+                              activeMessageCount: null,
+                              needsRebuild: null,
+                            },
+                          },
+                        ],
+                      ]),
+                    },
+                  ],
+                });
+              }
+              return result;
+            },
+          }),
+        controls,
+      );
+    const worker = vi
+      .spyOn(metadataRuntime, "withSessionMetadataWorker")
+      .mockImplementation(publishCanonicalPostimage);
+    try {
+      const branchId = await manager.createBranchedSession(selected);
+      expect(branchId).toBeDefined();
+      expect(branchId).not.toBe(target.sessionId);
+      expect(manager.getSessionTarget()?.sessionId).toBe(branchId);
+      expect(manager.getSessionId()).toBe(branchId);
+      expect(manager.getLeafId()).toBe(selected);
+      expect(manager.getHeader()).toMatchObject({
+        id: branchId,
+        parentSession: target.sessionId,
+      });
+    } finally {
+      worker.mockRestore();
+    }
+  },
+);
 
 it("keeps a detached context snapshot while an in-process append becomes visible on the next read", async () => {
   const { target, run, read, manager } = await fixture("snapshot");
@@ -334,7 +432,7 @@ it("retains a committed initial-writer receipt when its host publication throws"
     withSessionManagerWrite(manager, async (admission) => {
       assert(admission, "Missing write admission");
       return receiveSessionManagerCommit("session.metadata.initialize", () =>
-        withSessionMetadataWorker(
+        metadataRuntime.withSessionMetadataWorker(
           admission.options,
           admission.database,
           () => admission.assertCurrent(),
