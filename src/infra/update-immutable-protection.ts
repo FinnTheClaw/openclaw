@@ -20,6 +20,7 @@ import {
 } from "./update-immutable-protection-schema.js";
 
 type ProtectionContext = { env: NodeJS.ProcessEnv; assertCurrent: () => void };
+type ProtectedConfigFile = ImmutableProtectionSnapshot["config"][number];
 
 function fileIdentity(file: string) {
   const stat = fs.lstatSync(file);
@@ -29,9 +30,9 @@ function fileIdentity(file: string) {
   return immutableProtectedFileIdentitySchema.parse(resolveConfigStatMetadata(stat));
 }
 
-function fingerprint(raw: string, env: NodeJS.ProcessEnv): ConfigFingerprint {
+function fingerprint(raw: string, env: NodeJS.ProcessEnv, allowArray: boolean): ConfigFingerprint {
   const parsed = parseConfigJson5(raw);
-  if (!parsed.ok || !isRecord(parsed.parsed)) {
+  if (!parsed.ok || !(isRecord(parsed.parsed) || (allowArray && Array.isArray(parsed.parsed)))) {
     throw new Error("Immutable update requires a readable object-shaped config.");
   }
   const result = immutableConfigFingerprintSchema.safeParse(
@@ -118,7 +119,7 @@ function isAdditive(
     : isDeepStrictEqual(before, after);
 }
 
-function readFile(file: ImmutableProtectionSnapshot["config"][number], env: NodeJS.ProcessEnv) {
+function readFile(file: ProtectedConfigFile, env: NodeJS.ProcessEnv, allowArray: boolean) {
   assertConfigFileWritePathSnapshot(file.pathProof, fs);
   const before = fileIdentity(file.pathProof.targetPath);
   const raw = fs.readFileSync(file.pathProof.targetPath, "utf8");
@@ -127,7 +128,8 @@ function readFile(file: ImmutableProtectionSnapshot["config"][number], env: Node
   if (!isDeepStrictEqual(before, after)) {
     throw new Error("Protected config identity changed during verification.");
   }
-  return { identity: after, hash: hashConfigRaw(raw), fingerprint: fingerprint(raw, env) };
+  const value = fingerprint(raw, env, allowArray);
+  return { identity: after, hash: hashConfigRaw(raw), fingerprint: value };
 }
 
 function assertState(snapshot: ImmutableProtectionSnapshot): void {
@@ -175,7 +177,7 @@ export async function captureImmutableProtection(
     const proof =
       file.pathSnapshot ??
       captureConfigFileWritePathProof(file.path, fs.realpathSync(file.path), fs).snapshot;
-    const value = fingerprint(file.raw, env);
+    const value = fingerprint(file.raw, env, index !== 0);
     return {
       path: file.path,
       pathProof: proof,
@@ -209,7 +211,7 @@ export function assertImmutableProtectionUnchanged(
   context.assertCurrent();
   assertState(snapshot);
   for (const file of snapshot.config) {
-    const current = readFile(file, context.env);
+    const current = readFile(file, context.env, file !== snapshot.config[0]);
     if (current.hash !== file.hash || !isDeepStrictEqual(current.identity, file.identity)) {
       throw new Error(
         "Protected configuration changed before immutable cutover; the Gateway remains on its previous generation.",
@@ -228,7 +230,7 @@ export function verifyImmutableProtection(
   context.assertCurrent();
   assertState(snapshot);
   for (const file of snapshot.config) {
-    const current = readFile(file, context.env);
+    const current = readFile(file, context.env, file !== snapshot.config[0]);
     if (current.hash === file.hash && isDeepStrictEqual(current.identity, file.identity)) {
       continue;
     }

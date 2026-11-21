@@ -78,6 +78,32 @@ describe("immutable activation protected identities", () => {
     expect(fs.readFileSync(test.configPath, "utf8")).toContain("legacyWebhook");
   });
 
+  it("captures an ordinary array-valued include while requiring an object root", async () => {
+    const test = await fixture();
+    const fallbacks = ["openai/gpt-5.4-mini"];
+    test.migrate(fallbacks);
+    await expect(test.capture()).rejects.toThrow(/readable object-shaped config/u);
+
+    const includePath = path.join(test.root, "fallbacks.json5");
+    const includeRaw = JSON.stringify(fallbacks);
+    fs.writeFileSync(includePath, includeRaw, { mode: 0o600 });
+    const rootConfig = {
+      ...test.config,
+      agents: { defaults: { model: { fallbacks: { $include: "./fallbacks.json5" } } } },
+    };
+    test.migrate(rootConfig);
+
+    const captured = await test.capture();
+    expect(captured.config.map((file) => file.path)).toEqual([test.configPath, includePath]);
+    expect(captured.config[1]?.fingerprint).toEqual(
+      await fingerprintConfigSnapshotAuthoredConfig(fallbacks, { env: test.context.env }),
+    );
+    expect(() => assertImmutableProtectionUnchanged(captured, test.context)).not.toThrow();
+    expect(() => verifyImmutableProtection(captured, test.context)).not.toThrow();
+    expect(fs.readFileSync(test.configPath, "utf8")).toBe(JSON.stringify(rootConfig));
+    expect(fs.readFileSync(includePath, "utf8")).toBe(includeRaw);
+  });
+
   it("refuses permission changes in an otherwise additive startup migration", async () => {
     const test = await fixture();
     test.migrate(test.additive());
