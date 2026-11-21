@@ -311,6 +311,41 @@ it("prepares the final persisted index off thread even after the lease cached an
   ]);
 });
 
+it("rejects a second plugin batch finish after a successful runtime handoff", async () => {
+  const lifecycleLease = await import("./plugin-lifecycle-lease.js");
+  const assertCurrent = vi.fn();
+  const assertOwned = vi.fn(async () => {});
+  const lease = {
+    databasePath: "fixture-state.sqlite",
+    assertCurrent,
+    assertOwned,
+    stateLease: {
+      signal: new AbortController().signal,
+      assertCurrent,
+      assertOwned,
+      renew: vi.fn(async () => {}),
+    },
+  };
+  using _withLease = vi
+    .spyOn(lifecycleLease, "withPluginLifecycleLeaseAsync")
+    .mockImplementation((_options, run) => run(lease));
+  const index = createInstalledPluginIndex({
+    plugins: [],
+    installRecords: recordsAt("/fixture/plugin"),
+  });
+  using _readIndex = vi
+    .spyOn(metadataWorker, "readPluginMetadataStateRow")
+    .mockResolvedValue({ value_json: JSON.stringify({ index }) });
+  const reload = vi.fn(async () => applied());
+  const batch = new PluginInstallRuntimeBatch({}, reload);
+  batch.retain("fixture");
+  await batch.prepare(lease);
+
+  await expect(batch.finish(() => {})).resolves.toEqual(applied());
+  await expect(batch.finish(() => {})).rejects.toThrow("handoff already started");
+  expect(reload).toHaveBeenCalledOnce();
+});
+
 it("refuses publication when authority is revoked during the real index read", async () => {
   const { env, records, reload, batch } = await preparationFixture();
   const deferred = batch.install();

@@ -71,6 +71,7 @@ export class PluginInstallRuntimeBatch {
   private targets: PluginInstallBatchTarget[] = [];
   private readonly retained = new Set<string>();
   private databasePath?: string;
+  private handoffConsumed = false;
 
   constructor(
     private readonly options: Pick<OpenClawStateDatabaseOptions, "env" | "path" | "database">,
@@ -82,6 +83,7 @@ export class PluginInstallRuntimeBatch {
   }
 
   close(): void {
+    this.handoffConsumed = true;
     for (const entry of this.installs.splice(0)) {
       entry.commit = undefined;
       entry.cleanups.length = 0;
@@ -214,9 +216,10 @@ export class PluginInstallRuntimeBatch {
 
   /** The caller must leave every batch lease before invoking the captured runtime client. */
   async finish(warn: (message: string) => void): Promise<PluginRuntimeApplication | undefined> {
-    if (!this.databasePath || hasPluginLifecycleLease()) {
+    if (!this.databasePath || this.handoffConsumed || hasPluginLifecycleLease()) {
       throw new Error("Plugin batch was not prepared or its handoff already started");
     }
+    this.handoffConsumed = true;
     const targets = this.targets;
     let application: PluginRuntimeApplication | undefined;
     try {
