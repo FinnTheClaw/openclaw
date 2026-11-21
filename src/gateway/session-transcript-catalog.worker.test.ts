@@ -2,8 +2,10 @@ import type { StatementSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.sqlite-entry.js";
+import type { SessionTranscriptMessageEventPage } from "../config/sessions/session-accessor.sqlite-projection-read.js";
 import { appendTranscriptMessage } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
+import * as sessionEntryReads from "../config/sessions/session-entry-read-runtime.js";
 import * as historyWorker from "../config/sessions/session-history-worker-runtime.js";
 import { waitForSessionTranscriptProjection } from "../config/sessions/session-transcript-reconcile.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
@@ -91,5 +93,71 @@ it("reads catalog titles and cursor pages in workers and observes later transcri
       historyReads.mockRestore();
       observers.forEach((observer) => observer.mockRestore());
     }
+  });
+});
+
+it("does not duplicate catalog items when a transcript append shifts an internal page", async () => {
+  const target = {
+    agentId: "main",
+    sessionId: "catalog-append",
+    sessionKey: "agent:main:catalog-append",
+    storePath: "/tmp/synthetic-catalog-append.sqlite",
+  };
+  using entryRead = vi
+    .spyOn(sessionEntryReads, "withSessionEntryReadOnlyInWorker")
+    .mockImplementation(async (_scope, assertCurrent, consume) =>
+      consume(
+        { ok: true, value: { sessionId: target.sessionId, updatedAt: 1 } },
+        { kind: "file", assertCurrent },
+      ),
+    );
+  const row = (seq: number, text: string, visible = true) => ({
+    seq,
+    eventSeq: seq,
+    event: {
+      type: "message",
+      id: `row-${seq}`,
+      message: visible
+        ? { role: "user", content: text }
+        : { role: "assistant", content: text, display: false },
+    },
+  });
+  const boundary = row(4, "Boundary item");
+  const first: SessionTranscriptMessageEventPage = {
+    displaySource: "synthetic-display-source",
+    activeLeafEntryId: "row-7",
+    totalMessages: 7,
+    events: [boundary, row(5, "Hidden", false), row(6, "Hidden", false), row(7, "Hidden", false)],
+  };
+  // Row 8 appends to the same session without replacing its generation. The next
+  // offset was computed from seven rows, so the eight-row source includes row 4 again.
+  const second: SessionTranscriptMessageEventPage = {
+    displaySource: first.displaySource,
+    activeLeafEntryId: "row-8",
+    totalMessages: 8,
+    events: [row(2, "Earlier item"), row(3, "Previous item"), boundary],
+  };
+  using historyReads = vi
+    .spyOn(historyWorker, "readSessionHistoryPageInWorker")
+    .mockRejectedValue(new Error("Unexpected additional history read"))
+    .mockResolvedValueOnce(first)
+    .mockResolvedValueOnce(second);
+  const result = await catalog
+    .readSessionTranscriptCatalogPage({
+      ...target,
+      limit: 3,
+      sourceDomain: "catalog-test",
+      pluginId: "session-share",
+    })
+    .then(
+      ({ items }) => ({ texts: items.map((item) => item.text) }),
+      (error: unknown) => ({ error }),
+    );
+  expect(entryRead).toHaveBeenCalledTimes(1);
+  expect(historyReads).toHaveBeenCalledTimes(2);
+  expect(result).toEqual({
+    error: expect.objectContaining({
+      message: "Session transcript changed during this read; retry the page.",
+    }),
   });
 });

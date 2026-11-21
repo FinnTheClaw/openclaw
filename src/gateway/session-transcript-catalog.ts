@@ -232,7 +232,7 @@ async function readCatalogPageFromEntry(
     offset: 0,
     maxMessages: cursor ? 1 : params.limit + 1,
   });
-  const { totalMessages, displaySource } = page;
+  const { totalMessages, displaySource, activeLeafEntryId } = page;
   if (
     cursor &&
     (cursor.scope !== scopeHash ||
@@ -274,6 +274,14 @@ async function readCatalogPageFromEntry(
         offset: totalMessages - before,
         maxMessages: Math.min(before, limit + 1),
       });
+      // These offsets use the first page's total, so each page must match that snapshot.
+      if (
+        page.displaySource !== displaySource ||
+        page.activeLeafEntryId !== activeLeafEntryId ||
+        page.totalMessages !== totalMessages
+      ) {
+        throw new Error("Session transcript changed during this read; retry the page.");
+      }
     }
     const projected = projectChatDisplayMessages(page.events.map(sqliteMessageEventWithSeq), {
       maxChars: MAX_CATALOG_TEXT_CHARS,
