@@ -66,7 +66,14 @@ function checkCssValue(prop, value) {
   if (/^overflow(-[xy])?$/.test(prop) && /\b(auto|scroll|overlay)\b/i.test(v)) fail("CSS \"" + short(where) + "\": widgets cannot scroll; Telegram turns this into overflow: hidden and cuts the rest off. Show fewer items, or split them with tabs or <details>.");
   if (prop === "position" && /sticky/i.test(v)) fail("CSS \"" + short(where) + "\": position: sticky is not supported in widgets.");
   if (/(^|[^\w-])(color-mix|oklch|oklab)\(/i.test(v)) fail("CSS \"" + short(where) + "\": color-mix(), oklch() and oklab() are not supported. Use theme variables or hex colors.");
-  if (/url\(\s*['"]?(?!data:|#)/i.test(v)) fail("CSS \"" + short(where) + "\": widgets have no network, so external url() resources never load. Inline a data: URL or drop it.");
+  // Consume CSS whitespace and an opening quote before classifying each URL prefix.
+  var urlStart = /url\([ \t\r\n\f]*['"]?/gi;
+  while (urlStart.exec(v)) {
+    var start = urlStart.lastIndex;
+    if (/^(?:data:|#)/i.test(v.slice(start, start + 5))) continue;
+    fail("CSS \"" + short(where) + "\": widgets have no network, so external url() resources never load. Inline a data: URL or drop it.");
+    break;
+  }
   if (/\b(undefined|NaN)\b/.test(v)) warn("CSS \"" + short(where) + "\" " + context + ": a computed style value is undefined or NaN, so that element renders wrong. Check the data the code reads.");
 }
 var sheetCache = new Map();

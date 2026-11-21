@@ -1,4 +1,4 @@
-import { getRuntimeConfigSnapshot } from "../../config/config.js";
+import { captureRuntimeConfigAsyncReader, getRuntimeConfigSnapshot } from "../../config/config.js";
 import { loadFacadeModuleAtLocationSync } from "../../plugin-sdk/facade-loader.js";
 import { shouldRejectHardlinkedPluginFiles } from "../hardlink-policy.js";
 import { getPluginInstance } from "../plugin-instance-scope.js";
@@ -8,11 +8,22 @@ import { getPluginRegistryForContext } from "./gateway-request-scope.js";
 
 /** Package-root embedding API; runtime instances and cold callers share the public-surface loader. */
 export async function monitorWebChannel(...args: unknown[]): Promise<unknown> {
-  const registry = getPluginRegistryForContext();
+  let registry = getPluginRegistryForContext();
+  let config = registry ? null : getRuntimeConfigSnapshot();
+  if (!registry && !config) {
+    try {
+      config = await captureRuntimeConfigAsyncReader()();
+    } catch {
+      // Preserve default discovery when cold config cannot be loaded.
+    }
+    // A runtime published during config preparation owns selection now.
+    registry = getPluginRegistryForContext();
+    config = getRuntimeConfigSnapshot() ?? config;
+  }
   // An admitted runtime never falls back to installed bytes after disable or uninstall.
   const records = registry
     ? registry.plugins.filter((record) => record.status === "loaded")
-    : resolvePluginMetadataSnapshot({ config: getRuntimeConfigSnapshot() ?? {} }).plugins;
+    : resolvePluginMetadataSnapshot({ config: config ?? {} }).plugins;
   const matches = records.flatMap((record) => {
     const pluginRoot = record.rootDir;
     if (!pluginRoot) {

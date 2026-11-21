@@ -3,6 +3,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import * as runtimeConfig from "../../config/config.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -276,8 +277,14 @@ it.each([
 ] as const)(
   "loads a cold TypeScript embedding from $location with entry sidecar precedence (prepared config: $preparedConfig)",
   async ({ location, preparedConfig }) => {
-    if (!preparedConfig) {
+    const config = { plugins: { load: { paths: [root] } } };
+    if (preparedConfig) {
+      setRuntimeConfigSnapshot(config);
+    } else {
       clearRuntimeConfigSnapshot();
+      vi.spyOn(runtimeConfig, "captureRuntimeConfigAsyncReader").mockReturnValue(
+        Object.assign(async () => config, { assertCurrent() {} }),
+      );
     }
     const entryDirectory = path.join(root, "entry");
     fs.mkdirSync(entryDirectory);
@@ -289,6 +296,7 @@ it.each([
     }
     coldOwner(root, "cold-owner", path.join(entryDirectory, "index.ts"));
     await expect(monitorWebChannel("argument")).resolves.toEqual(["cold", "lazy-cold", "argument"]);
+    expect(resolvePluginMetadataSnapshot).toHaveBeenCalledWith(expect.objectContaining({ config }));
   },
 );
 

@@ -92,6 +92,21 @@ TelegramWidget.onEvent('chatDataChanged',draw);draw();</script>`;
     );
   });
 
+  it.each([
+    [
+      "a quoted inline image",
+      'p{background-image:url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")}',
+      "<p>Vote</p>",
+    ],
+    [
+      "a quoted SVG fragment",
+      "rect{fill:url('#accent')}",
+      '<svg><defs><linearGradient id="accent"><stop stop-color="red"/></linearGradient></defs><rect width="20" height="20"/></svg>',
+    ],
+  ])("accepts CSS url() with %s", async (_label, css, markup) => {
+    expect(await check(`<style>${css}</style>${markup}`)).toEqual({ errors: [], warnings: [] });
+  });
+
   it("supports TextEncoder and does not judge widgets using unmodeled web APIs", async () => {
     const encode = `<p id=o></p><script>document.getElementById('o').textContent=new TextEncoder().encode('vote').length;</script>`;
     expect(await check(encode)).toMatchObject({ errors: [] });
@@ -116,7 +131,7 @@ TelegramWidget.onEvent('chatDataChanged',draw);draw();</script>`;
 
   it("reports requests outside a tap and removed or network-bound content", async () => {
     const { errors } = await check(
-      `<style>.a{height:50vh}.l{overflow-y:auto}</style><input><img src="https://x/y.png"><script>TelegramWidget.request('boot');</script>`,
+      `<style>.a{height:50vh}.l{overflow-y:auto}.b{background-image:url("https://example.invalid/widget.png")}</style><input><img src="https://x/y.png"><script>TelegramWidget.request('boot');</script>`,
     );
     expect(errors).toEqual(
       expect.arrayContaining([
@@ -125,6 +140,7 @@ TelegramWidget.onEvent('chatDataChanged',draw);draw();</script>`;
         expect.stringMatching(/^<img src=/),
         expect.stringMatching(/vh units/),
         expect.stringMatching(/widgets cannot scroll/),
+        expect.stringMatching(/external url\(\) resources never load/),
       ]),
     );
   });
