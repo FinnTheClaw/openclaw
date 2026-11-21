@@ -65,7 +65,7 @@ import {
   resolveActiveMemoryBackendConfig as resolveBackend,
 } from "./memory-runtime.js";
 import { resetStandaloneMemoryRegistrySlot } from "./memory-runtime.test-support.js";
-import { hasMemoryRuntime } from "./memory-state.js";
+import { hasMemoryRuntime, resolveLoadedMemoryProviderKind } from "./memory-state.js";
 
 function createRuntime() {
   return {
@@ -282,12 +282,18 @@ describe("memory runtime handles", () => {
         manager: null,
         error: capability === "missing" ? "memory plugin unavailable" : "no index",
       });
+      expect(resolveLoadedMemoryProviderKind(memoryConfig)).toBe(
+        capability === "present" ? "legacy" : undefined,
+      );
       await retirePluginCache(cache);
       expect(first.instance.lifecycle.signal.aborted).toBe(true);
+      expect(resolveLoadedMemoryProviderKind(memoryConfig)).toBeUndefined();
+      expect(mocks.loadPluginRegistryHandle).toHaveBeenCalledTimes(1);
 
       for (let query = 0; query < 2; query += 1) {
         await expect(acquire()).resolves.toMatchObject({ manager: null, error: "no index" });
       }
+      expect(resolveLoadedMemoryProviderKind(memoryConfig)).toBe("legacy");
       expect(replacement.runtime.getMemorySearchManager).toHaveBeenCalledTimes(2);
       expect(replacement.instance.lifecycle.signal.aborted).toBe(false);
       await closeAll();

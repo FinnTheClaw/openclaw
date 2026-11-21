@@ -241,6 +241,10 @@ function ensureMemoryRuntime(params: {
           if (slot?.providerRuntime === ownedRuntime) {
             delete slot.providerRuntime;
           }
+          if (slot && !slot.runtime && !slot.providerRuntime) {
+            // The loaded-only owner fact must not outlive its last runtime.
+            setStandaloneMemoryOwner(undefined);
+          }
         });
         // Selection resets do not end the instance lifetime or remove its existing pruning callback.
         enrolledStandaloneMemoryRuntimes.add(ownedRuntime);
