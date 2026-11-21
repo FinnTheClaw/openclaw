@@ -482,7 +482,14 @@ it.each([false, true])(
           storePath: persisted ? scope.storePath : undefined,
         }),
       ).toBe(explicit);
-      expect(sessionStore[sessionKey]).toMatchObject(pinned);
-      if (persisted) expect(readSession(scope)).toMatchObject(pinned);
+      const entries = [stale, sessionStore[sessionKey]];
+      if (persisted) entries.push(readSession(scope)!);
+      for (const entry of entries) {
+        expect(entry).toMatchObject({
+          authProfileOverride: explicit,
+          authProfileOverrideSource: "user",
+        });
+        expect(entry.authProfileOverrideCompactionCount).toBeUndefined();
+      }
     }),
 );
