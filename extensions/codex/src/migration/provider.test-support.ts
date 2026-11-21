@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   clearRuntimeAuthProfileStoreSnapshots,
@@ -198,7 +199,7 @@ function loadTargetAuthStore(fixture: { stateDir: string }, agentId = "main") {
 
 async function createCodexTestRoot(): Promise<string> {
   const workspace = await tempWorkspace({
-    rootDir: resolvePreferredOpenClawTmpDir(),
+    rootDir: resolvePreferredOpenClawTmpDir({ preferredDir: path.join(os.tmpdir(), "openclaw") }),
     prefix: "openclaw-migrate-codex-",
   });
   tempWorkspaces.push(workspace);
