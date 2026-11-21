@@ -441,6 +441,11 @@ it("closes generic and explicit candidate-family readers without releasing unrel
       (error: unknown) => error instanceof AggregateError && causes(error).includes(failure),
     );
     expect(reopened.isOpen).toBe(true);
+    const readBeforeRetry = vi.fn();
+    expect(() =>
+      scope.run(options(sibling), () => readAgentDb(readBeforeRetry, options(sibling))),
+    ).toThrow("Agent read-only database native cleanup is pending");
+    expect(readBeforeRetry).not.toHaveBeenCalled();
     close.mockRestore();
     await closeReaders();
     expect(reopened.isOpen).toBe(false);

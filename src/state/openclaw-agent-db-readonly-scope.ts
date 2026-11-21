@@ -63,6 +63,7 @@ export class OpenClawAgentDatabaseReadOnlyScope {
   private idleTimer?: ReturnType<typeof setTimeout>;
   private unregisterResource?: () => void;
   private borrowers = 0;
+  private closing = false;
 
   constructor(private readonly cached = false) {}
 
@@ -89,6 +90,8 @@ export class OpenClawAgentDatabaseReadOnlyScope {
   }
 
   close(): void {
+    // A failed native close retains the handle for retry, not for reuse.
+    this.closing = true;
     clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
     this.database?.close();
@@ -107,6 +110,7 @@ export class OpenClawAgentDatabaseReadOnlyScope {
       retainedScopes.unregisterExit?.();
       retainedScopes.unregisterExit = undefined;
     }
+    this.closing = false;
   }
 
   private discardConnection(): void {
@@ -239,7 +243,14 @@ export class OpenClawAgentDatabaseReadOnlyScope {
     }
   }
 
+  private assertUsable(): void {
+    if (this.closing) {
+      throw new Error("Agent read-only database native cleanup is pending");
+    }
+  }
+
   retain(options: OpenClawAgentDatabaseOptions) {
+    this.assertUsable();
     const opened =
       this.database?.db.isOpen && this.database.db.isTransaction
         ? openOpenClawAgentDatabaseReadOnly(options)
@@ -270,6 +281,7 @@ export class OpenClawAgentDatabaseReadOnlyScope {
     options: OpenClawAgentDatabaseOptions,
     behavior: OpenClawAgentDatabaseReadOnlyBehavior = {},
   ): OpenClawAgentDatabaseReadOnlyResult<T> {
+    this.assertUsable();
     if (this.database?.db.isOpen && this.database.db.isTransaction) {
       return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);
     }
