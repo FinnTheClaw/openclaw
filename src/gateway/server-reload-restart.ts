@@ -152,25 +152,7 @@ class GatewayRestartTransaction {
     }
     const requestRecoveryRestart = params.requestRecoveryRestart;
     let emissionPrepared = true;
-    let preparing = false;
-    const prepareForEmit = async () => {
-      try {
-        await params.assertRestartReady?.(nextConfig);
-        const preparedConfig = options?.prepareRuntimeConfig
-          ? await options.prepareRuntimeConfig()
-          : nextConfig;
-        if (!this.isCurrentRequest(operation)) {
-          return false;
-        }
-        emissionPrepared = true;
-        setGatewayRestartPolicy({ allowExternal: isRestartEnabled(preparedConfig) });
-        return true;
-      } catch (err) {
-        emissionPrepared = false;
-        params.logReload.warn(`gateway restart preflight failed: ${String(err)}`);
-        return false;
-      }
-    };
+    let preparationOwner: symbol | undefined;
 
     const active = this.options.getActiveCounts();
 
@@ -193,11 +175,31 @@ class GatewayRestartTransaction {
         // Preparation can wait for the plugin lifecycle lease, whose holders need
         // root admission; the deferral runs it before taking the signal fence.
         prepareEmission: async () => {
-          preparing = true;
+          // A timed-out attempt can settle after its retry has already prepared.
+          const owner = Symbol();
+          preparationOwner = owner;
+          const isCurrent = () => preparationOwner === owner && this.isCurrentRequest(operation);
           try {
-            emissionPrepared = await prepareForEmit();
+            await params.assertRestartReady?.(nextConfig);
+            if (!isCurrent()) {
+              return;
+            }
+            const preparedConfig = options?.prepareRuntimeConfig
+              ? await options.prepareRuntimeConfig()
+              : nextConfig;
+            if (isCurrent()) {
+              setGatewayRestartPolicy({ allowExternal: isRestartEnabled(preparedConfig) });
+              emissionPrepared = true;
+            }
+          } catch (err) {
+            if (isCurrent()) {
+              emissionPrepared = false;
+              params.logReload.warn(`gateway restart preflight failed: ${String(err)}`);
+            }
           } finally {
-            preparing = false;
+            if (preparationOwner === owner) {
+              preparationOwner = undefined;
+            }
           }
         },
         emitHooks: {
@@ -231,7 +233,7 @@ class GatewayRestartTransaction {
           },
           onStillPending: (_pending, elapsedMs) => {
             params.logReload.warn(
-              `restart still deferred after ${elapsedMs}ms with ${preparing ? "restart preparation pending; " : ""}${this.options.formatDeferredWorkStatus("active")}`,
+              `restart still deferred after ${elapsedMs}ms with ${preparationOwner ? "restart preparation pending; " : ""}${this.options.formatDeferredWorkStatus("active")}`,
             );
           },
           onTimeout: (_pending, elapsedMs) => {

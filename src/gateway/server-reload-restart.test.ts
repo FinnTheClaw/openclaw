@@ -176,6 +176,58 @@ describe("gateway restart readiness preflight", () => {
     },
   );
 
+  it("emits after the replacement preflight passes despite a retired preflight failing", async () => {
+    const retiredPreflight = Promise.withResolvers<void>();
+    const releaseEmission = Promise.withResolvers<void>();
+    const beforeEmit = vi.fn(() => releaseEmission.promise);
+    const assertRestartReady = vi
+      .fn<() => Promise<void>>()
+      .mockReturnValueOnce(retiredPreflight.promise)
+      .mockResolvedValue(undefined);
+    const defer = restartModule.deferGatewayRestartUntilIdle;
+    vi.spyOn(restartModule, "deferGatewayRestartUntilIdle").mockImplementationOnce(
+      (options, scheduledRequest) =>
+        defer(
+          {
+            ...options,
+            maxWaitMs: 500,
+            emitHooks: {
+              ...options.emitHooks,
+              beforeEmit: async () => {
+                await options.emitHooks?.beforeEmit?.();
+                await beforeEmit();
+              },
+            },
+          },
+          scheduledRequest,
+        ),
+    );
+    const { request, requestRecoveryRestart } = createCoordinator({ assertRestartReady });
+
+    try {
+      expect(request().status).toBe("accepted");
+      expect(assertRestartReady).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(assertRestartReady).toHaveBeenCalledTimes(2);
+      expect(beforeEmit).toHaveBeenCalledOnce();
+      expect(requestRecoveryRestart).not.toHaveBeenCalled();
+
+      // The replacement passed. Let the retired preflight fail before its emission.
+      retiredPreflight.reject(new Error("retired preflight failed"));
+      await vi.advanceTimersByTimeAsync(0);
+      releaseEmission.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(requestRecoveryRestart).toHaveBeenCalledExactlyOnceWith(
+        "config reload: gateway.port",
+        expect.objectContaining({ force: true }),
+      );
+    } finally {
+      retiredPreflight.resolve();
+      releaseEmission.resolve();
+    }
+  });
+
   it("prepares outside the restart-signal fence so lease holders can finish", async () => {
     // A config reload holds the plugin lifecycle lease and needs root admission
     // before it can release it; restart preparation waits for that lease.
