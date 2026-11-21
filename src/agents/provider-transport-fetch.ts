@@ -432,7 +432,7 @@ export function buildGuardedModelFetch(
       options?.sanitizeSse !== false &&
       request?.method === "POST" &&
       /\bapplication\/json\b/i.test(request.headers.get("content-type") ?? "") &&
-      (!contentType.trim() || isJsonContentType(contentType));
+      (!contentType.trim() || isProviderJsonContentType(contentType));
     if (synthesizeJsonAsSse || mayHaveRequestFormSse) {
       response = await normalizeOpenAISdkStreamContentType({
         response,

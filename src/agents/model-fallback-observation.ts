@@ -170,9 +170,9 @@ function buildFallbackStepFields(
   const from = previous ?? params.candidate;
   const to = succeeded ? params.candidate : params.nextCandidate;
   const reason = succeeded ? previous?.reason : params.reason;
-  const previousObserved = succeeded ? buildErrorObservationFields(previous?.error) : undefined;
+  const previousObserved = succeeded ? buildTextObservationFields(previous?.error) : undefined;
   const detail = succeeded
-    ? (previousObserved?.providerErrorMessagePreview ?? previousObserved?.errorPreview)
+    ? (previousObserved?.providerErrorMessagePreview ?? previousObserved?.textPreview)
     : detailText;
   return {
     fallbackStepType: "fallback_step",

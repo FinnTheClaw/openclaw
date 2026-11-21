@@ -24,7 +24,7 @@ function decodeSystemdEnvironmentFileValue(
   let trailingWhitespaceStart: number | undefined;
   let end = start;
   for (; end < rawValue.length; end++) {
-    const char = rawValue[end];
+    const char = rawValue.charAt(end);
     // Only an unquoted, unescaped newline ends the logical assignment.
     if (char === "\n" && (state === "pre" || state === "unquoted")) {
       end++;

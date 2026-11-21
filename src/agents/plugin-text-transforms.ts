@@ -151,7 +151,7 @@ function wrapStreamTextTransforms(
                 ...next,
                 delta: projected,
                 ...(isRecord(lastDelta) && Object.hasOwn(lastDelta, "partial")
-                  ? { partial: transformMessageText(lastDelta.partial, replacements) }
+                  ? { partial: transformContentText(lastDelta.partial, replacements, "message") }
                   : {}),
               } as AssistantMessageEvent);
               firstDelta = false;

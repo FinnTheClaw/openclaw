@@ -475,3 +475,27 @@ it("L03-F004 matches retained sender context by complete rich payload", () => {
     ),
   ).toEqual([undefined]);
 });
+
+it.each([false, true])(
+  "matches timestamp-overridden rich turns only when attachments agree: %s",
+  (changedAttachment) => {
+    const runtimeMessage = user([
+      { type: "text", text: "private prompt" },
+      { ...image, data: "c2FtZQ==" },
+    ]);
+    const rebuilt = user([
+      { type: "text", text: "visible prompt" },
+      { ...image, data: changedAttachment ? "b3RoZXI=" : "c2FtZQ==" },
+    ]);
+    const transcriptMessage = user("sender metadata");
+    const originals = structuredClone({ runtimeMessage, rebuilt });
+    expect(
+      resolveUserTranscriptMessages([rebuilt], [{ runtimeMessage, transcriptMessage }], {
+        timestamp,
+        text: "visible prompt",
+        alternateText: "private prompt",
+      }),
+    ).toEqual([changedAttachment ? undefined : transcriptMessage]);
+    expect({ runtimeMessage, rebuilt }).toEqual(originals);
+  },
+);

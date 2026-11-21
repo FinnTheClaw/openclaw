@@ -125,9 +125,9 @@ function normalizeTranscriptMatchContent(content: unknown, firstTextOverride?: s
   if (!Array.isArray(blocks) || firstTextOverride === undefined) {
     return blocks;
   }
-  const firstTextIndex = blocks.findIndex(isUserTextBlock);
+  const firstTextIndex = blocks.findIndex(isTextContentBlock);
   return blocks.map((block, index) =>
-    index === firstTextIndex && isUserTextBlock(block)
+    index === firstTextIndex && isTextContentBlock(block)
       ? { ...block, text: firstTextOverride }
       : block,
   );

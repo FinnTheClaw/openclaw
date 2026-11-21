@@ -366,7 +366,7 @@ export async function assignSessionOwner(
   owner: Pick<SessionOwnerOption, "type" | "id">,
   scope: SidebarSessionMutationScope,
 ): Promise<void> {
-  if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
+  if (!deps.sessionData.isSessionMutationScopeCurrent(scope)) {
     return;
   }
   if (

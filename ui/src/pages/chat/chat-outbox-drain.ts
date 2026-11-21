@@ -186,7 +186,7 @@ async function drainStoredChatOutbox(
     // after an await: an equal-key move can change the head without changing any
     // delivery fields. Keep the consumed admission's original bypass semantics.
     const stillOwnsTurn = () => {
-      const current = readStoredChatOutbox(host, scope);
+      const current = readChatOutboxLane(host, scope);
       const isFresh = (entry: ChatQueueItem) =>
         lane.freshAdmissions.has(entry.id) || (freshItem && entry.id === item.id);
       const head =

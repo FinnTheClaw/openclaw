@@ -445,7 +445,7 @@ async function maybeFinalizeApprovalRouteNotice(
   }
   const selection = state.selections.get(approvalId);
   if (!selection) {
-    clearPendingApprovalRouteNotice(state, approvalId);
+    clearApprovalRouteEntry(state.pendingNotices, approvalId);
     return;
   }
   if (!options?.force) {
