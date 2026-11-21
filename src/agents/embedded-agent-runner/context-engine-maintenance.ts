@@ -37,6 +37,7 @@ type DeferredTurnMaintenanceRunState = {
   maintenance: ReturnType<typeof createSessionMaintenanceOwner>;
   promise: Promise<void>;
   activeEngine: ContextEngine;
+  normalDisposingEngine?: ContextEngine;
   pendingParams?: DeferredTurnMaintenanceScheduleParams;
   engines: DeferredTurnMaintenanceScheduleParams[];
   disposals: Set<Promise<void>>;
@@ -100,7 +101,11 @@ function scheduleDeferredTurnMaintenance(
 
   const activeRun = activeDeferredTurnMaintenanceRuns.get(sessionKey);
   if (activeRun) {
-    if (activeRun.closing) {
+    if (
+      activeRun.closing ||
+      (activeRun.normalDisposingEngine &&
+        hasSameContextEngineInstance(activeRun.normalDisposingEngine, params.contextEngine))
+    ) {
       params.onDeferredMaintenanceFailure?.(
         new Error("Deferred maintenance is finishing cleanup; try again on the next turn"),
       );
@@ -182,7 +187,7 @@ function scheduleDeferredTurnMaintenance(
                 !current ||
                 !hasSameContextEngineInstance(request.contextEngine, current.contextEngine)
               ) {
-                await disposeRetainedEngine(state, request.contextEngine);
+                await disposeRetainedEngine(state, request.contextEngine, "normal");
               }
               current = state.pendingParams ?? current;
               state.pendingParams = undefined;
@@ -221,6 +226,7 @@ function scheduleDeferredTurnMaintenance(
 async function disposeRetainedEngine(
   state: DeferredTurnMaintenanceRunState,
   contextEngine: ContextEngine,
+  phase: "normal" | "cleanup" = "cleanup",
 ): Promise<void> {
   const index = state.engines.findIndex((entry) =>
     hasSameContextEngineInstance(entry.contextEngine, contextEngine),
@@ -230,7 +236,16 @@ async function disposeRetainedEngine(
   }
   const [entry] = state.engines.splice(index, 1);
   if (entry?.disposeContextEngineAfterMaintenance) {
-    await disposeDeferredMaintenanceContextEngine(entry, state.maintenance);
+    if (phase === "normal") {
+      state.normalDisposingEngine = entry.contextEngine;
+    }
+    try {
+      await disposeDeferredMaintenanceContextEngine(entry, state.maintenance);
+    } finally {
+      if (phase === "normal") {
+        state.normalDisposingEngine = undefined;
+      }
+    }
   }
 }
 

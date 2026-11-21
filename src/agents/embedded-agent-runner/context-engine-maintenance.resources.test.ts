@@ -3,6 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate } from "node:timers/promises";
 import { expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
 import type { ContextEngine } from "../../context-engine/types.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import {
@@ -138,6 +139,46 @@ it("refuses to reschedule during final disposal", async () => {
     disposal.release.resolve();
     await wait();
     expect(maintain).toHaveBeenCalledOnce();
+  });
+});
+
+it("refuses to readmit a disposing engine after normal maintenance", async ({ signal }) => {
+  await withStateDirEnv("openclaw-maintenance-disposal-", async ({ stateDir }) => {
+    resetCommandQueueStateForTest();
+    using disposal = gate();
+    const pending: Promise<void>[] = [];
+    const schedule = scheduler(stateDir, pending);
+    const maintain = vi.fn(async () => unchanged);
+    const contextEngine = engine(maintain);
+    contextEngine.dispose = () => disposal.run(() => {});
+    const admitted = vi.fn();
+    const failed = vi.fn();
+    const healthy = vi.fn(async () => unchanged);
+    const independentKey = "agent:main:maintenance-disposal-control";
+    try {
+      await schedule(contextEngine);
+      await withinTest(
+        awaitGateBeforeSettlement(disposal.entered.promise, wait(), "Maintenance missed disposal"),
+        signal,
+      );
+      await schedule(contextEngine, undefined, {
+        onDeferredMaintenance: admitted,
+        onDeferredMaintenanceFailure: failed,
+      });
+      await schedule(engine(healthy), undefined, { sessionKey: independentKey });
+      await withinTest(waitForSessionMaintenance(independentKey), signal);
+      expect(healthy).toHaveBeenCalledOnce();
+
+      disposal.release.resolve();
+      await withinTest(wait(), signal);
+      expect(admitted).not.toHaveBeenCalled();
+      expect(failed).toHaveBeenCalledOnce();
+      expect(maintain).toHaveBeenCalledOnce();
+    } finally {
+      disposal.release.resolve();
+      await Promise.allSettled(pending);
+      resetCommandQueueStateForTest();
+    }
   });
 });
 
