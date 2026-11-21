@@ -125,10 +125,8 @@ it.each([
   { boundary: "even", tailBytes: 2 },
 ])("L09-F028 preserves sample alignment at an $boundary history crop", ({ tailBytes }) => {
   let nowMs = 0;
-  const verifier = createMeetingOutputLoopbackVerifier({
-    audioFormat: "pcm16-24khz",
-    now: () => nowMs,
-  });
+  vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+  const verifier = createVerifier();
   const signal = pcmEnergyFrames(outputEnvelope.slice(0, 50));
   verifier.beginOutput();
   // Eleven seconds of queued silence plus the reference keep observation open beyond the cap.
@@ -166,10 +164,8 @@ it.each([
 });
 
 it("L09-F028 retains a split PCM sample below the history cap", () => {
-  const verifier = createMeetingOutputLoopbackVerifier({
-    audioFormat: "pcm16-24khz",
-    now: () => 0,
-  });
+  vi.spyOn(Date, "now").mockReturnValue(0);
+  const verifier = createVerifier();
   const signal = pcmEnergyFrames(outputEnvelope.slice(0, 50));
   verifier.beginOutput();
   verifier.recordOutput(signal);
