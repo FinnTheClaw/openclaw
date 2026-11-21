@@ -180,6 +180,15 @@ it("keeps catalog navigation ordered and disambiguates names only while boards s
   expect(boardNavigation().map(({ id }) => id)).toEqual(["board-sessions", "board-ops"]);
   expect(navigation("ops").icon).toBe("kanban");
 
+  const sameNamedOperations = { ...operations, name: "Alpha" };
+  boards = [sameNamedOperations, { ...sameNamedOperations, id: "ops-mirror" }];
+  await change();
+  const duplicates = boardNavigation();
+  expect(duplicates.map(({ id }) => id)).toEqual(["board-ops", "board-ops-mirror"]);
+  const labels = duplicates.map(({ label }) => label);
+  expect(labels).toEqual([expect.stringContaining("Alpha"), expect.stringContaining("Alpha")]);
+  expect(new Set(labels).size).toBe(2);
+
   await showBoards([sessions, { ...operations, name: "Operations" }], ["Alpha", "Operations"]);
   await showBoards([sessions], ["Alpha"]);
   expect(boardNavigation().map(({ id }) => id)).toEqual(["board-sessions"]);

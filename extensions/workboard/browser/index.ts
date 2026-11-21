@@ -30,10 +30,12 @@ export default defineControlUiPlugin({
       { board: NavigationBoard; order: number; signature: string; dispose: () => void }
     >();
     const syncBoardNavigation = (boards: readonly NavigationBoard[]) => {
-      const nameCounts = new Map<string, number>();
+      const nameCounts = new Map<string, { cards: number; sessions: number }>();
       for (const board of boards) {
         const name = workboardBoardName(board);
-        nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+        const counts = nameCounts.get(name) ?? { cards: 0, sessions: 0 };
+        counts[board.kind ?? "cards"] += 1;
+        nameCounts.set(name, counts);
       }
       const currentIds = new Set(boards.map((board) => board.id));
       for (const [id, entry] of navigation) {
@@ -44,7 +46,12 @@ export default defineControlUiPlugin({
       }
       for (const [index, board] of boards.entries()) {
         const name = workboardBoardName(board);
-        const label = (nameCounts.get(name) ?? 0) > 1 ? `${name} (${board.kind ?? "cards"})` : name;
+        const kind = board.kind ?? "cards";
+        const counts = nameCounts.get(name);
+        const label =
+          counts && counts.cards + counts.sessions > 1
+            ? `${name} (${kind}${counts[kind] > 1 ? `: ${board.id}` : ""})`
+            : name;
         const order = 20 + index;
         const signature = JSON.stringify([label, board.icon, board.color, order]);
         const entry = navigation.get(board.id);
