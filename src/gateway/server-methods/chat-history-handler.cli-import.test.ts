@@ -526,6 +526,30 @@ it("invalidates imports on replacement, append, and deletion", async () => {
   );
 });
 
+it("continues merged CLI history after an ordinary local append", async () => {
+  await withImportedHistory(
+    6,
+    "Stable native history",
+    async ({ read, append, timestamp, importedIds }) => {
+      const opening = await read({ limit: 2 });
+      expect(ids(opening)).toEqual(importedIds.slice(4));
+      const cursor = opening.olderCursor;
+      expect(cursor).toEqual(expect.any(String));
+
+      const expected = { ids: importedIds.slice(2, 4), windowReset: undefined };
+      const uninterrupted = await read({ cursor, limit: 2 });
+      expect({ ids: ids(uninterrupted), windowReset: uninterrupted.windowReset }).toEqual(expected);
+
+      const appended = await append("assistant", "New local answer", timestamp + 2000);
+      const latest = await read({ limit: 2 });
+      expect(ids(latest).at(-1)).toBe(appended.messageId);
+
+      const continued = await read({ cursor, limit: 2 });
+      expect({ ids: ids(continued), windowReset: continued.windowReset }).toEqual(expected);
+    },
+  );
+});
+
 it("does not substitute byte-capped tails for missing imported anchors", async () => {
   await withImportedHistory(40, "x".repeat(7900), async ({ read, importedIds }) => {
     const newest = await read({ limit: 2 });

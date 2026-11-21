@@ -257,7 +257,17 @@ export async function prepareCliSessionHistoryReader(
     indexes.set(identity, cached);
   }
   const index = cached.index;
-  const indexCursorSource = createTranscriptDisplaySource([key]);
+  // A local append rebuilds the index, but a retained anchor still belongs to this source.
+  const indexDisplaySource = JSON.stringify([
+    "cli-merged-history",
+    identity,
+    source[1],
+    revision?.generation,
+    cached.displaySource,
+    cached.readWindow?.latestResetRawSeq,
+    params.entry?.sessionStartedAt,
+  ]);
+  const indexCursorSource = createTranscriptDisplaySource([indexDisplaySource]);
   // Set once this request reads a closed reset interval or archive through the
   // canonical anchor reader. Every row on that page, including rows retained into
   // the current window, then keeps its canonical sequence.
@@ -346,8 +356,8 @@ export async function prepareCliSessionHistoryReader(
       totalMessages: index.count,
       activeLeafEntryId: cached.leafEventId,
       transcriptSource: "active" as const,
-      displaySource: key,
-      readWindow: { source: key, latestResetRawSeq: null },
+      displaySource: indexDisplaySource,
+      readWindow: { source: indexDisplaySource, latestResetRawSeq: null },
     };
   };
   const readIndexedMessage: Readers["readSessionMessageByIdAsync"] = async (
@@ -372,7 +382,7 @@ export async function prepareCliSessionHistoryReader(
         oversized: false,
         message,
         seq: ordinal + 1,
-        historyContext: { displaySource: key, precedingMessage },
+        historyContext: { displaySource: indexDisplaySource, precedingMessage },
       },
       readScope,
       messageId,
@@ -435,7 +445,7 @@ export async function prepareCliSessionHistoryReader(
           found: true,
           offset: range.offset,
           hasOverreadContext: range.hasOverreadContext,
-          displaySource: key,
+          displaySource: indexDisplaySource,
         };
       },
     },
