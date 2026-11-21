@@ -196,6 +196,50 @@ it("preserves minimax tool-call XML examples inside inline and fenced code", () 
 
 describe("sanitizeAssistantVisibleText", () => {
   it.each([
+    {
+      name: "closed internal block",
+      input: "Visible <think/><internal>hidden internal sentinel</internal> tail",
+      expected: "Visible  tail",
+    },
+    {
+      name: "closed reasoning block",
+      input: "Visible <think/><think>hidden reasoning sentinel</think> tail",
+      expected: "Visible  tail",
+    },
+    {
+      name: "nested unclosed internal block",
+      input: "Visible <thinking/><think><internal>hidden nested sentinel",
+      expected: "Visible",
+    },
+    {
+      name: "plain prose",
+      input: "Visible ordinary answer tail",
+      expected: "Visible ordinary answer tail",
+    },
+    {
+      name: "unmatched self-closing literal",
+      input: "Use <think/> literally here",
+      expected: "Use <think/> literally here",
+    },
+    {
+      name: "inline-code literal tags",
+      input: "Example `<think/><internal>literal sentinel</internal>` tail",
+      expected: "Example `<think/><internal>literal sentinel</internal>` tail",
+    },
+  ])(
+    "L12-F010 keeps filtering after a self-closing reasoning tag: $name",
+    ({ input, expected }) => {
+      const originalInput = input;
+      const finalAnswer = sanitizeAssistantVisibleTextWithProfile(input, "final-answer-delivery");
+      expect(finalAnswer).toBe(expected);
+      expect(sanitizeAssistantVisibleTextWithProfile(finalAnswer, "final-answer-delivery")).toBe(
+        expected,
+      );
+      expect(input).toBe(originalInput);
+    },
+  );
+
+  it.each([
     ["Tool Result", "[Tool Result for ID abc]\nstdout: hello"],
     ["Tool Call and Arguments", '[Tool Call: bash (ID: 7)]\nArguments: {"cmd":"ls"}'],
   ])("preserves fenced %s logs", (_name, log) => {
