@@ -1,5 +1,10 @@
 import { join } from "node:path";
 import { afterAll, expect, it, onTestFinished, vi } from "vitest";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../../test/helpers/promise.js";
 import { delegateCompactionToRuntime } from "../../context-engine/delegate.js";
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { createApiKeyCredential } from "../auth-profiles/credential-fixtures.test-support.js";
@@ -10,7 +15,9 @@ import {
 } from "../auth-profiles/runtime-snapshots.js";
 import { installSessionPlacementAdmissionProvider } from "../session-placement-admission.js";
 import {
+  acquireAgentRunPreparedModelRuntimeMock,
   contextEngineCompactMock,
+  createOpenClawCodingToolsMock,
   getApiKeyForModelMock,
   loadCompactHooksHarness,
   resetCompactHooksHarnessMocks,
@@ -63,6 +70,75 @@ async function runOwnedCompaction(run: () => ReturnType<typeof compactEmbeddedAg
     );
   }
 }
+
+it("does not start direct compaction tool preparation after cancellation", async ({ signal }) => {
+  const workspaceDir = tempDirs.make();
+  resetCompactHooksHarnessMocks(workspaceDir);
+  const { compactEmbeddedAgentSessionDirectOnce } = await import("./direct-compaction.js");
+  const modelAuth = await import("../model-auth.js");
+  const capabilities = await import("../conversation-capability-profile.js");
+  const mode = vi.mocked(modelAuth.resolveModelAuthModeAsync);
+  const previousMode = mode.getMockImplementation();
+  const caller = new AbortController();
+  const stopped = new Error("cancelled before direct compaction tool preparation");
+  const entered = createDeferred();
+  const release = createDeferred();
+  const { snapshot } = await acquireAgentRunPreparedModelRuntimeMock({
+    agentId: "main",
+    agentDir: workspaceDir,
+    config: {},
+    workspaceDir,
+  });
+  const profile = vi
+    .spyOn(capabilities, "prepareConversationCapabilityProfile")
+    .mockResolvedValue({} as never);
+  mode.mockImplementationOnce(async () => {
+    entered.resolve();
+    await release.promise;
+    return "env";
+  });
+  // Stop at the mocked constructor on the baseline; never prepare or execute real tools.
+  createOpenClawCodingToolsMock.mockImplementationOnce(() => {
+    throw stopped;
+  });
+  const pending = runOwnedCompaction(() =>
+    compactEmbeddedAgentSessionDirectOnce({
+      sessionId: "direct-tool-preparation",
+      sessionFile: "agent:main:direct-tool-preparation",
+      workspaceDir,
+      sandbox: null,
+      provider: "openai",
+      model: "gpt-primary",
+      abortSignal: caller.signal,
+      preparedModelRuntime: snapshot as never,
+    }),
+  );
+  try {
+    await withinTest(
+      awaitGateBeforeSettlement(
+        entered.promise,
+        pending,
+        "Compaction settled before tool metadata",
+      ),
+      signal,
+    );
+    caller.abort(stopped);
+    release.resolve();
+
+    await expect(pending).resolves.toMatchObject({ ok: false, reason: stopped.message });
+    expect(createOpenClawCodingToolsMock).not.toHaveBeenCalled();
+  } finally {
+    caller.abort(stopped);
+    release.resolve();
+    await Promise.allSettled([pending]);
+    profile.mockRestore();
+    mode.mockReset();
+    if (previousMode) {
+      mode.mockImplementation(previousMode);
+    }
+    createOpenClawCodingToolsMock.mockReset().mockReturnValue([]);
+  }
+});
 
 it.each(["lookup", "hook", "allowed"] as const)(
   "honors direct compaction cancellation across provider auth (%s)",

@@ -291,6 +291,12 @@ export async function buildPreparedCompactionRuntime(
         (await ensureAuthProfileStoreWithoutExternalProfilesAsync(agentDir)))
       : undefined;
     params.abortSignal?.throwIfAborted();
+    const modelAuthMode = toolsEnabled
+      ? await resolveModelAuthModeAsync(effectiveModel.provider, params.config, authProfileStore, {
+          workspaceDir: effectiveWorkspace,
+        })
+      : undefined;
+    params.abortSignal?.throwIfAborted();
     const skillInstructionDeliveryCache = new Map<string, Promise<boolean>>();
     const toolsRaw = toolsEnabled
       ? await createOpenClawCodingToolsInternalAsync(
@@ -318,16 +324,12 @@ export async function buildPreparedCompactionRuntime(
             skillInstructionDeliveryCache,
             conversationCapabilityProfile: runtimeCapabilityProfile,
             preparedModelRuntime: params.preparedModelRuntime,
-            modelAuthMode: await resolveModelAuthModeAsync(
-              effectiveModel.provider,
-              params.config,
-              authProfileStore,
-              {
-                workspaceDir: effectiveWorkspace,
-              },
-            ),
+            modelAuthMode,
           },
           skillReadResources,
+          undefined,
+          undefined,
+          { signal: params.abortSignal },
         )
       : [];
     const runtimePlanModelContext = {
