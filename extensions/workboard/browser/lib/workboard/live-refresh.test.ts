@@ -147,6 +147,31 @@ it.each(["live", "direct"])("discards a %s read that completes after teardown", 
   expect(state.loading).toBe(false);
 });
 
+it("does not retry a retired live read after reopening", async () => {
+  vi.useFakeTimers();
+  const retired = createDeferred<unknown>();
+  const read = vi
+    .fn()
+    .mockReturnValueOnce(retired.promise)
+    .mockReturnValue(cardsResponse("Reopened board"));
+  const { host, client, state, listCalls, waitForReads } = setup(read);
+
+  expect(handleWorkboardChanged(host, { epoch: "epoch-a", revision: 1 })).toBe(true);
+  await waitForReads();
+  stopWorkboardLiveRefresh(host);
+  const force = configureWorkboardLiveRefresh({ host, client });
+  expect(force).toBe(true);
+  await expect(loadWorkboard({ host, client, force })).resolves.toBe(true);
+  expect(state.cards[0]?.title).toBe("Reopened board");
+  expect(listCalls()).toBe(2);
+
+  retired.resolve(cardsResponse("Retired board"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(state.cards[0]?.title).toBe("Reopened board");
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(listCalls()).toBe(2);
+});
+
 it("retains cards on unchanged responses and still refreshes caller-scoped Sessions boards", async () => {
   const host = {};
   const state = getWorkboardState(host);

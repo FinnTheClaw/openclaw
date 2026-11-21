@@ -38,7 +38,7 @@ async function runPendingRefresh(host: WorkboardHost): Promise<void> {
   if (runtime.liveRefreshPromise) {
     return await runtime.liveRefreshPromise;
   }
-  const promise = (async () => {
+  const refreshPending = async (): Promise<void> => {
     while (runtime.liveRefreshPending) {
       const entry = runtime.liveRefreshEntry;
       const state = getWorkboardState(host);
@@ -57,7 +57,8 @@ async function runPendingRefresh(host: WorkboardHost): Promise<void> {
           client: entry.client,
           source: "live",
         }));
-      if (!runtime.liveRefreshEntry) {
+      // A stopped refresh must not queue work for the next owner.
+      if (runtime.liveRefreshPromise !== promise) {
         return;
       }
       if (!refreshed) {
@@ -66,24 +67,25 @@ async function runPendingRefresh(host: WorkboardHost): Promise<void> {
         return;
       }
     }
-  })();
+  };
+  const promise = refreshPending();
   runtime.liveRefreshPromise = promise;
   try {
     await promise;
   } finally {
     if (runtime.liveRefreshPromise === promise) {
       delete runtime.liveRefreshPromise;
-    }
-    const state = getWorkboardState(host);
-    if (
-      runtime.liveRefreshPending &&
-      !runtime.liveRefreshRetryTimer &&
-      runtime.liveRefreshEntry?.client &&
-      !documentHidden() &&
-      !runtime.liveRefreshEntry.shouldDefer?.() &&
-      (runtime.liveRefreshEntry.refresh || !shouldDeferWorkboardLiveRefresh(state))
-    ) {
-      void runPendingRefresh(host);
+      const state = getWorkboardState(host);
+      if (
+        runtime.liveRefreshPending &&
+        !runtime.liveRefreshRetryTimer &&
+        runtime.liveRefreshEntry?.client &&
+        !documentHidden() &&
+        !runtime.liveRefreshEntry.shouldDefer?.() &&
+        (runtime.liveRefreshEntry.refresh || !shouldDeferWorkboardLiveRefresh(state))
+      ) {
+        void runPendingRefresh(host);
+      }
     }
   }
 }
