@@ -27,17 +27,18 @@ describe("Control UI service worker cache versioning", () => {
       claim: vi.fn(async () => undefined),
       matchAll: vi.fn(async () => [...included, ...excluded]),
     };
+    const cachePrefix = "openclaw-control:%2Fopenclaw%2F:";
     const context = vm.createContext({
       URL,
       caches: {
         delete: cacheDelete,
         match: async (_url: string, { cacheName }: { cacheName: string }) =>
-          cacheName.startsWith("openclaw-control-") ? {} : undefined,
+          cacheName.startsWith(cachePrefix) ? {} : undefined,
         keys: async () => [
-          "openclaw-control-oldest",
-          "openclaw-control-older",
-          "openclaw-control-previous",
-          "openclaw-control-new-build",
+          `${cachePrefix}oldest`,
+          `${cachePrefix}older`,
+          `${cachePrefix}previous`,
+          `${cachePrefix}new-build`,
           "other-cache",
         ],
       },
@@ -58,10 +59,7 @@ describe("Control UI service worker cache versioning", () => {
     });
     await expect(activation).resolves.toBeUndefined();
     expect(clients.claim).toHaveBeenCalledBefore(clients.matchAll);
-    expect(cacheDelete.mock.calls).toEqual([
-      ["openclaw-control-oldest"],
-      ["openclaw-control-older"],
-    ]);
+    expect(cacheDelete.mock.calls).toEqual([[`${cachePrefix}oldest`], [`${cachePrefix}older`]]);
     for (const page of included) {
       expect(page.postMessage).toHaveBeenCalledExactlyOnceWith(
         { type: "sw-updated", version: "new-build" },

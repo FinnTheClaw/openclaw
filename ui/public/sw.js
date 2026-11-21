@@ -1,4 +1,3 @@
-const CACHE_PREFIX = "openclaw-control-";
 const EMBEDDED_CACHE_VERSION = "__OPENCLAW_CONTROL_UI_BUILD_ID__";
 const URL_CACHE_VERSION = new URL(self.location.href).searchParams
   .get("v")
@@ -11,9 +10,11 @@ const CACHE_VERSION =
 const OFFLINE_BOOT = null;
 const NAVIGATION_TIMEOUT_MS = 10_000;
 const NATIVE_AUTH_PARAM = "openclaw_http_auth";
-const CACHE_NAME = `${CACHE_PREFIX}${CACHE_VERSION}${OFFLINE_BOOT ? `-${OFFLINE_BOOT.id}` : ""}`;
 const SCOPE_URL = new URL(self.registration.scope);
 const SCOPE_PATH = SCOPE_URL.pathname.endsWith("/") ? SCOPE_URL.pathname : `${SCOPE_URL.pathname}/`;
+// CacheStorage is origin-wide. An old unscoped worker must not retire these caches.
+const CACHE_PREFIX = `openclaw-control:${encodeURIComponent(SCOPE_PATH)}:`;
+const CACHE_NAME = `${CACHE_PREFIX}${CACHE_VERSION}${OFFLINE_BOOT ? `-${OFFLINE_BOOT.id}` : ""}`;
 
 function controlUiPathname(url) {
   if (url.origin !== SCOPE_URL.origin) {

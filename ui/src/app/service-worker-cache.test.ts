@@ -369,7 +369,7 @@ describe("Control UI offline app shell", () => {
 
     await worker.activate();
 
-    expect(worker.cacheDelete.mock.calls).toEqual([["openclaw-control-older"]]);
+    expect(worker.cacheDelete.mock.calls).toEqual([[`${worker.cachePrefix}older`]]);
     expect(worker.priorCache.has(worker.scope + "__offline_shell__")).toBe(true);
     expect(worker.cache.has(worker.scope + asset.path)).toBe(false);
     for (const client of worker.windowClients) {
@@ -391,7 +391,7 @@ describe("Control UI offline app shell", () => {
       worker.fetch.mockImplementation(async () => new Response("build asset"));
       await worker.install();
       await worker.activate();
-      expect(worker.cacheDelete).toHaveBeenCalledWith("openclaw-control-older");
+      expect(worker.cacheDelete).toHaveBeenCalledWith(`${worker.cachePrefix}older`);
       expect(
         await worker.cache
           .get(worker.scope + reused!.path)
@@ -690,17 +690,35 @@ describe("Control UI offline app shell", () => {
     },
   );
 
+  it("does not retire offline caches owned by another scope on the same origin", async () => {
+    const worker = createFetchServiceWorker();
+    worker.priorCache.set(worker.scope + "__offline_shell__", new Response("previous shell"));
+    const siblingShell = "https://control.example/another-gateway/__offline_shell__";
+    const siblingCache = new Map([[siblingShell, new Response("sibling shell")]]);
+    const siblingCacheName = "openclaw-control:%2Fanother-gateway%2F:sibling-build";
+    const legacyCacheName = "openclaw-control-sibling-build";
+    worker.generations.set(siblingCacheName, siblingCache);
+    worker.generations.set(legacyCacheName, siblingCache);
+
+    await worker.activate();
+
+    expect(worker.generations.get(siblingCacheName)).toBe(siblingCache);
+    // Legacy names identify no specific scope; the new worker does not own them.
+    expect(worker.generations.get(legacyCacheName)).toBe(siblingCache);
+    expect(worker.cacheDelete.mock.calls).toEqual([[`${worker.cachePrefix}older`]]);
+  });
+
   it("keeps a complete previous generation on failed preparation, then retires only older generations", async () => {
     const worker = createFetchServiceWorker();
     worker.priorCache.set(worker.scope + "__offline_shell__", new Response("previous shell"));
     worker.fetch.mockRejectedValue(new TypeError("offline"));
     await worker.install();
     await worker.activate();
-    expect(worker.cacheDelete.mock.calls).toEqual([["openclaw-control-older"]]);
+    expect(worker.cacheDelete.mock.calls).toEqual([[`${worker.cachePrefix}older`]]);
     expect(worker.priorCache.has(worker.scope + "__offline_shell__")).toBe(true);
     worker.fetch.mockResolvedValue(new Response("build asset"));
     await worker.probe();
-    expect(worker.cacheDelete.mock.calls).toEqual([["openclaw-control-older"]]);
+    expect(worker.cacheDelete.mock.calls).toEqual([[`${worker.cachePrefix}older`]]);
     expect(worker.priorCache.has(worker.scope + "__offline_shell__")).toBe(true);
   });
 
@@ -709,7 +727,7 @@ describe("Control UI offline app shell", () => {
     worker.fetch.mockResolvedValue(new Response("build asset"));
     await worker.install();
     await worker.activate();
-    const replacementName = "openclaw-control-next-fixture";
+    const replacementName = `${worker.cachePrefix}next-fixture`;
     const replacementCache = new Map([
       [worker.scope + "assets/next.js", new Response("installing replacement")],
     ]);
@@ -781,7 +799,7 @@ describe("Control UI offline app shell", () => {
     });
     expect(await response?.text()).toBe("asset");
     expect(worker.cacheMatch).toHaveBeenCalledWith(url, {
-      cacheName: "openclaw-control-dev-fixture",
+      cacheName: `${worker.cachePrefix}dev-fixture`,
     });
     expect(worker.fetch).toHaveBeenCalledTimes(offlineBootFixture.assets.length);
   });
@@ -849,15 +867,17 @@ function createFetchServiceWorker(
   const cache = new Map<string, Response>();
   const priorCache = new Map<string, Response>();
   const olderCache = new Map<string, Response>();
+  const cachePrefix = `openclaw-control:${encodeURIComponent(new URL(scope).pathname)}:`;
+  const currentCacheName = `${cachePrefix}dev-fixture`;
   const generations = new Map([
-    ["openclaw-control-older", olderCache],
-    ["openclaw-control-old", priorCache],
-    ["openclaw-control-dev-fixture", cache],
+    [`${cachePrefix}older`, olderCache],
+    [`${cachePrefix}old`, priorCache],
+    [currentCacheName, cache],
   ]);
   const cacheDelete = vi.fn(async (name: string) => generations.delete(name));
   const cacheMatch = vi.fn(async (request: CacheRequest, matchOptions?: { cacheName: string }) =>
     generations
-      .get(matchOptions?.cacheName ?? "openclaw-control-dev-fixture")
+      .get(matchOptions?.cacheName ?? currentCacheName)
       ?.get(typeof request === "string" ? request : request.url)
       ?.clone(),
   );
@@ -931,6 +951,7 @@ function createFetchServiceWorker(
   });
   return {
     scope,
+    cachePrefix,
     cache,
     priorCache,
     olderCache,

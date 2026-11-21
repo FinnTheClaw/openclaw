@@ -326,6 +326,33 @@ test("sessions.create persists explicit tool overrides before the first turn", a
   }
 });
 
+test("sessions.create keeps explicit communication by creating a child instead of resetting main", async () => {
+  testState.sessionConfig = { dmScope: "main" };
+  const mainSessionId = "communication-main";
+  const parentCommunication = { receive: "always" } as const;
+  const communication = { receive: "ask" } as const;
+  await seedMain(mainSessionId, { communication: parentCommunication });
+  const { ws } = await openClient();
+  try {
+    const created = await rpcReq<CreatedSession>(ws, "sessions.create", {
+      agentId: "main",
+      ...mainReset,
+      succeedsParent: false,
+      communication,
+    });
+    expect(created.ok, JSON.stringify(created.error)).toBe(true);
+    expect(created.payload?.key).not.toBe("agent:main:main");
+    expect(created.payload?.entry.communication).toEqual(communication);
+    expect(readEntry(created.payload?.key)).toMatchObject({ communication });
+    expect(readEntry()).toMatchObject({
+      sessionId: mainSessionId,
+      communication: parentCommunication,
+    });
+  } finally {
+    await closeGatewayTestWebSocket(ws);
+  }
+});
+
 test("sessions.create reset-in-place clears a prior node binding for Gateway execution", async () => {
   testState.sessionConfig = { dmScope: "main" };
   await seedMain("sess-node-parent");

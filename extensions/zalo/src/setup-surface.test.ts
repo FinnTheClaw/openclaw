@@ -1,5 +1,6 @@
 import { installChannelDmPolicyContractSuite } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import {
   createPluginSetupWizardConfigure,
   createTestWizardPrompter,
@@ -31,18 +32,33 @@ describe("zalo setup wizard", () => {
     };
     const cfg = config({ accounts: { default: account, alerts: { botToken: "sibling" } } });
     const original = JSON.stringify(cfg);
+    const confirm = vi.fn(async ({ message }: { message: string }) => {
+      if (message === "Zalo token already configured. Keep it?") {
+        return true;
+      }
+      expect(message).toBe("Use webhook mode for Zalo?");
+      return false;
+    });
+    const prompter = createTestWizardPrompter({ confirm });
     const result = await runSetupWizardFinalize({
       finalize: zaloSetupWizard.finalize,
       cfg,
       accountId: "default",
-      prompter: createTestWizardPrompter({ confirm: vi.fn(async () => true) }),
+      prompter,
       options: { secretInputMode: "plaintext" },
     });
-    const effective = resolveZaloAccount({ cfg: result.cfg, accountId: "default" });
+    const { cfg: configured } = expectDefined(result);
+    const effective = resolveZaloAccount({ cfg: configured, accountId: "default" });
+    expect(confirm).toHaveBeenCalledWith({
+      message: "Use webhook mode for Zalo?",
+      initialValue: true,
+    });
+    expect(prompter.text).not.toHaveBeenCalled();
+    expect(effective.token).toBe("old-token");
     expect(effective.config.webhookUrl).toBeUndefined();
     expect(effective.config.webhookSecret).toBeUndefined();
     expect(effective.config.webhookPath).toBeUndefined();
-    expect(result.cfg.channels?.zalo?.accounts?.alerts).toEqual(
+    expect(configured.channels?.zalo?.accounts?.alerts).toEqual(
       cfg.channels?.zalo?.accounts?.alerts,
     );
     expect(JSON.stringify(cfg)).toBe(original);

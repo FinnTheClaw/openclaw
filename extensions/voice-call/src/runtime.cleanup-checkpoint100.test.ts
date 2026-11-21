@@ -1,5 +1,5 @@
 import type { Server } from "node:http";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createVoiceCallBaseConfig } from "./test-fixtures.js";
 
@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   webhookStops: 0,
   webhookStopError: undefined as unknown,
   managerInitialize: vi.fn(),
+  managerStop: vi.fn(),
   startTunnel: vi.fn(),
   tunnelStop: vi.fn(),
   cleanupTailscaleExposure: vi.fn(),
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./manager.js", () => ({
   CallManager: class {
     initialize = mocks.managerInitialize;
+    stop = mocks.managerStop;
   },
 }));
 
@@ -77,8 +79,9 @@ async function createRuntime(withTunnel = true) {
   });
   config.agentId = "main";
   return await createVoiceCallRuntime({
+    scheduler: createTestPluginServiceScheduler(),
     config,
-    coreConfig: {} as OpenClawConfig,
+    coreConfig: { agents: { entries: { main: {} } } },
     agentRuntime: {} as never,
   });
 }
@@ -99,6 +102,9 @@ describe("voice runtime cleanup checkpoint 100", () => {
     mocks.webhookStops = 0;
     mocks.webhookStopError = undefined;
     mocks.managerInitialize.mockResolvedValue(undefined);
+    mocks.managerStop.mockImplementation(async () => {
+      mocks.steps.push("manager");
+    });
     mocks.tunnelStop.mockImplementation(async () => {
       mocks.steps.push("tunnel");
     });
@@ -128,7 +134,7 @@ describe("voice runtime cleanup checkpoint 100", () => {
     const runtime = await createRuntime();
     expect(listener().listening).toBe(true);
     await runtime.stop();
-    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook", "manager"]);
     expect(listener().listening).toBe(false);
     expect(mocks.webhookStops).toBe(1);
   });
@@ -141,7 +147,7 @@ describe("voice runtime cleanup checkpoint 100", () => {
     });
     const runtime = await createRuntime();
     await expect(runtime.stop()).rejects.toBe(failure);
-    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook", "manager"]);
     expect(listener().listening).toBe(false);
   });
 
@@ -153,7 +159,7 @@ describe("voice runtime cleanup checkpoint 100", () => {
     });
     const runtime = await createRuntime();
     await expect(runtime.stop()).rejects.toBe(failure);
-    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook", "manager"]);
     expect(listener().listening).toBe(false);
   });
 
@@ -162,11 +168,11 @@ describe("voice runtime cleanup checkpoint 100", () => {
     mocks.webhookStopError = failure;
     const runtime = await createRuntime();
     await expect(runtime.stop()).rejects.toBe(failure);
-    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook", "manager"]);
     expect(listener().listening).toBe(true);
   });
 
-  it("CP100-VOICE05 all three failures are attempted and the first wins", async () => {
+  it("CP100-VOICE05 all resources are attempted and the first error wins", async () => {
     const first = new Error("first tunnel failure");
     mocks.tunnelStop.mockImplementation(async () => {
       mocks.steps.push("tunnel");
@@ -179,7 +185,7 @@ describe("voice runtime cleanup checkpoint 100", () => {
     mocks.webhookStopError = new Error("third webhook failure");
     const runtime = await createRuntime();
     await expect(runtime.stop()).rejects.toBe(first);
-    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook", "manager"]);
     expect(mocks.webhookStops).toBe(1);
   });
 
@@ -192,7 +198,7 @@ describe("voice runtime cleanup checkpoint 100", () => {
     const runtime = await createRuntime(false);
     await expect(runtime.stop()).rejects.toBe(failure);
     expect(mocks.startTunnel).not.toHaveBeenCalled();
-    expect(mocks.steps).toEqual(["exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["exposure", "webhook", "manager"]);
     expect(listener().listening).toBe(false);
   });
 
@@ -209,7 +215,7 @@ describe("voice runtime cleanup checkpoint 100", () => {
     });
     mocks.webhookStopError = new Error("rollback webhook failed");
     await expect(createRuntime()).rejects.toBe(initializeError);
-    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook", "manager"]);
     expect(mocks.webhookStops).toBe(1);
   });
 
@@ -232,7 +238,7 @@ describe("voice runtime cleanup checkpoint 100", () => {
       releaseTunnel?.();
     }
     await first;
-    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook", "manager"]);
     expect(mocks.webhookStops).toBe(1);
     expect(listener().listening).toBe(false);
   });
@@ -249,7 +255,7 @@ describe("voice runtime cleanup checkpoint 100", () => {
     const second = runtime.stop();
     expect(second).toBe(first);
     await expect(second).rejects.toBe(failure);
-    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook", "manager"]);
     expect(mocks.webhookStops).toBe(1);
     expect(listener().listening).toBe(false);
   });
@@ -262,7 +268,7 @@ describe("voice runtime cleanup checkpoint 100", () => {
     });
     const runtime = await createRuntime();
     await expect(runtime.stop()).rejects.toBe(failure);
-    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook"]);
+    expect(mocks.steps).toEqual(["tunnel", "exposure", "webhook", "manager"]);
     expect(listener().listening).toBe(false);
   });
 });

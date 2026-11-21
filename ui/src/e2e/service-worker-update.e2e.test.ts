@@ -81,7 +81,11 @@ async function findBuildAsset(buildId: string, buildDir = outDir): Promise<Build
   };
 }
 
-async function readBuildCacheName(buildId: string, buildDir = outDir): Promise<string> {
+async function readBuildCacheName(
+  buildId: string,
+  scopePath: string,
+  buildDir = outDir,
+): Promise<string> {
   const worker = await readFile(path.join(buildDir, "sw.js"), "utf8");
   const embeddedBuild = /^const EMBEDDED_CACHE_VERSION = (.+);$/mu.exec(worker)?.[1];
   const offlineBoot = /^const OFFLINE_BOOT = (.+);$/mu.exec(worker)?.[1];
@@ -97,7 +101,7 @@ async function readBuildCacheName(buildId: string, buildDir = outDir): Promise<s
     throw new Error(`Staged service worker has no offline boot digest for ${buildId}`);
   }
   // The same build ID can name different boot graphs; never infer this from an arbitrary cache.
-  return `openclaw-control-${buildId}-${manifest.id}`;
+  return `openclaw-control:${encodeURIComponent(scopePath)}:${buildId}-${manifest.id}`;
 }
 
 async function prepareOnlineLoopback(page: Page): Promise<void> {
@@ -575,7 +579,8 @@ describe("Control UI service-worker production update E2E", () => {
       await waitForControlUiTerminalReady(page);
 
       const assetA = await findBuildAsset(buildA);
-      const cacheA = await readBuildCacheName(buildA);
+      const scopePath = new URL(server.baseUrl).pathname;
+      const cacheA = await readBuildCacheName(buildA, scopePath);
       const initialAsset = await fetchControlledAsset(page, assetA.path);
       expect(initialAsset).toEqual({
         controllerState: "activated",
@@ -587,7 +592,7 @@ describe("Control UI service-worker production update E2E", () => {
       const previousOutDir = `${outDir}-previous`;
       installGate = await createInstallGate();
       await holdReplacementWorkerInstalling(nextOutDir, installGate.url);
-      const cacheB = await readBuildCacheName(buildB, nextOutDir);
+      const cacheB = await readBuildCacheName(buildB, scopePath, nextOutDir);
       const assetB = await findBuildAsset(buildB, nextOutDir);
       expect(assetB).toEqual(assetA);
 

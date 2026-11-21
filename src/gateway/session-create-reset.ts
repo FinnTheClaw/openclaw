@@ -37,9 +37,10 @@ export function tryResetGatewaySessionForCreation(
     params.resetMainWhenUnspecified === true &&
     !params.deviceFolder &&
     !requestedToolOverrides &&
+    params.communication === undefined &&
     !parentIncognito &&
     // Creation-only content needs a fresh row; resetting main would return before
-    // the prepared transcript or catalog-owned model/runtime pair is persisted.
+    // that content is persisted.
     !params.initialAssistantMessage &&
     !params.catalogTarget &&
     params.cyberAccessProgram === undefined &&

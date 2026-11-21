@@ -104,14 +104,11 @@ async function registerUploadRows(
     for (let index = 0; index < chunkCount; index += 1) {
       const chunk = buffer.subarray(index * RAW_CHUNK_BYTES, (index + 1) * RAW_CHUNK_BYTES);
       staged.push(index);
-      await chunkStore.register(
-        buildChunkKey(record.id, index, chunkGeneration),
-        toPluginJsonValue({
-          id: record.id,
-          index,
-          dataBase64: chunk.toString("base64"),
-        }),
-      );
+      await chunkStore.register(buildChunkKey(record.id, index, chunkGeneration), {
+        id: record.id,
+        index,
+        dataBase64: chunk.toString("base64"),
+      });
     }
     await metaStore.register(
       buildMetaKey(record.id),

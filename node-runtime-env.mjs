@@ -85,8 +85,9 @@ export function nodeRuntimePathEntries(value) {
 /** Keep lifecycle children on the explicitly selected runtime without changing npm config. */
 export function withNodeRuntimePath(env, nodePath, platform = process.platform) {
   const paths = platform === "win32" ? path.win32 : path.posix;
+  // Bootstrap recovery runs on the old Node before it can select a compatible one.
   const keys = Object.keys(env)
-    .toSorted()
+    .sort()
     .filter((key) => (platform === "win32" ? key.toUpperCase() === "PATH" : key === "PATH"));
   const key = keys[0] ?? "PATH";
   const directory = paths.dirname(nodePath);
