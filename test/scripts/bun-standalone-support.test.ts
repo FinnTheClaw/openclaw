@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { parse } from "acorn";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createStandaloneArtifactAdapter } from "../../scripts/lib/bun-standalone-artifacts.mjs";
 import { parseStandaloneArguments } from "../../scripts/lib/bun-standalone-contract.mjs";
 import { standaloneEmbeddedPathsExpression } from "../../scripts/lib/bun-standalone-data.mjs";
@@ -635,6 +635,107 @@ console.log(JSON.stringify({
       expect(policyChanged.build.id).not.toBe(original.build.id);
     },
   );
+
+  it.each([
+    { layout: "one filesystem", crossDevice: false },
+    { layout: "separate filesystems", crossDevice: true },
+  ])("publishes both inert standalone outputs on $layout", async ({ crossDevice }) => {
+    const root = tempDirs.make("standalone-publication-");
+    const outputRoot = path.join(root, "staging");
+    const runtimeRoot = path.join(outputRoot, "runtime");
+    const supportRoot = path.join(outputRoot, "support-artifact");
+    const standardDestination = path.join(root, "standard");
+    const supportDevice = path.join(root, "support-device");
+    const supportDestination = path.join(supportDevice, "support");
+    const write = (filename: string, contents: string) => {
+      fs.mkdirSync(path.dirname(filename), { recursive: true });
+      fs.writeFileSync(filename, contents);
+    };
+    write(path.join(outputRoot, "openclaw"), "standard fixture");
+    write(path.join(runtimeRoot, "asset.txt"), "shared fixture asset");
+    write(path.join(supportRoot, "openclaw"), "support fixture");
+    for (const name of ["entry.mjs", "bootstrap.mjs", "bin/bun", "runtime/asset.txt"]) {
+      write(path.join(supportRoot, "debug", name), "inert support fixture");
+    }
+    write(path.join(supportDevice, "existing.txt"), "leave existing output alone");
+
+    const originalRename = fs.renameSync.bind(fs);
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation((source, destination) => {
+      const from = String(source);
+      const to = String(destination);
+      if (
+        crossDevice &&
+        from.startsWith(root + path.sep) &&
+        to.startsWith(root + path.sep) &&
+        from.startsWith(supportDevice + path.sep) !== to.startsWith(supportDevice + path.sep)
+      ) {
+        throw Object.assign(new Error("fixture cross-device rename"), { code: "EXDEV" });
+      }
+      originalRename(source, destination);
+    });
+    const identity = {
+      id: "a".repeat(64),
+      moduleGraphSha256: "b".repeat(64),
+      pluginSetSha256: "c".repeat(64),
+    };
+    let publicationError: unknown;
+    try {
+      await publishStandaloneArtifacts({
+        artifacts: [
+          {
+            mode: "aot",
+            flavor: "standard",
+            destination: standardDestination,
+            outputRoot,
+            compileFlags: ["--aot"],
+            build: { ...identity, flavor: "standard" },
+          },
+          {
+            mode: "jit",
+            flavor: "support",
+            destination: supportDestination,
+            outputRoot: supportRoot,
+            compileFlags: [],
+            build: { ...identity, flavor: "support" },
+          },
+        ],
+        runtimeRoot,
+        manifestInputs: {
+          bun: { version: "1.4.4" },
+          openclaw: { version: "2026.10.3", commit: "a".repeat(40) },
+          embedded: { modules: 0, plugins: 0, workers: 0, inlineWorkers: 0 },
+          plugins: { embedded: [], omitted: [] },
+          pluginContract: { schemaVersion: 1, sdk: {}, plugins: {} },
+          pruning: { categories: {}, sidecarPlugins: [] },
+          sqlite: { version: "3.53.4" },
+        },
+      });
+    } catch (error) {
+      publicationError = error;
+    } finally {
+      rename.mockRestore();
+    }
+    expect(fs.readFileSync(path.join(supportDevice, "existing.txt"), "utf8")).toBe(
+      "leave existing output alone",
+    );
+    expect(fs.readFileSync(path.join(standardDestination, "openclaw"), "utf8")).toBe(
+      "standard fixture",
+    );
+    expect(publicationError).toBeUndefined();
+    expect(fs.readFileSync(path.join(supportDestination, "openclaw"), "utf8")).toBe(
+      "support fixture",
+    );
+    for (const [destination, flavor] of [
+      [standardDestination, "standard"],
+      [supportDestination, "support"],
+    ]) {
+      const manifest = JSON.parse(fs.readFileSync(path.join(destination, "manifest.json"), "utf8"));
+      expect(manifest.build).toMatchObject({ ...identity, flavor });
+      expect(fs.readFileSync(path.join(destination, "runtime/asset.txt"), "utf8")).toBe(
+        "shared fixture asset",
+      );
+    }
+  });
 
   it("rejects output collisions before staging artifacts", () => {
     const root = tempDirs.make("standalone-destinations-");

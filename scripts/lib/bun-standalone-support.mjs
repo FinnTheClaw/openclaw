@@ -352,6 +352,23 @@ await import(entry.href);
  * manifestInputs: Omit<Parameters<typeof createStandaloneManifest>[0], "outputRoot" | "mode" | "build" | "debug">}} options
  */
 export async function publishStandaloneArtifacts({ artifacts, runtimeRoot, manifestInputs }) {
+  const moveOutput = (source, destination) => {
+    try {
+      fs.renameSync(source, destination);
+    } catch (error) {
+      if (error?.code !== "EXDEV") {
+        throw error;
+      }
+      // Leave copied sources in the owned staging tree for its normal cleanup.
+      fs.cpSync(source, destination, {
+        recursive: true,
+        verbatimSymlinks: true,
+        force: false,
+        errorOnExist: true,
+      });
+    }
+  };
+
   // Copy all sidecars before moving the standard one out of the staging directory.
   for (const artifact of artifacts) {
     if (artifact.flavor === "support") {
@@ -398,24 +415,28 @@ export async function publishStandaloneArtifacts({ artifacts, runtimeRoot, manif
     });
     fs.mkdirSync(path.dirname(artifact.destination), { recursive: true });
     fs.mkdirSync(artifact.destination);
-    fs.renameSync(
-      path.join(artifact.outputRoot, "openclaw"),
-      path.join(artifact.destination, "openclaw"),
-    );
-    fs.renameSync(
-      path.join(artifact.outputRoot, "runtime"),
-      path.join(artifact.destination, "runtime"),
-    );
-    if (artifact.flavor === "support") {
-      fs.renameSync(
-        path.join(artifact.outputRoot, "debug"),
-        path.join(artifact.destination, "debug"),
+    try {
+      const entries = ["openclaw", "runtime", ...(artifact.flavor === "support" ? ["debug"] : [])];
+      for (const entry of entries) {
+        moveOutput(path.join(artifact.outputRoot, entry), path.join(artifact.destination, entry));
+      }
+      // The manifest is the last file published, after the executable and sidecars.
+      fs.writeFileSync(
+        path.join(artifact.destination, "manifest.json"),
+        JSON.stringify(manifest, null, 2) + "\n",
       );
+    } catch (error) {
+      // The exclusive mkdir above must succeed before this invocation owns the destination.
+      try {
+        fs.rmSync(artifact.destination, { recursive: true, force: true });
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `Failed to publish and clean up standalone ${artifact.flavor} output`,
+        );
+      }
+      throw error;
     }
-    fs.writeFileSync(
-      path.join(artifact.destination, "manifest.json"),
-      JSON.stringify(manifest, null, 2) + "\n",
-    );
     console.log(
       `Standalone ${artifact.flavor} ready: ${path.join(artifact.destination, "openclaw")}`,
     );
