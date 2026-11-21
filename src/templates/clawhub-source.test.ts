@@ -365,6 +365,30 @@ describe("public ClawHub Template catalog", () => {
     });
   });
 
+  it("includes a profile-only plugin in catalog detail", async () => {
+    await prepareResolverFixture();
+    const profiles = path.join(fixtureRoot, "profiles");
+    await fs.mkdir(profiles);
+    const plugin = {
+      id: "profile-plugin",
+      kind: "plugin",
+      format: "openclaw",
+      source: "clawhub",
+      ref: "@openclaw/profile-plugin",
+      version: "1.2.3",
+    };
+    await fs.writeFile(
+      path.join(profiles, "openclaw.yml"),
+      JSON.stringify({ schemaVersion: 1, agent: {}, extensions: [plugin] }),
+    );
+
+    const detail = await readClawHubTemplateDetail({ packageName });
+    expect(detail).toMatchObject({
+      plugins: 1,
+      contents: { integrations: [{ name: plugin.ref, kind: "plugin", version: plugin.version }] },
+    });
+  });
+
   it("keeps the detail available when a skill card cannot be fetched", async () => {
     mocks.skillCard.mockRejectedValueOnce(new Error("Skill card unavailable"));
 

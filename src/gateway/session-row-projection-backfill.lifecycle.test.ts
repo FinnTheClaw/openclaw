@@ -24,6 +24,47 @@ function rows() {
     ),
   );
 }
+it("retries an unavailable transcript preview on the next ordinary row publication", async ({
+  signal,
+}) => {
+  const attempted = createDeferredCore();
+  const recovered = { lastMessagePreview: "Recovered preview" };
+  const read = vi
+    .spyOn(transcript, "backfillSessionRowTranscriptFields")
+    .mockImplementationOnce(async () => {
+      attempted.resolve();
+      return undefined;
+    })
+    .mockResolvedValue(recovered);
+  const row = rows()[0]!;
+  const publish = vi.fn();
+  const owner = createSessionRowProjectionBackfill({
+    ready: async () => {},
+    read: (id) => (id === identity(row) ? row : undefined),
+    current: () => true,
+    publish,
+  });
+  try {
+    owner.start();
+    owner.prepare(row, undefined);
+    await withinTest(attempted.promise, signal);
+    await nextTurn();
+    await nextTurn();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(publish).not.toHaveBeenCalledWith(row, recovered);
+
+    row.entry = { ...row.entry, displayName: "Renamed" };
+    owner.prepare(row, undefined);
+    await nextTurn();
+    await nextTurn();
+
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenLastCalledWith(row, recovered);
+  } finally {
+    owner.dispose();
+  }
+});
+
 it.for(["stop", "restart", "reset"] as const)(
   "retires queued rows and late publications on %s",
   async (mode, { signal }) => {

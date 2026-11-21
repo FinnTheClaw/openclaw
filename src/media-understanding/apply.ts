@@ -46,6 +46,14 @@ const EMPTY_VOICE_NOTE_PLACEHOLDER =
 
 const SELF_SERVE_CONTEXT_FIELDS = ["Body", "BodyForAgent", "agentText"] as const;
 
+function wasVoiceNoteTooSmall(
+  attachment?: MediaUnderstandingDecision["attachments"][number],
+): boolean {
+  return Boolean(
+    attachment?.attempts.some((attempt) => attempt.reason?.trim().startsWith("tooSmall")),
+  );
+}
+
 export async function applyMediaUnderstanding(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
@@ -168,9 +176,7 @@ export async function applyMediaUnderstanding(params: {
         const output = audioOutputsByAttachmentIndex.get(attachment.attachmentIndex);
         if (output) {
           outputs.push(output);
-        } else if (
-          attachment.attempts.some((attempt) => attempt.reason?.trim().startsWith("tooSmall"))
-        ) {
+        } else if (wasVoiceNoteTooSmall(attachment)) {
           outputs.push({
             kind: "audio.transcription",
             attachmentIndex: attachment.attachmentIndex,
@@ -271,6 +277,16 @@ export async function applyMediaUnderstanding(params: {
         disposition?.kind !== "failed"
       ) {
         return [];
+      }
+      if (
+        capability === "audio" &&
+        disposition?.kind === "failed" &&
+        wasVoiceNoteTooSmall(
+          decision.attachments.find(({ attachmentIndex }) => attachmentIndex === attachment.index),
+        )
+      ) {
+        // Keep preflight's diagnosis without creating or echoing a new transcript.
+        return [{ text: EMPTY_VOICE_NOTE_PLACEHOLDER, consumesMarkerBudget: true }];
       }
       const text = disposition ? renderMediaAttachmentDisposition(capability, disposition) : null;
       return text ? [{ text, consumesMarkerBudget: true }] : [];

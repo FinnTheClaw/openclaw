@@ -24,6 +24,8 @@ import { StorageLifecycle } from "./storage-lifecycle.js";
 import { canonical, scopeKey, type Prepared } from "./storage-types.js";
 import { digest } from "./vault.js";
 
+const REMEMBER_INTENT_PREFIX = "remember-v1:";
+
 /** Why relink chose a subject, recorded as the annotation reason. */
 const RELINK_BASIS = {
   page: "recorded source page",
@@ -32,7 +34,16 @@ const RELINK_BASIS = {
 } as const;
 /** Multi-record ingestion: batches, remembered claims and subject relinking. */
 export class StorageIngestion extends StorageLifecycle {
-  async batch(input: BatchInput, access: VaultAccess, actor: string): Promise<Receipt> {
+  batch(input: BatchInput, access: VaultAccess, actor: string): Promise<Receipt> {
+    return this.publishBatch(input, access, actor);
+  }
+
+  private async publishBatch(
+    input: BatchInput,
+    access: VaultAccess,
+    actor: string,
+    rememberIntent?: string,
+  ): Promise<Receipt> {
     if (!Check(BatchInput, input) || Buffer.byteLength(canonical(input)) > 1024 * 1024) {
       throw new Error(
         "Invalid batch input or batch exceeds 1 MiB. Use at most 25 records; retain originals with knowledge_attach.",
@@ -43,7 +54,7 @@ export class StorageIngestion extends StorageLifecycle {
       throw new Error("Writes disabled or connected vault changed; no batch accepted.");
     }
     const scope = scopeKey(access.scope),
-      intent = digest(canonical({ operation: "batch", input }));
+      intent = rememberIntent ?? digest(canonical({ operation: "batch", input }));
     await this.initialize(access);
     const prior = this.store.withDatabase((db) => this.row(db, scope, input.requestId));
     if (prior) {
@@ -250,7 +261,8 @@ export class StorageIngestion extends StorageLifecycle {
     }
     await this.initialize(access);
     const requestId = input.requestId,
-      scope = scopeKey(access.scope);
+      scope = scopeKey(access.scope),
+      intent = REMEMBER_INTENT_PREFIX + digest(canonical(input));
     const { plan, fingerprint } = await this.run(access, async (vault) => {
       const data = await vault.scan(),
         withdrawn = this.store.withDatabase((db) =>
@@ -265,6 +277,10 @@ export class StorageIngestion extends StorageLifecycle {
     const inserts = plan.flatMap((p, n) => (p.duplicateOf || p.sameAs !== undefined ? [] : [n]));
     let receipt: Receipt | null = null;
     if (prior) {
+      // Legacy rows hashed only the derived batch, so they retain claim-based replay.
+      if (prior.intent.startsWith(REMEMBER_INTENT_PREFIX)) {
+        this.checkReplay(prior, intent);
+      }
       // A replay finds its own published claims as duplicates; keys map them back.
       receipt = this.resume(access, requestId);
       for (const item of receipt.items ?? []) {
@@ -298,7 +314,7 @@ export class StorageIngestion extends StorageLifecycle {
         start_line: 1,
         end_line: input.excerpt.split(/\r?\n/).length,
       };
-      receipt = await this.batch(
+      receipt = await this.publishBatch(
         {
           requestId,
           expectedVaultId: this.config.vaultId,
@@ -311,6 +327,7 @@ export class StorageIngestion extends StorageLifecycle {
         },
         access,
         actor,
+        intent,
       );
     }
     const inserted = new Map((receipt?.items ?? []).map((i) => [Number(i.key.slice(1)), i.id]));

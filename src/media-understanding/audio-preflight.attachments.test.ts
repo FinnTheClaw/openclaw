@@ -272,4 +272,37 @@ process.stdout.write(process.argv[3] === "empty" && name === "first.wav" ? "  \\
       });
     },
   );
+
+  it("retains the too-small voice note explanation after internal audio preflight", async () => {
+    await withTestDir({ prefix: "openclaw-tiny-audio-selection-" }, async (dir) => {
+      runExecMock.mockRejectedValue(new Error("tiny audio must not reach the transcriber"));
+      const filePath = path.join(dir, "tiny.wav");
+      await fs.writeFile(filePath, Buffer.alloc(8));
+      const cfg = audioConfig("fixture-transcriber", ["{{AttachmentPath}}"], {});
+      const ctx: MsgContext = {
+        Body: caption,
+        agentText: caption,
+        ...captionFields,
+        Surface: "webchat",
+        media: [{ path: filePath, contentType: "audio/wav", workspaceDir: dir }],
+      };
+
+      await expect(transcribeAudioAttachments({ ctx, cfg, workspaceDir: dir })).resolves.toBe(
+        undefined,
+      );
+      expect(ctx.MediaUnderstandingDecisions?.[0]?.attachments).toMatchObject([
+        { attachmentIndex: 0, attempts: [{ reason: expect.stringMatching(/^tooSmall:/u) }] },
+      ]);
+
+      await enrichAudio(ctx, cfg, dir);
+
+      expect(runExecMock).not.toHaveBeenCalled();
+      expect(ctx.MediaUnderstandingDecisions?.at(-1)?.attachments).toEqual([]);
+      expect(ctx).toMatchObject(captionFields);
+      expect(ctx.agentText).toContain(
+        "[Voice note could not be transcribed because the audio attachment was too small]",
+      );
+      expect(ctx.agentText).not.toContain(failedMarker);
+    });
+  });
 });

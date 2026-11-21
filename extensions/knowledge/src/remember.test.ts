@@ -117,6 +117,23 @@ it("a replayed request returns its original result; a changed payload is rejecte
   ).rejects.toThrow(/different payload/);
 });
 
+it.each(["attribution", "due date"])(
+  "remember rejects changed %s for the same claim and request ID",
+  async (field) => {
+    const f = await fixture();
+    const requestId = randomUUID();
+    const item = { text: "Send the report.", kind: "commitment", due_at: "2026-10-23" };
+    const first = await f.remember([item], { requestId });
+    expect(first.receipt!.state).toBe("published");
+
+    const changed =
+      field === "attribution"
+        ? f.remember([item], { requestId, attribution: "Corrected source attribution" })
+        : f.remember([{ ...item, due_at: "2026-10-24" }], { requestId });
+    await expect(changed).rejects.toThrow(/different payload/);
+  },
+);
+
 it("remember rejects agent inference, oversized excerpts and missing request IDs outside a flush", async () => {
   const f = await fixture();
   await expect(

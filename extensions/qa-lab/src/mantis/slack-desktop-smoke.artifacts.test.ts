@@ -245,8 +245,12 @@ describe("Mantis Slack artifact ownership", () => {
       await writeRunArtifacts(outputDir, scenarios);
       const codexScenario = "slack-codex-approval-exec-native";
       for (const state of ["pending", "resolved"] as const) {
-        await changeCheckpoint(outputDir, codexScenario, state, {
+        await changeCheckpoint(outputDir, unselected, state, {
           approvalKind: "exec",
+        });
+        await changeCheckpoint(outputDir, codexScenario, state, {
+          // Codex command approval is a plugin approval in the Slack receipt.
+          approvalKind: "plugin",
           channelId: "CLEASED",
           messageTs: "1.000000",
           threadTs: state === "pending" ? null : "1.000000",

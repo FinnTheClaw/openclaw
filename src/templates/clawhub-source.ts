@@ -472,6 +472,12 @@ async function readClawHubTemplateContents(
         const skills = manifest.packages
           .filter((pkg) => pkg.kind === "skill")
           .map((pkg) => ({ name: pkg.ref, version: pkg.version }));
+        const manifestPlugins = manifest.packages.filter((pkg) => pkg.kind === "plugin");
+        const manifestPluginRefs = new Set(manifestPlugins.map((pkg) => pkg.ref));
+        // A duplicate profile declaration remains a planning error, not a second catalog entry.
+        const profilePlugins = (verified.openClawProfile?.extensions ?? []).filter(
+          (pkg) => !manifestPluginRefs.has(pkg.ref),
+        );
         const [describedInstructions, describedSkills] = requestedPreview
           ? [instructions, skills]
           : await Promise.all([
@@ -521,9 +527,11 @@ async function readClawHubTemplateContents(
               instructions: describedInstructions,
               skills: describedSkills,
               integrations: [
-                ...manifest.packages
-                  .filter((pkg) => pkg.kind === "plugin")
-                  .map((pkg) => ({ name: pkg.ref, kind: "plugin" as const, version: pkg.version })),
+                ...[...manifestPlugins, ...profilePlugins].map((pkg) => ({
+                  name: pkg.ref,
+                  kind: "plugin" as const,
+                  version: pkg.version,
+                })),
                 ...Object.keys(manifest.mcpServers).map((name) => ({
                   name,
                   kind: "mcpServer" as const,

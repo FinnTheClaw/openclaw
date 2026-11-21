@@ -42,7 +42,9 @@ export function createChatPaneRunRecoveryActions(
           if (ownsFailure(runId)) {
             // Continue with the existing history, rather than replaying a prompt
             // whose tools may already have completed side effects.
-            void state.handleSendChat(t("chat.recovery.continuePrompt"));
+            void state.handleSendChat(t("chat.recovery.continuePrompt"), {
+              replyTargetOverride: null,
+            });
           }
         }
       : undefined,

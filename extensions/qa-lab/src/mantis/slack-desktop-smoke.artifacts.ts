@@ -150,7 +150,8 @@ export async function createSlackDesktopArtifactOwner(params: {
             checkpointLabel,
           );
           assertBase(checkpoint, checkpointPath, checkpointLabel);
-          const expectedKind = scenarioId.endsWith("-approval-exec-native") ? "exec" : "plugin";
+          // Codex command approvals use plugin receipts; only the native exec scenario uses exec.
+          const expectedKind = scenarioId === "slack-approval-exec-native" ? "exec" : "plugin";
           if (checkpoint.approvalKind !== expectedKind) {
             throw new Error(`${checkpointLabel} has an unexpected approval kind.`);
           }

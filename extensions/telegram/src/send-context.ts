@@ -86,6 +86,9 @@ const CHAT_NOT_FOUND_RE = /400: Bad Request: chat not found/i;
 export const sendLogger = createSubsystemLogger("telegram/send");
 const diagLogger = createSubsystemLogger("telegram/diagnostic");
 type CachedTelegramClientOptions = {
+  activeLeases: number;
+  closeStarted: boolean;
+  retired: boolean;
   clientOptions: ApiClientOptions & { fetch: NonNullable<ApiClientOptions["fetch"]> };
   transport: TelegramTransport;
 };
@@ -114,7 +117,12 @@ function createTelegramHttpLogger(cfg: OpenClawConfig) {
 }
 
 function closeCachedTelegramClientOptions(entry: CachedTelegramClientOptions): void {
-  // Cache churn beyond 64 account/network configurations may interrupt a send.
+  // Retire the lookup immediately, but keep the transport until its last operation settles.
+  entry.retired = true;
+  if (entry.activeLeases > 0 || entry.closeStarted) {
+    return;
+  }
+  entry.closeStarted = true;
   void entry.transport.close().catch((err: unknown) => {
     diagLogger.warn(
       `telegram client options cache transport close failed: ${redactSensitiveText(
@@ -146,6 +154,9 @@ function resolveTelegramClientOptions(
     transport,
   });
   const entry: CachedTelegramClientOptions = {
+    activeLeases: 0,
+    closeStarted: false,
+    retired: false,
     clientOptions: {
       fetch: asTelegramClientFetch(fetchImpl),
       ...(normalizedApiRoot ? { apiRoot: normalizedApiRoot } : {}),
@@ -286,52 +297,65 @@ export async function withTelegramApiContext<T>(
       retryable: false,
     });
   }
-  let api: TelegramApi;
-  if (opts.api) {
-    api = opts.api as TelegramApi;
-  } else {
-    const client = resolveTelegramClientOptions(account);
-    const fetch = client.clientOptions.fetch;
-    const clientOptions = opts.assertPlatformSendAuthorized
-      ? {
-          ...client.clientOptions,
-          fetch: bindTelegramRequestAuthority(fetch, opts.assertPlatformSendAuthorized),
-        }
-      : client.clientOptions;
-    const bot = new Bot(token, { client: clientOptions });
-    if (opts.signal || opts.assertPlatformSendAuthorized) {
-      // grammY wraps later transformers around earlier ones. Check authority
-      // after the account queue drains, immediately before its HTTP client runs.
-      bot.api.config.use((prev, method, payload, signal) => {
-        opts.signal?.throwIfAborted();
-        opts.assertPlatformSendAuthorized?.();
-        return prev(method, payload, signal).catch((error: unknown) => {
-          const rejection =
-            error instanceof HttpError ? findTelegramRequestAuthorityError(error.error) : undefined;
-          if (rejection) {
-            throw rejection.originalError;
+  let client: CachedTelegramClientOptions | undefined;
+  try {
+    let api: TelegramApi;
+    if (opts.api) {
+      api = opts.api as TelegramApi;
+    } else {
+      client = resolveTelegramClientOptions(account);
+      client.activeLeases += 1;
+      const fetch = client.clientOptions.fetch;
+      const clientOptions = opts.assertPlatformSendAuthorized
+        ? {
+            ...client.clientOptions,
+            fetch: bindTelegramRequestAuthority(fetch, opts.assertPlatformSendAuthorized),
           }
-          throw error;
+        : client.clientOptions;
+      const bot = new Bot(token, { client: clientOptions });
+      if (opts.signal || opts.assertPlatformSendAuthorized) {
+        // grammY wraps later transformers around earlier ones. Check authority
+        // after the account queue drains, immediately before its HTTP client runs.
+        bot.api.config.use((prev, method, payload, signal) => {
+          opts.signal?.throwIfAborted();
+          opts.assertPlatformSendAuthorized?.();
+          return prev(method, payload, signal).catch((error: unknown) => {
+            const rejection =
+              error instanceof HttpError
+                ? findTelegramRequestAuthorityError(error.error)
+                : undefined;
+            if (rejection) {
+              throw rejection.originalError;
+            }
+            throw error;
+          });
         });
-      });
-    }
-    bot.api.config.use(getOrCreateAccountThrottler(token).transformer);
-    api = bot.api;
-  }
-  const context = {
-    cfg,
-    account,
-    ownerAgentId,
-    api,
-  };
-  const assertCurrent = opts.assertPlatformSendAuthorized
-    ? () => {
-        opts.signal?.throwIfAborted();
-        opts.assertPlatformSendAuthorized?.();
       }
-    : undefined;
-  // A caller-supplied API has no authority transformer; flood waits re-check here.
-  return await runAuthorizedTelegramRequest(assertCurrent, () => operation(context));
+      bot.api.config.use(getOrCreateAccountThrottler(token).transformer);
+      api = bot.api;
+    }
+    const context = {
+      cfg,
+      account,
+      ownerAgentId,
+      api,
+    };
+    const assertCurrent = opts.assertPlatformSendAuthorized
+      ? () => {
+          opts.signal?.throwIfAborted();
+          opts.assertPlatformSendAuthorized?.();
+        }
+      : undefined;
+    // A caller-supplied API has no authority transformer; flood waits re-check here.
+    return await runAuthorizedTelegramRequest(assertCurrent, () => operation(context));
+  } finally {
+    if (client) {
+      client.activeLeases -= 1;
+      if (client.retired) {
+        closeCachedTelegramClientOptions(client);
+      }
+    }
+  }
 }
 
 type TelegramRequestWithDiag = <T>(

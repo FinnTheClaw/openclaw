@@ -115,6 +115,10 @@ export function createSessionRowProjectionBackfill(params: {
                 })
               : (fields ?? {}),
           );
+          // An unavailable read permits later preparation, but does not requeue itself.
+          if (fields === undefined && revisions.get(id) === captured) {
+            revisions.delete(id);
+          }
         }
       } catch {
         // A later owner publication retries optional fields; do not spin on a cold/error row.

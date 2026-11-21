@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { resolveArtifactDownloadSource } from "../../api/artifact-download.ts";
 import type { SessionsListResult } from "../../api/types.ts";
+import { t } from "../../i18n/index.ts";
 import { reconcileSessionHistory } from "../../lib/sessions/reconcile.ts";
 import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
 import {
@@ -426,11 +427,18 @@ describe("SessionParticipationTracker", () => {
 
 describe("failed run recovery actions", () => {
   it("continues once from the current failed run without replaying the original prompt", () => {
+    const replyTarget = {
+      messageId: "unrelated-answer",
+      sourceMessageId: "unrelated-answer",
+      text: "An unrelated answer",
+    };
     const state = {
       sessionKey: "session-a",
       connected: true,
       chatRunId: null as string | null,
       chatSending: false,
+      chatMessage: "An unsent reply",
+      chatReplyTarget: replyTarget,
       handleSendChat: vi.fn(async () => {
         state.chatSending = true;
       }),
@@ -445,7 +453,14 @@ describe("failed run recovery actions", () => {
     expect(state.handleSendChat).not.toHaveBeenCalled();
     actions.onRetryRun?.("run-a");
     actions.onRetryRun?.("run-a");
-    expect(state.handleSendChat).toHaveBeenCalledOnce();
+    expect(state.handleSendChat).toHaveBeenCalledExactlyOnceWith(
+      t("chat.recovery.continuePrompt"),
+      {
+        replyTargetOverride: null,
+      },
+    );
+    expect(state.chatMessage).toBe("An unsent reply");
+    expect(state.chatReplyTarget).toBe(replyTarget);
     state.chatSending = false;
     current = false;
     actions.onRetryRun?.("run-a");
