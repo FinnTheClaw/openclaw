@@ -127,12 +127,13 @@ function parseProgressMarkup(sanitizedHtml: string) {
 }
 
 /** Compact previews share the full note parser but omit progress-bar fallback text. */
-export function progressCardNoteSummary(sanitizedHtml: string): string {
+export function progressCardNoteSummary(sanitizedHtml: string, progressOnlyLabel = ""): string {
   const { template, bars } = parseProgressMarkup(sanitizedHtml);
   for (const bar of bars) {
     bar.remove();
   }
-  return template.content.textContent?.replace(/\s+/gu, " ").trim() ?? "";
+  const text = template.content.textContent?.replace(/\s+/gu, " ").trim();
+  return text || (bars.length > 0 ? progressOnlyLabel : "");
 }
 
 export function promoteFirstProgressBar(sanitizedHtml: string): string {

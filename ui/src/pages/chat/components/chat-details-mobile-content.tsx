@@ -191,6 +191,7 @@ function MobileRoot(
         progressBars: true,
         codeBlockChrome: "none",
       }),
+      t("sessionProgressCard.noteLabel"),
     );
   });
   const automationNotice = (

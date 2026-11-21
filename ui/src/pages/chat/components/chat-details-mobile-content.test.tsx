@@ -174,6 +174,48 @@ it("opens unlisted mobile Details children as sessions and listed children in Su
   }
 });
 
+it("opens bar-only saved Task progress in Mobile Details without changing structured progress", async () => {
+  const value = details({ showTaskProgress: false, onShowTaskProgressChange: vi.fn() });
+  const card = { sessionKey: value.sessionKey, revision: 1, updatedAt: 1 };
+  const { view, element, navigate, show } = await mountMobileHost({
+    ...value,
+    progressCard: { ...card, steps: [{ step: "Review the sample", status: "in_progress" }] },
+  });
+  try {
+    const structured = view.getByRole("button", { name: /Review the sample/ });
+    expect(structured.textContent).toContain("1 / 1");
+    structured.click();
+    expect(navigate).toHaveBeenCalledOnce();
+    expect(navigate.mock.calls[0]![0].page?.details).toEqual({ kind: "task-progress" });
+    navigate.mockClear();
+
+    element.details = {
+      ...value,
+      progressCard: {
+        ...card,
+        revision: 2,
+        markdown: '<progress value="3" max="7"></progress>',
+      },
+    };
+    await settle(element);
+
+    const opener = view.getByRole("button", { name: /progress/i });
+    expect(opener.closest('[data-details-group="task-progress"]')).not.toBeNull();
+    expect(opener).toMatchObject({ disabled: false });
+    opener.click();
+    expect(navigate).toHaveBeenCalledOnce();
+    const destination = navigate.mock.calls[0]![0];
+    expect(destination.page?.details).toEqual({ kind: "task-progress" });
+
+    await show(destination);
+    await waitForSolid(() =>
+      expect(view.getByRole("progressbar")).toMatchObject({ value: 3, max: 7 }),
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 it("replaces the People activation owner while retaining the mobile host content", async () => {
   const { view, element, show, query } = await mountMobileHost(details());
   const release = vi.fn();
