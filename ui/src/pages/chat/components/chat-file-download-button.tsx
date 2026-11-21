@@ -1,4 +1,4 @@
-import { action, createOptimistic, onSettled } from "solid-js";
+import { createEffect, onSettled } from "solid-js";
 import { Icon } from "../../../components/solid/icon.tsx";
 import "../../../components/tooltip.ts";
 import { registerChatComposerEnglish } from "../../../i18n/locales/en-chat-composer.ts";
@@ -7,6 +7,7 @@ import { downloadBlobFile } from "../../../lib/download.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
 import { t, registerEnglishCatalog } from "../../../lib/reactive/i18n.ts";
 import { showToast } from "../../../lib/toast.ts";
+import { createDetailOperationPresentation } from "./chat-detail-panel-operation-lifetime.ts";
 import type { FileReaderDownload } from "./chat-sidebar-content-types.ts";
 
 registerEnglishCatalog(registerChatComposerEnglish);
@@ -20,25 +21,34 @@ export function FileDownloadButton(props: {
   disabled?: boolean;
   showLabel?: boolean;
 }) {
-  const [pending, setPending] = createOptimistic(false);
-  const retired = Promise.withResolvers<void>();
-  let request: AbortController | null = null;
-  onSettled(() => () => {
-    request?.abort();
-    retired.resolve();
-  });
-  const presentDownload = action(function* (completion: Promise<void>) {
-    setPending(true);
-    yield Promise.race([completion, retired.promise]);
-  });
+  const presentation = createDetailOperationPresentation();
+  const { pending } = presentation;
+  let request: { controller: AbortController; scopeKey: string } | null = null;
+  const retire = () => {
+    const previous = request;
+    request = null;
+    presentation.retire();
+    previous?.controller.abort();
+  };
+  createEffect(
+    () => props.scopeKey,
+    (scopeKey) => {
+      if (request && request.scopeKey !== scopeKey) {
+        retire();
+      }
+    },
+  );
+  onSettled(() => retire);
   const download = async () => {
     if (request || props.disabled) {
       return;
     }
     const controller = new AbortController();
     const scopeKey = props.scopeKey;
-    request = controller;
-    const current = () => !controller.signal.aborted && props.scopeKey === scopeKey;
+    const admitted = { controller, scopeKey };
+    request = admitted;
+    const current = () =>
+      request === admitted && !controller.signal.aborted && props.scopeKey === scopeKey;
     const failed = (error: unknown) => {
       if (current()) {
         showToast({
@@ -63,13 +73,14 @@ export function FileDownloadButton(props: {
       } catch (error) {
         failed(error);
       } finally {
-        request = null;
+        if (request === admitted) {
+          request = null;
+        }
       }
     })();
     // Download callbacks may select their file. Let that owner update land first.
-    await Promise.resolve();
     if (current()) {
-      await presentDownload(completion).catch(failed);
+      await presentation.observe(completion, current).catch(failed);
     }
   };
   const label = () =>

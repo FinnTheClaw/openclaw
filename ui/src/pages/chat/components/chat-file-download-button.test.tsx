@@ -49,6 +49,55 @@ it.each(["unmount", "session", "connection"])(
   },
 );
 
+it("enables a changed download scope before obsolete bytes settle", async () => {
+  type Result = { url: string; filename: string } | null;
+  const obsolete = createDeferredCore<Result>();
+  const current = createDeferredCore<Result>();
+  const download = vi
+    .fn<(signal: AbortSignal) => Promise<Result>>()
+    .mockReturnValueOnce(obsolete.promise)
+    .mockReturnValueOnce(current.promise);
+  const savedNames: string[] = [];
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+    this: HTMLAnchorElement,
+  ) {
+    savedNames.push(this.download);
+  });
+  const [scope, setScope] = createSignal("first-file");
+  const view = mountSolid(() => (
+    <FileDownloadButton scopeKey={scope()} download={download} class="download" />
+  ));
+  const button = () => view.getByRole("button");
+  const disabled = () => button().hasAttribute("disabled");
+  try {
+    button().click();
+    await waitForSolid(() => expect(disabled()).toBe(true));
+    expect(download).toHaveBeenCalledOnce();
+
+    setScope("next-file");
+    await waitForSolid(() => expect(disabled()).toBe(false));
+    expect(savedNames).toEqual([]);
+
+    button().click();
+    await waitForSolid(() => expect(disabled()).toBe(true));
+    expect(download).toHaveBeenCalledTimes(2);
+
+    obsolete.resolve({ url: "/fixture/obsolete", filename: "obsolete.txt" });
+    await obsolete.promise;
+    flush();
+    expect(savedNames).toEqual([]);
+    expect(disabled()).toBe(true);
+
+    current.resolve({ url: "/fixture/current", filename: "current.txt" });
+    await waitForSolid(() => expect(disabled()).toBe(false));
+    expect(savedNames).toEqual(["current.txt"]);
+  } finally {
+    view.unmount();
+    obsolete.resolve(null);
+    current.resolve(null);
+  }
+});
+
 it.each(["during download", "after start"])("closes the reader %s", async (timing) => {
   const bytes = createDeferredCore<{ url: string; filename: string } | null>();
   const [visible, setVisible] = createSignal(true);
