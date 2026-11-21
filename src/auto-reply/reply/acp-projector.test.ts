@@ -113,14 +113,14 @@ describe("createAcpReplyProjector", () => {
     await projector.flush();
 
     const output = deliveries.filter(({ kind }) => kind !== "tool");
-    expect(output.map(({ text }) => text).join("")).toBe(inputText.slice(0, 24_000));
+    expect(output.map(({ text }) => text).join("")).toBe(
+      `${inputText.slice(0, 24_000)}\n\n[output truncated]`,
+    );
     for (const { kind, text } of output) {
       expect(kind).toBe("block");
       expect(text?.length).toBeLessThanOrEqual(1800);
     }
-    expect(deliveries.filter(({ kind }) => kind === "tool")).toEqual([
-      { kind: "tool", text: prefixSystemMessage("output truncated") },
-    ]);
+    expect(deliveries.filter(({ kind }) => kind === "tool")).toEqual([]);
   });
 
   it.each(["live", "final_only"] as const)(
@@ -280,7 +280,7 @@ describe("createAcpReplyProjector", () => {
       const { deliveries, projector } = createStreamHarness(
         deliveryMode,
         { tagVisibility: { tool_call: true } },
-        { shouldSendToolSummaries: false },
+        { shouldSendToolSummariesNow: () => false },
       );
       await emitTool(projector, {
         tag: "tool_call",
@@ -296,7 +296,7 @@ describe("createAcpReplyProjector", () => {
       await emitText(projector, answerText);
       await emitText(projector, "discarded suffix");
       await emitText(projector, "another discarded suffix");
-      await projector.flush(true);
+      await projector.flush();
 
       const answer = deliveries.map((entry) => entry.text ?? "").join("");
       expect(answer).toBe(`${answerText}\n\n[output truncated]`);
@@ -313,11 +313,11 @@ describe("createAcpReplyProjector", () => {
       "final_only",
       {},
       {
-        shouldSendToolSummaries: false,
+        shouldSendToolSummariesNow: () => false,
       },
     );
     await emitText(projector, "A".repeat(24_000));
-    await projector.flush(true);
+    await projector.flush();
     expect(deliveries).toEqual([{ kind: "final", text: "A".repeat(24_000) }]);
   });
 
@@ -326,12 +326,12 @@ describe("createAcpReplyProjector", () => {
       "final_only",
       {},
       {
-        shouldSendToolSummaries: false,
+        shouldSendToolSummariesNow: () => false,
       },
     );
     await emitText(projector, `${"A".repeat(23_999)}😀tail`);
     await emitText(projector, "later");
-    await projector.flush(true);
+    await projector.flush();
     expect(deliveries).toEqual([
       { kind: "final", text: `${"A".repeat(23_999)}\n\n[output truncated]` },
     ]);

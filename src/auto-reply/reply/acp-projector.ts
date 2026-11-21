@@ -267,12 +267,10 @@ export function createAcpReplyProjector(params: {
     }
     truncationNoticeEmitted = true;
     // Lost answer content belongs to the answer lane, not optional tool progress.
-    if (settings.deliveryMode === "final_only") {
-      finalOnlyOutputText += ACP_OUTPUT_TRUNCATED_NOTICE;
-    } else {
-      liveBufferText += ACP_OUTPUT_TRUNCATED_NOTICE;
+    bufferedText += ACP_OUTPUT_TRUNCATED_NOTICE;
+    if (isLive) {
       clearLiveIdleTimer();
-      flushLiveBuffer({ force: true });
+      flushLiveBuffer();
     }
   };
 

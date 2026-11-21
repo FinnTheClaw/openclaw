@@ -549,9 +549,7 @@ export function createHooksRequestHandler(
           // Gmail preset already identifies each message in its rendered scope,
           // so leave its per-message replay behavior unchanged across batches.
           const sourcePayloadFingerprint =
-            mapped.fanout && !idempotencyKey
-              ? createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex")
-              : undefined;
+            mapped.fanout && !idempotencyKey ? sha256Hex(JSON.stringify(payload)) : undefined;
           // Within-batch duplicates: content identity alone would collapse two
           // identical rendered items into one dispatch while the response
           // claims both ran. Numbering repeated scopes keeps one replay entry
