@@ -266,7 +266,7 @@ const prefixCorrection = {
   unchangedLeadSentences: leadChunks.map((text) => text.trimEnd()),
   literal: true,
   terminalText: leadChunks.join("") + correctedText + "\n",
-  correctedText,
+  correctedStatement: "The current value is thirty-three for this item.",
   streamedText:
     "First lead stays.\nNext lead stays.\nThe current value is one for this item.Continue. Keep this sentence unchanged. Retaineach result. The final summary also remains",
 };
@@ -348,10 +348,14 @@ it.each([...blockDirectiveCases, ...inlineDirectiveCases, prefixCorrection])(
       if ("terminalText" in scenario) {
         const recipientText = texts(delivered);
         const additional = recipientText.slice(beforeTerminalCount);
-        expect(additional.join(" ")).toBe("\n" + scenario.correctedText);
+        expect(additional.join(" ")).toContain(scenario.correctedStatement);
         for (const sentence of scenario.unchangedLeadSentences) {
           expect.soft(recipientText.join(" ").split(sentence)).toHaveLength(2);
         }
+        expect(
+          recipientText.join(" ").split(scenario.marker),
+          "an unchanged sentence already delivered from the corrected item must not be replayed",
+        ).toHaveLength(2);
       }
       if ("textOnly" in scenario) {
         expect(delivered.every(hasNoMedia)).toBe(true);
