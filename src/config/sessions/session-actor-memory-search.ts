@@ -101,15 +101,17 @@ export function readSessionActorMemorySearch(
   input: SearchInput,
 ): SessionTranscriptSearchResult {
   const terms = sessionTranscriptSearchTerms(input.query);
-  const phrases = terms.map((term, index) => ({
-    terms: tokenize(term).map((token, offset, tokens) => {
+  const phrases = terms.flatMap((term, index) => {
+    const phraseTerms = tokenize(term).map((token, offset, tokens) => {
+      // A tokenless final term must not move the prefix to an earlier term.
       const prefix =
         input.match === "prefix" && index === terms.length - 1 && offset === tokens.length - 1;
       // Tokens contain only Unicode letters, numbers, private-use characters and marks.
       return new RegExp(`^${token.term}${prefix ? "" : "$"}`, "iu");
-    }),
-  }));
-  if (phrases.some((phrase) => phrase.terms.length === 0)) {
+    });
+    return phraseTerms.length > 0 ? [{ terms: phraseTerms }] : [];
+  });
+  if (phrases.length === 0) {
     return { hits: [], indexing: false, truncated: false };
   }
   const rows: SearchRow[] = [];

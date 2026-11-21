@@ -158,6 +158,25 @@ describe("actor-owned transcript search", () => {
     expect(bounded.truncated).toBe(true);
   });
 
+  it("ignores standalone punctuation in otherwise searchable actor transcript queries", async () => {
+    const { create, search } = await fixture();
+    await create("deploy", [message("deploy", "Rollback plan: deploy - staging")]);
+
+    for (const [query, options, ids] of [
+      ["deploy staging", {}, ["deploy"]],
+      ["deploy stag", { match: "prefix" }, ["deploy"]],
+      ["deploy missing -", {}, []],
+      ["- &", {}, []],
+      ["deploy - staging", {}, ["deploy"]],
+      ["deploy - stag", { match: "prefix" }, ["deploy"]],
+    ] as const) {
+      expect(
+        (await search(query, options)).hits.map((hit) => hit.messageId),
+        query,
+      ).toEqual(ids);
+    }
+  });
+
   it("uses corpus BM25 before scope filtering and preserves recent ordering and snippets", async () => {
     const { create, search } = await fixture();
     const selected = await create("selected", [message("a", "saffron", { role: "assistant" })]);
