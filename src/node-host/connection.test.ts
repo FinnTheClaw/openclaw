@@ -414,7 +414,7 @@ it.each([false, true])(
 it.each(["resolve", "reject"] as const)(
   "retires in-flight runner publication and its pending value before late %s",
   async (settle) => {
-    const { connection, request, callbacks } = startConnectionFixture(true);
+    const { connection, request, callbacks, writeStderrLine } = startConnectionFixture(true);
     const previous = createDeferred<unknown>();
     let first = true;
     request.mockImplementation((method) => {
@@ -425,12 +425,11 @@ it.each(["resolve", "reject"] as const)(
       return Promise.resolve({});
     });
     const capacityChanged = callbacks.onRunnerCapacityChanged!;
-    const publications = () => runnerPublications(request);
     try {
       capacityChanged({ total: 2, available: 2 });
       connection.connect(gateway);
       capacityChanged({ total: 2, available: 1 });
-      expect(publications()).toHaveLength(1);
+      expect(runnerPublications(request)).toHaveLength(1);
       connection.refreshRunnerInventory();
       await vi.advanceTimersByTimeAsync(0);
       capacityChanged({ total: 2, available: 0 });
@@ -441,13 +440,14 @@ it.each(["resolve", "reject"] as const)(
         previous.reject(new Error("retired publication rejected"));
       }
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(publications().map(([, params]) => params)).toEqual(
+      expect(runnerPublications(request).map(([, params]) => params)).toEqual(
         [2, 1, 0].map((available) =>
           expect.objectContaining({
             workerHost: expect.objectContaining({ capacity: { total: 2, available } }),
           }),
         ),
       );
+      expect(writeStderrLine).not.toHaveBeenCalled();
     } finally {
       previous.resolve({});
     }
