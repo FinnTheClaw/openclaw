@@ -643,11 +643,11 @@ export class NodeWorkerWorkspaceRuntime {
           });
           // A snapshot sent before this transfer knows only the old base. Keep the latest
           // result across command gaps; supersede it on transfer or drop it with its generation.
-          if (
-            !(input.transfer.direction === "download" && input.transfer.attachments) &&
-            !(input.transfer.direction === "upload" && input.transfer.publicationBaseCommit)
-          ) {
-            this.latestTransferredManifest.set(generationKey, stdout);
+          const transfer = input.transfer;
+          const download = transfer.direction === "download";
+          if (download ? !transfer.attachments : !transfer.publicationBaseCommit) {
+            const ref = download && transfer.checkpointGitHistory ? transfer.manifestRef : stdout;
+            this.latestTransferredManifest.set(generationKey, ref);
           }
           return projectWorkspaceOperationResult(workspacePath, `${stdout}\n`);
         }

@@ -337,6 +337,50 @@ it("retains transferred manifests across command gaps until superseded or retire
   expect(fs.existsSync(sibling)).toBe(true);
 });
 
+it("retains a checkpoint manifest when the history transfer acknowledges it as JSON", async () => {
+  const f = fixture("checkpoint-history-retention");
+  f.seed();
+  const baseDigest = "b".repeat(64);
+  const checkpointDigest = "d".repeat(64);
+  const baseManifestRef = `sha256:${baseDigest}`;
+  const manifestRef = `sha256:${checkpointDigest}`;
+  const base = f.manifest(baseDigest);
+  const checkpoint = f.manifest(checkpointDigest);
+  const acknowledgement = JSON.stringify({ manifestRef });
+  const runTransfer = vi.spyOn(workspaceTransfer, "runNodeWorkerWorkspaceTransfer");
+  runTransfer.mockResolvedValueOnce(acknowledgement);
+
+  const result = await f.workspace.exec(
+    {
+      gatewayNamespace: f.input.gatewayNamespace,
+      environmentId: f.entry.environmentId,
+      sessionId: f.entry.sessionId,
+      generation: f.generation,
+      argv: ["openclaw-internal-workspace-transfer"],
+      transfer: {
+        direction: "download",
+        token: "test-token",
+        manifestRef,
+        checkpointBaseManifestRef: baseManifestRef,
+        checkpointGitHistory: {
+          baseCommit: "a".repeat(40),
+          headCommit: "b".repeat(40),
+          descendsFromBase: true,
+        },
+      },
+    },
+    undefined,
+    { url: "fixture-only" },
+  );
+  expect(runTransfer).toHaveBeenCalledOnce();
+  expect(result).toMatchObject({ code: 0, termination: "exit", stdout: `${acknowledgement}\n` });
+
+  // The Gateway still knows only the base during the command gap.
+  const retained = await f.collect(1, [{ ...f.entry, manifestRefs: [baseManifestRef] }]);
+  expect(retained).toMatchObject({ applied: true });
+  expectPaths([base, checkpoint], true);
+});
+
 it("keeps a retained worker workspace after turn completion until environment teardown", async () => {
   const root = tempDirs.make("node-worker-workspace-retention-active-");
   const { bundleRoot, env, workspaceDir } = writeNodeWorkerFixture(root);
