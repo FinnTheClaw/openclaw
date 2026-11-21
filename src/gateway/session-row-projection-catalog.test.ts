@@ -241,3 +241,39 @@ it("waits for the successor when replacement begins during catalog preparation",
     catalog.dispose();
   }
 });
+
+it("retains a newer catalog publication while an older read settles", async () => {
+  const entry = (id: string) => [{ provider: "unit-test", id, name: id }];
+  const original = entry("original");
+  const older = entry("first-publication");
+  const newer = entry("second-publication");
+  const reading = createDeferredCore<typeof older>();
+  const read = vi.fn(async () => original);
+  const catalog = createSessionRowProjectionCatalog({
+    getModelCatalog: read,
+    onInvalidated: () => catalog.invalidate(),
+    onRefreshed: () => {},
+  });
+  const publish = () =>
+    notifyPreparedModelRuntimePublication({ phase: "catalog-published", modelFactsChanged: true });
+  try {
+    await catalog.refresh();
+    expect(catalog.current).toEqual(original);
+    read.mockReturnValueOnce(reading.promise).mockResolvedValue(newer);
+
+    publish();
+    const pending = catalog.refresh();
+    expect(read).toHaveBeenCalledTimes(2);
+    publish();
+    reading.resolve(older);
+    await pending;
+
+    await catalog.refresh();
+    expect(catalog.current).toEqual(newer);
+    await catalog.refresh();
+    expect(read).toHaveBeenCalledTimes(3);
+  } finally {
+    reading.resolve(older);
+    catalog.dispose();
+  }
+});

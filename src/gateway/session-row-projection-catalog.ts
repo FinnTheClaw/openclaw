@@ -45,7 +45,7 @@ export function createSessionRowProjectionCatalog(params: {
   onRefreshed: (changedAgents: ReadonlySet<string> | undefined) => void;
 }) {
   let modelCatalog = params.modelCatalog;
-  let catalogDirty = Boolean(params.getModelCatalog);
+  let dirtyRevision = params.getModelCatalog ? Symbol("catalog") : undefined;
   let pending: Promise<void> | undefined;
   let replacement: Promise<void> | undefined;
   let runtimeInvalidated = false;
@@ -88,7 +88,7 @@ export function createSessionRowProjectionCatalog(params: {
       return !lifecycle.signal.aborted && pending !== undefined;
     },
     get needsInitialRead() {
-      return catalogDirty && modelCatalog === undefined;
+      return dirtyRevision !== undefined && modelCatalog === undefined;
     },
     get needsCurrentRead() {
       return Boolean(params.getModelCatalog) && runtimeInvalidated;
@@ -110,13 +110,14 @@ export function createSessionRowProjectionCatalog(params: {
     },
     invalidate() {
       if (params.getModelCatalog) {
-        catalogDirty = true;
+        dirtyRevision = Symbol("catalog");
       }
     },
     refresh() {
+      const revision = dirtyRevision;
       if (
         lifecycle.signal.aborted ||
-        !catalogDirty ||
+        revision === undefined ||
         (replacement && modelCatalog !== undefined)
       ) {
         return Promise.resolve();
@@ -126,14 +127,17 @@ export function createSessionRowProjectionCatalog(params: {
       }
       const work = (async () => {
         const next = await params.getModelCatalog?.();
-        // Replacement can begin while the catalog read yields.
-        if (lifecycle.signal.aborted || (replacement && modelCatalog !== undefined)) {
+        // Only this read's revision may be adopted and clear pending invalidation.
+        if (
+          lifecycle.signal.aborted ||
+          dirtyRevision !== revision ||
+          (replacement && modelCatalog !== undefined)
+        ) {
           return;
         }
-        // A concurrent catalog change is adopted by the next publication.
         const changed = changedModelAgents(modelCatalog, next);
         modelCatalog = next;
-        catalogDirty = false;
+        dirtyRevision = undefined;
         runtimeInvalidated = false;
         params.onRefreshed(changed);
       })().finally(() => {

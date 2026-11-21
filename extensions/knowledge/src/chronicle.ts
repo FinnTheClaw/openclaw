@@ -211,7 +211,7 @@ export function emptyChronicle(input: TimelineInput, onDay?: DayInput): Chronicl
     JSON.stringify([
       "unprovisioned",
       { ...input, offset: undefined, limit: undefined, snapshot: undefined },
-      onDay,
+      onDay ? [onDay.date, onDay.week ?? false, onDay.timezone ?? "UTC"] : null,
     ]),
   );
   if (input.snapshot && input.snapshot !== snapshot) {

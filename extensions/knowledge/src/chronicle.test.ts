@@ -390,6 +390,24 @@ it("unprovisioned operator temporal reads stay empty without creating storage", 
   await expect(service.chronicle_since({} as SinceInput, operator)).rejects.toThrow();
 });
 
+it("unprovisioned day reads accept their own unchanged snapshot fence", async () => {
+  const base = tempDirs.make("knowledge-chronicle-empty-");
+  const f = hostApi(base, { policy: { operatorRead: true } });
+  const service = createKnowledgeService(f.api);
+  const operator = operatorContext(f.api, ["operator.read"]);
+  const input = { date: "2026-10-04", timezone: "UTC" };
+
+  const first = await service.chronicle_day(input, operator);
+  expect(first).toMatchObject({ total: 0, nextOffset: null });
+  const fenced = await service.chronicle_day({ ...input, snapshot: first.snapshot }, operator);
+  expect(fenced).toMatchObject({
+    total: 0,
+    nextOffset: null,
+    snapshot: first.snapshot,
+  });
+  expect((await service.status({}, operator)).store).toBe("unprovisioned");
+});
+
 it("source summaries are page-local, deduplicated, snapshot fenced and lifecycle aware", async () => {
   const f = await fixture();
   await f.put("person_alice", { type: "person" });

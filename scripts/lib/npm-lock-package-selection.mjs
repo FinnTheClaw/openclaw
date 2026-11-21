@@ -52,6 +52,7 @@ export function npmLockPackageDirsForChangedPaths(changedPaths, rootDir) {
       changedPath === "pnpm-lock.yaml" ||
       changedPath === "pnpm-workspace.yaml" ||
       changedPath === "scripts/generate-npm-package-lock.mts" ||
+      changedPath === "scripts/generate-npm-package-lock.worker.mts" ||
       /^scripts\/lib\/(?:npm-lock-package-selection|record-shared)\.(?:mjs|d\.mts)$/u.test(
         changedPath,
       )

@@ -1767,6 +1767,7 @@ process.on("SIGTERM", () => server.close(() => process.exit(0)));
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "scripts/generate-npm-package-lock.mts",
+    "scripts/generate-npm-package-lock.worker.mts",
     "scripts/lib/npm-lock-package-selection.mjs",
     "scripts/lib/npm-lock-package-selection.d.mts",
     "scripts/lib/record-shared.mjs",
