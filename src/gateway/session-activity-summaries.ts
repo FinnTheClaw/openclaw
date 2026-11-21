@@ -610,14 +610,14 @@ export function createSessionActivitySummaries(deps: {
       return { state: "unavailable" as const };
     }
     const state = admit(target, entry);
-    const readView = await prepareSessionActivitySummaryView({
+    const { readView, freshnessTimedOut } = await prepareSessionActivitySummaryView({
       ...target,
       cfg: deps.getConfig(),
       entry: state?.entry ?? entry,
       storePath: scope(target).storePath,
       admitted: state !== undefined,
     });
-    const canSchedule = state && !isActive(state);
+    const canSchedule = !freshnessTimedOut && state && !isActive(state);
     if (canSchedule && readView().state !== "current") {
       schedule(state);
     }

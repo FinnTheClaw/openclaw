@@ -9,6 +9,7 @@ import type { SessionTranscriptWatermark } from "../config/sessions/session-acce
 import { readSessionTranscriptWatermarkAsync } from "../config/sessions/session-transcript-watermark.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { resolveSessionStoreKey } from "./session-store-key.js";
@@ -155,20 +156,38 @@ export async function prepareSessionActivitySummaryView(
     storePath: string;
     admitted: boolean;
   },
-): Promise<() => SessionActivitySummary> {
-  const watermark =
-    params.entry && readSessionActivitySummary(params.entry)
-      ? await readSessionTranscriptWatermarkAsync({
-          storePath: params.storePath,
-          agentId: params.agentId,
-          sessionKey: params.key,
-          sessionId: params.entry.sessionId,
-        })
-      : undefined;
-  return () => {
-    const projected = projectSessionActivitySummary({ ...params, watermark });
-    return !params.admitted && projected?.state !== "current"
-      ? { ...projected, state: "unavailable" }
-      : (projected ?? { state: "updating" });
+): Promise<{ readView: () => SessionActivitySummary; freshnessTimedOut: boolean }> {
+  const saved = params.entry && readSessionActivitySummary(params.entry);
+  let watermark: SessionTranscriptWatermark | undefined;
+  if (params.entry && saved) {
+    try {
+      watermark = await readSessionTranscriptWatermarkAsync({
+        storePath: params.storePath,
+        agentId: params.agentId,
+        sessionKey: params.key,
+        sessionId: params.entry.sessionId,
+      });
+    } catch (error) {
+      if (!(error instanceof WorkerTaskError) || error.code !== "timeout") {
+        throw error;
+      }
+      // A failed freshness read must not be treated as evidence that generation is needed.
+      return {
+        freshnessTimedOut: true,
+        readView: () => ({
+          state: "unavailable",
+          ...(saved.text ? { text: saved.text, updatedAt: saved.updatedAt } : {}),
+        }),
+      };
+    }
+  }
+  return {
+    freshnessTimedOut: false,
+    readView: () => {
+      const projected = projectSessionActivitySummary({ ...params, watermark });
+      return !params.admitted && projected?.state !== "current"
+        ? { ...projected, state: "unavailable" }
+        : (projected ?? { state: "updating" });
+    },
   };
 }
