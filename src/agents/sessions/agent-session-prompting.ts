@@ -43,7 +43,7 @@ import type { ResourceLoader } from "./resource-loader.js";
 import { withSessionManagerAppend } from "./session-manager-append-admission.js";
 import { setSteeringMessageIdentity } from "./steering-message-identity.js";
 
-type PostAgentRunAction = "continue" | "settled" | "handoff";
+type PostAgentRunAction = "continue" | "retry" | "settled" | "handoff";
 type PromptAdmission = (onAdmitted: (commit?: () => void) => void) => Promise<void>;
 
 function createCustomMessage<T>(
@@ -128,11 +128,15 @@ export abstract class AgentSessionPrompting extends AgentSessionBase {
       await this.runPreparedAgentLoop(() => this.agent.prompt(messages));
       while (true) {
         const action = await this.handlePostAgentRun();
-        if (action !== "continue") {
+        if (action !== "continue" && action !== "retry") {
           endedForTurnHandoff = action === "handoff";
           break;
         }
-        await this.runPreparedAgentLoop(() => this.agent.continue());
+        await this.runPreparedAgentLoop(() =>
+          action === "retry"
+            ? this.agent.continue({ deferFollowUps: true })
+            : this.agent.continue(),
+        );
       }
     } finally {
       this.systemPromptOverride = undefined;
@@ -206,7 +210,7 @@ export abstract class AgentSessionPrompting extends AgentSessionBase {
     }
 
     if (this.isRetryableError(msg) && (await this.prepareRetry(msg))) {
-      return "continue";
+      return "retry";
     }
 
     if (msg.stopReason === "error" && this.retryCount > 0) {

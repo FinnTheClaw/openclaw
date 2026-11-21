@@ -362,8 +362,11 @@ export class Agent {
     await this.runPromptMessages(messages);
   }
 
-  /** Continue from a user, tool result, or failed assistant without rewriting its history. */
-  async continue(): Promise<void> {
+  /**
+   * Continue from a user, tool result, or failed assistant without rewriting its history.
+   * An in-place retry can leave follow-ups to the loop's normal post-turn drain.
+   */
+  async continue(options?: { deferFollowUps?: boolean }): Promise<void> {
     if (this.activeRun) {
       throw new Error("Agent is already processing. Wait for completion before continuing.");
     }
@@ -380,10 +383,12 @@ export class Agent {
         return;
       }
 
-      const queuedFollowUps = this.followUpQueue.drain();
-      if (queuedFollowUps.length > 0) {
-        await this.runPromptMessages(queuedFollowUps);
-        return;
+      if (!options?.deferFollowUps) {
+        const queuedFollowUps = this.followUpQueue.drain();
+        if (queuedFollowUps.length > 0) {
+          await this.runPromptMessages(queuedFollowUps);
+          return;
+        }
       }
     }
 

@@ -569,6 +569,63 @@ describe("AgentSession queue and next-turn lifecycle correctness", () => {
     }
   });
 
+  it("retries the original request before sending a queued follow-up", async () => {
+    const retryStarted = createDeferredCore();
+    let abortRetry: (() => void) | undefined;
+    try {
+      const requests = recordRequests((model, index) =>
+        index === 1
+          ? createAssistantResultStream({
+              ...createAssistant(model, [], "error"),
+              errorMessage: "HTTP 503 temporary provider response",
+            })
+          : textStream(model, `answer ${index}`),
+      );
+      // Direct SDK retry is enabled here; embedded runs own retry separately.
+      const settingsManager = SettingsManager.inMemory({
+        compaction: { enabled: false },
+        retry: { enabled: true, baseDelayMs: 10_000, maxRetries: 1 },
+      });
+      const { session } = await createTestSession({ settingsManager });
+      abortRetry = () => session.abortRetry();
+      const lifecycleEvents: string[] = [];
+      session.subscribe((event) => {
+        lifecycleEvents.push(event.type);
+        if (event.type === "auto_retry_start") {
+          // Install the clock before prepareRetry schedules its backoff, not before startup.
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          retryStarted.resolve();
+        }
+      });
+
+      const prompt = session.prompt("original request");
+      await Promise.race([
+        retryStarted.promise,
+        prompt.then(() => assert.fail("the prompt settled without starting a retry")),
+      ]);
+      expect(requests).toHaveLength(1);
+      await session.prompt("queued follow-up", { streamingBehavior: "followUp" });
+      expectQueues(session, [], ["queued follow-up"]);
+      expect(requests).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await prompt;
+
+      const retryRequest = requests[1];
+      assert(retryRequest, "the original request was not retried");
+      const retryMessages = JSON.stringify(retryRequest.context.messages);
+      expect(retryMessages).toContain("original request");
+      expect(retryMessages).not.toContain("queued follow-up");
+      expect(requests).toHaveLength(3);
+      expect(JSON.stringify(requests[2]?.context.messages)).toContain("queued follow-up");
+      expect(lifecycleEvents.filter((type) => type === "agent_settled")).toHaveLength(1);
+      expectQueues(session);
+    } finally {
+      abortRetry?.();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(imageQueues)(
     "retires an image-only $kind before terminal finalization",
     async (scenario) => {
