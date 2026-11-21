@@ -5297,7 +5297,7 @@ it("chat.inject rechecks archive state after lifecycle admission waits", async (
   }
 });
 
-it("chat.send non-streaming final keeps message defined for directive-only assistant text", async () => {
+it("chat.send non-streaming final omits the display message for directive-only assistant text", async () => {
   await createTranscriptFixture("openclaw-chat-send-directive-only-");
   mockState.finalText = "[[reply_to_current]]";
   const payload = await createChatRequestFixture().send({
@@ -5306,7 +5306,8 @@ it("chat.send non-streaming final keeps message defined for directive-only assis
 
   expect(payload?.runId).toBe("idem-directive-only");
   expect(payload?.state).toBe("final");
-  expect(extractFirstTextBlock(getMessage(payload))).toBe("");
+  // Terminal delivery remains defined, while the current display projection hides empty replies.
+  expect(getMessage(payload)).toBeUndefined();
 });
 
 it("rejects oversized chat.send session keys before dispatch", async () => {

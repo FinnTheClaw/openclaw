@@ -447,10 +447,9 @@ it("keeps supplied tools usable across close/reconnect until their caller releas
   });
   try {
     for (let cycle = 0; cycle < 2; cycle++) {
-      const [outbound, inbound] = InMemoryTransport.createLinkedPair();
-      const client = new Client({ name: "native-client", version: "0.0.0" });
+      const { client, connect } = createMcpConnection(server, "native-client");
       try {
-        await Promise.all([server.connect(inbound), client.connect(outbound)]);
+        await connect();
         expect(await client.callTool({ name: "mcp_native_read" })).toMatchObject({
           content: [{ text: "42" }],
         });

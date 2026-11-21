@@ -647,6 +647,7 @@ it("merges TTS supplements into visible replies on cursor refresh", async () => 
 
 describe("chat history delta visible source replies", () => {
   it("keeps independent text messages incremental", async () => {
+    setRuntimeConfigSnapshot({});
     const scope = {
       agentId: "main",
       sessionKey,
@@ -686,6 +687,7 @@ describe("chat history delta visible source replies", () => {
   it.each([0, 2, 3])(
     "preserves message-tool replies after %i recorded turn rows",
     async (prefixRows) => {
+      setRuntimeConfigSnapshot({});
       const scope = {
         agentId: "main",
         sessionKey,
@@ -765,6 +767,7 @@ describe("chat history delta visible source replies", () => {
 
 describe("chat history delta commentary segments", () => {
   it("preserves authored commentary from a missed transcript row", async () => {
+    setRuntimeConfigSnapshot({});
     const scope = {
       agentId: "main",
       sessionKey,

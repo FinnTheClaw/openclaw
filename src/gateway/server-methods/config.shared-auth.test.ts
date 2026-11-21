@@ -18,15 +18,25 @@ import {
   readGatewayRequestMutationAuthority,
 } from "./session-mutation-guards.js";
 
-const readConfigFileSnapshotForWriteMock = vi.fn();
-const writeConfigFileMock = vi.fn();
-const runtimeApplication = { claimed: true };
-const validateConfigObjectWithPluginsMock = vi.fn();
-const prepareSecretsRuntimeSnapshotMock = vi.fn();
-const scheduleGatewayRestartMock = vi.fn(() => ({
-  scheduled: true,
-  delayMs: 1_000,
-  coalesced: false,
+// Static authority imports can load config IO before this module's body runs.
+const {
+  readConfigFileSnapshotForWriteMock,
+  writeConfigFileMock,
+  runtimeApplication,
+  validateConfigObjectWithPluginsMock,
+  prepareSecretsRuntimeSnapshotMock,
+  scheduleGatewayRestartMock,
+} = vi.hoisted(() => ({
+  readConfigFileSnapshotForWriteMock: vi.fn(),
+  writeConfigFileMock: vi.fn(),
+  runtimeApplication: { claimed: true },
+  validateConfigObjectWithPluginsMock: vi.fn(),
+  prepareSecretsRuntimeSnapshotMock: vi.fn(),
+  scheduleGatewayRestartMock: vi.fn(() => ({
+    scheduled: true,
+    delayMs: 1_000,
+    coalesced: false,
+  })),
 }));
 const restartSentinelMocks = vi.hoisted(() => ({
   writeRestartSentinel: vi.fn(async (_payload: RestartSentinelPayload) => undefined),

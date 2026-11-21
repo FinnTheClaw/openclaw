@@ -67,12 +67,7 @@ export function registerAgentIdentityUpdateTests(harness: IdentityUpdateHarness)
         const workspace = `/remote-identity-${randomUUID()}`;
         const fallback = state === "replaced during fallback";
         const destination = fallback ? `/resolved${workspace}` : workspace;
-        if (fallback) {
-          mocks.ensureAgentWorkspace.mockResolvedValueOnce({
-            dir: destination,
-            identityPathCreated: false,
-          });
-        } else {
+        if (!fallback) {
           mocks.loadConfigReturn = agentConfig({
             "test-agent": { workspace, identity: { name: "Current Agent" } },
           });
@@ -107,7 +102,9 @@ export function registerAgentIdentityUpdateTests(harness: IdentityUpdateHarness)
           fallback ? "Workspace access changed" : "Workspace access",
         );
         expectUncalled(writeFile, replacementWrite, mocks.writeConfigFile);
-        expectUncalled(mocks.rootWrite, mocks.fsMkdir);
+        // Rejection happens during the precommit read, before workspace setup.
+        // Do not leave an unreachable one-shot setup result queued for the move cases.
+        expectUncalled(mocks.rootWrite, mocks.fsMkdir, mocks.ensureAgentWorkspace);
         if (!fallback) {
           expectUncalled(mocks.rootRead);
         }
