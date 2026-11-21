@@ -8,6 +8,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ContextEngine, ContextEngineRuntimeContext } from "../../context-engine/types.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import {
   acquireAgentRunPreparedModelRuntimeMock,
   contextEngineCompactMock,
@@ -196,6 +197,38 @@ beforeEach(async () => {
   resolveContextEngineMock.mockResolvedValue(engine() as never);
   contextEngineCompactMock.mockResolvedValue(completed());
   await upsertSessionEntryCore(target(), { ...owner, updatedAt: 1 });
+});
+
+it("releases the projection wait when queued compaction is cancelled", async () => {
+  const projection = await import("../../config/sessions/session-transcript-reconcile.js");
+  const waitStarted = createDeferred<AbortSignal | undefined>();
+  const releaseProjection = createDeferred();
+  let waiting: Promise<void> | undefined;
+  const wait = vi
+    .spyOn(projection, "waitForSessionTranscriptProjection")
+    .mockImplementation((_scope, signal) => {
+      waiting = racePromiseWithAbortSignal(releaseProjection.promise, signal);
+      waitStarted.resolve(signal);
+      return waiting;
+    });
+  const caller = new AbortController();
+  const pending = compact(backendCompactParams(caller.signal));
+  try {
+    await waitForCheckpoint(waitStarted.promise, pending);
+    const composedSignal = await waitStarted.promise;
+    caller.abort(new Error("queued compaction cancelled during projection wait"));
+
+    expect(composedSignal?.aborted).toBe(true);
+    expect(composedSignal).not.toBe(caller.signal);
+    await expect(expectDefined(waiting, "projection wait")).rejects.toThrow();
+    await expect(pending).resolves.toMatchObject({ ok: false, compacted: false });
+    expect(contextEngineCompactMock).not.toHaveBeenCalled();
+  } finally {
+    caller.abort();
+    releaseProjection.resolve();
+    await Promise.allSettled([pending, waiting]);
+    wait.mockRestore();
+  }
 });
 
 it.each(["compact", "maintain"] as const)(

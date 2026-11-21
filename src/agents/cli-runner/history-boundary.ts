@@ -119,12 +119,13 @@ export async function prepareCliHistoryBoundary(
 export async function prepareCliHistoryCompactionBoundary(
   target: SessionTranscriptRuntimeTarget,
   assertActive: () => void,
+  abortSignal?: AbortSignal,
 ): Promise<(() => Promise<void>) | undefined> {
   const assertCurrent = composeSessionSourceAssertion([
     assertActive,
     captureOwnedTranscriptWriteAssertion(target),
   ]);
-  await waitForSessionTranscriptProjection(target);
+  await waitForSessionTranscriptProjection(target, abortSignal);
   assertCurrent();
   const before = (
     await readSessionTranscriptAnchorsAsync(target, { entryIds: [], contextAuthority: true })

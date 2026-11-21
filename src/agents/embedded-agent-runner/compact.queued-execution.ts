@@ -347,6 +347,7 @@ export async function executeQueuedContextEngineCompaction(input: {
                 commitCliHistoryCompaction = await prepareCliHistoryCompactionBoundary(
                   runtimeTarget,
                   writeContext.assertCommitAllowed,
+                  backendParams.abortSignal,
                 );
               }
               return contextEngine.compact(backendParams);
