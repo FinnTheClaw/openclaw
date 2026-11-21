@@ -427,6 +427,43 @@ it("removes runs and totals when detail hydration reveals a hidden session", () 
     }
   }));
 
+it("does not keep a stale job-name search match after cron run hydration", () =>
+  withCronTranscript(async ({ cron, storePath, job }) => {
+    const context = await createHistoryReadContext({ cron, cronStorePath: storePath });
+    const queryRuns = async (query: string) =>
+      (await callCron(context, "cron.runs", { id: job.id, query })).calls;
+    const expectNameMatch = async (name: string) => {
+      expect(await queryRuns(name)).toMatchObject([
+        [true, { entries: [{ runId: "public-old-run", jobName: name }], total: 1 }, undefined],
+      ]);
+    };
+    await expectNameMatch(job.name);
+
+    const newName = "Renamed automation";
+    let displayName = job.name;
+    const getJob = cron.getJob.bind(cron);
+    const jobRead = vi.spyOn(cron, "getJob").mockImplementation((id) => {
+      const current = getJob(id);
+      return current?.id === job.id ? { ...current, name: displayName } : current;
+    });
+    const readDetails = cronReadOnly.readCronRunHistoryRecords;
+    const detailRead = vi
+      .spyOn(cronReadOnly, "readCronRunHistoryRecords")
+      .mockImplementationOnce(async (...args) => {
+        displayName = newName;
+        return readDetails(...args);
+      });
+    try {
+      const stale = await queryRuns(job.name);
+      expect(detailRead).toHaveBeenCalled();
+      await expectNameMatch(newName);
+      expect(stale).toMatchObject([[true, { entries: [], total: 0 }, undefined]]);
+    } finally {
+      detailRead.mockRestore();
+      jobRead.mockRestore();
+    }
+  }));
+
 it("refuses ambiguous timestamps and cursors moved to another recorded run", () =>
   withCronTranscript(async ({ record, detail, withDetail, query }) => {
     const first = await query({ runId: "public-old-run", limit: 1 });

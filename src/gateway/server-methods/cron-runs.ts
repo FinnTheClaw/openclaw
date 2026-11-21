@@ -23,6 +23,17 @@ import { createCronSessionVisibility, cronJobIsVisible } from "./cron-visibility
 import type { GatewayRequestHandler } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
+function sameJobNames(
+  captured: ReadCronRunHistoryPageOptions["jobNameById"],
+  current: ReadCronRunHistoryPageOptions["jobNameById"],
+): boolean {
+  const names = Object.entries(captured ?? {});
+  return (
+    names.length === Object.keys(current ?? {}).length &&
+    names.every(([id, name]) => current?.[id] === name)
+  );
+}
+
 export const cronRunsHandler: GatewayRequestHandler = async (options) => {
   const { params, respond, context, client } = options;
   if (!assertValidParams(params, validateCronRunsParams, "cron.runs", respond)) {
@@ -109,41 +120,84 @@ export const cronRunsHandler: GatewayRequestHandler = async (options) => {
           : undefined,
       };
     };
-    const initialOptions = resolvePageOptions();
-    if (!initialOptions) {
+    const query = p.query?.trim();
+    const readPage = async (readOptions: ReadCronRunHistoryPageOptions) => {
+      const candidates = await readCronRunHistoryCandidates(
+        storeKey,
+        scope === "all" ? undefined : jobId,
+        p.query,
+        query ? readOptions.jobNameById : undefined,
+      );
+      const { records } = candidates;
+      if (
+        scope !== "all" &&
+        !context.cron.getJob(jobId!) &&
+        projectCronRunHistoryPage(records, { storeKey, jobId, limit: 1 }).total === 0
+      ) {
+        assertCurrent(storeKey);
+        respondCronJobNotFound(respond, jobId!);
+        return;
+      }
+      const queryMatchedTaskIds = candidates.queryMatches
+        ? new Set(candidates.queryMatches)
+        : undefined;
+      const initial = selectCronRunHistoryPage(records, { ...readOptions, queryMatchedTaskIds });
+      const details = await readCronRunHistoryRecords(
+        storeKey,
+        initial.records.map((row) => row.id),
+        p.view,
+      );
+      return { records, details, queryMatchedTaskIds };
+    };
+    let readOptions = resolvePageOptions();
+    if (!readOptions) {
       return;
     }
-    const candidates = await readCronRunHistoryCandidates(
-      storeKey,
-      scope === "all" ? undefined : jobId,
-      p.query,
-      p.query ? initialOptions.jobNameById : undefined,
-    );
-    const { records } = candidates;
-    if (
-      scope !== "all" &&
-      !context.cron.getJob(jobId!) &&
-      projectCronRunHistoryPage(records, { storeKey, jobId, limit: 1 }).total === 0
-    ) {
-      assertCurrent(storeKey);
-      respondCronJobNotFound(respond, jobId!);
+    let data = await readPage(readOptions);
+    if (!data) {
       return;
     }
-    const queryMatchedTaskIds = candidates.queryMatches
-      ? new Set(candidates.queryMatches)
-      : undefined;
-    const initial = selectCronRunHistoryPage(records, { ...initialOptions, queryMatchedTaskIds });
-    const details = await readCronRunHistoryRecords(
-      storeKey,
-      initial.records.map((row) => row.id),
-      p.view,
-    );
     // Hydration awaits storage; visibility and caller authority belong at disclosure.
     assertCurrent(storeKey);
-    const pageOptions = resolvePageOptions();
+    let pageOptions = resolvePageOptions();
     if (!pageOptions) {
       return;
     }
+    if (query && !sameJobNames(readOptions.jobNameById, pageOptions.jobNameById)) {
+      // Reuse the worker's exact search with current names; never retry more than once.
+      readOptions = pageOptions;
+      data = await readPage(readOptions);
+      if (!data) {
+        return;
+      }
+      assertCurrent(storeKey);
+      pageOptions = resolvePageOptions();
+      if (!pageOptions) {
+        return;
+      }
+      if (!sameJobNames(readOptions.jobNameById, pageOptions.jobNameById)) {
+        const captured = readOptions.jobNameById ?? {};
+        const current = pageOptions.jobNameById ?? {};
+        // If names move again, keep search and display on one snapshot, not stale visibility.
+        pageOptions = {
+          ...pageOptions,
+          jobNameById: Object.fromEntries(
+            Object.entries(captured).filter(([id]) => Object.hasOwn(current, id)),
+          ),
+        };
+        for (const record of data.records) {
+          if (
+            record.jobId &&
+            Object.hasOwn(captured, record.jobId) &&
+            !Object.hasOwn(current, record.jobId)
+          ) {
+            // Membership may depend on a name no longer available to this caller.
+            data.queryMatchedTaskIds?.delete(record.id);
+          }
+        }
+      }
+    }
+    const { records, details, queryMatchedTaskIds } = data;
     const hydratedById = new Map(details.map((record) => [record.id, record]));
     const selection = selectCronRunHistoryPage(
       records.map((record) => hydratedById.get(record.id) ?? record),
