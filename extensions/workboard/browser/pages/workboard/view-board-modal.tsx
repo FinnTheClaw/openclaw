@@ -138,7 +138,7 @@ export function BoardModal(props: {
         }
         await client.request("workboard.sessionsBoard.update", {
           boardId: initialDraft.id,
-          patch: { columns: sessions.columns },
+          patch: { columns: sessions.columns, expectedColumns: original?.sessions?.columns },
         });
       }
       if (isCurrent()) {

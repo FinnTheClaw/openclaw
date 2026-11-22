@@ -296,11 +296,22 @@ export function normalizeWorkboardSessionsBoardSpec(value: unknown): WorkboardSe
   };
 }
 
-/** Columns and scope replace their previous values; omitted fields stay unchanged. */
+/** Columns and scope replace their previous values; expectedColumns optionally guards a column edit. */
 export function patchWorkboardSessionsBoardSpec(
   current: WorkboardSessionsBoardSpec,
   value: unknown,
 ): WorkboardSessionsBoardSpec {
-  const patch = record(value, "sessions board patch", SPEC_KEYS);
+  const { expectedColumns, ...patch } = record(value, "sessions board patch", [
+    ...SPEC_KEYS,
+    "expectedColumns",
+  ]);
+  if (expectedColumns !== undefined) {
+    const observed = normalizeWorkboardSessionsBoardSpec({ columns: expectedColumns }).columns;
+    if (JSON.stringify(observed) !== JSON.stringify(current.columns)) {
+      throw new Error(
+        "Sessions board columns changed. Copy your changes before reopening the editor.",
+      );
+    }
+  }
   return normalizeWorkboardSessionsBoardSpec({ ...current, ...patch });
 }

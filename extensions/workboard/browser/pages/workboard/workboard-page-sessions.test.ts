@@ -1,8 +1,9 @@
 import "../../test/dom.setup.ts";
 import { expectDefined } from "@openclaw/normalization-core";
-import type {
-  WorkboardSessionsBoard,
-  WorkboardSessionsBoardRead,
+import {
+  patchWorkboardSessionsBoardSpec,
+  type WorkboardSessionsBoard,
+  type WorkboardSessionsBoardRead,
 } from "@openclaw/workboard-contract";
 import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
 import type { ControlUiAgentPickerProps, ControlUiHost } from "openclaw/plugin-sdk/control-ui";
@@ -723,6 +724,53 @@ it("does not overwrite concurrent column edits when only renaming a sessions boa
   expect(page.container.textContent).toContain("Newer column label");
 });
 
+it("refuses a stale Sessions column edit without overwriting a peer change or losing the draft", async () => {
+  const page = sessionsPage();
+  const request = expectDefined(page.request.getMockImplementation(), "request");
+  page.request.mockImplementation(async (method, params) => {
+    if (method === "workboard.boards.upsert") {
+      return { board: structuredClone(page.board) };
+    }
+    if (method === "workboard.sessionsBoard.update") {
+      const { patch } = params as { patch: unknown };
+      page.board.sessions = patchWorkboardSessionsBoardSpec(page.board.sessions, patch);
+      return { board: structuredClone(page.board) };
+    }
+    return request(method, params);
+  });
+  await page.connect();
+  button(page, "Edit board").click();
+  await vi.advanceTimersByTimeAsync(0);
+  const form = expectDefined(
+    page.container.querySelector<HTMLFormElement>(".workboard-board-draft"),
+    "board editor",
+  );
+  // Commit a peer-column change after the editor cloned the original board.
+  expectDefined(page.board.sessions.columns[0], "peer column").label = "Peer working label";
+  const label = expectDefined(
+    form.querySelector<HTMLInputElement>('[data-column-id="done"] input'),
+    "locally edited column",
+  );
+  label.value = "Locally edited done";
+  label.dispatchEvent(new Event("input", { bubbles: true }));
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await vi.advanceTimersByTimeAsync(0);
+
+  expect(
+    page.request.mock.calls.filter(([method]) => method === "workboard.sessionsBoard.update"),
+  ).toHaveLength(1);
+  expect(page.board.sessions.columns.map((column) => column.label)).toEqual([
+    "Peer working label",
+    "Done",
+  ]);
+  expect(page.container.querySelector(".workboard-board-draft")).toBe(form);
+  expect(form.querySelector('[role="alert"]')?.textContent).toContain(
+    "Sessions board columns changed",
+  );
+  expect(label.value).toBe("Locally edited done");
+  expect(label.disabled).toBe(false);
+});
+
 it("saves a fallback-only edit without changing other session column fields", async () => {
   const page = sessionsPage();
   await page.connect();
@@ -741,12 +789,12 @@ it("saves a fallback-only edit without changing other session column fields", as
 
   expect(page.request).toHaveBeenCalledWith("workboard.sessionsBoard.update", {
     boardId: "sessions",
-    patch: {
+    patch: expect.objectContaining({
       columns: [
         { ...page.board.sessions.columns[0], fallback: true },
         { ...page.board.sessions.columns[1], fallback: false },
       ],
-    },
+    }),
   });
 });
 
@@ -781,12 +829,12 @@ it("validates session columns inline and preserves their ids and rules when labe
   await vi.advanceTimersByTimeAsync(0);
   expect(page.request).toHaveBeenCalledWith("workboard.sessionsBoard.update", {
     boardId: "sessions",
-    patch: {
+    patch: expect.objectContaining({
       columns: [
         { ...page.board.sessions.columns[0], label: "Building" },
         page.board.sessions.columns[1],
       ],
-    },
+    }),
   });
 });
 
