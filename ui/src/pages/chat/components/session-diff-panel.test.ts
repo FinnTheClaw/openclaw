@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { within } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { SessionsDiffResult } from "../../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred as deferred } from "../../../../../test/helpers/promise.js";
@@ -461,6 +462,36 @@ describe("SessionDiffPanel", () => {
     });
     expect(panel.querySelector(`${oldSide} ${text}`)?.textContent).toBe(before);
     expect(panel.querySelector(`${newSide} ${text}`)?.textContent).toBe(after);
+  });
+
+  it.each([
+    { mobile: false, layout: "desktop" },
+    { mobile: true, layout: "mobile" },
+  ])("names both paths on a renamed file in $layout Review", async ({ mobile, layout }) => {
+    setNativeGatewayTestState(null);
+    if (!mobile) {
+      setupDesktopResizeObserver();
+    }
+    const oldPath = "notes/draft.md";
+    const newPath = "docs/review.md";
+    const controlPath = "docs/guide.md";
+    const data = namedFileResult([newPath, controlPath]);
+    data.files[0] = { ...data.files[0]!, oldPath, status: "renamed" };
+    const { panel, update } = mountPanel();
+    update({ mobile, loader: async () => data });
+
+    const disclosure = (matches: (name: string) => boolean) =>
+      within(panel).queryByRole("button", {
+        name: (name, element) =>
+          element?.classList.contains("session-diff__file-toggle") === true && matches(name),
+      });
+    await waitForSolid(() => {
+      expect(panel.querySelector(`.session-diff--${layout}`)).not.toBeNull();
+      expect(disclosure((name) => name.includes(newPath))).not.toBeNull();
+    });
+    expect(disclosure((name) => name === `${controlPath} — Modified`)).not.toBeNull();
+    expect(panel.querySelector(".session-diff__old-path")?.textContent).toContain(oldPath);
+    expect(disclosure((name) => name.includes(oldPath) && name.includes(newPath))).not.toBeNull();
   });
 
   it.each([

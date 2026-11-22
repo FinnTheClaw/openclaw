@@ -183,6 +183,10 @@ export function createSessionDiffFileView(bindings: SessionDiffViewBindings) {
       return registerPresentation(path, presentation);
     });
     const path = () => splitPath(file().path);
+    const pathLabel = () => {
+      const { oldPath, path: currentPath } = file();
+      return oldPath ? `${oldPath} → ${currentPath}` : currentPath;
+    };
     const intrinsicSize = () => {
       gapRevision();
       return `auto ${Math.max(80, Math.min(12_000, (source().parsed?.lines.length ?? 2) * 19))}px`;
@@ -230,15 +234,9 @@ export function createSessionDiffFileView(bindings: SessionDiffViewBindings) {
             type="button"
             aria-expanded={collapsed() ? "false" : "true"}
             aria-label={
-              desktop() || mobile() ? `${file().path} — ${t(statusLabel()[1])}` : undefined
+              desktop() || mobile() ? `${pathLabel()} — ${t(statusLabel()[1])}` : undefined
             }
-            title={
-              desktop() || mobile()
-                ? undefined
-                : file().oldPath
-                  ? `${file().oldPath} → ${file().path}`
-                  : file().path
-            }
+            title={desktop() || mobile() ? undefined : pathLabel()}
             onClick={() => toggleFile(file().path)}
           >
             <span
