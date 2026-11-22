@@ -433,6 +433,36 @@ describe("gateway chat metadata lifecycle", () => {
     },
   );
 
+  it("does not refresh skill changes after the model owner fails during catch-up", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    const failure = new Error("replacement failed");
+    mocks.refresh.mockImplementationOnce(() => {
+      entered.resolve();
+      return release.promise;
+    });
+    const { lifecycle: pending, sidecarOwner } = createLifecycle();
+    const lifecycle = await pending;
+    const attachment = lifecycle.attachContext(context, sidecarOwner.publish);
+    try {
+      await entered.promise;
+      const modelListener = mocks.registerModelListener.mock.calls[0]![0];
+      modelListener({ phase: "invalidated", replacement: release.promise });
+      modelListener({ phase: "failed", error: failure });
+      release.reject(failure);
+      await attachment;
+      expect(mocks.fail).toHaveBeenCalledExactlyOnceWith(failure);
+
+      mocks.registerSkillsListener.mock.calls[0]![0]({ reason: "watch" });
+      expect(mocks.refresh).toHaveBeenCalledOnce();
+      modelListener({ phase: "published" });
+      expect(mocks.refresh).toHaveBeenCalledTimes(2);
+    } finally {
+      release.resolve();
+      await attachment;
+    }
+  });
+
   it.each([
     ["catalog-observation", false, false, false],
     ["catalog-published", true, false, true],

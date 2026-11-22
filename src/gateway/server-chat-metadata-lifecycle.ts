@@ -40,6 +40,7 @@ export async function createGatewayChatMetadataLifecycle(params: {
 }) {
   let context: GatewayRequestContext | undefined;
   let preparedModelRuntimeState: "unobserved" | "available" | "unavailable" = "unobserved";
+  let preparedModelRuntimeEventVersion = 0;
   let availabilityTimer: ReturnType<typeof setTimeout> | undefined;
   const { createGatewayChatMetadataRuntime } =
     await import("./server-methods/chat-metadata-runtime.js");
@@ -131,6 +132,7 @@ export async function createGatewayChatMetadataLifecycle(params: {
           );
           return;
         }
+        preparedModelRuntimeEventVersion += 1;
         if (context) {
           invalidateSharedReadResponses(context.broadcast, "chat.metadata.changed");
         }
@@ -247,13 +249,18 @@ export async function createGatewayChatMetadataLifecycle(params: {
       // Publications that complete before listener registration would otherwise be missed.
       // During ordinary startup the owner is published after attachment, so an unavailable
       // snapshot here is expected and the publication listener performs the first refresh.
+      const eventVersion = preparedModelRuntimeEventVersion;
       await runtime.refresh().then(
         () => {
-          preparedModelRuntimeState = "available";
+          if (preparedModelRuntimeEventVersion === eventVersion) {
+            preparedModelRuntimeState = "available";
+          }
         },
         (error: unknown) => {
           if (!(error instanceof ChatMetadataSnapshotUnavailableError)) {
-            preparedModelRuntimeState = "available";
+            if (preparedModelRuntimeEventVersion === eventVersion) {
+              preparedModelRuntimeState = "available";
+            }
             params.log.warn(`chat metadata catch-up refresh failed: ${String(error)}`);
           }
         },
