@@ -183,13 +183,28 @@ export class MemoryManagerRegistry<T extends ClosableMemoryManager> {
       throw new MemoryManagerReloadError();
     }
     return await this.runScopeOperation(params, async () => {
+      if (this.reload?.retireRuntime) {
+        throw new MemoryManagerReloadError();
+      }
       const prepared = await callbacks.prepare();
       if (!prepared) {
         return null;
       }
       const create = async () => {
+        if (this.reload?.retireRuntime) {
+          throw new MemoryManagerReloadError();
+        }
         const manager = await prepared.create();
-        this.track(manager, prepared.key);
+        const owner = this.track(manager, prepared.key);
+        if (this.reload?.retireRuntime) {
+          // This construction may not have existed when the drain selected its managers.
+          owner.retiring = true;
+          await this.closeEntry(prepared.key, manager);
+          throw new MemoryManagerReloadError();
+        }
+        if (params.purpose === "default") {
+          this.cache.set(prepared.key, manager);
+        }
         return manager;
       };
       if (params.purpose !== "default") {
@@ -204,11 +219,12 @@ export class MemoryManagerRegistry<T extends ClosableMemoryManager> {
       // The scope queue already serializes creation and replacement for this agent.
       const existing = this.cache.get(prepared.key);
       if (existing) {
+        if (this.reload?.retireRuntime) {
+          throw new MemoryManagerReloadError();
+        }
         return existing;
       }
-      const manager = await create();
-      this.cache.set(prepared.key, manager);
-      return manager;
+      return await create();
     });
   }
 

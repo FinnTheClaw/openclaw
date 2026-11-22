@@ -87,6 +87,60 @@ it("joins pending manager cleanup across overlapping reload drains", async () =>
   }
 });
 
+it("closes a manager created during full runtime retirement", async () => {
+  const lifecycle: MemoryManagerLifecycle = {};
+  const registry = new MemoryManagerRegistry(lifecycle);
+  const openStarted = createDeferred<void>();
+  const openFinished = createDeferred<void>();
+  const closeStarted = createDeferred<void>();
+  const closeFinished = createDeferred<void>();
+  const manager = {
+    close: vi.fn(() => {
+      closeStarted.resolve();
+      return closeFinished.promise;
+    }),
+  };
+  const acquisition = Promise.allSettled([
+    registry.acquire(
+      { agentId: "main", purpose: "default" },
+      {
+        prepare: () => ({
+          key: "main:default",
+          create: async () => {
+            openStarted.resolve();
+            await openFinished.promise;
+            return manager;
+          },
+          reuse: () => true,
+        }),
+      },
+    ),
+  ]);
+  await openStarted.promise;
+  const retirement = retireRuntime(lifecycle);
+  const drain = retirement.drain();
+  try {
+    openFinished.resolve();
+    await expect(
+      Promise.race([closeStarted.promise.then(() => "closing"), drain.then(() => "drained")]),
+    ).resolves.toBe("closing");
+    closeFinished.resolve();
+    expect(await acquisition).toEqual([
+      {
+        status: "rejected",
+        reason: expect.objectContaining({ message: expect.stringContaining("reloading") }),
+      },
+    ]);
+    await expect(drain).resolves.toEqual({ errors: [] });
+    expect(manager.close).toHaveBeenCalledOnce();
+  } finally {
+    openFinished.resolve();
+    closeFinished.resolve();
+    await Promise.allSettled([acquisition, drain]);
+    retirement.resume();
+  }
+});
+
 it("fences acquisition when reload starts before the manager owner initializes", async () => {
   const lifecycle: MemoryManagerLifecycle = {};
   const reload = retireRuntime(lifecycle);
