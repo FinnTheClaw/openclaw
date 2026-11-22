@@ -100,7 +100,12 @@ export async function prepareSessionIndexStream(
       chunk.startLine = facts.get(chunk.startLine)?.sourceLine ?? chunk.startLine;
       chunk.endLine = facts.get(chunk.endLine)?.sourceLine ?? chunk.endLine;
       for (const fragment of input.provider
-        ? enforceEmbeddingMaxInputTokens(input.provider, [chunk], input.hardMaxInputTokens)
+        ? enforceEmbeddingMaxInputTokens(
+            input.provider,
+            [chunk],
+            input.hardMaxInputTokens,
+            input.textInputOverheadBytes,
+          )
         : [chunk]) {
         delete fragment.embeddingInput;
         pending.push(Object.assign(fragment, metadata));

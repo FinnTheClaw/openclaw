@@ -164,6 +164,7 @@ export abstract class MemoryManagerEmbeddingCacheOps extends MemoryManagerSyncOp
     const batches = buildMemoryEmbeddingBatches(
       missingCandidates.map((candidate) => candidate.chunk),
       maxTokens,
+      this.settings.inputFormat?.document,
     );
     let cursor = 0;
     for (const batchChunks of batches) {

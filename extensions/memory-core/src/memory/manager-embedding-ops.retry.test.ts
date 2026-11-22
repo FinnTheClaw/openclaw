@@ -6,7 +6,13 @@ import {
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EmbeddingProvider, EmbeddingProviderRuntime } from "./embeddings.js";
+import type {
+  MemoryCachedEmbeddings,
+  MemoryEmbeddingCacheCandidate,
+} from "./manager-embedding-cache-ops.js";
 import { MemoryManagerEmbeddingOps } from "./manager-embedding-ops.js";
+import { prepareMemoryIndexChunks } from "./manager-index-preparation.js";
+import type { MemorySemanticProviderGeneration } from "./manager-sync-base.js";
 
 type EmbeddingQueryRetryHarness = {
   provider: EmbeddingProvider;
@@ -134,6 +140,76 @@ describe("memory model input formatting", () => {
     },
   );
 });
+
+it.each(["", "é: "])(
+  "budgets formatted document bytes before dispatch (prefix=%j)",
+  async (prefix) => {
+    const embedBatch = vi.fn<EmbeddingProvider["embedBatch"]>(async (inputs) =>
+      inputs.map(() => [0, 1]),
+    );
+    const manager = createEmbeddingBatchRetryHarness(embedBatch) as ReturnType<
+      typeof createEmbeddingBatchRetryHarness
+    > & {
+      embedChunksInBatches: (
+        candidates: MemoryEmbeddingCacheCandidate[],
+        generation: MemorySemanticProviderGeneration,
+        budget: number,
+        prepared: MemoryCachedEmbeddings,
+      ) => Promise<number[][]>;
+    };
+    const budget = 8;
+    Object.assign(manager.provider, { maxInputTokens: budget });
+    Object.assign(manager, {
+      settings: { inputFormat: { query: "", document: prefix } },
+      persistGeneratedEmbeddings: vi.fn(),
+    });
+    const generation = {
+      kind: "semantic",
+      provider: manager.provider,
+    } as MemorySemanticProviderGeneration;
+    const candidates = ["abcdefgh", "ab", "cd"].flatMap((content, index) => {
+      const path = `memory/prefix-fixture-${index}.md`;
+      const entry = {
+        path,
+        absPath: `/fixture/${path}`,
+        mtimeMs: 1,
+        size: content.length,
+        hash: content,
+      };
+      const source = "memory" as const;
+      const input = {
+        entry,
+        source,
+        content,
+        pathClassification: { curatedRoot: false, originClass: "agent" as const },
+        chunking: { tokens: 400, overlap: 0 },
+        provider: manager.provider,
+        hardMaxInputTokens: budget,
+        textInputOverheadBytes: Buffer.byteLength(prefix),
+      };
+      const { chunks } = prepareMemoryIndexChunks(input);
+      expect(chunks.map((chunk) => chunk.text).join("")).toBe(content);
+      expect(chunks.every((chunk) => chunk.startLine === 1 && chunk.endLine === 1)).toBe(true);
+      return chunks.map((chunk) => ({ chunk, entry, source }));
+    });
+
+    await expect(
+      manager.embedChunksInBatches(candidates, generation, budget, {
+        embeddings: [],
+        missing: candidates.map((_, index) => index),
+        missingCandidates: candidates,
+      }),
+    ).resolves.toEqual(candidates.map(() => [0, 1]));
+
+    const requests = embedBatch.mock.calls.map(([inputs]) => inputs);
+    expect(requests).toEqual(
+      prefix ? [["é: abcd"], ["é: efgh"], ["é: ab"], ["é: cd"]] : [["abcdefgh"], ["ab", "cd"]],
+    );
+    for (const request of requests) {
+      expect(Buffer.byteLength(request.join(""))).toBeLessThanOrEqual(budget);
+    }
+  },
+);
 
 describe("memory embedding query retry cancellation", () => {
   afterEach(() => {

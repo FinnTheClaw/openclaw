@@ -2,6 +2,7 @@ import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import {
+  estimateUtf8Bytes,
   isEmbeddingBatchUnavailableError,
   type EmbeddingInput,
   type MemoryEmbeddingProviderRuntime,
@@ -39,7 +40,7 @@ import {
   runMemoryEmbeddingBatchRetryWithSplit,
   runMemoryEmbeddingRetryLoop,
 } from "./manager-embedding-policy.js";
-import { resolveChunkProvenance } from "./manager-index-preparation.js";
+import { buildIndexPrepSettings, resolveChunkProvenance } from "./manager-index-preparation.js";
 import { prepareSessionIndexSource, readMemoryIndexSource } from "./manager-index-source.js";
 import { memoryPublicationGroup } from "./manager-publication-transfer.js";
 import {
@@ -608,15 +609,13 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerEmbeddingCa
         };
       }
 
-      const settings = {
-        entry: { path: entry.path, mtimeMs: entry.mtimeMs },
+      const settings = buildIndexPrepSettings({
+        entry,
         chunking: this.settings.chunking,
-        provider:
-          generation?.kind === "semantic"
-            ? { id: generation.provider.id, maxInputTokens: generation.provider.maxInputTokens }
-            : undefined,
+        provider: generation?.provider,
         hardMaxInputTokens: EMBEDDING_BATCH_MAX_TOKENS,
-      };
+        textInputOverheadBytes: estimateUtf8Bytes(this.settings.inputFormat?.document ?? ""),
+      });
       if (source === "sessions" && entry.streamSessionExport) {
         const prepared = await prepareSessionIndexSource(entry, settings, this.workspaceDir);
         this.dirty ||= !prepared;

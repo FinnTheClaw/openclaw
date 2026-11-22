@@ -43,7 +43,31 @@ export type MemoryIndexPreparationInput = {
   cutoffLine?: number;
   provider?: Pick<EmbeddingProvider, "id" | "maxInputTokens">;
   hardMaxInputTokens: number;
+  textInputOverheadBytes?: number;
 };
+
+/** Copy only worker-safe settings shared by Markdown and streamed session indexing. */
+export function buildIndexPrepSettings({
+  entry,
+  chunking,
+  provider,
+  hardMaxInputTokens,
+  textInputOverheadBytes,
+}: {
+  entry: Pick<MemoryIndexEntry, "path" | "mtimeMs">;
+  chunking: MemoryIndexPreparationInput["chunking"];
+  provider: MemoryIndexPreparationInput["provider"] | null;
+  hardMaxInputTokens: number;
+  textInputOverheadBytes: number;
+}) {
+  return {
+    entry: { path: entry.path, mtimeMs: entry.mtimeMs },
+    chunking,
+    provider: provider ? { id: provider.id, maxInputTokens: provider.maxInputTokens } : undefined,
+    hardMaxInputTokens,
+    textInputOverheadBytes,
+  };
+}
 
 export function prepareMemoryIndexChunks({
   entry,
@@ -54,6 +78,7 @@ export function prepareMemoryIndexChunks({
   cutoffLine,
   provider,
   hardMaxInputTokens,
+  textInputOverheadBytes,
 }: MemoryIndexPreparationInput): { contentHash: string | undefined; chunks: IndexedMemoryChunk[] } {
   // Hash, chunk, and embed one immutable read; publication validates it again.
   const contentHash = source === "memory" ? hashText(content) : undefined;
@@ -110,7 +135,12 @@ export function prepareMemoryIndexChunks({
   const recallMetadata = new Map<string, ReturnType<typeof extractCuratedEntryRecallMetadata>>();
   const chunks = (
     provider !== undefined
-      ? enforceEmbeddingMaxInputTokens(provider, baseChunks, hardMaxInputTokens)
+      ? enforceEmbeddingMaxInputTokens(
+          provider,
+          baseChunks,
+          hardMaxInputTokens,
+          textInputOverheadBytes,
+        )
       : baseChunks
   ).map((chunk): IndexedMemoryChunk => {
     // Plain text already lives in chunk.text; repeating it doubles the worker payload.

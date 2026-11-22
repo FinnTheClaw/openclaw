@@ -4,6 +4,7 @@ import {
   estimateStructuredEmbeddingInputBytes,
   estimateUtf8Bytes,
   formatEmbeddingModelInput,
+  hasNonTextEmbeddingParts,
   resolveEmbeddingInputFormatVersion,
   type EmbeddingInput,
 } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
@@ -108,15 +109,19 @@ export function formatMemoryEmbeddingChunks<T extends MemoryEmbeddingChunk>(
 export function buildMemoryEmbeddingBatches<T extends MemoryEmbeddingChunk>(
   chunks: T[],
   maxTokens: number,
+  documentPrefix?: string,
 ): T[][] {
+  const prefixBytes = estimateUtf8Bytes(documentPrefix ?? "");
   const batches: T[][] = [];
   let current: T[] = [];
   let currentTokens = 0;
 
   for (const chunk of chunks) {
-    const estimate = chunk.embeddingInput
-      ? estimateStructuredEmbeddingInputBytes(chunk.embeddingInput)
-      : estimateUtf8Bytes(chunk.text);
+    const estimate =
+      (chunk.embeddingInput
+        ? estimateStructuredEmbeddingInputBytes(chunk.embeddingInput)
+        : estimateUtf8Bytes(chunk.text)) +
+      (prefixBytes > 0 && !hasNonTextEmbeddingParts(chunk.embeddingInput) ? prefixBytes : 0);
     const wouldExceed = current.length > 0 && currentTokens + estimate > maxTokens;
     if (wouldExceed) {
       batches.push(current);
