@@ -86,6 +86,12 @@ it.each<[Record<string, unknown>, boolean, string, { now?: number; channelId?: s
   expect(evaluateHealth(snapshot, options)).toEqual({ healthy, reason });
 });
 
+it("rejects a start recorded after the current health sample", () => {
+  expect(evaluateHealth({ connected: false, lifecycle: "starting", lastStartAt: 101_000 })).toEqual(
+    { healthy: false, reason: "disconnected" },
+  );
+});
+
 it("preserves authored terminal detail above the shared blocked projection", () => {
   const snapshot = {
     enabled: true,
