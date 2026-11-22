@@ -108,6 +108,35 @@ describe("buildQaGatewayConfig", () => {
     },
   );
 
+  it.each(["same URL", "updated URL"] as const)(
+    "keeps the successor observer after stale disposal (%s)",
+    (variant) => {
+      const baseUrl = "http://127.0.0.1:44082";
+      const originalUrl = `${baseUrl}/debug/session`;
+      const successorUrl = variant === "same URL" ? originalUrl : `${baseUrl}/debug/successor`;
+      const request = () =>
+        buildConfig({ providerBaseUrl: baseUrl }).models?.providers?.["mock-openai"]?.request;
+      const expected = (url: string) => ({
+        allowPrivateNetwork: true,
+        headers: { [QA_SESSION_OBSERVER_HEADER]: url },
+      });
+      const dispose = registerQaSessionObserver(baseUrl, originalUrl);
+      try {
+        expect(request()).toEqual(expected(originalUrl));
+        const disposeSuccessor = registerQaSessionObserver(`${baseUrl}/v1/`, successorUrl);
+        try {
+          dispose();
+          expect(request()).toEqual(expected(successorUrl));
+        } finally {
+          disposeSuccessor();
+        }
+        expect(request()).toEqual({ allowPrivateNetwork: true });
+      } finally {
+        dispose();
+      }
+    },
+  );
+
   it("requires explicit ACP fixture selection", () => {
     const cfg = buildConfig({ transportPluginIds: ["telegram"], enabledPluginIds: ["acpx"] });
 

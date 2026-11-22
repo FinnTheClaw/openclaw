@@ -1,6 +1,6 @@
 export const QA_SESSION_OBSERVER_HEADER = "x-openclaw-qa-session-observer";
 
-const sessionObservers = new Map<string, string>();
+const sessionObservers = new Map<string, { url: string }>();
 
 function providerEndpoint(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
@@ -8,12 +8,15 @@ function providerEndpoint(baseUrl: string): string {
 
 export function registerQaSessionObserver(baseUrl: string, sessionObserverUrl: string): () => void {
   const endpoint = providerEndpoint(baseUrl);
-  sessionObservers.set(endpoint, sessionObserverUrl);
+  const registration = { url: sessionObserverUrl };
+  sessionObservers.set(endpoint, registration);
   return () => {
-    sessionObservers.delete(endpoint);
+    if (sessionObservers.get(endpoint) === registration) {
+      sessionObservers.delete(endpoint);
+    }
   };
 }
 
 export function resolveQaSessionObserverUrl(providerBaseUrl: string): string | undefined {
-  return sessionObservers.get(providerEndpoint(providerBaseUrl));
+  return sessionObservers.get(providerEndpoint(providerBaseUrl))?.url;
 }
