@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { initializeRepository } from "../server.sessions.create.projects.test-support.js";
+import * as sharingPreparation from "../session-sharing-preparation.js";
 import { abandonTaskSuggestionAcceptance } from "../task-suggestion-registry.js";
 import { sessionCreateHandlers } from "./sessions-create.js";
 import { sessionDispatchHandlers } from "./sessions-dispatch.js";
@@ -37,6 +38,41 @@ afterEach(async () => {
   closeOpenClawAgentDatabasesForTest();
   clearRuntimeConfigSnapshot();
 });
+
+it("keeps a source suggestion retryable when its retained read is temporarily unavailable", () =>
+  withOpenClawTestState({ scenario: "minimal" }, async () => {
+    setRuntimeConfigSnapshot({});
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey: SOURCE_SESSION_KEY },
+      { sessionId: "source-session", updatedAt: 1 },
+    );
+    const taskId = await createSourceSuggestion();
+    const unavailable = new sharingPreparation.SessionMutationFactsUnavailableError();
+    const prepareFacts = sharingPreparation.prepareSessionMutationFacts;
+    using _ = vi
+      .spyOn(sharingPreparation, "prepareSessionMutationFacts")
+      .mockImplementationOnce(async (input) => {
+        const facts = await prepareFacts(input);
+        return {
+          ...facts,
+          readCurrent() {
+            throw unavailable;
+          },
+        };
+      });
+    const accept = () => call("taskSuggestions.accept", { taskId, mode: "session" });
+
+    await expect(accept()).resolves.toMatchObject({
+      response: [false, undefined, { code: "UNAVAILABLE", message: unavailable.message }],
+    });
+    expect(handleChatSend).not.toHaveBeenCalled();
+    expect((await call("taskSuggestions.list", {})).response?.[1]).toMatchObject({
+      suggestions: [{ id: taskId }],
+    });
+
+    expect((await accept()).response?.[1]).toEqual({ taskId, key: SOURCE_SESSION_KEY });
+    expect(handleChatSend).toHaveBeenCalledTimes(1);
+  }));
 
 it.each(["worktree", "local", "cloud", "session"] as const)(
   "keeps %s suggestions retryable when their owner is temporarily unavailable",

@@ -28,6 +28,7 @@ import type {
 import { withSessionSharingTarget } from "../session-sharing-policy.js";
 import {
   prepareSessionMutationFacts,
+  SessionMutationFactsUnavailableError,
   type SessionFactsRead,
 } from "../session-sharing-preparation.js";
 import { prepareSessionSharingProfiles } from "../session-sharing-read.js";
@@ -315,7 +316,15 @@ async function deliverSuggestedTaskToSourceSession(
     return fail(errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
   }
   try {
-    const source = sourceFacts.readCurrent(params.options.context.getRuntimeConfig()).target;
+    let source: PreparedSessionMutationFacts["target"];
+    try {
+      source = sourceFacts.readCurrent(params.options.context.getRuntimeConfig()).target;
+    } catch (error) {
+      if (!(error instanceof SessionMutationFactsUnavailableError)) {
+        throw error;
+      }
+      return fail(errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
+    }
     if (!source?.entry?.sessionId) {
       return fail(
         errorShape(
