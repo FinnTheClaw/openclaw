@@ -162,12 +162,6 @@ export async function runCronCommandJob(params: {
       termination !== "no-output-timeout" &&
       termination !== "signal";
     const status: CronRunStatus = ok && !cleanupFailure ? "ok" : "error";
-    const rawSummary = buildCronCommandSummary({
-      stdout: result.stdout,
-      stderr: result.stderr,
-      preservedStdoutLines: result.preservedStdoutLines,
-      preservedStderrLines: result.preservedStderrLines,
-    });
     const rawOutput =
       result.stdout.trim() && result.stderr.trim()
         ? `stdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`
@@ -176,8 +170,18 @@ export async function runCronCommandJob(params: {
           : result.stderr;
     const prepared =
       status === "ok" ? prepareAgentRunTerminalReply({ rawText: rawOutput }) : undefined;
+    // Interpret control lines in the tail before stitching back independently retained lines.
+    const preparedTail = prepared && prepared.text !== rawOutput ? prepared.text : undefined;
     const summary =
-      prepared && prepared.text !== rawOutput ? prepared.text || undefined : rawSummary;
+      preparedTail === ""
+        ? undefined
+        : buildCronCommandSummary({
+            stdout: result.stdout,
+            stderr: result.stderr,
+            preservedStdoutLines: result.preservedStdoutLines,
+            preservedStderrLines: result.preservedStderrLines,
+            preparedTail,
+          });
     const error = ok
       ? cleanupFailure?.message
       : commandErrorMessage({

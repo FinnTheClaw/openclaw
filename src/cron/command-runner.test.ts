@@ -189,6 +189,51 @@ it.each(["normal", "uncertain"] as const)(
   },
 );
 
+const retainedCommandAction = "Copy this code before continuing.";
+const retainedCommandReport = "Report complete.";
+
+it.each([
+  { name: "ordinary output", stdout: retainedCommandReport, silent: false },
+  { name: "a leading control line", stdout: "NO_REPLY\n" + retainedCommandReport, silent: false },
+  {
+    name: "a trailing control line",
+    stdout: retainedCommandReport + "\nNO_REPLY\n",
+    silent: false,
+  },
+  { name: "standalone silence", stdout: "NO_REPLY\n", silent: true },
+])("interprets $name without losing retained command context", async ({ stdout, silent }) => {
+  const runCommand = vi.spyOn(processExecution, "runCommandWithTimeout").mockResolvedValue(
+    makeSpawnResult({
+      stdout,
+      stdoutTruncatedBytes: retainedCommandAction.length + 1,
+      preservedStdoutLines: [retainedCommandAction],
+    }),
+  );
+  try {
+    const result = await runCronCommandJob({
+      job: makeCommandJob({ argv: ["unused-test-command"] }),
+      nowMs: () => 123,
+    });
+    const summary = silent
+      ? undefined
+      : "action-required output preserved:\n" +
+        retainedCommandAction +
+        "\n\n" +
+        retainedCommandReport;
+
+    expect(runCommand).toHaveBeenCalledOnce();
+    expectOutcome(result, {
+      status: "ok",
+      replyDisposition: silent ? "silent" : "visible",
+      summary,
+    });
+    expect(result.diagnostics?.summary).toBe(summary);
+    expect(result.diagnostics?.entries[0]?.truncated).toBe(true);
+  } finally {
+    runCommand.mockRestore();
+  }
+});
+
 it.each<
   [output: string, summary: string | undefined, outputMaxBytes?: number, truncated?: boolean]
 >([

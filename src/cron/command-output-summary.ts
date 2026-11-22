@@ -43,10 +43,13 @@ export function buildCronCommandSummary(params: {
   stderr: string;
   preservedStdoutLines?: string[];
   preservedStderrLines?: string[];
+  preparedTail?: string;
 }): string | undefined {
   const stdout = normalizeOptionalString(params.stdout);
   const stderr = normalizeOptionalString(params.stderr);
-  const tail = stdout && stderr ? `stdout:\n${stdout}\n\nstderr:\n${stderr}` : (stdout ?? stderr);
+  const tail =
+    params.preparedTail ??
+    (stdout && stderr ? `stdout:\n${stdout}\n\nstderr:\n${stderr}` : (stdout ?? stderr));
   const preserved = [
     ...normalizeLines(params.preservedStdoutLines),
     ...normalizeLines(params.preservedStderrLines),
