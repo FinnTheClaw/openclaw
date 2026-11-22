@@ -200,7 +200,7 @@ export async function finalizeChatSendDispatchedReplies(
       transcriptMirrorResolution.kind === "owner" || transcriptMirrorResolution.kind === "blocked"
         ? transcriptMirrorResolution.owner
         : undefined;
-    const mediaScope = await captureMediaScope();
+    const mediaScope = await captureMediaScope(selectedInputs);
     if (!mediaScope) {
       return;
     }

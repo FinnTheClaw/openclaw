@@ -91,9 +91,12 @@ export async function createChatSendReplyFinalizationAuthority(
         current.release();
       }
     },
-    captureMediaScope: async () => {
+    captureMediaScope: async (
+      placementInputs?: Parameters<typeof captureWebchatReplyMediaScope>[0]["placementInputs"],
+    ) => {
       try {
         const scope = await captureWebchatReplyMediaScope({
+          placementInputs,
           cfg,
           sessionKey,
           agentId,

@@ -17,6 +17,7 @@ import { retainPreparedSessionEntryPredicate } from "../../config/sessions/sessi
 import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import { collectReplyMediaEntries } from "../../infra/outbound/reply-media-entries.js";
 import { WEBCHAT_LOCAL_MEDIA_MAX_BYTES } from "../../media/configured-max-bytes.js";
 import {
@@ -127,6 +128,7 @@ export function captureWebchatReplyMediaAuthority(
 /** Keep the selected media policy current through the session writer's receipts. */
 export async function captureWebchatReplyMediaScope(
   params: Omit<WebchatReplyMediaScope, "sessionEntry"> & {
+    placementInputs?: readonly ReplyDispatchOperation[];
     sessionKey: string;
     sessionLoadOptions?: Parameters<typeof loadIncognitoGatewaySessionEntryReadOnly>[1];
   },
@@ -169,13 +171,28 @@ export async function captureWebchatReplyMediaScope(
     });
     const sessionEntry = loaded.entry;
     const scope = { ...params, sessionEntry, readSource: loaded.capturedReadSource };
+    // Only complete, text-only inputs can skip the cold media placement read.
+    // Raw operations may introduce media later through outbound directive parsing.
+    const needsColdPlacement =
+      params.placementInputs?.some((input) => {
+        const payload = readChatSendReplyPayload(input);
+        return (
+          resolveSendableOutboundReplyParts(payload).hasMedia ||
+          (input.kind === "prepared"
+            ? input.plan.parts.hasMedia
+            : createOutboundPayloadPlan([payload]).some(({ parts }) => parts.hasMedia))
+        );
+      }) ?? true;
     const placement =
-      sessionEntry?.sessionId && !sessionEntry.execNode && !sessionEntry.repositoryWorkspaceId
+      needsColdPlacement &&
+      sessionEntry?.sessionId &&
+      !sessionEntry.execNode &&
+      !sessionEntry.repositoryWorkspaceId
         ? await readSessionWorkerPlacementAsync({
             context: resolveSessionWorkerPlacementContext(),
             sessionId: sessionEntry.sessionId,
           })
-        : undefined;
+        : readPlacement(sessionEntry);
     const selectedAuthority = captureWebchatReplyMediaAuthority(scope, placement);
     return {
       ...scope,
