@@ -57,6 +57,15 @@ export function subscribeGatewayWorkerPlacementMetadataChanges(params: {
   getSessionChangeContext?: () => Parameters<typeof emitSessionsChanged>[0] | undefined;
   warn: (message: string) => void;
 }) {
+  const warnMetadataChangeFailure = (error: unknown) => {
+    try {
+      params.warn(
+        `Worker placement metadata change reporting failed: ${formatErrorMessage(error)}`,
+      );
+    } catch {
+      // Best-effort reporting must not leak a rejected background operation.
+    }
+  };
   const profiles = new Set<string>();
   const nodes = new Set<string>();
   let stopped = false;
@@ -83,19 +92,24 @@ export function subscribeGatewayWorkerPlacementMetadataChanges(params: {
               ),
             );
             if (changedNodes.size) {
-              const identities = await params.placements.readChangeSnapshot();
-              const projection = await params.placements.readProjection(
-                identities.filter((row) => row.state === "active").map((row) => row.sessionId),
-                { current: true },
-              );
-              for (const placement of projection.placements.values()) {
-                const runner = params.runnerAvailability.read(
-                  placement,
-                  projection.environments.get(placement.environmentId ?? "") ?? null,
+              try {
+                const identities = await params.placements.readChangeSnapshot();
+                const projection = await params.placements.readProjection(
+                  identities.filter((row) => row.state === "active").map((row) => row.sessionId),
+                  { current: true },
                 );
-                if (runner?.deviceId && changedNodes.has(runner.deviceId)) {
-                  placements.set(placement.sessionId, placement);
+                for (const placement of projection.placements.values()) {
+                  const runner = params.runnerAvailability.read(
+                    placement,
+                    projection.environments.get(placement.environmentId ?? "") ?? null,
+                  );
+                  if (runner?.deviceId && changedNodes.has(runner.deviceId)) {
+                    placements.set(placement.sessionId, placement);
+                  }
                 }
+              } catch (error) {
+                // Runner refresh is independent of the profile placements already read.
+                warnMetadataChangeFailure(error);
               }
             }
             const context = params.getSessionChangeContext?.();
@@ -115,13 +129,7 @@ export function subscribeGatewayWorkerPlacementMetadataChanges(params: {
               );
             }
           } catch (error) {
-            try {
-              params.warn(
-                `Worker placement metadata change reporting failed: ${formatErrorMessage(error)}`,
-              );
-            } catch {
-              // Best-effort reporting must not leak a rejected background operation.
-            }
+            warnMetadataChangeFailure(error);
           }
         }
       } finally {

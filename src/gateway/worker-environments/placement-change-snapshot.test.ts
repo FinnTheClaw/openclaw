@@ -20,7 +20,7 @@ import {
 } from "../server-worker-placement-change-events.js";
 import { readWorkerPlacementIdentity } from "./placement-projector.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
-import { sessionIdentity } from "./placement-suite.test-support.js";
+import { activePlacement, sessionIdentity } from "./placement-suite.test-support.js";
 import {
   advancePlacementFixtureToActive,
   seedAttachedPlacementEnvironment,
@@ -31,6 +31,80 @@ const changeContext = (subscribers: string[] = []) => ({
   broadcastToConnIds: vi.fn(),
   getRuntimeConfig: () => ({}),
   getSessionEventSubscriberConnIds: () => new Set(subscribers),
+});
+
+it.each([
+  { title: "coalesces successful profile and runner notifications", runnerUnavailable: false },
+  {
+    title: "retains the profile notification when the optional runner read fails",
+    runnerUnavailable: true,
+  },
+])("$title", async ({ runnerUnavailable }) => {
+  const profile = activePlacement("synthetic-profile-placement");
+  const runner = activePlacement("synthetic-runner-placement");
+  const nodeId = "synthetic-runner";
+  const selected = [profile, runner];
+  const expected = (runnerUnavailable ? [profile] : selected).map((row) => row.sessionKey);
+  const readChangeSnapshot = vi.fn(async (profileIds?: readonly string[]) =>
+    profileIds === undefined ? selected : [profile],
+  );
+  const readProjection = vi.fn(async () => {
+    if (runnerUnavailable) {
+      throw new Error("Worker placement projection source is unavailable");
+    }
+    return {
+      placements: new Map(selected.map((row) => [row.sessionId, row])),
+      moves: new Map(),
+      pendingResults: new Map(),
+      workspaceJournalOwnerSessionIds: new Set<string>(),
+      workspaceResultReconcilingSessionIds: new Set<string>(),
+      workspaceRecoveryPendingSessionIds: new Set<string>(),
+      environments: new Map(),
+    };
+  });
+  const received: string[] = [];
+  const observed = createDeferredCore();
+  const unlisten = sessionChanges.subscribe((change) => {
+    if ("sessionKey" in change && selected.some((row) => row.sessionKey === change.sessionKey)) {
+      received.push(change.sessionKey);
+      if (received.length === expected.length) {
+        observed.resolve();
+      }
+    }
+  });
+  const warn = vi.fn(() => observed.resolve());
+  const machineShapeNotifications = { onChanged: (_profileId: string) => {} };
+  const context = changeContext();
+  const changes = subscribeGatewayWorkerPlacementMetadataChanges({
+    placements: { readChangeSnapshot, readProjection },
+    runnerAvailability: {
+      read: () => ({ kind: "device", status: "available", deviceId: nodeId }),
+      version: () => 0,
+    },
+    environments: { machineShapeNotifications },
+    getSessionChangeContext: () => context,
+    warn,
+  });
+  try {
+    machineShapeNotifications.onChanged("synthetic-profile");
+    changes.runnerChanged(nodeId);
+    await observed.promise;
+    expect(readProjection).toHaveBeenCalledExactlyOnceWith(
+      selected.map((row) => row.sessionId),
+      { current: true },
+    );
+    expect(received).toEqual(expected);
+    if (runnerUnavailable) {
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining("Worker placement projection source is unavailable"),
+      );
+    } else {
+      expect(warn).not.toHaveBeenCalled();
+    }
+  } finally {
+    await changes.stop();
+    unlisten();
+  }
 });
 
 it("coalesces machine metadata bursts off thread and selects only correlated profile placements", async () => {
