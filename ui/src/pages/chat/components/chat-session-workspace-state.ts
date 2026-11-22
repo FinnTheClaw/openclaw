@@ -559,10 +559,19 @@ export function selectSessionWorkspacePreview(state: SessionWorkspaceHost, id: s
 function closeSessionWorkspacePreview(state: SessionWorkspaceHost, id: string) {
   const workspace = getSessionWorkspace(state);
   const index = workspace.previews.findIndex((entry) => entry.id === id);
-  if (index < 0) {
+  const preview = workspace.previews[index];
+  if (!preview) {
     return;
   }
-  workspace.pendingPreview = undefined;
+  const pendingId = workspace.pendingPreview?.id;
+  if (
+    pendingId !== undefined &&
+    (pendingId === id ||
+      pendingId === preview.canonicalKey ||
+      preview.requestIds?.includes(pendingId))
+  ) {
+    workspace.pendingPreview = undefined;
+  }
   workspace.previews = workspace.previews.filter((entry) => entry.id !== id);
   if (workspace.activePreviewId === id) {
     selectSessionWorkspacePreview(

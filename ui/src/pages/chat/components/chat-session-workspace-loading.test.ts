@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../../../test/helpers/promise.js";
 import type { SessionWorkspaceListResult } from "../../../api/types.ts";
 import { createGatewayBrowserClientFixture } from "../chat-application-context.test-support.ts";
 import { createSessionCapabilityFixture } from "../chat-session-capability.test-support.ts";
@@ -15,6 +15,8 @@ import {
   loadSessionWorkspace,
   loadSessionWorkspaceArtifacts,
   loadSessionWorkspaceDirectory,
+  openSessionWorkspacePreview,
+  requestCloseSessionWorkspacePreview,
   retainSessionWorkspaceArtifacts,
   refreshSessionWorkspaceState,
 } from "./chat-session-workspace-state.ts";
@@ -95,6 +97,51 @@ async function fixture({ loadInitialListing = true } = {}) {
 }
 
 afterEach(() => vi.useRealTimers());
+
+it.each(["background", "active"] as const)(
+  "settles a pending workspace preview after closing the %s tab",
+  async (tab) => {
+    const { state } = await fixture({ loadInitialListing: false });
+    const workspace = getSessionWorkspace(state);
+    const content = { kind: "markdown", content: "Existing preview" } as const;
+    const background = openSessionWorkspacePreview(state, "background", "Background", content);
+    const active = openSessionWorkspacePreview(state, "active", "Active", content);
+    const started = createDeferred();
+    const held = createDeferred();
+    const getFile = vi.fn(async () => {
+      started.resolve();
+      await held.promise;
+      return { sessionKey: state.sessionKey, file: textFile("new.txt", "New preview") };
+    });
+    state.sessions.getFile = getFile;
+
+    const opening = openSessionWorkspaceFile(state, { path: "new.txt" }, "preview");
+    const closing = tab === "background" ? background : active;
+    const retained = tab === "background" ? active : background;
+    try {
+      if (!opening) {
+        throw new Error("Expected a pending workspace preview");
+      }
+      await awaitGateBeforeSettlement(started.promise, opening, "File read did not start");
+      expect(workspace.activePreviewId).toBe(active.id);
+      expect(await requestCloseSessionWorkspacePreview(state, closing.id)).toBe(true);
+      expect(workspace.previews).toEqual([retained]);
+    } finally {
+      held.resolve();
+    }
+    const opened = await opening;
+    expect(getFile).toHaveBeenCalledOnce();
+    if (tab === "background") {
+      expect(opened?.content).toMatchObject({ kind: "file", content: "New preview" });
+      expect(workspace.previews).toEqual([retained, opened]);
+      expect(workspace.activePreviewId).toBe(opened?.id);
+    } else {
+      expect(opened).toBeUndefined();
+      expect(workspace.previews).toEqual([retained]);
+      expect(workspace.activePreviewId).toBe(retained.id);
+    }
+  },
+);
 
 it.each([
   ["directory", "success"],
