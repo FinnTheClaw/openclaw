@@ -21,9 +21,11 @@ for bot creation, pairing, and group permissions.
 
 Update-time Doctor and startup migration import remaining
 `telegram/ingress-spool-<account>/*.json` and `.json.processing` files into SQLite
-ingress. Pending updates retain their payload and receipt timestamp; old process
-claims return to pending replay. `.json.failed` files remain failed tombstones
-with their original failure time and are never automatically replayed.
+ingress. Pending updates and interrupted processing claims retain their payload
+and receipt timestamp and can replay if they are no more than 24 hours old. Age
+uses the earlier of the receipt and message or edit timestamps, when available.
+Older updates are imported as failed and are not replayed. Existing `.json.failed`
+files keep their original failure time and are never automatically replayed.
 
 Doctor backs up exact source bytes as `.migrated` files before normalization.
 Import receipts prevent duplicate replay after an interrupted cleanup, including
