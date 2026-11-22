@@ -596,6 +596,7 @@ export function projectSessionPatchResult(params: {
   canonicalKey: string;
   cfg: OpenClawConfig;
   entry: SessionEntry;
+  /** Null is known absent; undefined is unavailable for this receipt. */
   preparedAcpMeta: SessionEntry["acp"] | null;
   modelCatalog?: ModelCatalogEntry[];
   modelCatalogRouteVariants?: readonly ModelCatalogEntry[];
@@ -626,10 +627,14 @@ export function projectSessionPatchResult(params: {
     modelCatalogRouteVariants: params.modelCatalogRouteVariants,
   };
   // Metadata-only receipts omit thinking/context fields; resolve only their runtime facts.
-  const thinking = modelCatalog
-    ? resolveGatewaySessionThinkingProjectionInternal(projection)
+  const hasAcpFact = params.preparedAcpMeta !== undefined;
+  const thinking =
+    hasAcpFact && modelCatalog
+      ? resolveGatewaySessionThinkingProjectionInternal(projection)
+      : undefined;
+  const runtime = hasAcpFact
+    ? (thinking ?? resolveGatewaySessionRuntimeProjection(projection))
     : undefined;
-  const runtime = thinking ?? resolveGatewaySessionRuntimeProjection(projection);
   const contextWindow = thinking
     ? resolveModelContextWindowProfile({
         catalogEntry: thinking.catalogEntry,
@@ -649,8 +654,12 @@ export function projectSessionPatchResult(params: {
     resolved: {
       modelProvider: displayModel.provider,
       model: displayModel.model,
-      agentRuntime: runtime.agentRuntime,
-      runtimeSelectionLocked: runtime.runtimeSelectionLocked,
+      ...(runtime
+        ? {
+            agentRuntime: runtime.agentRuntime,
+            runtimeSelectionLocked: runtime.runtimeSelectionLocked,
+          }
+        : {}),
       ...(thinking && contextWindow
         ? {
             contextWindow: contextWindow.contextWindow,

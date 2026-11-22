@@ -16,6 +16,7 @@ import {
 import { readAcpSessionMetaForEntries } from "../../acp/runtime/session-meta-readonly.js";
 import { updateSessionProfileInvolvementAsync } from "../../config/sessions/session-accessor.js";
 import { assignSessionOwnerInWorker } from "../../config/sessions/session-metadata-write.async.js";
+import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import { patchPluginSessionExtension } from "../../plugins/host-hook-state.js";
 import { isPluginJsonValue } from "../../plugins/host-hooks.js";
 import {
@@ -192,7 +193,7 @@ function createSessionPatchHandler(
       const prepared = executed.preparedByIndex[0]!;
       diagnostics?.scope("response");
       const catalog = await executed.catalogs.available(prepared.targetAgentId);
-      const [acpMeta] = await readAcpSessionMetaForEntries({
+      const preparedAcpMeta = await readAcpSessionMetaForEntries({
         cfg: executed.cfg,
         entries: [
           {
@@ -201,14 +202,23 @@ function createSessionPatchHandler(
             entry: outcome.entry,
           },
         ],
-      });
+      }).then(
+        ([metadata]) => metadata ?? null,
+        (error: unknown) => {
+          if (signal?.aborted || !(error instanceof WorkerTaskError) || error.code !== "timeout") {
+            throw error;
+          }
+          // The row already committed; omit runtime metadata we could not confirm.
+          return undefined;
+        },
+      );
       assertCurrent();
       respond(
         true,
         projectSessionPatchResult({
           ...prepared,
           cfg: executed.cfg,
-          preparedAcpMeta: acpMeta ?? null,
+          preparedAcpMeta,
           entry: {
             ...outcome.entry,
             fastMode: prepareSessionFastModePresentation(client)(outcome.entry.fastMode),

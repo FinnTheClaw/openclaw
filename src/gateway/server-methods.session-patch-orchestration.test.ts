@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
+import * as acpMetadata from "../acp/runtime/session-meta-readonly.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { applySessionEntryCanonicalReplacements } from "../config/sessions/session-accessor.sqlite-replacement-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
@@ -150,6 +152,57 @@ const patchContext = (overrides: Record<string, unknown> = {}) =>
     dedupe: new Map(),
     ...overrides,
   }) as never;
+
+it.each([
+  { name: "with known ACP absence", error: undefined },
+  {
+    name: "after an ACP metadata worker timeout",
+    error: new WorkerTaskError("worker task timed out", "timeout"),
+  },
+  { name: "with an unexpected ACP error", error: new WorkerTaskError("ACP read failed", "failed") },
+])("settles a committed session rename $name", async ({ error }) => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    setRuntimeConfigSnapshot({});
+    const key = "agent:main:rename-receipt";
+    const sessionId = "rename-receipt";
+    const label = "Saved title";
+    await seedEntry(key, sessionId, "rename-receipt-revision");
+    using metadata = vi
+      .spyOn(acpMetadata, "readAcpSessionMetaForEntries")
+      .mockImplementationOnce(async () => {
+        expect(readEntry(key)).toMatchObject({ sessionId, label });
+        if (error) {
+          throw error;
+        }
+        return [null];
+      });
+    const respond = vi.fn();
+    const request = sessionMutationHandlers["sessions.patch"]!({
+      params: { key, label, expectedSessionId: sessionId },
+      respond,
+      context: patchContext(),
+    } as never);
+    if (error?.code === "failed") {
+      await expect(request).rejects.toBe(error);
+      expect(respond).not.toHaveBeenCalled();
+    } else {
+      await expect(request).resolves.toBeUndefined();
+      expect(respond).toHaveBeenCalledExactlyOnceWith(
+        true,
+        expect.objectContaining({ key, entry: expect.objectContaining({ sessionId, label }) }),
+        undefined,
+      );
+      const receipt = respond.mock.calls[0]?.[1];
+      if (error?.code === "timeout") {
+        expect(receipt.resolved).not.toHaveProperty("runtimeSelectionLocked");
+        expect(receipt.resolved).not.toHaveProperty("agentRuntime");
+      } else {
+        expect(receipt.resolved).toHaveProperty("runtimeSelectionLocked", false);
+      }
+    }
+    expect(metadata).toHaveBeenCalledOnce();
+  });
+});
 
 describe("sessions.patchMany orchestration", () => {
   it("preserves request-order outcomes while isolating expected-identity failures", async () => {
