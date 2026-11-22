@@ -400,6 +400,31 @@ describe("worker placement idle suspension", () => {
     },
   );
 
+  it("leaves the placement active when the idle sweep stops before drain commit", async () => {
+    const { harness, idleSweep, expectNotSuspended } = await createIdleFixture({
+      getSessionWorkAdmissionCheck: async () => () => false,
+    });
+    const active = await harness.service.dispatch(REQUEST);
+    nowMs += 60_000;
+    const controller = new AbortController();
+    probe.admission(operationAdmission, (request, grant, admit) => {
+      if (request.stage === "commit") {
+        controller.abort(new Error("idle sweep stopped"));
+      }
+      admit(request, grant);
+    });
+
+    await idleSweep.sweep(controller.signal);
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(placements.get(REQUEST.sessionId)).toMatchObject({
+      state: "active",
+      generation: active.generation,
+      turnClaim: null,
+    });
+    expectNotSuspended();
+  });
+
   it.each(["activity", "disabled policy", "longer timeout"])(
     "rechecks %s after delayed automatic reclaim preparation",
     async (change) => {

@@ -126,6 +126,8 @@ export function createWorkerPlacementIdleSweep(options: {
             }
             const assertCurrent = () => {
               if (
+                signal?.aborted ||
+                options.isStopping?.() ||
                 options.getConfig().cloudWorkers?.profiles?.[environment.profileId]
                   ?.suspendAfter !== suspendAfter ||
                 hasSessionWork?.()
@@ -135,9 +137,6 @@ export function createWorkerPlacementIdleSweep(options: {
             };
             const beforeDrain = Object.assign(
               () => {
-                if (signal?.aborted || options.isStopping?.()) {
-                  throw new WorkerPlacementAutoSuspendBusyError();
-                }
                 assertCurrent();
                 const current = options.placements.get(placement.sessionId);
                 if (
