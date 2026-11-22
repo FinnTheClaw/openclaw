@@ -146,6 +146,7 @@ import { resolveCronDeliveryPlan } from "../delivery-plan.js";
 import { makeCfg, withTempCronHome } from "../isolated-agent.test-harness.js";
 import type { CronDelivery } from "../types.js";
 import type { DispatchCronDeliveryParams } from "./delivery-dispatch-types.js";
+import { registerCurrentTargetHandoffTests } from "./delivery-dispatch.current-target-handoff.test-support.js";
 import { dispatchCronDelivery } from "./delivery-dispatch.js";
 import { registerPersistentSessionDeliveryTests } from "./delivery-dispatch.persistent-session.test-support.js";
 import {
@@ -1437,48 +1438,12 @@ describe("dispatchCronDelivery", () => {
       },
     );
   });
-  it("commits a descendant final reply instead of the current-target parent interim text", async () => {
-    vi.mocked(hasUnsettledCronDescendants).mockResolvedValue(false);
-    vi.mocked(isLikelyInterimCronMessage).mockReturnValue(true);
-    vi.mocked(readDescendantSubagentFallbackReply).mockResolvedValue("Final child result.");
-
-    const params = makeBaseParams({
-      synthesizedText: "on it",
-      sessionTarget: "current",
-      runStartedAt: 1_000,
-    });
-    params.resolvedDelivery = {
-      ok: false,
-      channel: "webchat",
-      to: undefined,
-      accountId: undefined,
-      threadId: undefined,
-      mode: "implicit",
-      error: new Error("webchat has no outbound adapter"),
-    };
-
-    const state = await dispatchCronDelivery(params);
-
-    expect(state).toMatchObject({ delivered: true, deliveryAttempted: true });
-    expect(commitBackgroundResultToSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "Final child result." }),
-    );
-    expect(deliverOutboundPayloads).not.toHaveBeenCalled();
-  });
-
-  it("uses the descendant final reply for both current-session commit and external delivery", async () => {
-    vi.mocked(hasUnsettledCronDescendants).mockResolvedValue(false);
-    vi.mocked(isLikelyInterimCronMessage).mockReturnValue(true);
-    vi.mocked(readDescendantSubagentFallbackReply).mockResolvedValue("Final child result.");
-
-    const params = makeBaseParams({ synthesizedText: "on it", sessionTarget: "current" });
-    const state = await dispatchCronDelivery(params);
-
-    expect(state).toMatchObject({ delivered: true, deliveryAttempted: true });
-    expect(commitBackgroundResultToSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "Final child result." }),
-    );
-    expectDeliveryCall(0, { payloads: [{ text: "Final child result." }] });
+  registerCurrentTargetHandoffTests({
+    childResult,
+    childFallback,
+    commitBackgroundResultToSessionMock,
+    deliverOutboundPayloads,
+    expectDeliveryCall,
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
