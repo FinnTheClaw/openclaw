@@ -520,6 +520,10 @@ export async function finalizeWorkerTurnResult(
       reconcileWorkspaceAfterTurn({
         ...params,
         transcriptTarget: resultTarget,
+        onDeviceFolderResultAccepted:
+          !turn.onContextEngineTurnCandidate && !workerTurnFailed && !aborted
+            ? finalizeContext
+            : undefined,
         publishAcceptedWorkspace: async (claim) => {
           await params.publishAcceptedWorkspace?.(claim);
           assertResultCurrent();

@@ -165,6 +165,7 @@ export async function reconcileWorkspaceAfterTurn(params: {
   beforeTurnSignal?: AbortSignal;
   prepareAcceptedWorkspacePublication?: (claim: WorkerSessionTurnClaim) => Promise<void>;
   publishAcceptedWorkspace?: (claim: WorkerSessionTurnClaim) => Promise<void>;
+  onDeviceFolderResultAccepted?: () => Promise<void>;
 }): Promise<WorkspaceConflictReport | undefined> {
   if (params.workspace.kind === "device-folder") {
     // This is a turn-completion fence only; the device owns all filesystem state.
@@ -173,6 +174,8 @@ export async function reconcileWorkspaceAfterTurn(params: {
       throw new Error("Device folder turn lost its placement owner");
     }
     await params.placements.acceptWorkspaceResult(params.turnClaim);
+    // Finish transcript-owned work before releasing the claim, without publishing files.
+    await params.onDeviceFolderResultAccepted?.();
     await params.placements.closeWorkerTurnToolState(params.turnClaim);
     await params.placements.completeWorkspaceResultAndReleaseTurn(params.turnClaim);
     return undefined;
