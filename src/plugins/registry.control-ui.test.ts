@@ -55,20 +55,28 @@ describe("plugin registry Control UI descriptors", () => {
     });
   });
 
-  it("keeps legacy flat descriptors loadable for shipped JavaScript plugins", () => {
-    const { registerPlugin, expectDescriptor } = fixture();
-    registerPlugin({ id: "legacy" }, (api) =>
-      api.registerControlUiDescriptor({
-        id: "legacy-card",
-        name: "Legacy Card",
-      } as never),
-    );
-    expectDescriptor("legacy", {
-      id: "legacy-card",
-      surface: "session",
-      label: "Legacy Card",
-    });
-  });
+  it.each([
+    { name: "omitted surface", fields: {}, expected: { surface: "session" } },
+    { name: "non-string surface", fields: { surface: false }, expected: { surface: "session" } },
+    {
+      name: "valid inline surface",
+      fields: { surface: "inline", version: 1 },
+      expected: { surface: "inline", version: 1 },
+    },
+  ] as const)(
+    "keeps legacy flat descriptors loadable for shipped JavaScript plugins ($name)",
+    ({ fields, expected }) => {
+      const { registerPlugin, expectDescriptor } = fixture();
+      registerPlugin({ id: "legacy" }, (api) =>
+        api.registerControlUiDescriptor({
+          id: "legacy-card",
+          name: "Legacy Card",
+          ...fields,
+        } as never),
+      );
+      expectDescriptor("legacy", { id: "legacy-card", label: "Legacy Card", ...expected });
+    },
+  );
 
   it("accepts a bundled plugin's matching native route placement", () => {
     const { register, expectDescriptor } = fixture();

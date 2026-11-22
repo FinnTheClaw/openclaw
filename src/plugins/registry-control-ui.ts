@@ -256,7 +256,10 @@ export function createControlUiRegistrar(state: PluginRegistryState) {
           id,
           ...(descriptor.surface === "inline"
             ? { surface: descriptor.surface, version: descriptor.version }
-            : { surface: descriptor.surface ?? "session", version: undefined }),
+            : {
+                surface: typeof descriptor.surface === "string" ? descriptor.surface : "session",
+                version: undefined,
+              }),
           ...(linkReader ? { linkReader } : {}),
           label,
           ...(description !== undefined ? { description } : {}),
