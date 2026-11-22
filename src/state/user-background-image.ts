@@ -1,4 +1,4 @@
-import { readImageProbeFromHeader } from "rastermill";
+import { RastermillError, readImageProbeFromHeader } from "rastermill";
 import {
   USER_BACKGROUND_MAX_INPUT_BYTES,
   USER_BACKGROUND_MAX_OUTPUT_BYTES,
@@ -51,18 +51,30 @@ export async function normalizeUserBackgroundImage(imageBase64: string, signal?:
       "Choose a static JPEG, PNG, or WebP image up to 25 megapixels",
     );
   }
-  const image = await createImageProcessorWithPixelLimits({
+  const encoder = createImageProcessorWithPixelLimits({
     inputPixels: 25_000_000,
     outputPixels: 2560 * 2560,
-  }).encode(bytes, {
-    format: "jpeg",
-    autoOrient: true,
-    metadata: "strip",
-    signal,
-    resize: { maxSide: 2560, enlarge: false },
-    maxBytes: USER_BACKGROUND_MAX_OUTPUT_BYTES,
-    search: { maxSide: [2560, 1920, 1280], quality: [85, 70] },
   });
+  const image = await encoder
+    .encode(bytes, {
+      format: "jpeg",
+      autoOrient: true,
+      metadata: "strip",
+      signal,
+      resize: { maxSide: 2560, enlarge: false },
+      maxBytes: USER_BACKGROUND_MAX_OUTPUT_BYTES,
+      search: { maxSide: [2560, 1920, 1280], quality: [85, 70] },
+    })
+    .catch((error: unknown) => {
+      if (
+        !signal?.aborted &&
+        error instanceof RastermillError &&
+        error.code === "RASTERMILL_UNDECODABLE"
+      ) {
+        throw new UserBackgroundInputError("Image could not be decoded", { cause: error });
+      }
+      throw error;
+    });
   // The byte budget is a search target, not a guarantee.
   if (image.data.byteLength > USER_BACKGROUND_MAX_OUTPUT_BYTES) {
     throw new UserBackgroundInputError("Image could not fit the 2 MiB background limit");
