@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import type { SessionEntrySummary } from "openclaw/plugin-sdk/memory-core-host-engine-sessions";
 import {
   isFileMissingError,
   retryTransientMemoryRead,
@@ -7,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { readSessionResetRecallCutoffMetadata } from "../session-reset-recall-metadata.js";
 import { prepareSessionIndexInWorker } from "./manager-cpu-worker-runtime.js";
+import { MemoryIndexRevisionConflictError } from "./manager-db-kernel.js";
 import type { MemoryIndexEntry } from "./manager-index-preparation.js";
 import type { SessionIndexPreparation } from "./manager-session-index-preparation.js";
 import { resolveMemoryPathClassification } from "./memory-path-provenance.js";
@@ -60,21 +62,23 @@ export async function readMemoryIndexSource({
   return { content, pathClassification };
 }
 
-/**
- * Chunks a session by streaming its export again under the indexed entry's hash and reset
- * boundary; neither the export nor the index worker holds the whole transcript. A later change
- * differs from that hash, so the next sync reindexes it.
- */
+export function sessionIndexSourceHash(entry: Pick<SessionEntrySummary, "hash" | "revisionMs">) {
+  return entry.revisionMs === undefined ? entry.hash : `sqlite:${entry.revisionMs}:${entry.hash}`;
+}
+
+/** Stream bounded pages, but publish chunks only with their captured source fingerprint. */
 export async function prepareSessionIndexSource(
   entry: MemoryIndexEntry,
   settings: Omit<SessionIndexPreparation, "pathClassification" | "cutoffLine">,
   workspaceDir: string,
 ) {
-  if (!entry.streamSessionExport) {
+  const streamExport = entry.streamSessionExport;
+  if (!streamExport) {
     throw new Error("Session index entries stream their export");
   }
   const cutoff = readSessionResetRecallCutoffMetadata(entry);
-  return await prepareSessionIndexInWorker(
+  let sourceChanged = false;
+  const prepared = await prepareSessionIndexInWorker(
     {
       ...settings,
       cutoffLine: cutoff.state === "valid" ? cutoff.cutoffLine : undefined,
@@ -84,6 +88,20 @@ export async function prepareSessionIndexSource(
         workspaceDir,
       }),
     },
-    entry.streamSessionExport,
+    async (stream) => {
+      const summary = await streamExport(stream);
+      sourceChanged =
+        summary !== null &&
+        (sessionIndexSourceHash(summary) !== entry.hash ||
+          summary.mtimeMs !== entry.mtimeMs ||
+          summary.size !== entry.size);
+      return summary;
+    },
   );
+  if (sourceChanged) {
+    throw new MemoryIndexRevisionConflictError(
+      "Session transcript changed during index preparation; retry memory sync.",
+    );
+  }
+  return prepared;
 }

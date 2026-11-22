@@ -14,6 +14,7 @@ import {
 import { withMemoryWorkspaceLock } from "../memory-workspace-lock.js";
 import { MemoryIndexRevisionConflictError } from "./manager-db-kernel.js";
 import type { MemoryIndexEntry } from "./manager-index-preparation.js";
+import { sessionIndexSourceHash } from "./manager-index-source.js";
 import { MemoryManagerSessionSyncOps } from "./manager-session-sync-ops.js";
 import {
   isMemorySessionIndexable,
@@ -347,8 +348,7 @@ export abstract class MemoryManagerSourceSyncOps extends MemoryManagerSessionSyn
       };
       const existing = sourceRows.get(entry.path);
       const existingHash = existing?.hash;
-      const hash =
-        entry.revisionMs === undefined ? entry.hash : `sqlite:${entry.revisionMs}:${entry.hash}`;
+      const hash = sessionIndexSourceHash(entry);
       const existingContentHash = existingHash?.startsWith("sqlite:")
         ? existingHash.slice(existingHash.lastIndexOf(":") + 1)
         : existingHash;
@@ -380,8 +380,7 @@ export abstract class MemoryManagerSourceSyncOps extends MemoryManagerSessionSyn
         this.advanceSyncProgress(params.progress);
         return null;
       }
-      // Keep the summary's non-enumerable reset boundary. Indexing streams the export again
-      // under this entry's state; a later change differs from this hash and reindexes.
+      // Retain the captured reset boundary and fingerprint for the second export.
       const corpusEntry = corpusEntryForPath(absPath);
       const options = this.buildSessionEntryOptions(corpusEntry);
       return Object.assign(entry, {

@@ -13,6 +13,7 @@ import {
   prepareMemoryIndexChunks,
   type MemoryIndexPreparationInput,
 } from "./manager-index-preparation.js";
+import { prepareSessionIndexSource } from "./manager-index-source.js";
 import {
   sessionIndexPages,
   type SessionIndexPage,
@@ -150,6 +151,55 @@ it("discards chunks from pages before an export reset", async () => {
 
 it("returns no chunks for a transcript that disappeared", async () => {
   expect(await prepareSession(input(""), async () => null)).toBeNull();
+});
+
+it.each([
+  { backend: "archive", revisionMs: undefined },
+  { backend: "sqlite", revisionMs: 13 },
+])("rejects a changed second session export before indexing ($backend)", async ({ revisionMs }) => {
+  const text = "User: synthetic first message.";
+  const source = input(text);
+  const entry = {
+    path: source.entry.path,
+    absPath: "/synthetic/workspace/session.jsonl",
+    mtimeMs: source.entry.mtimeMs,
+    size: text.length,
+    hash: revisionMs === undefined ? "first" : `sqlite:${revisionMs}:first`,
+  };
+  const settings = {
+    entry: source.entry,
+    chunking: source.chunking,
+    provider: source.provider,
+    hardMaxInputTokens: source.hardMaxInputTokens,
+  };
+  const prepare = (changed: boolean) =>
+    prepareSessionIndexSource(
+      {
+        ...entry,
+        streamSessionExport: async (stream) => {
+          const content = changed ? `${text}\nUser: synthetic appended message.` : text;
+          await exportOf(input(content))(stream);
+          return {
+            path: entry.path,
+            absPath: entry.absPath,
+            mtimeMs: changed ? entry.mtimeMs + 1 : entry.mtimeMs,
+            size: content.length,
+            hash: changed ? "second" : "first",
+            ...(revisionMs === undefined ? {} : { revisionMs: revisionMs + Number(changed) }),
+            sessionKind: "interactive",
+            lineCount: changed ? 2 : 1,
+            lineOriginClasses: ["untrusted"],
+          };
+        },
+      },
+      settings,
+      "/synthetic/workspace",
+    );
+
+  await expect(prepare(false)).resolves.toMatchObject({ chunks: [{ text }] });
+  await expect(prepare(true)).rejects.toThrow(
+    "Session transcript changed during index preparation",
+  );
 });
 
 it("keeps Unicode, overlap and giant-line boundaries independent of transport frames", async () => {
