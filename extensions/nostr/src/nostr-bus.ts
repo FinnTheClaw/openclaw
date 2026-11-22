@@ -3,6 +3,7 @@ import { decrypt, encrypt } from "nostr-tools/nip04";
 import type { ChannelOutboundContext } from "openclaw/plugin-sdk/channel-contract";
 import { createDirectDmPreCryptoGuardPolicy } from "openclaw/plugin-sdk/direct-dm-guard-policy";
 import { captureEffectAuthority } from "openclaw/plugin-sdk/fetch-runtime";
+import { isStateDatabaseAdmissionClosedError } from "openclaw/plugin-sdk/retry-runtime";
 import { createFixedWindowRateLimiter } from "openclaw/plugin-sdk/webhook-ingress";
 import type { NostrProfile } from "./config-schema.js";
 import { DEFAULT_RELAYS } from "./default-relays.js";
@@ -292,6 +293,21 @@ export async function startNostrBus(options: NostrBusOptions) {
       await cursorWriter.persistNow(cursor);
     }
   };
+  const stopAfterReplayCursorFailure = async (error: unknown, reason: string): Promise<void> => {
+    onError?.(error as Error, "persist transient replay cursor");
+    await stopRelays(reason);
+    if (isStateDatabaseAdmissionClosedError(error)) {
+      return;
+    }
+    try {
+      await cursorWriter.flushUntilSuccess();
+    } catch (recoveryError) {
+      if (!isStateDatabaseAdmissionClosedError(recoveryError)) {
+        throw recoveryError;
+      }
+      onError?.(recoveryError as Error, "persist transient replay cursor");
+    }
+  };
   const handleRelayEvent = async (event: Event): Promise<void> => {
     // Apply the relay age fence once, before admission; recovered durable claims must still deliver.
     if (typeof event.created_at === "number" && event.created_at < since) {
@@ -315,9 +331,7 @@ export async function startNostrBus(options: NostrBusOptions) {
           try {
             await persistTransientReplayCursor(event);
           } catch (cursorError) {
-            onError?.(cursorError as Error, "persist transient replay cursor");
-            await stopRelays("cursor persistence failed");
-            await cursorWriter.flushUntilSuccess();
+            await stopAfterReplayCursorFailure(cursorError, "cursor persistence failed");
           }
         }
         return;
@@ -325,17 +339,13 @@ export async function startNostrBus(options: NostrBusOptions) {
       if (error instanceof NostrIngressPermanentError) {
         return;
       }
-      let cursorPersistenceFailed = false;
       try {
         await persistTransientReplayCursor(event);
       } catch (cursorError) {
-        onError?.(cursorError as Error, "persist transient replay cursor");
-        cursorPersistenceFailed = true;
+        await stopAfterReplayCursorFailure(cursorError, "durable admission failed");
+        return;
       }
       await stopRelays("durable admission failed");
-      if (cursorPersistenceFailed) {
-        await cursorWriter.flushUntilSuccess();
-      }
     }
   };
   let backfillFinalizePromise: Promise<void> | undefined;

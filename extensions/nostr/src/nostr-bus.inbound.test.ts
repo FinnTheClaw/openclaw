@@ -261,6 +261,67 @@ describe("startNostrBus inbound guards", () => {
     expect(onDelivered).not.toHaveBeenCalled();
   });
 
+  it("settles relay intake when the local cursor store has retired", async ({ signal }) => {
+    const newest = Math.floor(Date.now() / 1000);
+    const checkpoint = newest - 120;
+    mocks.readNostrBusState.mockResolvedValueOnce({
+      version: 2,
+      lastProcessedAt: checkpoint,
+      gatewayStartedAt: checkpoint,
+      recentEventIds: [],
+    });
+    mocks.computeSinceTimestamp.mockReturnValue(checkpoint);
+    const onError = vi.fn();
+    const backfill = createDeferred<void>();
+    const enqueue = vi.fn(ingressQueue.enqueue);
+    useQueue(() => ({ ...ingressQueue, enqueueAndClaim: undefined, enqueue }));
+    await startBus({ ...ACCOUNT, onError, onEose: () => backfill.resolve() });
+    await emitEvent({ id: "latest-delivered", created_at: newest });
+    mocks.handlers[0]?.oneose?.();
+    await withinTest(backfill.promise, signal);
+    expect(onDelivered).toHaveBeenCalledTimes(1);
+    const retired = new Error("fixture cursor store retired", {
+      cause: { code: "STATE_DATABASE_READ_ADMISSION_INVALIDATED" },
+    });
+    const appendFailure = new Error("fixture local append interrupted");
+    enqueue.mockClear().mockRejectedValue(appendFailure);
+    mocks.writeNostrBusState.mockClear();
+    mocks.writeNostrBusState.mockRejectedValue(retired);
+
+    try {
+      const failure = await emitEvent({ id: "delayed-message", created_at: newest - 180 }).catch(
+        (error: unknown) => error,
+      );
+      expect(enqueue).toHaveBeenCalledTimes(3);
+      expect(enqueue).toHaveBeenLastCalledWith(
+        "delayed-message",
+        expect.any(Object),
+        expect.any(Object),
+      );
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ cause: appendFailure }),
+        "durable admission for event delayed-message",
+      );
+      expect(mocks.writeNostrBusState).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ lastProcessedAt: newest - 60 }),
+      );
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ cause: retired }),
+        "persist transient replay cursor",
+      );
+      expect(mocks.subscriptionClose).toHaveBeenCalledExactlyOnceWith("durable admission failed");
+      expect(mocks.close).toHaveBeenCalledExactlyOnceWith(ACCOUNT.relays);
+      expect(onDelivered).toHaveBeenCalledTimes(1);
+      expect(failure).toBeUndefined();
+      expect(mocks.writeNostrBusState).toHaveBeenCalledTimes(1);
+    } finally {
+      // Allow the separate, awaited bus cleanup after the mocked failure.
+      mocks.writeNostrBusState.mockReset();
+      enqueue.mockReset();
+    }
+  });
+
   it("awaits ingress drain shutdown when startup state persistence fails", async () => {
     const startupError = new Error("state unavailable");
     const claimNext = vi.spyOn(ingressQueue, "claimNext");
