@@ -90,4 +90,44 @@ describe("iMessage recovery cursor persistence", () => {
       expect(syncOpen).not.toHaveBeenCalled();
     },
   );
+
+  it.each([false, true])(
+    "retains a database-scoped cursor after migration write failure (newer winner: %s)",
+    async (newerWins) => {
+      const legacyKey = `${accountId}\u0000${dbIdentity}`;
+      const rows = new Map([[legacyKey, { lastRowid: 31 }]]);
+      const failure = new Error("storage unavailable before cursor adoption");
+      const registerIfAbsent = vi
+        .fn(async (key: string, value: { lastRowid: number }) => {
+          if (newerWins) {
+            rows.set(key, { lastRowid: 50 });
+            return false;
+          }
+          rows.set(key, value);
+          return true;
+        })
+        .mockRejectedValueOnce(failure);
+      const state = getIMessageRuntime().state;
+      vi.spyOn(state, "openKeyedStoreV2").mockReturnValue({
+        lookup: async (key: string) => rows.get(key),
+        entries: async () => [...rows].map(([key, value]) => ({ key, value, createdAt: 0 })),
+        consume: async (key: string) => {
+          const value = rows.get(key);
+          rows.delete(key);
+          return value;
+        },
+        registerIfAbsent,
+      } as unknown as ReturnType<typeof state.openKeyedStoreV2>);
+
+      await expect(loadIMessageRecoveryCursor(accountId, dbIdentity)).rejects.toBe(failure);
+      expect(rows.get(legacyKey)).toEqual({ lastRowid: 31 });
+      expect(rows.has(cursorKey)).toBe(false);
+
+      const expected = newerWins ? 50 : 31;
+      await expect(loadIMessageRecoveryCursor(accountId, dbIdentity)).resolves.toBe(expected);
+      expect(rows.get(cursorKey)).toEqual({ lastRowid: expected });
+      expect(rows.has(legacyKey)).toBe(false);
+      expect(registerIfAbsent).toHaveBeenCalledTimes(2);
+    },
+  );
 });

@@ -152,12 +152,20 @@ async function readRecoveryCursor(accountId: string, dbIdentity: string): Promis
   // replays downtime rows, then consume it so a later dbPath change cannot
   // inherit this database's high-water.
   const nulKey = legacyNulRecoveryCursorStoreKey(accountId, dbIdentity);
-  const hasNulKey = (await store.entries()).some((entry) => entry.key === nulKey);
-  const legacy = await store.consume(hasNulKey ? nulKey : accountId);
+  const nulEntry = (await store.entries()).find((entry) => entry.key === nulKey);
+  const legacy = nulEntry ? nulEntry.value : await store.consume(accountId);
   if (legacy && Number.isFinite(legacy.lastRowid)) {
     await store.registerIfAbsent(key, { lastRowid: legacy.lastRowid });
     const adopted = await store.lookup(key);
-    return adopted && Number.isFinite(adopted.lastRowid) ? adopted.lastRowid : null;
+    if (adopted && Number.isFinite(adopted.lastRowid)) {
+      // Keep the old cursor until this database has a durable replacement.
+      if (nulEntry) {
+        await store.consume(nulKey);
+      }
+      return adopted.lastRowid;
+    }
+  } else if (nulEntry) {
+    await store.consume(nulKey);
   }
   return null;
 }
