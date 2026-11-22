@@ -135,7 +135,7 @@ async function resolveCronThinkingCatalog(params: {
   const selected = findModelInCatalog(catalog, params.provider, params.model);
   if (
     params.agentRuntime === "openclaw" &&
-    selected &&
+    selected?.reasoning !== undefined &&
     (selected.nativeRuntime === undefined || selected.nativeRuntime === "openclaw")
   ) {
     return catalog;
