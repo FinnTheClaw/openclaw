@@ -522,6 +522,40 @@ it("does not group-throttle fractional chat ids", async () => {
 });
 
 describe("releaseAccountThrottler", () => {
+  it("settles a final send waiting on the token flood cooldown", async () => {
+    vi.useFakeTimers();
+    const token = "retire-flood-cooldown";
+    const { api, sent } = floodApi(token, ({ method }) =>
+      method === "sendChatAction" ? flood(6) : undefined,
+    );
+    let replyOutcome: Promise<unknown> | undefined;
+    let releasing: Promise<boolean> | undefined;
+    finishClock(
+      10_000,
+      () => Promise.allSettled([replyOutcome, releasing]),
+      () => {
+        releasing ??= releaseAccountThrottler(token);
+      },
+    );
+    await expect(api.sendChatAction(-100111, "typing")).rejects.toMatchObject({
+      error_code: 429,
+    });
+
+    const reply = api.sendMessage(-100222, "final answer");
+    const settled = vi.fn();
+    replyOutcome = reply.then(settled, settled);
+    await tick(100);
+    expect(sent.map(({ method }) => method)).toEqual(["sendChatAction"]);
+    expect(settled).not.toHaveBeenCalled();
+
+    releasing = releaseAccountThrottler(token);
+    await tick(100);
+    await expect(releasing).resolves.toBe(true);
+    expect(settled).toHaveBeenCalledOnce();
+    await expect(reply).rejects.toThrow(/released/i);
+    expect(sent.map(({ method }) => method)).toEqual(["sendChatAction"]);
+  });
+
   it.each([42, "-100123"])(
     "settles queued sends and rejects retired work for chat %s",
     async (chatId) => {

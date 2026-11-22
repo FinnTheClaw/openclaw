@@ -139,10 +139,20 @@ function bridgeTelegramAbortSignal(signal: TelegramApiSignal) {
   return { controller, detach: () => signal?.removeEventListener("abort", abort) };
 }
 
-async function sleepForFloodGate(waitMs: number, signal: TelegramApiSignal): Promise<void> {
+async function sleepForFloodGate(
+  waitMs: number,
+  signal: TelegramApiSignal,
+  retirementSignal: AbortSignal,
+): Promise<void> {
   const { controller, detach } = bridgeTelegramAbortSignal(signal);
+  const waitSignal = AbortSignal.any([controller.signal, retirementSignal]);
   try {
-    await sleepWithAbort(waitMs, controller.signal);
+    await sleepWithAbort(waitMs, waitSignal);
+  } catch (error) {
+    if (waitSignal.reason === telegramThrottlerReleasedError) {
+      throw telegramThrottlerReleasedError;
+    }
+    throw error;
   } finally {
     detach();
   }
@@ -151,6 +161,7 @@ async function sleepForFloodGate(waitMs: number, signal: TelegramApiSignal): Pro
 function callThroughFloodGate(
   gate: TelegramFloodGate,
   replaceable: boolean,
+  retirementSignal: AbortSignal,
   prev: TelegramApiCall,
 ): TelegramApiCall {
   return async (method, payload, signal) => {
@@ -161,6 +172,7 @@ function callThroughFloodGate(
     let waitedMs = 0;
     let flooded: ApiError | undefined;
     for (;;) {
+      retirementSignal.throwIfAborted();
       const waitMs = gate.remainingMs();
       if (waitMs > 0) {
         if (replaceable) {
@@ -169,7 +181,7 @@ function callThroughFloodGate(
         if (waitedMs + waitMs > TELEGRAM_OUTBOUND_FLOOD_BUDGET_MS) {
           return flooded ?? skippedFloodResponse(waitMs, "flood wait exceeds delivery budget");
         }
-        await sleepForFloodGate(waitMs, signal);
+        await sleepForFloodGate(waitMs, signal, retirementSignal);
         waitedMs += waitMs;
         continue;
       }
@@ -433,7 +445,7 @@ function createTelegramAccountThrottler(
 ): TelegramAccountThrottler {
   const created = createThrottler();
   const baseThrottler = typeof created === "function" ? created : created.transformer;
-  // Aborted when the token retires so pre-I/O chat-action backoffs settle
+  // Aborted when the token retires so pre-I/O flood waits and chat-action backoffs settle
   // before the shared limiter's shutdown starts waiting on executing jobs.
   const retireController = new AbortController();
   const chatActions = createTelegramSendChatActionHandler({
@@ -453,9 +465,9 @@ function createTelegramAccountThrottler(
     for (const scheduler of schedulersByChat.values()) {
       scheduler.settleForRetirement(telegramThrottlerReleasedError);
     }
-    // Terminate pre-I/O chat-action backoffs before stopping the shared
+    // Terminate pre-I/O waits before stopping the shared
     // limiters, whose shutdown waits for executing callbacks to finish.
-    retireController.abort();
+    retireController.abort(telegramThrottlerReleasedError);
     if (typeof created !== "function") {
       await created.dispose();
     }
@@ -540,6 +552,7 @@ function createTelegramAccountThrottler(
     const send = callThroughFloodGate(
       floodGate,
       replaceable,
+      retireController.signal,
       (queuedMethod, queuedPayload, queuedSignal) =>
         scheduleRequest(replaceable)(admitted, queuedMethod, queuedPayload, queuedSignal),
     );
