@@ -125,7 +125,8 @@ export function readSessionActorMemoryAnchors(
       ? {
           metadata: {
             present: window.events.length > 0,
-            observedAt: window.hot.transcript.version.updatedAt,
+            // Memory has no separate registry observation; callers use the entry timestamp.
+            observedAt: null,
             updatedAt: window.hot.transcript.version.updatedAt,
           },
         }

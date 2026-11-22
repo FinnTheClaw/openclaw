@@ -1,5 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
+import { hasTerminalMainSessionTranscriptNewerThanRegistryAsync } from "./lifecycle-read.js";
 import type { SessionActorAuthority } from "./session-actor-contract.js";
 import type {
   SessionActorMemoryHistoryQuery,
@@ -8,6 +9,7 @@ import type {
 import { mutateMemory, readMemory } from "./session-actor-memory-publication.test-support.js";
 import { createMemorySessionActorOwner } from "./session-actor-memory.js";
 import { transcriptTurnCommand } from "./session-actor-transcript.test-support.js";
+import * as transcriptAnchors from "./session-transcript-anchor-read.js";
 import type { InternalSessionEntry } from "./types.js";
 
 const sessionKey = "agent:main:dashboard:incognito-history";
@@ -615,6 +617,37 @@ describe("memory actor history facts", () => {
       await read("maintenance", { request: { operation: "identity", eventId: "opaque" } }),
     ).toEqual({ kind: "transcript-maintenance", seq: 2 });
   });
+
+  it("compares actor transcript freshness against the registry timestamp", async () => {
+    const { read, storage } = await fixture([message("user", null, "user", "Question")], {
+      status: "killed",
+      updatedAt: 1,
+    });
+    const entry = await readMemory(storage, "session.entry.read", {});
+    assert(entry, "Expected memory session entry");
+    const { metadata } = await read("anchors", { entryIds: [], includeMetadata: true });
+    const mutationAt = metadata?.updatedAt;
+    assert(typeof mutationAt === "number" && mutationAt > entry.updatedAt);
+
+    // Exercise the ordinary lifecycle comparator with metadata from the real memory actor.
+    const anchors = vi
+      .spyOn(transcriptAnchors, "readSessionTranscriptAnchorsAsync")
+      .mockImplementation((_scope, selection) => read("anchors", selection));
+    const check = (updatedAt: number) =>
+      hasTerminalMainSessionTranscriptNewerThanRegistryAsync({
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        entry: { ...entry, updatedAt },
+      });
+    try {
+      await expect(check(mutationAt)).resolves.toBe(false);
+      await expect(check(mutationAt + 1)).resolves.toBe(false);
+      await expect(check(entry.updatedAt)).resolves.toBe(true);
+    } finally {
+      anchors.mockRestore();
+    }
+  });
+
   it("checks replay authority and clears retired history on deletion", async () => {
     const { storage, acquire, read, reset } = await fixture(
       [message("user", null, "user", "Question")],
