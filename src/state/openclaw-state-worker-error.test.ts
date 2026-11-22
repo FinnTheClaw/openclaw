@@ -528,6 +528,7 @@ describe("shared-state worker error transport", () => {
       expect(result.cause).toBe(result.errors[0]);
       expect(result.errors[1]).toBe(result.errors[0]);
       expect(result.errors[2]).toBe(untouched);
+      expect(result.errors[3]).toBe(result);
     }
     expect(original.cause).toBe(remote);
     expect(original.errors).toEqual([remote, remote, untouched, original]);

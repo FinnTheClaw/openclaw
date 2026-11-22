@@ -261,70 +261,80 @@ export function hydrateOpenClawStateWorkerError(
     return value;
   }
   const replacements = new Map<Error, Error>();
-  const pending = [{ error: value, finish: false }];
+  const parents = new Map<Error, Set<Error>>();
+  const local = new Map<Error, { cause: unknown; errors?: unknown[] }>();
+  const pending = [value];
+  while (pending.length > 0) {
+    const error = pending.pop()!;
+    if (local.has(error) || replacements.has(error)) {
+      continue;
+    }
+    const payload = retainedPayloads.get(error);
+    const graph = payload === undefined ? undefined : decodeErrorGraph(payload, options);
+    if (graph) {
+      replacements.set(error, graph.errors[graph.root]!);
+      continue;
+    }
+    const cause: unknown = error.cause;
+    const errors: unknown[] | undefined =
+      error instanceof AggregateError ? error.errors : undefined;
+    local.set(error, { cause, errors });
+    const track = (child: unknown) => {
+      if (child instanceof Error) {
+        let links = parents.get(child);
+        if (!links) {
+          links = new Set();
+          parents.set(child, links);
+        }
+        links.add(error);
+        pending.push(child);
+      }
+    };
+    track(cause);
+    errors?.forEach(track);
+  }
+
+  // Install every affected shell before relinking. New keys join this iteration,
+  // including parents reached through cycles in the caller's local wrappers.
+  for (const child of replacements.keys()) {
+    for (const parent of parents.get(child) ?? []) {
+      if (replacements.has(parent)) {
+        continue;
+      }
+      const copy =
+        parent instanceof AggregateError
+          ? new AggregateError([], parent.message)
+          : new Error(parent.message);
+      Object.setPrototypeOf(copy, Object.getPrototypeOf(parent));
+      replacements.set(parent, copy);
+    }
+  }
   const replace = (child: unknown): unknown =>
     child instanceof Error ? (replacements.get(child) ?? child) : child;
-  while (pending.length > 0) {
-    const entry = pending.pop()!;
-    const { error } = entry;
-    if (!entry.finish) {
-      if (replacements.has(error)) {
-        continue;
-      }
-      // A circular local cause stays on its original object; wire graphs keep their aliases.
-      replacements.set(error, error);
-      const payload = retainedPayloads.get(error);
-      const graph = payload === undefined ? undefined : decodeErrorGraph(payload, options);
-      if (graph) {
-        replacements.set(error, graph.errors[graph.root]!);
-        continue;
-      }
-      pending.push({ error, finish: true });
-      if (error.cause instanceof Error) {
-        pending.push({ error: error.cause, finish: false });
-      }
-      if (error instanceof AggregateError) {
-        for (const child of error.errors) {
-          if (child instanceof Error) {
-            pending.push({ error: child, finish: false });
-          }
-        }
-      }
+  for (const [error, replacement] of replacements) {
+    const edges = local.get(error);
+    if (!edges) {
+      // A decoded wire graph has already linked its own causes and aliases.
       continue;
     }
-    const cause = replace(error.cause);
-    const originalErrors = error instanceof AggregateError ? error.errors : undefined;
-    const errors = originalErrors?.map(replace);
-    if (
-      cause === error.cause &&
-      (!errors || errors.every((child, index) => child === originalErrors?.[index]))
-    ) {
-      continue;
-    }
-    const replacement =
-      error instanceof AggregateError
-        ? new AggregateError([], error.message)
-        : new Error(error.message);
-    Object.setPrototypeOf(replacement, Object.getPrototypeOf(error));
     const descriptors = Object.getOwnPropertyDescriptors(error);
     if ("cause" in error) {
       descriptors.cause = {
         configurable: true,
         writable: true,
         ...descriptors.cause,
-        value: cause,
+        value: replace(edges.cause),
       };
     }
-    if (errors) {
+    if (edges.errors) {
       descriptors.errors = {
         configurable: true,
         writable: true,
         ...descriptors.errors,
-        value: errors,
+        value: edges.errors.map(replace),
       };
     }
     Object.defineProperties(replacement, descriptors);
-    replacements.set(error, replacement);
   }
-  return replacements.get(value)!;
+  return replacements.get(value) ?? value;
 }
