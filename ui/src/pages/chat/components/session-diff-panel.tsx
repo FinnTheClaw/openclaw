@@ -20,7 +20,6 @@ import { registerChatSessionOptionalEnglish } from "../../../i18n/locales/en-cha
 import "../../../components/tooltip.ts";
 import {
   expandSessionDiffGap,
-  splitSessionDiffFileText,
   type SessionDiffGapDirection,
 } from "../../../lib/chat/session-diff-gaps.ts";
 import {
@@ -35,6 +34,7 @@ import { registerEnglishCatalog, t } from "../../../lib/reactive/i18n.ts";
 import { useVisiblePoll } from "../../../lib/reactive/visible-poll.ts";
 import type { DiffPresentation } from "./chat-diff-render.solid.tsx";
 import type { SessionDiffScope, SessionDiffProps } from "./chat-sidebar-content-types.ts";
+import { createSessionDiffGapFileText } from "./session-diff-gap-file-text.ts";
 import {
   SessionDiffMenu,
   type SessionDiffMenuAction,
@@ -50,7 +50,7 @@ import {
 import type { SessionDiffViewBindings } from "./session-diff-presentation.ts";
 import { createSessionDiffPanelFrame, SessionDiffNativeGaps } from "./session-diff-result-view.tsx";
 import { SessionDiffSyncMobile } from "./session-diff-sync-mobile.tsx";
-import type { DiffValue, FileSource, FileView } from "./session-diff-types.ts";
+import type { DiffValue, FileView } from "./session-diff-types.ts";
 
 registerEnglishCatalog(registerChatSessionOptionalEnglish);
 
@@ -201,8 +201,7 @@ export function SessionDiffPanel(props: SessionDiffProps) {
     );
   });
   const codePresentations = new Map<string, DiffPresentation>();
-  const fileTextCache = new WeakMap<FileSource, Promise<string[] | null>>();
-  const unavailableFileText = new WeakSet<FileSource>();
+  const gapFileText = createSessionDiffGapFileText(() => props.loadFileText);
   const expandingGaps = new WeakSet<DiffLine>();
   let disposed = false;
   const nativeGateways = nativeGatewaysCapability();
@@ -284,6 +283,9 @@ export function SessionDiffPanel(props: SessionDiffProps) {
             : null,
         },
       }));
+      if (requestedReload?.target === target && gapFileText.restoreUnavailable(views)) {
+        setGapRevision((revision) => revision + 1);
+      }
       setValue({ owner, scope: requestedScope, result, views });
       props.onResult?.({ owner, scope: requestedScope, result });
       const currentPaths = new Set(views.map((view) => view.file.path));
@@ -473,22 +475,8 @@ export function SessionDiffPanel(props: SessionDiffProps) {
       view.file.binary !== true &&
       view.source.parsed !== null &&
       !view.source.parsed.truncated &&
-      !unavailableFileText.has(view.source)
+      !gapFileText.isUnavailable(view.source)
     );
-  }
-  function loadFileLines(view: FileView) {
-    const cached = fileTextCache.get(view.source);
-    if (cached) {
-      return cached;
-    }
-    const load = props.loadFileText;
-    const result = load
-      ? load(view.file.path)
-          .then((text) => (text === null ? null : splitSessionDiffFileText(text)))
-          .catch(() => null)
-      : Promise.resolve(null);
-    fileTextCache.set(view.source, result);
-    return result;
   }
   async function expandGap(view: FileView, line: DiffLine, direction: SessionDiffGapDirection) {
     const parsed = view.source.parsed;
@@ -519,11 +507,11 @@ export function SessionDiffPanel(props: SessionDiffProps) {
       // Revalidate the patch: gap-interior edits cannot be detected from visible rows.
       // The remaining diff-to-file fetch race is accepted without shared snapshot identity.
       if (!freshFile || freshFile.patch !== view.file.patch) {
-        fileTextCache.delete(view.source);
+        gapFileText.invalidate(view.source);
         setReload({ target: requestTarget(), result: freshResult });
         return;
       }
-      const fileLines = await loadFileLines(view);
+      const fileLines = await gapFileText.read(view);
       if (!isCurrent() || !parsed.lines.includes(line) || view.source.expandedGaps?.has(line)) {
         return;
       }
@@ -546,7 +534,7 @@ export function SessionDiffPanel(props: SessionDiffProps) {
           parsed.lines = expanded;
         }
       } else {
-        unavailableFileText.add(view.source);
+        gapFileText.markUnavailable(view.source);
       }
       setGapRevision((revision) => revision + 1);
     } finally {

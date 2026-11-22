@@ -679,6 +679,41 @@ describe("SessionDiffPanel", () => {
     expect(panel.textContent).not.toContain("expanded current file line");
     expect(panel.querySelector(".session-diff__gap-controls")).toBeNull();
   });
+
+  it("offers context again after refreshing an unchanged diff following a file read failure", async () => {
+    const loader = vi
+      .fn<NonNullable<SessionDiffProps["loader"]>>()
+      .mockImplementation(async () => fileResult(SNAPSHOT_PATCH));
+    const omitted = "recovered review context";
+    const loadFileText = vi
+      .fn<NonNullable<SessionDiffProps["loadFileText"]>>()
+      .mockRejectedValueOnce(new Error("Temporary file read failure"))
+      .mockResolvedValue([omitted, "another context line", "snapshot line"].join("\n"));
+    const { panel, update } = mountPanel();
+    update({ mobile: true, loader, loadFileText });
+    const expand = () => panel.querySelector<HTMLButtonElement>(".session-diff__gap-count");
+    await waitForSolid(() => expect(expand()).not.toBeNull());
+    const disclosure = panel.querySelector(".session-diff__file-toggle");
+    expect(disclosure).not.toBeNull();
+
+    expand()!.click();
+    await waitForSolid(() => {
+      expect(loadFileText).toHaveBeenCalledOnce();
+      expect(expand()).toBeNull();
+    });
+    expect(panel.textContent).not.toContain(omitted);
+
+    loader.mockResolvedValue({ ...fileResult(SNAPSHOT_PATCH), branch: "feature/refreshed" });
+    panel.querySelector<HTMLButtonElement>(".session-diff__refresh")!.click();
+    await waitForSolid(() => expect(panel.textContent).toContain("feature/refreshed"));
+    expect(panel.querySelector(".session-diff__file-toggle")).toBe(disclosure);
+    expect(loadFileText).toHaveBeenCalledOnce();
+    expect(expand()).not.toBeNull();
+
+    expand()!.click();
+    await waitForSolid(() => expect(panel.textContent).toContain(omitted));
+    expect(loadFileText).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("manual code folding", () => {
