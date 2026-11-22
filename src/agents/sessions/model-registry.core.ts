@@ -740,18 +740,7 @@ export class ModelRegistry {
       }
     }
     this.applyProviderConfig(providerName, config, effectiveConfig);
-    if (!existing) {
-      this.registeredProviders.set(providerName, config);
-      return;
-    }
-    // Undefined registration fields preserve the stored provider configuration.
-    // SAFETY: These own keys come from the typed provider registration being merged.
-    for (const k of Object.keys(config) as (keyof ProviderConfigInput)[]) {
-      if (config[k] !== undefined) {
-        // SAFETY: Both objects share ProviderConfigInput; each value keeps its original key.
-        (existing as Record<string, unknown>)[k] = config[k];
-      }
-    }
+    this.registeredProviders.set(providerName, existing ? effectiveConfig : config);
   }
 
   /**

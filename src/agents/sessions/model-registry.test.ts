@@ -213,6 +213,16 @@ describe("ModelRegistry", () => {
     );
   });
 
+  it("updates a provider label without mutating its original registration", () => {
+    const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+    const original = Object.freeze({ name: "Original display name" });
+    registry.registerProvider("label-only", original);
+    expect(registry.getProviderDisplayName("label-only")).toBe(original.name);
+    registry.registerProvider("label-only", { name: "Updated display name" });
+    expect(registry.getProviderDisplayName("label-only")).toBe("Updated display name");
+    expect(original.name).toBe("Original display name");
+  });
+
   it.each(["persisted", "registered"] as const)("preserves %s model metadata", (source) => {
     const model = {
       id: "shared-model",
