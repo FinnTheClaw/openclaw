@@ -72,12 +72,28 @@ export async function releaseRotatedTelegramAccountThrottler(
  * it still contains the removed account; that account is excluded from the
  * still-in-use check while a shared sibling token keeps its limiter alive.
  */
-export async function releaseRemovedTelegramAccountThrottler(
+async function releaseRemovedTelegramAccountThrottler(
   prevCfg: OpenClawConfig,
   accountId: string,
 ): Promise<boolean> {
   const token = resolveTelegramAccount({ cfg: prevCfg, accountId }).token.trim();
   return releaseRetiredTelegramAccountThrottler(token, prevCfg, accountId);
+}
+
+/** Settle independent removal owners while preserving the original cache cleanup failure. */
+export async function cleanupRemovedTelegramAccountResources(
+  prevCfg: OpenClawConfig,
+  accountId: string,
+  cacheCleanups: readonly Promise<unknown>[],
+): Promise<void> {
+  const outcomes = await Promise.allSettled([
+    ...cacheCleanups,
+    releaseRemovedTelegramAccountThrottler(prevCfg, accountId),
+  ]);
+  const failure = outcomes.find((outcome) => outcome.status === "rejected");
+  if (failure) {
+    throw failure.reason;
+  }
 }
 
 /**

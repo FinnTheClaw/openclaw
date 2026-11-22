@@ -15,6 +15,7 @@ import { getOrCreateAccountThrottler, releaseAccountThrottler } from "./account-
 import { readCachedTelegramBotInfo, writeCachedTelegramBotInfo } from "./bot-info-cache.js";
 import type { TelegramBotInfo } from "./bot-info.js";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
+import { makeTelegramKeyedStoreTestMock } from "./bot.test-helpers.js";
 import { telegramPlugin } from "./channel.js";
 import { acquireTelegramPollingLease } from "./polling-lease.js";
 import { setTelegramRuntime } from "./runtime.js";
@@ -410,6 +411,49 @@ describe("telegramPlugin gateway startup", () => {
       expect(getOrCreateAccountThrottler(token) === first).toBe(retained);
       await releaseAccountThrottler(token);
     });
+
+    it.each([false, true])(
+      "settles account cleanup after a cursor deletion error (shared=%s)",
+      async (shared) => {
+        const cursorError = new Error("offset store unavailable");
+        const deleteCursor = vi.fn(async () => {
+          throw cursorError;
+        });
+        const deleteBotInfo = vi.fn(async () => true);
+        const runtime = createPluginRuntimeMock();
+        runtime.state.openKeyedStore = <T>(
+          options: Parameters<TelegramRuntime["state"]["openKeyedStore"]>[0],
+        ) => {
+          if (options.namespace === "telegram.update-offsets") {
+            return makeTelegramKeyedStoreTestMock<T>({ delete: deleteCursor });
+          }
+          if (options.namespace === "telegram.bot-info-cache") {
+            return makeTelegramKeyedStoreTestMock<T>({ delete: deleteBotInfo });
+          }
+          throw new Error("Unexpected account removal state store");
+        };
+        setTelegramRuntime(runtime);
+        const dispose = vi.fn(async () => {});
+        getOrCreateAccountThrottler(token, () => ({
+          transformer: (prev, method, payload, signal) => prev(method, payload, signal),
+          dispose,
+        }));
+        try {
+          await expect(
+            telegramPlugin.lifecycle!.onAccountRemoved!({
+              accountId: "ops",
+              prevCfg: accounts(token, shared ? token : undefined),
+              runtime: createRuntimeSpies(),
+            }),
+          ).rejects.toBe(cursorError);
+          expect(deleteCursor).toHaveBeenCalledExactlyOnceWith("ops");
+          expect(deleteBotInfo).toHaveBeenCalledExactlyOnceWith("ops");
+          expect(dispose).toHaveBeenCalledTimes(shared ? 0 : 1);
+        } finally {
+          await releaseAccountThrottler(token);
+        }
+      },
+    );
 
     it.each(["rotated", "removed", "configured"] as const)(
       "stops an account whose token is %s",

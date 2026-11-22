@@ -42,7 +42,7 @@ import {
   inspectTelegramAccount,
 } from "./account-inspect.js";
 import {
-  releaseRemovedTelegramAccountThrottler,
+  cleanupRemovedTelegramAccountResources,
   releaseRotatedTelegramAccountThrottler,
   releaseStoppedTelegramAccountResources,
 } from "./account-throttler-lifecycle.js";
@@ -663,14 +663,13 @@ export const telegramPlugin = createChatChannelPlugin({
           await deleteStartupBotInfoCache(accountId);
         }
       },
-      onAccountRemoved: async ({ accountId, prevCfg }) => {
-        const { deleteTelegramUpdateOffset } = await loadTelegramUpdateOffsetRuntime();
-        await Promise.all([
-          deleteTelegramUpdateOffset({ accountId }),
+      onAccountRemoved: ({ accountId, prevCfg }) =>
+        cleanupRemovedTelegramAccountResources(prevCfg, accountId, [
+          loadTelegramUpdateOffsetRuntime().then(({ deleteTelegramUpdateOffset }) =>
+            deleteTelegramUpdateOffset({ accountId }),
+          ),
           deleteStartupBotInfoCache(accountId),
-        ]);
-        await releaseRemovedTelegramAccountThrottler(prevCfg, accountId);
-      },
+        ]),
     },
     heartbeat: {
       sendTypingGuarded: ({ signal, assertPlatformSendAuthorized, ...params }) =>
