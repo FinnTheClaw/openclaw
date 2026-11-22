@@ -346,6 +346,34 @@ describe("createScopedChannelConfigAdapter", () => {
   });
 });
 
+it.each(["scoped", "hybrid"] as const)(
+  "preserves the config method receiver for %s accounts",
+  (kind) => {
+    const options = {
+      ...namedAccountBase,
+      defaultAccountId: (_cfg) => "primary",
+      listAccountIds(cfg) {
+        return [this.defaultAccountId(cfg), "alt"];
+      },
+      resolveAccount(cfg, accountId) {
+        return { accountId: accountId ?? this.defaultAccountId(cfg) };
+      },
+      inspectAccount(cfg, accountId) {
+        return this.resolveAccount(cfg, accountId);
+      },
+    } satisfies Parameters<typeof createScopedChannelConfigBase<{ accountId: string }>>[0];
+    const base =
+      kind === "scoped"
+        ? createScopedChannelConfigBase(options)
+        : createHybridChannelConfigBase(options);
+
+    expect(base.defaultAccountId?.({})).toBe("primary");
+    expect(base.listAccountIds({})).toEqual(["primary", "alt"]);
+    expect(base.resolveAccount({})).toEqual({ accountId: "primary" });
+    expect(base.inspectAccount?.({}, "alt")).toEqual({ accountId: "alt" });
+  },
+);
+
 it("createTopLevelChannelConfigBase wires top-level enable/delete semantics", () => {
   const base = createTopLevelChannelConfigBase({
     sectionKey: "demo",

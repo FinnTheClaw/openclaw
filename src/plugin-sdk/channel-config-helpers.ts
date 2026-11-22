@@ -247,14 +247,13 @@ export function createScopedChannelConfigBase<
     allowTopLevel?: boolean;
   },
 ): ChannelCrudConfigAdapter<ResolvedAccount> {
-  const { listAccountIds, resolveAccount, inspectAccount, defaultAccountId } = params;
   return {
-    listAccountIds: (cfg) => listAccountIds(cfg as Config),
-    resolveAccount: (cfg, accountId) => resolveAccount(cfg as Config, accountId),
-    inspectAccount: inspectAccount
-      ? (cfg, accountId) => inspectAccount(cfg as Config, accountId)
+    listAccountIds: (cfg) => params.listAccountIds(cfg as Config),
+    resolveAccount: (cfg, accountId) => params.resolveAccount(cfg as Config, accountId),
+    inspectAccount: params.inspectAccount
+      ? (cfg, accountId) => params.inspectAccount?.(cfg as Config, accountId)
       : undefined,
-    defaultAccountId: (cfg) => defaultAccountId(cfg as Config),
+    defaultAccountId: (cfg) => params.defaultAccountId(cfg as Config),
     setAccountEnabled({ cfg, accountId, enabled }) {
       return setAccountEnabledInConfigSectionInSection({
         cfg,
