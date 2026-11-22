@@ -151,10 +151,10 @@ export async function waitForDescendantSubagentSummary(params: {
   try {
     // Delivery text has already lost MEDIA directives. Compare history against
     // its own text so the unchanged parent cannot masquerade as new synthesis.
-    const initialParentReply = await readLatestAssistantReply({
-      sessionKey: params.sessionKey,
-      callGateway,
-    });
+    const initialParentReply =
+      params.awaitParentSynthesis === false
+        ? undefined
+        : await readLatestAssistantReply({ sessionKey: params.sessionKey, callGateway });
     let pendingRunIds = initialActiveRuns.map((entry) => entry.runId);
     while (performance.now() < deadline && !params.abortSignal?.aborted) {
       await waitForAgentRunsToDrain({

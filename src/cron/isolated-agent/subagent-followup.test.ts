@@ -6,6 +6,7 @@ vi.hoisted(() => vi.stubEnv("OPENCLAW_TEST_FAST", "1"));
 
 import {
   readDescendantSubagentFallbackReply,
+  waitForDescendantSubagentResult,
   waitForDescendantSubagentSummary,
 } from "./subagent-followup.js";
 
@@ -161,6 +162,22 @@ describe("waitForDescendantSubagentSummary", () => {
   it("returns initialReply immediately when no active descendants and observedActiveDescendants=false", async () => {
     const result = await waitSummary({ observedActiveDescendants: false });
     expect(result).toBe("on it");
+    expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  it("settles a spawn-only handoff from its child without reading parent history", async () => {
+    const reply = "The child completed the report.";
+    listRuns.mockResolvedValue([terminalRun({ disposition: "visible", text: reply })]);
+    latestReply.mockRejectedValue(new Error("parent history unavailable"));
+
+    await expect(
+      waitForDescendantSubagentResult({
+        sessionKey: "test-session",
+        runStartedAt: 1000,
+        timeoutMs: 1_000,
+      }),
+    ).resolves.toEqual({ reply, disposition: "visible" });
+    expect(latestReply).not.toHaveBeenCalled();
     expect(callGateway).not.toHaveBeenCalled();
   });
 
