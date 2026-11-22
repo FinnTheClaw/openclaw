@@ -52,6 +52,19 @@ function hasExactBinding(
   );
 }
 
+function matchesDiskSpaceSampleInputs(
+  observation: DiskSpaceObservation | undefined,
+  placement: ActivePlacement,
+  runnerVersion: number,
+): observation is DiskSpaceObservation {
+  return (
+    observation !== undefined &&
+    hasExactBinding(observation, placement) &&
+    observation.updatedAtMs === placement.updatedAtMs &&
+    observation.runnerVersion === runnerVersion
+  );
+}
+
 function parseSafeByteCount(value: unknown, field: string): number {
   if (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/u.test(value)) {
     throw new Error(`Worker disk-space check returned an invalid ${field}`);
@@ -138,10 +151,7 @@ export function createWorkerPlacementDiskSpaceMonitor(params: {
     const runnerVersion = params.runnerAvailability.version();
     const previousObservation = observations.get(placement.sessionId);
     if (
-      previousObservation &&
-      hasExactBinding(previousObservation, placement) &&
-      previousObservation.updatedAtMs === placement.updatedAtMs &&
-      previousObservation.runnerVersion === runnerVersion &&
+      matchesDiskSpaceSampleInputs(previousObservation, placement, runnerVersion) &&
       Date.now() - previousObservation.snapshot.observedAtMs < IDLE_DISK_SPACE_REFRESH_MS
     ) {
       return;
@@ -245,6 +255,7 @@ export function createWorkerPlacementDiskSpaceMonitor(params: {
         );
       },
     });
+    const runnerVersion = params.runnerAvailability.version();
     nextSweepAtMs = Math.min(
       Infinity,
       ...active.map((placement) => {
@@ -256,7 +267,7 @@ export function createWorkerPlacementDiskSpaceMonitor(params: {
           return Infinity;
         }
         const observation = observations.get(placement.sessionId);
-        return observation && hasExactBinding(observation, placement)
+        return matchesDiskSpaceSampleInputs(observation, placement, runnerVersion)
           ? Math.max(
               Date.now() + DISK_SPACE_RETRY_MS,
               observation.snapshot.observedAtMs + IDLE_DISK_SPACE_REFRESH_MS,

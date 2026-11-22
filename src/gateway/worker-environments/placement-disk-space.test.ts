@@ -324,6 +324,29 @@ it("keeps the last exact-binding sample and warns on every failed advisory probe
   );
 });
 
+it("retries a failed disk-space refresh on the next minute after placement activity", async () => {
+  const availableBytes = 400 * MIB;
+  const totalBytes = 10 * GIB;
+  const harness = createHarness(async () => result(availableBytes, totalBytes));
+  harness.runCommand
+    .mockResolvedValueOnce(result(6 * GIB, totalBytes))
+    .mockResolvedValueOnce({ ...result(availableBytes, totalBytes), code: 1 });
+  await harness.sweep();
+  const previous = harness.snapshot();
+  expect(previous).toMatchObject({ status: "ok" });
+
+  harness.setPlacement(activePlacement({ updatedAtMs: harness.placement.updatedAtMs + 1 }));
+  await harness.sweep(60_000);
+  expect(harness.state()).toMatchObject({ sample: previous, starts: 2, warnings: 1 });
+
+  await harness.sweep(60_000);
+  expect(harness.state()).toMatchObject({
+    sample: { status: "warning", availableBytes },
+    starts: 3,
+    warnings: 1,
+  });
+});
+
 it("parks an empty inventory until a placement receipt and retains receipts during reads", async () => {
   const harness = createHarness();
   harness.setPlacement({ ...activePlacement(), state: "draining" });
