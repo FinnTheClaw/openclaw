@@ -113,7 +113,11 @@ export async function prepareWorkerDarwinNativeAssets(rootDir: string, manifestP
         }
         return { fileName, source, sha256: createHash("sha256").update(source).digest("hex") };
       }),
-    );
+    ).catch((error: unknown) => {
+      // Let a later build retry; every caller of this attempt still sees the original error.
+      assetsByIdentity.delete(identity);
+      throw error;
+    });
     assetsByIdentity.set(identity, pending);
   }
   return pending;

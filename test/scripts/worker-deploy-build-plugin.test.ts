@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
@@ -10,6 +11,7 @@ import { build } from "tsdown";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { rawDataToString } from "../../packages/gateway-client/src/websocket-data.js";
+import { prepareWorkerDarwinNativeAssets } from "../../scripts/lib/fs-safe-worker-native-assets.mts";
 import {
   createWorkerDeployBuildPlugin,
   resolveWorkerDeployGeneratorInputs,
@@ -63,6 +65,73 @@ describe("worker deploy build plugin", () => {
       ]),
     );
   });
+
+  it.each(["cold acquisition", "same-process retry"] as const)(
+    "acquires pinned worker native assets (%s)",
+    async (mode) => {
+      const root = tempDirs.make("worker-native-acquisition-");
+      const source = Buffer.from("inert native asset fixture");
+      const archive = path.join(root, "fixture.tgz");
+      fs.mkdirSync(path.join(root, "package"));
+      fs.writeFileSync(path.join(root, "package/fs-safe-native.node"), source);
+      await tar.create({ cwd: root, file: archive, gzip: true }, ["package/fs-safe-native.node"]);
+      const body = Uint8Array.from(fs.readFileSync(archive));
+      const integrity = `sha512-${createHash("sha512").update(body).digest("base64")}`;
+      const targets = Object.keys(WORKER_BUNDLE_DARWIN_NATIVE_ARTIFACTS);
+      const names = targets.map((target) => `@openclaw/fs-safe-${target}`);
+      const manifest = path.join(root, "package.json");
+      fs.writeFileSync(
+        manifest,
+        JSON.stringify({
+          optionalDependencies: Object.fromEntries(names.map((name) => [name, "1.0.0"])),
+        }),
+      );
+      fs.writeFileSync(
+        path.join(root, "pnpm-lock.yaml"),
+        JSON.stringify({
+          packages: Object.fromEntries(
+            names.map((name) => [`${name}@1.0.0`, { resolution: { integrity } }]),
+          ),
+        }),
+      );
+
+      let failing = mode === "same-process retry";
+      let failedRequests = 0;
+      const firstWave = Promise.withResolvers<void>();
+      const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        if (failing) {
+          // Let both pins reach the first attempt before either rejection settles.
+          if (++failedRequests === names.length) {
+            firstWave.resolve();
+          }
+          await firstWave.promise;
+          throw new Error("fixture transport temporarily unavailable");
+        }
+        return new Response(body);
+      });
+      try {
+        if (failing) {
+          await expect(prepareWorkerDarwinNativeAssets(root, manifest)).rejects.toThrow(
+            "fixture transport temporarily unavailable",
+          );
+          failing = false;
+        }
+        const assets = await prepareWorkerDarwinNativeAssets(root, manifest);
+        const sha256 = createHash("sha256").update(source).digest("hex");
+        expect(assets).toEqual(
+          Object.values(WORKER_BUNDLE_DARWIN_NATIVE_ARTIFACTS).map((fileName) => ({
+            fileName,
+            source,
+            sha256,
+          })),
+        );
+        expect(await prepareWorkerDarwinNativeAssets(root, manifest)).toBe(assets);
+        expect(fetch).toHaveBeenCalledTimes(names.length * (mode === "same-process retry" ? 2 : 1));
+      } finally {
+        fetch.mockRestore();
+      }
+    },
+  );
 
   it.each(["", 'require("../package.json"); require("../package.json");'])(
     "rejects changed fs-safe native manifest lookup shape %#",
