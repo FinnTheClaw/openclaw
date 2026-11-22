@@ -539,18 +539,18 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
     if (this.closing || this.closed) {
       throw new Error("Memory index manager is closed");
     }
-    if (this.database.admission?.engine === "postgres") {
-      return this.publishedStatus();
-    }
-    return this.withPublishedDatabase(() =>
-      this.publishedStatus(
+    return this.withPublishedDatabase(() => {
+      if (this.database.admission?.engine === "postgres") {
+        return this.publishedStatus();
+      }
+      return this.publishedStatus(
         collectMemoryStatusSnapshot(
           this.database.hasIndex ? this.db : undefined,
           resolveUserPath(this.settings.store.databasePath),
           this.statusQuery(),
         ),
-      ),
-    );
+      );
+    });
   }
 
   statusAsync(options?: { includeCounts?: boolean }): Promise<MemoryProviderStatus> {
