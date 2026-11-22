@@ -2217,6 +2217,61 @@ EOF
     expect(result.stdout.includes("runtime upgraded")).toBe(upgrade);
   });
 
+  it.each([false, true])(
+    "publishes a fresh Git checkout with Node initially on PATH=%s",
+    (warm) => {
+      const result = runInstallShell(`
+      source "${SCRIPT_PATH}"
+      bootstrap_gum_temp() { :; }; print_installer_banner() { :; }; print_gum_status() { :; }
+      detect_os_or_die() { OS=linux; }; detect_openclaw_checkout() { return 1; }
+      show_install_plan() { :; }; check_existing_openclaw() { return 1; }
+      load_nvm_for_node_detection() { NVM_DETECTED=0; }; use_supported_nvm_node() { return 1; }
+      promote_supported_node_binary() { return 1; }; install_homebrew() { :; }
+      print_active_node_paths() { :; }; node_binary_has_safe_sqlite() { return 0; }
+      fixture_node=${warm ? 1 : 0}
+      command() {
+        if [[ "$*" == "-v node" ]]; then [[ "$fixture_node" == 1 ]];
+        else builtin command "$@"; fi
+      }
+      install_node() { fixture_node=1; echo "Node provisioned"; }
+      node() {
+        if [[ "$fixture_node" != 1 ]]; then echo "clone publication needs Node" >&2; return 127; fi
+        if [[ "$1" == -v ]]; then echo v24.22.1; return 0; fi
+        [[ "$#" == 4 && "$1" == - ]] || return 91
+        mkdir -p "$3/.git"
+        echo "checkout published"
+      }
+      check_git() { return 0; }; npm() { return 1; }; git() { return 0; }
+      installer_step() {
+        [[ "$1" == "Cloning OpenClaw" && "$2" == git && "$3" == clone ]] || return 92
+        echo "mock clone staged"
+      }
+      resolve_git_openclaw_ref() { echo main; }
+      checkout_git_openclaw_ref() {
+        printf '%s\\n' '{"engines":{"node":">=24.16.0 <25 || >=26.1.0"}}' > "$1/package.json"
+      }
+      ensure_pnpm() {
+        [[ "$NODE_PACKAGE_ENGINE" == ">=24.16.0 <25 || >=26.1.0" ]] || return 93
+        echo "selected engine admitted"
+        exit 0
+      }
+      INSTALL_METHOD=git GIT_DIR="$HOME/checkout"
+      main
+    `);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(
+        result.stdout.match(
+          /^(?:Node provisioned|mock clone staged|checkout published|selected engine admitted)$/gm,
+        ),
+      ).toEqual([
+        ...(warm ? [] : ["Node provisioned"]),
+        "mock clone staged",
+        "checkout published",
+        "selected engine admitted",
+      ]);
+    },
+  );
+
   it.each(["install.sh", "install-cli.sh"])(
     "checks canonical Node release labels in %s",
     (installer) => {

@@ -2985,6 +2985,10 @@ install_openclaw_from_git() {
 
     validate_git_checkout "$repo_dir" || return 1
     if [[ ! -e "$repo_dir/.git" ]]; then
+        # Transactional clone publication needs Node before a target engine is available.
+        if ! command -v node >/dev/null 2>&1; then
+            ensure_node "$repo_dir" || return $?
+        fi
         # Blobless clone: the installer checks out one release tag, so full blob
         # history is downloaded and then discarded. blob:none keeps ref metadata
         # (unlike --depth 1) so ref switching and later updates still work, and
