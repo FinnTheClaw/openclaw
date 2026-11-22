@@ -377,6 +377,64 @@ describe("WorkboardView", () => {
   );
 
   it.each([
+    { label: "Archive card", successorLabel: "Restore from archive", archived: true },
+    { label: "Restore from archive", successorLabel: "Archive card", archived: false },
+  ])(
+    "keeps the clicked $label intent after a live card change",
+    async ({ label, successorLabel, archived }) => {
+      const card = createWorkboardCard({ notes: "Original notes" });
+      const newerCard = (isArchived: boolean, updatedAt: number) => ({
+        ...card,
+        updatedAt,
+        metadata: isArchived ? { archivedAt: updatedAt } : undefined,
+      });
+      const client = createWorkboardTestClient({
+        "workboard.cards.archive": { card: newerCard(archived, 4) },
+      });
+      const { state, container, renderView } = createWorkboardView({
+        client,
+        onRequestUpdate: () => renderView(),
+      });
+      state.cards = [card];
+      state.detailCardId = card.id;
+      renderView();
+
+      const editor = await inlineEditor(container, "notes");
+      const input = await editor.open();
+      input.value = "Unsaved note";
+      input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      if (!archived) {
+        // A live archive leaves an already dirty editor available for recovery.
+        state.cards = [newerCard(true, 2)];
+        renderView();
+      }
+      const actions = expectDefined(
+        container.querySelector(".workboard-detail__menu"),
+        "drawer actions",
+      );
+      requireButton(actions, label).click();
+      const discard = expectDefined(
+        container.querySelector(".workboard-discard"),
+        "discard prompt",
+      );
+      expect(client.request).not.toHaveBeenCalled();
+
+      state.cards = [newerCard(archived, 3)];
+      renderView();
+      expect(requireButton(actions, successorLabel).isConnected).toBe(true);
+      expect(input.value).toBe("Unsaved note");
+      expect(discard.isConnected).toBe(true);
+
+      textButton(discard, "Discard").click();
+      await waitForFast(() => expect(state.busyCardIds.size).toBe(0));
+      expect(client.request).toHaveBeenCalledExactlyOnceWith("workboard.cards.archive", {
+        id: card.id,
+        archived,
+      });
+    },
+  );
+
+  it.each([
     { field: "priority", original: "normal", next: "high" },
     { field: "status", original: "todo", next: "ready" },
   ] as const)(
