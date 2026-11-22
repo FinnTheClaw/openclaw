@@ -3,6 +3,7 @@ import { getInvalidPersistedCronJobReason as invalidReason } from "./persisted-s
 import {
   currentPluginCommandHostProcessId,
   getPluginCommandRunBudgetError,
+  isPluginCommandScheduleCapPeer,
 } from "./plugin-command-schedule.js";
 import { pluginCommandSchedule } from "./plugin-command-schedule.test-support.js";
 import { PLUGIN_COMMAND_SCHEDULE_MESSAGE } from "./plugin-command-schedule.types.js";
@@ -94,6 +95,23 @@ it("refuses to persist an envelope paired with any non-reserved payload", () => 
   expect(() =>
     stripJobRuntimeFields({ ...commandJob(), payload: { kind: "command", argv: ["echo"] } }),
   ).toThrow(/without its reserved payload/);
+});
+
+it.each([
+  ["before", -1, true],
+  ["at", 0, false],
+  ["after", 1, false],
+] as const)("counts a same-process command schedule %s its deadline", (_when, offset, counts) => {
+  const schedule = pluginCommandSchedule(now);
+  const peer = {
+    enabled: true,
+    pluginCommand: schedule,
+    state: { pluginCommandRuns: 0 },
+  };
+
+  expect(
+    isPluginCommandScheduleCapPeer(peer, schedule, schedule.deadlineAtMs + offset, undefined),
+  ).toBe(counts);
 });
 
 it("requires a known Gateway process before any charge", () => {

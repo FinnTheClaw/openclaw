@@ -205,8 +205,8 @@ export function retirePluginCommandJob(job: CronStoredJob, nowMs: number): void 
 }
 
 /**
- * Enabled schedules that can still run plugin code count toward the active cap: those bound to the
- * same live plugin instance in this Gateway process, and unexpired restartable schedules of the
+ * Unexpired, enabled schedules count toward the active cap: those bound to the
+ * same live plugin instance in this Gateway process, and restartable schedules of the
  * same plugin code (`sourceDigest` of the new schedule's instance) left by an earlier process,
  * which a later claim can re-arm. Schedules bound to a replaced instance or other code, or not
  * restartable from an earlier process, retire at their next occurrence and do not block
@@ -222,7 +222,8 @@ export function isPluginCommandScheduleCapPeer(
   if (
     !job.enabled ||
     peer?.pluginId !== schedule.pluginId ||
-    peer.parent.sessionKey !== schedule.parent.sessionKey
+    peer.parent.sessionKey !== schedule.parent.sessionKey ||
+    !(nowMs < peer.deadlineAtMs)
   ) {
     return false;
   }
@@ -238,7 +239,6 @@ export function isPluginCommandScheduleCapPeer(
   return (
     binding.restartable &&
     binding.sourceDigest === sourceDigest &&
-    nowMs < peer.deadlineAtMs &&
     peer.pluginSource === schedule.pluginSource &&
     peer.pluginRoot === schedule.pluginRoot &&
     peer.pluginVersion === schedule.pluginVersion
