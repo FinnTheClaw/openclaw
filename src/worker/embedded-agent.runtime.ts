@@ -174,8 +174,9 @@ export async function runWorkerEmbeddedTurn(params: RunWorkerEmbeddedTurnParams)
       content,
       display,
       details,
+      timestamp,
     ) => {
-      const entryId = await appendCustomMessage(customType, content, display, details);
+      const entryId = await appendCustomMessage(customType, content, display, details, timestamp);
       const entry = sessionManager.getEntry(entryId);
       const message = entry && projectSessionEntryMessage(entry);
       if (!message) {

@@ -11,6 +11,7 @@ import {
 } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
 import type { WorkerTurnAdmissionParams } from "../../packages/gateway-protocol/src/schema/worker-turn-admission.js";
 import { createOperationalRunInstanceRef } from "../agents/admitted-run-context.js";
+import * as runtimeContextPrompt from "../agents/embedded-agent-runner/run/runtime-context-prompt.js";
 import * as boundaryFileRead from "../infra/boundary-file-read.js";
 import { prepareSkillBundle } from "../skills/library/bundle.js";
 import { parseWorkerLaunchDescriptor, type WorkerLaunchDescriptor } from "./launch-descriptor.js";
@@ -93,7 +94,17 @@ export function registerWorkerPromptTests({ setup, modelRef: MODEL_REF }: Worker
         ],
       };
 
-      const result = await runWorkerDescriptor(parseWorkerLaunchDescriptor(launch));
+      const timestamp = 1_700_000_000_000;
+      const buildCarrier = runtimeContextPrompt.buildRuntimeContextCustomMessage;
+      const carrierBuilder = vi
+        .spyOn(runtimeContextPrompt, "buildRuntimeContextCustomMessage")
+        .mockImplementationOnce((...args) => {
+          const carrier = buildCarrier(...args);
+          return carrier ? { ...carrier, timestamp } : carrier;
+        });
+      const result = await runWorkerDescriptor(parseWorkerLaunchDescriptor(launch)).finally(() => {
+        carrierBuilder.mockRestore();
+      });
 
       expect(result.status).toBe("completed");
       expect(gateway.inferenceRequests).toHaveLength(1);
@@ -109,6 +120,7 @@ export function registerWorkerPromptTests({ setup, modelRef: MODEL_REF }: Worker
         "worker-bootstrap-marker",
       );
       const firstCarrier = gateway.inferenceRequests[0]!.context.messages[1];
+      expect(firstCarrier).toHaveProperty("timestamp", timestamp);
       expect(firstCarrier).toMatchObject(
         inHistorySystemUpdates
           ? { role: "user", operatorMessage: { turnScoped: true } }
@@ -183,6 +195,7 @@ export function registerWorkerPromptTests({ setup, modelRef: MODEL_REF }: Worker
       expect(gateway.transcriptRequests.flatMap((request) => request.messages)[1]).toMatchObject({
         role: "custom",
         display: false,
+        timestamp,
         customType: inHistorySystemUpdates ? "openclaw.system-update" : "openclaw.runtime-context",
         details: inHistorySystemUpdates
           ? { kind: "runtime-context", turnScoped: true }
@@ -218,11 +231,7 @@ export function registerWorkerPromptTests({ setup, modelRef: MODEL_REF }: Worker
       );
       expect(gateway.inferenceRequests[1]!.context.systemPrompt).toBe(firstPrompt);
       const retained = gateway.inferenceRequests[1]!.context.messages[1];
-      // The session entry owns the replay timestamp, independently of prompt creation.
-      expect(retained).toEqual({
-        ...firstCarrier,
-        timestamp: next.assignment.initialMessages[1]?.timestamp,
-      });
+      expect(retained).toEqual(firstCarrier);
       const currentCarrier = gateway.inferenceRequests[1]!.context.messages.at(-1);
       expect(currentCarrier).toMatchObject(
         inHistorySystemUpdates
