@@ -54,11 +54,19 @@ export async function runGatewayStartupObservers(params: {
       }
       const { resumeAgentDeletions } = await import("./server-agent-deletion-recovery.js");
       await resumeAgentDeletions(context, params.signal);
-      const activateSubagentRegistry = await params.loadSubagentRegistryActivation();
-      if (params.signal.aborted || params.isClosing?.()) {
-        return;
+      try {
+        const activateSubagentRegistry = await params.loadSubagentRegistryActivation();
+        if (params.signal.aborted || params.isClosing?.()) {
+          return;
+        }
+        await activateSubagentRegistry(params.resolveGatewayContext);
+      } catch (error) {
+        // Restoring history is best-effort; queued input recovery still owns startup ordering.
+        params.signal.throwIfAborted();
+        if (!params.isClosing?.()) {
+          params.log.warn(`subagent restart recovery failed to activate: ${String(error)}`);
+        }
       }
-      await activateSubagentRegistry(params.resolveGatewayContext);
       if (params.signal.aborted || params.isClosing?.()) {
         return;
       }

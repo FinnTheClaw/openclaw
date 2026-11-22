@@ -1,6 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { createDeferredWorkTracker } from "../shared/async-work-scope.test-support.js";
 import {
   createAgentDatabaseInspectionRefusal,
   recordAgentDatabaseAdmissions,
@@ -111,6 +113,34 @@ export function registerGatewayStartupReadinessTests(params: {
       );
     },
   );
+
+  it("unlocks startup after optional subagent restoration fails", async () => {
+    const { postAttachMocks } = await import("./server-startup-post-attach.mocks.test-support.js");
+    const startupWork = new AsyncWorkScope();
+    const unavailableGatewayMethods = new Set<string>(STARTUP_UNAVAILABLE_GATEWAY_METHODS);
+    const onChannelsStarted = vi.fn();
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const restoreError = new Error("retained subagent restoration unavailable");
+    postAttachMocks.activateSubagentRegistry.mockRejectedValueOnce(restoreError);
+
+    const runtime = await params.start(
+      params.createParams({
+        sidecarStartup: "defer",
+        trackStartupWork: createDeferredWorkTracker(startupWork),
+        unlockStartupMethods: createStartupMethodUnlocker(unavailableGatewayMethods),
+        onChannelsStarted,
+        log,
+      }),
+    );
+    await runtime.startupSettled;
+    await startupWork.runWhenIdle(() => {});
+
+    expect(postAttachMocks.activateSubagentRegistry).toHaveBeenCalledOnce();
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(restoreError.message));
+    expect(unavailableGatewayMethods.has("chat.send")).toBe(false);
+    expect(postAttachMocks.resumeMarkedSessions).toHaveBeenCalledOnce();
+    expect(onChannelsStarted).toHaveBeenCalledOnce();
+  });
 
   it("emits a sidecar readiness summary in startup trace details", async () => {
     const trace: GatewayStartupTrace = {
