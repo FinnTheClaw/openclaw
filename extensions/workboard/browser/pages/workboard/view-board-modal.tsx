@@ -69,7 +69,8 @@ export function BoardModal(props: {
   toastOwner: object;
   client: GatewayBrowserClient | null;
   readonly canWrite: boolean;
-  onSaved: (board: WorkboardBoardMetadata) => void;
+  navigationGeneration: () => number;
+  onSaved: (board: WorkboardBoardMetadata, navigationGeneration: number) => void;
   onCancel: () => void;
   onChange: () => void;
 }) {
@@ -97,6 +98,7 @@ export function BoardModal(props: {
   const nameValue = liveInputValue(() => draft().name);
   const persist = async (initialDraft: BoardDraft, client: GatewayBrowserClient) => {
     busy = true;
+    const savedNavigation = props.navigationGeneration();
     const isCurrent = () => !disposed && props.client === client;
     try {
       const sessions = initialDraft.sessions
@@ -142,7 +144,7 @@ export function BoardModal(props: {
         });
       }
       if (isCurrent()) {
-        props.onSaved(board);
+        props.onSaved(board, savedNavigation);
       }
     } catch (error) {
       if (isCurrent()) {

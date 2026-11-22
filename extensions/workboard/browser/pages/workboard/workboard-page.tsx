@@ -497,12 +497,12 @@ export function createWorkboardPage(
                       boardDraft = null;
                       publishPresentation();
                     }}
-                    onSaved={(board) => {
+                    navigationGeneration={() => navigationGeneration}
+                    onSaved={(board, savedNavigation) => {
                       if (disposed) {
                         return;
                       }
                       const creating = boardDraft?.create;
-                      const savedNavigation = navigationGeneration;
                       boardDraft = null;
                       if (creating) {
                         invalidateWorkboardLoads(workboard);

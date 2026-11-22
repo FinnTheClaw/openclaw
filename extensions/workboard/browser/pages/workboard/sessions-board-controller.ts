@@ -29,7 +29,7 @@ export function createSessionsBoardController(host: BoardDockHost, notify: () =>
   let active = false;
   let generation = 0;
   let attempted = false;
-  let pending: Promise<boolean> | undefined;
+  let pending: { more: boolean; load: Promise<boolean> } | undefined;
   let snapshot: WorkboardSessionsBoardRead | undefined;
   let revision: WorkboardSessionsBoardRevision | undefined;
   let error: string | undefined;
@@ -98,7 +98,14 @@ export function createSessionsBoardController(host: BoardDockHost, notify: () =>
       return false;
     }
     if (pending) {
-      return pending;
+      if (more || !pending.more) {
+        return pending.load;
+      }
+      // A cursor append cannot satisfy a canonical read of the loaded window.
+      const id = boardId;
+      const receipt = generation;
+      await pending.load;
+      return current(id, receipt) ? read() : false;
     }
     if (more && !snapshot?.nextCursor) {
       return false;
@@ -170,12 +177,12 @@ export function createSessionsBoardController(host: BoardDockHost, notify: () =>
         return false;
       }
     })();
-    pending = load;
+    pending = { more, load };
     notify();
     try {
       return await load;
     } finally {
-      if (pending === load) {
+      if (pending?.load === load) {
         pending = undefined;
       }
       notify();
@@ -195,7 +202,7 @@ export function createSessionsBoardController(host: BoardDockHost, notify: () =>
     try {
       await operation(id, receipt);
       if (pending) {
-        await pending;
+        await pending.load;
       }
       if (current(id, receipt)) {
         await read();
