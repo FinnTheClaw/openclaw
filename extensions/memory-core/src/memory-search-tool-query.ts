@@ -71,6 +71,7 @@ export async function executeMemorySearchToolQuery(params: {
 }) {
   const startedAt = Date.now();
   const runtimeDebug: MemorySearchRuntimeDebug[] = [];
+  let partialGeneration = 0;
   const active = params.initialManager;
   const { query, signal, visibility } = params;
   // Product recall may index transcripts without adding them to ordinary model search.
@@ -117,6 +118,8 @@ export async function executeMemorySearchToolQuery(params: {
       onDebug: (debug) => runtimeDebug.push(debug),
       onPartialResults: params.onPartialResults
         ? (partialCandidates) => {
+            // A newer snapshot or fallback reset invalidates earlier finalizers.
+            const generation = ++partialGeneration;
             params.onPartialResults?.(null);
             // Session visibility can change while semantic retrieval waits. A deadline
             // cannot reuse earlier session authority, so retain only durable memory files.
@@ -134,7 +137,7 @@ export async function executeMemorySearchToolQuery(params: {
               effectiveMode: "keyword-only",
             }).then(
               (result) => {
-                if (!signal.aborted) {
+                if (generation === partialGeneration && !signal.aborted) {
                   params.onPartialResults?.(result.pausedIndexIdentity ? null : result);
                 }
               },
