@@ -241,13 +241,16 @@ export function createWhatsAppGroupMetadataCacheOwner(params: GroupMetadataCache
 
     void (async () => {
       const revision = cacheRevision;
+      const reconnectEntriesAtStart = new Map(reconnectCache);
       try {
         const groups = await params.sock.groupFetchAllParticipating();
         if (closed || revision !== cacheRevision) {
           return;
         }
         for (const [jid, meta] of Object.entries(groups ?? {})) {
-          if (meta) {
+          // A live lookup can publish a newer title while startup hydration is pending.
+          const current = reconnectCache.get(jid);
+          if (meta && (!current || current === reconnectEntriesAtStart.get(jid))) {
             rememberGroupMetadataCacheEntry(reconnectCache, jid, summarizeForReconnect(meta));
             rememberWhatsAppBaileysCacheEntry(params.baileysCache, jid, meta, GROUP_META_TTL_MS);
           }
