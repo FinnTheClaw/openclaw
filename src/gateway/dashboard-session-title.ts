@@ -21,6 +21,7 @@ import {
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withTimeout } from "../infra/fs-safe.js";
+import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import {
   SESSION_TITLE_SOURCE_MAX_CHARS,
@@ -530,7 +531,16 @@ export async function maybeGenerateSessionTitle(params: SessionTitleParams): Pro
   const run = async () => {
     // Select the first usable task, not an earlier control-only turn. Carry the
     // same prepared command metadata through history selection and generation.
-    const skillCommands = await prepareTitleSkillCommands(skillParams);
+    const skillCommands = await prepareTitleSkillCommands(skillParams).catch((error: unknown) => {
+      if (!(error instanceof WorkerTaskError) || error.code !== "timeout") {
+        throw error;
+      }
+      getAsyncWorkSignal()?.throwIfAborted();
+      params.commitGuard?.();
+      assertMemoryCurrent();
+      // Temporarily unavailable command metadata need not block unambiguous plain text.
+      return [];
+    });
     const transcriptScope = {
       agentId: params.agentId,
       sessionEntry: entry,
