@@ -21,6 +21,7 @@ import {
 import { isWhatsAppGroupJid, normalizeWhatsAppTarget } from "./normalize-target.js";
 import {
   createWaDirectorySocket,
+  waitForCredsSaveQueue,
   waitForCredsSaveQueueWithTimeout,
   waitForWaConnection,
 } from "./session.js";
@@ -123,7 +124,11 @@ type ManagedStandaloneCleanup = {
   ownerLease: WhatsAppConnectionOwnerLease;
   sock: StandaloneSocket | null;
   socketClosed: boolean;
+  inFlight?: Promise<void>;
+  observingDrain?: boolean;
 };
+
+class StandaloneCredsDrainTimeout extends Error {}
 
 const pendingStandaloneCleanups = new Map<string, ManagedStandaloneCleanup>();
 
@@ -138,7 +143,9 @@ async function completeStandaloneCleanup(cleanup: ManagedStandaloneCleanup): Pro
   if (cleanup.sock) {
     const queueResult = await waitForCredsSaveQueueWithTimeout(cleanup.authDir);
     if (queueResult === "timed_out") {
-      throw new Error("WhatsApp credential persistence did not drain before socket release");
+      throw new StandaloneCredsDrainTimeout(
+        "WhatsApp credential persistence did not drain before socket release",
+      );
     }
   }
   await cleanup.ownerLease.release();
@@ -147,15 +154,53 @@ async function completeStandaloneCleanup(cleanup: ManagedStandaloneCleanup): Pro
   }
 }
 
+function runStandaloneCleanup(cleanup: ManagedStandaloneCleanup): Promise<void> {
+  cleanup.inFlight ??= completeStandaloneCleanup(cleanup).finally(() => {
+    cleanup.inFlight = undefined;
+  });
+  return cleanup.inFlight;
+}
+
+async function observeStandaloneDrain(cleanup: ManagedStandaloneCleanup): Promise<void> {
+  if (cleanup.observingDrain) {
+    return;
+  }
+  cleanup.observingDrain = true;
+  try {
+    while (pendingStandaloneCleanups.get(cleanup.authDir) === cleanup) {
+      await waitForCredsSaveQueue(cleanup.authDir);
+      if (pendingStandaloneCleanups.get(cleanup.authDir) !== cleanup) {
+        return; // A later lookup already completed this cleanup.
+      }
+      try {
+        await runStandaloneCleanup(cleanup);
+        return;
+      } catch (error) {
+        if (!(error instanceof StandaloneCredsDrainTimeout)) {
+          throw error;
+        }
+        // Snapshot the latest tail if more work arrived before the bounded recheck.
+      }
+    }
+  } catch {
+    // Other cleanup failures keep ownership and remain retryable by a later lookup.
+  } finally {
+    cleanup.observingDrain = false;
+  }
+}
+
 async function finishStandaloneCleanupOrThrow(
   cleanup: ManagedStandaloneCleanup,
   operationError?: unknown,
 ): Promise<void> {
   try {
-    await completeStandaloneCleanup(cleanup);
+    await runStandaloneCleanup(cleanup);
   } catch (cleanupError) {
-    // Keep credentials exclusively owned; the next lookup retries cleanup.
+    // Keep ownership until the queue drains and the lease actually releases.
     pendingStandaloneCleanups.set(cleanup.authDir, cleanup);
+    if (cleanupError instanceof StandaloneCredsDrainTimeout) {
+      void observeStandaloneDrain(cleanup);
+    }
     const cause =
       operationError === undefined
         ? cleanupError

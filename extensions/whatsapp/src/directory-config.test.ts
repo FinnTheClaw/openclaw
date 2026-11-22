@@ -1,10 +1,15 @@
+import fs from "node:fs/promises";
 import { createDirectoryTestRuntime } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { beforeEach, expect, it, vi } from "vitest";
-import { WhatsAppConnectionOwnerBusyError } from "./connection-owner.js";
+import {
+  acquireWhatsAppGatewayConnectionOwner,
+  WhatsAppConnectionOwnerBusyError,
+} from "./connection-owner.js";
 import { listWhatsAppDirectoryGroupsLive as listGroups } from "./directory-config.js";
 
 const mocks = vi.hoisted(() => ({
+  acquireFileLock: vi.fn<typeof import("openclaw/plugin-sdk/file-lock").acquireFileLock>(),
   acquireOwner:
     vi.fn<typeof import("./connection-owner.js").acquireWhatsAppStandaloneConnectionOwner>(),
   createSocket: vi.fn<typeof import("./session.js").createWaDirectorySocket>(),
@@ -18,6 +23,11 @@ const mocks = vi.hoisted(() => ({
   resolveAuthDir: vi.fn(),
   waitForConnection: vi.fn<typeof import("./session.js").waitForWaConnection>(),
   waitForCreds: vi.fn<typeof import("./session.js").waitForCredsSaveQueueWithTimeout>(),
+  waitForCredsDrain: vi.fn<typeof import("./session.js").waitForCredsSaveQueue>(),
+}));
+vi.mock("openclaw/plugin-sdk/file-lock", async (original) => ({
+  ...(await original<typeof import("openclaw/plugin-sdk/file-lock")>()),
+  acquireFileLock: mocks.acquireFileLock,
 }));
 vi.mock("./active-listener.js", async (original) => ({
   ...(await original<typeof import("./active-listener.js")>()),
@@ -41,6 +51,7 @@ vi.mock("./auth-store.js", async (original) => ({
 }));
 vi.mock("./session.js", () => ({
   createWaDirectorySocket: mocks.createSocket,
+  waitForCredsSaveQueue: mocks.waitForCredsDrain,
   waitForCredsSaveQueueWithTimeout: mocks.waitForCreds,
   waitForWaConnection: mocks.waitForConnection,
 }));
@@ -89,6 +100,7 @@ beforeEach(() => {
   mocks.readAuth.mockResolvedValue({ outcome: "stable", exists: true });
   mocks.waitForConnection.mockResolvedValue(undefined);
   mocks.waitForCreds.mockResolvedValue("drained");
+  mocks.waitForCredsDrain.mockReset().mockResolvedValue(undefined);
 });
 
 it("filters and sorts groups through the active owner", async () => {
@@ -177,9 +189,86 @@ it("cleans up a socket whose connection fails", async () => {
 it("retries retained cleanup after credential drain times out", async () => {
   const sock = socket({});
   mocks.createSocket.mockResolvedValueOnce(sock as never).mockResolvedValueOnce(sock as never);
+  const drain = Promise.withResolvers<void>();
   mocks.waitForCreds.mockResolvedValueOnce("timed_out");
-  await unavailable("cleanup_failed");
-  expect(mocks.releaseOwner).not.toHaveBeenCalled();
-  await expect(listGroups(params())).resolves.toEqual([]);
-  expect(mocks.releaseOwner).toHaveBeenCalledTimes(2);
+  mocks.waitForCredsDrain.mockReturnValueOnce(drain.promise);
+  try {
+    await unavailable("cleanup_failed");
+    expect(mocks.releaseOwner).not.toHaveBeenCalled();
+    await expect(listGroups(params())).resolves.toEqual([]);
+    expect(mocks.releaseOwner).toHaveBeenCalledTimes(2);
+  } finally {
+    drain.resolve();
+  }
+});
+
+it("admits the waiting gateway after a standalone directory drain settles", async () => {
+  const authDir = "/tmp/wa-fake-directory-drain";
+  const lockPath = `${authDir}.lock`;
+  using mkdir = vi.spyOn(fs, "mkdir").mockResolvedValue(undefined);
+  using realpath = vi.spyOn(fs, "realpath").mockResolvedValue(authDir);
+  const actualOwner =
+    await vi.importActual<typeof import("./connection-owner.js")>("./connection-owner.js");
+  const standaloneRelease = vi.fn(async () => {});
+  const gatewayRelease = vi.fn(async () => {});
+  mocks.acquireFileLock
+    .mockResolvedValueOnce({ lockPath, release: standaloneRelease })
+    .mockResolvedValueOnce({ lockPath, release: gatewayRelease });
+  mocks.acquireOwner.mockImplementationOnce(actualOwner.acquireWhatsAppStandaloneConnectionOwner);
+  mocks.resolveAuthDir.mockReturnValueOnce({ authDir, isLegacy: false });
+  const sock = socket({});
+  mocks.createSocket.mockResolvedValueOnce(sock as never);
+  const drain = Promise.withResolvers<void>();
+  mocks.waitForCreds
+    .mockImplementationOnce(
+      () =>
+        new Promise<"timed_out">((resolve) => {
+          setTimeout(() => resolve("timed_out"), 15_000);
+        }),
+    )
+    .mockImplementationOnce(async () => {
+      await drain.promise;
+      return "drained";
+    });
+  mocks.waitForCredsDrain.mockReturnValueOnce(drain.promise);
+  const abort = new AbortController();
+  let waiter: Promise<void> | undefined;
+  let admitted: Awaited<ReturnType<typeof acquireWhatsAppGatewayConnectionOwner>> | undefined;
+
+  vi.useFakeTimers();
+  try {
+    const result = unavailable("cleanup_failed");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.waitForCreds).toHaveBeenCalledWith(authDir);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await result;
+    expect(sock.end).toHaveBeenCalledOnce();
+    expect(standaloneRelease).not.toHaveBeenCalled();
+
+    waiter = acquireWhatsAppGatewayConnectionOwner(authDir, abort.signal).then(
+      (owner) => {
+        admitted = owner;
+      },
+      () => {},
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mkdir).toHaveBeenCalledTimes(2);
+    expect(realpath).toHaveBeenCalledTimes(2);
+    expect(mocks.acquireFileLock).toHaveBeenCalledOnce();
+    expect(admitted).toBeUndefined();
+
+    drain.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(standaloneRelease).toHaveBeenCalledOnce();
+    expect(admitted).toBeDefined();
+    expect(mocks.acquireFileLock).toHaveBeenCalledTimes(2);
+    expect(mocks.acquireOwner).toHaveBeenCalledOnce();
+    expect(sock.end).toHaveBeenCalledOnce();
+  } finally {
+    drain.resolve();
+    abort.abort();
+    await waiter;
+    await admitted?.release();
+    vi.useRealTimers();
+  }
 });
